@@ -2813,6 +2813,58 @@ check "a member answering to field but not validations is rejected", /ArgumentEr
   raw_shape_verdict({ members: [Class.new { def field = :a }.new], container: Hash })
 end
 
+# A DECLARED field's `type:` reaches reflection canonicalized to `{ klass: … }` (the DSL applies
+# TypeValidator's syntactic sugar); a raw member's never is, so `type: Hash` — the only spelling anyone writes
+# by hand — arrives at the projection bare. The projection read it as `dig(:type, :klass)` while the layer that
+# DESCRIBES what it emitted read either spelling, so reflecting such a member raised `TypeError:
+# #<Class:Hash> does not have #dig method`, naming neither the member nor the option.
+def bare_member_projection(type)
+  inner = { members: [SC.new(field: :x, validations: {})], container: Hash }
+  member = SC.new(field: :m, validations: { type:, shape: inner })
+  klass = Class.new do
+    include Axn
+    expects :payload, type: Hash, shape: { members: [member], container: Hash }
+    def call; end
+  end
+  JSON.generate(klass.input_schema.dig(:properties, :payload, :properties, :m))
+end
+
+def bare_vs_canonical(bare)
+  projected = bare_member_projection(bare)
+  "#{projected} #{projected == bare_member_projection({ klass: bare }) ? '==' : '!='} canonical"
+end
+
+check "a member's bare `type:` projects, and exactly as the `{ klass: }` bag does",
+      '{"type":"object","properties":{"x":{}}} == canonical' do
+  bare_vs_canonical(Hash)
+end
+
+# The type's OWN members come from the same read, so the bare spelling has to reach them too — otherwise it
+# would project a strictly smaller property set than the canonical bag under the same declaration.
+BARE_DATA = Data.define(:a, :b)
+check "...including a bare Data type's own members",
+      '{"type":"object","properties":{"a":{},"b":{},"x":{}}} == canonical' do
+  bare_vs_canonical(BARE_DATA)
+end
+
+# RESIDUE, unchanged by that fix and recorded here because the projection now describes a member the runtime
+# refuses: nothing canonicalizes a raw member's validator SUGAR (only its keys — see
+# `_symbol_keyed_member_validations`), so `TypeValidator#check_validity!` rejects the bare bag on every call.
+# The canonical spelling is what a raw member must carry to validate at all.
+check "a member's bare `type:` still validates nothing (residue)",
+      ["ArgumentError: must supply :klass", "Axn::InboundValidationError: Payload m is not a Hash"] do
+  [{ type: Hash }, { type: { klass: Hash } }].map do |validations|
+    member = SC.new(field: :m, validations:)
+    klass = Class.new do
+      include Axn
+      expects :payload, type: Hash, shape: { members: [member], container: Hash }
+      def call; end
+    end
+    e = klass.call(payload: { m: "nope" }).exception
+    "#{e.class}: #{e.message}"
+  end
+end
+
 # ---------------------------------------------------------------------------------------------------
 puts "\n== the boot guarantee, including a tool that inherits its adapter's readers ============="
 # ---------------------------------------------------------------------------------------------------

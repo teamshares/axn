@@ -609,6 +609,67 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
     end
 
+    # A declared field's `type:` reaches reflection canonicalized to `{ klass: … }` (the DSL applies
+    # TypeValidator's syntactic sugar); a raw `shape:` member's does not — `#field` + `#validations` is the
+    # whole member contract, so `type: Hash`, the only spelling anyone writes by hand, arrives at the
+    # projection bare. The projection read it as `dig(:type, :klass)` while the layer that DESCRIBES what it
+    # emitted read it as either spelling, so reflecting such a member raised
+    # `TypeError: #<Class:Hash> does not have #dig method` — naming neither the member nor the option. Both
+    # layers now read it through one owner (`Schema.declared_klass`), so the bare spelling reflects as exactly
+    # what the canonical one reflects as.
+    describe "a member whose type: is spelled bare (no `{ klass: }` bag)" do
+      def member(validations) = Axn::Core::Contract::ShapeConfig.new(field: :m, validations:)
+      def inner = { members: [Axn::Core::Contract::ShapeConfig.new(field: :x, validations: {})], container: Hash }
+
+      def inbound(validations)
+        m = member(validations)
+        build_axn { expects :payload, type: Hash, shape: { members: [m], container: Hash } }
+      end
+
+      def outbound(validations)
+        m = member(validations)
+        build_axn do
+          exposes :payload, type: Hash, shape: { members: [m], container: Hash }
+
+          define_method(:call) { expose(payload: {}) }
+        end
+      end
+
+      it "emits the member's own shape rather than raising" do
+        klass = inbound({ type: Hash, shape: inner })
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :m))
+          .to eq({ type: "object", properties: { x: {} } })
+      end
+
+      it "emits exactly what the canonical `{ klass: }` spelling emits, inbound and outbound" do
+        %i[input_schema output_schema].each do |schema|
+          expect(inbound({ type: Hash, shape: inner }).public_send(schema))
+            .to eq(inbound({ type: { klass: Hash }, shape: inner }).public_send(schema))
+        end
+      end
+
+      # The type's OWN members are contributed by the same read, so a bare `type: <Data>` has to reach them
+      # too — otherwise the bare spelling would emit a strictly smaller property set than the canonical one.
+      it "contributes a bare Data type's members alongside the shape's" do
+        klass = inbound({ type: Data.define(:a, :b), shape: inner })
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :m, :properties).keys).to eq(%i[a b x])
+      end
+
+      # OUTPUT asks a second question of the same option — whether the value provably serializes member-keyed
+      # (`shape_serializes_to_object?`) — so the bare spelling must reach that decision as well, including its
+      # negative answer: a Data with its own `as_json` may serialize to anything, so its property stays untyped.
+      it "leaves an outbound member untyped when its bare type overrides as_json" do
+        custom = Class.new(Data.define(:c)) { def as_json(*) = "scalar" }
+
+        expect(outbound({ type: custom, shape: inner }).output_schema.dig(:properties, :payload, :properties))
+          .to eq({ m: {} })
+        expect(outbound({ type: Hash, shape: inner }).output_schema.dig(:properties, :payload, :properties))
+          .to eq({ m: { type: "object", properties: { x: {} } } })
+      end
+    end
+
     # The documented member contract is duck-typed (#field + #validations). A raw `shape:` supplied
     # with a member object that doesn't implement #method_call must not raise — it defaults to the
     # safe no-dispatch behavior, so existing member objects don't have to grow a new method.
