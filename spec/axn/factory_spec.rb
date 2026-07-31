@@ -28,6 +28,36 @@ RSpec.shared_examples "can build Axns from callables" do
       expect(axn.call).to be_ok
       expect(axn.call.value).to eq(123)
     end
+
+    # Its presence is asked on two sides of a boundary — whether to DECLARE the exposure at build time, and
+    # whether to WRITE it from the generated `call`. `present?` is an ActiveSupport method on Object, so a
+    # `String` subclass overrides it, and one answering differently across those two reads declared no exposure
+    # and then wrote one: `UnknownExposure` at call time for a contract that was never wrong. Canonicalized once
+    # in `build`, so both sides read the same answer.
+    it "declares and writes the same exposure when the name's own present? disagrees between reads" do
+      name = Class.new(String) do
+        def present?
+          @reads = (@reads || 0) + 1
+          @reads > 1
+        end
+
+        def blank? = !present?
+      end.new("out")
+
+      klass = Axn::Factory.build(-> { 42 }, expose_return_as: name)
+
+      expect(klass.external_field_configs.map(&:field)).to eq([:out])
+      result = klass.call
+      expect(result).to be_ok
+      expect(result.out).to eq(42)
+    end
+
+    it "still declares no exposure when the name is genuinely absent" do
+      klass = Axn::Factory.build(-> { 42 }, expose_return_as: nil)
+
+      expect(klass.external_field_configs.map(&:field)).to be_empty
+      expect(klass.call).to be_ok
+    end
   end
 
   context "setting messages, expects, exposes" do

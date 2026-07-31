@@ -1086,6 +1086,42 @@ RSpec.describe "declaration-time property name collisions" do
         expect(klass.subfield_configs.map(&:on)).to eq(%i[address address.billing])
         expect(klass.input_schema.dig(:properties, :address, :properties, :billing, :properties).keys).to eq([:zip])
       end
+
+      # Canonicalizing a route is only worth anything if it cannot be SKIPPED, and the decision of whether a
+      # route is present at all was itself a dispatch: `present?`/`blank?` are ActiveSupport methods on Object,
+      # so a `String` subclass overrides them. One answering "blank" to that decision and "present" to a later
+      # reader was stored raw — the very split canonicalizing exists to close, reachable through the guard
+      # protecting it. Absence is now decided from the value's class and Ruby's own `empty?`.
+      it "canonicalizes a route whose own blank? calls it absent" do
+        route = Class.new(String) do
+          def blank?
+            @reads = (@reads || 0) + 1
+            @reads == 1
+          end
+        end.new("p")
+
+        klass = build_axn do
+          expects :p, type: Hash
+          expects :a, on: route, optional: true
+        end
+
+        expect(klass.subfield_configs.map(&:on)).to eq([:p])
+        expect(klass.input_schema.dig(:properties, :p, :properties).keys).to eq([:a])
+      end
+
+      # The complement, so the fix is not just "always symbolize": a genuinely absent route still means "no
+      # route", and its field stays top-level rather than becoming a subfield of something.
+      it "still treats nil and the empty String as no route at all" do
+        [nil, ""].each do |absent|
+          klass = build_axn do
+            expects :p, type: Hash
+            expects :a, on: absent, optional: true
+          end
+
+          expect(klass.subfield_configs).to be_empty
+          expect(klass.internal_field_configs.map(&:field)).to eq(%i[p a])
+        end
+      end
     end
   end
 

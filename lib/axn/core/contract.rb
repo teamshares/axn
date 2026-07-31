@@ -262,9 +262,12 @@ module Axn
           # declaration written honestly is a duplicate. A Symbol's `to_s` is Ruby's own, so afterwards every
           # read is the same answer, and no message renders a route by running the route's own code. Dotted
           # paths symbolize harmlessly, exactly as a dotted `on:` always did: they are only ever split via `to_s`.
-          # Absent stays absent — `nil`/`""` mean "no route", and `present?` decides that without rendering
-          # anything.
-          on = on.to_sym if on.present?
+          #
+          # Absent stays absent — `nil`/`""` mean "no route" — and that verdict is reached WITHOUT running the
+          # route's own code, because `present?`/`blank?` are ActiveSupport methods on Object that a String
+          # subclass overrides: one answering "blank" here and "present" to a later reader skipped this line
+          # entirely and was stored raw, reinstating the split this canonicalization exists to close.
+          on = on.to_sym unless Internal::NativeMethods.absent_name?(on)
 
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)

@@ -66,6 +66,13 @@ module Axn
         executable = callable || block
         raise ArgumentError, "[Axn::Factory] Must provide either a callable or a block" unless executable
 
+        # Canonicalized once, here, because its presence is asked TWICE on two sides of a boundary: whether to
+        # declare the exposure at build time, and whether to write it from the generated `call`. A caller value
+        # answering `present?` differently across those reads declared no exposure and then wrote one, failing
+        # with UnknownExposure on a contract that was never wrong. Decided without dispatching the value's own
+        # `present?`/`blank?`, which a String subclass overrides — see Internal::NativeMethods.absent_name?.
+        expose_return_as = Internal::NativeMethods.absent_name?(expose_return_as) ? nil : expose_return_as.to_sym
+
         args = executable.parameters.each_with_object(_hash_with_default_array) { |(type, field), hash| hash[type] << field }
 
         if args[:opt].present? || args[:req].present? || args[:rest].present?
@@ -181,7 +188,7 @@ module Axn
           end
 
           # Default exposure
-          axn.exposes(expose_return_as, optional: true) if expose_return_as.present?
+          axn.exposes(expose_return_as, optional: true) if expose_return_as
         end
       end
       # rubocop:enable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
@@ -307,7 +314,7 @@ module Axn
             end
 
             retval = instance_exec(**unwrapped_kwargs, &executable)
-            expose(expose_return_as => retval) if expose_return_as.present?
+            expose(expose_return_as => retval) if expose_return_as
           end
         end
       ensure

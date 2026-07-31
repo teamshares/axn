@@ -40,7 +40,8 @@ module Axn
       MODULE_ANCESTORS = ::Module.instance_method(:ancestors)
       MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
-      private_constant :OBJECT_METHOD, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS,
+      STRING_EMPTY = ::String.instance_method(:empty?)
+      private_constant :OBJECT_METHOD, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY,
                        :MODULE_ANCESTORS, :MODULE_INSTANCE_METHODS, :MODULE_PRIVATE_INSTANCE_METHODS
 
       # Ruby's own owners, read from the implementations rather than named, so an implementation that moves
@@ -117,6 +118,26 @@ module Axn
       end
 
       def self.frozen?(value) = KERNEL_FROZEN.bind_call(value)
+
+      # Does this caller-supplied name mean "absent" — nil, or the empty String/Symbol?
+      #
+      # `present?`/`blank?` cannot answer it: they are ActiveSupport methods on Object, so a String subclass
+      # overrides them, and a value that answered "blank" here and "present" to a later reader skipped
+      # canonicalization and was stored raw — the exact guard/consumer split canonicalizing exists to close.
+      #
+      # `String#empty?` is bound for the same reason it would be overridden. `Symbol#empty?` is NOT bound and does
+      # not need to be: a Symbol subclass can be DECLARED but never instantiated (`new` is undefined and
+      # `allocate` raises TypeError), so no value is ever an instance of one. Anything that is neither nil nor a
+      # String nor a Symbol is "present" here, which leaves it to the caller's `to_sym` exactly as before — an
+      # `on: 123` still raises NoMethodError rather than being silently treated as no route.
+      def self.absent_name?(value)
+        case value
+        when nil then true
+        when ::Symbol then value.empty?
+        when ::String then STRING_EMPTY.bind_call(value)
+        else false
+        end
+      end
 
       def self._object_owns_none?(value, expected)
         expected.all? { |name, owner| owner.equal?(OBJECT_METHOD.bind_call(value, name).owner) }
