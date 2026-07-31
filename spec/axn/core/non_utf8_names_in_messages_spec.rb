@@ -135,4 +135,92 @@ RSpec.describe "non-UTF-8 declared names in messages" do
       expect(Axn::Reflection::PropertyNames.renderable_label(exotic)).to match(/\Aa name of class /)
     end
   end
+
+  # A CLASS name is foreign text on exactly the same terms, and the messages that fall back to naming one are the
+  # safe escape everything above depends on. A constant may hold non-UTF-8 bytes — `const_set` accepts them and
+  # `Module#to_s` hands them back — so naming a class was the one step in these messages that could still raise
+  # Encoding::CompatibilityError while the failure was being reported.
+  describe "a class named in prose" do
+    # Assigned with `const_set` rather than written as a literal or handed to `stub_const`, both of which read
+    # their name as UTF-8 source text. Valid ISO-8859-1, so the name renders as "Café" — a real constant a
+    # Latin-1-encoded source file declares.
+    let(:exotic_name) { "Caf\xE9".dup.force_encoding("ISO-8859-1").to_sym }
+    let(:exotic_class) { exotic_named(Class.new) }
+
+    def exotic_named(klass) = klass.tap { Object.const_set(exotic_name, klass) }
+
+    after { Object.send(:remove_const, exotic_name) if Object.const_defined?(exotic_name) }
+
+    it "names a value's class as readable text" do
+      expect(Axn::Reflection::PropertyNames.renderable_class_name(exotic_class.new)).to eq("Café")
+    end
+
+    it "names a class itself as readable text" do
+      expect(Axn::Reflection::PropertyNames.renderable_module_name(exotic_class)).to eq("Café")
+    end
+
+    # An ordinary class name is byte-identical, so no existing message text moves.
+    it "leaves an ASCII class name exactly as it was" do
+      expect(Axn::Reflection::PropertyNames.renderable_class_name(1)).to eq("Integer")
+      expect(Axn::Reflection::PropertyNames.renderable_module_name(Hash)).to eq("Hash")
+    end
+
+    # A declaration error whose only handle on the offender is its class: the member name is neither a String nor
+    # a Symbol, so there is no spelling to print.
+    it "reports the shape-member-name rule rather than an encoding failure" do
+      member = Struct.new(:field, :validations).new(exotic_class.new, {})
+
+      expect do
+        build_axn { expects :p, type: Hash, shape: { members: [member], container: Hash } }
+      end.to raise_error(ArgumentError) { |error|
+        expect(error.message).to be_readable_utf8
+        expect(error.message).to include("a shape member name must be a String or a Symbol", "Café")
+      }
+    end
+
+    it "reports the sensitive: rule rather than an encoding failure" do
+      value = exotic_class.new
+
+      expect { build_axn { expects :a, sensitive: value } }.to raise_error(ArgumentError) { |error|
+        expect(error.message).to be_readable_utf8
+        expect(error.message).to include("sensitive: must be true, false", "Café")
+      }
+    end
+
+    # The fallback the whole name-rendering path leans on: a name with no spelling to print is named by its class,
+    # so that escape has to be renderable itself or it replaces the error it was reached to describe.
+    it "names an unspellable name by its class" do
+      expect(Axn::Reflection::PropertyNames.inspect_field_name(exotic_class.new)).to eq("a name of class Café")
+    end
+
+    it "reports an uncopyable option container rather than an encoding failure" do
+      container = exotic_named(Class.new(Array) { def include?(_value) = true }).new
+
+      expect { build_axn { expects :choice, inclusion: { in: container } } }.to raise_error(ArgumentError) { |error|
+        expect(error.message).to be_readable_utf8
+        expect(error.message).to include("defines methods of its own", "Café")
+      }
+    end
+
+    # A member with no `#field` has no name to print at all, so its class is the whole of what identifies it.
+    it "reports a nameless shape member rather than an encoding failure" do
+      member = exotic_class.new
+
+      expect do
+        build_axn { expects :p, type: Hash, shape: { members: [member], container: Hash } }
+      end.to raise_error(ArgumentError) { |error|
+        expect(error.message).to be_readable_utf8
+        expect(error.message).to include("of class Café")
+      }
+    end
+
+    # A shape graph re-walked after declaration is named by the member it was reached from, and by class for the
+    # same reason: the member's own readers are arbitrary code axn never snapshotted.
+    it "names the member a re-walked shape graph was reached from" do
+      message = Axn::Internal::ShapeGraph.self_containing_message(exotic_class.new)
+
+      expect(message).to be_readable_utf8
+      expect(message).to include("reached from the shape member of class Café")
+    end
+  end
 end

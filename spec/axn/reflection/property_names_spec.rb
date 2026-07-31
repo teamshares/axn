@@ -24,11 +24,17 @@ RSpec.describe Axn::Reflection::PropertyNames do
   # `same_declared_name?` is handed out for the same reason the renderers are: the contract asks the same
   # question about the same names when it chooses between the two duplicate wordings, and a raw-spelling
   # comparison re-derived per layer is one that dispatches the name's own `==` on a failure path.
+  #
+  # The two class-name renderers are handed out on the same terms: naming a foreign value's class in prose owes
+  # BOTH halves — no dispatch of the value's own `class`/`inspect`, and bytes that can be joined to a UTF-8
+  # message — and a caller composing them itself is a caller that can supply one and miss the other.
   let(:entry_points) do
     %i[
       inspect_field_name
       reject_unrenderable_field_names!
+      renderable_class_name
       renderable_label
+      renderable_module_name
       same_declared_name?
       validate_inbound!
       validate_outbound!

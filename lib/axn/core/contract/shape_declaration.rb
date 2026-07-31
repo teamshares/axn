@@ -24,7 +24,7 @@ module Axn
         # error with the caller's exception — verified against a member whose `field` raises the second time
         # it is called.
         def _describe_shape_member(member, name)
-          return "of class #{Axn::Internal::ClassName.of(member)}" if Internal::ShapeGraph.missing?(name)
+          return "of class #{Axn::Reflection::PropertyNames.renderable_class_name(member)}" if Internal::ShapeGraph.missing?(name)
 
           "`#{_shape_member_label(name)}`"
         end

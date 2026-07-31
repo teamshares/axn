@@ -98,7 +98,7 @@ module Axn
 
         raise ArgumentError,
               "sensitive: must be true, false, a Symbol naming an action method, or a Proc (got a value of " \
-              "class #{Axn::Internal::ClassName.of(sensitive)}) — any other value is not a redaction rule, and " \
+              "class #{Axn::Reflection::PropertyNames.renderable_class_name(sensitive)}) — any other value is not a redaction rule, and " \
               "a truthy one would silently leave the value logged in the clear rather than raise. Use " \
               "`sensitive: true` to always redact, or a Symbol/Proc predicate to decide per call."
       end
@@ -127,7 +127,8 @@ module Axn
 
         raise ArgumentError,
               "a shape member name must be a String or a Symbol (got a name of class " \
-              "#{Axn::Internal::ClassName.of(name)}) — a member name is both the JSON property it renders as " \
+              "#{Axn::Reflection::PropertyNames.renderable_class_name(name)}) — a member name is both the JSON " \
+              "property it renders as " \
               "and the schema property key it is emitted under, and any other object converts to those two " \
               "independently. Declare the member under a String or Symbol name."
       end

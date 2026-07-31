@@ -214,8 +214,9 @@ module Axn
       # `Set` is mutable. Both residues are recorded in `property_name_collision_spec.rb`.
       #
       # The container is named by class and its methods by the method table, never by `inspect` — its own code
-      # must not run while the declaration error it caused is being built, and a method name is rendered like
-      # any other name reaching prose (a non-UTF-8 one would otherwise raise while the error is built).
+      # must not run while the declaration error it caused is being built, and both the class name and each
+      # method name are rendered like any other name reaching prose (bytes with no UTF-8 rendering, from a
+      # constant or from a method name, would otherwise raise while the error is built).
       def self.detached_option_array(value, label)
         return value if NativeMethods.frozen?(value)
 
@@ -223,7 +224,8 @@ module Axn
         return detached_dup(value) if own.empty?
 
         raise ArgumentError,
-              "the #{label} container (of class #{Axn::Internal::ClassName.of(value)}) defines methods of its " \
+              "the #{label} container (of class #{Axn::Reflection::PropertyNames.renderable_class_name(value)}) " \
+              "defines methods of its " \
               "own (#{describe_own_methods(own)}), so axn cannot copy it. A declared contract is copied at " \
               "declaration so that mutating what you still hold cannot change it — and `dup` copies the " \
               "elements while sharing the instance variables and dropping the singleton class, so the copy " \
@@ -281,7 +283,7 @@ module Axn
       def self.describe_via(member)
         return "" if nil.equal?(member)
 
-        " reached from the shape member of class #{Axn::Internal::ClassName.of(member)}"
+        " reached from the shape member of class #{Axn::Reflection::PropertyNames.renderable_class_name(member)}"
       end
 
       def self.self_containing_message(member)

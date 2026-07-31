@@ -195,8 +195,29 @@ module Axn
       # a class name identifies the offender without running a line the offender wrote, exactly as
       # `Reflection::Values#describe_key_classes` names a colliding Hash key.
       def inspect_field_name(name)
-        field_name_spelling(name) || "a name of class #{Axn::Internal::ClassName.of(name)}"
+        field_name_spelling(name) || "a name of class #{renderable_class_name(name)}"
       end
+
+      # How a foreign value's CLASS — or a class named in its own right, a declared `type:` or a tool axn — is
+      # written into a message. Two hazards, one seam, because they are different failures with the same outcome
+      # and a layer that closed one of them has historically missed the other:
+      #
+      # 1. Running the value's own `class`/`inspect` lets it raise INSTEAD of the report, and outside StandardError
+      #    that escapes the rescue meant to settle the failure. `Internal::ClassName` answers from bound base
+      #    implementations, so nothing the value defines runs.
+      # 2. The name it answers with is still foreign BYTES. A constant may hold non-UTF-8 ones —
+      #    `Object.const_set(:"Caf\xE9", Class.new)` is accepted and `Module#to_s` returns those bytes — so
+      #    interpolating the name into a UTF-8 message raises Encoding::CompatibilityError from the reporting
+      #    itself, destroying the failure exactly as a hostile `class` would.
+      #
+      # So a class name is rendered through `renderable_label`, the one path every foreign string axn writes into
+      # prose takes: an ordinary ASCII name is byte-identical, a Latin-1 one reads as its text, and bytes with no
+      # UTF-8 rendering at all come back escaped. That cannot recurse back into `inspect_field_name`'s class
+      # branch above: `Module#to_s` always answers with a genuine String (`"#<Class:0x…>"` for an anonymous
+      # class), so `field_name_spelling` resolves it from its String branch.
+      def renderable_class_name(value) = renderable_label(Axn::Internal::ClassName.of(value))
+
+      def renderable_module_name(mod) = renderable_label(Axn::Internal::ClassName.of_module(mod))
 
       # How a name is written into a message that names ONE thing rather than distinguishing two spellings: the
       # UTF-8 property it canonicalizes to, falling back to the escaped form above when its bytes have no UTF-8
@@ -553,9 +574,9 @@ module Axn
         klass.is_a?(Class) ? klass : nil
       end
 
-      # A declared type is named through a bound `Module#to_s`: a class can define its own, and one that
-      # raises would replace the collision being reported (outside StandardError, escaping class definition).
-      def describe_type(klass) = klass.nil? ? "one of the element types" : "the #{Axn::Internal::ClassName.of_module(klass)} type"
+      # A declared type is named through the class-name seam: neither its own `to_s` nor its own bytes may
+      # replace the collision being reported (see `renderable_module_name`).
+      def describe_type(klass) = klass.nil? ? "one of the element types" : "the #{renderable_module_name(klass)} type"
 
       def describe_config(config)
         route = config.on ? " (on: #{inspect_field_name(config.on)})" : ""
@@ -939,12 +960,14 @@ module Axn
 
       def raise_shape_too_deep!(member) = raise(ArgumentError, Internal::ShapeGraph.too_deep_message(member))
 
-      # Seven entry points, and everything else internal. Mirrors Reflection::Values' own narrowing: the walk,
+      # Nine entry points, and everything else internal. Mirrors Reflection::Values' own narrowing: the walk,
       # the message builders, and the provenance resolution are implementation of the two rules, not surface a
       # caller should reach. `field_name_spelling` is deliberately not public either — `inspect_field_name` is
       # the one way a name gets written into a message. `same_declared_name?` is public for the same reason
       # `renderable_label` is: the contract asks the same question about the same names, and two answers to it
-      # is how a raw-spelling comparison came to be re-derived beside this one.
+      # is how a raw-spelling comparison came to be re-derived beside this one. The two class-name renderers are
+      # public for that reason too: every layer that names a foreign value's class in prose owes it BOTH halves
+      # (no dispatch, and renderable bytes), and a site that composed them itself is a site that can get one.
       private_class_method :validate_and_build, :attributions, :inbound_property_sources, :outbound_property_sources,
                            :reject_colliding_emitted_properties!, :reject_oversized_schema!,
                            :field_name_spelling, :each_emitted_node, :raise_colliding_properties!,

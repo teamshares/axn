@@ -1437,6 +1437,25 @@ RSpec.describe "declaration-time property name collisions" do
           .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
       end
 
+      # Naming the type is also writing foreign BYTES into the message: a constant may hold non-UTF-8 ones
+      # (`const_set` accepts them, and a Latin-1-encoded source file declares them), so the collision report
+      # raised Encoding::CompatibilityError from its own interpolation instead of naming the property.
+      it "reports the collision when the type's own constant holds non-UTF-8 bytes" do
+        exotic = "Caf\xE9Type".dup.force_encoding("ISO-8859-1").to_sym
+        shaped = Data.define(:café)
+        Object.const_set(exotic, shaped)
+        latin1 = latin1_name
+
+        expect { project_axn { expects(:payload, type: shaped) { field latin1, type: String } } }
+          .to raise_error(Axn::DuplicateFieldError) { |error|
+            expect(error.message).to include("a member of the CaféType type declared on :payload")
+            expect(error.message.encoding).to eq(Encoding::UTF_8)
+            expect(error.message).to be_valid_encoding
+          }
+      ensure
+        Object.send(:remove_const, exotic) if exotic && Object.const_defined?(exotic)
+      end
+
       it "still merges a shape member of the same spelling" do
         shaped = Data.define(:café)
         utf8 = utf8_name

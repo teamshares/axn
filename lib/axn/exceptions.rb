@@ -8,6 +8,15 @@ module Axn
     # failure being reported with an exception of its own — and one outside StandardError then escapes
     # the `rescue StandardError` callers map these failures with, which is the escape naming the class
     # is meant to describe. A bound base implementation cannot be intercepted.
+    #
+    # Not dispatching is ALL this promises. What it returns is the constant path's own bytes, and a constant
+    # may hold non-UTF-8 ones (`Object.const_set(:"Caf\xE9", Class.new)` is accepted, and `Module#to_s` hands
+    # those bytes back), so interpolating the result into a UTF-8 message can still raise
+    # Encoding::CompatibilityError from the reporting itself. A layer writing a class name into prose therefore
+    # renders it — `Reflection::PropertyNames.renderable_class_name`/`renderable_module_name` compose both
+    # halves — and this module deliberately does not, because the reflection layer requires THIS file: reaching
+    # back into it here would leave a message path NameError-ing under the standalone loads
+    # `spec/axn/standalone_require_spec.rb` pins.
     module ClassName
       OBJECT_CLASS = ::Object.instance_method(:class)
       MODULE_TO_S = ::Module.instance_method(:to_s)
@@ -142,8 +151,24 @@ module Axn
   # and this exception exists precisely because reporting must not depend on an exception's own methods, so it
   # renders identically through `#message`, through a bound `Exception#to_s`, and to anything that reads the
   # stored message directly.
+  #
+  # Every value it interpolates came from somewhere else's object — the tool's constant path, the original's
+  # message, the original's class name — so each is RENDERED into this message rather than joined to it. Bytes
+  # with no UTF-8 rendering (or in another encoding entirely) would otherwise raise
+  # Encoding::CompatibilityError from `super` itself, replacing the tool-contract failure with an encoding
+  # failure at boot, which is the outcome this error exists to prevent one indirection over. Rendering is
+  # idempotent, so the caller having already rendered them (as `Axn.validate_tool_contracts!` does, needing the
+  # same text for its other branch) costs an allocation and changes nothing: the guarantee holds for any caller
+  # rather than resting on that one's diligence.
+  #
+  # This file cannot REQUIRE the renderer (the reflection layer requires this file), so the reference resolves at
+  # call time — sound here and not for `Internal::ClassName` above, because the only code that can construct this
+  # error is `Axn.validate_tool_contracts!`, which lives in the fully-loaded gem, while a class name is written
+  # into prose by files an adapter loads standalone.
   class InvalidToolContract < ContractViolation
     def initialize(tool:, reason:, original_class:)
+      tool, reason, original_class = [tool, reason, original_class].map { |text| Axn::Reflection::PropertyNames.renderable_label(text) }
+
       super("#{tool} has an invalid tool contract — #{reason} (raised as #{self.class}, and not as the original " \
             "#{original_class}, because that class supplies its own `#exception` or duplication hook, or the " \
             "object is frozen: axn does not run an exception's own code while reporting the failure it caused. " \

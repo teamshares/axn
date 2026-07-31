@@ -136,7 +136,7 @@ module Axn
   #
   # This is a REPORTING path, so every method it needs is one the exception's own class may override, and an
   # override that raises (outside StandardError included) would replace the failure being reported with the
-  # offending class's exception, at boot, with nothing left naming the tool. Two rules keep it bounded, and
+  # offending class's exception, at boot, with nothing left naming the tool. Three rules keep it bounded, and
   # together they are the whole design:
   #
   # 1. Every dispatch of the exception's own code sits behind a guard (see `_reported_message`). What a guard
@@ -147,6 +147,14 @@ module Axn
   #    exception that has already been raised once proves nothing about the second call: an `#exception` that
   #    answers itself the first time and raises the second defeated exactly that argument, because
   #    `Exception#exception(message)` clones and `raise` then asks the CLONE.
+  #
+  # 3. Every foreign STRING it writes into the message is RENDERED into UTF-8 rather than joined to it, through
+  #    the one path axn renders foreign text with (`Reflection::PropertyNames`). A guarded dispatch is only half
+  #    of what a report needs: a `#message` that behaves perfectly and returns a String whose bytes are not
+  #    UTF-8-compatible — the stored message of an ordinary ArgumentError is enough, no override required — made
+  #    the interpolation itself raise Encoding::CompatibilityError, destroying the contract failure at boot and
+  #    losing the tool name, by a path both rules above cover fully. Neither of the two foreign strings here is
+  #    exempt: the tool's own name is a constant path, and a constant may hold non-UTF-8 bytes too.
   #
   # So a class that owns none of `#exception` or the duplication hooks (the overwhelmingly common case, an
   # ordinary ArgumentError or DuplicateFieldError included) is renamed and reported as itself, class and state
@@ -162,7 +170,7 @@ module Axn
   # and carrying the original as `cause`. Only the CLASS degrades there, and `#message` is a separate question:
   # an exception that builds its message from its state keeps that message on either branch.
   def self._named_invalid_tool_contract(klass, error)
-    tool = Axn::Internal::ClassName.of_module(klass)
+    tool = Axn::Reflection::PropertyNames.renderable_module_name(klass)
     reason = _reported_message(error)
     unless Axn::Internal::NativeMethods.native_exception_reporting?(error)
       return InvalidToolContract.new(tool:, reason:, original_class: Axn::Internal::ClassName.of(error))
@@ -171,19 +179,32 @@ module Axn
     EXCEPTION_EXCEPTION.bind_call(error, "#{tool} has an invalid tool contract — #{reason}")
   end
 
-  # An exception's own message, for a message being built ABOUT it, as a String this method owns.
+  # An exception's own message, for a message being built ABOUT it, as a UTF-8 String this method owns.
+  #
+  # RENDERED rather than returned as it came, because what an exception's message HOLDS is foreign too, not just
+  # the code that answers it: a String whose bytes are not UTF-8-compatible cannot be joined to axn's own UTF-8
+  # prose at all (Encoding::CompatibilityError from the interpolation), and one merely in another encoding, or
+  # holding invalid bytes, silently poisons the message it lands in. Neither needs an override to reach here —
+  # the STORED message of an ordinary ArgumentError is a String the raiser chose. `renderable_label` is the one
+  # path axn renders foreign text with (a name in a message, a Hash key in a log line, this): an ASCII message
+  # is byte-identical, a legitimate multibyte one reads as its text, and bytes with no UTF-8 rendering come back
+  # escaped rather than taking the report with them. Rendering dispatches nothing here — every branch below
+  # yields a genuine String, and a String is rendered through bound String methods.
+  def self._reported_message(error) = Axn::Reflection::PropertyNames.renderable_label(_raw_reported_message(error))
+
+  # The message bytes, before rendering.
   #
   # Dispatched deliberately — an exception that derives its message from its state (`UnserializableValue`) has no
   # other way to be reported richly — but behind a guard, because that is caller code in an error path, and the
   # guard has to cover an ordinary class too: `Exception#to_s` renders the message OBJECT the exception was
   # raised with (`rb_String`), so a plain ArgumentError carrying a value whose `to_s` raises raises here.
   #
-  # The result is type-tested rather than interpolated, because an owned `#message` may return anything, and
-  # interpolating a non-String dispatches its `to_s` — outside the guard, which is the escape this exists to
-  # prevent. (A String SUBCLASS is safe to interpolate: interpolation returns a T_STRING as-is, running no
-  # `to_s`.) `Exception#to_s` is the non-dispatching second choice, and the class is what is left when even that
-  # will not answer.
-  def self._reported_message(error)
+  # The result is type-tested rather than returned as-is, because an owned `#message` may return anything, and
+  # rendering a non-String dispatches its `to_s` — outside the guard, which is the escape this exists to
+  # prevent. (A String SUBCLASS is safe: it is type-tested and rendered through bound String methods, and the
+  # renderer hands back a plain String either way.) `Exception#to_s` is the non-dispatching second choice, and
+  # the class is what is left when even that will not answer.
+  def self._raw_reported_message(error)
     case (reported = error.message)
     when ::String then reported
     else EXCEPTION_TO_S.bind_call(error)
@@ -210,11 +231,11 @@ module Axn
     adapter
   end
 
-  # None of the three is reached with an explicit receiver: `_registered_tool_adapter!` from `tools_for`
-  # and `versions_for`, `_named_invalid_tool_contract` from `validate_tool_contracts!`, and
-  # `_reported_message` from `_named_invalid_tool_contract`. Private so the top-level module's public
-  # surface is the API it means to publish (PRO-3005 re-homes all three under `Axn::Tools`).
-  private_class_method :_registered_tool_adapter!, :_named_invalid_tool_contract, :_reported_message
+  # None of the four is reached with an explicit receiver: `_registered_tool_adapter!` from `tools_for`
+  # and `versions_for`, `_named_invalid_tool_contract` from `validate_tool_contracts!`, and the message
+  # pair from `_named_invalid_tool_contract`. Private so the top-level module's public
+  # surface is the API it means to publish (PRO-3005 re-homes them all under `Axn::Tools`).
+  private_class_method :_registered_tool_adapter!, :_named_invalid_tool_contract, :_reported_message, :_raw_reported_message
 
   def self.included(base)
     # Re-including Axn (e.g. `include Axn` in a subclass of an existing Axn) would re-run

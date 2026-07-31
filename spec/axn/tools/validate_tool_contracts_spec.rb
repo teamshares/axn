@@ -277,6 +277,121 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       }
     end
 
+    # Every rung above is about an exception's own CODE. This one is about the bytes it hands back while behaving
+    # perfectly: axn's messages are UTF-8, and joining a String that has no UTF-8-compatible rendering to one
+    # raises Encoding::CompatibilityError from the interpolation — so the contract failure was destroyed at boot,
+    # by a path the guards around every dispatch cover completely, and the tool name went with it.
+    #
+    # Nothing hostile is needed to reach it: the message an ordinary `raise` stores is a String the raiser chose.
+    describe "an exception whose message holds bytes a UTF-8 message cannot carry" do
+      def binary = "bad\xFF".dup.force_encoding("ASCII-8BIT")
+      def latin1 = "caf\xE9 broke".dup.force_encoding("ISO-8859-1")
+
+      def be_readable_utf8
+        satisfy("be readable UTF-8") { |message| message.encoding == Encoding::UTF_8 && message.valid_encoding? }
+      end
+
+      # The bytes are ESCAPED rather than scrubbed or dropped: the author still needs to see what the message
+      # held, and `String#inspect` is the same escape every unrenderable NAME is reported by.
+      it "reports one whose #message returns them, keeping its class and escaping the bytes" do
+        hostile = Class.new(ArgumentError) { define_method(:message) { "bad\xFF".dup.force_encoding("ASCII-8BIT") } }
+        raising_from(hostile, hostile.new("stored"))
+
+        expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
+          message = Exception.instance_method(:to_s).bind_call(error)
+          expect(message).to eq('ToolContractsSpec::Valid has an invalid tool contract — "bad\xFF"')
+          expect(message).to be_readable_utf8
+          expect(error.cause).to be_a(hostile)
+        }
+      end
+
+      # No override at all — the stored message of a plain ArgumentError. This is the shape most likely to happen
+      # for real (a message built from a filesystem path, a database blob, or an external library's bytes).
+      it "reports a plain exception whose STORED message holds them" do
+        raising_from(Class.new(ArgumentError), ArgumentError.new(binary))
+
+        expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+          expect(Exception.instance_method(:to_s).bind_call(error))
+            .to eq('ToolContractsSpec::Valid has an invalid tool contract — "bad\xFF"')
+        }
+      end
+
+      # Renderable bytes in another encoding are RENDERED, not escaped: a valid ISO-8859-1 message transcodes to
+      # the same text, so the author reads their own words rather than a byte dump. (This also raised before.)
+      it "renders a message in another encoding as its text" do
+        raising_from(Class.new(ArgumentError), ArgumentError.new(latin1))
+
+        expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+          message = Exception.instance_method(:to_s).bind_call(error)
+          expect(message).to eq("ToolContractsSpec::Valid has an invalid tool contract — café broke")
+          expect(message).to be_readable_utf8
+        }
+      end
+
+      # Legitimate non-ASCII is not mangled — the rendering only ever fixes what an encoder could not carry.
+      it "leaves a valid multibyte UTF-8 message exactly as it was" do
+        raising_from(Class.new(ArgumentError), ArgumentError.new("café broke"))
+
+        expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+          expect(Exception.instance_method(:to_s).bind_call(error))
+            .to eq("ToolContractsSpec::Valid has an invalid tool contract — café broke")
+        }
+      end
+
+      # The other branch builds its text in `InvalidToolContract#initialize`, so it needs the same treatment: an
+      # exception with BOTH an owned `#exception` and unrenderable message bytes lands there.
+      it "renders them on the InvalidToolContract branch too" do
+        hostile = Class.new(ArgumentError) do
+          def exception(*_args) = self
+          define_method(:message) { "bad\xFF".dup.force_encoding("ASCII-8BIT") }
+        end
+        raising_from(hostile, hostile.new("stored"))
+
+        expect { Axn.validate_tool_contracts! }.to raise_error(Axn::InvalidToolContract) { |error|
+          expect(error.message).to start_with('ToolContractsSpec::Valid has an invalid tool contract — "bad\xFF"')
+          expect(error.message).to be_readable_utf8
+          expect(error.cause).to be_a(hostile)
+        }
+      end
+
+      # The fallback error renders its OWN inputs rather than trusting the caller to have rendered them: it is a
+      # public exception class, and the setup path needs the same text for its other branch, so both render and
+      # rendering is idempotent. Asserted directly, because through the setup path the reporter has already
+      # rendered everything this error receives — the guarantee it makes is for any caller.
+      it "renders its inputs when Axn::InvalidToolContract is built directly" do
+        error = Axn::InvalidToolContract.new(tool: binary, reason: latin1, original_class: binary)
+
+        expect(error.message).to be_readable_utf8
+        expect(error.message).to start_with('"bad\xFF" has an invalid tool contract — café broke')
+      end
+
+      # The TOOL's own name is foreign text on the same terms: a constant may hold non-UTF-8 bytes (`const_set`
+      # accepts them, and `Module#to_s` hands them back), so naming the tool could destroy the report it exists
+      # to improve. Rendered like everything else — a valid ISO-8859-1 constant reads as its text.
+      it "renders a tool whose own constant holds non-UTF-8 bytes" do
+        # Set directly rather than through `stub_const`, which parses its name argument as UTF-8 text.
+        exotic = "Caf\xE9Tool".dup.force_encoding("ISO-8859-1").to_sym
+        Axn.register_tool_adapter(:mcp)
+        klass = Class.new do
+          include Axn
+          tool :mcp
+          expects :a, optional: true
+          def call; end
+        end
+        Object.const_set(exotic, klass)
+        allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
+        allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).with(klass).and_raise(ArgumentError, "the real defect")
+
+        expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+          message = Exception.instance_method(:to_s).bind_call(error)
+          expect(message).to eq("CaféTool has an invalid tool contract — the real defect")
+          expect(message).to be_readable_utf8
+        }
+      ensure
+        Object.send(:remove_const, exotic) if exotic && Object.const_defined?(exotic)
+      end
+    end
+
     # The fallback error is itself reportable without running anything: it stores its message rather than building
     # it in `#message`, so a bound `Exception#to_s` renders the same text.
     it "renders the fallback error's full text through a bound Exception#to_s" do
