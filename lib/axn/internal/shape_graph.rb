@@ -261,9 +261,12 @@ module Axn
       # questions, it does not decide what a declaration error says.
       #
       # A graph the declaration walk stored can be neither: it is a snapshot of axn's own Hashes and `ShapeConfig`s,
-      # built bottom-up from a graph that walk already traversed. So a re-walk can only meet one of these on a
-      # graph that never passed it — a field config array assigned onto the class directly, bypassing `expects`
-      # entirely. The bounds stay because the alternative outcome is `SystemStackError`, which is outside
+      # built bottom-up from a graph that walk already traversed. Traversing it is not on its own what makes it
+      # shallow enough, though — the walk remembers sub-shapes it has verified, so what it descended is not what
+      # it stored — and the depth bound holds here only because that walk re-judges every REFERENCE to a
+      # remembered sub-shape against its height (`Contract#_walk_shape_graph!`). So a re-walk can only meet one of
+      # these on a graph that never passed it — a field config array assigned onto the class directly, bypassing
+      # `expects` entirely. The bounds stay because the alternative outcome is `SystemStackError`, which is outside
       # `StandardError` and escapes the rescue meant to settle a result: from a projection it reaches the caller,
       # and from a log line it takes down the call it was only observing.
       #

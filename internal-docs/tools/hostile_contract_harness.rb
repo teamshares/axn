@@ -2086,6 +2086,40 @@ check "one level past the cap is rejected", /ArgumentError.*nested more than 64 
   declare_and_reflect(linear_nested_shape(65), type: Hash)
 end
 
+# The cap over a graph whose depth is assembled out of SHARED tails, each first reached shallow. Depth belongs
+# to a shape's position, not to the shape, so a walk that remembers shapes it has verified has to re-judge a
+# reused subtree by its height: every tail here is a sibling of the root one level down before the next chain
+# nests it one level lower, so no walk descends past two while the stored graph is `chains` levels deep. At the
+# cap it must still declare AND project; past it, declaration is the only honest place to say so — the
+# projection has no walk of the stored graph, and redaction's fail-safe past the bound masks a value with no
+# `sensitive:` anywhere in the contract.
+def shared_tail_shape(chains)
+  shapes = [{ members: [SC.new(field: :leaf, validations: {})], container: Hash }]
+  (chains - 1).times { |i| shapes << { members: [SC.new(field: :"n#{i}", validations: { shape: shapes[i] })], container: Hash } }
+  members = shapes.each_with_index.map { |shape, i| SC.new(field: :"m#{i}", validations: { shape: }) }
+  { members:, container: Hash }
+end
+
+check "shared tails reaching the cap declare and project", "declared and projected" do
+  expects_axn(shared_tail_shape(64), type: Hash).input_schema && "declared and projected"
+end
+
+# Declaration ONLY, deliberately: what this row is about is WHICH layer says no, and the two layers say it in
+# different words — the declaration walk's "nested more than 64 levels deep" against `ShapeGraph`'s "nests more
+# than", which every re-walk of an already-held graph reports. Reflecting here would satisfy the row either way.
+check "shared tails past the cap are rejected at declaration", /ArgumentError.*nested more than 64 levels deep/ do
+  expects_axn(shared_tail_shape(71), type: Hash) && "declared"
+end
+
+# The other half of the same row, and the user-visible one: past the depth bound `_shape_has_sensitive_member?`
+# answers TRUE (nothing can enumerate a graph that mints its members on demand, so the value is masked wholesale
+# rather than logged in the clear), which is only ever an answer about an UNDECLARABLE graph. A contract with no
+# `sensitive:` in it logs its values.
+check "a shape at the cap with no sensitive: logs in the clear", { m63: { n62: "visible" } } do
+  klass = expects_axn(shared_tail_shape(64), type: Hash)
+  klass.send(:new, payload: { m63: { n62: "visible" } }).send(:inputs_for_logging)[:payload]
+end
+
 check "a declared shape still validates its members at runtime", false do
   expects_axn({ members: [SC.new(field: :a, validations: { presence: true })], container: Hash }, type: Hash).call(payload: {}).ok?
 end
@@ -2234,6 +2268,25 @@ puts "\n== cost: an honest shape must not hang at class definition =============
     puts format("       (%.3fs)", elapsed)
     elapsed < 1.0
   end
+end
+
+# The two shapes that stress the walk in opposite directions, since a bound re-judged at every REFERENCE has to
+# be answerable from what the memo already carries rather than by walking again. Deep and unshared: one walk per
+# level, and the cap is the most levels there can be. Shallow and heavily shared: thirteen levels of two-way
+# sharing is the deepest the path bound admits (24,574 paths), and remembering its 14 distinct shapes is what
+# keeps 27 references from expanding into 16,382 walks (measured: 0.002s memoized, 0.216s not, growing as 2^N).
+check "a linear chain at the cap declares fast", true do
+  raw = linear_nested_shape(64)
+  elapsed = Benchmark.realtime { expects_axn(raw, type: Hash) }
+  puts format("       (%.3fs)", elapsed)
+  elapsed < 1.0
+end
+
+check "the most heavily shared DAG the path bound admits declares fast", true do
+  raw = shared_diamond_shape(13)
+  elapsed = Benchmark.realtime { expects_axn(raw, type: Hash) }
+  puts format("       (%.3fs)", elapsed)
+  elapsed < 1.0
 end
 
 # The two bounds are DIFFERENT limits: one on the stored graph (paths, at declaration, because the walks that

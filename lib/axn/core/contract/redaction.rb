@@ -374,7 +374,9 @@ module Axn
           # Past the depth bound the answer is TRUE, not false: a graph that deep is one minting fresh nested
           # shapes on every read, so nothing can enumerate what is inside it — and the fail-safe answer for
           # redaction is "assume a secret", which masks the value wholesale rather than logging it in the clear.
-          # Unreachable for a declared graph, since the declaration walk rejects one this deep.
+          # Unreachable for a declared graph, since the declaration walk rejects one this deep — depth included
+          # when it comes only from sub-shapes that walk had already verified shallower, which is what keeps this
+          # from masking a value in a contract with no `sensitive:` in it (`Contract#_walk_shape_graph!`).
           return true if depth > Internal::ShapeGraph::MAX_NESTING
 
           Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: false) do |open|

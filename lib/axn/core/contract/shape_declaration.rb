@@ -94,7 +94,13 @@ module Axn
         # What one walked shape yields. The path count travels with the copy because a shape REUSED by two
         # members is walked (and copied) once but COUNTED twice: sharing is exactly how a graph multiplies out,
         # so the second reference charges the whole total its subtree expands to.
-        WalkedShape = Data.define(:copy, :paths)
+        #
+        # `height` is how many levels the walked subtree adds BELOW this shape — 0 for one whose members carry no
+        # nested shape of their own — and it travels for the reason the count does, one step further: DEPTH is not
+        # a property of a shape at all, it is a property of a shape at a POSITION. A subtree already walked needs
+        # no walking again, but it does need re-judging against the bound wherever it is reused, and its height is
+        # the whole of what that judgement needs (see `_walk_shape_graph!`).
+        WalkedShape = Data.define(:copy, :paths, :height)
         private_constant :WalkedShape
 
         # The remaining allowance, and the fields to name if it runs out — a two-element Array rather than an
@@ -124,7 +130,7 @@ module Axn
           hash = Internal::ShapeGraph.hash_or_nil(shape)
           # Not a shape, so it has no members to walk and nothing to copy — returned as it came, for the
           # container check downstream to reject.
-          return WalkedShape.new(copy: shape, paths: 0) if nil.equal?(hash)
+          return WalkedShape.new(copy: shape, paths: 0, height: 0) if nil.equal?(hash)
 
           # Ahead of "does it supply members?", because a shape whose `members:` comes from a default supplies
           # them to this walk and not to the snapshot it produces — the reverse mismatch of the one below, and
@@ -136,10 +142,20 @@ module Axn
           walk ||= ShapeWalk.new(seen: nil, walked: {}.compare_by_identity, depth: 0)
           walked = walk.walked[hash]
           unless nil.equal?(walked)
+            # The bound is re-judged HERE, against the reused subtree's whole height, because the memo answers
+            # "traversable as read" — a property of the subtree — and not "within the bound", which depends on
+            # where it is reused. Without it a graph reaches ANY depth out of subtrees each first met shallow:
+            # present every tail of a shared chain as a sibling of the root before the next chain nests it one
+            # level lower, and no walk descends past two while the stored graph is arbitrarily deep. Judged
+            # ahead of the path charge, as a shape's own depth is judged ahead of its members' charges — one memo
+            # hit stands for walking this shape and everything under it.
+            _raise_shape_too_deep!(via, via_name) if walk.depth + walked.height > Internal::ShapeGraph::MAX_NESTING
             _spend_paths!(allowance, walked.paths)
             return walked
           end
 
+          # The same inequality with a height not yet known: descending checks each level as it is reached, so a
+          # shape walked rather than reused is judged by its own position and its subtree by theirs.
           _raise_shape_too_deep!(via, via_name) if walk.depth > Internal::ShapeGraph::MAX_NESTING
 
           # Read as SUPPLIED, so a shape that names no members is told apart from one naming an empty list.
@@ -160,10 +176,16 @@ module Axn
         # `walked` is the complement: shapes already walked to completion, which never need walking again —
         # without it, that same legal diamond costs 2^depth walks (measured: 18 levels took 1.4s, 22 took
         # 22s), so a generated-but-honest schema with shared sub-shapes hung at class definition. Keyed by
-        # identity, per declaration, and populated only AFTER a shape has passed, so a memoized entry always
-        # means "already verified" — and carries that shape's copy, so a shape reused by two members is read
-        # from the caller once and both members store the one copy. A shape that answers a later read
-        # differently is the inconsistent-reader limit above, not something re-walking would have caught.
+        # identity, per declaration, and populated only AFTER a shape has passed — and carries that shape's copy,
+        # so a shape reused by two members is read from the caller once and both members store the one copy. A
+        # shape that answers a later read differently is the inconsistent-reader limit above, not something
+        # re-walking would have caught.
+        #
+        # What an entry means is bounded by what it can mean: "this subtree is traversable as read, and here is
+        # its size and its height". Every question that is a property of the SUBTREE is answered by reuse; every
+        # question that depends on the POSITION — the depth bound, the size allowance — is asked again at each
+        # reference (see `_walk_shape_graph!`). Reading an entry as "already verified" full stop admits a graph
+        # deeper than any walk of it goes, since a shared chain can present every tail shallow first.
         ShapeWalk = Data.define(:seen, :walked, :depth)
         private_constant :ShapeWalk
 
@@ -219,6 +241,7 @@ module Axn
 
           child = walk.with(depth: walk.depth + 1)
           paths = 0
+          height = 0
           copied = keyed.map do |member, name, key|
             # Charged BEFORE this member is snapshotted, and before its nested shape is walked, so a graph that
             # multiplies out is rejected while the work done on it is still bounded by the allowance.
@@ -235,12 +258,15 @@ module Axn
             unless nil.equal?(nested)
               inner = _walk_shape_graph!(nested, child, allowance, via: member, via_name: name)
               paths += inner.paths
+              # This node's height is the deepest member's, plus the level that member's shape adds.
+              nested_height = inner.height + 1
+              height = nested_height if nested_height > height
               validations[:shape] = inner.copy
             end
             ShapeConfig.new(**attributes)
           end
 
-          WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), paths:)
+          WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), paths:, height:)
         end
 
         # Everything a stored member carries, read off the caller's object exactly ONCE and held to its grammar

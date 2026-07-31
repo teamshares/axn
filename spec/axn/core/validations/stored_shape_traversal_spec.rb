@@ -217,5 +217,56 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
       expect { build_axn { expects :p, type: Hash, shape: } }
         .to raise_error(ArgumentError, /nested more than 64 levels deep/)
     end
+
+    # A DAG whose tails are SHARED, arranged so the declaration walk meets every one of them shallow before
+    # anything reuses it deep: `shapes[i]` is a chain of `i + 1` nested shapes, and every `shapes[i]` is also a
+    # direct member of the root, so each is first walked one level down and then reused one level under the next
+    # chain. The deepest node of the graph the class STORES therefore sits `chains` levels below the root, while
+    # no walk of it ever descends past two — which is exactly the distinction the depth bound has to survive,
+    # since depth belongs to a shape's POSITION and the walk remembers shapes rather than positions.
+    def shared_tail_shape(chains)
+      shapes = [{ members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: {})], container: Hash }]
+      (chains - 1).times do |i|
+        shapes << { members: [Axn::Core::Contract::ShapeConfig.new(field: :"n#{i}", validations: { type: { klass: Hash }, shape: shapes[i] })],
+                    container: Hash }
+      end
+      members = shapes.each_with_index.map do |shape, i|
+        Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: { type: { klass: Hash }, shape: })
+      end
+      { members:, container: Hash }
+    end
+
+    it "accepts a shared-tail graph at the cap, for declaration AND projection" do
+      shape = shared_tail_shape(64)
+      klass = build_axn { expects :p, type: Hash, shape: }
+
+      expect { klass.input_schema }.not_to raise_error
+      expect { klass.output_schema }.not_to raise_error
+    end
+
+    # The user-visible half of the same cap. Redaction's answer past the bound is TRUE, deliberately: nothing can
+    # enumerate a graph that mints its members on demand, so the value is masked wholesale rather than logged in
+    # the clear. That fail-safe is only ever an answer about an UNDECLARABLE graph while a declared one cannot be
+    # that deep — a stored graph past the bound would mask values in a contract with no `sensitive:` in it at all.
+    it "logs a shared-tail graph at the cap in the clear, with no `sensitive:` declared" do
+      shape = shared_tail_shape(64)
+      klass = build_axn { expects :p, type: Hash, shape: }
+
+      logged = klass.send(:new, p: { m63: { n62: "visible" } }).send(:inputs_for_logging)
+
+      expect(logged).to eq({ p: { m63: { n62: "visible" } } })
+    end
+
+    # The counterexample a subtree memo admits unless the bound is re-judged at each reference: every level of
+    # this chain is a subtree already verified shallower, so nothing on the way down sees a depth past two while
+    # the graph the class would store is 71 levels deep. Such a contract has no honest projection (that walk
+    # judges positions, and refuses it), and redaction's fail-safe past the bound masks values with no
+    # `sensitive:` anywhere in it — so declaration is where it has to be answered, with the author standing there.
+    it "rejects a graph whose depth is reached only through subtrees already verified shallower" do
+      shape = shared_tail_shape(71)
+
+      expect { build_axn { expects :p, type: Hash, shape: } }
+        .to raise_error(ArgumentError, /nested more than 64 levels deep/)
+    end
   end
 end
