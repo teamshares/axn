@@ -5184,4 +5184,26 @@ RSpec.describe Axn::Reflection::Schema do
     expect { klass.input_schema }.not_to raise_error
     expect(klass.input_schema[:properties][:limit][:default]).to eq(Float::INFINITY)
   end
+
+  # `build_input` is public, so a config a downstream caller built itself reaches the emitter without passing
+  # the declaration walk — and its member names are then whatever the caller made them. A member's property key
+  # and its `required` entry are ONE name, so they are rendered from one conversion of it: two conversions are
+  # two answers the caller can give, and a name that gave them differently listed a required property this
+  # emitter never emitted (a schema no input can satisfy). Declared members can't reach this — the walk stores
+  # the Symbol it judged — which is exactly why the tolerance needs its own example.
+  it "lists a caller-built member as required under the same name it emitted" do
+    flipping = Class.new(String) do
+      def to_sym
+        @reads = (@reads || 0) + 1
+        @reads == 1 ? :first : :second
+      end
+    end.new("ignored")
+    member = Struct.new(:field, :validations).new(flipping, { presence: true })
+    config = Axn::Core::Contract::FieldConfig.new(field: :payload, reader_as: :payload,
+                                                  validations: { type: { klass: Hash }, shape: { members: [member], container: Hash } })
+
+    schema = described_class.build_input([config])
+
+    expect(schema.dig(:properties, :payload, :required)).to eq(schema.dig(:properties, :payload, :properties).keys.map(&:to_s))
+  end
 end

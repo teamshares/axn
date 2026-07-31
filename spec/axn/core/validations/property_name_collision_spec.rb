@@ -340,6 +340,73 @@ RSpec.describe "declaration-time property name collisions" do
       end
     end
 
+    # Reading a member's name once is not enough on its own: CANONICALIZING it (`to_sym`) is a second dispatch
+    # on the same caller object, and a String subclass answering it differently gave the duplicate check one
+    # property name while the stored `ShapeConfig` took another. Two declared members were then stored under one
+    # property, the schema emitted one, and nothing raised — the exact collapse this whole file exists to
+    # reject, reached by a name that agreed with itself only once.
+    describe "canonicalizing a caller's member name" do
+      # A name whose `to_sym` answers with each of `answers` in turn, and repeats the last one after that. The
+      # STRING content is a third spelling on purpose, so a conversion taken from the bytes rather than from
+      # this reader is visible as itself rather than as one of the answers.
+      def flipping_name(*answers)
+        Class.new(String) do
+          define_method(:initialize) do |content|
+            @answers = answers
+            @reads = 0
+            super(content)
+          end
+
+          def to_sym
+            @reads += 1
+            @answers[[@reads - 1, @answers.size - 1].min]
+          end
+
+          attr_reader :reads
+        end.new("bytes")
+      end
+
+      def member(name, validations = {}) = Struct.new(:field, :validations).new(name, validations)
+
+      it "converts it exactly once, and keys the member on the answer the guard judged" do
+        name = flipping_name(:alpha, :collide)
+        shape = { members: [member(name), member(:collide)], container: Hash }
+        klass = build_axn { expects :payload, type: Hash, shape: }
+
+        expect(name.reads).to eq(1)
+        expect(payload_props(klass)).to eq(%i[alpha collide])
+        expect(klass.internal_field_configs.first.validations[:shape][:members].map(&:field)).to eq(%i[alpha collide])
+      end
+
+      # The other direction of the same property: when the ONE conversion is what collides, it is rejected — so
+      # the guard's verdict and the stored contract are the same fact, whichever way the name answers.
+      it "rejects the duplicate when that one answer is the colliding one" do
+        name = flipping_name(:collide, :alpha)
+        shape = { members: [member(name), member(:collide)], container: Hash }
+
+        expect { build_axn { expects :payload, type: Hash, shape: } }
+          .to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared/)
+      end
+
+      it "holds at every level of nesting" do
+        name = flipping_name(:alpha, :collide)
+        nested = { members: [member(name), member(:collide)], container: Hash }
+        shape = { members: [member(:mid, { type: { klass: Hash }, shape: nested })], container: Hash }
+        klass = build_axn { expects :payload, type: Hash, shape: }
+
+        expect(name.reads).to eq(1)
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :mid, :properties).keys).to eq(%i[alpha collide])
+      end
+
+      # A String subclass is not the defect — answering differently on two reads is. One with an ordinary
+      # (or an unusual but STABLE) `to_sym` declares exactly as the name it converts to.
+      it "still declares a String subclass whose conversion is stable" do
+        shape = { members: [member(Class.new(String) { def to_sym = :renamed }.new("ignored"))], container: Hash }
+
+        expect(payload_props(build_axn { expects :payload, type: Hash, shape: })).to eq([:renamed])
+      end
+    end
+
     # A duck-typed member is snapshotted into axn's own `ShapeConfig` like any other, so the nested shape it
     # carries is copied too — there is no member the copy stops at.
     it "copies a nested shape carried by a duck-typed member" do
@@ -935,7 +1002,10 @@ RSpec.describe "declaration-time property name collisions" do
           expects latin1, on: :bar, optional: true
         end
       end.to raise_error(Axn::DuplicateFieldError) { |error|
-        expect(error.message).to include(':café (on: "foo.bar")', 'caf\xE9" (on: :bar)')
+        # A route is canonicalized to a Symbol at declaration (see `_expects_subfields`), so a dotted route
+        # is named as the Symbol it is stored as whichever spelling declared it — the PATH is what tells the
+        # two declarations apart, and it is still each one's own.
+        expect(error.message).to include(':café (on: :"foo.bar")', 'caf\xE9" (on: :bar)')
       }
     end
 
@@ -951,6 +1021,71 @@ RSpec.describe "declaration-time property name collisions" do
       end
 
       expect(klass.input_schema.dig(:properties, :address, :properties, :billing, :properties).keys).to eq([:zip])
+    end
+
+    # Which routes those are is decided by `on:`, and a route is judged as WRITTEN (the root must name a
+    # declared reader; the duplicate check keys a config by it) and then SPLIT AGAIN by every consumer —
+    # `SubfieldTree`, `resolve_parent`, the ambient checks, the executor's parent memo. So a caller value
+    # whose rendering answers differently on successive reads had the guard judging one route while the tree
+    # built another: two subfields landed on ONE node, merging as if they were two routes to one wire slot,
+    # where the same declaration written honestly is a duplicate. Canonicalized once, at declaration, exactly
+    # as a field NAME is — after which every read is a Symbol's own.
+    describe "a route that renders differently on each read" do
+      # A `String` route whose rendering is "q" first and "p" afterwards. Both conversions flip together, so
+      # the fixture does not depend on which one a layer reaches for.
+      def flipping_route
+        Class.new(String) do
+          def to_s
+            @reads = (@reads || 0) + 1
+            @reads == 1 ? "q" : "p"
+          end
+
+          def to_sym = to_s.to_sym
+          def reads = @reads || 0
+        end.new("ignored")
+      end
+
+      it "anchors the subfield where the guard judged it, not where a later read points" do
+        route = flipping_route
+        klass = build_axn do
+          expects :p, type: Hash
+          expects :q, type: Hash
+          expects :a, on: :p, optional: true
+          expects :a, on: route, as: :qa, optional: true
+        end
+
+        expect(route.reads).to eq(1)
+        expect(klass.subfield_configs.map(&:on)).to eq(%i[p q])
+        expect(klass.input_schema[:properties].transform_values { |prop| prop[:properties]&.keys }).to eq({ p: [:a], q: [:a] })
+      end
+
+      # And the other direction: when that one read is the colliding one, it is rejected — rather than cleared
+      # by the guard on one route and then resolved onto the other.
+      it "rejects it as a duplicate when the judged route is the one already declared" do
+        route = flipping_route
+        route.to_s # spend the "q" answer, so the read the declaration makes is "p"
+
+        expect do
+          build_axn do
+            expects :p, type: Hash
+            expects :a, on: :p, optional: true
+            expects :a, on: route, as: :pa, optional: true
+          end
+        end.to raise_error(Axn::DuplicateFieldError, /Duplicate field\(s\) declared: a/)
+      end
+
+      # A String route is not the defect — the route is stored as the Symbol it names, whichever spelling
+      # declared it, so the two spellings are one route by construction rather than by comparison.
+      it "stores an ordinary String route as the Symbol it names" do
+        klass = build_axn do
+          expects :address, type: Hash
+          expects :billing, on: "address", type: Hash
+          expects :zip, on: "address.billing", optional: true
+        end
+
+        expect(klass.subfield_configs.map(&:on)).to eq(%i[address address.billing])
+        expect(klass.input_schema.dig(:properties, :address, :properties, :billing, :properties).keys).to eq([:zip])
+      end
     end
   end
 

@@ -1221,17 +1221,23 @@ module Axn
         end
       end
 
-      # A shape member's `field` is a raw declared name (`field "bar"`) that isn't symbolized at
-      # declaration, so key the emitted property by its symbol — every other schema property key is a
-      # Symbol (top-level `config.field`, symbolized wire keys), so this keeps a string-named member
-      # (`field "bar"`) colliding with a dotted/explicit subfield (`bar.baz`) resolving to the one `:bar`
-      # property that every downstream lookup (apply_implicit_node!'s `existing`, explicit-child overwrite)
-      # already keys by symbol — not a String duplicate alongside it. `required` already uses `.to_s`.
+      # A DECLARED member's `field` is already the Symbol the declaration walk judged it under (`ShapeConfig`
+      # normalizes, and the walk canonicalizes a duck-typed member's name once, beside the duplicate check).
+      # It is still symbolized here because `build_input` is public: a config a downstream caller built itself
+      # may carry a raw name, and every other schema property key is a Symbol (top-level `config.field`,
+      # symbolized wire keys) — so this keeps a string-named member colliding with a dotted/explicit subfield
+      # (`bar.baz`) resolving to the one `:bar` property that every downstream lookup (apply_implicit_node!'s
+      # `existing`, explicit-child overwrite) already keys by symbol, not a String duplicate alongside it.
+      #
+      # `required` renders the SAME Symbol rather than converting the name a second time: two conversions of
+      # one caller object are two answers it can give, and a name that gave them differently would list a
+      # required property this method never emitted.
       def member_properties(members, for_output:)
         props = {}
         required = []
         named_members(members).each do |m, name|
-          props[name.to_sym] = build_property(m, for_output:).compact
+          key = name.to_sym
+          props[key] = build_property(m, for_output:).compact
           # On OUTPUT, a member whose presence obligation can be gated off — either wholesale by a
           # declaration-level gate, or because every nil-rejecting entry is nil-tolerant or covered by a
           # per-validator (nested) gate — can legitimately be skipped or emitted without a value by a
@@ -1239,7 +1245,7 @@ module Axn
           # (superset of conditionally_gated?) subsumes both cases, so requiredness is dropped along with
           # (already-handled) gated constraints. INPUT stays static-maximal (a client is still expected to
           # send the member) — stricter, and safe.
-          required << name.to_s unless optional_for_schema?(m) || (for_output && requiredness_conditionally_relaxable?(m))
+          required << key.to_s unless optional_for_schema?(m) || (for_output && requiredness_conditionally_relaxable?(m))
         end
         [props, required]
       end

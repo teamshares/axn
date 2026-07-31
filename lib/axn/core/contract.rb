@@ -200,9 +200,14 @@ module Axn
           Contract.validate_user_facing!(user_facing)
           Contract.validate_sensitive!(sensitive)
           # `to_sym` is dispatched, so a String SUBCLASS could return something other than its own spelling —
-          # but normalizing once is exactly what makes that harmless: every consumer then reads the one
+          # but converting once is exactly what makes that harmless: every consumer then reads the one
           # stored Symbol, so a surprising conversion picks a different property name rather than splitting
-          # the guard from the schema.
+          # the guard from the schema. That is why this must be the ONLY conversion of the name on every route
+          # here: the declaration walk canonicalizes a duck-typed member's name itself, beside the duplicate
+          # check that judges it, and hands the Symbol down — so this is a no-op for a member the walk built,
+          # and the whole normalization for one built directly (the `field "bar"` block form, a pre-built
+          # ShapeConfig in a raw `shape:`, a config assigned via `internal_field_configs=`), which is why it
+          # stays.
           super(field: field.to_sym, validations:, metadata:, method_call:, sensitive:, user_facing:)
         end
 
@@ -247,6 +252,19 @@ module Axn
           # `expects "note"` and `expects :note` are the same field; a dotted subfield key (`"a.b"`)
           # symbolizes harmlessly (it's only ever compared/split via `.to_s`). See PRO-2790.
           fields = fields.map(&:to_sym)
+
+          # A subfield's ROUTE is canonicalized on the same terms, and here — before the first guard reads it.
+          # A route is judged as written (its root must name a declared reader; `_duplicate_fields` keys a config
+          # by it) and then split again by every consumer: `SubfieldTree`, `resolve_parent`'s recipe, the ambient
+          # checks, the executor's parent memo. So a caller value whose rendering answered differently on
+          # successive reads had one layer judging one route while the tree built another — two subfields
+          # silently landing on ONE node, merged as if they were two routes to one wire slot, where the same
+          # declaration written honestly is a duplicate. A Symbol's `to_s` is Ruby's own, so afterwards every
+          # read is the same answer, and no message renders a route by running the route's own code. Dotted
+          # paths symbolize harmlessly, exactly as a dotted `on:` always did: they are only ever split via `to_s`.
+          # Absent stays absent — `nil`/`""` mean "no route", and `present?` decides that without rendering
+          # anything.
+          on = on.to_sym if on.present?
 
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
@@ -929,6 +947,13 @@ module Axn
         # a nested shape, the copy stored for it — reads that capture rather than the member again. Same reasoning
         # as the renderer's one-#to_s-per-key rule: a second read may disagree with the first or raise something
         # that is not even a StandardError, replacing the diagnosis with the escape these guards exist to prevent.
+        #
+        # Reading the name once is not enough on its own, because CANONICALIZING it is a second dispatch on the
+        # same caller object: a String subclass whose `to_sym` answers `:alpha` and then `:collide` gave the
+        # duplicate check one property name and `ShapeConfig`'s constructor another, so two declared members were
+        # stored under one property, `member_properties` emitted one, and nothing raised. So the canonical Symbol
+        # is computed once too, beside the check that judges it, and threaded to the snapshot — which is what
+        # makes "the guard judged the property this member is stored under" true rather than probable.
         def _check_and_copy_shape_members!(hash, members, walk, allowance)
           named = members.map { |member| [member, Internal::ShapeGraph.fetch(member, :field)] }
           named.each { |member, name| _raise_nameless_member!(member, name) if Internal::ShapeGraph.missing?(name) }
@@ -946,17 +971,24 @@ module Axn
           # such collapse (`_reject_colliding_property_claims!`) so no mechanism pair can slip between checks.
           # This one cannot move there: two identical claims are a legal MERGE by that rule, while two
           # identical members of one block are a genuine duplicate.
+          #
+          # The key each member is judged under is CAPTURED here (into a (member, name, key) triple) and stored
+          # as that member's `field`, rather than converted again downstream — see the note above. Computed
+          # inside this loop rather than in a pass of its own so the order of failures is unchanged: a name whose
+          # `to_sym` raises (bytes with no Symbol, say) is still reached after every earlier member has been
+          # judged, so a duplicate declared ahead of it is still reported as the duplicate it is.
           claimed = {}
-          names.each do |name|
+          keyed = named.map do |member, name|
             key = name.to_sym
             _raise_duplicate_member!(name) if claimed.key?(key)
 
             claimed[key] = name
+            [member, name, key]
           end
 
           child = walk.with(depth: walk.depth + 1)
           paths = 0
-          copied = named.map do |member, name|
+          copied = keyed.map do |member, name, key|
             # Charged BEFORE this member is snapshotted, and before its nested shape is walked, so a graph that
             # multiplies out is rejected while the work done on it is still bounded by the allowance.
             _spend_paths!(allowance, 1)
@@ -967,7 +999,7 @@ module Axn
             _raise_member_without_validations!(member, name) if nil.equal?(validations)
             # Every other attribute read (and grammar-checked) BEFORE the nested walk, so a member carrying both
             # a bad `sensitive:` and an untraversable nested shape is reported as the value defect it is.
-            attributes = _snapshot_member_attributes!(member, name, validations)
+            attributes = _snapshot_member_attributes!(member, name, key, validations)
             nested = Internal::ShapeGraph.hash_or_nil(validations[:shape])
             unless nil.equal?(nested)
               inner = _walk_shape_graph!(nested, child, allowance, via: member, via_name: name)
@@ -1000,7 +1032,12 @@ module Axn
         # `description` is read directly rather than taken from `metadata`, because that is where reflection
         # reads it from (`Schema.declared_attribute`) and a duck-typed member may define the reader without any
         # metadata at all; folding it into the metadata Hash is what `ShapeConfig#description` then answers with.
-        def _snapshot_member_attributes!(member, name, validations)
+        #
+        # `name` and `key` are the same name in its two roles: `name` is what a message about this member RENDERS
+        # (a raw String keeps the spelling the caller wrote, and an unrenderable one its escaped form), while
+        # `key` is the canonical Symbol the duplicate check already judged — and so the property this member is
+        # stored, validated and emitted under. Both come from the one read; nothing here converts either again.
+        def _snapshot_member_attributes!(member, name, key, validations)
           sensitive = Internal::ShapeGraph.read(member, :sensitive)
           Contract.validate_sensitive!(sensitive)
           user_facing = Internal::ShapeGraph.read(member, :user_facing)
@@ -1010,7 +1047,7 @@ module Axn
           description = Internal::ShapeGraph.read(member, :description)
           metadata[:description] = description unless nil.equal?(description)
 
-          { field: name, validations:, metadata:, sensitive: sensitive || false, user_facing: user_facing || false,
+          { field: key, validations:, metadata:, sensitive: sensitive || false, user_facing: user_facing || false,
             method_call: Internal::ShapeGraph.read(member, :method_call) || false }
         end
 
@@ -1298,10 +1335,13 @@ module Axn
         #
         # Returns `[claimed_field, offending_field]` pairs; equal entries are an identical-name duplicate.
         def _duplicate_fields(existing, new_configs)
-          # `on:` is normalized with `to_s` so `:payload` and `"payload"` (and any symbol/string spelling
-          # of the same dotted path) name the same route — matching how the SubfieldTree splits `on:` —
-          # rather than slipping two configs onto one wire slot on a spelling difference. It is deliberately
-          # not canonicalized or resolved further; see the note above on which half of identity this is.
+          # `on:` is rendered with `to_s` so `:payload` and `"payload"` (and any symbol/string spelling of the
+          # same dotted path) name the same route — matching how the SubfieldTree splits `on:` — rather than
+          # slipping two configs onto one wire slot on a spelling difference. The DSL already canonicalizes a
+          # declared route to a Symbol (see `expects`), so for a declared config this is Ruby's own `to_s` and
+          # cannot answer differently here than it does in the tree; the rendering stays because a config
+          # ASSIGNED onto a class carries whatever route its author built, exactly as it carries a raw `field`.
+          # The route is deliberately not resolved further; see the note above on which half of identity this is.
           #
           # A name with no UTF-8 rendering canonicalizes to nil and names no property, so it is SKIPPED rather
           # than compared: two of them would otherwise key alike and be reported as duplicates of each other.
@@ -1386,9 +1426,16 @@ module Axn
 
           if as
             raise ArgumentError, "`as:` can only be provided when declaring a single field (use prefix: for several)" if fields.size > 1
-            raise ArgumentError, "`as:` reader name may not be dotted (#{as.inspect} would not name a method)" if as.to_s.include?(".")
 
-            { fields.first => as.to_sym }
+            # Canonicalized before the dotted check rather than after it, so the name the check JUDGES is the
+            # name the reader is defined under — `to_s` and `to_sym` are two dispatches on the same caller
+            # object, and a String subclass answering them differently had the guard clearing one spelling
+            # while another was generated. A Symbol's `to_s`/`inspect` are Ruby's own, so both the check and
+            # the message it may raise are now decided by axn.
+            reader = as.to_sym
+            raise ArgumentError, "`as:` reader name may not be dotted (#{reader.inspect} would not name a method)" if reader.to_s.include?(".")
+
+            { fields.first => reader }
           else
             fields.to_h { |f| [f, :"#{prefix}#{f}"] }
           end

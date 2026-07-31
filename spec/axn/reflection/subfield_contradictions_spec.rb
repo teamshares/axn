@@ -480,6 +480,8 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
       end.to raise_error(ArgumentError, /conflicting default:.*payload\.meta\.count/m)
     end
 
+    # `on:` is canonicalized to a Symbol at declaration, so a dotted route reads `:"payload.meta"` here however
+    # it was spelled — the route is still named, and a Symbol's `inspect` is Ruby's own.
     it "names both routes and their defaults in the message" do
       expect do
         build_axn do
@@ -488,7 +490,7 @@ RSpec.describe Axn::Reflection::SubfieldContradictions do
           expects :count, on: "payload.meta", default: "", optional: true
           expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
         end
-      end.to raise_error(ArgumentError, /:count.*on "payload\.meta".*default: a String value.*:count.*on :meta.*default: 42/m)
+      end.to raise_error(ArgumentError, /:count.*on :"payload\.meta".*default: a String value.*:count.*on :meta.*default: 42/m)
     end
 
     it "rejects EQUAL literal defaults uniformly (agreement today drifts tomorrow)" do

@@ -269,6 +269,30 @@ DRIFTING = Class.new do
   def optional? = true
 end
 
+# A name that is READ once and stably, but CONVERTS differently each time — the complement of DRIFTING, and the
+# form the member snapshot did not close on its own: `to_sym` is a second dispatch on the same object.
+DRIFTING_NAME = Class.new(String) do
+  def initialize(*) = super("alpha")
+
+  def to_sym
+    @reads = (@reads || 0) + 1
+    @reads == 1 ? :alpha : :collide
+  end
+end
+
+# The same drift on an `on:` ROUTE: renders "q" first and "p" afterwards. Both conversions flip together, so the
+# fixture does not depend on which one a layer reaches for.
+DRIFTING_ROUTE = Class.new(String) do
+  def initialize(*) = super("ignored")
+
+  def to_s
+    @reads = (@reads || 0) + 1
+    @reads == 1 ? "q" : "p"
+  end
+
+  def to_sym = to_s.to_sym
+end
+
 # Builds a FRESH nested shape on every read: never repeats an object, so no identity guard can see it;
 # endless rather than cyclic.
 GENERATIVE = Class.new(Hash) do
@@ -3233,6 +3257,46 @@ puts "\n== the last of that: a reader that answers differently each read =======
 check "non-idempotent reader: the first read is the contract", /declared props=\[:unique\d+, :unique\d+\]/ do
   members = [DRIFTING.new, DRIFTING.new]
   declare_and_reflect({ members:, container: Hash }, type: Hash)
+end
+
+# The complement, and the one the reader row above did not cover: a name read ONCE whose CONVERSION answers
+# twice. `to_sym` is a second dispatch on the caller's object, so a member whose name is stable but whose
+# conversion is not gave the duplicate check `:alpha` and `ShapeConfig`'s constructor `:collide` — two declared
+# members stored under one property, one property emitted, nothing raised. The walk now canonicalizes once,
+# beside the check that judges it.
+check "non-idempotent name conversion: the judged Symbol is the stored one",
+      'declared props=[:alpha, :collide] json={"alpha":{},"collide":{}}' do
+  members = [duck_carrying(field: DRIFTING_NAME.new, validations: {}), duck_carrying(field: :collide, validations: {})]
+  declare_and_reflect({ members:, container: Hash }, type: Hash)
+end
+
+# And the other direction of the same property: when the ONE conversion is the colliding one, it is rejected.
+# Whichever way the name answers, the verdict and the stored contract are the same fact.
+check "non-idempotent name conversion, colliding answer: rejected",
+      /DuplicateFieldError: Duplicate shape member declared/ do
+  name = DRIFTING_NAME.new
+  name.to_sym # spend the :alpha answer, so the declaration's own read is :collide
+  members = [duck_carrying(field: name, validations: {}), duck_carrying(field: :collide, validations: {})]
+  declare_and_reflect({ members:, container: Hash }, type: Hash)
+end
+
+# The same defect on the OTHER path a name reaches a node by: `on:`. A route is judged as written (its root must
+# name a declared reader; the duplicate check keys a config by it) and then split again by SubfieldTree,
+# `resolve_parent`, the ambient checks and the executor's parent memo — so a route whose rendering drifted had
+# the guard clearing `:q` while the tree anchored at `:p`, landing two subfields on ONE node where the honest
+# spelling is a duplicate. Canonicalized once, at declaration, exactly as a field name is.
+check "a drifting on: route anchors where it was judged", "p=[:a] q=[:a]" do
+  route = DRIFTING_ROUTE.new
+  klass = Class.new do
+    include Axn
+    expects :p, type: Hash
+    expects :q, type: Hash
+    expects :a, on: :p, optional: true
+    expects :a, on: route, as: :qa, optional: true
+    def call; end
+  end
+  # Rendered pairwise rather than through `Hash#inspect`, whose spacing changed in Ruby 3.4.
+  klass.input_schema[:properties].map { |key, prop| "#{key}=#{prop[:properties]&.keys.inspect}" }.join(" ")
 end
 
 puts "\n#{'=' * 100}"

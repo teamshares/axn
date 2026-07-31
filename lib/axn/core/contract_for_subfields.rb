@@ -467,6 +467,9 @@ module Axn
           method_call: false,
           **validations
         )
+          # `on:` arrives canonicalized (a Symbol — see `expects`), so every read of it here and downstream is
+          # Ruby's own and they cannot disagree about which route was declared.
+          #
           # `on:` may be a dotted path (e.g. "address.billing"); the *root* segment must be declared.
           # It's resolved by calling the parent's reader (`resolve_parent` → public_send), so it must
           # name a reader — i.e. the alias when the parent was declared with `as:`/`prefix:`, not the

@@ -25,6 +25,12 @@ module Axn
     # (`Contract#_check_and_copy_shape_members!` snapshots every member into a `ShapeConfig` of axn's
     # own). What a caller's object can decide is what the contract SAYS, at the one moment it is asked;
     # it cannot say one thing to a guard and another to a consumer, because no consumer asks it again.
+    #
+    # That holds for what the walk CONVERTS as well as what it reads, and it has to be arranged as
+    # deliberately: a member's name is canonicalized with `to_sym`, which is a second dispatch on the same
+    # object, so the walk computes that Symbol once beside the check that judges it and stores THAT
+    # (see `_check_and_copy_shape_members!`). Reading once while converting twice is the same defect wearing
+    # a disguise — it split the duplicate check from the property the member was stored under.
     module ShapeGraph
       # `#method` is itself overridable, so the lookup below goes through Object's implementation: an
       # object whose own `#method` raises would otherwise replace a declaration verdict with its
