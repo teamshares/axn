@@ -156,8 +156,15 @@ module Axn
 
           if %w[failure exception].include?(outcome) && result.exception
             span.record_exception(result.exception)
-            error_message = result.exception.message || result.exception.class.name
-            span.status = OpenTelemetry::Trace::Status.error(error_message)
+
+            # The only OpenTelemetry constant left in this path, and a configured tracer can be in
+            # use with OpenTelemetry never loaded. Guarding just this assignment keeps the facet
+            # attributes below reachable; there is no vendor-neutral way to construct a Status, so a
+            # non-OTel tracer gets the recorded exception without an error status.
+            if defined?(OpenTelemetry::Trace::Status)
+              error_message = result.exception.message || result.exception.class.name
+              span.status = OpenTelemetry::Trace::Status.error(error_message)
+            end
           end
 
           resolved_tags.each { |name, value| span.set_attribute("axn.tag.#{name}", value) }

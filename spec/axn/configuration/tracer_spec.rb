@@ -143,4 +143,40 @@ RSpec.describe "Axn.config.tracer" do
       expect(recorder.calls.length).to eq(2)
     end
   end
+
+  describe "span finalization without OpenTelemetry" do
+    let(:tracer) do
+      span = fake_span
+      Class.new do
+        define_method(:initialize) { @span = span }
+        define_method(:in_span) { |_name, **, &block| block.call(@span) }
+      end.new
+    end
+
+    let(:failing_axn) do
+      build_axn do
+        tag :account, -> { "acct-1" }
+        dimension :kind, -> { "widget" }
+
+        def call = fail!("nope")
+      end
+    end
+
+    before { Axn.config.tracer = tracer }
+
+    it "records declared facets on the span even though the OTel Status class is absent" do
+      expect(defined?(OpenTelemetry)).to be_nil
+      failing_axn.call
+      expect(fake_span.attributes).to include(
+        "axn.outcome" => "failure",
+        "axn.tag.account" => "acct-1",
+        "axn.dimension.kind" => "widget",
+      )
+    end
+
+    it "still records the exception on the span" do
+      expect(fake_span).to receive(:record_exception)
+      failing_axn.call
+    end
+  end
 end
