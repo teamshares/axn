@@ -527,6 +527,26 @@ RSpec.describe "Axn.config.tracer" do
       workers.each { |worker| worker.join rescue nil } # rubocop:disable Style/RescueModifier
     end
 
+    it "does not describe a span whose action aborted before its result settled" do
+      # `with_exception_handling` is what finalizes the result, and it sits INSIDE the traced block. A
+      # stack that begins and dies before reaching it leaves the result at its default `success` — so
+      # having started is not enough to describe an outcome, only having completed is.
+      aborted_span = Class.new do
+        attr_reader :attributes
+
+        def initialize = @attributes = {}
+        def set_attribute(key, value) = @attributes[key] = value
+        def record_exception(_exception) = nil
+      end.new
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| block.call(aborted_span) }
+      end.new
+      allow(Axn::Internal::Timing).to receive(:now).and_raise("clock unavailable")
+
+      expect { counting_axn.call }.to raise_error("clock unavailable")
+      expect(aborted_span.attributes).to be_empty
+    end
+
     it "does not stamp a worker's span with an action the fallback ran outside it" do
       # The interleaving matters and has to be forced: the worker must still be INSIDE the notification
       # when the caller's fallback runs the action. A subscriber that stalls during `start` holds it

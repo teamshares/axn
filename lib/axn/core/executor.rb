@@ -49,6 +49,7 @@ module Axn
         @claimed = false
         @notification_claimed = false
         @started = false
+        @completed = false
         @error = nil
         @abandoned = false
       end
@@ -73,6 +74,12 @@ module Axn
 
       def claimed? = @claimed
       def started? = @started
+
+      # The action ran to COMPLETION — the wrapped stack returned, so `with_exception_handling` settled
+      # its result. Distinct from `started?`: a stack that begins and then aborts before that boundary
+      # (a pre-body clock read raising, say) leaves the result at its default `success`, which is not
+      # an outcome anything should be describing.
+      def completed? = @completed
 
       def abandoned? = @abandoned
 
@@ -134,10 +141,9 @@ module Axn
 
       def execute
         @started = true
-        completed = false
         begin
           value = yield
-          completed = true
+          @completed = true
           value
         # Every escaping class, not axn's swallow allowlist: this RECORDS and always re-raises, never
         # absorbs, so widening it does not widen what axn swallows. A tracer wrapping its yield in
@@ -148,7 +154,7 @@ module Axn
           @error = e
           raise
         ensure
-          @abandoned = true unless completed || @error
+          @abandoned = true unless @completed || @error
         end
       end
     end
@@ -474,12 +480,16 @@ module Axn
             # is still at its default `success`, so finalizing here would stamp a completed success
             # onto a call that went on to fail in the observer-free fallback, or never ran at all. An
             # unlabelled span is a smaller lie than a wrong one.
+            # `completed?`, not `started?`: a stack that begins and aborts before the exception
+            # boundary never settles its result, which still reads the default `success` — describing
+            # that would report a completed success for a call that failed.
+            #
             # `originating_context?` is what makes this THIS span's outcome rather than any span's. A
             # block invoked on another thread or fiber had its `run_action` refused, so the action it
             # would be describing was run by the fallback, outside this span entirely — comparing
             # before/after snapshots of a shared flag cannot tell those apart, since the fallback can
             # set it while this block is descheduled.
-            finalize_span(span) if attempt.started? && attempt.originating_context?
+            finalize_span(span) if attempt.completed? && attempt.originating_context?
           end
         end
       end
