@@ -485,6 +485,25 @@ RSpec.describe "Axn.config.tracer" do
       workers.each(&:join)
     end
 
+    it "does not run the action when a subscriber throws and the tracer absorbs it" do
+      # The unwind happens inside notification startup, before the action is reached, so the attempt
+      # would otherwise have recorded nothing at all — and a tracer that catches leaves the boundary
+      # looking like a clean return, freeing the fallback to run the action. Turning a cancellation
+      # into committed work is the outcome worth the most care.
+      evented = Object.new
+      evented.define_singleton_method(:start) { |*| throw(:cancel, :from_subscriber) }
+      evented.define_singleton_method(:finish) { |*| nil }
+      subscriber = ActiveSupport::Notifications.subscribe("axn.call", evented)
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| catch(:cancel) { block.call(nil) } }
+      end.new
+
+      expect { counting_axn.call }.to raise_error(/absorbed a non-local exit from the action/)
+      expect(runs.size).to eq(0)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
     it "does not start the action when the tracer throws instead of raising" do
       # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
       # being absent — it has to come from the guarded step reporting that it returned normally.

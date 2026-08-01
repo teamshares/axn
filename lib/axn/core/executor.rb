@@ -50,6 +50,7 @@ module Axn
       # Whether the action BODY began. Deliberately not the same as having been claimed: an observer
       # can claim the attempt and then fail before reaching the action (a notification subscriber
       # raising from `start`), and the untraced fallback has to be able to tell those apart.
+      def claimed? = @claimed
       def started? = @started
 
       # Whether the action has finished — returned, raised, or unwound. Distinct from `started?`
@@ -82,6 +83,27 @@ module Axn
 
           @notification_claimed = true
           true
+        end
+      end
+
+      # Records how a block completed WITHOUT claiming or starting anything — for work wrapped around
+      # the action (the notification) whose abnormal exit must be visible for the same reasons.
+      def observe
+        completed = false
+        raised = false
+        begin
+          value = yield
+          completed = true
+          value
+        rescue Exception # rubocop:disable Lint/RescueException
+          # Deliberately NOT recorded as the attempt's error. An observer raising is an observer
+          # failure — logged and swallowed by the guard, which then lets the fallback run the action.
+          # Only a non-exception unwind is recorded here, because that is the one an observer can
+          # absorb while leaving nothing at all behind.
+          raised = true
+          raise
+        ensure
+          @abandoned = true unless completed || raised || @error
         end
       end
 
@@ -244,10 +266,17 @@ module Axn
         # would never be reached. That is why the last-resort fallback below calls `run_action` rather
         # than this: once notification has failed, retrying it fails the same way.
         instrument_block = proc do
-          ActiveSupport::Notifications.instrument("axn.call", payload) do
-            run_action.call
-          ensure
-            update_payload.call
+          # Wrapped in `observe` so an unwind through NOTIFICATION startup is recorded too. A
+          # subscriber can `throw` or raise a signal from its `start` callback, before `run_action` is
+          # ever reached — and a tracer that catches around its yield then absorbs it, leaving the
+          # attempt with nothing recorded and the fallback free to run the action. Turning a
+          # cancellation into committed work is the outcome worth the most care to avoid.
+          attempt.observe do
+            ActiveSupport::Notifications.instrument("axn.call", payload) do
+              run_action.call
+            ensure
+              update_payload.call
+            end
           end
         end
 
@@ -295,7 +324,7 @@ module Axn
           # than start the action: work that runs, and possibly commits, after its caller was cancelled
           # is worse than a lost span. A swallowable error still resumes, which is what keeps the
           # dev-loud path from costing the action its run.
-          if !attempt.started? && resumable_after?(traced)
+          if may_start_action?(attempt, traced)
             emitted = false
             begin
               # Only when nothing claimed the notification — a tracer that raised or returned before
@@ -305,7 +334,7 @@ module Axn
               emit_notification.call if attempt.claim_notification
               emitted = true
             ensure
-              run_action.call if !attempt.started? && resumable_after?(emitted)
+              run_action.call if may_start_action?(attempt, emitted)
             end
           end
 
@@ -365,13 +394,25 @@ module Axn
               "complete. A tracer or subscriber must not `catch` around the block axn hands it."
       end
 
+      # Whether this path may still start the action. Not started yet, nothing has abandoned it, and
+      # the guarded step either returned normally or is unwinding an error axn may absorb. `abandoned?`
+      # bars it as firmly as a signal does: the stack unwound by a `throw` somewhere an observer
+      # swallowed it, so the caller is gone and running the action now would turn a cancellation into
+      # committed work.
+      def may_start_action?(attempt, returned_normally)
+        !attempt.started? && !attempt.abandoned? && resumable_after?(returned_normally)
+      end
+
       # `in_span` must invoke the block it is given synchronously — the action's entire pipeline runs
       # inside it (settlement, timing, contract, hooks), so a tracer that hands the block to a worker
       # and returns leaves the caller holding a result that is still being written, and will change
       # under them. Axn cannot wait for a thread it does not own without risking a hang, so it refuses
       # the violation rather than returning a success about to become a failure.
       def reject_unsettled_attempt!(attempt)
-        return unless attempt.started? && !attempt.settled?
+        # `claimed?`, not `started?`: a worker can win the claim and be descheduled before `execute`
+        # marks it started, and the boundary must reject that too rather than return a result the
+        # worker is about to write.
+        return unless attempt.claimed? && !attempt.settled?
 
         raise "axn.call tracing returned while the action was still running: a tracer must invoke the " \
               "block it is given synchronously, on the calling thread."
