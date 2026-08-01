@@ -3826,6 +3826,44 @@ check "the size guard decides wire-key ownership without asking the name", "coun
   "counted"
 end
 
+# RECORDED RESIDUE, not a guarantee: a member name whose `to_sym` answers with a STRING rather than a Symbol is
+# converted twice — the walk judges what the first conversion returned, and `ShapeConfig` converts that answer
+# again on the way into the snapshot. So the value the duplicate check compares is not always the key finally
+# stored, which is the shape every other name defect in this file takes.
+#
+# It stays a residue because `to_sym` returning a non-Symbol breaks Ruby's own contract for the method rather than
+# being an unusual-but-legitimate object: it is categorically unlike the reachable siblings that DID earn code
+# here (a non-idempotent `to_s`, unrenderable bytes, a name owning its rendering, a raising `eql?`), each of which
+# an ActiveSupport::SafeBuffer-shaped value or binary bytes off a file produces with nobody intending harm.
+#
+# The rows assert what actually happens, because the silent two-into-one collapse such a name might be expected to
+# cause does NOT occur — both arrangements are refused at declaration. The message names the INTERMEDIATE rather
+# than the Symbol stored, which is confusing prose for a correct verdict, and is what the second row pins.
+NON_SYMBOL_TO_SYM_INNER = Class.new(String) { def to_sym = :collapsed }
+NON_SYMBOL_TO_SYM = Class.new(String) { def to_sym = NON_SYMBOL_TO_SYM_INNER.new("#{self}-mid") }
+
+def non_symbol_to_sym_members(*names)
+  members = names.map { |name| Axn::Core::Contract::ShapeConfig.new(field: name, validations: {}) }
+  Class.new do
+    include Axn
+    expects :p, type: Hash, shape: { members:, container: Hash }
+    def call; end
+  end
+  "declared"
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message[0, 60]}"
+end
+
+check "byte-distinct names whose to_sym answers a String are refused, not collapsed",
+      /DuplicateFieldError/ do
+  non_symbol_to_sym_members(NON_SYMBOL_TO_SYM.new("a"), NON_SYMBOL_TO_SYM.new("b"))
+end
+
+check "the refusal names the intermediate its to_sym returned, not the Symbol stored",
+      /a-mid|b-mid/ do
+  non_symbol_to_sym_members(NON_SYMBOL_TO_SYM.new("a"), NON_SYMBOL_TO_SYM.new("b"))
+end
+
 puts "\n#{'=' * 100}"
 if $failures.empty?
   puts "ALL #{$rows} ROWS PASS"
