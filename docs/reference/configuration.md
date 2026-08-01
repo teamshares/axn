@@ -273,7 +273,7 @@ end
 ```
 
 ::: warning Exceptions from an injected tracer propagate
-A tracer that fails before it yields does not cost you the call: axn logs the failure and runs the action anyway, exactly once. A tracer that fails *after* yielding is different — the action has already run and settled, so that exception propagates out of `.call` rather than being logged and swallowed. Axn will not absorb anything raised once the action is in flight, since it cannot distinguish a late tracer failure from the action's own outcome, and re-running the action to find out would be worse than either.
+A misbehaving tracer cannot cost you the call. Axn logs the failure and runs the action exactly once whether `in_span` raises before yielding, returns without ever yielding, or yields more than once — and a failure raised after the action has already settled (a span failing to export, say) is logged and swallowed rather than converting a successful result into an exception from `.call`. Tracing observes the call; it never decides its outcome.
 :::
 
 Assign `nil` to turn axn's spans off without unloading OpenTelemetry — the rest of your instrumentation keeps working:

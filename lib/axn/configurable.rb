@@ -18,6 +18,21 @@ module Axn
     # generated class-level override accessors.
     UNSET = Object.new.freeze
 
+    # Names the DSL installs itself, so a setting cannot be declared with one. Either direction of the
+    # collision silently breaks something: a generated `reset!` reader would replace the per-setting
+    # reset helper (leaving `reset!(:other)` an arity error), and in the module-singleton flavor
+    # `Config#reset!` wins method lookup so the declared setting becomes unreadable. Raise when the
+    # class is defined instead.
+    RESERVED_SETTING_NAMES = %i[reset!].freeze
+
+    def self.reject_reserved_setting_name!(name)
+      return unless RESERVED_SETTING_NAMES.include?(name.to_sym)
+
+      raise ArgumentError,
+            "setting #{name.inspect} is reserved: Axn::Configurable defines #{name} on every config " \
+            "object. Pick another name."
+    end
+
     # The config source that owns `namespace` on `klass` or any ancestor, or nil. Walks the same
     # superclass chain the override store uses, so the duplicate-owner guard and the `configure`
     # writer agree on which source (if any) governs a namespace for a given class.
@@ -408,6 +423,7 @@ module Axn
     private :_axn_config_settings
 
     def setting(name, default: nil, one_of: nil, validate: nil, overridable: false)
+      Axn::Configurable.reject_reserved_setting_name!(name)
       name = name.to_sym
       setting = Setting.new(name:, default:, one_of:, validate:, overridable:)
       _axn_config_settings[name] = setting
@@ -554,6 +570,7 @@ module Axn
       end
 
       def setting(name, default: nil, one_of: nil, validate: nil, overridable: false)
+        Axn::Configurable.reject_reserved_setting_name!(name)
         setting = Setting.new(name: name.to_sym, default:, one_of:, validate:, overridable:)
         _declared_settings[setting.name] = setting
         ivar = :"@#{name}"

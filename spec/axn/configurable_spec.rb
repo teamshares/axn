@@ -737,6 +737,26 @@ RSpec.describe "#reset!" do
       expect(instance.base_only).to eq(:base_default)
     end
 
+    it "rejects `reset!` as a setting name at declaration, in the class flavor" do
+      expect do
+        Class.new do
+          extend Axn::Configurable::Settings
+
+          setting :reset!
+        end
+      end.to raise_error(ArgumentError, /setting :reset! is reserved/)
+    end
+
+    it "rejects `reset!` as a setting name at declaration, in the module-singleton flavor" do
+      expect do
+        Module.new do
+          extend Axn::Configurable
+
+          setting :reset!
+        end
+      end.to raise_error(ArgumentError, /setting :reset! is reserved/)
+    end
+
     it "defers to a reset! the class defined itself rather than replacing it" do
       klass = Class.new do
         def reset!(*) = :the_authors_own

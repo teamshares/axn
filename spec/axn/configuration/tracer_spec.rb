@@ -227,7 +227,10 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(1)
     end
 
-    it "does not absorb a failure raised after the action has run" do
+    it "swallows a failure raised after the action has run, keeping the settled result" do
+      # `with_exception_handling` runs inside `with_tracing`, so by the time `in_span` regains control
+      # the action's own outcome is already on the result — anything raised here is the span export
+      # failing, and must not convert a settled success into a raise from `.call`.
       Axn.config.tracer = Class.new do
         define_method(:in_span) do |*, **, &block|
           block.call(nil)
@@ -235,7 +238,7 @@ RSpec.describe "Axn.config.tracer" do
         end
       end.new
 
-      expect { counting_axn.call }.to raise_error("flush failed")
+      expect(counting_axn.call).to be_ok
       expect(runs.size).to eq(1)
     end
 

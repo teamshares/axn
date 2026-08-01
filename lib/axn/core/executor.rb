@@ -137,9 +137,13 @@ module Axn
           # still false means the action has not run yet and the fallback below owes it exactly one
           # execution.
           #
-          # Once `started` is set, nothing is swallowed: axn cannot tell a late tracer failure from the
-          # action's own outcome propagating up through the wrapper, and either re-running the action
-          # or absorbing its real result would be worse than letting the exception through.
+          # A failure surfacing here is the tracing wrapper's, never the action's, whichever side of the
+          # yield it happened on: `with_exception_handling` runs INSIDE this block (see #run), so the
+          # action's own swallowable exceptions are already settled onto its result before `in_span`
+          # regains control. So it is logged and swallowed like any other side channel — converting a
+          # settled success into a raise from `.call` because a span failed to export would be the
+          # observability channel taking down the call it observes. An exception axn never swallows
+          # still propagates untouched, since it is outside this rescue's set.
           started = false
           begin
             tracer.in_span("axn.call", **in_span_kwargs) do |span|
@@ -153,9 +157,7 @@ module Axn
               end
             end
           rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-            raise if started
-
-            Axn::Extensions.best_effort("opening the axn.call span", action: @action) { raise e }
+            Axn::Extensions.best_effort("tracing axn.call", action: @action) { raise e }
           end
 
           instrument_block.call unless started
