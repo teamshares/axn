@@ -2813,56 +2813,65 @@ check "a member answering to field but not validations is rejected", /ArgumentEr
   raw_shape_verdict({ members: [Class.new { def field = :a }.new], container: Hash })
 end
 
-# A DECLARED field's `type:` reaches reflection canonicalized to `{ klass: … }` (the DSL applies
-# TypeValidator's syntactic sugar); a raw member's never is, so `type: Hash` — the only spelling anyone writes
-# by hand — arrives at the projection bare. The projection read it as `dig(:type, :klass)` while the layer that
-# DESCRIBES what it emitted read either spelling, so reflecting such a member raised `TypeError:
-# #<Class:Hash> does not have #dig method`, naming neither the member nor the option.
-def bare_member_projection(type)
-  inner = { members: [SC.new(field: :x, validations: {})], container: Hash }
-  member = SC.new(field: :m, validations: { type:, shape: inner })
-  klass = Class.new do
+# Axn's own validators accept a direct value in place of an options bag (`type: Hash`, `of: Hash`), and the DSL
+# expands it into that bag. A raw member's bag was canonicalized at the KEY level only, so the bare spelling —
+# the only one anyone writes by hand — reached the validators and the projection as a Class, which both read as
+# `[:klass]`: the member validated nothing (`ArgumentError: must supply :klass` on every call) while the
+# projection asked a Class for `#dig`/`#[]`. The member snapshot now applies the same expansion from the same
+# seam, so these rows assert the CLOSURE: one declaration, one bag, whichever way it was spelled.
+def bare_member_axn(validations)
+  member = SC.new(field: :m, validations:)
+  Class.new do
     include Axn
     expects :payload, type: Hash, shape: { members: [member], container: Hash }
     def call; end
   end
-  JSON.generate(klass.input_schema.dig(:properties, :payload, :properties, :m))
 end
 
-def bare_vs_canonical(bare)
-  projected = bare_member_projection(bare)
-  "#{projected} #{projected == bare_member_projection({ klass: bare }) ? '==' : '!='} canonical"
+# Both halves of one row, because either alone was the defect: what the projection SAYS and what a call DOES.
+def bare_member_verdict(validations, value)
+  klass = bare_member_axn(validations)
+  projected = JSON.generate(klass.input_schema.dig(:properties, :payload, :properties, :m))
+  r = klass.call(payload: { m: value })
+  "#{projected} call=#{r.ok? ? 'ok' : "#{r.exception.class}: #{r.exception.message}"}"
 end
 
-check "a member's bare `type:` projects, and exactly as the `{ klass: }` bag does",
-      '{"type":"object","properties":{"x":{}}} == canonical' do
-  bare_vs_canonical(Hash)
+def bare_vs_canonical(bare, canonical, value)
+  bare_verdict = bare_member_verdict(bare, value)
+  "#{bare_verdict} #{bare_verdict == bare_member_verdict(canonical, value) ? '==' : '!='} canonical"
+end
+
+INNER_SHAPE = { members: [SC.new(field: :x, validations: {})], container: Hash }
+
+check "a member's bare `type:` validates and projects as the `{ klass: }` bag does",
+      '{"type":"object","properties":{"x":{}}} call=ok == canonical' do
+  bare_vs_canonical({ type: Hash, shape: INNER_SHAPE }, { type: { klass: Hash }, shape: INNER_SHAPE }, { x: 1 })
 end
 
 # The type's OWN members come from the same read, so the bare spelling has to reach them too — otherwise it
 # would project a strictly smaller property set than the canonical bag under the same declaration.
 BARE_DATA = Data.define(:a, :b)
 check "...including a bare Data type's own members",
-      '{"type":"object","properties":{"a":{},"b":{},"x":{}}} == canonical' do
-  bare_vs_canonical(BARE_DATA)
+      '{"type":"object","properties":{"a":{},"b":{},"x":{}}} call=ok == canonical' do
+  bare_vs_canonical({ type: BARE_DATA, shape: INNER_SHAPE }, { type: { klass: BARE_DATA }, shape: INNER_SHAPE },
+                    BARE_DATA.new(a: 1, b: 2))
 end
 
-# RESIDUE, unchanged by that fix and recorded here because the projection now describes a member the runtime
-# refuses: nothing canonicalizes a raw member's validator SUGAR (only its keys — see
-# `_symbol_keyed_member_validations`), so `TypeValidator#check_validity!` rejects the bare bag on every call.
-# The canonical spelling is what a raw member must carry to validate at all.
-check "a member's bare `type:` still validates nothing (residue)",
-      ["ArgumentError: must supply :klass", "Axn::InboundValidationError: Payload m is not a Hash"] do
-  [{ type: Hash }, { type: { klass: Hash } }].map do |validations|
-    member = SC.new(field: :m, validations:)
-    klass = Class.new do
-      include Axn
-      expects :payload, type: Hash, shape: { members: [member], container: Hash }
-      def call; end
-    end
-    e = klass.call(payload: { m: "nope" }).exception
-    "#{e.class}: #{e.message}"
-  end
+# `of:` is the same option one layer down, and it was worse off: the projection reads it as a bag in three
+# places, so a bare one raised `ArgumentError: odd number of arguments for Hash` from `input_schema` — before
+# any call could reach the "must supply :klass" the runtime had waiting for it.
+check "a member's bare `of:` validates and projects as the `{ klass: }` bag does",
+      '{"type":"array","items":{"type":"object"}} call=ok == canonical' do
+  bare_vs_canonical({ type: Array, of: Hash }, { type: { klass: Array }, of: { klass: Hash } }, [{ a: 1 }])
+end
+
+# The one shorthand a member has no meaning for is refused rather than expanded: `model:` resolves a record and
+# exposes a companion reader, neither of which a reader-less member has, so expanding it would have made the
+# option silently type-check the element in place. The block form has always refused it; the raw route used to
+# declare cleanly and fail every call with `must supply :klass`.
+check "a member's `model:` is refused rather than expanded",
+      /ArgumentError: shape member `m` does not support model:/ do
+  raw_shape_verdict({ members: [SC.new(field: :m, validations: { model: Hash })], container: Hash })
 end
 
 # ---------------------------------------------------------------------------------------------------

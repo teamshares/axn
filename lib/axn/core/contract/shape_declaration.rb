@@ -249,7 +249,7 @@ module Axn
             paths += 1
             # `validations` is read ONCE and threaded to every use — the nested shape to walk, and the snapshot
             # of this member. A second read is a second answer the caller can give.
-            validations = _symbol_keyed_member_validations(member, name)
+            validations = _symbol_keyed_member_validations(member, name, key)
             _raise_member_without_validations!(member, name) if nil.equal?(validations)
             # Every other attribute read (and grammar-checked) BEFORE the nested walk, so a member carrying both
             # a bad `sensitive:` and an untraversable nested shape is reported as the value defect it is.
@@ -334,13 +334,14 @@ module Axn
                 "flatten the nesting."
         end
 
-        # A member's declared validations, symbol-canonical at BOTH levels its grammar has: the validator names,
-        # and each validator's own option bag (see _symbolize_option_bags!, which does the same for a field).
-        # A raw `shape:` member bypasses `expects`' option handling entirely, so this is the one place its
-        # grammar gets canonicalized — and it must, because what the snapshot stores is a plain Hash: a member
-        # declared with String keys otherwise validated nothing at all, silently, and reflected an empty
-        # constraint beside it.
-        def _symbol_keyed_member_validations(member, name)
+        # A member's declared validations, canonical at every level its grammar has: the validator names, each
+        # validator's own option bag (see _symbolize_option_bags!, which does the same for a field), and each
+        # axn validator's shorthand VALUE (see _expand_validator_sugar!, likewise). A raw `shape:` member
+        # bypasses `expects`' option handling entirely, so this is the one place its grammar gets canonicalized
+        # — and it must, because what the snapshot stores is a plain Hash: a member declared with String keys
+        # otherwise validated nothing at all, silently, and reflected an empty constraint beside it, while one
+        # declared `type: Hash` (the spelling every author writes) failed every call with `must supply :klass`.
+        def _symbol_keyed_member_validations(member, name, key)
           validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations))
           return nil if nil.equal?(validations)
 
@@ -351,25 +352,57 @@ module Axn
           # afterwards widened a declared member's enum. The copy is also what the snapshot stores, so it is one
           # allocation rather than two.
           copy = {}
-          Internal::ShapeGraph.each_entry(validations) do |key, value|
-            canonical = case key
-                        when ::String then key.to_sym
-                        else key
+          Internal::ShapeGraph.each_entry(validations) do |option_key, value|
+            canonical = case option_key
+                        when ::String then option_key.to_sym
+                        else option_key
                         end
             _raise_ambiguous_option_key!("the validations of #{_member_owner_label(member, name)}", canonical) if copy.key?(canonical)
 
             copy[canonical] = value
           end
-          # Each bag's own keys, then the containers themselves — through the same two helpers a field's options
-          # go through, in the same order, so a member is held to exactly what a field is held to: an
-          # `inclusion:` list keeps its class, and a container that answers with code of its own is refused
-          # unless it is frozen.
+          # Each bag's own keys, then the containers themselves, then each axn validator's shorthand — through
+          # the same three helpers a field's options go through, in the same order, so a member is held to
+          # exactly what a field is held to: an `inclusion:` list keeps its class, a container that answers with
+          # code of its own is refused unless it is frozen, and `type: Hash` means what it says.
+          #
+          # The expansion runs after both, as it does for a field, and that order is load-bearing at one end: an
+          # expander reads a bag by Symbol, so a String-keyed one has to be canonical first
+          # (`validate: { "with" => … }` is otherwise a Hash carrying no callable, rejected at declaration for
+          # a callable it does supply). What an expander then builds on top is a Hash axn owns, holding values
+          # the detach pass has already copied. `model:` is refused rather than expanded, under whichever key
+          # spelling declared it, which is why that check sits between the two.
           _symbolize_option_bags!(copy)
           Internal::ShapeGraph.detach_option_containers!(copy)
+          _raise_member_model_unsupported!(name) if copy.key?(:model)
+          _expand_validator_sugar!(copy, [key])
           copy
         end
 
         def _member_owner_label(member, name) = "shape member #{_describe_shape_member(member, name)}"
+
+        # `model:` resolves a record from an id and exposes a `<field>_id` companion reader — both live in the
+        # reader/facade layer a reader-less member never routes through, so on a member it can only type-check
+        # the element in place (what `type: Klass` already does) while implying resolution/companion behavior
+        # that never happens. Rejected rather than accepted in that degenerate form, pointing at the plain
+        # type check.
+        #
+        # Raised for a member declared BOTH ways: the block form checks the option it was handed
+        # (`_build_shape_member`), and the declaration walk checks a raw member's bag before canonicalizing it
+        # (`_symbol_keyed_member_validations`). The walk's check has to be there, and ahead of the
+        # canonicalization, precisely because the shorthand expansion would otherwise make the option WORK — as
+        # a silent type check, which is the option being reinterpreted rather than honored — where before it
+        # failed every call with `must supply :klass`.
+        #
+        # The companion reader is named off the message-safe label too, so the `_id` name it reports is derived
+        # from the same rendering of the member name the sentence already used.
+        def _raise_member_model_unsupported!(name)
+          label = _shape_member_label(name)
+          raise ArgumentError,
+                "shape member `#{label}` does not support model: — a model field resolves a record from an id " \
+                "and exposes a `#{Internal::FieldConfig.model_id_key(label)}` reader, but a shape member is " \
+                "reader-less and validates the element in place (use `type: Klass` for a plain instance check)."
+        end
 
         # Metadata is one level of grammar (`description:` and whatever an extension registered), read as
         # Symbols — `ShapeConfig#description` is `metadata[:description]` — so a String-keyed metadata Hash
@@ -456,7 +489,7 @@ module Axn
         # calls as `self.class.<name>` — hiding it would break that.
         private :_spend_paths!, :_raise_too_many_member_paths!, :_symbol_keyed_member_validations,
                 :_symbol_keyed_member_metadata, :_snapshot_member_attributes!,
-                :_member_owner_label, :_describe_shape_member,
+                :_member_owner_label, :_describe_shape_member, :_raise_member_model_unsupported!,
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
                 :_check_and_copy_shape_members!, :_raise_cyclic_shape!, :_raise_shape_too_deep!,
                 :_raise_duplicate_member!, :_raise_nameless_member!,

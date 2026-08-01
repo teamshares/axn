@@ -236,29 +236,11 @@ module Axn
       # does not have.
       def property_representative(configs) = configs.reject { |c| c.validations[:model] }.first
 
-      # THE read of what a `type:`/`of:` option NAMES, whichever way it was spelled. A declared field's options
-      # reach reflection canonicalized to `{ klass: … }` (TypeValidator.apply_syntactic_sugar), but a raw
-      # `shape:` member's do not — `#field` + `#validations` is the whole member contract, so nothing
-      # canonicalizes a member bag's sugar and `type: Hash` (the only spelling anyone writes by hand) arrives
-      # bare. One owner because the layer that MIRRORS this projection re-read it: attribution asks which type
-      # contributed a member (`PropertyNames.shape_type_klass`) and must get the same answer as the emission it
-      # describes, and reading it as `dig(:type, :klass)` beside a reader that handles both spellings asked a
-      # Class for `#dig` instead.
-      #
-      # `case`/`when`, not `is_a?`: the option is a caller-supplied value on a reflection path, and `Module#===`
-      # is a C-level check it cannot override to route around this read.
-      def declared_klass(type_opt)
-        case type_opt
-        when Hash then type_opt[:klass]
-        else type_opt
-        end
-      end
-
       def object_type_branches(config)
         type_opt = config.validations[:type]
         return [Hash] unless type_opt # untyped parent — object-shaped for both any?/all?
 
-        Array(declared_klass(type_opt))
+        Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
       end
 
       # The builtin scalars whose reader-method surface we judge as the class's own public methods:
@@ -323,7 +305,7 @@ module Axn
       # Takes VALIDATIONS rather than a config because its one caller (shape_property_plan) has already
       # reduced the config to the validations the projection is built from — see effective_validations.
       def shape_serializes_to_object?(validations)
-        type_klass = declared_klass(validations[:type])
+        type_klass = validations.dig(:type, :klass)
         return true if type_klass.nil?
 
         Array(type_klass).all? { |k| member_keyed_object_type?(k) }
@@ -1193,7 +1175,7 @@ module Axn
         # A shaped object field IS an object, even when its declared type: (e.g. a Data.define subclass) isn't
         # in TYPE_MAP — on input unconditionally, on output only when the value serializes member-keyed.
         emitted = !for_output || shape_serializes_to_object?(validations)
-        type_klass = declared_klass(validations[:type])
+        type_klass = validations.dig(:type, :klass)
         base = emitted && type_klass.is_a?(Class) && type_klass < Data ? type_klass.members.to_h { |m| [m, {}] } : {}
         # A non-array type contributes at ONE node (a multi-class `type:` reflects as `anyOf` branches of
         # scalar types, which name no properties), so its schema is just those properties.
@@ -1397,7 +1379,8 @@ module Axn
 
       def json_type_for(validations, for_output: false)
         if validations[:type]
-          klass = declared_klass(validations[:type])
+          type_opt = validations[:type]
+          klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
           type_hashes = Array(klass).map { |k| single_type_for(k, for_output:) }.uniq
           return type_hashes.first if type_hashes.size == 1
 

@@ -609,64 +609,101 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
     end
 
-    # A declared field's `type:` reaches reflection canonicalized to `{ klass: … }` (the DSL applies
-    # TypeValidator's syntactic sugar); a raw `shape:` member's does not — `#field` + `#validations` is the
-    # whole member contract, so `type: Hash`, the only spelling anyone writes by hand, arrives at the
-    # projection bare. The projection read it as `dig(:type, :klass)` while the layer that DESCRIBES what it
-    # emitted read it as either spelling, so reflecting such a member raised
-    # `TypeError: #<Class:Hash> does not have #dig method` — naming neither the member nor the option. Both
-    # layers now read it through one owner (`Schema.declared_klass`), so the bare spelling reflects as exactly
-    # what the canonical one reflects as.
-    describe "a member whose type: is spelled bare (no `{ klass: }` bag)" do
-      def member(validations) = Axn::Core::Contract::ShapeConfig.new(field: :m, validations:)
-      def inner = { members: [Axn::Core::Contract::ShapeConfig.new(field: :x, validations: {})], container: Hash }
-
-      def inbound(validations)
-        m = member(validations)
-        build_axn { expects :payload, type: Hash, shape: { members: [m], container: Hash } }
+    # Axn's own validators accept a direct value in place of an options bag (`type: Hash`, `of: Hash`,
+    # `validate: ->(v){}`), and the DSL expands it into that bag before storing it. A raw member's bag was
+    # canonicalized at the KEY level only, so the bare spelling — the one every author writes — reached the
+    # validators and the projection as a Class, which both read as `[:klass]`: the member validated nothing and
+    # failed every call, while `of:` took the projection down with it. The member snapshot now applies the same
+    # expansion, from the same seam, so a member's bag is a field's bag.
+    describe "a member's shorthand validator value" do
+      def declared_with(validations)
+        member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations:)
+        build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
       end
 
-      def outbound(validations)
-        m = member(validations)
-        build_axn do
-          exposes :payload, type: Hash, shape: { members: [m], container: Hash }
+      def property(klass) = klass.input_schema.dig(:properties, :payload, :properties, :m)
 
-          define_method(:call) { expose(payload: {}) }
-        end
+      def stored(klass) = klass.internal_field_configs.first.validations[:shape][:members].first.validations
+
+      it "stores `type: Hash` as the bag every consumer reads" do
+        expect(stored(declared_with({ type: Hash }))).to eq({ type: { klass: Hash } })
       end
 
-      it "emits the member's own shape rather than raising" do
-        klass = inbound({ type: Hash, shape: inner })
+      it "validates `type: Hash`, which used to fail every call with `must supply :klass`" do
+        klass = declared_with({ type: Hash })
 
-        expect(klass.input_schema.dig(:properties, :payload, :properties, :m))
-          .to eq({ type: "object", properties: { x: {} } })
+        expect(klass.call(payload: { m: { a: 1 } })).to be_ok
+        expect(klass.call(payload: { m: "nope" }).exception).to be_a(Axn::InboundValidationError)
+        expect(klass.call(payload: { m: "nope" }).exception.message).to match(/m is not a Hash/)
       end
 
-      it "emits exactly what the canonical `{ klass: }` spelling emits, inbound and outbound" do
+      it "reflects it as exactly what the `{ klass: }` spelling reflects, inbound and outbound" do
         %i[input_schema output_schema].each do |schema|
-          expect(inbound({ type: Hash, shape: inner }).public_send(schema))
-            .to eq(inbound({ type: { klass: Hash }, shape: inner }).public_send(schema))
+          expect(declared_with({ type: Hash }).public_send(schema))
+            .to eq(declared_with({ type: { klass: Hash } }).public_send(schema))
         end
       end
 
-      # The type's OWN members are contributed by the same read, so a bare `type: <Data>` has to reach them
-      # too — otherwise the bare spelling would emit a strictly smaller property set than the canonical one.
-      it "contributes a bare Data type's members alongside the shape's" do
-        klass = inbound({ type: Data.define(:a, :b), shape: inner })
+      # `of:` is the same option one layer down, and it was worse off: the projection reads it as a bag in three
+      # places, so a bare one raised `ArgumentError: odd number of arguments for Hash` (a Class asked for
+      # `[:klass]`) from `input_schema` — before any call could reach the "must supply :klass" the runtime had
+      # waiting for it.
+      it "projects and validates a bare `of:`, which used to take the projection down" do
+        klass = declared_with({ type: Array, of: Hash })
 
-        expect(klass.input_schema.dig(:properties, :payload, :properties, :m, :properties).keys).to eq(%i[a b x])
+        expect(property(klass)).to eq({ type: "array", items: { type: "object" } })
+        expect(klass.call(payload: { m: [{ a: 1 }] })).to be_ok
+        expect(klass.call(payload: { m: [1] }).exception.message).to match(/element at index 0 is not a Hash/)
       end
 
-      # OUTPUT asks a second question of the same option — whether the value provably serializes member-keyed
-      # (`shape_serializes_to_object?`) — so the bare spelling must reach that decision as well, including its
-      # negative answer: a Data with its own `as_json` may serialize to anything, so its property stays untyped.
-      it "leaves an outbound member untyped when its bare type overrides as_json" do
-        custom = Class.new(Data.define(:c)) { def as_json(*) = "scalar" }
+      # A member carrying BOTH a bare `type:` and a nested `shape:` is the corner the projection read as a bag
+      # unconditionally: `TypeError: #<Class:Hash> does not have #dig method`, naming neither the member nor the
+      # option, and taking `input_schema` (and so `Axn.validate_tool_contracts!`) with it.
+      it "projects a bare `type:` carrying a nested shape, and validates through it" do
+        inner = Axn::Core::Contract::ShapeConfig.new(field: :n, validations: { type: String })
+        klass = declared_with({ type: Hash, shape: { members: [inner], container: Hash } })
 
-        expect(outbound({ type: custom, shape: inner }).output_schema.dig(:properties, :payload, :properties))
-          .to eq({ m: {} })
-        expect(outbound({ type: Hash, shape: inner }).output_schema.dig(:properties, :payload, :properties))
-          .to eq({ m: { type: "object", properties: { x: {} } } })
+        expect(property(klass)).to eq({ type: "object", properties: { n: { type: "string" } }, required: ["n"] })
+        expect(klass.call(payload: { m: { n: "x" } })).to be_ok
+        expect(klass.call(payload: { m: { n: 1 } }).exception.message).to match(/m n is not a String/)
+      end
+
+      # The expansion runs after the KEYS are canonicalized, which is what lets a String-keyed bag reach the
+      # expander as the bag it is: `validate:`'s expander rejects a Hash carrying no callable, and reading this
+      # one before its keys were canonical would reject a declaration that supplies one.
+      it "expands a String-keyed bag by its canonical keys" do
+        klass = declared_with({ "validate" => { "with" => ->(v) { "must be 1" unless v == 1 } } })
+
+        expect(klass.call(payload: { m: 1 })).to be_ok
+        expect(klass.call(payload: { m: 2 }).exception.message).to match(/m must be 1/)
+      end
+
+      # Reached through the same expansion, so the misuse it catches is now caught where every other malformed
+      # declaration is. It used to declare cleanly and raise the same ArgumentError on every call.
+      it "rejects a `validate:` Hash carrying no callable at declaration" do
+        expect { declared_with({ validate: { inclusion: { in: [1] } } }) }
+          .to raise_error(ArgumentError, /`validate:` expects a callable/)
+      end
+
+      # `model:` is the one shorthand a member has no meaning for — it resolves a record and exposes a
+      # companion reader, neither of which a reader-less member has — so it is refused on the raw route exactly
+      # as the block form refuses it, rather than expanded into a bag that would silently type-check the
+      # element in place. Before, it declared cleanly and failed every call with `must supply :klass`.
+      it "rejects `model:` at declaration, as the block form does" do
+        expect { declared_with({ model: Struct.new(:id) }) }
+          .to raise_error(ArgumentError, /shape member `m` does not support model:.*type: Klass/m)
+      end
+
+      # A bare `type:` naming a LIST is expanded around a copy of that list, since the detach pass runs first —
+      # so the stored contract is axn's, exactly as for a field.
+      it "detaches a bare `type:` list, so mutating it cannot widen a declared member" do
+        types = [String]
+        klass = declared_with({ type: types })
+        types << Integer
+
+        expect(stored(klass)).to eq({ type: { klass: [String] } })
+        expect(klass.call(payload: { m: "x" })).to be_ok
+        expect(klass.call(payload: { m: 1 })).not_to be_ok
       end
     end
 

@@ -572,13 +572,10 @@ module Axn
       # declaration — a derivation of the emitter's own ordering, for prose, on a path that only runs once a
       # failure is certain. The message names the union collectively there instead. A nil answer means exactly
       # that case: every other way of reaching nil contributes no type properties for a source to describe.
-      # The option is read through `Schema.declared_klass` — the emitter's own read — because this layer only
-      # DESCRIBES what the emitter emitted: a second reading of one option is a second answer.
       def shape_type_klass(config, plan)
-        klass = Schema.declared_klass(plan.in_items? ? config.validations[:of] : config.validations[:type])
-        case klass
-        when Class then klass
-        end
+        source = plan.in_items? ? config.validations[:of] : config.validations[:type]
+        klass = source.is_a?(Hash) ? source[:klass] : source
+        klass.is_a?(Class) ? klass : nil
       end
 
       # A declared type is named through the class-name seam: neither its own `to_s` nor its own bytes may

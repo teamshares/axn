@@ -744,20 +744,7 @@ module Axn
                   "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
           end
 
-          # `model:` resolves a record from an id and exposes a `<field>_id` companion reader — both live
-          # in the reader/facade layer a reader-less member never routes through, so on a member it would
-          # only type-check the element in place (what `type: Klass` already does) while implying
-          # resolution/companion behavior that never happens. Reject it loudly rather than accept the
-          # degenerate form, pointing at the plain-type-check alternative.
-          if opts.key?(:model)
-            # The companion reader is named off the message-safe label too, so the `_id` name it reports is
-            # derived from the same rendering of the member name the sentence already used.
-            label = _shape_member_label(name)
-            raise ArgumentError,
-                  "shape member `#{label}` does not support model: — a model field resolves a record from an id " \
-                  "and exposes a `#{Internal::FieldConfig.model_id_key(label)}` reader, but a shape member is " \
-                  "reader-less and validates the element in place (use `type: Klass` for a plain instance check)."
-          end
+          _raise_member_model_unsupported!(name) if opts.key?(:model)
 
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
@@ -1178,6 +1165,34 @@ module Axn
           end
         end
 
+        # Axn's own validators accept a direct value in place of an options bag (`type: Hash`,
+        # `of: Hash`, `model: User`, `validate: ->(v){}`), and each of them owns the expansion of its own
+        # shorthand. THE seam that applies them, so a declaration reaching a validator — or a consumer
+        # reading a declared bag — meets one canonical spelling however it was written.
+        #
+        # Called for a top-level field/subfield (below) and for every shape MEMBER
+        # (`ShapeDeclaration#_symbol_keyed_member_validations`), which is the whole reason it is a seam
+        # rather than four lines: `#field` + `#validations` is the entire member contract, so nothing
+        # expanded a raw `shape:` member's bag, and the bare spelling — the only one anyone writes by hand
+        # — reached the validators and the projection as a Class. Every consumer of a declared bag reads
+        # `[:klass]`, so `type: Hash` validated nothing and failed every call with `ArgumentError: must
+        # supply :klass`, while `of: Hash` asked a Class for `[:klass]` and took the projection down with
+        # `ArgumentError: odd number of arguments for Hash`. Expanding here is what makes the parity
+        # `ShapeConfig` claims — a member declared via the block form, via a raw `shape:` kwarg, or by the
+        # caller's own class is validated identically — true of the bag as well as of the name.
+        #
+        # `fields` names the declaration for the one expander that reads it (`model:` infers its class from
+        # the field name); a member passes the canonical Symbol the declaration walk already judged it under,
+        # so nothing here converts a caller-supplied name a second time. A member never arrives carrying
+        # `model:` at all — a reader-less member cannot resolve a record, so it is refused ahead of this rather
+        # than expanded into a bag that would quietly type-check the element instead.
+        def _expand_validator_sugar!(validations, fields)
+          validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
+          validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
+          validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
+          validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields) if validations.key?(:of)
+        end
+
         # This method applies any top-level options to each of the individual validations given.
         # It also allows our custom validators to accept a direct value rather than a hash of options.
         def _parse_field_validations(
@@ -1194,10 +1209,7 @@ module Axn
           # hash flows through the normal path.
           _expand_coerce_sugar!(validations)
 
-          # Apply syntactic sugar for our custom validators (convert shorthand to full hash of options)
-          validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
-          validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
-          validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
+          _expand_validator_sugar!(validations, fields)
 
           # Validate the coerce target set (covers BOTH the sugar above and an explicit
           # `type: { klass:, coerce: true }`) once the type bag is canonical.
@@ -1207,7 +1219,6 @@ module Axn
             declared_klasses = Array(validations.dig(:type, :klass))
             raise ArgumentError, "of: requires type: Array (got #{declared_klasses.inspect})" unless declared_klasses == [Array]
 
-            validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
             raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
           end
 
