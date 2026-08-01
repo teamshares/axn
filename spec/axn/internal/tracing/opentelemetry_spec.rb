@@ -250,6 +250,21 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
       expect(Axn::Internal::Tracing.supports_record_exception_option?(nil)).to be(false)
     end
 
+    it "does not serve a previous tracer's answer after a probe unwinds non-locally" do
+      # Publishing the key before the value would leave this tracer keyed to `accepting`'s `true`, and
+      # the next call would act on it — sending `record_exception:` to a tracer with no slot for it.
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(accepting)).to be(true)
+
+      thrower = Class.new do
+        def in_span(_name, attributes: nil); end
+        def method(_name) = throw(:probe_unwound)
+      end.new
+
+      expect(catch(:probe_unwound) { Axn::Internal::Tracing.supports_record_exception_option?(thrower) }).to be_nil
+      # Re-probes rather than reporting the stale answer, so it unwinds again instead of returning true.
+      expect(catch(:probe_unwound) { Axn::Internal::Tracing.supports_record_exception_option?(thrower) }).to be_nil
+    end
+
     it "does not leak one tracer's answer to another" do
       expect(Axn::Internal::Tracing.supports_record_exception_option?(accepting)).to be(true)
       expect(Axn::Internal::Tracing.supports_record_exception_option?(rejecting)).to be(false)

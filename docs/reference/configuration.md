@@ -290,7 +290,7 @@ Called with no arguments, `Axn.config.reset!` resets every setting declared thro
 
 A tracer that is not OpenTelemetry's receives the span, its `axn.resource` / `axn.outcome` attributes, every `axn.tag.*` and `axn.dimension.*` facet, and `record_exception` for a failure — but not an error `Status`, which can only be constructed through OpenTelemetry's own class.
 
-An object that is neither `nil` nor responds to `#in_span` is rejected at assignment, naming the `#in_span` contract in the raised `ArgumentError`.
+An object that is neither `nil` nor responds to `#in_span` is rejected at assignment, naming the `#in_span` contract in the raised `ArgumentError`. The one exception is a value that cannot be asked: a `BasicObject`-based proxy has no `respond_to?`, and no reflection method reaches it, so axn accepts it rather than rejecting a legitimate wrapper over a real tracer. If such a proxy turns out to lack `in_span`, that surfaces on the first traced call — logged, with the action running untraced — instead of at assignment.
 
 ### Basic Setup
 

@@ -26,12 +26,16 @@ module Axn
           current_provider = OpenTelemetry.tracer_provider
           return @tracer if defined?(@tracer) && defined?(@tracer_provider) && @tracer_provider == current_provider
 
-          # Publish the pair together. Recording the provider first and then failing to obtain its
-          # tracer would leave a mismatched pair that the check above reads as a cache hit, pinning
-          # spans to the PREVIOUS provider permanently — discovery would never be retried.
+          # Compute first, then publish VALUE BEFORE KEY. Both halves matter. Recording the provider
+          # before obtaining its tracer leaves a mismatched pair that the check above reads as a hit,
+          # pinning spans to the previous provider permanently. And because the provider is what that
+          # check tests, writing it last makes it the validity marker: a concurrent reader sees either
+          # the old provider (and re-derives, at worst doing the work twice) or the new one with its
+          # own tracer already in place — never the new key against a stale value.
           tracer = current_provider.tracer("axn", Axn::VERSION)
-          @tracer_provider = current_provider
           @tracer = tracer
+          @tracer_provider = current_provider
+          tracer
         end
 
         # Whether THIS tracer's #in_span accepts the `record_exception:` option (added in
@@ -62,8 +66,7 @@ module Axn
           return false if Identity.nil_value?(tracer)
           return @supports_record_exception if defined?(@supports_record_exception) && Identity.same?(@probed_tracer, tracer)
 
-          @probed_tracer = tracer
-          @supports_record_exception = begin
+          supported = begin
             tracer.method(:in_span).parameters.any? { |type, name| name == :record_exception && %i[key keyreq].include?(type) }
           rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
             # Every class axn permits itself to absorb, not just StandardError: a proxy raising
@@ -72,6 +75,14 @@ module Axn
             # option is unsupported and omit it.
             false
           end
+
+          # Value before key, for the same reasons as the tracer memo above: a probe that unwinds
+          # non-locally (a `throw` from an overridden `method`, or a class axn will not swallow) must
+          # not leave this tracer keyed to the PREVIOUS tracer's answer, which a later call would read
+          # as a hit and act on — passing `record_exception:` to a tracer that has no slot for it.
+          @supports_record_exception = supported
+          @probed_tracer = tracer
+          supported
         end
 
         # Drops the auto-detection and capability memos, for specs that swap the OpenTelemetry
