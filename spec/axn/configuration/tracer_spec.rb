@@ -326,6 +326,28 @@ RSpec.describe "Axn.config.tracer" do
       Axn.config.tracer = tracer
     end
 
+    it "does not hand an OpenTelemetry Status to a custom span that has its own status=" do
+      # `status=` on a non-OpenTelemetry span means that span's OWN status type. Axn can only build an
+      # OpenTelemetry::Trace::Status, so it must not offer one here on the strength of the name alone.
+      own_status_span = Class.new do
+        attr_reader :assigned_status
+
+        def set_attribute(_key, _value) = nil
+
+        def status=(value)
+          @assigned_status = value
+        end
+      end.new
+
+      Axn.config.tracer = Class.new do
+        define_method(:initialize) { @span = own_status_span }
+        define_method(:in_span) { |_name, **, &block| block.call(@span) }
+      end.new
+
+      failing_axn.call
+      expect(own_status_span.assigned_status).to be_nil
+    end
+
     it "records declared facets even though the span implements neither record_exception nor status=" do
       expect(minimal_span).not_to respond_to(:record_exception)
       expect(minimal_span).not_to respond_to(:status=)

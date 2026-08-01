@@ -182,16 +182,21 @@ module Axn
 
           if %w[failure exception].include?(outcome) && result.exception
             # Recording error details is OpenTelemetry-shaped: `set_attribute` is all a configured
-            # tracer's span is asked for, so both calls below are capability-checked, and the pair is
-            # isolated in its own best_effort. Otherwise a span that omits one — or raises inside it —
-            # aborts the enclosing block and silently drops the facet attributes set afterward.
-            # `Status` needs the OpenTelemetry class as well as a willing span: there is no
-            # vendor-neutral way to construct one, so a custom span keeps the recorded exception
-            # without an error status.
+            # tracer's span is asked for, so both calls below are conditional, and the pair is isolated
+            # in its own best_effort. Otherwise a span that omits one — or raises inside it — aborts the
+            # enclosing block and silently drops the facet attributes set afterward.
+            #
+            # `record_exception` is capability-checked, because the argument is a plain Ruby exception
+            # any span can do something sensible with. A STATUS cannot be offered the same way: the
+            # only status axn can construct is an `OpenTelemetry::Trace::Status`, so the test is
+            # whether the span is an OpenTelemetry span — not merely whether it answers `status=`. A
+            # custom span exposing that name means its OWN status type, and handing it a vendor object
+            # would store a value it never agreed to. It keeps the recorded exception instead.
             Axn::Extensions.best_effort("recording exception details on the axn.call span", action: @action) do
               span.record_exception(result.exception) if span.respond_to?(:record_exception)
 
-              if span.respond_to?(:status=) && defined?(OpenTelemetry::Trace::Status)
+              if defined?(OpenTelemetry::Trace::Status) && defined?(OpenTelemetry::Trace::Span) &&
+                 span.is_a?(OpenTelemetry::Trace::Span)
                 error_message = result.exception.message || result.exception.class.name
                 span.status = OpenTelemetry::Trace::Status.error(error_message)
               end

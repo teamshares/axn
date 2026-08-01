@@ -2,8 +2,19 @@
 
 RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
   let(:mock_tracer) { instance_double("OpenTelemetry::Trace::Tracer") }
-  let(:mock_span) { instance_double("OpenTelemetry::Trace::Span") }
   let(:mock_tracer_provider) { instance_double("OpenTelemetry::Trace::TracerProvider") }
+
+  # A real class registered as OpenTelemetry::Trace::Span below, rather than a double: axn decides
+  # whether to hand a span an `OpenTelemetry::Trace::Status` by asking whether it IS an OpenTelemetry
+  # span, so the fake has to actually be one for these examples to exercise that path.
+  let(:otel_span_class) do
+    Class.new do
+      def set_attribute(_key, _value); end
+      def record_exception(_exception); end
+      def status=(_status); end
+    end
+  end
+  let(:mock_span) { otel_span_class.new }
 
   before do
     # Save original OpenTelemetry if it exists
@@ -17,6 +28,7 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
     mock_status = instance_double("Status")
     status_class.define_singleton_method(:error) { |_msg| mock_status }
     trace_module.const_set(:Status, status_class)
+    trace_module.const_set(:Span, otel_span_class)
     otel_module.const_set(:Trace, trace_module)
     stub_const("OpenTelemetry", otel_module)
 
