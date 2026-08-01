@@ -416,6 +416,19 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "refuses to report success when the tracer catches a throw from the wrapped stack" do
+      # A `throw` cannot be re-thrown once an observer has caught it — the tag and value are gone. So
+      # this is the one case axn cannot make transparent; it fails loudly instead of reporting a
+      # success for an action that never completed.
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| catch(:cancel) { block.call(nil) } }
+      end.new
+      allow(Axn::Internal::Timing).to receive(:now) { throw(:cancel, :from_stack) }
+
+      expect { counting_axn.call }.to raise_error(/absorbed a non-local exit from the action/)
+      expect(runs.size).to eq(0)
+    end
+
     it "does not start the action when the tracer throws instead of raising" do
       # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
       # being absent — it has to come from the guarded step reporting that it returned normally.

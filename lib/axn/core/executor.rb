@@ -23,6 +23,50 @@ module Axn
     # - timing: sets elapsed_time via ensure
     # - contract: validates inputs/outputs, applies defaults/preprocessing
     # - hooks: user before/after/around hooks
+    # What happened to ONE attempt at running the action, so the observers wrapped around it cannot
+    # misreport it. Tracing calls an app-supplied object that WRAPS the action (`in_span` takes the
+    # work as a block), so the action's fate and the observer's are entangled by construction — this
+    # is what keeps them separable:
+    #
+    #   started?    the exactly-once guarantee: the action began, so nothing may run it again
+    #   error       the exception the wrapped stack raised, kept so an observer that swallows,
+    #               replaces, or re-raises it cannot decide the call's outcome
+    #   abandoned?  a `throw` unwound the stack. Unlike an exception this cannot be re-thrown once an
+    #               observer has caught it — the tag and value are gone — so it exists only to refuse
+    #               to report a success
+    class ActionAttempt
+      attr_reader :error
+
+      def initialize
+        @started = false
+        @error = nil
+        @abandoned = false
+      end
+
+      def started? = @started
+      def abandoned? = @abandoned
+
+      def run
+        @started = true
+        completed = false
+        begin
+          value = yield
+          completed = true
+          value
+        # Every escaping class, not axn's swallow allowlist: this RECORDS and always re-raises, never
+        # absorbs, so widening it does not widen what axn swallows. A tracer wrapping its yield in
+        # `rescue Exception` can eat an `Interrupt` from the wrapped stack as easily as a
+        # `StandardError`, and a cancellation turning into a reported success is the worst outcome
+        # available here.
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          @error = e
+          raise
+        ensure
+          @abandoned = true unless completed || @error
+        end
+      end
+    end
+
     class Executor # rubocop:disable Metrics/ClassLength
       def initialize(action)
         @action = action
@@ -143,32 +187,11 @@ module Axn
           end
         end
 
-        # The action, separable from every observer of it. `started` flips here and nowhere else, so it
-        # records the action actually beginning rather than some wrapper being entered on its behalf.
-        started = false
-        inner_error = nil
-        run_action = proc do
-          started = true
-          begin
-            block.call
-          # EVERY escaping class, not axn's swallow allowlist: this records, it never absorbs, and it
-          # always re-raises. A tracer wrapping its yield in `rescue Exception` can eat an `Interrupt`
-          # from the wrapped stack just as easily as a StandardError, and a cancellation silently
-          # becoming a default success is the worst of the outcomes here. What axn will SETTLE or
-          # swallow is decided elsewhere and is unchanged.
-          #
-          # Kept as the exception itself rather than a flag because an observer may swallow it on the
-          # way out, and it then has to be re-raised from `guarding_observer`. `with_logging` and
-          # `with_timing` sit inside this block but OUTSIDE `with_exception_handling`, so an error
-          # there is never settled onto the result.
-          rescue Exception => e # rubocop:disable Lint/RescueException
-            inner_error = e
-            raise
-          end
-        end
-
-        started_check = proc { started }
-        inner_error_check = proc { inner_error }
+        # The action, separable from every observer of it. `ActionAttempt` records what happened to it
+        # — begun, raised, abandoned — where it actually happens, rather than letting a wrapper's own
+        # progress stand in for the action's.
+        attempt = ActionAttempt.new
+        run_action = proc { attempt.run { block.call } }
 
         # Enrich the payload from inside the instrument block — after the action settles but
         # BEFORE ActiveSupport publishes the event — so live `axn.call` subscribers observe the
@@ -195,15 +218,15 @@ module Axn
 
         # Guards notification delivery, NOT the stack it wraps — same rule as the tracing boundary
         # below, and it has to be restated here because this proc reaches `block.call` too. Absorbing
-        # a wrapped-stack failure would leave `started` true, skip the bare fallback, and return the
-        # action's unfinalized default-success result.
-        emit_notification = proc { guarding_observer("emitting axn.call notification", inner_error_check) { instrument_block.call } }
+        # a wrapped-stack failure would leave the attempt started, skip the bare fallback, and return
+        # the action's unfinalized default-success result.
+        emit_notification = proc { guarding_observer("emitting axn.call notification", attempt) { instrument_block.call } }
 
         # ONE boundary around everything tracing does — resolving the tracer, probing its signature,
         # opening the span, finalizing it. All of it is a side channel, and the whole path holds a
         # single invariant: it may neither suppress, duplicate, nor replace the action.
         #
-        # `started` (set where the action actually begins, above) is the entire guarantee. It makes the
+        # `attempt.started?` (set where the action actually begins) is the entire guarantee. It makes the
         # action run at most once no matter how the tracer behaves — raising before yielding, returning
         # without ever yielding (a disabled or broken decorator), yielding more than once, or raising
         # afterward — and anything that leaves this boundary with it still false means the action has
@@ -220,8 +243,8 @@ module Axn
         # with OpenTelemetry unloaded and `tracer = nil` turns spans off with it loaded.
         traced = false
         begin
-          guarding_observer("tracing axn.call", inner_error_check) do
-            emit_observed(resource, instrument_block, started_check)
+          guarding_observer("tracing axn.call", attempt) do
+            emit_observed(resource, instrument_block, attempt)
           end
           traced = true
         ensure
@@ -237,7 +260,7 @@ module Axn
           # than start the action: work that runs, and possibly commits, after its caller was cancelled
           # is worse than a lost span. A swallowable error still resumes, which is what keeps the
           # dev-loud path from costing the action its run.
-          if !started && resumable_after?(traced)
+          if !attempt.started? && resumable_after?(traced)
             emitted = false
             begin
               # Only when the notification was never reached — a tracer that raised or returned before
@@ -247,7 +270,7 @@ module Axn
               emit_notification.call unless notified
               emitted = true
             ensure
-              run_action.call if !started && resumable_after?(emitted)
+              run_action.call if !attempt.started? && resumable_after?(emitted)
             end
           end
         end
@@ -267,11 +290,11 @@ module Axn
       # observer, and `with_logging`/`with_timing` sit inside that but outside `with_exception_handling`
       # — so an error from there is never settled onto the result, and absorbing it would return a
       # default success for an action that never ran.
-      def guarding_observer(description, inner_error_check)
+      def guarding_observer(description, attempt)
         begin
           yield
         rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-          recorded = inner_error_check.call
+          recorded = attempt.error
           # `raise recorded`, never a bare `raise`: an observer that catches the wrapped stack's
           # failure and raises its OWN in response (an exporter dying while recording an exception)
           # would otherwise replace the call's real outcome with a side-channel error. The observer's
@@ -294,8 +317,15 @@ module Axn
         # may rescue around its own `yield` (recording the exception is a reason to), absorbing a
         # failure that never reached the rescue above. Surface it rather than letting the observer
         # decide the call's outcome.
-        swallowed = inner_error_check.call
+        swallowed = attempt.error
         raise swallowed if swallowed
+        return unless attempt.abandoned?
+
+        # The stack unwound by `throw` and the observer consumed it. The tag and value are unrecoverable,
+        # so the cancellation cannot be re-thrown — but reporting a success for an action that never
+        # finished is worse than failing loudly about it.
+        raise "#{description}: absorbed a non-local exit from the action, which therefore did not " \
+              "complete. A tracer or subscriber must not `catch` around the block axn hands it."
       end
 
       # Whether it is still legitimate to do more work on the action's behalf. Takes the guarded step's
@@ -314,7 +344,7 @@ module Axn
       # Emits the `axn.call` span and notification around the action. Split out of `with_tracing` so the
       # invariant there — the action runs exactly once, whatever the observers do — reads as one piece.
       # `started_check` is how the double-yield guard sees a flag owned by the caller's closure.
-      def emit_observed(resource, instrument_block, started_check)
+      def emit_observed(resource, instrument_block, attempt)
         tracer = Axn.config.tracer
         return instrument_block.call unless tracer
 
@@ -322,7 +352,7 @@ module Axn
         in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
 
         tracer.in_span("axn.call", **in_span_kwargs) do |span|
-          next if started_check.call
+          next if attempt.started?
 
           begin
             instrument_block.call
@@ -332,7 +362,7 @@ module Axn
             # is still at its default `success`, so finalizing here would stamp a completed success
             # onto a call that went on to fail in the observer-free fallback, or never ran at all. An
             # unlabelled span is a smaller lie than a wrong one.
-            finalize_span(span) if started_check.call
+            finalize_span(span) if attempt.started?
           end
         end
       end
