@@ -362,6 +362,22 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "surfaces the wrapped stack's failure, not one the tracer raised in response to it" do
+      # An exporter dying while it records an exception must not replace the call's real outcome with
+      # its own error. The observer's failure is logged; the action's is what propagates.
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(nil)
+        rescue StandardError
+          raise "exporter failed"
+        end
+      end.new
+      allow(Axn::Internal::Timing).to receive(:now).and_raise("clock unavailable")
+
+      expect { counting_axn.call }.to raise_error("clock unavailable")
+      expect(runs.size).to eq(0)
+    end
+
     it "does not start the action when the tracer throws instead of raising" do
       # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
       # being absent — it has to come from the guarded step reporting that it returned normally.

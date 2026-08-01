@@ -266,7 +266,15 @@ module Axn
         begin
           yield
         rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-          raise if inner_error_check.call
+          recorded = inner_error_check.call
+          # `raise recorded`, never a bare `raise`: an observer that catches the wrapped stack's
+          # failure and raises its OWN in response (an exporter dying while recording an exception)
+          # would otherwise replace the call's real outcome with a side-channel error. The observer's
+          # is logged like any other observer failure; the action's is the one that propagates.
+          if recorded
+            Axn::Extensions.best_effort(description, action: @action) { raise e } unless Internal::Identity.same?(e, recorded)
+            raise recorded
+          end
 
           Axn::Extensions.best_effort(description, action: @action) { raise e }
         end
