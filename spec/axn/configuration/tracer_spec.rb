@@ -378,6 +378,44 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "surfaces the wrapped stack's failure over the tracer's even in dev-loud mode" do
+      # best_effort re-raises under best_effort_raises_in_dev, so logging the observer's error must
+      # not be allowed to carry that error past the recorded one — in the environment where a
+      # developer is most likely to be running.
+      allow(Axn.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
+      Axn.config.best_effort_raises_in_dev = true
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(nil)
+        rescue StandardError
+          raise "exporter failed"
+        end
+      end.new
+      allow(Axn::Internal::Timing).to receive(:now).and_raise("clock unavailable")
+
+      expect { counting_axn.call }.to raise_error("clock unavailable")
+      expect(runs.size).to eq(0)
+    ensure
+      Axn.config.reset!(:best_effort_raises_in_dev)
+    end
+
+    it "surfaces a cancellation the tracer swallowed with a bare rescue Exception" do
+      # A tracer wrapping its yield in `rescue Exception` can eat an Interrupt as easily as a
+      # StandardError. A cancellation silently becoming a default success is the worst outcome here,
+      # so every escaping class is recorded for re-raise — separately from what axn will settle.
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(nil)
+        rescue Exception # rubocop:disable Lint/RescueException
+          :swallowed
+        end
+      end.new
+      allow(Axn::Internal::Timing).to receive(:now).and_raise(Interrupt, "cancelled")
+
+      expect { counting_axn.call }.to raise_error(Interrupt)
+      expect(runs.size).to eq(0)
+    end
+
     it "does not start the action when the tracer throws instead of raising" do
       # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
       # being absent — it has to come from the guarded step reporting that it returned normally.

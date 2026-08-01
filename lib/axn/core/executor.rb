@@ -151,12 +151,17 @@ module Axn
           started = true
           begin
             block.call
-          rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-            # The stack axn wraps failed, not tracing. Kept — the exception itself, not a flag —
-            # because an observer may swallow it on the way out and it then has to be re-raised from
-            # here. `with_logging` and `with_timing` sit inside this block but OUTSIDE
-            # `with_exception_handling`, so an error there is NOT settled onto the result, and losing
-            # it hands the caller a default success for an action that never ran.
+          # EVERY escaping class, not axn's swallow allowlist: this records, it never absorbs, and it
+          # always re-raises. A tracer wrapping its yield in `rescue Exception` can eat an `Interrupt`
+          # from the wrapped stack just as easily as a StandardError, and a cancellation silently
+          # becoming a default success is the worst of the outcomes here. What axn will SETTLE or
+          # swallow is decided elsewhere and is unchanged.
+          #
+          # Kept as the exception itself rather than a flag because an observer may swallow it on the
+          # way out, and it then has to be re-raised from `guarding_observer`. `with_logging` and
+          # `with_timing` sit inside this block but OUTSIDE `with_exception_handling`, so an error
+          # there is never settled onto the result.
+          rescue Exception => e # rubocop:disable Lint/RescueException
             inner_error = e
             raise
           end
@@ -272,8 +277,14 @@ module Axn
           # would otherwise replace the call's real outcome with a side-channel error. The observer's
           # is logged like any other observer failure; the action's is the one that propagates.
           if recorded
-            Axn::Extensions.best_effort(description, action: @action) { raise e } unless Internal::Identity.same?(e, recorded)
-            raise recorded
+            begin
+              # `ensure`, because best_effort RE-RAISES under best_effort_raises_in_dev — and letting
+              # the observer's error win there would undo the whole point of preferring the recorded
+              # one, in the environment where a developer is most likely to be running.
+              Axn::Extensions.best_effort(description, action: @action) { raise e } unless Internal::Identity.same?(e, recorded)
+            ensure
+              raise recorded
+            end
           end
 
           Axn::Extensions.best_effort(description, action: @action) { raise e }
