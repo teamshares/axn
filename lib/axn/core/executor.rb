@@ -38,15 +38,33 @@ module Axn
       attr_reader :error
 
       def initialize
+        @lock = Thread::Mutex.new
+        @claimed = false
         @started = false
         @error = nil
         @abandoned = false
       end
 
+      # Whether the action BODY began. Deliberately not the same as having been claimed: an observer
+      # can claim the attempt and then fail before reaching the action (a notification subscriber
+      # raising from `start`), and the untraced fallback has to be able to tell those apart.
       def started? = @started
       def abandoned? = @abandoned
 
-      def run
+      # Takes the one permitted attempt, returning false if it is already taken. Checking and taking
+      # are ONE operation: a tracer may invoke the block it was handed from more than one thread, and
+      # a separate test could pass in several of them before any set the flag — which would run the
+      # business action more than once.
+      def claim
+        @lock.synchronize do
+          return false if @claimed
+
+          @claimed = true
+          true
+        end
+      end
+
+      def execute
         @started = true
         completed = false
         begin
@@ -191,7 +209,7 @@ module Axn
         # — begun, raised, abandoned — where it actually happens, rather than letting a wrapper's own
         # progress stand in for the action's.
         attempt = ActionAttempt.new
-        run_action = proc { attempt.run { block.call } }
+        run_action = proc { attempt.execute { block.call } }
 
         # Enrich the payload from inside the instrument block — after the action settles but
         # BEFORE ActiveSupport publishes the event — so live `axn.call` subscribers observe the
@@ -352,7 +370,7 @@ module Axn
         in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
 
         tracer.in_span("axn.call", **in_span_kwargs) do |span|
-          next if attempt.started?
+          next unless attempt.claim
 
           begin
             instrument_block.call
