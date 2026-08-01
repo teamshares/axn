@@ -851,6 +851,136 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
     end
 
+    # A raw member's bag never passes `_partition_field_options`, so nothing had ever held its KEYS to a
+    # grammar: a typo declared cleanly and raised `Unknown validator: 'TpyeValidator'` on every call, naming a
+    # class the author never wrote and neither the member nor the option, where the same typo on a field is
+    # refused at declaration. The allowed set is derived from the field path's own (KNOWN_VALIDATION_KEYS)
+    # unioned with ActiveModel's shared options, which is what a raw bag reaches `validates` as.
+    describe "a member's option keys" do
+      def declared_with(validations)
+        member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations:)
+        build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+      end
+
+      def declared_two_deep(validations)
+        leaf = Axn::Core::Contract::ShapeConfig.new(field: :deep, validations:)
+        declared_with({ type: Hash, shape: { members: [leaf] } })
+      end
+
+      it "rejects a typo at declaration, naming the member and the key" do
+        expect { declared_with({ tpye: String }) }
+          .to raise_error(ArgumentError, /Unknown key\(s\) :tpye in the validations of shape member `m`/)
+      end
+
+      it "rejects one two levels down just the same" do
+        expect { declared_two_deep({ tpye: String }) }
+          .to raise_error(ArgumentError, /Unknown key\(s\) :tpye in the validations of shape member `deep`/)
+      end
+
+      it "rejects a key that is not a Symbol at all" do
+        expect { declared_with({ 1 => String }) }
+          .to raise_error(ArgumentError, /Unknown key\(s\) .* in the validations of shape member `m`/)
+      end
+
+      # The verdict is not the caller's to decide: a key that is not a Symbol is unknown by construction, so
+      # one answering `hash`/`eql?` as `:type` cannot pass itself off as a recognized option — and its own
+      # `to_s` is not run to report it, since that is caller code running while its error is built.
+      it "refuses a key that claims to be a recognized one, naming it by class" do
+        lying = Class.new do
+          def hash = :type.hash
+          def eql?(other) = other.equal?(:type)
+          def to_s = raise(NotImplementedError)
+        end
+
+        expect { declared_with({ lying.new => String }) }
+          .to raise_error(ArgumentError, /Unknown key\(s\) a name of class .* in the validations of shape member `m`/)
+      end
+
+      # A member's non-validation options are attributes of the member itself, so the same names in its
+      # validations bag are in the wrong slot — the message says where they belong.
+      %i[optional sensitive user_facing method_call description].each do |opt|
+        it "rejects #{opt}: in the bag, pointing at where a member carries it" do
+          expect { declared_with({ opt => true, type: String }) }
+            .to raise_error(ArgumentError, /Unknown key\(s\) :#{opt} .*attributes of the member ITSELF/m)
+        end
+      end
+
+      # The two the block form already refuses with a REASON keep that reason on this route: an author who
+      # wrote `default:` has a different problem from one who wrote `tpye:`.
+      %i[default preprocess].each do |opt|
+        it "gives #{opt}: the block form's own reason rather than the unknown-key message" do
+          expect { declared_with({ opt => true, type: String }) }
+            .to raise_error(ArgumentError, %r{shape member `m` does not support #{opt}: \(shape blocks declare validation/schema only\)})
+        end
+      end
+
+      %i[as prefix].each do |opt|
+        it "gives #{opt}: the reader-less reason" do
+          expect { declared_with({ opt => :renamed, type: String }) }
+            .to raise_error(ArgumentError, /shape member `m` does not support #{opt}:.*reader-less/m)
+        end
+      end
+
+      # `coerce:` is field-only (it resolves a coerced value onto a reader a member has not got), and the block
+      # form refuses it whichever way it is spelled. The raw route refused neither: a top-level `coerce:`
+      # reached ActiveModel as a validator, and the bag spelling was accepted and silently did nothing.
+      it "refuses a top-level `coerce:`" do
+        expect { declared_with({ coerce: Integer }) }
+          .to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+      end
+
+      it "refuses the `type: { coerce: true }` spelling, which used to be silently inert" do
+        expect { declared_with({ type: { klass: Integer, coerce: true } }) }
+          .to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+      end
+
+      it "refuses one two levels down" do
+        expect { declared_two_deep({ coerce: Integer }) }
+          .to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+      end
+
+      it "leaves `coerce: false` the legal no-op it is on a field" do
+        expect(declared_with({ type: { klass: Integer, coerce: false } }).call(payload: { m: 1 })).to be_ok
+      end
+
+      it "still accepts every validation a member legitimately carries" do
+        expect(declared_with({ type: String }).call(payload: { m: "x" })).to be_ok
+        expect(declared_with({ type: Array, of: String }).call(payload: { m: ["x"] })).to be_ok
+        expect(declared_with({ presence: true }).call(payload: { m: "x" })).to be_ok
+        expect(declared_with({ inclusion: { in: %w[x] } }).call(payload: { m: "x" })).to be_ok
+        expect(declared_with({ validate: ->(v) { "no" unless v == "x" } }).call(payload: { m: "x" })).to be_ok
+      end
+
+      # ActiveModel's own shared options ride a `validates` call without being validators, and a raw bag
+      # reaches `validates` verbatim — so they work on this route today and refusing them would reject a legal
+      # declaration. They are unioned in from AM's own list rather than listed again.
+      it "accepts ActiveModel's shared options, which apply on this route" do
+        klass = declared_with({ type: String, allow_blank: true })
+
+        expect(klass.call(payload: { m: "" })).to be_ok
+        expect(declared_with({ type: String, strict: true }).call(payload: { m: "x" })).to be_ok
+        expect(declared_with({ type: String, if: -> { false } }).call(payload: { m: 1 })).to be_ok
+      end
+
+      it "leaves a member's own attributes alone — they were never bag keys" do
+        member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: String }, sensitive: true, user_facing: true)
+        klass = build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+        stored = klass.internal_field_configs.first.validations[:shape][:members].first
+
+        expect([stored.sensitive, stored.user_facing, stored.validations.keys]).to eq([true, true, [:type]])
+        expect(klass.call(payload: { m: "x" })).to be_ok
+      end
+
+      # The block form reaches this bag only through `_partition_field_options`, which has always refused an
+      # unknown key — and it accepts the member options the raw route cannot take in a bag.
+      it "leaves the block form's own verdicts unchanged" do
+        expect { build_axn { expects(:payload, type: Hash) { field :m, tpye: String } } }
+          .to raise_error(ArgumentError, /Unknown key\(s\) :tpye in field declaration/)
+        expect(build_axn { expects(:payload, type: Hash) { field :m, type: String, optional: true, sensitive: true } }
+                 .call(payload: { m: "x" })).to be_ok
+      end
+    end
+
     # The documented member contract is duck-typed (#field + #validations). A raw `shape:` supplied
     # with a member object that doesn't implement #method_call must not raise — it defaults to the
     # safe no-dispatch behavior, so existing member objects don't have to grow a new method.

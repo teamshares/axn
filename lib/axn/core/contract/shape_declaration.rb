@@ -379,6 +379,13 @@ module Axn
 
             copy[canonical] = value
           end
+          # The bag's own KEYS, held to the member grammar before anything reads a value out of it — the field
+          # path's own order (`_partition_field_options` rejects an unknown key ahead of `_symbolize_option_bags!`),
+          # and the block form's (`_build_shape_member` names a refused option before parsing anything). Without
+          # it a typo, or a field-level option in a member bag, declared cleanly and raised `Unknown validator:
+          # 'TpyeValidator'` on every call. Runs at every level the walk reaches, since it sits in the per-member
+          # loop the recursion runs at each node.
+          _check_member_option_keys!(name, copy)
           # Each bag's own keys, then the containers themselves, then each axn validator's shorthand and the
           # guards that read what it expanded — through the same three helpers a field's options go through, in
           # the same order, so a member is held to exactly what a field is held to: an `inclusion:` list keeps
@@ -399,6 +406,11 @@ module Axn
           Internal::ShapeGraph.detach_option_containers!(copy)
           _raise_member_model_unsupported!(name) if copy.key?(:model)
           _canonicalize_validator_options!(copy, [key])
+          # Last, where the block form checks it too (after the same canonicalization), so a declaration failing
+          # both is reported by the same one on either route. A raw member's `coerce:` used to reach ActiveModel
+          # as a validator (`Unknown validator: 'CoerceValidator'` on every call) while `type: { coerce: true }`
+          # was accepted and silently did nothing — a member has no reader for a coerced value to land on.
+          _reject_member_coerce!(copy)
           copy
         end
 

@@ -38,7 +38,10 @@
 # they stay here for the A/B, which is where their counterexamples came from. The name-rendering rows are the
 # clearest case for the A/B this file exists for: at the commit before, two of them printed
 # `{"properties":{"dup":{},"dup":{}}}` and one printed a `required` entry for a property the same schema does not
-# define — output no assertion about the current tree can show you.
+# define — output no assertion about the current tree can show you. The member option-KEY rows are covered the
+# same way, by mutation against `shape_contracts_spec.rb`: removing the check, dropping the derived set's
+# ActiveModel half, dropping the Symbol gate, collapsing the two messages into one, and reading only half of the
+# `coerce:` rule each fail the suite (13 / 1 / 1 / 4 / 2 examples).
 #
 #   # 1. put the older commit in a detached worktree, with this harness copied in
 #   git worktree add -f --detach /tmp/axn-ab <OLDER_SHA>
@@ -3002,6 +3005,163 @@ check "a nested shape shared by two members gets each position's own container",
   stored = klass.internal_field_configs.first.validations[:shape][:members].map { |m| m.validations[:shape][:container] }
   r = klass.call(payload: { a: { leaf: "x" }, b: [{ leaf: "y" }] })
   "#{stored.inspect} caller=#{shared.keys.inspect} call ok=#{r.ok?}"
+end
+
+# ---------------------------------------------------------------------------------------------------
+puts "\n== a member's option KEYS, held to what a field's are =============="
+# ---------------------------------------------------------------------------------------------------
+# The check that would have caught several of the rows above wholesale: a raw member's bag was never held to
+# a key grammar at all, so a typo — or a field-level option someone reaches for inside a member bag — declared
+# cleanly and raised `Unknown validator: 'TpyeValidator'` on EVERY call, naming a class the author never wrote
+# and neither the member nor the option. The allowed set is DERIVED (KNOWN_MEMBER_VALIDATION_KEYS: the field
+# path's own recognized set, unioned with ActiveModel's own shared options, which is what a raw bag reaches
+# `validates` as), so it cannot drift from either source.
+
+def member_keys_verdict(validations, value = 1)
+  member = SC.new(field: :m, validations:)
+  declaration_verdict(payload: { m: value }) do
+    Class.new do
+      include Axn
+      expects :payload, type: Hash, shape: { members: [member], container: Hash }
+      def call; end
+    end
+  end
+end
+
+check "a typo'd validation key is refused at declaration, naming the member and the key",
+      /ArgumentError: Unknown key\(s\) :tpye in the validations of shape member `m`\./ do
+  member_keys_verdict({ tpye: String })
+end
+
+# The four field-level options someone naturally reaches for inside a member bag. Each used to declare and then
+# die per call under a validator class name derived from the option (`OptionalValidator`, `SensitiveValidator`).
+# Two of them the block form already refuses with a REASON, and those messages are what the raw route now gives
+# — an author who wrote `default:` has a different problem from one who wrote `tpye:`.
+check "`optional:` in a member bag is refused", /ArgumentError: Unknown key\(s\) :optional in the validations of shape member `m`\./ do
+  member_keys_verdict({ optional: true, type: String }, "x")
+end
+
+check "`sensitive:` too, pointed at the member attribute it belongs to",
+      /Unknown key\(s\) :sensitive .*attributes of the member ITSELF/m do
+  member_keys_verdict({ sensitive: true, type: String }, "x")
+end
+
+check "`default:` gets the block form's own reason", "ArgumentError: shape member `m` does not support default: (shape blocks declare validation/schema only)" do
+  member_keys_verdict({ default: 5, type: String }, "x")
+end
+
+check "`as:` likewise", /ArgumentError: shape member `m` does not support as: \(they rename a field's generated reader/ do
+  member_keys_verdict({ as: :other, type: String }, "x")
+end
+
+# `coerce:` is field-only — it resolves a coerced value onto a reader a member has not got — and the block form
+# refuses it whichever way it is spelled. The raw route refused NEITHER: a top-level `coerce:` reached AM as a
+# validator, and the bag spelling was accepted and silently did nothing.
+check "a member's top-level `coerce:` is refused", /ArgumentError: coerce: is not supported on a shape member/ do
+  member_keys_verdict({ coerce: Integer })
+end
+
+check "...and the `type: { coerce: true }` spelling, which was silently inert", /ArgumentError: coerce: is not supported on a shape member/ do
+  member_keys_verdict({ type: { klass: Integer, coerce: true } })
+end
+
+check "CONTROL: `coerce: false` in a type bag stays the legal no-op it is on a field", "declared; call ok=true" do
+  member_keys_verdict({ type: { klass: Integer, coerce: false } })
+end
+
+# The verdict is not the caller's to decide. A key that is not a Symbol is unknown by construction (String keys
+# were canonicalized on the way in), so a key answering `hash`/`eql?` as `:type` cannot pass itself off as one:
+# the allowed set is consulted only for a real Symbol, and the two option sets are matched by identity against
+# axn's own. Its `to_s` is not run to report it, either — the message names it by class.
+class LYING_OPTION_KEY
+  def hash = :type.hash
+  def eql?(other) = other.equal?(:type)
+  def ==(other) = other.equal?(:type)
+  def to_s = raise(NotImplementedError, "hijacked from #to_s")
+end
+
+check "an option key claiming to be `:type:` is refused, and named by class",
+      /Unknown key\(s\) a name of class LYING_OPTION_KEY in the validations of shape member `m`\./ do
+  member_keys_verdict({ LYING_OPTION_KEY.new => String })
+end
+
+# The walk runs this per member at every node it descends through, so depth 2 has to behave exactly as depth 1
+# — this seam has produced a depth-only miss before.
+def deep_member_keys_verdict(validations)
+  leaf = SC.new(field: :deep, validations:)
+  mid = SC.new(field: :mid, validations: { type: Hash, shape: { members: [leaf] } })
+  declaration_verdict(payload: { mid: { deep: 1 } }) do
+    Class.new do
+      include Axn
+      expects :payload, type: Hash, shape: { members: [mid], container: Hash }
+      def call; end
+    end
+  end
+end
+
+check "the key check reaches a member two levels down",
+      /ArgumentError: Unknown key\(s\) :tpye in the validations of shape member `deep`\./ do
+  deep_member_keys_verdict({ tpye: String })
+end
+
+check "...and so does the reason a refused option gives", "ArgumentError: shape member `deep` does not support default: (shape blocks declare validation/schema only)" do
+  deep_member_keys_verdict({ default: 5 })
+end
+
+check "...and the coerce refusal", /ArgumentError: coerce: is not supported on a shape member/ do
+  deep_member_keys_verdict({ coerce: Integer })
+end
+
+check "CONTROL: a legitimate bag two levels down still declares and validates", "declared; call ok=true" do
+  deep_member_keys_verdict({ type: Integer })
+end
+
+# The false-positive set: every spelling a member legitimately carries still declares AND still behaves. The
+# two ActiveModel shared options the union adds are here because they WORK on the raw route (a raw bag reaches
+# `validates` verbatim), so refusing them would reject a legal declaration.
+check "CONTROL: `type:` / `of:` / `shape:` / `presence:` / `inclusion:` / `validate:` all still declare",
+      ["declared; call ok=true"] do
+  bags = [{ type: String }, { type: Array, of: String }, { type: Hash, shape: { members: NESTED_LEAF } },
+          { presence: true }, { inclusion: { in: %w[x] } }, { validate: ->(v) { "no" unless v == "x" } }]
+  values = ["x", ["x"], { leaf: "x" }, "x", "x", "x"]
+  bags.each_with_index.map { |bag, i| member_keys_verdict(bag, values[i]) }.uniq
+end
+
+check "CONTROL: ActiveModel's shared options still declare and still apply", ["declared; call ok=true"] do
+  [{ type: String, allow_blank: true }, { type: String, allow_nil: true }, { type: String, strict: true },
+   { type: String, if: -> { false } }, { type: String, on: :create }].map { |bag| member_keys_verdict(bag, "x") }.uniq
+end
+
+check "CONTROL: a member's own attributes are untouched — they were never bag keys",
+      "declared; call ok=true stored=[true, true, false] bag=[:type]" do
+  member = SC.new(field: :m, validations: { type: String }, sensitive: true, user_facing: true, method_call: false)
+  klass = Class.new do
+    include Axn
+    expects :payload, type: Hash, shape: { members: [member], container: Hash }
+    def call; end
+  end
+  stored = klass.internal_field_configs.first.validations[:shape][:members].first
+  r = klass.call(payload: { m: "x" })
+  "declared; call ok=#{r.ok?} stored=#{[stored.sensitive, stored.user_facing, stored.method_call].inspect} bag=#{stored.validations.keys.inspect}"
+end
+
+# The block form is where these messages come from, and it must be untouched: it reaches this bag only through
+# `_partition_field_options`, which has always refused an unknown key.
+check "CONTROL: the block form's own verdicts are unchanged",
+      ["ArgumentError: Unknown key(s) :tpye in field declaration. Not a recognized validation or registered field metadata key.",
+       "ArgumentError: shape member `m` does not support default: (shape blocks declare validation/schema only)",
+       "declared; call ok=true", "declared; call ok=true", "declared; call ok=true"] do
+  [{ tpye: String }, { default: 5 }, { optional: true }, { sensitive: true }, { method_call: true }].map do |opts|
+    declaration_verdict(payload: { m: "x" }) do
+      Class.new do
+        include Axn
+        expects :payload, type: Hash do
+          field :m, **opts
+        end
+        def call; end
+      end
+    end
+  end
 end
 
 # ---------------------------------------------------------------------------------------------------

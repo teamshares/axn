@@ -698,6 +698,104 @@ module Axn
         # `_build_shape_member` rejects them explicitly with the reader-less reason instead.
         SHAPE_MEMBER_READER_OPTIONS = %i[as prefix].freeze
 
+        # The keys a shape member's VALIDATIONS bag may hold — derived from the two sets that already decide
+        # it, never listed again beside them. `KNOWN_VALIDATION_KEYS` is the field path's own recognized set
+        # (what `_partition_field_options` holds a field's bag to), and a member's bag is the same kind of
+        # thing: the options `validates` is called with. ActiveModel's own shared options are unioned in
+        # because a RAW member's bag reaches `validates` verbatim — nothing pushes a tolerance down into it,
+        # as `_parse_field_validations` does for a field — and four of the six (`if:`/`unless:`/`on:`/
+        # `strict:`) are in the field set already. The two the union adds are `allow_blank:`/`allow_nil:`,
+        # which are exactly the tolerance the block form takes as a member kwarg (SHAPE_MEMBER_FIELD_OPTIONS)
+        # and compiles into this bag for a field, and which already WORK on the raw route — so allowing them
+        # is the parity rather than a widening, and rejecting them would be an over-rejection of a legal
+        # declaration. Both sources are read rather than copied, so the member set cannot drift from either.
+        KNOWN_MEMBER_VALIDATION_KEYS = (KNOWN_VALIDATION_KEYS | Axn::Validation::Base.shared_validation_option_keys).freeze
+
+        # A raw `shape:` member's bag never passes `_partition_field_options`, so nothing had ever held its
+        # KEYS to a grammar: a typo declared cleanly and then raised `Unknown validator: 'TpyeValidator'` on
+        # EVERY call — naming a class the author never wrote, and neither the member nor the option — where the
+        # same typo on a field is refused at declaration. Same for the field-level options someone naturally
+        # reaches for inside a member bag (`optional:`, `default:`, `sensitive:`, `as:`). This is the field
+        # path's own check applied where a raw member arrives, so one grammar decides both routes.
+        #
+        # Order mirrors `_build_shape_member`'s: an option a member may never carry is named for what it is,
+        # and only what is left over is an unrecognized key. That is the split worth keeping — an author who
+        # wrote `default:` has a different problem from one who wrote `tpye:`, and the first has a message
+        # already, explaining WHY a reader-less member cannot carry it.
+        #
+        # Nothing a caller's key defines decides the verdict. A key that is not a Symbol is unknown by
+        # construction (String keys were canonicalized on the way in), tested with `case`/`when` rather than
+        # `is_a?` — so a key answering `hash`/`eql?` as `:type` cannot pass itself off as a recognized option,
+        # and the keys the two specific messages RENDER are axn's own Symbols (a `Symbol#==` match is
+        # identity), never the caller's object.
+        #
+        # One pass, classifying rather than raising as it goes, so the order above holds whatever order the
+        # bag was written in — and so an ordinary member (every key recognized) allocates nothing here beyond
+        # the Set lookups themselves.
+        def _check_member_option_keys!(name, validations)
+          unsupported = reader_opts = unknown = nil
+          validations.each_key do |key|
+            case key
+            when ::Symbol then next if KNOWN_MEMBER_VALIDATION_KEYS.include?(key)
+            end
+
+            if SHAPE_MEMBER_UNSUPPORTED_OPTIONS.include?(key)
+              (unsupported ||= []) << key
+            elsif SHAPE_MEMBER_READER_OPTIONS.include?(key)
+              (reader_opts ||= []) << key
+            else
+              (unknown ||= []) << key
+            end
+          end
+
+          _raise_member_unsupported_options!(name, unsupported) if unsupported
+          _raise_member_reader_options!(name, reader_opts) if reader_opts
+          return if unknown.nil?
+
+          raise ArgumentError,
+                "Unknown key(s) #{unknown.map { |key| _inspect_field_name(key) }.join(', ')} in the validations of " \
+                "shape member `#{_shape_member_label(name)}`. Not a recognized validation — ActiveModel reads the " \
+                "bag as validators, so it fails every call with `Unknown validator`. A member's other options are " \
+                "attributes of the member ITSELF rather than entries in its validations bag: " \
+                "`sensitive:`/`user_facing:`/`method_call:` are read from the member, `description:` and any " \
+                "registered metadata from its `metadata`, and the tolerance the block form spells `optional:` is " \
+                "`allow_blank:`/`allow_nil:` here."
+        end
+
+        # Shared by the block form (which passes the keys it was handed, in the order they were declared) and by
+        # the declaration walk, so both routes give one reason for one option.
+        def _raise_member_unsupported_options!(name, unsupported)
+          return if unsupported.empty?
+
+          raise ArgumentError,
+                "shape member `#{_shape_member_label(name)}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
+                "(shape blocks declare validation/schema only)"
+        end
+
+        def _raise_member_reader_options!(name, reader_opts)
+          return if reader_opts.empty?
+
+          raise ArgumentError,
+                "shape member `#{_shape_member_label(name)}` does not support #{reader_opts.map { |k| "#{k}:" }.join('/')} " \
+                "(they rename a field's generated reader, but a shape member is reader-less; " \
+                "use them on a top-level `expects` field or an `on:` subfield)."
+        end
+
+        # `coerce:` is field-only: it resolves a coerced value onto a reader, which a member has not got (see
+        # `_parse_field_validations`, which deliberately keeps the coercible-set check out of the shared
+        # canonicalization seam for the same reason). Read the same way whichever route declared it — the
+        # block form arrives after `_expand_coerce_sugar!` has folded a top-level `coerce:` into the type bag,
+        # a raw member arrives with whatever it was spelled as, and nothing expands it — so both spellings are
+        # refused on both routes. `coerce: false` inside a type bag stays a legal no-op, as it is on a field.
+        def _reject_member_coerce!(validations)
+          type_bag = Internal::ShapeGraph.hash_or_nil(validations[:type])
+          return unless validations.key?(:coerce) || (!nil.equal?(type_bag) && type_bag[:coerce])
+
+          raise ArgumentError,
+                "coerce: is not supported on a shape member (it has no reader for a coerced value to resolve " \
+                "onto; use it on a top-level `expects` field or an `on:` subfield)."
+        end
+
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
         # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than
         # trying to extract members from the wrong kind of value).
@@ -717,20 +815,8 @@ module Axn
         # A member reuses the same option handling as a top-level field (optional/allow_blank/
         # default/etc. + validations + metadata), but yields a ShapeConfig and never a reader.
         def _build_shape_member(name, opts, subblock, outbound: false)
-          unsupported = opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS
-          if unsupported.any?
-            raise ArgumentError,
-                  "shape member `#{_shape_member_label(name)}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
-                  "(shape blocks declare validation/schema only)"
-          end
-
-          reader_opts = opts.keys & SHAPE_MEMBER_READER_OPTIONS
-          if reader_opts.any?
-            raise ArgumentError,
-                  "shape member `#{_shape_member_label(name)}` does not support #{reader_opts.map { |k| "#{k}:" }.join('/')} " \
-                  "(they rename a field's generated reader, but a shape member is reader-less; " \
-                  "use them on a top-level `expects` field or an `on:` subfield)."
-          end
+          _raise_member_unsupported_options!(name, opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS)
+          _raise_member_reader_options!(name, opts.keys & SHAPE_MEMBER_READER_OPTIONS)
 
           # `user_facing:` reclassifies an INBOUND violation into the user-facing failure bucket. An
           # outbound (`exposes`) failure means the action produced bad output — always a dev bug, never
@@ -752,11 +838,7 @@ module Axn
           field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
-          if config.validations.dig(:type, :coerce)
-            raise ArgumentError,
-                  "coerce: is not supported on a shape member (it has no reader for a coerced value to resolve " \
-                  "onto; use it on a top-level `expects` field or an `on:` subfield)."
-          end
+          _reject_member_coerce!(config.validations)
 
           # `user_facing:` (full parity with a field's) is validated in ShapeConfig's constructor below,
           # so the block and raw `shape:` paths hold members to one grammar.
