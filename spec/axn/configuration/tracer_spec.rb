@@ -240,6 +240,23 @@ RSpec.describe "Axn.config.tracer" do
       ActiveSupport::Notifications.unsubscribe(bad_subscriber)
     end
 
+    it "does not start the action when a cancellation signal is in flight" do
+      # The caller has abandoned this call, so the fallback must not fire: work that runs — and
+      # possibly commits — after cancellation is a worse outcome than a lost span.
+      Axn.config.tracer = Class.new { def in_span(*, **) = raise(Interrupt, "cancelled") }.new
+
+      expect { counting_axn.call }.to raise_error(Interrupt)
+      expect(runs.size).to eq(0)
+    end
+
+    it "does not start the action when an enclosing Timeout fires while the tracer stalls" do
+      require "timeout"
+      Axn.config.tracer = Class.new { def in_span(*, **) = sleep(5) }.new
+
+      expect { Timeout.timeout(0.2) { counting_axn.call } }.to raise_error(Timeout::Error)
+      expect(runs.size).to eq(0)
+    end
+
     it "runs the action exactly once when resolving the tracer itself raises" do
       # Tracer DISCOVERY is a side channel too: a faulty OpenTelemetry provider must not cost the
       # action its run, even though the failure happens before there is any span to speak of.

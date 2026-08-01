@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+# $ERROR_INFO, read in with_tracing to tell a cancellation signal from an error axn may absorb.
+require "English"
+
 module Axn
   module Core
     # Executor encapsulates the full execution pipeline for an action.
@@ -116,6 +119,16 @@ module Axn
           block.call
         end
 
+        started_check = proc { started }
+
+        # Whether it is still legitimate to do more work on the action's behalf: true on a normal
+        # return, and while an exception axn may absorb is propagating, but false for a pass-through
+        # signal that means the caller has abandoned this call.
+        resumable = proc do
+          in_flight = $ERROR_INFO
+          in_flight.nil? || Axn::Extensions.swallowable?(in_flight)
+        end
+
         # Enrich the payload from inside the instrument block — after the action settles but
         # BEFORE ActiveSupport publishes the event — so live `axn.call` subscribers observe the
         # full payload. Running update_payload after `instrument` returns (its own ensure) would
@@ -155,23 +168,7 @@ module Axn
         # with OpenTelemetry unloaded and `tracer = nil` turns spans off with it loaded.
         begin
           Axn::Extensions.best_effort("tracing axn.call", action: @action) do
-            tracer = Axn.config.tracer
-            if tracer
-              in_span_kwargs = { attributes: { "axn.resource" => resource } }
-              in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
-
-              tracer.in_span("axn.call", **in_span_kwargs) do |span|
-                next if started
-
-                begin
-                  instrument_block.call
-                ensure
-                  finalize_span(span)
-                end
-              end
-            else
-              instrument_block.call
-            end
+            emit_observed(resource, instrument_block, started_check)
           end
         ensure
           # Reached only when nothing above managed to start the action — a tracer that never yielded,
@@ -179,11 +176,18 @@ module Axn
           # observers one at a time rather than all at once: the span may be what broke, in which case
           # the notification is still worth emitting, and only if that fails too does the action run
           # bare. Losing both is a smaller failure than losing the caller's work.
-          unless started
+          #
+          # Unless the caller has already given up. `resumable` reads the exception in flight (`$!` is
+          # nil on a normal return and on one already handled), and a signal axn would never swallow —
+          # a `Timeout` from an enclosing block, an `Interrupt`, an `exit` — must escape here rather
+          # than start the action: work that runs, and possibly commits, after its caller was cancelled
+          # is worse than a lost span. A swallowable error still resumes, which is what keeps the
+          # dev-loud path from costing the action its run.
+          if !started && resumable.call
             begin
               Axn::Extensions.best_effort("emitting axn.call notification", action: @action) { instrument_block.call }
             ensure
-              run_action.call unless started
+              run_action.call if !started && resumable.call
             end
           end
         end
@@ -194,6 +198,27 @@ module Axn
             result = @action.result
             Internal::Callable.call_with_desired_shape(emit_metrics_proc,
                                                        kwargs: { resource:, result:, dimensions: Core::Tagging.dup_facets(resolved_dimensions) })
+          end
+        end
+      end
+
+      # Emits the `axn.call` span and notification around the action. Split out of `with_tracing` so the
+      # invariant there — the action runs exactly once, whatever the observers do — reads as one piece.
+      # `started_check` is how the double-yield guard sees a flag owned by the caller's closure.
+      def emit_observed(resource, instrument_block, started_check)
+        tracer = Axn.config.tracer
+        return instrument_block.call unless tracer
+
+        in_span_kwargs = { attributes: { "axn.resource" => resource } }
+        in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
+
+        tracer.in_span("axn.call", **in_span_kwargs) do |span|
+          next if started_check.call
+
+          begin
+            instrument_block.call
+          ensure
+            finalize_span(span)
           end
         end
       end
