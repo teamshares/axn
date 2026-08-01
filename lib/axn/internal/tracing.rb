@@ -26,8 +26,12 @@ module Axn
           current_provider = OpenTelemetry.tracer_provider
           return @tracer if defined?(@tracer) && defined?(@tracer_provider) && @tracer_provider == current_provider
 
+          # Publish the pair together. Recording the provider first and then failing to obtain its
+          # tracer would leave a mismatched pair that the check above reads as a cache hit, pinning
+          # spans to the PREVIOUS provider permanently — discovery would never be retried.
+          tracer = current_provider.tracer("axn", Axn::VERSION)
           @tracer_provider = current_provider
-          @tracer = current_provider.tracer("axn", Axn::VERSION)
+          @tracer = tracer
         end
 
         # Whether THIS tracer's #in_span accepts the `record_exception:` option (added in

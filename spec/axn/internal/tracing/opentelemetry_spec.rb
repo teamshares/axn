@@ -180,6 +180,35 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
     end
   end
 
+  describe ".autodetected_tracer" do
+    it "retries discovery after a provider fails to supply a tracer, rather than pinning the old one" do
+      # Recording the new provider before its tracer exists would leave a mismatched pair that the
+      # cache check reads as a hit — spans would go to the previous provider forever.
+      # The SAME replacement provider has to still be current on the retry — that is what makes a
+      # half-published pair read as a cache hit. A different provider on the third call would sidestep
+      # the bug entirely by forcing a re-fetch for an unrelated reason.
+      first = Object.new
+      first.define_singleton_method(:tracer) { |*| :tracer_v1 }
+
+      attempts = 0
+      flaky = Object.new
+      flaky.define_singleton_method(:tracer) do |*|
+        attempts += 1
+        raise "provider not ready" if attempts == 1
+
+        :tracer_v2
+      end
+
+      providers = [first, flaky, flaky]
+      allow(OpenTelemetry).to receive(:tracer_provider) { providers.shift || flaky }
+      Axn::Internal::Tracing.reset!
+
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq(:tracer_v1)
+      expect { Axn::Internal::Tracing.autodetected_tracer }.to raise_error("provider not ready")
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq(:tracer_v2)
+    end
+  end
+
   describe ".supports_record_exception_option?" do
     let(:accepting) { Class.new { def in_span(_name, record_exception: nil); end }.new }
     let(:rejecting) { Class.new { def in_span(_name, attributes: nil); end }.new }

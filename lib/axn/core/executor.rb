@@ -121,14 +121,6 @@ module Axn
 
         started_check = proc { started }
 
-        # Whether it is still legitimate to do more work on the action's behalf: true on a normal
-        # return, and while an exception axn may absorb is propagating, but false for a pass-through
-        # signal that means the caller has abandoned this call.
-        resumable = proc do
-          in_flight = $ERROR_INFO
-          in_flight.nil? || Axn::Extensions.swallowable?(in_flight)
-        end
-
         # Enrich the payload from inside the instrument block — after the action settles but
         # BEFORE ActiveSupport publishes the event — so live `axn.call` subscribers observe the
         # full payload. Running update_payload after `instrument` returns (its own ensure) would
@@ -175,10 +167,12 @@ module Axn
         # settled onto its result before control returns. Presence of a TRACER — not of the
         # OpenTelemetry constant — is what gates the span, so an explicitly configured tracer works
         # with OpenTelemetry unloaded and `tracer = nil` turns spans off with it loaded.
+        traced = false
         begin
           Axn::Extensions.best_effort("tracing axn.call", action: @action) do
             emit_observed(resource, instrument_block, started_check)
           end
+          traced = true
         ensure
           # Reached only when nothing above managed to start the action — a tracer that never yielded,
           # a notification subscriber that raised before it, a dev-loud re-raise on its way past. Shed
@@ -192,15 +186,17 @@ module Axn
           # than start the action: work that runs, and possibly commits, after its caller was cancelled
           # is worse than a lost span. A swallowable error still resumes, which is what keeps the
           # dev-loud path from costing the action its run.
-          if !started && resumable.call
+          if !started && resumable_after?(traced)
+            emitted = false
             begin
               # Only when the notification was never reached — a tracer that raised or returned before
               # yielding. If it WAS reached and still left the action unstarted, the failure is the
               # notification's own, and re-entering it would repeat whatever a subscriber already did
               # before raising.
               emit_notification.call unless notified
+              emitted = true
             ensure
-              run_action.call if !started && resumable.call
+              run_action.call if !started && resumable_after?(emitted)
             end
           end
         end
@@ -213,6 +209,19 @@ module Axn
                                                        kwargs: { resource:, result:, dimensions: Core::Tagging.dup_facets(resolved_dimensions) })
           end
         end
+      end
+
+      # Whether it is still legitimate to do more work on the action's behalf. Takes the guarded step's
+      # OWN record of having returned normally rather than inferring it: an absent `$!` does not mean
+      # nothing went wrong, because a `throw` unwinds with no exception in flight at all. So
+      # resumability is either an observed normal return, or an error axn may absorb propagating (the
+      # dev-loud path). A signal or a `throw` is neither, and must not be answered by starting the
+      # action — the caller has abandoned this call.
+      def resumable_after?(returned_normally)
+        return true if returned_normally
+
+        in_flight = $ERROR_INFO
+        !in_flight.nil? && Axn::Extensions.swallowable?(in_flight)
       end
 
       # Emits the `axn.call` span and notification around the action. Split out of `with_tracing` so the

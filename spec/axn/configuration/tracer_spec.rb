@@ -296,6 +296,36 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "does not start the action when the tracer throws instead of raising" do
+      # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
+      # being absent — it has to come from the guarded step reporting that it returned normally.
+      Axn.config.tracer = Class.new { def in_span(*, **) = throw(:cancel, :thrown) }.new
+
+      expect(catch(:cancel) do
+        counting_axn.call
+        :no_throw
+      end).to eq(:thrown)
+      expect(runs.size).to eq(0)
+    end
+
+    it "does not start the action when a notification subscriber throws" do
+      evented = Object.new
+      evented.define_singleton_method(:start) { |*| throw(:cancel, :from_subscriber) }
+      evented.define_singleton_method(:finish) { |*| nil }
+      subscriber = ActiveSupport::Notifications.subscribe("axn.call", evented)
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| block.call(nil) }
+      end.new
+
+      expect(catch(:cancel) do
+        counting_axn.call
+        :no_throw
+      end).to eq(:from_subscriber)
+      expect(runs.size).to eq(0)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
     it "does not start the action when an enclosing Timeout fires while the tracer stalls" do
       require "timeout"
       Axn.config.tracer = Class.new { def in_span(*, **) = sleep(5) }.new
