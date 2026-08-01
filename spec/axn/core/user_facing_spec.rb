@@ -451,7 +451,7 @@ RSpec.describe "expects ..., user_facing:" do
     it "cannot be built at all with a malformed field-level user_facing" do
       expect do
         Axn::Core::Contract::FieldConfig.new(field: :name, reader_as: :name, validations: { presence: true }, user_facing: 123)
-      end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc \(got 123\)/)
+      end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc \(got a value of class Integer\)/)
     end
 
     it "still accepts every value that IS a rule, and false" do
@@ -470,7 +470,7 @@ RSpec.describe "expects ..., user_facing:" do
       result = action.call(payload: {})
 
       expect(result.exception).to be_a(ArgumentError)
-      expect(result.exception.message).to match(/user_facing: must be true, a String, a Symbol, or a Proc \(got 123\)/)
+      expect(result.exception.message).to match(/user_facing: must be true, a String, a Symbol, or a Proc \(got a value of class Integer\)/)
       expect(result.error).not_to eq("123")
     end
 
@@ -936,6 +936,82 @@ RSpec.describe "expects ..., user_facing:" do
           expects(:id, on: :payload, user_facing: 5)
         end
       end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+    end
+
+    # The guard is a DECLARATION guard, so the value it is judging must not be able to raise INSTEAD of the
+    # verdict — a `NotImplementedError` is outside StandardError and escapes every rescue above, so the
+    # caller's exception replaced axn's own error entirely. Matches the `sensitive:` guard one method away.
+    describe "a value that answers with code of its own" do
+      let(:hostile) do
+        Class.new do
+          def is_a?(_klass) = raise(NotImplementedError, "is_a? should not decide this")
+          def respond_to?(*) = raise(NotImplementedError, "respond_to? should not escape")
+          def inspect = raise(NotImplementedError, "inspect should not build the message")
+          def to_s = raise(NotImplementedError, "to_s should not build the message")
+        end.new
+      end
+
+      it "reports axn's own ArgumentError rather than the value's exception" do
+        value = hostile
+        expect do
+          build_axn { expects(:note, user_facing: value) }
+        end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+      end
+
+      it "names the offender by class rather than by running its #inspect" do
+        expect do
+          Axn::Core::Contract::FieldConfig.new(field: :note, reader_as: :note, validations: { presence: true }, user_facing: hostile)
+        end.to raise_error(ArgumentError, /got a value of class #<Class:0x/)
+      end
+
+      it "holds a shape member to the same rule, whatever the member's class" do
+        member = Struct.new(:field, :validations, :user_facing).new(:status, { presence: true }, hostile)
+
+        expect do
+          build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+        end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+      end
+
+      it "refuses rather than trusts a value whose `respond_to_missing?` raises" do
+        raising_lookup = Class.new { def respond_to_missing?(*) = raise(NotImplementedError, "boom") }.new
+        expect do
+          build_axn { expects(:note, user_facing: raising_lookup) }
+        end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+      end
+
+      # The rescue is pinned to what axn absorbs everywhere else: a signal is nobody's fault and must pass
+      # through, exactly as `best_effort` lets it.
+      it "still lets a non-swallowable exception through untouched" do
+        signalling = Class.new { def respond_to?(*) = raise(Interrupt) }.new
+        expect do
+          build_axn { expects(:note, user_facing: signalling) }
+        end.to raise_error(Interrupt)
+      end
+
+      # The executor picks its String arm with `case`/`when` too, so a value claiming String through its own
+      # `is_a?` was accepted here and then rendered as a literal at runtime — the split the guard exists to close.
+      it "does not accept a value that claims String through its own #is_a?" do
+        pretender = Class.new { def is_a?(klass) = klass == String }.new
+        expect do
+          build_axn { expects(:note, user_facing: pretender) }
+        end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
+      end
+
+      # The dispatch is guarded, not removed: what may be declared is still exactly what the invoker will run,
+      # so a duck-typed callable keeps working and resolves its message at runtime.
+      it "still accepts (and invokes) a duck-typed callable the invoker can run" do
+        callable = Class.new do
+          def to_proc = proc { |_e| "from a duck" }
+          def arity = 1
+        end.new
+
+        action = build_axn do
+          expects :note, type: String, user_facing: callable
+          def call = nil
+        end
+
+        expect(action.call(note: 1).error).to eq("from a duck")
+      end
     end
   end
 end

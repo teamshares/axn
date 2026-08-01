@@ -63,13 +63,54 @@ module Axn
       # RECLASSIFIES the violation as user-facing (the contract bug is never reported) and then renders as the
       # caller's own error message — `user_facing: 123` surfaced the literal `"123"`. That is why the check lives
       # at every point a value can enter, not only at the DSL.
+      #
+      # The three literal arms are decided by `case`/`when` (`Module#===`, a C-level check) rather than by `is_a?`,
+      # and the offender is named by CLASS rather than by `inspect`, exactly as the `sensitive:` guard beside it —
+      # a declaration guard must not let the value being judged raise INSTEAD of the verdict, and outside
+      # StandardError that exception escapes every rescue above. It also closes a divergence: the executor picks
+      # the String arm with `case`/`when` too (`_resolve_user_facing_override`), so a value whose own `is_a?`
+      # claimed String passed this check and was then rendered as a literal — the failure the guard exists to
+      # prevent.
+      #
+      # The CALLABLE arm cannot be decided that way, and deliberately is not narrowed to `when ::Proc, ::Method`.
+      # What may be declared here is what `Handlers::Invoker` will actually invoke, decided by the invoker's own
+      # `callable?` so there is no second, divergent predicate — and that set is open-ended duck typing
+      # (`to_proc` + `arity`). A `case`/`when` list would reject a custom callable that works today, and asking
+      # the method table instead would ACCEPT one whose `respond_to?` answers false, which the invoker would then
+      # treat as a literal value and render as the caller's error message. So the dispatch stays and is GUARDED
+      # instead: an object that raises while being asked cannot be established as invokable, so it is refused by
+      # axn's own error naming its class (see `_invokable_user_facing?`).
       def self.validate_user_facing!(user_facing)
-        return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
-                  Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
+        case user_facing
+        when true, false, ::String, ::Symbol then return
+        end
+        return if _invokable_user_facing?(user_facing)
 
         raise ArgumentError,
-              "user_facing: must be true, a String, a Symbol, or a Proc (got #{user_facing.inspect})"
+              "user_facing: must be true, a String, a Symbol, or a Proc (got a value of class " \
+              "#{Axn::Reflection::PropertyNames.renderable_class_name(user_facing)})"
       end
+
+      # Whether the invoker would run this value as a handler — asked of the invoker itself, so the declaration
+      # check and the call-time dispatch can never disagree, with the caller's exception kept from replacing the
+      # verdict.
+      #
+      # `respond_to?` is the caller's to override, and it consults `respond_to_missing?`, which is the caller's
+      # too; either raising would surface as the object's own exception in place of the ArgumentError. Refusing is
+      # the honest fallback: a value that cannot answer whether it is invokable has not been shown to be a
+      # resolution rule, and axn's error names its class safely rather than reporting the object's.
+      #
+      # The rescue is pinned to the same boundary as everything else axn absorbs
+      # (`Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR`), so a signal or another library's control-flow
+      # exception still passes through untouched — and it is written as a `rescue` clause rather than
+      # `Extensions.swallowable?` because `rescue` matches through `Module#===` while that predicate would ask
+      # the exception's own `is_a?`, reintroducing the dispatch one layer down.
+      def self._invokable_user_facing?(value)
+        Axn::Core::Flow::Handlers::Invoker.callable?(value)
+      rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
+        false
+      end
+      private_class_method :_invokable_user_facing?
 
       # The grammar of a `sensitive:` value: `true`/`false`, a Symbol (an action method name), or a Proc — plus
       # `nil`, which means `false` (so `sensitive: some_flag` reads naturally when the flag is unset). Anything
