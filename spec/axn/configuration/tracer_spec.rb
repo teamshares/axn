@@ -323,6 +323,17 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "propagates a failure from the wrapped stack instead of reporting a success" do
+      # `with_logging` and `with_timing` run inside the traced block but OUTSIDE
+      # `with_exception_handling`, so an error there is never settled onto the result. The tracing
+      # guard must not absorb it — doing so hands the caller a default success for an action that
+      # never ran, which is the worst possible outcome and strictly worse than no tracing at all.
+      allow(Axn::Internal::Timing).to receive(:now).and_raise("clock unavailable")
+
+      expect { counting_axn.call }.to raise_error("clock unavailable")
+      expect(runs.size).to eq(0)
+    end
+
     it "does not start the action when the tracer throws instead of raising" do
       # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
       # being absent — it has to come from the guarded step reporting that it returned normally.

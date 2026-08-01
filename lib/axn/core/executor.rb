@@ -116,6 +116,11 @@ module Axn
       #
       # Signals and throws are the exception to all of it: the caller has abandoned the call, so they
       # escape without the action being started. See `resumable_after?`.
+      #
+      # And the guard covers TRACING's failures only. `with_logging` and `with_timing` run inside this
+      # block but outside `with_exception_handling`, so an error there is never settled onto the
+      # result; absorbing it would report a default success for an action that never ran. Errors
+      # reaching here out of `block.call` are re-raised — see `inner_failed`.
 
       def with_tracing(&block)
         resource = @action_class.resolved_axn_name
@@ -137,9 +142,19 @@ module Axn
         # The action, separable from every observer of it. `started` flips here and nowhere else, so it
         # records the action actually beginning rather than some wrapper being entered on its behalf.
         started = false
+        inner_failed = false
         run_action = proc do
           started = true
-          block.call
+          begin
+            block.call
+          rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
+            # The stack axn wraps failed, not tracing. Recorded so the guard below re-raises instead
+            # of absorbing it: `with_logging` and `with_timing` sit inside this block but OUTSIDE
+            # `with_exception_handling`, so an error there is NOT settled onto the result, and
+            # swallowing it would hand the caller a default success for an action that never ran.
+            inner_failed = true
+            raise
+          end
         end
 
         started_check = proc { started }
@@ -192,8 +207,12 @@ module Axn
         # with OpenTelemetry unloaded and `tracer = nil` turns spans off with it loaded.
         traced = false
         begin
-          Axn::Extensions.best_effort("tracing axn.call", action: @action) do
+          begin
             emit_observed(resource, instrument_block, started_check)
+          rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
+            raise if inner_failed
+
+            Axn::Extensions.best_effort("tracing axn.call", action: @action) { raise e }
           end
           traced = true
         ensure
