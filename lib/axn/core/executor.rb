@@ -63,8 +63,12 @@ module Axn
       # tracer that hands the block to a worker cannot start the action there — the untraced fallback
       # then runs it on the right thread, with the execution state it belongs to, rather than the call
       # being lost.
+      # True when the caller is on the thread and fiber the attempt was created on — so it is a context
+      # that could legitimately have run the action, rather than one whose block was refused.
+      def originating_context? = Thread.current.equal?(@thread) && Fiber.current.equal?(@fiber)
+
       def require_originating_context!
-        return if Thread.current.equal?(@thread) && Fiber.current.equal?(@fiber)
+        return if originating_context?
 
         raise "axn.call tracing invoked the action on a different thread or fiber than the caller's: a " \
               "tracer must invoke the block it is given synchronously, on the calling thread and fiber."
@@ -459,7 +463,6 @@ module Axn
           # is claimed separately, inside `run_action`, immediately before it begins.
           next unless attempt.claim_notification
 
-          started_before = attempt.started?
           begin
             instrument_block.call
           ensure
@@ -468,7 +471,12 @@ module Axn
             # is still at its default `success`, so finalizing here would stamp a completed success
             # onto a call that went on to fail in the observer-free fallback, or never ran at all. An
             # unlabelled span is a smaller lie than a wrong one.
-            finalize_span(span) if attempt.started? && !started_before
+            # `originating_context?` is what makes this THIS span's outcome rather than any span's. A
+            # block invoked on another thread or fiber had its `run_action` refused, so the action it
+            # would be describing was run by the fallback, outside this span entirely — comparing
+            # before/after snapshots of a shared flag cannot tell those apart, since the fallback can
+            # set it while this block is descheduled.
+            finalize_span(span) if attempt.started? && attempt.originating_context?
           end
         end
       end

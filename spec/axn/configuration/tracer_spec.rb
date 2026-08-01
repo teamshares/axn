@@ -527,6 +527,44 @@ RSpec.describe "Axn.config.tracer" do
       workers.each { |worker| worker.join rescue nil } # rubocop:disable Style/RescueModifier
     end
 
+    it "does not stamp a worker's span with an action the fallback ran outside it" do
+      # The interleaving matters and has to be forced: the worker must still be INSIDE the notification
+      # when the caller's fallback runs the action. A subscriber that stalls during `start` holds it
+      # there. Without that, the worker finishes first and the race never happens — an earlier version
+      # of this example passed against the broken code for exactly that reason.
+      worker_span = Class.new do
+        attr_reader :attributes
+
+        def initialize = @attributes = {}
+        def set_attribute(key, value) = @attributes[key] = value
+        def record_exception(_exception) = nil
+      end.new
+
+      stalling = Object.new
+      stalling.define_singleton_method(:start) { |*| sleep 0.15 }
+      stalling.define_singleton_method(:finish) { |*| nil }
+      subscriber = ActiveSupport::Notifications.subscribe("axn.call", stalling)
+
+      workers = []
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          workers << Thread.new { block.call(worker_span) }
+          sleep 0.02 # long enough for the worker to reach the stalled notification
+          :returned_early
+        end
+      end.new
+      failing = build_axn { def call = fail!("real failure") }
+
+      expect(failing.call.outcome.to_s).to eq("failure")
+      workers.each { |worker| worker.join rescue nil } # rubocop:disable Style/RescueModifier
+
+      # The worker's run_action was refused for being on the wrong context, so its span describes
+      # nothing — the action it would be labelling ran on the fallback, outside this span.
+      expect(worker_span.attributes).to be_empty
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
     it "runs the action on the calling fiber when a tracer wraps the block in one" do
       # Same thread, so the thread check alone passes — but a fiber can SUSPEND mid-action and hand
       # control back, letting `in_span` return with the action started and unfinished. Refused, and
