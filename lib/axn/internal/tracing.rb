@@ -3,6 +3,10 @@
 require "securerandom"
 require "axn/internal/identity"
 
+# The capability probe rescues Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR, so this component needs
+# the shared allowlist whether or not the umbrella entrypoint loaded it.
+require "axn/extensions"
+
 # autodetected_tracer names the instrumentation scope with Axn::VERSION, so this component cannot
 # rely on the umbrella entrypoint having loaded the version first.
 require "axn/version"

@@ -47,6 +47,23 @@ RSpec.describe "loading config components in isolation" do
     expect(out).to eq("tracer(axn, #{Axn::VERSION})")
   end
 
+  it "answers the capability probe for an uninspectable tracer when only axn/internal/tracing is loaded" do
+    # A BasicObject proxy has no `method`, so the probe's rescue clause is evaluated — and that clause
+    # names Extensions' swallowable allowlist, which this component has to require for itself.
+    out, status = load_in_fresh_process(<<~RUBY)
+      require "axn/internal/tracing"
+
+      proxy = Class.new(BasicObject) do
+        def in_span(_name, **) = nil
+      end.new
+
+      print Axn::Internal::Tracing.supports_record_exception_option?(proxy).inspect
+    RUBY
+
+    expect(status).to be_success, "expected a clean load, got: #{out}"
+    expect(out).to eq("false")
+  end
+
   it "raises ArgumentError, not NoMethodError, for a String validate: reason when only axn/configurable is loaded" do
     out, status = load_in_fresh_process(<<~RUBY)
       require "axn/configurable"
