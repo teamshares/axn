@@ -527,6 +527,21 @@ RSpec.describe "Axn.config.tracer" do
       workers.each { |worker| worker.join rescue nil } # rubocop:disable Style/RescueModifier
     end
 
+    it "runs the action on the calling fiber when a tracer wraps the block in one" do
+      # Same thread, so the thread check alone passes — but a fiber can SUSPEND mid-action and hand
+      # control back, letting `in_span` return with the action started and unfinished. Refused, and
+      # the fallback runs it on the caller's own fiber.
+      calling_fiber = Fiber.current
+      observed = []
+      fibered = build_axn { define_method(:call) { observed << Fiber.current.equal?(calling_fiber) } }
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| Fiber.new { block.call(nil) }.resume }
+      end.new
+
+      expect(fibered.call).to be_ok
+      expect(observed).to eq([true])
+    end
+
     it "keeps the nesting stack intact when a tracer yields on a worker and joins it" do
       depths = []
       inner = build_axn { define_method(:call) { depths << Axn::Core::NestingTracking._current_axn_stack.size } }

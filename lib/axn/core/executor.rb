@@ -38,12 +38,16 @@ module Axn
       attr_reader :error
 
       def initialize
-        # The thread the call arrived on. Axn's per-execution state — the nesting stack, exception
-        # classification, carried presentation — lives in ActiveSupport::IsolatedExecutionState, which
-        # is per-thread, and it was established out here before tracing began. An action body running
-        # on any other thread would therefore see an EMPTY axn stack: wrong log prefixes, wrong
-        # nested-call classification, wrong exception-report breadcrumbs.
+        # The thread AND fiber the call arrived on — the two axes ActiveSupport::IsolatedExecutionState
+        # scopes by, and axn's per-execution state (nesting stack, exception classification, carried
+        # presentation) was established out here before tracing began. A body running elsewhere sees an
+        # empty axn stack: wrong log prefixes, wrong nested-call classification, wrong breadcrumbs.
+        #
+        # The fiber matters for a second reason the thread does not: a block invoked in a fresh Fiber
+        # can SUSPEND mid-action and hand control back, so `in_span` returns with the action started
+        # and unfinished, and the caller is given a result still being written.
         @thread = Thread.current
+        @fiber = Fiber.current
         @lock = Thread::Mutex.new
         @claimed = false
         @notification_claimed = false
@@ -59,11 +63,11 @@ module Axn
       # tracer that hands the block to a worker cannot start the action there — the untraced fallback
       # then runs it on the right thread, with the execution state it belongs to, rather than the call
       # being lost.
-      def require_originating_thread!
-        return if Thread.current.equal?(@thread)
+      def require_originating_context!
+        return if Thread.current.equal?(@thread) && Fiber.current.equal?(@fiber)
 
-        raise "axn.call tracing invoked the action on #{Thread.current.inspect} instead of the calling " \
-              "thread: a tracer must invoke the block it is given synchronously, on the calling thread."
+        raise "axn.call tracing invoked the action on a different thread or fiber than the caller's: a " \
+              "tracer must invoke the block it is given synchronously, on the calling thread and fiber."
       end
 
       def claimed? = @claimed
@@ -273,7 +277,7 @@ module Axn
         # progress stand in for the action's.
         attempt = ActionAttempt.new
         run_action = proc do
-          attempt.require_originating_thread!
+          attempt.require_originating_context!
           attempt.execute { block.call } if attempt.claim
         end
 
