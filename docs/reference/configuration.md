@@ -264,7 +264,7 @@ When an action fails or raises an exception, the span is marked as an error with
 
 Leave it unset — the default — and axn auto-detects: it uses the OpenTelemetry tracer when OpenTelemetry is loaded, and creates no spans otherwise. Detection re-runs on every action, so OpenTelemetry configured later in boot is still picked up.
 
-Assign a tracer to use it instead, whether or not OpenTelemetry is loaded. Anything responding to `in_span(name, attributes:)` and yielding a span works — a differently-named instrumentation scope, a custom provider, or a test fake. `in_span` must invoke the block **synchronously, on the calling thread**: the action's entire pipeline runs inside it, so a tracer that hands the block to a worker and returns early would leave the caller holding a result still being written. Axn raises rather than return one.
+Assign a tracer to use it instead, whether or not OpenTelemetry is loaded. Anything responding to `in_span(name, attributes:)` and yielding a span works — a differently-named instrumentation scope, a custom provider, or a test fake. `in_span` must invoke the block **synchronously, on the calling thread**: the action's entire pipeline runs inside it, and axn's per-execution state (the nesting stack, exception classification) is per-thread. A tracer that hands the block to a worker gets that block refused, and axn runs the action untraced on the calling thread instead — the call still succeeds, with correct nesting and logging, but loses its span.
 
 ```ruby
 Axn.configure do |c|

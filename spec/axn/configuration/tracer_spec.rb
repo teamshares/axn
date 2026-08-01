@@ -466,42 +466,37 @@ RSpec.describe "Axn.config.tracer" do
       ActiveSupport::Notifications.unsubscribe(subscriber)
     end
 
-    it "refuses to return while a tracer's worker thread is still running the action" do
-      # The action's whole pipeline — settlement, timing, contract, hooks — runs inside the block the
-      # tracer is given, so returning early hands the caller a result that is still being written and
-      # will change under them. Axn cannot wait on a thread it does not own, so it refuses instead.
+    it "runs the action on the calling thread when a tracer hands the block to a worker" do
+      # Axn's per-execution state (the nesting stack, exception classification) is per-thread and was
+      # established before tracing began, so an action body on another thread would see an empty stack:
+      # wrong log prefixes, wrong nested-call classification, wrong report breadcrumbs. The worker is
+      # refused and the untraced fallback runs the action where it belongs — the call still succeeds.
       workers = []
       Axn.config.tracer = Class.new do
         define_method(:in_span) do |*, **, &block|
           workers << Thread.new { block.call(nil) }
-          sleep 0.05 # long enough for the worker to enter the action
+          sleep 0.05
           :returned_early
         end
       end.new
-      slow_axn = build_axn { def call = sleep(0.2) }
 
-      expect { slow_axn.call }.to raise_error(/must invoke the block it is given synchronously/)
+      expect(counting_axn.call).to be_ok
+      expect(runs.size).to eq(1)
     ensure
-      workers.each(&:join)
+      workers.each { |worker| worker.join rescue nil } # rubocop:disable Style/RescueModifier
     end
 
-    it "does not run the action when a subscriber throws and the tracer absorbs it" do
-      # The unwind happens inside notification startup, before the action is reached, so the attempt
-      # would otherwise have recorded nothing at all — and a tracer that catches leaves the boundary
-      # looking like a clean return, freeing the fallback to run the action. Turning a cancellation
-      # into committed work is the outcome worth the most care.
-      evented = Object.new
-      evented.define_singleton_method(:start) { |*| throw(:cancel, :from_subscriber) }
-      evented.define_singleton_method(:finish) { |*| nil }
-      subscriber = ActiveSupport::Notifications.subscribe("axn.call", evented)
+    it "keeps the nesting stack intact when a tracer yields on a worker and joins it" do
+      depths = []
+      inner = build_axn { define_method(:call) { depths << Axn::Core::NestingTracking._current_axn_stack.size } }
+      outer = build_axn { define_method(:call) { inner.call } }
       Axn.config.tracer = Class.new do
-        define_method(:in_span) { |*, **, &block| catch(:cancel) { block.call(nil) } }
+        define_method(:in_span) { |*, **, &block| Thread.new { block.call(nil) }.join }
       end.new
 
-      expect { counting_axn.call }.to raise_error(/absorbed a non-local exit from the action/)
-      expect(runs.size).to eq(0)
-    ensure
-      ActiveSupport::Notifications.unsubscribe(subscriber)
+      expect(outer.call).to be_ok
+      # 2 — outer and inner — is what a synchronous tracer sees. A worker thread would see 0.
+      expect(depths).to eq([2])
     end
 
     it "does not start the action when the tracer throws instead of raising" do

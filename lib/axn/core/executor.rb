@@ -38,11 +38,16 @@ module Axn
       attr_reader :error
 
       def initialize
+        # The thread the call arrived on. Axn's per-execution state — the nesting stack, exception
+        # classification, carried presentation — lives in ActiveSupport::IsolatedExecutionState, which
+        # is per-thread, and it was established out here before tracing began. An action body running
+        # on any other thread would therefore see an EMPTY axn stack: wrong log prefixes, wrong
+        # nested-call classification, wrong exception-report breadcrumbs.
+        @thread = Thread.current
         @lock = Thread::Mutex.new
         @claimed = false
         @notification_claimed = false
         @started = false
-        @settled = false
         @error = nil
         @abandoned = false
       end
@@ -50,13 +55,20 @@ module Axn
       # Whether the action BODY began. Deliberately not the same as having been claimed: an observer
       # can claim the attempt and then fail before reaching the action (a notification subscriber
       # raising from `start`), and the untraced fallback has to be able to tell those apart.
+      # Raises unless called on the thread the attempt was created on. Checked BEFORE claiming, so a
+      # tracer that hands the block to a worker cannot start the action there — the untraced fallback
+      # then runs it on the right thread, with the execution state it belongs to, rather than the call
+      # being lost.
+      def require_originating_thread!
+        return if Thread.current.equal?(@thread)
+
+        raise "axn.call tracing invoked the action on #{Thread.current.inspect} instead of the calling " \
+              "thread: a tracer must invoke the block it is given synchronously, on the calling thread."
+      end
+
       def claimed? = @claimed
       def started? = @started
 
-      # Whether the action has finished — returned, raised, or unwound. Distinct from `started?`
-      # because a tracer that hands the block to a worker thread and returns leaves the action running
-      # after the boundary is done with it.
-      def settled? = @settled
       def abandoned? = @abandoned
 
       # Takes the one permitted attempt, returning false if it is already taken. Checking and taking
@@ -124,7 +136,6 @@ module Axn
           raise
         ensure
           @abandoned = true unless completed || @error
-          @settled = true
         end
       end
     end
@@ -253,7 +264,10 @@ module Axn
         # — begun, raised, abandoned — where it actually happens, rather than letting a wrapper's own
         # progress stand in for the action's.
         attempt = ActionAttempt.new
-        run_action = proc { attempt.execute { block.call } if attempt.claim }
+        run_action = proc do
+          attempt.require_originating_thread!
+          attempt.execute { block.call } if attempt.claim
+        end
 
         # Enrich the payload from inside the instrument block — after the action settles but
         # BEFORE ActiveSupport publishes the event — so live `axn.call` subscribers observe the
@@ -337,8 +351,6 @@ module Axn
               run_action.call if may_start_action?(attempt, emitted)
             end
           end
-
-          reject_unsettled_attempt!(attempt) if resumable_after?(traced)
         end
       ensure
         Axn::Extensions.best_effort("calling emit_metrics while tracing axn.call", action: @action) do
@@ -401,21 +413,6 @@ module Axn
       # committed work.
       def may_start_action?(attempt, returned_normally)
         !attempt.started? && !attempt.abandoned? && resumable_after?(returned_normally)
-      end
-
-      # `in_span` must invoke the block it is given synchronously — the action's entire pipeline runs
-      # inside it (settlement, timing, contract, hooks), so a tracer that hands the block to a worker
-      # and returns leaves the caller holding a result that is still being written, and will change
-      # under them. Axn cannot wait for a thread it does not own without risking a hang, so it refuses
-      # the violation rather than returning a success about to become a failure.
-      def reject_unsettled_attempt!(attempt)
-        # `claimed?`, not `started?`: a worker can win the claim and be descheduled before `execute`
-        # marks it started, and the boundary must reject that too rather than return a result the
-        # worker is about to write.
-        return unless attempt.claimed? && !attempt.settled?
-
-        raise "axn.call tracing returned while the action was still running: a tracer must invoke the " \
-              "block it is given synchronously, on the calling thread."
       end
 
       # Whether it is still legitimate to do more work on the action's behalf. Takes the guarded step's
