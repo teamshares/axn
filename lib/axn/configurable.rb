@@ -66,9 +66,10 @@ module Axn
         outcome = validate.call(value)
         return if outcome && !outcome.is_a?(String)
 
-        # .presence (not the bare String) so a validator returning "" falls back to the plain
-        # form below instead of raising with a dangling " — " and no actual reason.
-        detail = outcome.presence if outcome.is_a?(String)
+        # A blank reason is no reason: fall back to the plain form below rather than raising with a
+        # dangling " — " and nothing after it. Checked without ActiveSupport's blank extensions, since
+        # this file is loadable on its own and must not depend on them being present.
+        detail = outcome if outcome.is_a?(String) && !outcome.strip.empty?
         raise ArgumentError, ["#{name} got invalid value: #{value.inspect}", detail].compact.join(" — ")
       end
 
@@ -515,7 +516,22 @@ module Axn
       # from `self.class` up through its ancestry, so an instance of a subclass sees both settings
       # declared on the subclass and settings declared on any ancestor that extended `Settings` —
       # regardless of whether the subclass re-extends `Settings` itself.
+      #
+      # A `reset!` the class already provides — its own, or one inherited from a non-axn ancestor —
+      # wins: axn generates this one, so it defers rather than replacing behavior the author wrote,
+      # leaving a debug breadcrumb instead. Settings still reset through the flat `<name>=` writers.
       def self.extended(base)
+        if base.method_defined?(:reset!) || base.private_method_defined?(:reset!)
+          if defined?(Axn.config)
+            owner = base.instance_method(:reset!).owner
+            Axn.config.logger.debug do
+              "[Axn] #{base.name || base}: instance method `reset!` is already defined by #{owner}, so the " \
+                "Configurable settings DSL leaves it alone. Per-setting reset is unavailable on this class."
+            end
+          end
+          return
+        end
+
         base.send(:define_method, :reset!) do |*names|
           declared = Axn::Configurable.declared_settings_for(self.class)
           targets = names.empty? ? declared.keys : names.map(&:to_sym)

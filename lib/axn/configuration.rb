@@ -3,6 +3,10 @@
 require "axn/configurable"
 require "pathname"
 
+# The `tracer` setting's default resolves through Internal::Tracing on every read, so this file
+# cannot rely on the umbrella entrypoint having loaded it first.
+require "axn/internal/tracing"
+
 module Axn
   class RailsConfiguration
     attr_accessor :app_actions_autoload_namespace

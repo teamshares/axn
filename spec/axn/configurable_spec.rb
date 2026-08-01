@@ -736,6 +736,31 @@ RSpec.describe "#reset!" do
       instance.reset!(:base_only)
       expect(instance.base_only).to eq(:base_default)
     end
+
+    it "defers to a reset! the class defined itself rather than replacing it" do
+      klass = Class.new do
+        def reset!(*) = :the_authors_own
+
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+      end
+
+      expect(klass.new.reset!(:literal)).to eq(:the_authors_own)
+    end
+
+    it "defers to a reset! inherited from a non-axn ancestor" do
+      ancestor = Class.new do
+        def reset!(*) = :inherited
+      end
+      klass = Class.new(ancestor) do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+      end
+
+      expect(klass.new.reset!(:literal)).to eq(:inherited)
+    end
   end
 
   context "on the module-singleton flavor" do
