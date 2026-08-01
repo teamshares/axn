@@ -593,6 +593,23 @@ RSpec.describe "Axn.config.tracer" do
       expect(depths).to eq([2])
     end
 
+    it "does not start the action when a throw unwinds and an earlier error is still in $!" do
+      # Entering `.call` from inside a rescue handler leaves the handled error in `$!` for the whole
+      # handler, so a throw unwinding past the boundary looks identical to an absorbable error if the
+      # decision is made by reading ambient state. Each guarded step records its own ending instead.
+      Axn.config.tracer = Class.new { def in_span(*, **) = throw(:cancel, :from_tracer) }.new
+
+      caught = catch(:cancel) do
+        raise "earlier, already handled"
+      rescue StandardError
+        counting_axn.call
+        :no_throw
+      end
+
+      expect(caught).to eq(:from_tracer)
+      expect(runs.size).to eq(0)
+    end
+
     it "does not start the action when the tracer throws instead of raising" do
       # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
       # being absent — it has to come from the guarded step reporting that it returned normally.

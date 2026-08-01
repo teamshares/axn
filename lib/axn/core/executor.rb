@@ -1,8 +1,5 @@
 # frozen_string_literal: true
 
-# $ERROR_INFO, read in with_tracing to tell a cancellation signal from an error axn may absorb.
-require "English"
-
 module Axn
   module Core
     # Executor encapsulates the full execution pipeline for an action.
@@ -335,12 +332,15 @@ module Axn
         # settled onto its result before control returns. Presence of a TRACER — not of the
         # OpenTelemetry constant — is what gates the span, so an explicitly configured tracer works
         # with OpenTelemetry unloaded and `tracer = nil` turns spans off with it loaded.
-        traced = false
+        traced = nil
         begin
           guarding_observer("tracing axn.call", attempt) do
             emit_observed(resource, instrument_block, attempt)
           end
-          traced = true
+          traced = :returned
+        rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
+          traced = :absorbable_error
+          raise
         ensure
           # Reached only when nothing above managed to start the action — a tracer that never yielded,
           # a notification subscriber that raised before it, a dev-loud re-raise on its way past. Shed
@@ -348,21 +348,22 @@ module Axn
           # the notification is still worth emitting, and only if that fails too does the action run
           # bare. Losing both is a smaller failure than losing the caller's work.
           #
-          # Unless the caller has already given up. `resumable` reads the exception in flight (`$!` is
-          # nil on a normal return and on one already handled), and a signal axn would never swallow —
-          # a `Timeout` from an enclosing block, an `Interrupt`, an `exit` — must escape here rather
-          # than start the action: work that runs, and possibly commits, after its caller was cancelled
-          # is worse than a lost span. A swallowable error still resumes, which is what keeps the
-          # dev-loud path from costing the action its run.
+          # Unless the caller has already given up. Each guarded step records how IT ended, rather than
+          # anything reading ambient state: a `Timeout` from an enclosing block, an `Interrupt`, an
+          # `exit`, or a `throw` must escape here rather than start the action, since work that runs —
+          # and possibly commits — after its caller was cancelled is worse than a lost span.
           if may_start_action?(attempt, traced)
-            emitted = false
+            emitted = nil
             begin
               # Only when nothing claimed the notification — a tracer that raised or returned before
               # yielding. If it WAS claimed and still left the action unstarted, the failure is the
               # notification's own, and re-entering it would repeat whatever a subscriber already did
               # before raising.
               emit_notification.call if attempt.claim_notification
-              emitted = true
+              emitted = :returned
+            rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
+              emitted = :absorbable_error
+              raise
             ensure
               run_action.call if may_start_action?(attempt, emitted)
             end
@@ -437,11 +438,13 @@ module Axn
       # resumability is either an observed normal return, or an error axn may absorb propagating (the
       # dev-loud path). A signal or a `throw` is neither, and must not be answered by starting the
       # action — the caller has abandoned this call.
-      def resumable_after?(returned_normally)
-        return true if returned_normally
-
-        in_flight = $ERROR_INFO
-        !in_flight.nil? && Axn::Extensions.swallowable?(in_flight)
+      # `outcome` is what the guarded step RECORDED about its own ending, never a reading of ambient
+      # state. `$!` cannot answer this: entering `.call` from inside a `rescue` handler leaves the
+      # previously-handled error there for the duration, so a `throw` unwinding past this point looks
+      # identical to an absorbable error — and the action would be started after its caller had
+      # already abandoned the call.
+      def resumable_after?(outcome)
+        %i[returned absorbable_error].include?(outcome)
       end
 
       # Emits the `axn.call` span and notification around the action. Split out of `with_tracing` so the

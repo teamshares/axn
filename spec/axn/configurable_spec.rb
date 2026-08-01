@@ -709,8 +709,10 @@ RSpec.describe "#reset!" do
       expect(instance.derived).to eq(:derived_default)
     end
 
-    it "raises on a name that is not a declared setting" do
-      expect { instance.reset!(:nope) }.to raise_error(ArgumentError, /unknown setting :nope/)
+    it "raises on a name that is not a declared setting, naming the ones that exist" do
+      # Per AGENTS.md, a message explains the problem AND the fix — here, which names are valid.
+      expect { instance.reset!(:nope) }
+        .to raise_error(ArgumentError, /unknown setting :nope\. Declared settings are: .*:literal/)
     end
 
     it "resets nothing when any name in the list is unknown" do
@@ -870,8 +872,9 @@ RSpec.describe "#reset!" do
       expect(mod.config.derived).to eq(:derived_default)
     end
 
-    it "raises on an unknown setting" do
-      expect { mod.config.reset!(:nope) }.to raise_error(ArgumentError, /unknown setting :nope/)
+    it "raises on an unknown setting, naming the ones that exist" do
+      expect { mod.config.reset!(:nope) }
+        .to raise_error(ArgumentError, /unknown setting :nope\. Declared settings are: .*:literal/)
     end
 
     it "resets nothing when any name in the list is unknown" do

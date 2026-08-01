@@ -494,7 +494,11 @@ module Axn
         # Validate the WHOLE list before deleting anything, so a typo alongside a real name cannot
         # leave the config half-reset behind the raise.
         unknown = targets.reject { |name| @settings.key?(name) }
-        raise ArgumentError, "unknown setting #{unknown.first.inspect}" if unknown.any?
+        if unknown.any?
+          raise ArgumentError,
+                "reset! got unknown setting #{unknown.first.inspect}. Declared settings are: " \
+                "#{@settings.keys.map(&:inspect).join(', ')}."
+        end
 
         targets.each { |name| @values.delete(name) }
         self
@@ -568,7 +572,11 @@ module Axn
           # Validate the WHOLE list before touching anything, so `reset!(:real, :typo)` leaves the
           # config exactly as it was instead of half-reset behind the raise.
           unknown = targets.reject { |name| declared.key?(name) }
-          raise ArgumentError, "unknown setting #{unknown.first.inspect}" if unknown.any?
+          if unknown.any?
+            raise ArgumentError,
+                  "reset! got unknown setting #{unknown.first.inspect}. Declared settings are: " \
+                  "#{declared.keys.map(&:inspect).join(', ')}."
+          end
 
           targets.each do |name|
             ivar = :"@#{name}"
