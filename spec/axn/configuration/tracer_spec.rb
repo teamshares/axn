@@ -334,6 +334,17 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "propagates a wrapped-stack failure that happens during the fallback notification too" do
+      # The fallback path has its own guard, and it reaches `block.call` just as the main boundary
+      # does — so the same rule has to hold there. Entered by failing the tracer before yield, then
+      # failing the wrapped stack inside the fallback's notification attempt.
+      Axn.config.tracer = Class.new { def in_span(*, **) = raise("tracer down") }.new
+      allow(Axn::Internal::Timing).to receive(:now).and_raise("clock unavailable")
+
+      expect { counting_axn.call }.to raise_error("clock unavailable")
+      expect(runs.size).to eq(0)
+    end
+
     it "does not start the action when the tracer throws instead of raising" do
       # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
       # being absent — it has to come from the guarded step reporting that it returned normally.

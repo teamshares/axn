@@ -158,6 +158,7 @@ module Axn
         end
 
         started_check = proc { started }
+        inner_failed_check = proc { inner_failed }
 
         # Enrich the payload from inside the instrument block — after the action settles but
         # BEFORE ActiveSupport publishes the event — so live `axn.call` subscribers observe the
@@ -182,9 +183,11 @@ module Axn
           end
         end
 
-        emit_notification = proc do
-          Axn::Extensions.best_effort("emitting axn.call notification", action: @action) { instrument_block.call }
-        end
+        # Guards notification delivery, NOT the stack it wraps — same rule as the tracing boundary
+        # below, and it has to be restated here because this proc reaches `block.call` too. Absorbing
+        # a wrapped-stack failure would leave `started` true, skip the bare fallback, and return the
+        # action's unfinalized default-success result.
+        emit_notification = proc { guarding_observer("emitting axn.call notification", inner_failed_check) { instrument_block.call } }
 
         # ONE boundary around everything tracing does — resolving the tracer, probing its signature,
         # opening the span, finalizing it. All of it is a side channel, and the whole path holds a
@@ -207,12 +210,8 @@ module Axn
         # with OpenTelemetry unloaded and `tracer = nil` turns spans off with it loaded.
         traced = false
         begin
-          begin
+          guarding_observer("tracing axn.call", inner_failed_check) do
             emit_observed(resource, instrument_block, started_check)
-          rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-            raise if inner_failed
-
-            Axn::Extensions.best_effort("tracing axn.call", action: @action) { raise e }
           end
           traced = true
         ensure
@@ -251,6 +250,19 @@ module Axn
                                                        kwargs: { resource:, result:, dimensions: Core::Tagging.dup_facets(resolved_dimensions) })
           end
         end
+      end
+
+      # Runs an observer (the span, the notification) so its OWN failure is logged and swallowed while
+      # a failure of the stack it wraps escapes untouched. Both callers reach `block.call` through the
+      # observer, and `with_logging`/`with_timing` sit inside that but outside `with_exception_handling`
+      # — so an error from there is never settled onto the result, and absorbing it would return a
+      # default success for an action that never ran.
+      def guarding_observer(description, inner_failed_check)
+        yield
+      rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
+        raise if inner_failed_check.call
+
+        Axn::Extensions.best_effort(description, action: @action) { raise e }
       end
 
       # Whether it is still legitimate to do more work on the action's behalf. Takes the guarded step's
