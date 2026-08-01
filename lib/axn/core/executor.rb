@@ -93,6 +93,27 @@ module Axn
       # =========================================================================
       # TRACING (Outside zone - result is settled)
       # =========================================================================
+      #
+      # Tracing calls an object the APP supplies, inside the hot path, so the failure space is the
+      # grid below rather than the happy path plus whatever went wrong last. Every cell holds one
+      # invariant: tracing may neither suppress, duplicate, nor replace the action. Each is exercised
+      # by spec/axn/configuration/tracer_spec.rb; add the cell here before adding the guard.
+      #
+      #   FAILURE POINT              x  UNWIND: return / swallowable raise / signal / throw
+      #   ------------------------------------------------------------------------------------
+      #   resolving Axn.config.tracer   log, run the action untraced
+      #   probing #in_span              treat as unsupported; never let the probe escape
+      #   entering in_span              log, run untraced
+      #   before yield                  log, run untraced (the action has NOT run yet)
+      #   returns without yielding      run untraced — no exception, so absence of one proves nothing
+      #   yields more than once         run the action for the FIRST yield only
+      #   after yield                   log and keep the settled result; the action already ran
+      #   span finalization             skip it unless the action ran inside that span
+      #   notification start            run the action bare; do not re-enter a notification that ran
+      #   notification finish           log; the action already ran and settled
+      #
+      # Signals and throws are the exception to all of it: the caller has abandoned the call, so they
+      # escape without the action being started. See `resumable_after?`.
 
       def with_tracing(&block)
         resource = @action_class.resolved_axn_name

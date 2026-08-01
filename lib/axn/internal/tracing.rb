@@ -24,17 +24,16 @@ module Axn
           return nil unless defined?(OpenTelemetry)
 
           current_provider = OpenTelemetry.tracer_provider
-          return @tracer if defined?(@tracer) && defined?(@tracer_provider) && @tracer_provider == current_provider
+          cached = @tracer_entry
+          return cached.last if cached && cached.first == current_provider
 
-          # Compute first, then publish VALUE BEFORE KEY. Both halves matter. Recording the provider
-          # before obtaining its tracer leaves a mismatched pair that the check above reads as a hit,
-          # pinning spans to the previous provider permanently. And because the provider is what that
-          # check tests, writing it last makes it the validity marker: a concurrent reader sees either
-          # the old provider (and re-derives, at worst doing the work twice) or the new one with its
-          # own tracer already in place — never the new key against a stale value.
+          # ONE immutable entry, assigned in a single reference store. Two ivars cannot express this
+          # safely: a failed acquisition could leave them mismatched (a pair the check above reads as a
+          # hit, pinning spans to the previous provider), and two threads racing on a provider swap
+          # could interleave their writes into a pair belonging to neither. A reader sees the whole old
+          # entry or the whole new one, so at worst it re-derives.
           tracer = current_provider.tracer("axn", Axn::VERSION)
-          @tracer = tracer
-          @tracer_provider = current_provider
+          @tracer_entry = [current_provider, tracer].freeze
           tracer
         end
 
@@ -64,7 +63,9 @@ module Axn
         # first, outside the probe's rescue, and take down an action over an optional lookup.
         def supports_record_exception_option?(tracer)
           return false if Identity.nil_value?(tracer)
-          return @supports_record_exception if defined?(@supports_record_exception) && Identity.same?(@probed_tracer, tracer)
+
+          cached = @probe_entry
+          return cached.last if cached && Identity.same?(cached.first, tracer)
 
           supported = begin
             tracer.method(:in_span).parameters.any? { |type, name| name == :record_exception && %i[key keyreq].include?(type) }
@@ -76,19 +77,19 @@ module Axn
             false
           end
 
-          # Value before key, for the same reasons as the tracer memo above: a probe that unwinds
-          # non-locally (a `throw` from an overridden `method`, or a class axn will not swallow) must
-          # not leave this tracer keyed to the PREVIOUS tracer's answer, which a later call would read
-          # as a hit and act on — passing `record_exception:` to a tracer that has no slot for it.
-          @supports_record_exception = supported
-          @probed_tracer = tracer
+          # One immutable entry, for the same reasons as the tracer memo above: a probe that unwinds
+          # non-locally must not leave a tracer keyed to the PREVIOUS tracer's answer, and two threads
+          # probing different tracers must not interleave into a pair belonging to neither — which
+          # would hand one tracer the other's answer and send `record_exception:` to something with no
+          # slot for it.
+          @probe_entry = [tracer, supported].freeze
           supported
         end
 
         # Drops the auto-detection and capability memos, for specs that swap the OpenTelemetry
         # constant or the tracer out from under them.
         def reset!
-          %i[@tracer @tracer_provider @supports_record_exception @probed_tracer].each do |ivar|
+          %i[@tracer_entry @probe_entry].each do |ivar|
             remove_instance_variable(ivar) if instance_variable_defined?(ivar)
           end
         end
