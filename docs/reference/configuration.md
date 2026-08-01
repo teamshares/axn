@@ -273,7 +273,7 @@ end
 ```
 
 ::: warning Exceptions from an injected tracer propagate
-Unlike axn's other observability sinks (logging, `emit_metrics`, the notification payload), `tracer.in_span` runs outside axn's best-effort guard. An exception raised by an injected tracer's `in_span` — as opposed to one raised by the action body it wraps — propagates out of `.call` rather than being logged and swallowed.
+A tracer that fails before it yields does not cost you the call: axn logs the failure and runs the action anyway, exactly once. A tracer that fails *after* yielding is different — the action has already run and settled, so that exception propagates out of `.call` rather than being logged and swallowed. Axn will not absorb anything raised once the action is in flight, since it cannot distinguish a late tracer failure from the action's own outcome, and re-running the action to find out would be worse than either.
 :::
 
 Assign `nil` to turn axn's spans off without unloading OpenTelemetry — the rest of your instrumentation keeps working:

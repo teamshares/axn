@@ -183,6 +183,53 @@ RSpec.describe "Axn.config.tracer" do
     end
   end
 
+  describe "a tracer that raises" do
+    let(:runs) { [] }
+
+    let(:counting_axn) do
+      recorder = runs
+      build_axn { define_method(:call) { recorder << :ran } }
+    end
+
+    after { Axn.config.reset!(:tracer) }
+
+    it "runs the action exactly once when in_span raises before yielding" do
+      Axn.config.tracer = Class.new { def in_span(*, **) = raise("backend down") }.new
+
+      expect(counting_axn.call).to be_ok
+      expect(runs.size).to eq(1)
+    end
+
+    it "does not absorb a failure raised after the action has run" do
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(nil)
+          raise "flush failed"
+        end
+      end.new
+
+      expect { counting_axn.call }.to raise_error("flush failed")
+      expect(runs.size).to eq(1)
+    end
+
+    it "still settles the action's own exception onto the result rather than re-running it" do
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| block.call(nil) }
+      end.new
+      recorder = runs
+      raising_axn = build_axn do
+        define_method(:call) do
+          recorder << :ran
+          raise ArgumentError, "boom"
+        end
+      end
+
+      result = raising_axn.call
+      expect(result.outcome.to_s).to eq("exception")
+      expect(runs.size).to eq(1)
+    end
+  end
+
   # A configured tracer is expressly allowed to coexist with a loaded OpenTelemetry — overriding axn's
   # spans without unloading OTel is one of the reasons the seam exists. So the presence of OTel's
   # classes says nothing about whether THIS span implements their optional methods.

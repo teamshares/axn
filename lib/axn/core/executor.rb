@@ -129,10 +129,26 @@ module Axn
           in_span_kwargs = { attributes: { "axn.resource" => resource } }
           in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
 
-          tracer.in_span("axn.call", **in_span_kwargs) do |span|
+          # A tracer that dies BEFORE yielding must not stop the action from running: tracing observes
+          # the call, so a broken backend or decorator is not allowed to cost the caller its work.
+          # `started` is what makes the fallback safe — it flips inside the block, so the action can
+          # run at most once no matter where `in_span` failed. Once it is set, nothing is swallowed:
+          # anything raised from there on is the action's own outcome propagating (or a tracer failing
+          # after the work is already done), and re-running or absorbing it would be far worse than
+          # letting it through.
+          started = false
+          begin
+            tracer.in_span("axn.call", **in_span_kwargs) do |span|
+              started = true
+              instrument_block.call
+            ensure
+              finalize_span(span)
+            end
+          rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
+            raise if started
+
+            Axn::Extensions.best_effort("opening the axn.call span", action: @action) { raise e }
             instrument_block.call
-          ensure
-            finalize_span(span)
           end
         else
           instrument_block.call

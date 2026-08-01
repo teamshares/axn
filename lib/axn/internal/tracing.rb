@@ -63,7 +63,11 @@ module Axn
           @probed_tracer = tracer
           @supports_record_exception = begin
             tracer.method(:in_span).parameters.any? { |type, name| name == :record_exception && %i[key keyreq].include?(type) }
-          rescue StandardError
+          rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
+            # Every class axn permits itself to absorb, not just StandardError: a proxy raising
+            # SystemStackError from an overridden #method would otherwise escape an optional signature
+            # lookup and abort the call. The answer for any failed probe is the same — assume the
+            # option is unsupported and omit it.
             false
           end
         end
