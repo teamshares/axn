@@ -14,11 +14,21 @@ module Axn
       EQUAL = BasicObject.instance_method(:equal?)
       private_constant :EQUAL
 
+      # Module#===, which resolves an object's type without consulting any `is_a?`/`kind_of?` the
+      # object itself defines. Held as an UnboundMethod and called rather than written as the `===`
+      # operator, so the intent is legible at each call site and the type test stays in one place.
+      KIND = Module.instance_method(:===)
+      private_constant :KIND
+
       # True when `one` and `other` are the same object.
       def self.same?(one, other) = EQUAL.bind_call(one, other)
 
       # True when `value` IS nil — the undispatched form of `value.nil?`.
       def self.nil_value?(value) = EQUAL.bind_call(value, nil)
+
+      # True when `value` is an instance of `klass` — the undispatched form of `value.is_a?(klass)`,
+      # for a `value` whose own answer axn has no reason to trust.
+      def self.kind?(value, klass) = KIND.bind_call(klass, value)
     end
   end
 end

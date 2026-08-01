@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/identity"
+
 module Axn
   # A small DSL for declaring configuration on a module (e.g. a satellite gem
   # namespace like Axn::MCP), so each one doesn't hand-roll its own config
@@ -79,12 +81,14 @@ module Axn
         return unless validate.respond_to?(:call)
 
         outcome = validate.call(value)
-        return if outcome && !outcome.is_a?(String)
+        # `String === outcome`, not `outcome.is_a?(String)`: the value comes back from a caller's
+        # lambda, and Module#=== settles the type without dispatching anything to it.
+        return if outcome && !Axn::Internal::Identity.kind?(outcome, String)
 
         # A blank reason is no reason: fall back to the plain form below rather than raising with a
         # dangling " — " and nothing after it. Checked without ActiveSupport's blank extensions, since
         # this file is loadable on its own and must not depend on them being present.
-        detail = outcome if outcome.is_a?(String) && !outcome.strip.empty?
+        detail = outcome if Axn::Internal::Identity.kind?(outcome, String) && !outcome.strip.empty?
         raise ArgumentError, ["#{name} got invalid value: #{value.inspect}", detail].compact.join(" — ")
       end
 
@@ -92,7 +96,7 @@ module Axn
       # stored. Settings whose default depends on the host app's boot state (a tracer that
       # OpenTelemetry may register after axn loads, a Rails.env-derived flag) would otherwise cache
       # an answer taken before that state existed.
-      def dynamic_default? = default.is_a?(Proc)
+      def dynamic_default? = Axn::Internal::Identity.kind?(default, Proc)
 
       # A fresh copy of the default, so mutable defaults (e.g. []) aren't shared
       # across instances. dup is a no-op for nil/true/false/Symbol/Integer.

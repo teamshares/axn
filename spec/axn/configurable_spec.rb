@@ -305,6 +305,16 @@ RSpec.describe Axn::Configurable::Settings do
       )
     end
 
+    it "accepts a truthy result whose own is_a? would raise, rather than dispatching to it" do
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :hostile, validate: ->(_v) { Class.new { def is_a?(_klass) = raise("hostile is_a?") }.new }
+      end
+
+      expect { klass.new.hostile = 5 }.not_to raise_error
+    end
+
     it "accepts a valid value through a String-returning validator" do
       expect { instance.detailed = 3 }.not_to raise_error
     end

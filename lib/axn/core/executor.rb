@@ -108,14 +108,27 @@ module Axn
           end
         end
 
+        # The action, separable from every observer of it. `started` flips here and nowhere else, so it
+        # records the action actually beginning rather than some wrapper being entered on its behalf.
+        started = false
+        run_action = proc do
+          started = true
+          block.call
+        end
+
         # Enrich the payload from inside the instrument block — after the action settles but
         # BEFORE ActiveSupport publishes the event — so live `axn.call` subscribers observe the
         # full payload. Running update_payload after `instrument` returns (its own ensure) would
         # publish first and mutate after, leaving subscribers with outcome/result/tags/dimensions
         # missing at callback time.
+        #
+        # Notification is a side channel like tracing, and `instrument` can raise BEFORE it yields — an
+        # evented `axn.call` subscriber whose `start` callback blows up does exactly that, so the action
+        # would never be reached. That is why the last-resort fallback below calls `run_action` rather
+        # than this: once notification has failed, retrying it fails the same way.
         instrument_block = proc do
           ActiveSupport::Notifications.instrument("axn.call", payload) do
-            block.call
+            run_action.call
           ensure
             update_payload.call
           end
@@ -125,11 +138,11 @@ module Axn
         # opening the span, finalizing it. All of it is a side channel, and the whole path holds a
         # single invariant: it may neither suppress, duplicate, nor replace the action.
         #
-        # `started` is the entire guarantee. It flips on the first yield, so the block body runs at
-        # most once no matter how the tracer behaves — raising before yielding, returning without ever
-        # yielding (a disabled or broken decorator), yielding more than once, or raising afterward —
-        # and anything that leaves this boundary with it still false means the action has not run, so
-        # the untraced fallback owes it exactly one execution.
+        # `started` (set where the action actually begins, above) is the entire guarantee. It makes the
+        # action run at most once no matter how the tracer behaves — raising before yielding, returning
+        # without ever yielding (a disabled or broken decorator), yielding more than once, or raising
+        # afterward — and anything that leaves this boundary with it still false means the action has
+        # not run, so the untraced fallback owes it exactly one execution.
         #
         # The fallback lives in `ensure` deliberately: `best_effort` re-raises under
         # `best_effort_raises_in_dev`, and a dev-loud tracing error must still not cost the action its
@@ -140,7 +153,6 @@ module Axn
         # settled onto its result before control returns. Presence of a TRACER — not of the
         # OpenTelemetry constant — is what gates the span, so an explicitly configured tracer works
         # with OpenTelemetry unloaded and `tracer = nil` turns spans off with it loaded.
-        started = false
         begin
           Axn::Extensions.best_effort("tracing axn.call", action: @action) do
             tracer = Axn.config.tracer
@@ -151,17 +163,29 @@ module Axn
               tracer.in_span("axn.call", **in_span_kwargs) do |span|
                 next if started
 
-                started = true
                 begin
                   instrument_block.call
                 ensure
                   finalize_span(span)
                 end
               end
+            else
+              instrument_block.call
             end
           end
         ensure
-          instrument_block.call unless started
+          # Reached only when nothing above managed to start the action — a tracer that never yielded,
+          # a notification subscriber that raised before it, a dev-loud re-raise on its way past. Shed
+          # observers one at a time rather than all at once: the span may be what broke, in which case
+          # the notification is still worth emitting, and only if that fails too does the action run
+          # bare. Losing both is a smaller failure than losing the caller's work.
+          unless started
+            begin
+              Axn::Extensions.best_effort("emitting axn.call notification", action: @action) { instrument_block.call }
+            ensure
+              run_action.call unless started
+            end
+          end
         end
       ensure
         Axn::Extensions.best_effort("calling emit_metrics while tracing axn.call", action: @action) do
@@ -195,8 +219,10 @@ module Axn
             Axn::Extensions.best_effort("recording exception details on the axn.call span", action: @action) do
               span.record_exception(result.exception) if span.respond_to?(:record_exception)
 
+              # `Module#===`, not `span.is_a?`: the span is caller-supplied, and a proxy answering
+              # `is_a?` however it likes must not be able to talk its way into a vendor status object.
               if defined?(OpenTelemetry::Trace::Status) && defined?(OpenTelemetry::Trace::Span) &&
-                 span.is_a?(OpenTelemetry::Trace::Span)
+                 Axn::Internal::Identity.kind?(span, OpenTelemetry::Trace::Span)
                 error_message = result.exception.message || result.exception.class.name
                 span.status = OpenTelemetry::Trace::Status.error(error_message)
               end

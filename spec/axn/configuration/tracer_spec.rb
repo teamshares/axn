@@ -220,6 +220,26 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(1)
     end
 
+    it "runs the action exactly once when an axn.call subscriber raises before the action starts" do
+      # An EVENTED subscriber (one responding to start/finish) — not a lambda, which ActiveSupport
+      # wraps as a timed subscriber that only runs at finish. `instrument` raises out of `start`, so
+      # the action is never reached, and retrying the notification would fail identically: the fallback
+      # has to run the action with the notification stripped off entirely.
+      evented = Object.new
+      evented.define_singleton_method(:start) { |*| raise "subscriber start boom" }
+      evented.define_singleton_method(:finish) { |*| nil }
+      bad_subscriber = ActiveSupport::Notifications.subscribe("axn.call", evented)
+
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| block.call(nil) }
+      end.new
+
+      expect(counting_axn.call).to be_ok
+      expect(runs.size).to eq(1)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(bad_subscriber)
+    end
+
     it "runs the action exactly once when resolving the tracer itself raises" do
       # Tracer DISCOVERY is a side channel too: a faulty OpenTelemetry provider must not cost the
       # action its run, even though the failure happens before there is any span to speak of.
@@ -319,6 +339,11 @@ RSpec.describe "Axn.config.tracer" do
       status_class = Class.new { def self.error(_message) = :error_status }
       trace_module = Module.new
       trace_module.const_set(:Status, status_class)
+      # Trace::Span must exist for these examples to mean anything: axn gates the status assignment on
+      # the span BEING an OpenTelemetry span, so without this constant the branch is unreachable and
+      # every "custom span gets no status" example below would pass without testing anything. None of
+      # the spans in this describe are instances of it — that is the point.
+      trace_module.const_set(:Span, Class.new)
       otel_module = Module.new
       otel_module.const_set(:Trace, trace_module)
       stub_const("OpenTelemetry", otel_module)
@@ -346,6 +371,28 @@ RSpec.describe "Axn.config.tracer" do
 
       failing_axn.call
       expect(own_status_span.assigned_status).to be_nil
+    end
+
+    it "does not hand a status to a span that merely claims to be an OpenTelemetry span" do
+      # The span is caller-supplied, so its own `is_a?` is not evidence of anything.
+      liar = Class.new do
+        attr_reader :assigned_status
+
+        def set_attribute(_key, _value) = nil
+        def is_a?(_klass) = true
+
+        def status=(value)
+          @assigned_status = value
+        end
+      end.new
+
+      Axn.config.tracer = Class.new do
+        define_method(:initialize) { @span = liar }
+        define_method(:in_span) { |_name, **, &block| block.call(@span) }
+      end.new
+
+      failing_axn.call
+      expect(liar.assigned_status).to be_nil
     end
 
     it "records declared facets even though the span implements neither record_exception nor status=" do
