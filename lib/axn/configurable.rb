@@ -2,6 +2,10 @@
 
 require "axn/internal/identity"
 
+# Breadcrumbs below go through Extensions.best_effort, so this component needs it whether or not the
+# umbrella entrypoint loaded it.
+require "axn/extensions"
+
 module Axn
   # A small DSL for declaring configuration on a module (e.g. a satellite gem
   # namespace like Axn::MCP), so each one doesn't hand-roll its own config
@@ -214,10 +218,12 @@ module Axn
           [name, :"#{name}?", :"#{name}_override"].each do |accessor|
             next unless Axn::Core::MethodShadowing.externally_defined?(base, accessor)
 
-            Axn.config.logger.debug do
-              "[Axn] #{base.name || 'Action'}: per-class override accessor `#{accessor}` collides with a same-named " \
-                "class method from a non-axn ancestor (axn installs the accessor anyway; reads route through " \
-                "resolve_override_for). See PRO-2856."
+            Axn::Extensions.best_effort("logging a shadowed override accessor", action: base) do
+              Axn.config.logger.debug do
+                "[Axn] #{base.name || 'Action'}: per-class override accessor `#{accessor}` collides with a same-named " \
+                  "class method from a non-axn ancestor (axn installs the accessor anyway; reads route through " \
+                  "resolve_override_for). See PRO-2856."
+              end
             end
           end
         end
@@ -546,9 +552,11 @@ module Axn
         if base.method_defined?(:reset!) || base.private_method_defined?(:reset!)
           if defined?(Axn.config)
             owner = base.instance_method(:reset!).owner
-            Axn.config.logger.debug do
-              "[Axn] #{base.name || base}: instance method `reset!` is already defined by #{owner}, so the " \
-                "Configurable settings DSL leaves it alone. Per-setting reset is unavailable on this class."
+            Axn::Extensions.best_effort("logging a reset! collision", action: base) do
+              Axn.config.logger.debug do
+                "[Axn] #{base.name || base}: instance method `reset!` is already defined by #{owner}, so the " \
+                  "Configurable settings DSL leaves it alone. Per-setting reset is unavailable on this class."
+              end
             end
           end
           return

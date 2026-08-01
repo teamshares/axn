@@ -791,6 +791,29 @@ RSpec.describe "#reset!" do
       end.to raise_error(ArgumentError, /setting :reset! is reserved/)
     end
 
+    it "still defers when the logger raises while leaving the collision breadcrumb" do
+      # The breadcrumb is a side channel and must not be able to take down the thing it observes —
+      # here, class DEFINITION. A faulty custom logger previously aborted `extend`, so the collision
+      # behavior it was announcing never happened at all.
+      exploding = Object.new
+      exploding.define_singleton_method(:debug) { |*| raise "logger exploded" }
+      exploding.define_singleton_method(:warn) { |*| raise "warn exploded" }
+      allow(Axn.config).to receive(:logger).and_return(exploding)
+
+      klass = nil
+      expect do
+        klass = Class.new do
+          def reset!(*) = :the_authors_own
+
+          extend Axn::Configurable::Settings
+
+          setting :literal, default: :original
+        end
+      end.not_to raise_error
+
+      expect(klass.new.reset!(:literal)).to eq(:the_authors_own)
+    end
+
     it "defers to a reset! the class defined itself rather than replacing it" do
       klass = Class.new do
         def reset!(*) = :the_authors_own
