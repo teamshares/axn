@@ -20,6 +20,10 @@ module Axn
       KIND = Module.instance_method(:===)
       private_constant :KIND
 
+      STRIP = String.instance_method(:strip)
+      EMPTY = String.instance_method(:empty?)
+      private_constant :STRIP, :EMPTY
+
       # True when `one` and `other` are the same object.
       def self.same?(one, other) = EQUAL.bind_call(one, other)
 
@@ -29,6 +33,12 @@ module Axn
       # True when `value` is an instance of `klass` — the undispatched form of `value.is_a?(klass)`,
       # for a `value` whose own answer axn has no reason to trust.
       def self.kind?(value, klass) = KIND.bind_call(klass, value)
+
+      # True when a String is empty or only whitespace, read through String's OWN implementations. A
+      # subclass may override `strip`/`empty?`, and this runs while an error is already being raised —
+      # dispatching there lets the caller's method replace that error with anything it likes, including
+      # a class the surrounding rescue was never meant to catch. Caller must have checked `kind?` first.
+      def self.blank_string?(value) = EMPTY.bind_call(STRIP.bind_call(value))
     end
   end
 end

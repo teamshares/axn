@@ -305,6 +305,23 @@ RSpec.describe Axn::Configurable::Settings do
       )
     end
 
+    it "raises ArgumentError even when the reason's own strip would raise something else" do
+      # The blank-reason check runs while an error is already being raised, so dispatching to a
+      # caller-supplied String subclass there lets its method replace that ArgumentError with anything
+      # — including a class the surrounding rescue was never meant to catch.
+      hostile_reason = Class.new(String) do
+        def strip = raise(NotImplementedError, "hostile strip")
+      end
+
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :num, validate: ->(_v) { hostile_reason.new("must be an Integer") }
+      end
+
+      expect { klass.new.num = 5 }.to raise_error(ArgumentError, /must be an Integer/)
+    end
+
     it "accepts a truthy result whose own is_a? would raise, rather than dispatching to it" do
       klass = Class.new do
         extend Axn::Configurable::Settings

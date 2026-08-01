@@ -119,7 +119,11 @@ module Axn
           @error ||= e unless Axn::Extensions.swallowable?(e)
           raise
         ensure
-          @abandoned = true unless completed || raised || @error
+          # `@started` matters here and not in `execute`: an unwind through the notification AFTER the
+          # action has run is a side channel failing on its way out, not the action being abandoned.
+          # Marking it abandoned would let a subscriber throwing from `finish` replace a settled result
+          # with a synthetic error.
+          @abandoned = true unless completed || raised || @error || @started
         end
       end
 

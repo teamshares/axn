@@ -439,6 +439,24 @@ RSpec.describe "Axn.config.tracer" do
       ActiveSupport::Notifications.unsubscribe(subscriber)
     end
 
+    it "keeps a settled result when a subscriber throws from finish, after the action ran" do
+      # An unwind through the notification AFTER the action has run is a side channel failing on its
+      # way out, not the action being abandoned. Treating it as abandonment let a `finish` callback
+      # replace a perfectly good result with a synthetic error.
+      evented = Object.new
+      evented.define_singleton_method(:start) { |*| nil }
+      evented.define_singleton_method(:finish) { |*| throw(:cancel, :from_finish) }
+      subscriber = ActiveSupport::Notifications.subscribe("axn.call", evented)
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| catch(:cancel) { block.call(nil) } }
+      end.new
+
+      expect(counting_axn.call).to be_ok
+      expect(runs.size).to eq(1)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
     it "refuses to report success when the tracer catches a throw from the wrapped stack" do
       # A `throw` cannot be re-thrown once an observer has caught it — the tag and value are gone. So
       # this is the one case axn cannot make transparent; it fails loudly instead of reporting a

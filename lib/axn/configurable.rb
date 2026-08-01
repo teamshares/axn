@@ -88,7 +88,8 @@ module Axn
         # A blank reason is no reason: fall back to the plain form below rather than raising with a
         # dangling " — " and nothing after it. Checked without ActiveSupport's blank extensions, since
         # this file is loadable on its own and must not depend on them being present.
-        detail = outcome if Axn::Internal::Identity.kind?(outcome, String) && !outcome.strip.empty?
+        detail = outcome if Axn::Internal::Identity.kind?(outcome, String) &&
+                            !Axn::Internal::Identity.blank_string?(outcome)
         raise ArgumentError, ["#{name} got invalid value: #{value.inspect}", detail].compact.join(" — ")
       end
 
