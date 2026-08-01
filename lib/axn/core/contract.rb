@@ -1186,11 +1186,26 @@ module Axn
         # so nothing here converts a caller-supplied name a second time. A member never arrives carrying
         # `model:` at all — a reader-less member cannot resolve a record, so it is refused ahead of this rather
         # than expanded into a bag that would quietly type-check the element instead.
-        def _expand_validator_sugar!(validations, fields)
+        #
+        # The `of:` pair below is the same seam deliberately, not a guard that happens to sit here: both read
+        # the bag the expansion just produced (`type:`'s klass list, `of:`'s own bag), so they are the checks
+        # canonicalizing MAKES possible, and splitting them from it is what let a member expand like a field
+        # and validate like nothing. Together they are one rule with two halves — the option only means
+        # something over an Array, and it must name what the elements are — and neither has any runtime
+        # counterpart to fall back on: `OfValidator` returns before it inspects a value that is not an Array,
+        # so `of:` beside `type: Hash` never applied at all, while `of: nil` reached `check_validity!` and
+        # raised on every call instead of at the author.
+        def _canonicalize_validator_options!(validations, fields)
           validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
           validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
           validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
-          validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields) if validations.key?(:of)
+          return unless validations.key?(:of)
+
+          validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
+          declared_klasses = Array(validations.dig(:type, :klass))
+          raise ArgumentError, "of: requires type: Array (got #{declared_klasses.inspect})" unless declared_klasses == [Array]
+
+          raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
         end
 
         # This method applies any top-level options to each of the individual validations given.
@@ -1209,18 +1224,17 @@ module Axn
           # hash flows through the normal path.
           _expand_coerce_sugar!(validations)
 
-          _expand_validator_sugar!(validations, fields)
-
           # Validate the coerce target set (covers BOTH the sugar above and an explicit
-          # `type: { klass:, coerce: true }`) once the type bag is canonical.
+          # `type: { klass:, coerce: true }`). Deliberately NOT part of the canonicalization seam below, and so
+          # not applied to a shape member: `coerce:` is a field-only option — it resolves a coerced value onto a
+          # reader, which a member has not got, and the block form rejects it on a member outright — so the
+          # coercible-set check would half-legitimize an option a member may not carry at all. It runs ahead of
+          # the seam rather than after it (where it sat when the `of:` checks were inline here) so that a
+          # declaration failing both is still reported by its coercion error: only `_expand_coerce_sugar!` can
+          # produce a `coerce:` key, and the type sugar never adds one, so the bag it reads is already final.
           _validate_coercion!(validations[:type]) if validations[:type].is_a?(Hash) && validations[:type].key?(:coerce)
 
-          if validations.key?(:of)
-            declared_klasses = Array(validations.dig(:type, :klass))
-            raise ArgumentError, "of: requires type: Array (got #{declared_klasses.inspect})" unless declared_klasses == [Array]
-
-            raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
-          end
+          _canonicalize_validator_options!(validations, fields)
 
           _derive_raw_shape_container!(validations)
 

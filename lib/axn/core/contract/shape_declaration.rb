@@ -336,7 +336,7 @@ module Axn
 
         # A member's declared validations, canonical at every level its grammar has: the validator names, each
         # validator's own option bag (see _symbolize_option_bags!, which does the same for a field), and each
-        # axn validator's shorthand VALUE (see _expand_validator_sugar!, likewise). A raw `shape:` member
+        # axn validator's shorthand VALUE (see _canonicalize_validator_options!, likewise). A raw `shape:` member
         # bypasses `expects`' option handling entirely, so this is the one place its grammar gets canonicalized
         # — and it must, because what the snapshot stores is a plain Hash: a member declared with String keys
         # otherwise validated nothing at all, silently, and reflected an empty constraint beside it, while one
@@ -361,21 +361,26 @@ module Axn
 
             copy[canonical] = value
           end
-          # Each bag's own keys, then the containers themselves, then each axn validator's shorthand — through
-          # the same three helpers a field's options go through, in the same order, so a member is held to
-          # exactly what a field is held to: an `inclusion:` list keeps its class, a container that answers with
-          # code of its own is refused unless it is frozen, and `type: Hash` means what it says.
+          # Each bag's own keys, then the containers themselves, then each axn validator's shorthand and the
+          # guards that read what it expanded — through the same three helpers a field's options go through, in
+          # the same order, so a member is held to exactly what a field is held to: an `inclusion:` list keeps
+          # its class, a container that answers with code of its own is refused unless it is frozen, `type: Hash`
+          # means what it says, and an `of:` that constrains nothing is refused instead of ignored.
           #
-          # The expansion runs after both, as it does for a field, and that order is load-bearing at one end: an
+          # Canonicalizing runs after both, as it does for a field, and that order is load-bearing at one end: an
           # expander reads a bag by Symbol, so a String-keyed one has to be canonical first
           # (`validate: { "with" => … }` is otherwise a Hash carrying no callable, rejected at declaration for
           # a callable it does supply). What an expander then builds on top is a Hash axn owns, holding values
           # the detach pass has already copied. `model:` is refused rather than expanded, under whichever key
           # spelling declared it, which is why that check sits between the two.
+          #
+          # Expansion and the checks over what it produced are ONE call deliberately: a member that expanded
+          # like a field and validated like nothing is exactly how the `of:` pair went missing here the first
+          # time, when the expansion alone was extracted from `_parse_field_validations`.
           _symbolize_option_bags!(copy)
           Internal::ShapeGraph.detach_option_containers!(copy)
           _raise_member_model_unsupported!(name) if copy.key?(:model)
-          _expand_validator_sugar!(copy, [key])
+          _canonicalize_validator_options!(copy, [key])
           copy
         end
 

@@ -694,6 +694,31 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           .to raise_error(ArgumentError, /shape member `m` does not support model:.*type: Klass/m)
       end
 
+      # Expanding a shorthand is only half of what canonicalizing a bag is for: the compatibility guards that
+      # read the canonical bag live in the same seam, so a member is held to exactly what a field is held to.
+      # `of:` beside a non-Array `type:` is the case with no runtime signal at all — `OfValidator` returns
+      # before it inspects anything that is not an Array, so on a value the declared `type:` accepts the
+      # element constraint simply never applies. It declared cleanly and every call succeeded.
+      it "rejects `of:` beside a non-Array `type:` at declaration, with the field path's own message" do
+        expect { declared_with({ type: Hash, of: String }) }
+          .to raise_error(ArgumentError, "of: requires type: Array (got [Hash])")
+      end
+
+      # Same guard, the other spelling of the same mistake: with no `type:` at all the element check applies to
+      # an Array and to nothing else, so the member accepted every non-Array value it was declared to constrain.
+      it "rejects a bare `of:` with no `type:`, as the field path does" do
+        expect { declared_with({ of: String }) }
+          .to raise_error(ArgumentError, "of: requires type: Array (got [])")
+      end
+
+      # The required-option half of the same pair, reached through the expansion (`of: nil` expands to
+      # `{ klass: nil }`): it used to declare cleanly and raise `must supply :klass` from `check_validity!` on
+      # every call, which is the field path's message arriving at the wrong time and at the wrong person.
+      it "rejects `of: nil` at declaration, where it used to raise on every call" do
+        expect { declared_with({ type: Array, of: nil }) }
+          .to raise_error(ArgumentError, "of: must supply :klass")
+      end
+
       # A bare `type:` naming a LIST is expanded around a copy of that list, since the detach pass runs first —
       # so the stored contract is axn's, exactly as for a field.
       it "detaches a bare `type:` list, so mutating it cannot widen a declared member" do

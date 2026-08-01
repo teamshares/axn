@@ -2874,6 +2874,75 @@ check "a member's `model:` is refused rather than expanded",
   raw_shape_verdict({ members: [SC.new(field: :m, validations: { model: Hash })], container: Hash })
 end
 
+# Expanding a shorthand is only HALF of what canonicalizing a bag is for: the compatibility guards that read
+# what the expansion produced run in the same seam, so a member is rejected for exactly what a field is
+# rejected for. Extracting the expansion alone left a member expanding like a field and validating like
+# nothing. Each row declares the SAME options both ways and compares the two verdicts, which is the property
+# the seam exists to hold — not merely that something raised.
+def of_parity(validations, value)
+  member = SC.new(field: :m, validations:)
+  field = declaration_verdict(m: value) do
+    Class.new do
+      include Axn
+      expects :m, **validations
+      def call; end
+    end
+  end
+  raw = declaration_verdict(payload: { m: value }) do
+    Class.new do
+      include Axn
+      expects :payload, type: Hash, shape: { members: [member], container: Hash }
+      def call; end
+    end
+  end
+  "#{raw} #{raw == field ? '==' : '!='} field"
+end
+
+# The verdict of a declaration, and — when it declares — of a call against it, since an option that is merely
+# INERT declares perfectly well: that is the whole shape of this defect.
+def declaration_verdict(inputs)
+  r = yield.call(**inputs)
+  "declared; call ok=#{r.ok?}#{r.ok? ? '' : " (#{r.exception.class})"}"
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message}"
+end
+
+# `OfValidator` returns before it inspects a value that is not an Array, so beside a non-Array `type:` the
+# element constraint never applies to any value the member accepts — a contradiction with no runtime signal
+# at all, which is why it has to be a declaration error.
+check "a member's `of:` beside a non-Array `type:` is refused, as a field's is",
+      "ArgumentError: of: requires type: Array (got [Hash]) == field" do
+  of_parity({ type: Hash, of: String }, {})
+end
+
+# The same mistake spelled without a `type:`: the member constrained an Array's elements and accepted every
+# non-Array value silently.
+check "...and a bare `of:` naming no type at all",
+      "ArgumentError: of: requires type: Array (got []) == field" do
+  of_parity({ of: String }, "nope")
+end
+
+# The required-option half, reached THROUGH the expansion (`of: nil` expands to `{ klass: nil }`): it used to
+# declare and then raise the same message from `check_validity!` on every call — the right diagnosis at the
+# wrong time, delivered to whoever called rather than whoever declared.
+check "...and an `of:` naming nothing", "ArgumentError: of: must supply :klass == field" do
+  of_parity({ type: Array, of: nil }, [])
+end
+
+check "CONTROL: a legitimate `of:` still declares and validates on both routes",
+      "declared; call ok=true == field" do
+  of_parity({ type: Array, of: Hash }, [{ a: 1 }])
+end
+
+# RECORDED RESIDUE, and a field-path one rather than a member's: `of: false` is not `of: nil`, so the
+# required-option check passes it through and `TypeValidator.value_matches?(el, klass: false)` raises
+# `TypeError: class or module required` on the first call carrying a non-empty Array. It is recorded here
+# because it is the boundary of what the shared guard covers, and because the two routes agreeing about it —
+# both of them wrong, identically — is what "the member reaches the field's own guards" means.
+check "an `of: false` is inert on BOTH routes (residue)", "declared; call ok=false (TypeError) == field" do
+  of_parity({ type: Array, of: false }, [1])
+end
+
 # ---------------------------------------------------------------------------------------------------
 puts "\n== the boot guarantee, including a tool that inherits its adapter's readers ============="
 # ---------------------------------------------------------------------------------------------------
