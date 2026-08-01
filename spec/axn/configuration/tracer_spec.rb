@@ -416,6 +416,29 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "does not run the action when a subscriber raises a signal and the tracer absorbs it" do
+      # The three ways an observer can unwind are not interchangeable. An ordinary error from a
+      # subscriber is an observer FAILURE and the action still runs (covered above); a `throw` and a
+      # pass-through signal are CANCELLATIONS, and a tracer that absorbs everything must not be able
+      # to erase either into a successful call.
+      evented = Object.new
+      evented.define_singleton_method(:start) { |*| raise Interrupt, "cancelled" }
+      evented.define_singleton_method(:finish) { |*| nil }
+      subscriber = ActiveSupport::Notifications.subscribe("axn.call", evented)
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(nil)
+        rescue Exception # rubocop:disable Lint/RescueException
+          :swallowed
+        end
+      end.new
+
+      expect { counting_axn.call }.to raise_error(Interrupt)
+      expect(runs.size).to eq(0)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
     it "refuses to report success when the tracer catches a throw from the wrapped stack" do
       # A `throw` cannot be re-thrown once an observer has caught it — the tag and value are gone. So
       # this is the one case axn cannot make transparent; it fails loudly instead of reporting a

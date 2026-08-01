@@ -107,12 +107,16 @@ module Axn
           value = yield
           completed = true
           value
-        rescue Exception # rubocop:disable Lint/RescueException
-          # Deliberately NOT recorded as the attempt's error. An observer raising is an observer
-          # failure — logged and swallowed by the guard, which then lets the fallback run the action.
-          # Only a non-exception unwind is recorded here, because that is the one an observer can
-          # absorb while leaving nothing at all behind.
+        rescue Exception => e # rubocop:disable Lint/RescueException
           raised = true
+          # An observer raising an ORDINARY error is an observer failure: logged and swallowed by the
+          # guard, which then lets the fallback run the action. Deliberately not recorded, or a
+          # subscriber's own bug would propagate as the action's outcome.
+          #
+          # A class axn never swallows is the opposite — a cancellation passing through, which a
+          # tracer that absorbs everything would otherwise erase, leaving the fallback free to run the
+          # action after its caller had already given up.
+          @error ||= e unless Axn::Extensions.swallowable?(e)
           raise
         ensure
           @abandoned = true unless completed || raised || @error
