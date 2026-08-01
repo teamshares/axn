@@ -262,6 +262,24 @@ module Axn
               nested_height = inner.height + 1
               height = nested_height if nested_height > height
               validations[:shape] = inner.copy
+              # The field path's own derivation and check, called from where the walk already is, so a NESTED
+              # shape is held to exactly what a field's `shape:` is held to — at every level, since this runs on
+              # each member the walk descends through. Without it a hand-written nested `shape:` (the natural
+              # spelling for a raw member) reached ShapeValidator with a nil container and failed EVERY call with
+              # a bare `TypeError: class or module required`, naming neither the member nor the option, while the
+              # block form derived one and worked; a nested `container:` that is not a class did the same.
+              #
+              # AFTER the walk, matching the field path's own order (`expects` snapshots the graph, then
+              # `_parse_field_validations` derives), and after the copy is stored so what is derived onto is
+              # axn's own node. A container belongs to the POSITION rather than to the node — it comes from the
+              # enclosing member's `type:`, exactly as a field's comes from the field's — so it is resolved per
+              # REFERENCE: the walk's memo hands two members sharing one nested shape the same copy, and
+              # `_derive_raw_shape_container!` detaches before it writes, so a shape reused under `type: Hash`
+              # and under `type: Array` stores the right container in each place rather than the last one
+              # walked. Deriving BEFORE the walk instead would defeat that memo outright (a fresh detached node
+              # per reference is a fresh identity), which is what keeps a shared sub-shape from costing
+              # 2^depth walks.
+              _derive_raw_shape_container!(validations)
             end
             ShapeConfig.new(**attributes)
           end

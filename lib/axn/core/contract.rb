@@ -815,6 +815,12 @@ module Axn
           # the single declaration walk (see _validate_and_snapshot_shape!), which is also what captures the
           # members list carried forward here. A shape nested inside a `do…end` block reaches this before that
           # walk, which is exactly why the write must not land on the caller's object.
+          #
+          # The walk itself is the other caller, for every member's nested `shape:` (see
+          # `_check_and_copy_shape_members!`). The node it hands over is already axn's own copy, and the detach
+          # is load-bearing there for a different reason: that copy is SHARED by every member reusing the shape,
+          # while the container comes from the enclosing member's `type:` — so writing in place would give one
+          # position the container derived for another.
           detached = Internal::ShapeGraph.detach_node(shape)
           detached[:container] = _shape_compatible_type!(validations) if nil.equal?(detached[:container])
           _reject_non_class_container!(detached[:container])

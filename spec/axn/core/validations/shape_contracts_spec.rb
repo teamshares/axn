@@ -732,6 +732,125 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
     end
 
+    # A member's nested `shape:` is a shape declared by hand exactly as a field's is, so it is held to the
+    # field's own derivation and container check — at every level the declaration walk descends through.
+    # Before, the walk recursed past both: a hand-written nested shape (the natural spelling for a raw member)
+    # reached ShapeValidator with a nil container and raised a bare `TypeError: class or module required` on
+    # EVERY call, naming neither the member nor the option, while the block form derived one and worked.
+    describe "a member's nested `shape:`" do
+      def declared_with(validations)
+        member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations:)
+        build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+      end
+
+      def nested(klass, depth = 1)
+        node = klass.internal_field_configs.first.validations[:shape]
+        depth.times { node = node[:members].first.validations[:shape] }
+        node
+      end
+
+      let(:leaf) { Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: { type: String }) }
+
+      it "derives the container from the member's own `type:`, where every call used to raise TypeError" do
+        klass = declared_with({ type: Hash, shape: { members: [leaf] } })
+
+        expect(nested(klass)[:container]).to eq(Hash)
+        expect(klass.call(payload: { m: { leaf: "x" } })).to be_ok
+        expect(klass.call(payload: { m: { leaf: 1 } }).exception.message).to match(/m leaf is not a String/)
+      end
+
+      # The container a member's nested shape gets is the one the block form gives the same declaration —
+      # verified by comparing the stored node against the route that already derived it (a block-form member
+      # carrying a raw `shape:` kwarg, which reaches the field path's derivation through `_parse_field_configs`).
+      it "stores the node the block form stores for the same declaration" do
+        raw = declared_with({ type: Hash, shape: { members: [leaf] } })
+        via_block = build_axn do
+          member_shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: { type: String })] }
+          expects :payload, type: Hash do
+            field :m, type: Hash, shape: member_shape
+          end
+        end
+
+        expect(nested(raw)[:container]).to eq(nested(via_block)[:container])
+        expect(nested(raw)[:members].map(&:to_h)).to eq(nested(via_block)[:members].map(&:to_h))
+      end
+
+      it "derives an Array container for an Array-typed member, as the field path does" do
+        klass = declared_with({ type: Array, shape: { members: [leaf] } })
+
+        expect(nested(klass)[:container]).to eq(Array)
+        expect(klass.call(payload: { m: [{ leaf: "x" }] })).to be_ok
+      end
+
+      # The walk recurses, so every level is a member of some shape and gets the same treatment: a two-level
+      # nested shape behaves exactly as a one-level one.
+      it "derives at every nesting level, not just the first" do
+        deep = Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: { type: Hash, shape: { members: [leaf] } })
+        klass = declared_with({ type: Hash, shape: { members: [deep] } })
+
+        expect(nested(klass, 1)[:container]).to eq(Hash)
+        expect(nested(klass, 2)[:container]).to eq(Hash)
+        expect(klass.call(payload: { m: { deep: { leaf: "x" } } })).to be_ok
+      end
+
+      it "rejects a non-class nested `container:` at declaration, with the field path's own message" do
+        expect { declared_with({ type: Hash, shape: { members: [], container: :junk } }) }
+          .to raise_error(ArgumentError, /a shape's `container:` must be a class \(got :junk\)/)
+      end
+
+      it "rejects one nested two levels down just the same" do
+        deep = Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: { type: Hash, shape: { members: [], container: :junk } })
+
+        expect { declared_with({ type: Hash, shape: { members: [deep], container: Hash } }) }
+          .to raise_error(ArgumentError, /a shape's `container:` must be a class \(got :junk\)/)
+      end
+
+      # Derivation reports the field path's declaration error when there is nothing structured to derive from,
+      # rather than storing a nil container for the first call to trip over.
+      it "raises when the member declares no structured `type:` to derive from" do
+        expect { declared_with({ shape: { members: [leaf] } }) }
+          .to raise_error(ArgumentError, /a shape block requires a single structured type:/)
+      end
+
+      it "leaves an explicit nested `container:` exactly as declared" do
+        klass = declared_with({ type: Hash, shape: { members: [leaf], container: Hash } })
+
+        expect(nested(klass)[:container]).to eq(Hash)
+        expect(klass.call(payload: { m: { leaf: "x" } })).to be_ok
+      end
+
+      # A container comes from the ENCLOSING member's `type:`, so it belongs to the position rather than to the
+      # node: one nested shape object reused by two members with different types needs a different container in
+      # each place. The walk's memo hands both members one copy, so the derivation detaches before it writes.
+      it "gives one shared nested shape the container each position calls for" do
+        shared = { members: [leaf] }
+        klass = build_axn do
+          node = shared
+          expects :payload, type: Hash, shape: { container: Hash, members: [
+            Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Hash, shape: node }),
+            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { type: Array, shape: node }),
+          ] }
+        end
+        members = klass.internal_field_configs.first.validations[:shape][:members]
+
+        expect(members.map { |m| m.validations[:shape][:container] }).to eq([Hash, Array])
+        expect(shared.key?(:container)).to be(false)
+        expect(klass.call(payload: { a: { leaf: "x" }, b: [{ leaf: "y" }] })).to be_ok
+      end
+
+      it "derives on the outbound route too" do
+        klass = build_axn do
+          inner = Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: { type: String })
+          member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: Hash, shape: { members: [inner] } })
+          exposes :payload, type: Hash, shape: { members: [member], container: Hash }
+          define_method(:call) { expose(payload: { m: { leaf: "x" } }) }
+        end
+
+        expect(klass.external_field_configs.first.validations[:shape][:members].first.validations[:shape][:container]).to eq(Hash)
+        expect(klass.call).to be_ok
+      end
+    end
+
     # The documented member contract is duck-typed (#field + #validations). A raw `shape:` supplied
     # with a member object that doesn't implement #method_call must not raise — it defaults to the
     # safe no-dispatch behavior, so existing member objects don't have to grow a new method.

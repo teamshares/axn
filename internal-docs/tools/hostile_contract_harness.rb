@@ -2879,7 +2879,7 @@ end
 # rejected for. Extracting the expansion alone left a member expanding like a field and validating like
 # nothing. Each row declares the SAME options both ways and compares the two verdicts, which is the property
 # the seam exists to hold — not merely that something raised.
-def of_parity(validations, value)
+def member_field_parity(validations, value)
   member = SC.new(field: :m, validations:)
   field = declaration_verdict(m: value) do
     Class.new do
@@ -2912,26 +2912,26 @@ end
 # at all, which is why it has to be a declaration error.
 check "a member's `of:` beside a non-Array `type:` is refused, as a field's is",
       "ArgumentError: of: requires type: Array (got [Hash]) == field" do
-  of_parity({ type: Hash, of: String }, {})
+  member_field_parity({ type: Hash, of: String }, {})
 end
 
 # The same mistake spelled without a `type:`: the member constrained an Array's elements and accepted every
 # non-Array value silently.
 check "...and a bare `of:` naming no type at all",
       "ArgumentError: of: requires type: Array (got []) == field" do
-  of_parity({ of: String }, "nope")
+  member_field_parity({ of: String }, "nope")
 end
 
 # The required-option half, reached THROUGH the expansion (`of: nil` expands to `{ klass: nil }`): it used to
 # declare and then raise the same message from `check_validity!` on every call — the right diagnosis at the
 # wrong time, delivered to whoever called rather than whoever declared.
 check "...and an `of:` naming nothing", "ArgumentError: of: must supply :klass == field" do
-  of_parity({ type: Array, of: nil }, [])
+  member_field_parity({ type: Array, of: nil }, [])
 end
 
 check "CONTROL: a legitimate `of:` still declares and validates on both routes",
       "declared; call ok=true == field" do
-  of_parity({ type: Array, of: Hash }, [{ a: 1 }])
+  member_field_parity({ type: Array, of: Hash }, [{ a: 1 }])
 end
 
 # RECORDED RESIDUE, and a field-path one rather than a member's: `of: false` is not `of: nil`, so the
@@ -2940,7 +2940,68 @@ end
 # because it is the boundary of what the shared guard covers, and because the two routes agreeing about it —
 # both of them wrong, identically — is what "the member reaches the field's own guards" means.
 check "an `of: false` is inert on BOTH routes (residue)", "declared; call ok=false (TypeError) == field" do
-  of_parity({ type: Array, of: false }, [1])
+  member_field_parity({ type: Array, of: false }, [1])
+end
+
+# The same parity one level down: a member's NESTED `shape:` is a shape declared by hand exactly as a field's
+# is, and the declaration walk recursed past both the field path's container derivation and its container
+# check. So a hand-written nested shape — needing no hostile object, and the natural spelling for a raw member
+# — declared cleanly and failed EVERY call with a bare `TypeError: class or module required`, naming neither
+# the member nor the option, while the block form derived a container and worked.
+NESTED_LEAF = [SC.new(field: :leaf, validations: { type: String })].freeze
+
+check "a member's nested `shape:` gets the container derived, as a field's does",
+      "declared; call ok=true == field" do
+  member_field_parity({ type: Hash, shape: { members: NESTED_LEAF } }, { leaf: "x" })
+end
+
+# The guard half of the same seam, and the one that changes a previously-declaring contract into a raise.
+check "...and a nested non-class `container:` is refused, as a field's is",
+      /ArgumentError: a shape's `container:` must be a class \(got :junk\).* == field/ do
+  member_field_parity({ type: Hash, shape: { members: [], container: :junk } }, {})
+end
+
+# The walk recurses, so every level is a member of some shape: depth 2 has to behave exactly as depth 1, both
+# halves. A row per half, since the derivation and the guard fail differently.
+DEEP_DERIVED = [SC.new(field: :deep, validations: { type: Hash, shape: { members: NESTED_LEAF } })].freeze
+DEEP_JUNK = [SC.new(field: :deep, validations: { type: Hash, shape: { members: [], container: :junk } })].freeze
+
+check "the derivation reaches a shape nested two levels down", "declared; call ok=true == field" do
+  member_field_parity({ type: Hash, shape: { members: DEEP_DERIVED } }, { deep: { leaf: "x" } })
+end
+
+check "...and so does the container check", /ArgumentError: a shape's `container:` must be a class \(got :junk\).* == field/ do
+  member_field_parity({ type: Hash, shape: { members: DEEP_JUNK } }, { deep: {} })
+end
+
+# Deriving needs something structured to derive FROM, and reports the field path's own declaration error when
+# there is not — rather than storing a nil container for the first call to trip over.
+check "a nested shape with no structured `type:` to derive from is refused",
+      /ArgumentError: a shape block requires a single structured type:.* == field/ do
+  member_field_parity({ shape: { members: NESTED_LEAF } }, {})
+end
+
+check "CONTROL: an explicit nested `container:` still declares and validates on both routes",
+      "declared; call ok=true == field" do
+  member_field_parity({ type: Hash, shape: { members: NESTED_LEAF, container: Hash } }, { leaf: "x" })
+end
+
+# A container comes from the ENCLOSING member's `type:`, so it belongs to the POSITION and not to the node: one
+# nested shape object reused by two members with different types needs a different container in each place.
+# The walk's memo hands both members ONE copy (which is what keeps a shared sub-shape from costing 2^depth
+# walks), so the derivation detaches before it writes — and the caller's own node is never written into.
+check "a nested shape shared by two members gets each position's own container", "[Hash, Array] caller=[:members] call ok=true" do
+  shared = { members: NESTED_LEAF }
+  members = [SC.new(field: :a, validations: { type: Hash, shape: shared }),
+             SC.new(field: :b, validations: { type: Array, shape: shared })]
+  klass = Class.new do
+    include Axn
+    expects :payload, type: Hash, shape: { members:, container: Hash }
+    def call; end
+  end
+  stored = klass.internal_field_configs.first.validations[:shape][:members].map { |m| m.validations[:shape][:container] }
+  r = klass.call(payload: { a: { leaf: "x" }, b: [{ leaf: "y" }] })
+  "#{stored.inspect} caller=#{shared.keys.inspect} call ok=#{r.ok?}"
 end
 
 # ---------------------------------------------------------------------------------------------------
