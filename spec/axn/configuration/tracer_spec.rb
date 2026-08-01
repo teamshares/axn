@@ -232,6 +232,33 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(1)
     end
 
+    it "does not stamp an outcome on a span the action never ran inside" do
+      # The result is still at its default `success` until the action settles, so finalizing a span the
+      # action never entered would label a failed call as a successful one.
+      span = Class.new do
+        attr_reader :attributes
+
+        def initialize = @attributes = {}
+        def set_attribute(key, value) = @attributes[key] = value
+        def record_exception(_exception) = nil
+      end.new
+
+      evented = Object.new
+      evented.define_singleton_method(:start) { |*| raise "subscriber boom" }
+      evented.define_singleton_method(:finish) { |*| nil }
+      bad_subscriber = ActiveSupport::Notifications.subscribe("axn.call", evented)
+
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| block.call(span) }
+      end.new
+      failing = build_axn { def call = fail!("actually failed") }
+
+      expect(failing.call.outcome.to_s).to eq("failure")
+      expect(span.attributes).to be_empty
+    ensure
+      ActiveSupport::Notifications.unsubscribe(bad_subscriber)
+    end
+
     it "does not re-enter a notification that already ran a subscriber's side effect" do
       # A subscriber can commit something and THEN raise. Retrying the notification in that state would
       # repeat the side effect, so a failure the notification itself caused is not retried.

@@ -240,7 +240,12 @@ module Axn
           begin
             instrument_block.call
           ensure
-            finalize_span(span)
+            # Only describe a span the action actually ran inside. If `instrument` exited before
+            # reaching the action — an evented subscriber raising or throwing from `start` — the result
+            # is still at its default `success`, so finalizing here would stamp a completed success
+            # onto a call that went on to fail in the observer-free fallback, or never ran at all. An
+            # unlabelled span is a smaller lie than a wrong one.
+            finalize_span(span) if started_check.call
           end
         end
       end
