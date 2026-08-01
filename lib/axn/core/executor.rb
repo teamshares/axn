@@ -109,6 +109,8 @@ module Axn
       #   yields more than once         run the action for the FIRST yield only
       #   after yield                   log and keep the settled result; the action already ran
       #   span finalization             skip it unless the action ran inside that span
+      #   span missing an optional method  attempt the call and tolerate absence; never ask
+      #                                   respond_to?, which a proxy cannot answer or answers wrongly
       #   notification start            run the action bare; do not re-enter a notification that ran
       #   notification finish           log; the action already ran and settled
       #
@@ -283,14 +285,23 @@ module Axn
             # in its own best_effort. Otherwise a span that omits one — or raises inside it — aborts the
             # enclosing block and silently drops the facet attributes set afterward.
             #
-            # `record_exception` is capability-checked, because the argument is a plain Ruby exception
-            # any span can do something sensible with. A STATUS cannot be offered the same way: the
-            # only status axn can construct is an `OpenTelemetry::Trace::Status`, so the test is
-            # whether the span is an OpenTelemetry span — not merely whether it answers `status=`. A
-            # custom span exposing that name means its OWN status type, and handing it a vendor object
-            # would store a value it never agreed to. It keeps the recorded exception instead.
+            # `record_exception` is ATTEMPTED rather than capability-checked: its argument is a plain
+            # Ruby exception any span can do something sensible with, and asking `respond_to?` first
+            # would lose the event for a span that cannot answer — a BasicObject-based proxy has no
+            # `respond_to?` at all, and one that overrides it can answer wrongly. A span that genuinely
+            # lacks the method is the only thing the rescue absorbs.
+            #
+            # A STATUS cannot be offered the same way: the only status axn can construct is an
+            # `OpenTelemetry::Trace::Status`, so the test is whether the span IS an OpenTelemetry span,
+            # not whether it answers `status=`. A custom span exposing that name means its OWN status
+            # type, and handing it a vendor object would store a value it never agreed to. It keeps the
+            # recorded exception instead.
             Axn::Extensions.best_effort("recording exception details on the axn.call span", action: @action) do
-              span.record_exception(result.exception) if span.respond_to?(:record_exception)
+              begin
+                span.record_exception(result.exception)
+              rescue NoMethodError
+                nil
+              end
 
               # `Module#===`, not `span.is_a?`: the span is caller-supplied, and a proxy answering
               # `is_a?` however it likes must not be able to talk its way into a vendor status object.

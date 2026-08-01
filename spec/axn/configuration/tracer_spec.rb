@@ -494,6 +494,38 @@ RSpec.describe "Axn.config.tracer" do
       expect(own_status_span.assigned_status).to be_nil
     end
 
+    it "records the exception on a BasicObject span, which cannot answer respond_to?" do
+      recorded = []
+      span = Class.new(BasicObject) do
+        define_method(:set_attribute) { |_key, _value| nil }
+        define_method(:record_exception) { |exception| recorded << exception.message }
+      end.new
+
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |_name, **, &block| block.call(span) }
+      end.new
+
+      failing_axn.call
+      expect(recorded).to eq(["nope"])
+    end
+
+    it "records the exception on a span whose respond_to? answers false" do
+      recorded = []
+      span = Class.new do
+        def set_attribute(_key, _value) = nil
+        def respond_to?(*) = false
+
+        define_method(:record_exception) { |exception| recorded << exception.message }
+      end.new
+
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |_name, **, &block| block.call(span) }
+      end.new
+
+      failing_axn.call
+      expect(recorded).to eq(["nope"])
+    end
+
     it "does not hand a status to a span that merely claims to be an OpenTelemetry span" do
       # The span is caller-supplied, so its own `is_a?` is not evidence of anything.
       liar = Class.new do
