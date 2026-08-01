@@ -137,8 +137,21 @@ module Axn
               # Identity against nil, not `v.nil?`: an object that overrides `nil?` to return true
               # would otherwise be accepted as "tracing disabled" and skip the #in_span check
               # entirely, turning a rejectable configuration into a per-call failure.
-              Axn::Internal::Identity.nil_value?(v) || v.respond_to?(:in_span) ||
-                "must respond to #in_span, or be nil to disable tracing"
+              next true if Axn::Internal::Identity.nil_value?(v)
+
+              # A BasicObject-based proxy — the shape most likely to be wrapping a real tracer — has no
+              # `respond_to?` at all, and there is no way to introspect one: every reflection method
+              # lives on Object. Accept what cannot be inspected rather than rejecting it over the
+              # absence of a method axn never asked for. A tracer that then turns out to lack `in_span`
+              # is caught by the tracing boundary in Core::Executor, which logs it and runs the action
+              # untraced, so the cost of being wrong here is a log line rather than a broken call.
+              responds = begin
+                v.respond_to?(:in_span)
+              rescue NoMethodError
+                true
+              end
+
+              responds || "must respond to #in_span, or be nil to disable tracing"
             }
 
     attr_writer :logger, :env, :on_exception, :rails

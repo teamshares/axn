@@ -62,6 +62,18 @@ RSpec.describe "Axn.config.tracer" do
     expect { Axn.config.tracer = -> { fake_tracer } }.to raise_error(ArgumentError, /must respond to #in_span/)
   end
 
+  it "accepts a BasicObject proxy tracer, which cannot be introspected at all" do
+    # Every reflection method lives on Object, so a BasicObject-based forwarder — the likeliest shape to
+    # be wrapping a real tracer — has no `respond_to?` to ask. Rejecting it over the absence of a method
+    # axn never needs would make the seam unusable for exactly that case.
+    proxy = Class.new(BasicObject) do
+      def in_span(_name, **) = yield(nil)
+    end.new
+
+    expect { Axn.config.tracer = proxy }.not_to raise_error
+    expect(build_axn.call).to be_ok
+  end
+
   it "rejects an object claiming to be nil rather than reading it as tracing-disabled" do
     liar = Class.new { def nil? = true }.new
 
