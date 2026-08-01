@@ -232,6 +232,41 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(1)
     end
 
+    it "does not re-enter a notification that already ran a subscriber's side effect" do
+      # A subscriber can commit something and THEN raise. Retrying the notification in that state would
+      # repeat the side effect, so a failure the notification itself caused is not retried.
+      side_effects = []
+      evented = Object.new
+      evented.define_singleton_method(:start) do |*|
+        side_effects << :notified
+        raise "after side effect"
+      end
+      evented.define_singleton_method(:finish) { |*| nil }
+      bad_subscriber = ActiveSupport::Notifications.subscribe("axn.call", evented)
+
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| block.call(nil) }
+      end.new
+
+      expect(counting_axn.call).to be_ok
+      expect(side_effects.size).to eq(1)
+      expect(runs.size).to eq(1)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(bad_subscriber)
+    end
+
+    it "still emits the notification when it was the TRACER that failed before yielding" do
+      events = []
+      subscriber = ActiveSupport::Notifications.subscribe("axn.call") { |name, *| events << name }
+      Axn.config.tracer = Class.new { def in_span(*, **) = raise("tracer down") }.new
+
+      expect(counting_axn.call).to be_ok
+      expect(events).to eq(["axn.call"])
+      expect(runs.size).to eq(1)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
     it "runs the action exactly once when an axn.call subscriber raises before the action starts" do
       # An EVENTED subscriber (one responding to start/finish) — not a lambda, which ActiveSupport
       # wraps as a timed subscriber that only runs at finish. `instrument` raises out of `start`, so

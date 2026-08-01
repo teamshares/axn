@@ -139,12 +139,21 @@ module Axn
         # evented `axn.call` subscriber whose `start` callback blows up does exactly that, so the action
         # would never be reached. That is why the last-resort fallback below calls `run_action` rather
         # than this: once notification has failed, retrying it fails the same way.
+        # `notified` records that the notification was ATTEMPTED, not that it succeeded, because a
+        # subscriber can commit a side effect and then raise. Retrying it in that state would run the
+        # side effect twice, so the fallback below retries only when nothing reached this proc at all.
+        notified = false
         instrument_block = proc do
+          notified = true
           ActiveSupport::Notifications.instrument("axn.call", payload) do
             run_action.call
           ensure
             update_payload.call
           end
+        end
+
+        emit_notification = proc do
+          Axn::Extensions.best_effort("emitting axn.call notification", action: @action) { instrument_block.call }
         end
 
         # ONE boundary around everything tracing does — resolving the tracer, probing its signature,
@@ -185,7 +194,11 @@ module Axn
           # dev-loud path from costing the action its run.
           if !started && resumable.call
             begin
-              Axn::Extensions.best_effort("emitting axn.call notification", action: @action) { instrument_block.call }
+              # Only when the notification was never reached — a tracer that raised or returned before
+              # yielding. If it WAS reached and still left the action unstarted, the failure is the
+              # notification's own, and re-entering it would repeat whatever a subscriber already did
+              # before raising.
+              emit_notification.call unless notified
             ensure
               run_action.call if !started && resumable.call
             end
