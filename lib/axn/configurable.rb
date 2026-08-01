@@ -480,11 +480,12 @@ module Axn
       # and the supported alternative to assigning nil, which is a VALUE rather than a reset.
       def reset!(*names)
         targets = names.empty? ? @settings.keys : names.map(&:to_sym)
-        targets.each do |name|
-          raise ArgumentError, "unknown setting #{name.inspect}" unless @settings.key?(name)
+        # Validate the WHOLE list before deleting anything, so a typo alongside a real name cannot
+        # leave the config half-reset behind the raise.
+        unknown = targets.reject { |name| @settings.key?(name) }
+        raise ArgumentError, "unknown setting #{unknown.first.inspect}" if unknown.any?
 
-          @values.delete(name)
-        end
+        targets.each { |name| @values.delete(name) }
         self
       end
 
@@ -551,9 +552,12 @@ module Axn
         base.send(:define_method, :reset!) do |*names|
           declared = Axn::Configurable.declared_settings_for(self.class)
           targets = names.empty? ? declared.keys : names.map(&:to_sym)
-          targets.each do |name|
-            raise ArgumentError, "unknown setting #{name.inspect}" unless declared.key?(name)
+          # Validate the WHOLE list before touching anything, so `reset!(:real, :typo)` leaves the
+          # config exactly as it was instead of half-reset behind the raise.
+          unknown = targets.reject { |name| declared.key?(name) }
+          raise ArgumentError, "unknown setting #{unknown.first.inspect}" if unknown.any?
 
+          targets.each do |name|
             ivar = :"@#{name}"
             remove_instance_variable(ivar) if instance_variable_defined?(ivar)
           end

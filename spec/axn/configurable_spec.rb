@@ -686,6 +686,13 @@ RSpec.describe "#reset!" do
       expect { instance.reset!(:nope) }.to raise_error(ArgumentError, /unknown setting :nope/)
     end
 
+    it "resets nothing when any name in the list is unknown" do
+      instance.literal = :changed
+
+      expect { instance.reset!(:literal, :nope) }.to raise_error(ArgumentError, /unknown setting :nope/)
+      expect(instance.literal).to eq(:changed)
+    end
+
     it "is a no-op for a setting that was never assigned" do
       expect { instance.reset!(:literal) }.not_to raise_error
       expect(instance.literal).to eq(:original)
@@ -815,6 +822,13 @@ RSpec.describe "#reset!" do
 
     it "raises on an unknown setting" do
       expect { mod.config.reset!(:nope) }.to raise_error(ArgumentError, /unknown setting :nope/)
+    end
+
+    it "resets nothing when any name in the list is unknown" do
+      mod.config.literal = :changed
+
+      expect { mod.config.reset!(:literal, :nope) }.to raise_error(ArgumentError, /unknown setting :nope/)
+      expect(mod.config.literal).to eq(:changed)
     end
   end
 end

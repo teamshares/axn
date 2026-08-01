@@ -121,48 +121,47 @@ module Axn
           end
         end
 
-        # Presence of a TRACER gates the span, not presence of the OpenTelemetry constant: a tracer
-        # can be configured explicitly (`Axn.config.tracer`) with OpenTelemetry never loaded, and
-        # tracing can be turned off (`Axn.config.tracer = nil`) with it loaded.
-        tracer = Axn.config.tracer
-        if tracer
-          in_span_kwargs = { attributes: { "axn.resource" => resource } }
-          in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
+        # ONE boundary around everything tracing does — resolving the tracer, probing its signature,
+        # opening the span, finalizing it. All of it is a side channel, and the whole path holds a
+        # single invariant: it may neither suppress, duplicate, nor replace the action.
+        #
+        # `started` is the entire guarantee. It flips on the first yield, so the block body runs at
+        # most once no matter how the tracer behaves — raising before yielding, returning without ever
+        # yielding (a disabled or broken decorator), yielding more than once, or raising afterward —
+        # and anything that leaves this boundary with it still false means the action has not run, so
+        # the untraced fallback owes it exactly one execution.
+        #
+        # The fallback lives in `ensure` deliberately: `best_effort` re-raises under
+        # `best_effort_raises_in_dev`, and a dev-loud tracing error must still not cost the action its
+        # run. Same reason an exception axn never swallows reaches the fallback on its way past.
+        #
+        # A failure anywhere in here belongs to tracing, never to the action: `with_exception_handling`
+        # runs INSIDE this block (see #run), so the action's own swallowable exceptions are already
+        # settled onto its result before control returns. Presence of a TRACER — not of the
+        # OpenTelemetry constant — is what gates the span, so an explicitly configured tracer works
+        # with OpenTelemetry unloaded and `tracer = nil` turns spans off with it loaded.
+        started = false
+        begin
+          Axn::Extensions.best_effort("tracing axn.call", action: @action) do
+            tracer = Axn.config.tracer
+            if tracer
+              in_span_kwargs = { attributes: { "axn.resource" => resource } }
+              in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
 
-          # Tracing observes the call, so a tracer must be able to neither suppress nor duplicate it.
-          # `in_span` wraps the work instead of sinking it, and a caller-supplied one may misbehave in
-          # three ways: raise before yielding, return without ever yielding (a disabled or broken
-          # decorator), or yield more than once. `started` answers all three — it flips on the first
-          # yield, so the block body runs at most once, and anything that leaves `in_span` with it
-          # still false means the action has not run yet and the fallback below owes it exactly one
-          # execution.
-          #
-          # A failure surfacing here is the tracing wrapper's, never the action's, whichever side of the
-          # yield it happened on: `with_exception_handling` runs INSIDE this block (see #run), so the
-          # action's own swallowable exceptions are already settled onto its result before `in_span`
-          # regains control. So it is logged and swallowed like any other side channel — converting a
-          # settled success into a raise from `.call` because a span failed to export would be the
-          # observability channel taking down the call it observes. An exception axn never swallows
-          # still propagates untouched, since it is outside this rescue's set.
-          started = false
-          begin
-            tracer.in_span("axn.call", **in_span_kwargs) do |span|
-              next if started
+              tracer.in_span("axn.call", **in_span_kwargs) do |span|
+                next if started
 
-              started = true
-              begin
-                instrument_block.call
-              ensure
-                finalize_span(span)
+                started = true
+                begin
+                  instrument_block.call
+                ensure
+                  finalize_span(span)
+                end
               end
             end
-          rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-            Axn::Extensions.best_effort("tracing axn.call", action: @action) { raise e }
           end
-
+        ensure
           instrument_block.call unless started
-        else
-          instrument_block.call
         end
       ensure
         Axn::Extensions.best_effort("calling emit_metrics while tracing axn.call", action: @action) do

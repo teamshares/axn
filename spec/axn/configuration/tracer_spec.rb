@@ -220,6 +220,30 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(1)
     end
 
+    it "runs the action exactly once when resolving the tracer itself raises" do
+      # Tracer DISCOVERY is a side channel too: a faulty OpenTelemetry provider must not cost the
+      # action its run, even though the failure happens before there is any span to speak of.
+      otel = Module.new { def self.tracer_provider = raise("provider exploded") }
+      stub_const("OpenTelemetry", otel)
+      Axn::Internal::Tracing.reset!
+
+      expect(counting_axn.call).to be_ok
+      expect(runs.size).to eq(1)
+    end
+
+    it "runs the action exactly once even when a tracing failure is re-raised dev-loud" do
+      # best_effort re-raises under best_effort_raises_in_dev. The developer should see the tracing
+      # error, but it must not swallow the action's execution on the way out.
+      allow(Axn.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
+      Axn.config.best_effort_raises_in_dev = true
+      Axn.config.tracer = Class.new { def in_span(*, **) = raise("down before yield") }.new
+
+      expect { counting_axn.call }.to raise_error("down before yield")
+      expect(runs.size).to eq(1)
+    ensure
+      Axn.config.reset!(:best_effort_raises_in_dev)
+    end
+
     it "runs the action exactly once when in_span raises before yielding" do
       Axn.config.tracer = Class.new { def in_span(*, **) = raise("backend down") }.new
 
