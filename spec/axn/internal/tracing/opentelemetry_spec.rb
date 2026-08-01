@@ -191,6 +191,20 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
       expect(Axn::Internal::Tracing.supports_record_exception_option?(positional)).to be(false)
     end
 
+    # A configured tracer promises #in_span and nothing else, so the memo must not dispatch identity
+    # or nil-ness to it — that would run on every call after the first, outside the probe's rescue.
+    it "does not dispatch equal? or nil? to the tracer" do
+      hostile = Class.new do
+        def in_span(_name, record_exception: nil); end
+        def equal?(_other) = raise("tracer#equal? must not be called")
+        def nil? = raise("tracer#nil? must not be called")
+      end.new
+
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(hostile)).to be(true)
+      # Second call goes through the memo comparison, which is where a dispatched equal? would fire.
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(hostile)).to be(true)
+    end
+
     it "is false for no tracer at all" do
       expect(Axn::Internal::Tracing.supports_record_exception_option?(nil)).to be(false)
     end
