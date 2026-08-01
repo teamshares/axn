@@ -209,7 +209,7 @@ module Axn
         # — begun, raised, abandoned — where it actually happens, rather than letting a wrapper's own
         # progress stand in for the action's.
         attempt = ActionAttempt.new
-        run_action = proc { attempt.execute { block.call } }
+        run_action = proc { attempt.execute { block.call } if attempt.claim }
 
         # Enrich the payload from inside the instrument block — after the action settles but
         # BEFORE ActiveSupport publishes the event — so live `axn.call` subscribers observe the
@@ -225,6 +225,7 @@ module Axn
         # subscriber can commit a side effect and then raise. Retrying it in that state would run the
         # side effect twice, so the fallback below retries only when nothing reached this proc at all.
         notified = false
+        notified_check = proc { notified }
         instrument_block = proc do
           notified = true
           ActiveSupport::Notifications.instrument("axn.call", payload) do
@@ -262,7 +263,7 @@ module Axn
         traced = false
         begin
           guarding_observer("tracing axn.call", attempt) do
-            emit_observed(resource, instrument_block, attempt)
+            emit_observed(resource, instrument_block, attempt, notified_check)
           end
           traced = true
         ensure
@@ -362,7 +363,7 @@ module Axn
       # Emits the `axn.call` span and notification around the action. Split out of `with_tracing` so the
       # invariant there — the action runs exactly once, whatever the observers do — reads as one piece.
       # `started_check` is how the double-yield guard sees a flag owned by the caller's closure.
-      def emit_observed(resource, instrument_block, attempt)
+      def emit_observed(resource, instrument_block, attempt, notified_check)
         tracer = Axn.config.tracer
         return instrument_block.call unless tracer
 
@@ -370,7 +371,9 @@ module Axn
         in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
 
         tracer.in_span("axn.call", **in_span_kwargs) do |span|
-          next unless attempt.claim
+          # Guards the NOTIFICATION against a tracer that yields more than once; the action itself is
+          # guarded by the claim inside `run_action`, immediately before it begins.
+          next if notified_check.call
 
           begin
             instrument_block.call

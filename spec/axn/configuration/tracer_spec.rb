@@ -429,6 +429,37 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    # These two document the OUTCOME for a tracer that breaks the synchronous contract of `in_span`.
+    # Neither discriminates the mechanism: the async one is short-circuited by the notification guard
+    # before the claim is reached, and the concurrent one has a window too narrow to lose reliably.
+    # What makes the claim itself correct is covered deterministically in
+    # spec/axn/core/action_attempt_spec.rb — these would only catch a gross regression.
+    it "runs the action once when the tracer yields asynchronously and returns early" do
+      spawned = []
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          spawned << Thread.new { sleep 0.05 and block.call(nil) }
+          :returned_early
+        end
+      end.new
+
+      counting_axn.call
+      spawned.each(&:join)
+
+      expect(runs.size).to eq(1)
+    end
+
+    it "runs the action once when the tracer yields concurrently from two threads" do
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          2.times.map { Thread.new { block.call(nil) } }.each(&:join)
+        end
+      end.new
+
+      counting_axn.call
+      expect(runs.size).to eq(1)
+    end
+
     it "does not start the action when the tracer throws instead of raising" do
       # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
       # being absent — it has to come from the guarded step reporting that it returned normally.
