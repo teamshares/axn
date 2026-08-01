@@ -40,6 +40,7 @@ module Axn
       def initialize
         @lock = Thread::Mutex.new
         @claimed = false
+        @notification_claimed = false
         @started = false
         @error = nil
         @abandoned = false
@@ -60,6 +61,20 @@ module Axn
           return false if @claimed
 
           @claimed = true
+          true
+        end
+      end
+
+      # The same one-winner rule for emitting `axn.call`, tracked separately from the action's claim
+      # because the two are not the same event: a notification can be attempted and fail before the
+      # action begins, and must not then be retried — a subscriber may already have committed a side
+      # effect. Claiming rather than testing a flag matters for the same reason it does above: a tracer
+      # yielding from two threads could otherwise emit the event twice.
+      def claim_notification
+        @lock.synchronize do
+          return false if @notification_claimed
+
+          @notification_claimed = true
           true
         end
       end
@@ -221,13 +236,7 @@ module Axn
         # evented `axn.call` subscriber whose `start` callback blows up does exactly that, so the action
         # would never be reached. That is why the last-resort fallback below calls `run_action` rather
         # than this: once notification has failed, retrying it fails the same way.
-        # `notified` records that the notification was ATTEMPTED, not that it succeeded, because a
-        # subscriber can commit a side effect and then raise. Retrying it in that state would run the
-        # side effect twice, so the fallback below retries only when nothing reached this proc at all.
-        notified = false
-        notified_check = proc { notified }
         instrument_block = proc do
-          notified = true
           ActiveSupport::Notifications.instrument("axn.call", payload) do
             run_action.call
           ensure
@@ -263,7 +272,7 @@ module Axn
         traced = false
         begin
           guarding_observer("tracing axn.call", attempt) do
-            emit_observed(resource, instrument_block, attempt, notified_check)
+            emit_observed(resource, instrument_block, attempt)
           end
           traced = true
         ensure
@@ -282,11 +291,11 @@ module Axn
           if !attempt.started? && resumable_after?(traced)
             emitted = false
             begin
-              # Only when the notification was never reached — a tracer that raised or returned before
-              # yielding. If it WAS reached and still left the action unstarted, the failure is the
+              # Only when nothing claimed the notification — a tracer that raised or returned before
+              # yielding. If it WAS claimed and still left the action unstarted, the failure is the
               # notification's own, and re-entering it would repeat whatever a subscriber already did
               # before raising.
-              emit_notification.call unless notified
+              emit_notification.call if attempt.claim_notification
               emitted = true
             ensure
               run_action.call if !attempt.started? && resumable_after?(emitted)
@@ -363,17 +372,21 @@ module Axn
       # Emits the `axn.call` span and notification around the action. Split out of `with_tracing` so the
       # invariant there — the action runs exactly once, whatever the observers do — reads as one piece.
       # `started_check` is how the double-yield guard sees a flag owned by the caller's closure.
-      def emit_observed(resource, instrument_block, attempt, notified_check)
+      def emit_observed(resource, instrument_block, attempt)
         tracer = Axn.config.tracer
-        return instrument_block.call unless tracer
+        unless tracer
+          instrument_block.call if attempt.claim_notification
+          return
+        end
 
         in_span_kwargs = { attributes: { "axn.resource" => resource } }
         in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
 
         tracer.in_span("axn.call", **in_span_kwargs) do |span|
-          # Guards the NOTIFICATION against a tracer that yields more than once; the action itself is
-          # guarded by the claim inside `run_action`, immediately before it begins.
-          next if notified_check.call
+          # Claims the NOTIFICATION, so a tracer yielding more than once — sequentially or from two
+          # threads — emits `axn.call` exactly once and finalizes exactly one span. The action itself
+          # is claimed separately, inside `run_action`, immediately before it begins.
+          next unless attempt.claim_notification
 
           begin
             instrument_block.call

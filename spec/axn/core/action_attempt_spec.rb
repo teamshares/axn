@@ -47,6 +47,36 @@ RSpec.describe Axn::Core::ActionAttempt do
     end
   end
 
+  describe "#claim_notification" do
+    it "grants the first claim and refuses the rest" do
+      expect(attempt.claim_notification).to be(true)
+      expect(attempt.claim_notification).to be(false)
+    end
+
+    it "is independent of the action claim" do
+      # A notification can be attempted and fail before the action begins; the two events are tracked
+      # separately so that failure does not also consume the action's one attempt.
+      expect(attempt.claim_notification).to be(true)
+      expect(attempt.claim).to be(true)
+    end
+
+    it "lets exactly one of many concurrent threads win" do
+      20.times do
+        fresh = described_class.new
+        gate = Queue.new
+        threads = 8.times.map do
+          Thread.new do
+            gate.pop
+            fresh.claim_notification
+          end
+        end
+        8.times { gate << :go }
+
+        expect(threads.map(&:value).count(true)).to eq(1)
+      end
+    end
+  end
+
   describe "#execute" do
     it "returns the block's value and records neither failure nor abandonment" do
       expect(attempt.execute { :the_value }).to eq(:the_value)

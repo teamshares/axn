@@ -449,7 +449,9 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(1)
     end
 
-    it "runs the action once when the tracer yields concurrently from two threads" do
+    it "runs the action once and emits axn.call once when the tracer yields from two threads" do
+      events = Queue.new
+      subscriber = ActiveSupport::Notifications.subscribe("axn.call") { |name, *| events << name }
       Axn.config.tracer = Class.new do
         define_method(:in_span) do |*, **, &block|
           2.times.map { Thread.new { block.call(nil) } }.each(&:join)
@@ -457,7 +459,11 @@ RSpec.describe "Axn.config.tracer" do
       end.new
 
       counting_axn.call
+
       expect(runs.size).to eq(1)
+      expect(events.size).to eq(1)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
     end
 
     it "does not start the action when the tracer throws instead of raising" do
