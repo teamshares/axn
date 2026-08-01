@@ -62,6 +62,12 @@ RSpec.describe "Axn.config.tracer" do
     expect { Axn.config.tracer = -> { fake_tracer } }.to raise_error(ArgumentError, /must respond to #in_span/)
   end
 
+  it "rejects an object claiming to be nil rather than reading it as tracing-disabled" do
+    liar = Class.new { def nil? = true }.new
+
+    expect { Axn.config.tracer = liar }.to raise_error(ArgumentError, /must respond to #in_span/)
+  end
+
   describe "Axn::Internal::Tracing.autodetected_tracer" do
     it "is nil when OpenTelemetry is not loaded" do
       Axn::Internal::Tracing.reset!
@@ -183,7 +189,9 @@ RSpec.describe "Axn.config.tracer" do
     end
   end
 
-  describe "a tracer that raises" do
+  # Tracing observes the call, so a misbehaving tracer must neither suppress nor duplicate it. Every
+  # example here asserts the action ran EXACTLY once — the count, not just the outcome, is the point.
+  describe "a tracer that misbehaves" do
     let(:runs) { [] }
 
     let(:counting_axn) do
@@ -192,6 +200,25 @@ RSpec.describe "Axn.config.tracer" do
     end
 
     after { Axn.config.reset!(:tracer) }
+
+    it "runs the action exactly once when in_span returns without ever yielding" do
+      Axn.config.tracer = Class.new { def in_span(*, **) = :never_yielded }.new
+
+      expect(counting_axn.call).to be_ok
+      expect(runs.size).to eq(1)
+    end
+
+    it "runs the action exactly once when in_span yields twice" do
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(nil)
+          block.call(nil)
+        end
+      end.new
+
+      expect(counting_axn.call).to be_ok
+      expect(runs.size).to eq(1)
+    end
 
     it "runs the action exactly once when in_span raises before yielding" do
       Axn.config.tracer = Class.new { def in_span(*, **) = raise("backend down") }.new

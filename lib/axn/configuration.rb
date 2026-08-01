@@ -5,6 +5,7 @@ require "pathname"
 
 # The `tracer` setting's default resolves through Internal::Tracing on every read, so this file
 # cannot rely on the umbrella entrypoint having loaded it first.
+require "axn/internal/identity"
 require "axn/internal/tracing"
 
 module Axn
@@ -132,7 +133,13 @@ module Axn
     # disable tracing for an app that configures OpenTelemetry in an initializer.
     setting :tracer,
             default: -> { Axn::Internal::Tracing.autodetected_tracer },
-            validate: ->(v) { v.nil? || v.respond_to?(:in_span) || "must respond to #in_span, or be nil to disable tracing" }
+            validate: lambda { |v|
+              # Identity against nil, not `v.nil?`: an object that overrides `nil?` to return true
+              # would otherwise be accepted as "tracing disabled" and skip the #in_span check
+              # entirely, turning a rejectable configuration into a per-call failure.
+              Axn::Internal::Identity.nil_value?(v) || v.respond_to?(:in_span) ||
+                "must respond to #in_span, or be nil to disable tracing"
+            }
 
     attr_writer :logger, :env, :on_exception, :rails
 

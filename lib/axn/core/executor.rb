@@ -129,27 +129,36 @@ module Axn
           in_span_kwargs = { attributes: { "axn.resource" => resource } }
           in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
 
-          # A tracer that dies BEFORE yielding must not stop the action from running: tracing observes
-          # the call, so a broken backend or decorator is not allowed to cost the caller its work.
-          # `started` is what makes the fallback safe — it flips inside the block, so the action can
-          # run at most once no matter where `in_span` failed. Once it is set, nothing is swallowed:
-          # anything raised from there on is the action's own outcome propagating (or a tracer failing
-          # after the work is already done), and re-running or absorbing it would be far worse than
-          # letting it through.
+          # Tracing observes the call, so a tracer must be able to neither suppress nor duplicate it.
+          # `in_span` wraps the work instead of sinking it, and a caller-supplied one may misbehave in
+          # three ways: raise before yielding, return without ever yielding (a disabled or broken
+          # decorator), or yield more than once. `started` answers all three — it flips on the first
+          # yield, so the block body runs at most once, and anything that leaves `in_span` with it
+          # still false means the action has not run yet and the fallback below owes it exactly one
+          # execution.
+          #
+          # Once `started` is set, nothing is swallowed: axn cannot tell a late tracer failure from the
+          # action's own outcome propagating up through the wrapper, and either re-running the action
+          # or absorbing its real result would be worse than letting the exception through.
           started = false
           begin
             tracer.in_span("axn.call", **in_span_kwargs) do |span|
+              next if started
+
               started = true
-              instrument_block.call
-            ensure
-              finalize_span(span)
+              begin
+                instrument_block.call
+              ensure
+                finalize_span(span)
+              end
             end
           rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
             raise if started
 
             Axn::Extensions.best_effort("opening the axn.call span", action: @action) { raise e }
-            instrument_block.call
           end
+
+          instrument_block.call unless started
         else
           instrument_block.call
         end

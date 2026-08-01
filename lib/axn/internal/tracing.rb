@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "securerandom"
+require "axn/internal/identity"
 
 # autodetected_tracer names the instrumentation scope with Axn::VERSION, so this component cannot
 # rely on the umbrella entrypoint having loaded the version first.
@@ -9,10 +10,6 @@ require "axn/version"
 module Axn
   module Internal
     module Tracing
-      # Identity comparison that cannot be intercepted by the object being compared.
-      IDENTITY = BasicObject.instance_method(:equal?)
-      private_constant :IDENTITY
-
       class << self
         # The OpenTelemetry tracer, when OpenTelemetry is loaded. Mechanism only: whether axn traces
         # at all, and with which tracer, is Axn.config.tracer's decision. The presence check runs on
@@ -50,15 +47,12 @@ module Axn
         # Single-slot identity memo: there is one tracer per process, so a map would model tracers
         # that never exist, and the slot holds no reference Axn.config isn't already holding.
         #
-        # Both checks below compare identity through BasicObject's own `equal?` rather than calling
-        # the tracer's. A configured tracer promises `#in_span` and nothing else, so a proxy that
-        # overrides or forwards `equal?`/`nil?` must not be dispatched to here — it would run on every
-        # call after the first, outside the probe's rescue, and take down an action over an optional
-        # observability lookup. BasicObject (not Object) owns the binding so it also holds for a
-        # BasicObject-based proxy, and identity-against-nil is the undispatched form of `nil?`.
+        # Both checks below go through Internal::Identity rather than dispatching `nil?`/`equal?` to
+        # the tracer: a proxy that overrides or forwards either would run on every call after the
+        # first, outside the probe's rescue, and take down an action over an optional lookup.
         def supports_record_exception_option?(tracer)
-          return false if IDENTITY.bind_call(tracer, nil)
-          return @supports_record_exception if defined?(@supports_record_exception) && IDENTITY.bind_call(@probed_tracer, tracer)
+          return false if Identity.nil_value?(tracer)
+          return @supports_record_exception if defined?(@supports_record_exception) && Identity.same?(@probed_tracer, tracer)
 
           @probed_tracer = tracer
           @supports_record_exception = begin
