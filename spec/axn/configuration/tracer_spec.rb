@@ -345,6 +345,23 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "propagates a wrapped-stack failure that the tracer itself swallowed" do
+      # Rescuing around its own `yield` is ordinary tracer behavior — recording the exception is a
+      # reason to do it. An observer returning normally is therefore not proof that the stack it
+      # wrapped succeeded, so the failure cannot be left to propagate through the tracer.
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(nil)
+        rescue StandardError
+          :recorded_and_swallowed
+        end
+      end.new
+      allow(Axn::Internal::Timing).to receive(:now).and_raise("clock unavailable")
+
+      expect { counting_axn.call }.to raise_error("clock unavailable")
+      expect(runs.size).to eq(0)
+    end
+
     it "does not start the action when the tracer throws instead of raising" do
       # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
       # being absent — it has to come from the guarded step reporting that it returned normally.

@@ -117,6 +117,10 @@ module Axn
       # Signals and throws are the exception to all of it: the caller has abandoned the call, so they
       # escape without the action being started. See `resumable_after?`.
       #
+      # An observer RETURNING is not proof the stack it wrapped succeeded: a tracer may rescue around
+      # its own `yield`. The wrapped stack's exception is kept, not just flagged, and re-raised after
+      # the observer returns if the observer absorbed it.
+      #
       # And the guard covers TRACING's failures only. `with_logging` and `with_timing` run inside this
       # block but outside `with_exception_handling`, so an error there is never settled onto the
       # result; absorbing it would report a default success for an action that never ran. Errors
@@ -142,23 +146,24 @@ module Axn
         # The action, separable from every observer of it. `started` flips here and nowhere else, so it
         # records the action actually beginning rather than some wrapper being entered on its behalf.
         started = false
-        inner_failed = false
+        inner_error = nil
         run_action = proc do
           started = true
           begin
             block.call
-          rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
-            # The stack axn wraps failed, not tracing. Recorded so the guard below re-raises instead
-            # of absorbing it: `with_logging` and `with_timing` sit inside this block but OUTSIDE
-            # `with_exception_handling`, so an error there is NOT settled onto the result, and
-            # swallowing it would hand the caller a default success for an action that never ran.
-            inner_failed = true
+          rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
+            # The stack axn wraps failed, not tracing. Kept — the exception itself, not a flag —
+            # because an observer may swallow it on the way out and it then has to be re-raised from
+            # here. `with_logging` and `with_timing` sit inside this block but OUTSIDE
+            # `with_exception_handling`, so an error there is NOT settled onto the result, and losing
+            # it hands the caller a default success for an action that never ran.
+            inner_error = e
             raise
           end
         end
 
         started_check = proc { started }
-        inner_failed_check = proc { inner_failed }
+        inner_error_check = proc { inner_error }
 
         # Enrich the payload from inside the instrument block — after the action settles but
         # BEFORE ActiveSupport publishes the event — so live `axn.call` subscribers observe the
@@ -187,7 +192,7 @@ module Axn
         # below, and it has to be restated here because this proc reaches `block.call` too. Absorbing
         # a wrapped-stack failure would leave `started` true, skip the bare fallback, and return the
         # action's unfinalized default-success result.
-        emit_notification = proc { guarding_observer("emitting axn.call notification", inner_failed_check) { instrument_block.call } }
+        emit_notification = proc { guarding_observer("emitting axn.call notification", inner_error_check) { instrument_block.call } }
 
         # ONE boundary around everything tracing does — resolving the tracer, probing its signature,
         # opening the span, finalizing it. All of it is a side channel, and the whole path holds a
@@ -210,7 +215,7 @@ module Axn
         # with OpenTelemetry unloaded and `tracer = nil` turns spans off with it loaded.
         traced = false
         begin
-          guarding_observer("tracing axn.call", inner_failed_check) do
+          guarding_observer("tracing axn.call", inner_error_check) do
             emit_observed(resource, instrument_block, started_check)
           end
           traced = true
@@ -257,12 +262,21 @@ module Axn
       # observer, and `with_logging`/`with_timing` sit inside that but outside `with_exception_handling`
       # — so an error from there is never settled onto the result, and absorbing it would return a
       # default success for an action that never ran.
-      def guarding_observer(description, inner_failed_check)
-        yield
-      rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-        raise if inner_failed_check.call
+      def guarding_observer(description, inner_error_check)
+        begin
+          yield
+        rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
+          raise if inner_error_check.call
 
-        Axn::Extensions.best_effort(description, action: @action) { raise e }
+          Axn::Extensions.best_effort(description, action: @action) { raise e }
+        end
+
+        # The observer returned — but returning is not proof the stack it wrapped succeeded. A tracer
+        # may rescue around its own `yield` (recording the exception is a reason to), absorbing a
+        # failure that never reached the rescue above. Surface it rather than letting the observer
+        # decide the call's outcome.
+        swallowed = inner_error_check.call
+        raise swallowed if swallowed
       end
 
       # Whether it is still legitimate to do more work on the action's behalf. Takes the guarded step's
