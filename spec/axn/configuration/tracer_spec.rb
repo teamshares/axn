@@ -466,6 +466,25 @@ RSpec.describe "Axn.config.tracer" do
       ActiveSupport::Notifications.unsubscribe(subscriber)
     end
 
+    it "refuses to return while a tracer's worker thread is still running the action" do
+      # The action's whole pipeline — settlement, timing, contract, hooks — runs inside the block the
+      # tracer is given, so returning early hands the caller a result that is still being written and
+      # will change under them. Axn cannot wait on a thread it does not own, so it refuses instead.
+      workers = []
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          workers << Thread.new { block.call(nil) }
+          sleep 0.05 # long enough for the worker to enter the action
+          :returned_early
+        end
+      end.new
+      slow_axn = build_axn { def call = sleep(0.2) }
+
+      expect { slow_axn.call }.to raise_error(/must invoke the block it is given synchronously/)
+    ensure
+      workers.each(&:join)
+    end
+
     it "does not start the action when the tracer throws instead of raising" do
       # A `throw` unwinds with NO exception in flight, so resumability cannot be inferred from `$!`
       # being absent — it has to come from the guarded step reporting that it returned normally.

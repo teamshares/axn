@@ -42,6 +42,7 @@ module Axn
         @claimed = false
         @notification_claimed = false
         @started = false
+        @settled = false
         @error = nil
         @abandoned = false
       end
@@ -50,6 +51,11 @@ module Axn
       # can claim the attempt and then fail before reaching the action (a notification subscriber
       # raising from `start`), and the untraced fallback has to be able to tell those apart.
       def started? = @started
+
+      # Whether the action has finished — returned, raised, or unwound. Distinct from `started?`
+      # because a tracer that hands the block to a worker thread and returns leaves the action running
+      # after the boundary is done with it.
+      def settled? = @settled
       def abandoned? = @abandoned
 
       # Takes the one permitted attempt, returning false if it is already taken. Checking and taking
@@ -96,6 +102,7 @@ module Axn
           raise
         ensure
           @abandoned = true unless completed || @error
+          @settled = true
         end
       end
     end
@@ -301,6 +308,8 @@ module Axn
               run_action.call if !attempt.started? && resumable_after?(emitted)
             end
           end
+
+          reject_unsettled_attempt!(attempt) if resumable_after?(traced)
         end
       ensure
         Axn::Extensions.best_effort("calling emit_metrics while tracing axn.call", action: @action) do
@@ -356,6 +365,18 @@ module Axn
               "complete. A tracer or subscriber must not `catch` around the block axn hands it."
       end
 
+      # `in_span` must invoke the block it is given synchronously — the action's entire pipeline runs
+      # inside it (settlement, timing, contract, hooks), so a tracer that hands the block to a worker
+      # and returns leaves the caller holding a result that is still being written, and will change
+      # under them. Axn cannot wait for a thread it does not own without risking a hang, so it refuses
+      # the violation rather than returning a success about to become a failure.
+      def reject_unsettled_attempt!(attempt)
+        return unless attempt.started? && !attempt.settled?
+
+        raise "axn.call tracing returned while the action was still running: a tracer must invoke the " \
+              "block it is given synchronously, on the calling thread."
+      end
+
       # Whether it is still legitimate to do more work on the action's behalf. Takes the guarded step's
       # OWN record of having returned normally rather than inferring it: an absent `$!` does not mean
       # nothing went wrong, because a `throw` unwinds with no exception in flight at all. So
@@ -388,6 +409,7 @@ module Axn
           # is claimed separately, inside `run_action`, immediately before it begins.
           next unless attempt.claim_notification
 
+          started_before = attempt.started?
           begin
             instrument_block.call
           ensure
@@ -396,7 +418,7 @@ module Axn
             # is still at its default `success`, so finalizing here would stamp a completed success
             # onto a call that went on to fail in the observer-free fallback, or never ran at all. An
             # unlabelled span is a smaller lie than a wrong one.
-            finalize_span(span) if attempt.started?
+            finalize_span(span) if attempt.started? && !started_before
           end
         end
       end
