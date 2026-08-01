@@ -2,6 +2,10 @@
 
 require "securerandom"
 
+# autodetected_tracer names the instrumentation scope with Axn::VERSION, so this component cannot
+# rely on the umbrella entrypoint having loaded the version first.
+require "axn/version"
+
 module Axn
   module Internal
     module Tracing

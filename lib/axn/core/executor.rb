@@ -155,15 +155,20 @@ module Axn
           span.set_attribute("axn.outcome", outcome)
 
           if %w[failure exception].include?(outcome) && result.exception
-            span.record_exception(result.exception)
+            # Recording error details is OpenTelemetry-shaped: `set_attribute` is all a configured
+            # tracer's span is asked for, so both calls below are capability-checked, and the pair is
+            # isolated in its own best_effort. Otherwise a span that omits one — or raises inside it —
+            # aborts the enclosing block and silently drops the facet attributes set afterward.
+            # `Status` needs the OpenTelemetry class as well as a willing span: there is no
+            # vendor-neutral way to construct one, so a custom span keeps the recorded exception
+            # without an error status.
+            Axn::Extensions.best_effort("recording exception details on the axn.call span", action: @action) do
+              span.record_exception(result.exception) if span.respond_to?(:record_exception)
 
-            # The only OpenTelemetry constant left in this path, and a configured tracer can be in
-            # use with OpenTelemetry never loaded. Guarding just this assignment keeps the facet
-            # attributes below reachable; there is no vendor-neutral way to construct a Status, so a
-            # non-OTel tracer gets the recorded exception without an error status.
-            if defined?(OpenTelemetry::Trace::Status)
-              error_message = result.exception.message || result.exception.class.name
-              span.status = OpenTelemetry::Trace::Status.error(error_message)
+              if span.respond_to?(:status=) && defined?(OpenTelemetry::Trace::Status)
+                error_message = result.exception.message || result.exception.class.name
+                span.status = OpenTelemetry::Trace::Status.error(error_message)
+              end
             end
           end
 

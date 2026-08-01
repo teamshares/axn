@@ -182,4 +182,72 @@ RSpec.describe "Axn.config.tracer" do
       failing_axn.call
     end
   end
+
+  # A configured tracer is expressly allowed to coexist with a loaded OpenTelemetry — overriding axn's
+  # spans without unloading OTel is one of the reasons the seam exists. So the presence of OTel's
+  # classes says nothing about whether THIS span implements their optional methods.
+  describe "span finalization with OpenTelemetry loaded but a custom span" do
+    let(:minimal_span) do
+      # Implements only what a configured tracer's span is asked for: set_attribute.
+      Class.new do
+        attr_reader :attributes
+
+        def initialize = @attributes = {}
+        def set_attribute(key, value) = @attributes[key] = value
+      end.new
+    end
+
+    let(:tracer) do
+      span = minimal_span
+      Class.new do
+        define_method(:initialize) { @span = span }
+        define_method(:in_span) { |_name, **, &block| block.call(@span) }
+      end.new
+    end
+
+    let(:failing_axn) do
+      build_axn do
+        tag :account, -> { "acct-1" }
+        dimension :kind, -> { "widget" }
+
+        def call = fail!("nope")
+      end
+    end
+
+    before do
+      status_class = Class.new { def self.error(_message) = :error_status }
+      trace_module = Module.new
+      trace_module.const_set(:Status, status_class)
+      otel_module = Module.new
+      otel_module.const_set(:Trace, trace_module)
+      stub_const("OpenTelemetry", otel_module)
+
+      Axn.config.tracer = tracer
+    end
+
+    it "records declared facets even though the span implements neither record_exception nor status=" do
+      expect(minimal_span).not_to respond_to(:record_exception)
+      expect(minimal_span).not_to respond_to(:status=)
+
+      failing_axn.call
+
+      expect(minimal_span.attributes).to include(
+        "axn.outcome" => "failure",
+        "axn.tag.account" => "acct-1",
+        "axn.dimension.kind" => "widget",
+      )
+    end
+
+    it "records declared facets even when the span's own record_exception raises" do
+      raising_span = minimal_span
+      raising_span.define_singleton_method(:record_exception) { |_exception| raise "span exploded" }
+
+      failing_axn.call
+
+      expect(raising_span.attributes).to include(
+        "axn.tag.account" => "acct-1",
+        "axn.dimension.kind" => "widget",
+      )
+    end
+  end
 end
