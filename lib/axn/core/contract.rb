@@ -1008,13 +1008,24 @@ module Axn
         # Runs AFTER the unknown-key rejection above, deliberately: a String key at the DECLARATION level
         # (`expects :a, "type" => String`) is an unknown key and still says so, rather than being quietly
         # accepted by this.
+        #
+        # And it declines to REPLACE a bag that answers from a Hash default, which is the same obligation seen
+        # from the other end: canonicalizing is a copy, entries only, so the plain Hash written back here holds
+        # no default — and the checks that own that rule (`ShapeGraph.detach_option_containers!` for an option
+        # bag, the declaration walk for a `shape:` node) read what is written back. A Symbol-keyed defaulting
+        # bag was refused while the same bag spelled with Strings declared silently, and an indifferent-access
+        # one — every key a String however it is written — escaped under both spellings. The bag is left exactly
+        # as it came so those checks judge what the author wrote; canonical keys are of no use to a declaration
+        # that is about to be refused anyway.
         def _symbolize_option_bags!(validations)
           Internal::ShapeGraph.each_entry(validations) do |key, value|
             bag = Internal::ShapeGraph.hash_or_nil(value)
             next if nil.equal?(bag)
 
             symbolized = _symbol_keyed_bag(bag) { "the `#{key}:` option bag" }
-            validations[key] = symbolized unless nil.equal?(symbolized)
+            next if nil.equal?(symbolized) || Internal::ShapeGraph.supplies_default?(bag)
+
+            validations[key] = symbolized
           end
         end
 

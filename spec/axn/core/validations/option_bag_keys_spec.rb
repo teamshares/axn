@@ -187,6 +187,81 @@ RSpec.describe "option bag keys" do
       expect { build_axn { expects :a, type: bag } }.to raise_error(ArgumentError, /answers a missing key from a Hash default/)
     end
 
+    # Refused under every KEY SPELLING, which a String-keyed bag was not: canonicalizing keys REPLACES the
+    # bag with a plain Hash of its entries, and a plain Hash has no default — so the check that owns this
+    # rule read a copy the defect had already been erased from, and the declaration went through in silence.
+    # Canonicalization declines to replace a defaulting bag for exactly that reason, leaving the original for
+    # the check to judge.
+    it "rejects a String-keyed defaulting bag" do
+      bag = defaulting(String)
+      bag["klass"] = String
+
+      expect { build_axn { expects :a, type: bag } }
+        .to raise_error(ArgumentError, /the `type:` option bag answers a missing key from a Hash default/)
+    end
+
+    it "rejects a mixed-key defaulting bag" do
+      bag = defaulting(String)
+      bag[:klass] = String
+      bag["message"] = "must be a String"
+
+      expect { build_axn { expects :a, type: bag } }
+        .to raise_error(ArgumentError, /the `type:` option bag answers a missing key from a Hash default/)
+    end
+
+    it "rejects a String-keyed default_proc bag" do
+      bag = Hash.new { |_h, _key| String }
+      bag["klass"] = String
+
+      expect { build_axn { expects :a, type: bag } }.to raise_error(ArgumentError, /answers a missing key from a Hash default/)
+    end
+
+    # The form a Rails author actually hands in, and the one the erasure hit hardest: an indifferent-access
+    # bag stores every key as a String however you write it, so a defaulting one was accepted under BOTH
+    # spellings. (`.with_indifferent_access` on a literal carries no default and is untouched — see above.)
+    it "rejects a defaulting indifferent-access bag, whose keys are Strings whatever you write" do
+      bag = ActiveSupport::HashWithIndifferentAccess.new(String)
+      bag[:klass] = String
+
+      expect { build_axn { expects :a, type: bag } }
+        .to raise_error(ArgumentError, /the `type:` option bag answers a missing key from a Hash default/)
+    end
+
+    # Both readers stay Hash's own here too — the erasure is what a lying subclass would otherwise be handed
+    # for free, since a canonicalized bag has no default for the guard downstream to catch it out with.
+    it "does not let a String-keyed bag deny its own default" do
+      liar = Class.new(Hash) do
+        def default(*) = nil
+        def default_proc = nil
+      end.new(String)
+      liar["klass"] = String
+
+      expect { build_axn { expects :a, type: liar } }.to raise_error(ArgumentError, /answers a missing key from a Hash default/)
+    end
+
+    # Two spellings of one option is reported ahead of the default, on the bag axn declines to canonicalize as
+    # much as on the one it canonicalizes: the ambiguity is decided while the canonical bag is being built, and
+    # the author fixing the double key then meets the container defect underneath it.
+    it "reports one option under both spellings ahead of the default" do
+      bag = defaulting(%w[z])
+      bag["in"] = %w[x]
+      bag[:in] = %w[y]
+
+      expect { build_axn { expects :a, inclusion: bag } }
+        .to raise_error(ArgumentError, /the `inclusion:` option bag declares :in twice/)
+    end
+
+    # The skip is on the DEFAULT, not on being a Hash: a String-keyed bag with the `default: nil` every Hash
+    # literal has is canonicalized exactly as before, and validates.
+    it "still canonicalizes a String-keyed bag whose default is nil" do
+      bag = defaulting(nil)
+      bag["klass"] = String
+      klass = build_axn { expects :a, type: bag }
+
+      expect(klass.call(a: "x")).to be_ok
+      expect(klass.call(a: 1)).not_to be_ok
+    end
+
     # Every bag axn detaches, whichever validator owns it — the guard is on the container, so there is no
     # per-validator list to keep in step.
     %i[of inclusion validate model presence numericality].each do |option|
@@ -213,6 +288,35 @@ RSpec.describe "option bag keys" do
 
       expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
         .to raise_error(ArgumentError, /the nested `shape:` at shape member `m` answers a missing key from a Hash default/)
+    end
+
+    # A shape node's keys are canonicalized by the same pass, so both shape reports had the same hole — and a
+    # String-keyed one reported the wrong defect rather than none: the copy carried no `members:` either, so a
+    # shape supplying them through its default was refused for having none at all.
+    it "rejects a String-keyed raw `shape:` whose members come from the default" do
+      shape = defaulting([Axn::Core::Contract::ShapeConfig.new(field: :m, validations: {})])
+      shape["container"] = Hash
+
+      expect { build_axn { expects :payload, type: Hash, shape: } }
+        .to raise_error(ArgumentError, /the `shape:` answers a missing key from a Hash default/)
+    end
+
+    it "rejects a String-keyed defaulting nested shape, naming the member it hangs from" do
+      nested = defaulting([Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: {})])
+      nested["container"] = Hash
+      member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: Hash, shape: nested })
+
+      expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
+        .to raise_error(ArgumentError, /the nested `shape:` at shape member `m` answers a missing key from a Hash default/)
+    end
+
+    it "rejects a String-keyed defaulting bag inside a shape member" do
+      bag = defaulting(String)
+      bag["klass"] = String
+      member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: bag })
+
+      expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
+        .to raise_error(ArgumentError, /the `type:` option bag answers a missing key from a Hash default/)
     end
 
     # A member's own two grammar levels are held to it as well: the validations Hash and the metadata Hash are
