@@ -373,6 +373,28 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "surfaces the action's cancellation, not a different signal the tracer raised in its place" do
+      # Neither class is swallowable, so the swallowable rescue never sees this — the recorded error
+      # has to be consulted for EVERY escaping class, or an observer's cancellation replaces the
+      # action's.
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(nil)
+        rescue Exception # rubocop:disable Lint/RescueException
+          raise SystemExit, 3
+        end
+      end.new
+      interrupted = build_axn { def call = raise(Interrupt, "cancelled") }
+
+      expect { interrupted.call }.to raise_error(Interrupt)
+    end
+
+    it "still lets a tracer's own signal through when the action recorded nothing" do
+      Axn.config.tracer = Class.new { def in_span(*, **) = raise(SystemExit, 7) }.new
+
+      expect { counting_axn.call }.to raise_error(SystemExit)
+    end
+
     it "surfaces the wrapped stack's failure, not one the tracer raised in response to it" do
       # An exporter dying while it records an exception must not replace the call's real outcome with
       # its own error. The observer's failure is logged; the action's is what propagates.

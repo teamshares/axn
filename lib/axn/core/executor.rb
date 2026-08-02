@@ -416,6 +416,15 @@ module Axn
           end
 
           Axn::Extensions.best_effort(description, action: @action) { raise e }
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          # A class axn never swallows, so it is never logged or absorbed here — but it can still be a
+          # REPLACEMENT: a tracer that catches the action's `Interrupt` and raises its own `SystemExit`
+          # would otherwise carry the observer's cancellation out in place of the action's, skipping
+          # the clause above entirely because neither class is swallowable.
+          recorded = attempt.error
+          raise recorded if recorded && !Internal::Identity.same?(e, recorded)
+
+          raise
         end
 
         # The observer returned — but returning is not proof the stack it wrapped succeeded. A tracer
