@@ -6,7 +6,9 @@
 # against a broken implementation most of the time. The invariant belongs to this object, so it is
 # tested where it is enforced.
 RSpec.describe Axn::Core::ActionAttempt do
-  subject(:attempt) { described_class.new }
+  # Every case below is about an action whose result never settled — that is what makes abandonment
+  # abandonment. The settled variant gets its own example at the bottom.
+  subject(:attempt) { described_class.new(settled: -> { false }) }
 
   describe "#claim" do
     it "grants the first claim" do
@@ -32,7 +34,7 @@ RSpec.describe Axn::Core::ActionAttempt do
       # A tracer may invoke the block it was handed from more than one thread. Checking and claiming
       # have to be one operation, or several threads pass the check before any of them sets the flag.
       20.times do
-        fresh = described_class.new
+        fresh = described_class.new(settled: -> { false })
         gate = Queue.new
         threads = 8.times.map do
           Thread.new do
@@ -62,7 +64,7 @@ RSpec.describe Axn::Core::ActionAttempt do
 
     it "lets exactly one of many concurrent threads win" do
       20.times do
-        fresh = described_class.new
+        fresh = described_class.new(settled: -> { false })
         gate = Queue.new
         threads = 8.times.map do
           Thread.new do
@@ -102,6 +104,27 @@ RSpec.describe Axn::Core::ActionAttempt do
       expect(catch(:cancel) { attempt.execute { throw :cancel, :thrown } }).to eq(:thrown)
       expect(attempt.abandoned?).to be(true)
       expect(attempt.error).to be_nil
+    end
+
+    it "does NOT record abandonment when the result had already settled" do
+      # The completion side of the action's own block — `log_after`, the timing ensure — runs after
+      # `with_exception_handling` settled the result. A throw from there is a side channel failing on
+      # its way out of a finished call, not an action that abandoned execution, and marking it
+      # abandoned would let a logger take down a completed action.
+      settled = described_class.new(settled: -> { true })
+
+      expect(catch(:cancel) { settled.execute { throw :cancel, :thrown } }).to eq(:thrown)
+      expect(settled.abandoned?).to be(false)
+      expect(settled.error).to be_nil
+    end
+
+    it "treats an unanswerable settled predicate as not settled" do
+      # Consulted from an `ensure` while a throw unwinds, so it must never raise in place of the
+      # in-flight unwind. Unknown means "not known to have settled" — the conservative reading.
+      exploding = described_class.new(settled: -> { raise "predicate is broken" })
+
+      expect(catch(:cancel) { exploding.execute { throw :cancel, :thrown } }).to eq(:thrown)
+      expect(exploding.abandoned?).to be(true)
     end
   end
 end

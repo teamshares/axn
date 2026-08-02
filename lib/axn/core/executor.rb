@@ -28,13 +28,20 @@ module Axn
     #   started?    the exactly-once guarantee: the action began, so nothing may run it again
     #   error       the exception the wrapped stack raised, kept so an observer that swallows,
     #               replaces, or re-raises it cannot decide the call's outcome
-    #   abandoned?  a `throw` unwound the stack. Unlike an exception this cannot be re-thrown once an
-    #               observer has caught it — the tag and value are gone — so it exists only to refuse
-    #               to report a success
+    #   abandoned?  a `throw` unwound the stack BEFORE the result settled. Unlike an exception this
+    #               cannot be re-thrown once an observer has caught it — the tag and value are gone —
+    #               so it exists only to refuse to report a success. A throw that unwinds AFTER
+    #               settlement is a side channel failing on its way out, not the action being
+    #               abandoned, and leaves the settled result alone.
     class ActionAttempt
       attr_reader :error
 
-      def initialize
+      # `settled` answers whether the action's result has FINALIZED — the same `finalized?` signal
+      # `log_after` gates on, and true on every settling path (success, `fail!`, `done!`, a recorded
+      # exception). Injected as a predicate rather than read from the action here so the attempt stays
+      # a record of what happened to one call, with no opinion about how a result is shaped.
+      def initialize(settled:)
+        @settled = settled
         # The thread AND fiber the call arrived on — the two axes ActiveSupport::IsolatedExecutionState
         # scopes by, and axn's per-execution state (nesting stack, exception classification, carried
         # presentation) was established out here before tracing began. A body running elsewhere sees an
@@ -158,8 +165,25 @@ module Axn
           @error = e
           raise
         ensure
-          @abandoned = true unless @completed || @error
+          # `settled?` is what separates the two unwinds that reach here without an exception. A
+          # `throw` from the action's own body abandoned the call and must never be reported as a
+          # success. A `throw` from the completion side — `with_logging`'s `log_after`, `with_timing`'s
+          # ensure, both of which run INSIDE this block but after `with_exception_handling` settled the
+          # result — is a side channel failing on its way out of a call that already finished. Marking
+          # that abandoned would let a logger take down a completed action, which is the same failure
+          # `observe` refuses via `@started` one layer out.
+          @abandoned = true unless @completed || @error || settled?
         end
+      end
+
+      # Deliberately swallows everything: this is consulted from an `ensure` while a `throw` is
+      # unwinding, so a raise here would replace the in-flight unwind with an error from the very
+      # bookkeeping meant to preserve it. An unanswerable predicate means "not known to have settled",
+      # which is the conservative reading — it keeps the pre-existing abandonment behavior.
+      def settled?
+        @settled.call
+      rescue Exception # rubocop:disable Lint/RescueException
+        false
       end
     end
 
@@ -248,6 +272,9 @@ module Axn
       #   returns without yielding      run untraced — no exception, so absence of one proves nothing
       #   yields more than once         run the action for the FIRST yield only
       #   after yield                   log and keep the settled result; the action already ran
+      #   completion-side hook (log_after, the timing ensure) runs inside the action's own block but
+      #                                 after the result settled — an unwind there is a side channel
+      #                                 failing on its way out, so keep the settled result
       #   span finalization             skip it unless the action ran inside that span
       #   span missing an optional method  attempt the call and tolerate absence; never ask
       #                                   respond_to?, which a proxy cannot answer or answers wrongly
@@ -286,7 +313,7 @@ module Axn
         # The action, separable from every observer of it. `ActionAttempt` records what happened to it
         # — begun, raised, abandoned — where it actually happens, rather than letting a wrapper's own
         # progress stand in for the action's.
-        attempt = ActionAttempt.new
+        attempt = ActionAttempt.new(settled: method(:action_result_finalized?))
         run_action = proc do
           attempt.require_originating_context!
           attempt.execute { block.call } if attempt.claim
@@ -389,6 +416,11 @@ module Axn
           end
         end
       end
+
+      # The attempt's view of whether the action's result has SETTLED. Same `finalized?` signal
+      # `log_after` gates on — true on every settling path, false for a body that never reached the
+      # exception boundary.
+      def action_result_finalized? = @action.result.finalized?
 
       # Runs an observer (the span, the notification) so its OWN failure is logged and swallowed while
       # a failure of the stack it wraps escapes untouched. Both callers reach `block.call` through the

@@ -503,6 +503,31 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "keeps the settled result when a completion-side log hook throws and the tracer catches it" do
+      # The complement of the case above, and the distinction the guard turns on. `log_after` runs
+      # inside the same block as the action but AFTER `with_exception_handling` settled the result, so
+      # a `throw` from a logger there is a side channel failing on its way out of a call that already
+      # finished — not an action that abandoned execution. Reporting the synthetic error here would let
+      # a logger take down a completed action, which is precisely what tracing must never do.
+      logging_axn = build_axn do
+        exposes :v
+        define_method(:call) { expose(:v, 42) }
+      end
+      logging_axn.auto_log :info
+      calls = 0
+      allow(Axn.config.logger).to receive(:info) do
+        calls += 1
+        throw(:cancel, :from_log_after) if calls > 1
+      end
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| catch(:cancel) { block.call(nil) } }
+      end.new
+
+      result = logging_axn.call
+      expect(result).to be_ok
+      expect(result.v).to eq(42)
+    end
+
     # These two document the OUTCOME for a tracer that breaks the synchronous contract of `in_span`.
     # Neither discriminates the mechanism: the async one is short-circuited by the notification guard
     # before the claim is reached, and the concurrent one has a window too narrow to lose reliably.
