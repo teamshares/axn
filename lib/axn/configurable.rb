@@ -574,6 +574,15 @@ module Axn
         generated = Module.new
         base.include(generated)
         generated.send(:define_method, :reset!) do |*names|
+          # Deferral has to be decided HERE, not only at extend time. The pre-check above covers a
+          # `reset!` that already existed, and being a module covers one included later on this class —
+          # but neither covers one that arrives later on an ANCESTOR, since the generated module sits
+          # ahead of the superclass in a subclass's chain and would silently win. `super` resolves to
+          # exactly the ancestors below this module, so asking for it makes the deferral independent of
+          # whether the author's include ran before or after the extend.
+          # Arguments explicit: `define_method` forbids implicit-argument `super`.
+          return super(*names) if defined?(super)
+
           # Not `self.class`: a setting may be named `class`, and its generated reader would shadow the
           # real one — leaving reset! resolving its targets from a setting value.
           declared = Axn::Configurable.declared_settings_for(Axn::Internal::Identity.class_of(self))

@@ -886,6 +886,43 @@ RSpec.describe "#reset!" do
 
       expect(klass.new.reset!(:literal)).to eq(:inherited)
     end
+
+    it "defers to a reset! added to an ANCESTOR after the extend" do
+      # The last load-order dependency. Being a module covers an include on the same class, and the
+      # extend-time check covers what already existed — but the generated module sits ahead of the
+      # superclass in a subclass's ancestry, so a reset! arriving on the superclass afterwards would
+      # silently lose. Deferral is therefore decided per call, not only at extend time.
+      base = Class.new
+      sub = Class.new(base) do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+      end
+
+      authors = Module.new { def reset!(*) = :added_to_the_ancestor_later }
+      base.include(authors)
+
+      expect(sub.new.reset!(:literal)).to eq(:added_to_the_ancestor_later)
+    end
+
+    it "passes its arguments through when it defers" do
+      # `define_method` forbids implicit-argument `super`, so the forwarding is written out and can
+      # silently drop the names it was called with.
+      seen = []
+      authors = Module.new do
+        define_method(:reset!) { |*names| seen = names }
+      end
+      base = Class.new
+      sub = Class.new(base) do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+      end
+      base.include(authors)
+
+      sub.new.reset!(:literal, :another)
+      expect(seen).to eq(%i[literal another])
+    end
   end
 
   context "on the module-singleton flavor" do
