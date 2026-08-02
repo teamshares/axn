@@ -147,7 +147,12 @@ module Axn
               # untraced, so the cost of being wrong here is a log line rather than a broken call.
               responds = begin
                 v.respond_to?(:in_span)
-              rescue NoMethodError
+              rescue NoMethodError => e
+                # Only a genuinely ABSENT `respond_to?` — a BasicObject-based proxy. A NoMethodError
+                # from INSIDE a present implementation is that object's own bug, and accepting it here
+                # would turn a declaration-time error into a per-call one.
+                raise unless e.name == :respond_to? && Axn::Internal::Identity.same?(e.receiver, v)
+
                 true
               end
 

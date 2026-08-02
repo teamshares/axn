@@ -74,6 +74,17 @@ RSpec.describe "Axn.config.tracer" do
     expect(build_axn.call).to be_ok
   end
 
+  it "rejects a tracer whose own respond_to? is buggy, rather than reading it as uninspectable" do
+    # Accepting every NoMethodError here would treat the object's OWN bug as "this is a BasicObject
+    # with no reflection", turning a declaration-time error into a per-call one.
+    buggy = Class.new do
+      def respond_to?(*) = nil.no_such_helper
+      def in_span(_name, **) = yield(nil)
+    end.new
+
+    expect { Axn.config.tracer = buggy }.to raise_error(NoMethodError, /no_such_helper/)
+  end
+
   it "rejects an object claiming to be nil rather than reading it as tracing-disabled" do
     liar = Class.new { def nil? = true }.new
 
