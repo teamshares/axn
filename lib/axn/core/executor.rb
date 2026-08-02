@@ -33,6 +33,11 @@ module Axn
     #               so it exists only to refuse to report a success. A throw that unwinds AFTER
     #               settlement is a side channel failing on its way out, not the action being
     #               abandoned, and leaves the settled result alone.
+    #   settled?    whether the action's RESULT finalized, asked of the action rather than inferred
+    #               from how this block ended. The two diverge exactly where it matters: a completion-
+    #               side unwind leaves a settled result behind, and it is settlement — not a normal
+    #               return — that decides both abandonment above and whether a span has an outcome
+    #               worth describing.
     class ActionAttempt
       attr_reader :error
 
@@ -93,12 +98,6 @@ module Axn
 
       def claimed? = @claimed
       def started? = @started
-
-      # The action ran to COMPLETION — the wrapped stack returned, so `with_exception_handling` settled
-      # its result. Distinct from `started?`: a stack that begins and then aborts before that boundary
-      # (a pre-body clock read raising, say) leaves the result at its default `success`, which is not
-      # an outcome anything should be describing.
-      def completed? = @completed
 
       def abandoned? = @abandoned
 
@@ -575,9 +574,15 @@ module Axn
             # is still at its default `success`, so finalizing here would stamp a completed success
             # onto a call that went on to fail in the observer-free fallback, or never ran at all. An
             # unlabelled span is a smaller lie than a wrong one.
-            # `completed?`, not `started?`: a stack that begins and aborts before the exception
-            # boundary never settles its result, which still reads the default `success` — describing
-            # that would report a completed success for a call that failed.
+            # `settled?`, not `started?`: a stack that begins and aborts before the exception boundary
+            # never settles its result, which still reads the default `success` — describing that
+            # would report a completed success for a call that failed.
+            #
+            # And `settled?` rather than "the block returned normally", because those diverge. A throw
+            # from the completion side — `log_after`, the timing ensure — unwinds a call whose result
+            # already finalized, which `execute` deliberately does not treat as abandonment. That call
+            # returns its settled result, so its span has a real outcome to carry and skipping it would
+            # leave an unlabelled span on a perfectly good call.
             #
             # `originating_context?` is belt here (the guard above already refused an off-context
             # block) and states the property directly: this span describes an action that ran inside
@@ -586,7 +591,7 @@ module Axn
             # guards itself with best_effort, which by design does not swallow a class axn never
             # swallows — and a tracer wrapping its yield in `rescue Exception` would otherwise absorb
             # that signal and hand back the settled success.
-            attempt.observe { finalize_span(span) } if attempt.completed? && attempt.originating_context?
+            attempt.observe { finalize_span(span) } if attempt.settled? && attempt.originating_context?
           end
         end
       end

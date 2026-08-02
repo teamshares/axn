@@ -578,13 +578,23 @@ RSpec.describe "Axn.config.tracer" do
         calls += 1
         throw(:cancel, :from_log_after) if calls > 1
       end
+      span = Class.new do
+        attr_reader :attrs
+
+        def initialize = @attrs = {}
+        def set_attribute(key, value) = @attrs[key] = value
+      end.new
       Axn.config.tracer = Class.new do
-        define_method(:in_span) { |*, **, &block| catch(:cancel) { block.call(nil) } }
+        define_method(:in_span) { |*, **, &block| catch(:cancel) { block.call(span) } }
       end.new
 
       result = logging_axn.call
       expect(result).to be_ok
       expect(result.v).to eq(42)
+      # And the span still describes it. The result settled, so there is a real outcome to carry —
+      # gating finalization on the block having returned normally would leave an unlabelled span on a
+      # call that succeeded.
+      expect(span.attrs["axn.outcome"]).to eq("success")
     end
 
     # These two document the OUTCOME for a tracer that breaks the synchronous contract of `in_span`.
