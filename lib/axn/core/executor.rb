@@ -59,6 +59,18 @@ module Axn
         @completed = false
         @error = nil
         @abandoned = false
+        @closed = false
+      end
+
+      # Ends the attempt's lifetime at the tracing boundary, so nothing may act on it afterward.
+      # Context identity alone cannot express this: a tracer that CAPTURES the block it was handed,
+      # cancels out before invoking it, and calls it later on the same thread and fiber presents an
+      # originating context that is genuinely the caller's — just no longer a live one. The cancellation
+      # path deliberately leaves both claims unused (the fallback must not run the action after the
+      # caller has given up), so without this the deferred callback would find them available and turn
+      # abandoned work into committed side effects.
+      def close!
+        @lock.synchronize { @closed = true }
       end
 
       # Whether the action BODY began. Deliberately not the same as having been claimed: an observer
@@ -96,7 +108,7 @@ module Axn
       # business action more than once.
       def claim
         @lock.synchronize do
-          return false if @claimed
+          return false if @closed || @claimed
 
           @claimed = true
           true
@@ -110,7 +122,7 @@ module Axn
       # yielding from two threads could otherwise emit the event twice.
       def claim_notification
         @lock.synchronize do
-          return false if @notification_claimed
+          return false if @closed || @notification_claimed
 
           @notification_claimed = true
           true
@@ -280,6 +292,10 @@ module Axn
       #                                   respond_to?, which a proxy cannot answer or answers wrongly
       #   notification start            run the action bare; do not re-enter a notification that ran
       #   notification finish           log; the action already ran and settled
+      #   stores the block and invokes it after this boundary exits — refuse it. On a cancellation
+      #                                 path both claims are deliberately left un-taken, so identity
+      #                                 alone would admit a deferred callback on the caller's own
+      #                                 thread and commit work the caller had abandoned
       #
       # Signals and throws are the exception to all of it: the caller has abandoned the call, so they
       # escape without the action being started. See `resumable_after?`.
@@ -407,13 +423,22 @@ module Axn
           end
         end
       ensure
+        # The attempt does not outlive the boundary. Every path that may legitimately run the action
+        # has been taken by the time this runs — including the untraced fallback above — so anything
+        # reaching for it after this point is a tracer invoking a block it stored, and must find both
+        # claims closed rather than merely un-taken.
+        attempt.close!
+        emit_metrics_for(resource)
+      end
+
+      def emit_metrics_for(resource)
         Axn::Extensions.best_effort("calling emit_metrics while tracing axn.call", action: @action) do
           emit_metrics_proc = Axn.config.emit_metrics
-          if emit_metrics_proc
-            result = @action.result
-            Internal::Callable.call_with_desired_shape(emit_metrics_proc,
-                                                       kwargs: { resource:, result:, dimensions: Core::Tagging.dup_facets(resolved_dimensions) })
-          end
+          next unless emit_metrics_proc
+
+          result = @action.result
+          Internal::Callable.call_with_desired_shape(emit_metrics_proc,
+                                                     kwargs: { resource:, result:, dimensions: Core::Tagging.dup_facets(resolved_dimensions) })
         end
       end
 

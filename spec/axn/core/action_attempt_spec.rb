@@ -10,6 +10,27 @@ RSpec.describe Axn::Core::ActionAttempt do
   # abandonment. The settled variant gets its own example at the bottom.
   subject(:attempt) { described_class.new(settled: -> { false }) }
 
+  describe "#close!" do
+    it "refuses both claims afterward" do
+      # The attempt does not outlive the tracing boundary. A tracer that captures the block, cancels
+      # out before invoking it, and calls it later presents the caller's own thread and fiber — a
+      # genuine originating context, just no longer a live one — and the cancellation path leaves both
+      # claims un-taken on purpose. Only closure can tell those apart.
+      attempt.close!
+
+      expect(attempt.claim).to be(false)
+      expect(attempt.claim_notification).to be(false)
+    end
+
+    it "does not disturb claims already taken" do
+      expect(attempt.claim).to be(true)
+      attempt.close!
+
+      expect(attempt.claimed?).to be(true)
+      expect(attempt.claim).to be(false)
+    end
+  end
+
   describe "#claim" do
     it "grants the first claim" do
       expect(attempt.claim).to be(true)

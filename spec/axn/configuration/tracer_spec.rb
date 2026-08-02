@@ -503,6 +503,29 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "refuses a stored block invoked after the tracing boundary has exited" do
+      # The tracer captures the block, cancels out before invoking it, and calls it later on the
+      # caller's OWN thread and fiber — so context identity is satisfied and cannot be what refuses
+      # it. The cancellation left both claims un-taken deliberately (the fallback must not run the
+      # action once the caller has given up), which is exactly what a deferred callback would find
+      # available. Running then would turn abandoned work into committed side effects.
+      holder = Class.new do
+        attr_reader :saved
+
+        def in_span(*, **, &block)
+          @saved = block
+          raise Interrupt
+        end
+      end.new
+      Axn.config.tracer = holder
+
+      expect { counting_axn.call }.to raise_error(Interrupt)
+      expect(runs.size).to eq(0)
+
+      holder.saved.call(nil)
+      expect(runs.size).to eq(0)
+    end
+
     it "keeps the settled result when a completion-side log hook throws and the tracer catches it" do
       # The complement of the case above, and the distinction the guard turns on. `log_after` runs
       # inside the same block as the action but AFTER `with_exception_handling` settled the result, so
