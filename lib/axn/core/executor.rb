@@ -128,7 +128,11 @@ module Axn
           # A class axn never swallows is the opposite — a cancellation passing through, which a
           # tracer that absorbs everything would otherwise erase, leaving the fallback free to run the
           # action after its caller had already given up.
-          @error ||= e unless Axn::Extensions.swallowable?(e)
+          # Ordinarily an observer raising an ordinary error is an observer FAILURE — logged, swallowed,
+          # and the fallback still runs the action. Under dev-loud that policy inverts: best_effort
+          # re-raises tracing failures on purpose, so a tracer that swallows must not be able to quietly
+          # undo it. Recorded in that mode so the guard re-raises it.
+          @error ||= e unless Axn::Extensions.swallowable?(e) && !Axn::Extensions.raises_in_dev?
           raise
         ensure
           # `@started` matters here and not in `execute`: an unwind through the notification AFTER the

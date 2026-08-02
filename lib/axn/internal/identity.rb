@@ -20,6 +20,9 @@ module Axn
       KIND = Module.instance_method(:===)
       private_constant :KIND
 
+      CLASS_OF = Object.instance_method(:class)
+      private_constant :CLASS_OF
+
       STRIP = String.instance_method(:strip)
       EMPTY = String.instance_method(:empty?)
       private_constant :STRIP, :EMPTY
@@ -33,6 +36,11 @@ module Axn
       # True when `value` is an instance of `klass` — the undispatched form of `value.is_a?(klass)`,
       # for a `value` whose own answer axn has no reason to trust.
       def self.kind?(value, klass) = KIND.bind_call(klass, value)
+
+      # `value`'s class, read through Object's own `#class`. A config object can declare a setting named
+      # `class`, whose generated reader shadows it — so dispatching would hand back the setting's value
+      # where a Class was expected.
+      def self.class_of(value) = CLASS_OF.bind_call(value)
 
       # True when a String is empty or only whitespace, read through String's OWN implementations. A
       # subclass may override `strip`/`empty?`, and this runs while an error is already being raised —

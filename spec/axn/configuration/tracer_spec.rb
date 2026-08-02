@@ -555,6 +555,28 @@ RSpec.describe "Axn.config.tracer" do
       ActiveSupport::Notifications.unsubscribe(subscriber)
     end
 
+    it "keeps a dev-loud finalization failure from being swallowed by the tracer" do
+      # Under best_effort_raises_in_dev, tracing failures are re-raised on purpose — so a tracer that
+      # rescues StandardError must not be able to quietly undo that and hand back the settled result.
+      allow(Axn.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
+      Axn.config.best_effort_raises_in_dev = true
+      failing_span = Class.new do
+        def set_attribute(*) = raise("finalize boom")
+        def record_exception(_exception) = nil
+      end.new
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(failing_span)
+        rescue StandardError
+          :swallowed
+        end
+      end.new
+
+      expect { counting_axn.call }.to raise_error("finalize boom")
+    ensure
+      Axn.config.reset!(:best_effort_raises_in_dev)
+    end
+
     it "lets a signal from span finalization escape a tracer that swallows everything" do
       signalling_span = Class.new do
         def set_attribute(*) = raise(Interrupt, "cancelled")

@@ -828,6 +828,25 @@ RSpec.describe "#reset!" do
       expect(klass.new.reset!(:literal)).to eq(:the_authors_own)
     end
 
+    it "resolves its targets even when a setting named `class` shadows Object#class" do
+      # The generated reader for `setting :class` shadows the real one, so reading `self.class` to find
+      # the declared settings hands back the setting's VALUE — leaving no-arg reset! resetting nothing
+      # and a named reset claiming a real setting is unknown.
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :class, default: :shadowed
+        setting :other, default: 1
+      end
+      instance = klass.new
+      instance.other = 9
+
+      instance.reset!
+
+      expect(instance.other).to eq(1)
+      expect { instance.reset!(:other) }.not_to raise_error
+    end
+
     it "defers to a reset! from a module included AFTER the extend" do
       # A method defined directly on the class outranks every module, so generating it that way made
       # the deferral depend on whether the author's include sat above or below the `extend`.

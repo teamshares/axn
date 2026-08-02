@@ -574,7 +574,9 @@ module Axn
         generated = Module.new
         base.include(generated)
         generated.send(:define_method, :reset!) do |*names|
-          declared = Axn::Configurable.declared_settings_for(self.class)
+          # Not `self.class`: a setting may be named `class`, and its generated reader would shadow the
+          # real one — leaving reset! resolving its targets from a setting value.
+          declared = Axn::Configurable.declared_settings_for(Axn::Internal::Identity.class_of(self))
           targets = names.empty? ? declared.keys : names.map(&:to_sym)
           # Validate the WHOLE list before touching anything, so `reset!(:real, :typo)` leaves the
           # config exactly as it was instead of half-reset behind the raise.

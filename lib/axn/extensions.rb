@@ -33,6 +33,11 @@ module Axn
       # True when `exception` is one axn may absorb: any StandardError, plus the allowlist above.
       # Anything else — a signal, an `exit`, another library's private control-flow signal — must pass
       # through untouched.
+      # Whether a guarded failure is re-raised rather than logged — the dev-loud mode. Exposed so
+      # anything that has to reason about what best_effort will DO consults the same condition rather
+      # than restating it.
+      def raises_in_dev? = Axn.config.best_effort_raises_in_dev && Axn.config.env.development?
+
       def swallowable?(exception)
         exception.is_a?(StandardError) || SWALLOWABLE_BEYOND_STANDARD_ERROR.any? { |klass| exception.is_a?(klass) }
       end
@@ -84,7 +89,7 @@ module Axn
       # Warn about a swallowed exception and return nil (best_effort's documented failure return).
       # Re-raises first in development when configured, keeping the guard dev-loud.
       def _warn_and_swallow(exception, desc, action)
-        raise exception if Axn.config.best_effort_raises_in_dev && Axn.config.env.development?
+        raise exception if raises_in_dev?
 
         src = _source_location(exception)
 
