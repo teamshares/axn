@@ -134,7 +134,11 @@ Any code that recurses through caller-supplied Hash/Array values must cycle-guar
 
 - **CHANGELOG every user-visible change** under `## Unreleased`, tagged `[FEAT]` / `[BREAKING]` /
   `[BUGFIX]` / `[INTERNAL]` — dense and specific (what, why, edge behavior), matching the prevailing
-  detail level.
+  detail level. Release prep renames that heading to the version, so between the rename and the tag
+  the TOP VERSION HEADING is the unreleased section and entries belong there — do not open a second
+  `## Unreleased` above it, or the release has two sections to reconcile. Decide which state you are
+  in from `git tag` and rubygems, never from which heading is on top: a version heading with no
+  matching tag has not shipped.
 - **`[BREAKING]`**: state old vs new explicitly; if a silent old behavior becomes a raise, say so
   loudly. Prefer a non-breaking design when one exists.
 - **Pre-alpha: remove dead kwargs outright, no tombstone.** A removed option is simply *gone* from
