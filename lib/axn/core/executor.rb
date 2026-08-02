@@ -467,9 +467,15 @@ module Axn
         in_span_kwargs[:record_exception] = false if Internal::Tracing.supports_record_exception_option?(tracer)
 
         tracer.in_span("axn.call", **in_span_kwargs) do |span|
-          # Claims the NOTIFICATION, so a tracer yielding more than once — sequentially or from two
-          # threads — emits `axn.call` exactly once and finalizes exactly one span. The action itself
-          # is claimed separately, inside `run_action`, immediately before it begins.
+          # Refuse the WHOLE off-context block, not just the action inside it. Subscribers are user
+          # code too: letting an off-context block claim the notification runs every `axn.call`
+          # subscriber with an empty axn execution context, and possibly still running after `.call`
+          # has returned — the action being refused a moment later does not undo that.
+          next unless attempt.originating_context?
+
+          # Claims the NOTIFICATION, so a tracer yielding more than once emits `axn.call` exactly once
+          # and finalizes exactly one span. The action itself is claimed separately, inside
+          # `run_action`, immediately before it begins.
           next unless attempt.claim_notification
 
           begin
@@ -484,12 +490,14 @@ module Axn
             # boundary never settles its result, which still reads the default `success` — describing
             # that would report a completed success for a call that failed.
             #
-            # `originating_context?` is what makes this THIS span's outcome rather than any span's. A
-            # block invoked on another thread or fiber had its `run_action` refused, so the action it
-            # would be describing was run by the fallback, outside this span entirely — comparing
-            # before/after snapshots of a shared flag cannot tell those apart, since the fallback can
-            # set it while this block is descheduled.
-            finalize_span(span) if attempt.completed? && attempt.originating_context?
+            # `originating_context?` is belt here (the guard above already refused an off-context
+            # block) and states the property directly: this span describes an action that ran inside
+            # it, never one the fallback ran elsewhere.
+            # Through `observe`, so a signal raised by the span's own methods is recorded: `finalize_span`
+            # guards itself with best_effort, which by design does not swallow a class axn never
+            # swallows — and a tracer wrapping its yield in `rescue Exception` would otherwise absorb
+            # that signal and hand back the settled success.
+            attempt.observe { finalize_span(span) } if attempt.completed? && attempt.originating_context?
           end
         end
       end
@@ -520,7 +528,13 @@ module Axn
             Axn::Extensions.best_effort("recording exception details on the axn.call span", action: @action) do
               begin
                 span.record_exception(result.exception)
-              rescue NoMethodError
+              rescue NoMethodError => e
+                # Only a genuinely ABSENT method. A NoMethodError raised from INSIDE a working
+                # `record_exception` is that span's own bug, and swallowing it here would hide it from
+                # the guard — including from the dev-loud path, where it should be raised like any
+                # other tracing failure.
+                raise unless e.name == :record_exception && Internal::Identity.same?(e.receiver, span)
+
                 nil
               end
 

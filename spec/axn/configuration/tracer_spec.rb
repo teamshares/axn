@@ -527,6 +527,76 @@ RSpec.describe "Axn.config.tracer" do
       workers.each { |worker| worker.join rescue nil } # rubocop:disable Style/RescueModifier
     end
 
+    it "does not run notification subscribers from an off-context block" do
+      # Subscribers are user code too. Refusing only the action still lets an off-context block run
+      # every `axn.call` subscriber with an empty axn execution context. Asserting the COUNT does not
+      # catch that — the worker claims the notification and the fallback then skips it, so exactly one
+      # event is emitted either way. What changes is WHERE it ran.
+      calling_thread = Thread.current
+      ran_on_calling_thread = Queue.new
+      subscriber = ActiveSupport::Notifications.subscribe("axn.call") do |*|
+        ran_on_calling_thread << Thread.current.equal?(calling_thread)
+      end
+      workers = []
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          workers << Thread.new { block.call(nil) }
+          sleep 0.05
+          :returned_early
+        end
+      end.new
+
+      counting_axn.call
+      workers.each { |worker| worker.join rescue nil } # rubocop:disable Style/RescueModifier
+
+      expect(ran_on_calling_thread.size).to eq(1)
+      expect(ran_on_calling_thread.pop).to be(true)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
+    it "lets a signal from span finalization escape a tracer that swallows everything" do
+      signalling_span = Class.new do
+        def set_attribute(*) = raise(Interrupt, "cancelled")
+        def record_exception(_exception) = nil
+      end.new
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(signalling_span)
+        rescue Exception # rubocop:disable Lint/RescueException
+          :swallowed
+        end
+      end.new
+
+      expect { counting_axn.call }.to raise_error(Interrupt)
+    end
+
+    it "treats a bug inside record_exception as a tracing failure, not a missing method" do
+      # Suppressing every NoMethodError here would hide the span's own bug — including from the
+      # dev-loud path, where a tracing failure is meant to be raised.
+      # A genuine NoMethodError from a DIFFERENT receiver — `missing_helper_call` would raise NameError,
+      # which this rescue never catches, so it would not exercise the narrowing at all.
+      buggy_span = Class.new do
+        def set_attribute(_key, _value) = nil
+        def record_exception(_exception) = nil.no_such_method
+      end.new
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) { |*, **, &block| block.call(buggy_span) }
+      end.new
+      failing = build_axn { def call = fail!("nope") }
+
+      # Swallowed as a tracing failure in test/production — the call still settles normally...
+      expect(failing.call.outcome.to_s).to eq("failure")
+
+      # ...but it reaches the guard, so dev-loud surfaces it rather than discarding it as absence.
+      allow(Axn.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
+      Axn.config.best_effort_raises_in_dev = true
+
+      expect { failing.call }.to raise_error(NoMethodError, /no_such_method/)
+    ensure
+      Axn.config.reset!(:best_effort_raises_in_dev)
+    end
+
     it "does not describe a span whose action aborted before its result settled" do
       # `with_exception_handling` is what finalizes the result, and it sits INSIDE the traced block. A
       # stack that begins and dies before reaching it leaves the result at its default `success` — so
