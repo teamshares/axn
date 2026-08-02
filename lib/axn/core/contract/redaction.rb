@@ -412,14 +412,14 @@ module Axn
         # object there, and `container == Array` dispatches that object's own `==` — one answering true for
         # both arms, or raising, would decide which redaction path a secret takes. `Array`/`Hash` are the
         # receivers, so only their own `equal?` runs.
-        def _mask_shape_value(value, shape, action_instance)
+        def _mask_shape_value(value, shape, action_instance, seen = nil)
           container = shape[:container]
           if ::Array.equal?(container)
-            return value.map { |element| _mask_shape_element(element, shape, action_instance) } if value.is_a?(Array)
+            return value.map { |element| _mask_shape_element(element, shape, action_instance, seen) } if value.is_a?(Array)
 
             return _mask_opaque_or_preserve(value)
           end
-          return _mask_shape_element(value, shape, action_instance) if ::Hash.equal?(container)
+          return _mask_shape_element(value, shape, action_instance, seen) if ::Hash.equal?(container)
 
           _mask_opaque_or_preserve(value)
         end
@@ -429,12 +429,38 @@ module Axn
         # member's value when that nested shape actually carries a sensitive member, to avoid needless
         # masking of an unrelated non-Hash deeper down. The member key is matched in either symbol or
         # string form, since extraction accepts both.
-        def _mask_shape_element(element, shape, action_instance)
+        #
+        # Cycle-guarded on the VALUE, which is the only ancestry that can recurse here: every step of this
+        # walk moves to a strictly contained value (an Array element, or a Hash value under a member's key),
+        # so a finite acyclic value terminates it however the SHAPE is built — a shape pointed back at itself
+        # (reachable only through `internal_field_configs=`, since declaring one is refused) walks a
+        # self-referential value forever but an acyclic one only as deep as the value goes. Guarding the shape
+        # instead would stop the recursion at the wrong place: it would refuse to descend a legitimately
+        # repeated shape — the same nested shape used by two members — where the value has more to redact.
+        # The guard therefore lives on the Hash opened here rather than on the Array opened above, because a
+        # cycle cannot close through Arrays alone (an Array element only recurses by being a Hash), so every
+        # cyclic path repeats one of these.
+        #
+        # A revisited value masks WHOLESALE, never passes through: we cannot descend to redact the sensitive
+        # member inside it, and a cycle is exactly where a sensitive sibling would otherwise print in the
+        # clear — the same over-redact-rather-than-leak call `_mask_opaque_or_preserve` and the Array branch of
+        # `_mask_value_at_path` make. Only genuine ancestry counts (CycleGuard pops on the way out), so a Hash
+        # repeated among SIBLINGS, or a shape shared by two members, is still masked in full at every position.
+        #
+        # The guard is skipped when the shape has no descendable member, which is the ordinary flat shape and
+        # every value masked under one: there is no recursion to guard, and entering it would put a
+        # `compare_by_identity` Hash allocation on the per-logged-call redaction path.
+        def _mask_shape_element(element, shape, action_instance, seen = nil)
           return _mask_opaque_or_preserve(element) unless element.is_a?(Hash)
 
-          _sensitive_nested_members(shape, action_instance).each_with_object(element.dup) do |(member, nested), masked|
-            _present_key_variants(masked, member.field).each do |key|
-              masked[key] = _mask_shape_value(masked[key], nested, action_instance)
+          descendable = _sensitive_nested_members(shape, action_instance)
+          return element.dup if descendable.empty?
+
+          Axn::Internal::CycleGuard.guard(element, seen, on_cycle: SENSITIVE_FILTERED_MASK) do |open|
+            descendable.each_with_object(element.dup) do |(member, nested), masked|
+              _present_key_variants(masked, member.field).each do |key|
+                masked[key] = _mask_shape_value(masked[key], nested, action_instance, open)
+              end
             end
           end
         end

@@ -160,6 +160,134 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
     end
   end
 
+  # The walks above answer questions ABOUT the graph, and a bound on the graph is enough for them. The mask
+  # that redacts a value descends the graph and the VALUE in lockstep, so what recurses there is the value: a
+  # held cyclic graph walks a self-referential value forever, while an acyclic value stops the walk at its own
+  # leaves however the graph is built. Both halves are pinned here, because guarding the graph instead would
+  # stop a legitimately repeated shape from descending a value that still has members to redact.
+  describe "the mask that descends a shaped value" do
+    # `nxt`'s nested shape IS the shape it lives in, beside a `sensitive:` sibling — which is what makes the
+    # mask descend at all (see `_sensitive_nested_members`).
+    def cyclic_sensitive_shape
+      shape = { container: Hash, members: [] }
+      shape[:members] << Axn::Core::Contract::ShapeConfig.new(field: :secret, validations: {}, sensitive: true)
+      shape[:members] << Axn::Core::Contract::ShapeConfig.new(field: :nxt, validations: { type: { klass: Hash }, shape: })
+      shape
+    end
+
+    # The same nested shape reached by two members — SHARED but acyclic. A guard that mistook sharing for a
+    # cycle would mask `right` wholesale and lose the sibling beside the secret.
+    def diamond_shape
+      leaf = { container: Hash,
+               members: [Axn::Core::Contract::ShapeConfig.new(field: :secret, validations: {}, sensitive: true),
+                         Axn::Core::Contract::ShapeConfig.new(field: :keep, validations: {})] }
+      { container: Hash,
+        members: [Axn::Core::Contract::ShapeConfig.new(field: :left, validations: { type: { klass: Hash }, shape: leaf }),
+                  Axn::Core::Contract::ShapeConfig.new(field: :right, validations: { type: { klass: Hash }, shape: leaf })] }
+    end
+
+    def shaped_config(field, shape)
+      Axn::Core::Contract::FieldConfig.new(field:, reader_as: field, validations: { type: { klass: Hash }, shape: })
+    end
+
+    def held_masking(shape)
+      klass = build_axn
+      klass.internal_field_configs = [shaped_config(:payload, shape)].freeze
+      klass
+    end
+
+    def cyclic_value
+      value = { secret: "hunter2", other: "keepme" }
+      value[:nxt] = value
+      value
+    end
+
+    it "masks a self-referential value wholesale where it repeats, instead of recursing" do
+      klass = held_masking(cyclic_sensitive_shape)
+
+      masked = klass.send(:_context_slice, data: { payload: cyclic_value }, direction: :inbound)
+
+      # Over-redacted rather than under-redacted: the repeat cannot be descended into, so it is replaced whole
+      # — the sensitive member is still filtered, and the ordinary sibling beside it still survives.
+      expect(masked).to eq({ payload: { secret: "[FILTERED]", other: "keepme", nxt: "[FILTERED]" } })
+    end
+
+    # The side channels that read the mask on a live call. `_context_slice` above is the seam; these are where
+    # a SystemStackError would actually land — one takes down the call it observes, the other the caller.
+    it "keeps inputs_for_logging bounded on a self-referential value" do
+      klass = held_masking(cyclic_sensitive_shape)
+
+      logged = klass.send(:new, payload: cyclic_value).send(:inputs_for_logging)
+
+      expect(logged).to eq({ payload: { secret: "[FILTERED]", other: "keepme", nxt: "[FILTERED]" } })
+    end
+
+    it "keeps the facade's inspect bounded on a self-referential value" do
+      # The exposure's contract is ordinary while the call runs and the held graph is assigned afterwards, so
+      # what this exercises is the mask `inspect` reaches rather than any other walk over the same graph.
+      value = cyclic_value
+      klass = build_axn { exposes(:out) }
+      klass.send(:define_method, :call) { expose(out: value) }
+      result = klass.call
+      klass.external_field_configs = [shaped_config(:out, cyclic_sensitive_shape)].freeze
+
+      # Asserted by content, not by rendering: Ruby 3.4 changed how a Hash inspects.
+      rendered = result.inspect
+      expect(rendered).to include("[FILTERED]").and include("keepme")
+      expect(rendered).not_to include("hunter2")
+    end
+
+    # The other half: the graph repeats but the value does not, so the walk must follow the value all the way
+    # down rather than stopping at the shape it has seen before.
+    it "descends a cyclic graph as far as an acyclic value goes" do
+      klass = held_masking(cyclic_sensitive_shape)
+      value = { secret: "s0", nxt: { secret: "s1", nxt: { secret: "s2", other: "kept" } } }
+
+      masked = klass.send(:_context_slice, data: { payload: value }, direction: :inbound)
+
+      expect(masked).to eq({ payload: { secret: "[FILTERED]",
+                                        nxt: { secret: "[FILTERED]", nxt: { secret: "[FILTERED]", other: "kept" } } } })
+    end
+
+    it "masks every position of a shared but acyclic graph" do
+      klass = held_masking(diamond_shape)
+
+      masked = klass.send(:_context_slice, data: { payload: { left: { secret: "a", keep: "l" }, right: { secret: "b", keep: "r" } } },
+                                           direction: :inbound)
+
+      expect(masked).to eq({ payload: { left: { secret: "[FILTERED]", keep: "l" }, right: { secret: "[FILTERED]", keep: "r" } } })
+    end
+
+    # A container repeated among SIBLINGS is not ancestry, and must not read as a cycle — the second position
+    # is masked in full, not replaced (CycleGuard pops on the way out).
+    it "masks a value repeated among siblings in full at both positions" do
+      klass = held_masking(diamond_shape)
+      shared = { secret: "shared", keep: "kept" }
+
+      masked = klass.send(:_context_slice, data: { payload: { left: shared, right: shared } }, direction: :inbound)
+
+      expect(masked).to eq({ payload: { left: { secret: "[FILTERED]", keep: "kept" },
+                                        right: { secret: "[FILTERED]", keep: "kept" } } })
+    end
+
+    # A cycle that closes through an Array as well as a Hash: an Array element only recurses by being a Hash,
+    # so every cyclic path repeats a Hash — which is why the guard sits on the Hash rather than on both.
+    it "masks a cycle that closes through an array" do
+      shape = { container: Hash, members: [] }
+      shape[:members] << Axn::Core::Contract::ShapeConfig.new(field: :secret, validations: {}, sensitive: true)
+      shape[:members] << Axn::Core::Contract::ShapeConfig.new(
+        field: :list, validations: { type: { klass: Array }, shape: { container: Array, members: shape[:members] } },
+      )
+      klass = held_masking(shape)
+      value = { secret: "s", keep: "k" }
+      value[:list] = [value]
+
+      masked = klass.send(:_context_slice, data: { payload: value }, direction: :inbound)
+
+      expect(masked).to eq({ payload: { secret: "[FILTERED]", keep: "k", list: ["[FILTERED]"] } })
+    end
+  end
+
   # Declaring a LATER ambient subfield rebuilds the tree over every ambient config, so a graph the class was
   # handed rather than declared is re-walked there. That walk carried neither bound until it was enumerated for.
   describe "the ambient placement check" do
