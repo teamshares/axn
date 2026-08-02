@@ -207,6 +207,39 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
       expect { Axn::Internal::Tracing.autodetected_tracer }.to raise_error("provider not ready")
       expect(Axn::Internal::Tracing.autodetected_tracer).to eq(:tracer_v2)
     end
+
+    it "detects a replacement provider that claims to == the one it replaced" do
+      # The provider is an object the host app supplies, so validating the cache by dispatching `==`
+      # asks the replacement whether it counts as its predecessor. One that says yes would pin spans
+      # to the replaced provider for the life of the process.
+      provider = Class.new do
+        def initialize(label) = @label = label
+        def ==(_other) = true
+        def tracer(*) = "tracer-for-#{@label}"
+      end
+      current = provider.new("first")
+      allow(OpenTelemetry).to receive(:tracer_provider) { current }
+      Axn::Internal::Tracing.reset!
+
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq("tracer-for-first")
+      current = provider.new("second")
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq("tracer-for-second")
+    end
+
+    it "does not let a provider's == abort the call from inside the cache check" do
+      # `autodetected_tracer` resolves OUTSIDE the capability probe's rescue, so a class axn never
+      # swallows escaping from `==` would take down the action over an optional lookup — the cache
+      # check must not run provider code at all.
+      hostile = Class.new do
+        def ==(_other) = raise Interrupt
+        def tracer(*) = :hostile_tracer
+      end.new
+      allow(OpenTelemetry).to receive(:tracer_provider).and_return(hostile)
+      Axn::Internal::Tracing.reset!
+
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq(:hostile_tracer)
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq(:hostile_tracer)
+    end
   end
 
   describe ".supports_record_exception_option?" do

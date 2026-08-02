@@ -25,7 +25,12 @@ module Axn
 
           current_provider = OpenTelemetry.tracer_provider
           cached = @tracer_entry
-          return cached.last if cached && cached.first == current_provider
+          # Identity, not `==`: the provider is an object the host app supplies, and validating a cache
+          # must not run its code. A provider whose `==` answers true for a DIFFERENT provider would
+          # pin spans to the replaced one forever, and one whose `==` raises a class axn never swallows
+          # would abort the call from inside an optional lookup — `autodetected_tracer` resolves
+          # outside the probe's rescue. Same seam and same reason as the capability memo below.
+          return cached.last if cached && Identity.same?(cached.first, current_provider)
 
           # ONE immutable entry, assigned in a single reference store. Two ivars cannot express this
           # safely: a failed acquisition could leave them mismatched (a pair the check above reads as a
