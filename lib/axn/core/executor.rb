@@ -277,6 +277,9 @@ module Axn
       #
       #   FAILURE POINT              x  UNWIND: return / swallowable raise / signal / throw
       #   ------------------------------------------------------------------------------------
+      #   resolving the action's name   propagate it untouched — it happens before any observer, so
+      #                                 there is nothing to trace and nothing this method's ensure may
+      #                                 put in its place
       #   resolving Axn.config.tracer   log, run the action untraced
       #   probing #in_span              treat as unsupported; never let the probe escape
       #   entering in_span              log, run untraced
@@ -310,6 +313,16 @@ module Axn
       # reaching here out of `block.call` are re-raised — see `inner_failed`.
 
       def with_tracing(&block)
+        # The action, separable from every observer of it. `ActionAttempt` records what happened to it
+        # — begun, raised, abandoned — where it actually happens, rather than letting a wrapper's own
+        # progress stand in for the action's.
+        #
+        # Constructed BEFORE any fallible setup, because the ensure below closes it: resolving the
+        # resource name runs user-overridable code and can raise, and an ensure that assumes a local
+        # from further down the method replaces that failure with a NoMethodError about its own
+        # bookkeeping. Nothing here can fail — current thread and fiber, a mutex, and a bound method.
+        attempt = ActionAttempt.new(settled: method(:action_result_finalized?))
+
         resource = @action_class.resolved_axn_name
         payload = { resource:, action: @action }
 
@@ -326,10 +339,6 @@ module Axn
           end
         end
 
-        # The action, separable from every observer of it. `ActionAttempt` records what happened to it
-        # — begun, raised, abandoned — where it actually happens, rather than letting a wrapper's own
-        # progress stand in for the action's.
-        attempt = ActionAttempt.new(settled: method(:action_result_finalized?))
         run_action = proc do
           attempt.require_originating_context!
           attempt.execute { block.call } if attempt.claim
@@ -427,8 +436,18 @@ module Axn
         # has been taken by the time this runs — including the untraced fallback above — so anything
         # reaching for it after this point is a tracer invoking a block it stored, and must find both
         # claims closed rather than merely un-taken.
-        attempt.close!
-        emit_metrics_for(resource)
+        #
+        # `&.` because this ensure covers the WHOLE method body, construction included: an ensure that
+        # assumes its locals were assigned is how bookkeeping replaces the failure it was meant to
+        # survive. Nothing to close means nothing was ever handed out.
+        attempt&.close!
+
+        # Same reasoning as the `&.` above, for the other local this ensure reads. `resolved_axn_name`
+        # never returns nil (it falls back to ANONYMOUS), so a nil resource means resolving it RAISED
+        # and the assignment never happened — there is no action identity to file a metric under, and
+        # `best_effort` re-raises under best_effort_raises_in_dev, which would put a metrics error in
+        # place of the failure that got us here.
+        emit_metrics_for(resource) if resource
       end
 
       def emit_metrics_for(resource)

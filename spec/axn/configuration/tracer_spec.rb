@@ -503,6 +503,42 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(0)
     end
 
+    it "propagates a failure from resolving the action name rather than its own bookkeeping error" do
+      # Setup raising before tracing has anything to trace. The ensure that closes the attempt and
+      # emits metrics still runs, and an ensure that assumes locals from further down the method
+      # replaces the real failure with a NoMethodError about its own bookkeeping.
+      boom = RuntimeError.new("resolving the name blew up")
+      allow(counting_axn).to receive(:resolved_axn_name).and_raise(boom)
+
+      expect { counting_axn.call }.to raise_error(boom)
+      expect(runs.size).to eq(0)
+    end
+
+    it "survives the attempt itself failing to construct" do
+      # Constructing the attempt first fixes the reported ordering, but does not make the ensure safe
+      # on its own — it still runs when construction is what raised. Covered rather than assumed,
+      # since the ensure is the last thing standing between a setup failure and the caller.
+      boom = RuntimeError.new("could not construct the attempt")
+      allow(Axn::Core::ActionAttempt).to receive(:new).and_raise(boom)
+
+      expect { counting_axn.call }.to raise_error(boom)
+      expect(runs.size).to eq(0)
+    end
+
+    it "does not let a dev-loud metrics failure replace that error either" do
+      # The other local the same ensure reads. `resolved_axn_name` never returns nil, so a nil
+      # resource means resolving it raised — there is no identity to file a metric under, and
+      # `best_effort` re-raises under best_effort_raises_in_dev, which would swap the errors.
+      boom = RuntimeError.new("resolving the name blew up")
+      allow(counting_axn).to receive(:resolved_axn_name).and_raise(boom)
+      Axn.config.emit_metrics = ->(**) { raise "metrics exploded" }
+      allow(Axn::Extensions).to receive(:raises_in_dev?).and_return(true)
+
+      expect { counting_axn.call }.to raise_error(boom)
+    ensure
+      Axn.config.reset!(:emit_metrics)
+    end
+
     it "refuses a stored block invoked after the tracing boundary has exited" do
       # The tracer captures the block, cancels out before invoking it, and calls it later on the
       # caller's OWN thread and fiber — so context identity is satisfied and cannot be what refuses
