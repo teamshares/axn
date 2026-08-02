@@ -45,8 +45,16 @@ module Axn
       MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
       STRING_EMPTY = ::String.instance_method(:empty?)
-      private_constant :OBJECT_METHOD, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY,
+      STRING_ENCODING = ::String.instance_method(:encoding)
+      private_constant :OBJECT_METHOD, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_INSTANCE_METHODS, :MODULE_PRIVATE_INSTANCE_METHODS
+
+      # ActiveSupport's own definition of a blank String, matched against the value's BYTES rather than asked
+      # of the value (`Regexp#match?` reads a String operand's bytes in C — no `to_str`, no `=~`, and the
+      # receiver here is axn's own frozen Regexp), so a name cannot answer this one way and a later reader
+      # another.
+      BLANK_STRING = /\A[[:space:]]*\z/
+      private_constant :BLANK_STRING
 
       # Ruby's own owners, read from the implementations rather than named, so an implementation that moves
       # cannot silently disagree with a constant here.
@@ -161,25 +169,61 @@ module Axn
         false
       end
 
-      # Does this caller-supplied name mean "absent" — nil, or the empty String/Symbol?
+      # Does this caller-supplied name mean "absent" — `nil`, `false`, an all-whitespace (or empty) String, or
+      # the empty Symbol?
       #
       # `present?`/`blank?` cannot answer it: they are ActiveSupport methods on Object, so a String subclass
       # overrides them, and a value that answered "blank" here and "present" to a later reader skipped
       # canonicalization and was stored raw — the exact guard/consumer split canonicalizing exists to close.
       #
-      # `String#empty?` is bound for the same reason it would be overridden. `Symbol#empty?` is NOT bound and does
-      # not need to be: a Symbol subclass can be DECLARED but never instantiated (`new` is undefined and
-      # `allocate` raises TypeError), so no value is ever an instance of one. Anything that is neither nil nor a
-      # String nor a Symbol is "present" here, which leaves it to the caller's `to_sym` exactly as before — an
-      # `on: 123` still raises NoMethodError rather than being silently treated as no route.
+      # But the SET has to stay what `blank?` meant, because this decides whether an option was supplied at all
+      # and every spelling of "not supplied" a caller could reasonably write was one: `expose_return_as: false`
+      # and `on: false` are "no exposure"/"no route", and a whitespace-only String names nothing. Answering
+      # only nil/empty here handed `false` to `to_sym` (NoMethodError) and declared an exposure named `:"   "`.
+      # Whitespace is read off the value's BYTES with axn's own frozen Regexp — `Regexp#match?` takes a String
+      # operand as-is in C (no `to_str`, no `=~`) — which is a bound read, not a question put to the value.
+      #
+      # `String#empty?`/`#encoding` are bound for the same reason they would be overridden. `Symbol#empty?` is
+      # NOT bound and does not need to be: a Symbol subclass can be DECLARED but never instantiated (`new` is
+      # undefined and `allocate` raises TypeError), so no value is ever an instance of one.
+      #
+      # Anything that is neither nil/false nor a String nor a Symbol is "present" here, which leaves it to the
+      # caller's `to_sym` exactly as before — `on: 123` still raises NoMethodError rather than being silently
+      # treated as no route. That is deliberately narrower than `blank?`, which called every empty container
+      # blank (it dispatches `empty?` on anything that answers it): `[]` names nothing and is not a spelling of
+      # "no option", so it earns the same NoMethodError as `123` rather than being silently ignored.
       def self.absent_name?(value)
         case value
-        when nil then true
+        when nil, false then true
         when ::Symbol then value.empty?
-        when ::String then STRING_EMPTY.bind_call(value)
+        when ::String then STRING_EMPTY.bind_call(value) || _blank_string?(value)
         else false
         end
       end
+
+      # Whitespace-only, for any encoding, without letting the check itself become the failure. A String whose
+      # bytes are invalid for its encoding raises from the match — it is not blank, and reporting it is the
+      # name rules' job (they name it in axn's own error, having rendered it) rather than a blankness test's.
+      def self._blank_string?(value)
+        BLANK_STRING.match?(value)
+      rescue ::Encoding::CompatibilityError
+        _blank_in_own_encoding?(value)
+      rescue ::StandardError
+        false
+      end
+
+      # A non-ASCII-compatible String (UTF-16, …) cannot be matched against a US-ASCII pattern at all, so ask
+      # the same question in the value's own encoding — mirroring ActiveSupport, so "blank" means one thing
+      # whatever the name is written in. The pattern is rebuilt per call rather than cached: reaching this
+      # requires declaring a name in such an encoding, and it runs once, at declaration.
+      def self._blank_in_own_encoding?(value)
+        source = BLANK_STRING.source.encode(STRING_ENCODING.bind_call(value))
+        ::Regexp.new(source, BLANK_STRING.options | ::Regexp::FIXEDENCODING).match?(value)
+      rescue ::StandardError
+        false
+      end
+
+      private_class_method :_blank_string?, :_blank_in_own_encoding?
 
       def self._object_owns_none?(value, expected)
         expected.all? { |name, owner| owner.equal?(OBJECT_METHOD.bind_call(value, name).owner) }

@@ -315,11 +315,15 @@ module Axn
           # read is the same answer, and no message renders a route by running the route's own code. Dotted
           # paths symbolize harmlessly, exactly as a dotted `on:` always did: they are only ever split via `to_s`.
           #
-          # Absent stays absent — `nil`/`""` mean "no route" — and that verdict is reached WITHOUT running the
-          # route's own code, because `present?`/`blank?` are ActiveSupport methods on Object that a String
-          # subclass overrides: one answering "blank" here and "present" to a later reader skipped this line
-          # entirely and was stored raw, reinstating the split this canonicalization exists to close.
-          on = on.to_sym unless Internal::NativeMethods.absent_name?(on)
+          # Absent stays absent — `nil`, `false`, an empty or whitespace-only String and the empty Symbol all
+          # mean "no route", which is the whole of what the `present?` this replaced answered — and that verdict
+          # is reached WITHOUT running the route's own code, because `present?`/`blank?` are ActiveSupport
+          # methods on Object that a String subclass overrides: one answering "blank" here and "present" to a
+          # later reader skipped this line entirely and was stored raw, reinstating the split this
+          # canonicalization exists to close. Absent canonicalizes to `nil` rather than being left as written,
+          # so that every reader below is asking nil-or-Symbol — otherwise the SAME split reopens one line
+          # down, with this deciding "absent" and a `present?` on the caller's own value deciding to route.
+          on = Internal::NativeMethods.absent_name?(on) ? nil : on.to_sym
 
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
@@ -337,7 +341,7 @@ module Axn
           # method-dispatches — so `method_call: true` without `on:` could never take effect; reject
           # it rather than accept a silently-inert option (matching the ambient default:/coerce:
           # rejections). `method_call: false` is the default, so it's a harmless no-op anywhere.
-          if method_call && on.blank?
+          if method_call && on.nil?
             raise ArgumentError,
                   "`method_call: true` is only meaningful on a subfield (declared with `on:`) — a top-level field " \
                   "reads its wire key and never invokes a method. Add `on:` to name the parent, or drop `method_call:`."
@@ -350,7 +354,9 @@ module Axn
           validations[:shape] = _build_shape(fields, validations:, &block) if block
           _snapshot_declared_shape!(validations, fields)
 
-          if on.present?
+          # `on` is nil-or-Symbol by construction here (canonicalized above), so routing asks the canonical
+          # value rather than re-deciding presence on whatever the caller passed.
+          if on
             return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                                reader_names:, user_facing:, method_call:, **validations)
           end

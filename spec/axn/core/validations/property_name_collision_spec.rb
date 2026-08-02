@@ -1110,9 +1110,12 @@ RSpec.describe "declaration-time property name collisions" do
       end
 
       # The complement, so the fix is not just "always symbolize": a genuinely absent route still means "no
-      # route", and its field stays top-level rather than becoming a subfield of something.
-      it "still treats nil and the empty String as no route at all" do
-        [nil, ""].each do |absent|
+      # route", and its field stays top-level rather than becoming a subfield of something. Absent is the
+      # whole of what `blank?` meant here — `false` and a whitespace-only String included, in any encoding —
+      # because that is what the decision this replaced answered, and narrowing it turned two spellings of
+      # "no route" into a NoMethodError from `to_sym` and a whitespace route naming a reader nobody declared.
+      it "still treats every blank spelling as no route at all" do
+        [nil, false, "", "   ", "\t\n", " ", (+"  ").force_encoding("ASCII-8BIT"), "  ".encode("UTF-16LE"), :""].each do |absent|
           klass = build_axn do
             expects :p, type: Hash
             expects :a, on: absent, optional: true
@@ -1120,6 +1123,71 @@ RSpec.describe "declaration-time property name collisions" do
 
           expect(klass.subfield_configs).to be_empty
           expect(klass.internal_field_configs.map(&:field)).to eq(%i[p a])
+        end
+      end
+
+      # A String subclass answering "blank" is still canonicalized when its BYTES name a route — blankness is
+      # read off the value's own class and bytes, never off the answer it gives. (The lie is exercised in
+      # full above; this pins that the widened blank set did not turn one into an absent route.)
+      it "does not treat a lying blank? as an absent route" do
+        route = Class.new(String) do
+          def blank? = true
+          def present? = false
+        end.new("p")
+
+        klass = build_axn do
+          expects :p, type: Hash
+          expects :a, on: route, optional: true
+        end
+
+        expect(klass.subfield_configs.map(&:on)).to eq([:p])
+      end
+
+      # And the other direction of the same split, which is why absence canonicalizes to `nil` rather than
+      # being left as the caller wrote it: a route judged absent here that a `present?` one line down called
+      # present took the SUBFIELD path with the raw value, and a blank one anchored nothing —
+      # `NoMethodError: undefined method 'to_sym' for nil` out of the route resolution, for a declaration
+      # whose only sin was an empty String with an opinion. Every reader below now sees nil-or-Symbol.
+      it "treats a blank route as absent even when its own present? claims otherwise" do
+        route = Class.new(String) do
+          def present? = true
+          def blank? = false
+        end
+
+        ["", "   "].each do |bytes|
+          klass = build_axn do
+            expects :p, type: Hash
+            expects :a, on: route.new(bytes), optional: true
+          end
+
+          expect(klass.subfield_configs).to be_empty
+          expect(klass.internal_field_configs.map(&:field)).to eq(%i[p a])
+        end
+      end
+
+      # Deciding blankness reads the route's bytes, and bytes that are invalid for their own encoding cannot
+      # be read — so the decision declines to answer rather than becoming the failure itself. What such a
+      # route means is the name rules' verdict to give (they render it), one line further on, exactly as
+      # before blankness was decided here at all.
+      it "leaves a route whose bytes are invalid for its encoding to the name it converts to" do
+        expect do
+          build_axn do
+            expects :p, type: Hash
+            expects :a, on: (+"\xff").force_encoding("UTF-8"), optional: true
+          end
+        end.to raise_error(EncodingError)
+      end
+
+      # Everything that is neither a name nor blank still reaches `to_sym` and says so — the absent set is
+      # nil/false/empty-or-whitespace String/empty Symbol, not "anything that answers `empty?`".
+      it "still raises NoMethodError for a route that is not a name" do
+        [123, true].each do |not_a_name|
+          expect do
+            build_axn do
+              expects :p, type: Hash
+              expects :a, on: not_a_name, optional: true
+            end
+          end.to raise_error(NoMethodError, /to_sym/)
         end
       end
     end

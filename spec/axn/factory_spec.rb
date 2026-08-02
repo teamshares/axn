@@ -52,11 +52,38 @@ RSpec.shared_examples "can build Axns from callables" do
       expect(result.out).to eq(42)
     end
 
+    # Absent is the whole of what `blank?` meant here — `false` and a whitespace-only String included, in any
+    # encoding — because that is what the decision this replaced answered. Narrowing it to nil/empty turned
+    # `expose_return_as: false` into a NoMethodError from `to_sym` and `"   "` into a declared exposure named
+    # `:"   "`, on input a caller could legitimately pass.
     it "still declares no exposure when the name is genuinely absent" do
-      klass = Axn::Factory.build(-> { 42 }, expose_return_as: nil)
+      [nil, false, "", "   ", "\t\n", " ", (+"  ").force_encoding("ASCII-8BIT"), "  ".encode("UTF-16LE"), :""].each do |absent|
+        klass = Axn::Factory.build(-> { 42 }, expose_return_as: absent)
 
-      expect(klass.external_field_configs.map(&:field)).to be_empty
-      expect(klass.call).to be_ok
+        expect(klass.external_field_configs.map(&:field)).to be_empty
+        expect(klass.call).to be_ok
+      end
+    end
+
+    # And the complement: a name that is not blank still becomes the exposure it names, including a String
+    # subclass whose own `blank?` claims otherwise — blankness is read off the value's class and bytes.
+    it "declares the exposure when the name's own blank? lies about being absent" do
+      name = Class.new(String) do
+        def blank? = true
+        def present? = false
+      end.new("out")
+
+      klass = Axn::Factory.build(-> { 42 }, expose_return_as: name)
+
+      expect(klass.external_field_configs.map(&:field)).to eq([:out])
+      expect(klass.call.out).to eq(42)
+    end
+
+    # Everything that is neither a name nor blank still reaches `to_sym` and says so.
+    it "still raises NoMethodError for a return-name that is not a name" do
+      [123, true].each do |not_a_name|
+        expect { Axn::Factory.build(-> { 42 }, expose_return_as: not_a_name) }.to raise_error(NoMethodError, /to_sym/)
+      end
     end
   end
 
