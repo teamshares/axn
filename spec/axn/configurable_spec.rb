@@ -828,6 +828,33 @@ RSpec.describe "#reset!" do
       expect(klass.new.reset!(:literal)).to eq(:the_authors_own)
     end
 
+    it "defers to a reset! from a module included AFTER the extend" do
+      # A method defined directly on the class outranks every module, so generating it that way made
+      # the deferral depend on whether the author's include sat above or below the `extend`.
+      authors = Module.new { def reset!(*) = :the_authors_own }
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+
+        include authors
+      end
+
+      expect(klass.new.reset!(:literal)).to eq(:the_authors_own)
+    end
+
+    it "still lets a reset! defined on the class itself win over the generated one" do
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+
+        def reset!(*) = :defined_on_the_class
+      end
+
+      expect(klass.new.reset!(:literal)).to eq(:defined_on_the_class)
+    end
+
     it "defers to a reset! inherited from a non-axn ancestor" do
       ancestor = Class.new do
         def reset!(*) = :inherited

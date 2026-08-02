@@ -566,7 +566,14 @@ module Axn
           return
         end
 
-        base.send(:define_method, :reset!) do |*names|
+        # INCLUDED as a module rather than defined on the class. A method defined directly on the class
+        # outranks every module in the lookup chain, so it would beat a `reset!` the author includes
+        # LATER — making the deferral depend on whether their include sits above or below the `extend`.
+        # From a module, the class's own definition still wins (as it should) and so does anything
+        # included after axn, while the pre-check above still covers what was already there.
+        generated = Module.new
+        base.include(generated)
+        generated.send(:define_method, :reset!) do |*names|
           declared = Axn::Configurable.declared_settings_for(self.class)
           targets = names.empty? ? declared.keys : names.map(&:to_sym)
           # Validate the WHOLE list before touching anything, so `reset!(:real, :typo)` leaves the
