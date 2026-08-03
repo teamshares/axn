@@ -81,7 +81,7 @@ RSpec.describe Axn::Extensions::Serialization do
 
       expect(described_class.render(result)["owner"]).to match(/\A#<Object:0x[0-9a-f]+>\z/)
       expect { described_class.render(result, reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`owner`/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`owner`/)
     end
   end
 end

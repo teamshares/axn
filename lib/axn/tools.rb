@@ -139,8 +139,8 @@ module Axn
       # running no initializer, where a dispatched `exception` is caller code free to return a different object or to
       # raise. Naming the CLASS (`raise e.class, message`) is a third thing and worse than either — it CONSTRUCTS an
       # instance, which fails outright for any exception whose initializer takes more than a message
-      # (`UnserializableValue` requires `path:`/`value:`), destroying both the contract error and the class the
-      # wrapper promised to preserve.
+      # (`Axn::Extensions::Serialization::UnserializableValue` requires `path:`/`value:`), destroying both the
+      # contract error and the class the wrapper promised to preserve.
       #
       # Anything else — an owned `#exception`, an owned duplication hook, a frozen exception whose clone cannot take
       # a new message — is reported as `Axn::Tools::InvalidContract`, naming the tool, repeating the original's message,

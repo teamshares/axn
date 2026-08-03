@@ -6,8 +6,8 @@ require "time"
 # Declared rather than inherited from the top-level `axn` entrypoint's require order: `axn/reflection`
 # is loadable on its own (it composes only its own reflection files), and Axn::Extensions::Serialization
 # requires this file directly, while serializing ANY Hash/Array reaches CycleGuard and raising needs
-# UnserializableValue. Both are runtime references, so without these a standalone load NameErrors on
-# ordinary output.
+# Axn::Extensions::Serialization::UnserializableValue. Both are runtime references, so without these a
+# standalone load NameErrors on ordinary output.
 require "axn/internal/cycle_guard"
 require "axn/exceptions"
 
@@ -136,7 +136,7 @@ module Axn
           # cannot be overridden (Symbol takes neither a subclass nor a singleton). On success the path is the
           # canonical wire key, so nested paths read `owner.name` as before.
           wire_key = canonical_wire_key(config.field) ||
-                     raise(Axn::Reflection::UnserializableValue.new(
+                     raise(Axn::Extensions::Serialization::UnserializableValue.new(
                              path: config.field.inspect, value: config.field, reason: UNRENDERABLE_FIELD_BYTES_REASON,
                            ))
           raise_colliding_fields!(wire_key, claimed.fetch(wire_key), config.field) if claimed.key?(wire_key)
@@ -181,8 +181,9 @@ module Axn
           # handled above. A non-real Numeric (Complex) can't become a Float — fall back to its string form.
           #
           # The finiteness check sits OUTSIDE the coercion's rescue: BigDecimal("Infinity") and a Rational
-          # too large for a double both coerce to a non-finite Float, and UnserializableValue is an
-          # ArgumentError, so raising inside that rescue would be swallowed into the string fallback.
+          # too large for a double both coerce to a non-finite Float, and
+          # Axn::Extensions::Serialization::UnserializableValue is an ArgumentError, so raising inside
+          # that rescue would be swallowed into the string fallback.
           coerced = coerce_to_float(value)
           coerced.nil? ? encodable_string!(value.to_s, source: value, path:) : finite_number!(coerced, source: value, path:)
         when Hash
@@ -226,13 +227,15 @@ module Axn
             # `to_h`, and no `to_hash` for ActiveSupport's generic Object#as_json to delegate to — so what
             # would render is its instance-variable dump. A :delegated_as_json value does declare one (its
             # `to_hash`), which that same generic `as_json` renders faithfully, so it is not opaque.
-            raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_AS_JSON_REASON) if reject_opaque && projection == :generic_as_json
+            if reject_opaque && projection == :generic_as_json
+              raise Axn::Extensions::Serialization::UnserializableValue.new(path:, value:, reason: OPAQUE_AS_JSON_REASON)
+            end
 
             within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested, reject_opaque:) }
           when :to_h
             within_container(value, path, seen) { |nested| serialize_value(value.to_h, path:, seen: nested, reject_opaque:) }
           else
-            raise Axn::Reflection::UnserializableValue.new(path:, value:, reason: OPAQUE_VALUE_REASON) if reject_opaque && default_to_s?(value)
+            raise Axn::Extensions::Serialization::UnserializableValue.new(path:, value:, reason: OPAQUE_VALUE_REASON) if reject_opaque && default_to_s?(value)
 
             encodable_string!(value.to_s, source: value, path:)
           end
@@ -265,7 +268,7 @@ module Axn
         when ::String
           return ::String.new(rendered) if utf8_rendering(rendered)
 
-          raise Axn::Reflection::UnserializableValue.new(path:, value: source, reason: UNRENDERABLE_BYTES_REASON)
+          raise Axn::Extensions::Serialization::UnserializableValue.new(path:, value: source, reason: UNRENDERABLE_BYTES_REASON)
         else
           rendered
         end
@@ -318,7 +321,7 @@ module Axn
       def finite_number!(float, source:, path:)
         return float if float.finite?
 
-        raise Axn::Reflection::UnserializableValue.new(
+        raise Axn::Extensions::Serialization::UnserializableValue.new(
           path:,
           value: source,
           reason: "it renders as #{float}, and JSON has no literal for a non-finite number — `JSON.generate` " \
@@ -349,7 +352,7 @@ module Axn
       # this module's own frozen sentinel.
       def within_container(container, path, seen, &)
         result = Axn::Internal::CycleGuard.guard(container, seen, on_cycle: CYCLE_DETECTED, &)
-        raise Axn::Reflection::UnserializableValue.new(path:, value: container) if CYCLE_DETECTED.equal?(result)
+        raise Axn::Extensions::Serialization::UnserializableValue.new(path:, value: container) if CYCLE_DETECTED.equal?(result)
 
         result
       end
@@ -461,7 +464,7 @@ module Axn
       # itself is what the message names the class of, so no key's `inspect` runs while the error is built.
       def own_wire_key(key, path)
         canonical_wire_key(key) ||
-          raise(Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: UNRENDERABLE_KEY_BYTES_REASON))
+          raise(Axn::Extensions::Serialization::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: UNRENDERABLE_KEY_BYTES_REASON))
       end
 
       # A post-condition, not a detector: every route to dropping an entry is supposed to have been caught
@@ -475,7 +478,7 @@ module Axn
       def no_entries_lost!(rendered_size, captured_size, path)
         return if rendered_size == captured_size
 
-        raise Axn::Reflection::UnserializableValue.new(
+        raise Axn::Extensions::Serialization::UnserializableValue.new(
           path:,
           value: nil,
           reason: "serializing it produced #{rendered_size} of its #{captured_size} entries, and no specific " \
@@ -488,7 +491,7 @@ module Axn
       # Two field names that converged on one property. Both names are safe to interpolate — Symbol#inspect
       # escapes any bytes and cannot be overridden — so unlike a Hash key's, the message can name each.
       def raise_colliding_fields!(wire_key, first, second)
-        raise Axn::Reflection::UnserializableValue.new(
+        raise Axn::Extensions::Serialization::UnserializableValue.new(
           path: second.inspect,
           value: second,
           reason: "two exposed fields render as the same JSON property #{wire_key.inspect} " \
@@ -564,7 +567,7 @@ module Axn
       # itself paired up, so the message names the real pair without projecting either key again. The pair
       # reported is the first collapse in insertion order, which makes it deterministic.
       def raise_colliding_keys!(path:, wire_key:, first_key:, second_key:)
-        raise Axn::Reflection::UnserializableValue.new(
+        raise Axn::Extensions::Serialization::UnserializableValue.new(
           path: "#{path} (hash key)",
           value: second_key,
           reason: "two keys stringify to the same JSON property #{wire_key.inspect} " \
@@ -609,7 +612,7 @@ module Axn
 
         return unless default_to_s?(key)
 
-        raise Axn::Reflection::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: OPAQUE_KEY_REASON)
+        raise Axn::Extensions::Serialization::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: OPAQUE_KEY_REASON)
       end
 
       # The projection serialize_value follows for a non-leaf object: its own `as_json` (defined on its

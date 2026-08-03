@@ -226,45 +226,47 @@ module Axn
     end
   end
 
-  module Reflection
-    # Raised when an exposed value has no honest JSON representation, so a serializing adapter
-    # (axn-openapi, axn-mcp, axn-ruby_llm) fails the call rather than emitting garbage or a placeholder
-    # where data belongs. Six shapes, in two categories. The rendering would be WRONG, or not JSON at
-    # all: a self-referential container (no JSON representation at all), two Hash keys that stringify
-    # to one JSON property (a value silently dropped), a non-finite Float (no JSON literal exists), or
-    # a String whose bytes have no UTF-8 rendering (JSON is a UTF-8 format). The rendering would be
-    # UGLY, rejected only under `serialize_value(reject_opaque: true)`: a value or a Hash key whose
-    # only `to_s` is the inherited Object#to_s, which renders an object address into a response body.
-    #
-    # An ArgumentError so an adapter's existing `rescue StandardError` maps it to an error response
-    # with no adapter-side change; a SystemStackError, being outside StandardError, would escape the
-    # adapter entirely. Names the path to the offending value.
-    class UnserializableValue < ArgumentError
-      # `reason:` names the specific defect, punctuation included. It defaults to the cycle case —
-      # both the original meaning of this error and the only one an external caller is likely to
-      # construct — so `new(path:, value:)` remains a complete call.
-      def initialize(path:, value:, reason: nil)
-        @path = path
-        @value = value
-        @reason = reason
-        super()
-      end
+  module Extensions
+    module Serialization
+      # Raised when an exposed value has no honest JSON representation, so a serializing adapter
+      # (axn-openapi, axn-mcp, axn-ruby_llm) fails the call rather than emitting garbage or a placeholder
+      # where data belongs. Six shapes, in two categories. The rendering would be WRONG, or not JSON at
+      # all: a self-referential container (no JSON representation at all), two Hash keys that stringify
+      # to one JSON property (a value silently dropped), a non-finite Float (no JSON literal exists), or
+      # a String whose bytes have no UTF-8 rendering (JSON is a UTF-8 format). The rendering would be
+      # UGLY, rejected only under `serialize_value(reject_opaque: true)`: a value or a Hash key whose
+      # only `to_s` is the inherited Object#to_s, which renders an object address into a response body.
+      #
+      # An ArgumentError so an adapter's existing `rescue StandardError` maps it to an error response
+      # with no adapter-side change; a SystemStackError, being outside StandardError, would escape the
+      # adapter entirely. Names the path to the offending value.
+      class UnserializableValue < ArgumentError
+        # `reason:` names the specific defect, punctuation included. It defaults to the cycle case —
+        # both the original meaning of this error and the only one an external caller is likely to
+        # construct — so `new(path:, value:)` remains a complete call.
+        def initialize(path:, value:, reason: nil)
+          @path = path
+          @value = value
+          @reason = reason
+          super()
+        end
 
-      # The offending value's class is named via Axn::Internal::ClassName, not `@value.class`: the value
-      # is caller-supplied and may override `class`, and running that override here would replace this
-      # failure with the value's own exception.
-      def message
-        "Cannot serialize exposed value at `#{@path}` (#{Axn::Internal::ClassName.of(@value)}): #{@reason || cycle_reason}"
-      end
+        # The offending value's class is named via Axn::Internal::ClassName, not `@value.class`: the value
+        # is caller-supplied and may override `class`, and running that override here would replace this
+        # failure with the value's own exception.
+        def message
+          "Cannot serialize exposed value at `#{@path}` (#{Axn::Internal::ClassName.of(@value)}): #{@reason || cycle_reason}"
+        end
 
-      private
+        private
 
-      def cycle_reason
-        klass = Axn::Internal::ClassName.of(@value)
-        article = klass.match?(/\A[aeiou]/i) ? "an" : "a"
+        def cycle_reason
+          klass = Axn::Internal::ClassName.of(@value)
+          article = klass.match?(/\A[aeiou]/i) ? "an" : "a"
 
-        "it is self-referential (#{article} #{klass} cycle), which has no JSON representation. " \
-          "Expose a finite projection of it instead (e.g. ids rather than the objects that point back)."
+          "it is self-referential (#{article} #{klass} cycle), which has no JSON representation. " \
+            "Expose a finite projection of it instead (e.g. ids rather than the objects that point back)."
+        end
       end
     end
   end
