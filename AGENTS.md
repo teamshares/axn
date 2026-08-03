@@ -149,7 +149,13 @@ Any code that recurses through caller-supplied Hash/Array values must cycle-guar
   Read the differences one by one: an example that fails THERE and passes here is a behaviour this change
   moved, and an unexpected one is a regression. **An example that fails in BOTH is a broken fixture, not a
   finding** — that distinction is the one that repeatedly mattered, because a stale fixture reads exactly
-  like a regression until you check the other side.
+  like a regression until you check the other side. A mixed result is normal and is the useful case: only the
+  examples whose behaviour the change actually moved flip.
+
+  `bundle exec` needs no `bundle install` in the worktree while `Gemfile.lock` is unchanged between the two
+  commits — the gems are already resolved. If the older commit's lockfile DOES differ, install there first;
+  otherwise every example fails for the same uninteresting reason, which is the commonest cause of a
+  fails-in-both reading.
 
 ## Changes & compatibility
 
