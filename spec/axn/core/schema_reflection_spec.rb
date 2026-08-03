@@ -310,6 +310,12 @@ RSpec.describe "Axn class-level schema reflection" do
       "an entry-level allow_nil: false over a hash-level true" =>
         [{ type: { klass: String, allow_nil: false }, allow_nil: true }, false],
       "no tolerance at all" => [{ type: String }, false],
+      # A declaration-wide `on:` is merged into every validator, and axn validates with no context — so no
+      # spelling of it can match and nothing in the declaration runs at all.
+      "a hash-level on: naming a context" => [{ type: String, on: :publish }, true],
+      "a hash-level on: nil" => [{ type: String, on: nil }, true],
+      "a hash-level on: false" => [{ type: String, on: false }, true],
+      "a hash-level on: []" => [{ type: String, on: [] }, true],
     }.each do |label, (member_validations, tolerant)|
       it "reads #{label} the way the runtime treats a nil member" do
         klass = shaped(member_validations)
@@ -323,6 +329,23 @@ RSpec.describe "Axn class-level schema reflection" do
         expect(Array(prop[:required]).include?("name")).to be(!tolerant)
         expect(Array(prop.dig(:properties, :name, :type)).include?("null")).to be(tolerant)
       end
+    end
+
+    # A declaration-wide `allow_blank:` reaches the length validator too, so the floor it names is one the
+    # contract does not enforce and the schema must not advertise.
+    it "emits no floor for a length: the declaration tolerates blank around" do
+      klass = shaped(type: String, length: { minimum: 3 }, allow_blank: true)
+
+      expect(klass.call(payload: { name: "" })).to be_ok
+      prop = klass.input_schema.dig(:properties, :payload, :properties, :name)
+      expect(prop).not_to have_key(:minLength)
+    end
+
+    it "keeps the floor when the declaration tolerates nothing" do
+      klass = shaped(type: String, length: { minimum: 3 })
+
+      expect(klass.call(payload: { name: "" })).not_to be_ok
+      expect(klass.input_schema.dig(:properties, :payload, :properties, :name, :minLength)).to eq(3)
     end
 
     # The strip that discards shared keys before judging is what keeps a shared-ONLY hash from reading as a

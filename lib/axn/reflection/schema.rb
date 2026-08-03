@@ -762,7 +762,7 @@ module Axn
         presence = validations[:presence]
         return false unless presence
 
-        opts = validator_entry_options(presence)
+        opts = effective_entry_options(presence, validations.slice(*Axn::Validation::Base.shared_validation_option_keys))
         !opts[:allow_blank] && !entry_context_scoped?(opts)
       end
 
@@ -1224,7 +1224,7 @@ module Axn
         # from one whose blank-tolerance is moot.
         rejects_empty = empty_value_rejected?(validations)
 
-        length = validator_entry_options(validations[:length])
+        length = effective_entry_options(validations[:length], shared_validation_options(config))
         if !entry_context_scoped?(length) && (rejects_empty || !length[:allow_blank])
           declared = Axn::Validation::Base.declared_length_floor(length)
           return declared if Axn::Validation::Base.emittable_length_floor?(declared)
@@ -1680,6 +1680,10 @@ module Axn
       def entry_context_scoped?(opt) = Axn::Validation::Base.entry_context_scoped?(opt)
       def validator_entry_options(entry) = Axn::Validation::Base.validator_entry_options(entry)
 
+      # An entry's options as `validates` will hand them over — the declaration-wide shared options with the
+      # entry's own merged on top, so a shared tolerance or context is judged here exactly as at runtime.
+      def effective_entry_options(entry, declaration_options) = Axn::Validation::Base.effective_entry_options(entry, declaration_options)
+
       def nil_allowed?(config)
         nil_tolerance_rescues_absence?(config)
       end
@@ -1689,8 +1693,7 @@ module Axn
       # matters for dropping `format: "uuid"` — a blank-tolerant `length:`/other validator doesn't make
       # `TypeValidator` accept `""`, so the format must stay.
       def type_allows_blank?(config)
-        type = config.validations[:type]
-        type.is_a?(Hash) && type[:allow_blank] == true
+        effective_entry_options(config.validations[:type], shared_validation_options(config))[:allow_blank] == true
       end
 
       # Strip `format: "uuid"` from anyOf members: a blank-tolerant uuid accepts "" at runtime, which a

@@ -43,11 +43,13 @@ module Axn
       KERNEL_SINGLETON_CLASS = ::Kernel.instance_method(:singleton_class)
       MODULE_ANCESTORS = ::Module.instance_method(:ancestors)
       MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
+      MODULE_PUBLIC_METHOD_DEFINED = ::Module.instance_method(:public_method_defined?)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
       STRING_EMPTY = ::String.instance_method(:empty?)
       STRING_ENCODING = ::String.instance_method(:encoding)
       private_constant :OBJECT_METHOD, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
-                       :MODULE_ANCESTORS, :MODULE_INSTANCE_METHODS, :MODULE_PRIVATE_INSTANCE_METHODS
+                       :MODULE_ANCESTORS, :MODULE_INSTANCE_METHODS, :MODULE_PRIVATE_INSTANCE_METHODS,
+                       :MODULE_PUBLIC_METHOD_DEFINED
 
       # ActiveSupport's own definition of a blank String, matched against the value's BYTES rather than asked
       # of the value (`Regexp#match?` reads a String operand's bytes in C — no `to_str`, no `=~`, and the
@@ -132,6 +134,16 @@ module Axn
       end
 
       def self.frozen?(value) = KERNEL_FROZEN.bind_call(value)
+
+      # Whether a MODULE defines a public instance method — read out of its method table, not asked of it. A
+      # declared type is a caller's class or module, and `public_method_defined?` is as overridable as anything
+      # else: one that answers wrongly inverts the verdict a declaration guard reaches, turning a declaration
+      # error into a runtime failure or refusing a type that is perfectly capable.
+      #
+      # The caller must have established that `mod` IS a Module first, through a `case`/`when` (`Module#===` is
+      # a C-level check that runs none of the object's code): binding this to anything else is a TypeError, which
+      # would be exactly the replaced-verdict failure the bound read exists to prevent.
+      def self.public_instance_method?(mod, name) = MODULE_PUBLIC_METHOD_DEFINED.bind_call(mod, name)
 
       # Whether this NAME renders through Ruby's own code, which is the condition for "the property a rule judged
       # is the property every consumer reads".

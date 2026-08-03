@@ -1409,16 +1409,23 @@ module Axn
         # and `:uuid` have no empty state.
         EMPTIABLE_PSEUDO_TYPES = %i[params].freeze
 
-        # Whether a declared type has an empty state for `allow_empty:` to talk about. Asked of the type
-        # rather than an allowlist: `public_method_defined?` is the same reflective test schema.rb uses for
-        # capability questions, it covers a custom container with its own `empty?`, and it avoids naming
-        # `Set`, which may not be loaded outside Rails. Asked of any MODULE, matching what a declared type
-        # may be: TypeValidator matches with `is_a?`, so a bare module is a supported `type:` and its values
-        # have whatever empty state it defines (a `Class` is a `Module`, so every class is still asked).
+        # Whether a declared type has an empty state for `allow_empty:` to talk about. Asked of the type's METHOD
+        # TABLE rather than of an allowlist: it covers a custom container with its own `empty?`, and it avoids
+        # naming `Set`, which may not be loaded outside Rails. Asked of any MODULE, matching what a declared type
+        # may be: TypeValidator matches with `is_a?`, so a bare module is a supported `type:` and its values have
+        # whatever empty state it defines (a `Class` is a `Module`, so every class is still asked).
+        #
+        # Nothing here runs a line the type wrote. The type test is a `case` (`Module#===`/`Symbol#===` are
+        # C-level), and the capability read is bound (`NativeMethods.public_instance_method?`) — a class or module
+        # defining `is_a?` or `public_method_defined?` would otherwise decide this guard's verdict for it, and a
+        # declaration guard that a caller can invert is not a guard. Symbol membership is compared against axn's
+        # own frozen list, where `==` is Symbol's (a Symbol takes no subclass).
         def _emptiable_type?(klass)
-          return EMPTIABLE_PSEUDO_TYPES.include?(klass) if klass.is_a?(Symbol)
-
-          klass.is_a?(Module) && klass.public_method_defined?(:empty?)
+          case klass
+          when ::Symbol then EMPTIABLE_PSEUDO_TYPES.include?(klass)
+          when ::Module then Internal::NativeMethods.public_instance_method?(klass, :empty?)
+          else false
+          end
         end
 
         # The grammar of an `allow_empty:` value: the option's three states — `true` (an empty value is
@@ -1432,10 +1439,15 @@ module Axn
         def _validate_allow_empty_value!(fields, allow_empty)
           return if [nil, true, false].include?(allow_empty)
 
+          # The offender is described by CLASS through the seam that reads it natively and renders the result:
+          # its own `inspect` would run caller code while this failure is being reported, and one that raises
+          # replaces the declaration error with the caller's exception — outside StandardError, escaping every
+          # rescue meant to settle it.
           raise ArgumentError,
                 "allow_empty: must be true, false, or nil on #{fields.map(&:to_s).inspect} " \
-                "(got #{allow_empty.inspect}). `true` accepts an empty value, `false` rejects one, and " \
-                "omitting the option leaves the field's other rules to decide."
+                "(got a value of class #{Axn::Reflection::PropertyNames.renderable_class_name(allow_empty)}). " \
+                "`true` accepts an empty value, `false` rejects one, and omitting the option leaves the " \
+                "field's other rules to decide."
         end
 
         # `allow_empty:` permits (or forbids) an empty value of a declared type. With no `type:` there is
@@ -1602,8 +1614,12 @@ module Axn
         #   * an `on:` inside the type BAG — ActiveModel's validation-context option, which makes the entry
         #     permanently inert and so its nil verdict vacuous (Validation::Base.entry_context_scoped?).
         def _type_rejects_nil?(validations)
-          type = validations[:type]
-          return false unless type.is_a?(Hash) && type[:klass]
+          raw = validations[:type]
+          return false unless raw.is_a?(Hash) && raw[:klass]
+
+          # The options the type check will run under, the declaration's included — a shared tolerance or context
+          # governs it exactly as one inside the bag does.
+          type = Axn::Validation::Base.effective_entry_options(raw, _shared_validation_options(validations))
           return false if type[:allow_nil] || type[:allow_blank]
           return false if Axn::Validation::Base.entry_context_scoped?(type)
 
@@ -1675,12 +1691,13 @@ module Axn
           # contradiction — defer to it, so long as it is guaranteed to run. Under a nil-tolerance it needs
           # the axis's own tolerance keys, or the pushed blank-tolerance would stand it down on exactly the
           # value it is being trusted to reject.
-          if length_answer == :rejected && _entry_guaranteed_to_run?(authored_length)
+          if length_answer == :rejected && _entry_guaranteed_to_run?(validations[:length], _shared_validation_options(validations))
             validations[:length] = EMPTINESS_AXIS_TOLERANCE.merge(authored_length) if tolerant
             return
           end
 
-          return if presence_answer == :rejected && _entry_guaranteed_to_run?(validations[:presence])
+          return if presence_answer == :rejected &&
+                    _entry_guaranteed_to_run?(validations[:presence], _shared_validation_options(validations))
 
           # A `length:` that explicitly ADMITS an empty value is settled before asking what would enforce the
           # axis: the inferred presence check would honor the flag, but the declaration would still answer the
@@ -1724,12 +1741,16 @@ module Axn
         #     declaration, the emptiness check included, so relative to the check that would replace this
         #     entry there is nothing to withdraw.
         #   * an `on:` — ActiveModel's validation-context option, which makes the entry permanently inert
-        #     (Validation::Base.entry_context_scoped?): it runs on no call at all.
-        def _entry_guaranteed_to_run?(entry)
-          opts = entry.is_a?(Hash) ? entry : {}
-          return false if Axn::Validation::Base.entry_context_scoped?(opts)
+        #     (Validation::Base.entry_context_scoped?): it runs on no call at all. Asked of the options the entry
+        #     will RUN under, since a declaration-wide `on:` scopes every validator in the call — the opposite
+        #     tier treatment from the gate above, and for the opposite reason: a shared context silences this
+        #     entry AND the check that would replace it, but it silences them on every call rather than some.
+        def _entry_guaranteed_to_run?(entry, declaration_options)
+          own = entry.is_a?(Hash) ? entry : {}
+          effective = Axn::Validation::Base.effective_entry_options(entry, declaration_options)
+          return false if Axn::Validation::Base.entry_context_scoped?(effective)
 
-          !Axn::Validation::Base.entry_self_gated?(opts)
+          !Axn::Validation::Base.entry_self_gated?(own)
         end
 
         # What an explicit `presence:` says about emptiness: `presence` is `!blank?`, so a live one rejects
@@ -1745,7 +1766,7 @@ module Axn
 
           return :permitted unless validations[:presence]
 
-          entry = Axn::Validation::Base.validator_entry_options(validations[:presence])
+          entry = Axn::Validation::Base.effective_entry_options(validations[:presence], _shared_validation_options(validations))
           return nil if Axn::Validation::Base.entry_context_scoped?(entry)
 
           entry[:allow_blank] ? :permitted : :rejected
@@ -1764,7 +1785,7 @@ module Axn
         # whatever it rejects. Both the floor and the test of what counts are the definitions schema
         # reflection emits from, so the two layers honor exactly the same set of floors.
         def _length_emptiness_answer(validations)
-          opts = _authored_length_options(validations)
+          opts = _effective_length_options(validations)
           return nil if opts.empty?
           return nil if Axn::Validation::Base.entry_context_scoped?(opts)
           return :permitted if opts[:allow_blank]
@@ -1782,6 +1803,19 @@ module Axn
         # names nothing.
         def _authored_length_options(validations)
           Axn::Validation::Base.validator_entry_options(validations[:length])
+        end
+
+        # The same entry as the options it will RUN under. Read where the question is what the entry enforces;
+        # `_authored_length_options` stays the author's own, because that is what is written back into the
+        # declaration and the declaration's shared options must not be baked into an entry.
+        def _effective_length_options(validations)
+          Axn::Validation::Base.effective_entry_options(validations[:length], _shared_validation_options(validations))
+        end
+
+        # The declaration-wide options every entry of this declaration rides alongside — the tier each per-entry
+        # judgment resolves against.
+        def _shared_validation_options(validations)
+          validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
         end
 
         def _raise_emptiness_conflict!(fields, allow_empty:, spelling:, says:)

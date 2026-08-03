@@ -45,6 +45,23 @@ module Axn
         normalize_validator_options(entry)
       end
 
+      # ONE entry's options as `validates` will hand them to the validator: the declaration-wide shared options
+      # with the entry's own merged over them, which is literally what AM builds
+      # (`defaults.merge(_parse_validates_options(options))`, activemodel 7.2.2.2). Every per-entry judgment reads
+      # THIS rather than the entry alone, because a shared `allow_nil:`/`allow_blank:`/`on:`/`strict:` governs how
+      # the entry runs just as an entry's own does — and an entry's own value overrides the shared one per key,
+      # which the merge order gives for free.
+      #
+      # A falsy entry is a disabled validator AM skips outright, so it has no effective options to speak of.
+      # The two GATE questions deliberately do not come through here: `entry_effective_gate_keys` resolves the
+      # same two tiers with AM's blankness rule applied per key, and `entry_self_gated?` asks about an entry's own
+      # gate specifically.
+      def self.effective_entry_options(entry, declaration_options)
+        return {} unless entry
+
+        declaration_options.merge(normalize_validator_options(entry))
+      end
+
       # ActiveModel's shared "default" validator options — keys that ride alongside validator entries
       # in a `validates` call but are NOT validators themselves (if:/unless:/on:/strict:/allow_blank:/
       # allow_nil:). Exposed so the tolerance push-down (contract.rb) can hold them OUT of the
@@ -102,33 +119,30 @@ module Axn
       # so a caller cannot omit the tier that decides several of these answers and get a quietly wrong one.
       def self.nil_tolerant_validation?(key, opt, declaration_options)
         return true unless opt # a disabled validator (falsy `opt` — `false`/`nil`); ActiveModel skips it
-        return true if entry_context_scoped?(opt)
-        return true if entry_tolerates_nil?(opt, declaration_options)
+
+        # Judged on the options `validates` will actually hand the validator, so a declaration-wide tolerance or
+        # context counts exactly as an entry's own does.
+        opts = effective_entry_options(opt, declaration_options)
+        return true if entry_context_scoped?(opts)
+        return true if opts[:allow_nil] || opts[:allow_blank]
         return true if key == :absence
-        return true if key == :acceptance && acceptance_admits_nil?(opt)
+        return true if key == :acceptance && acceptance_admits_nil?(opts)
         return true if key == :confirmation
-        return true if key == :format && format_admits_nil?(opt)
-        return true if key == :length && length_admits_nil?(opt)
-        return true if key == :type && type_admits_nil?(opt)
-        return true if key == :exclusion && set_includes_nil?(opt) == false
-        return true if key == :inclusion && set_includes_nil?(opt) == true
+        return true if key == :format && format_admits_nil?(opts)
+        return true if key == :length && length_admits_nil?(opts)
+        return true if key == :type && type_admits_nil?(opts)
+        return true if key == :exclusion && set_includes_nil?(opts) == false
+        return true if key == :inclusion && set_includes_nil?(opts) == true
 
         false
       end
 
-      # Whether an entry runs nil-tolerant, at either tier `validates` resolves: its OWN `allow_nil:`/
-      # `allow_blank:` if it carries one, otherwise the declaration-wide value, which AM applies to every
-      # validator in the call. Read through the shared per-entry precedence model, so this answers the same
-      # way the gate and `strict:` questions do — and truthiness decides, so a hash-level `allow_nil: false`
-      # confers nothing and an entry's own `false` overrides a declaration-wide `true`.
-      def self.entry_tolerates_nil?(entry_opts, declaration_options)
-        %i[allow_nil allow_blank].any? { |key| entry_effective_option(entry_opts, declaration_options, key) }
-      end
-
-      # Whether a validator ENTRY is scoped to an ActiveModel validation CONTEXT — an `on:` inside the
-      # entry's own options — which makes it permanently inert: `Fields.errors_for` calls `valid?` with no
-      # context, so the entry runs on no call at all and whatever it would have rejected is vacuous. Only
-      # the key's presence is asked: any `on:` disables the entry, whatever its value.
+      # Whether a validator ENTRY is scoped to an ActiveModel validation CONTEXT — an `on:` among the options it
+      # will run under, its own or the declaration's (`effective_entry_options`) — which makes it permanently
+      # inert: `Fields.errors_for` calls `valid?` with no context, so the entry runs on no call at all and
+      # whatever it would have rejected is vacuous. Only the key's presence is asked, at either tier: `validate`
+      # installs the context gate on `options.key?(:on)` whatever the value, so `on: nil`/`false`/`[]` name a
+      # context no call is in exactly as `on: :publish` does.
       #
       # Distinct from an if:/unless: GATE, which a given call MAY run: reflection counts a gated entry as if
       # its gate were open (static-maximal — stricter than a closed-gate runtime, and safe), while a

@@ -250,22 +250,81 @@ RSpec.describe "nil and empty axes" do
       end
     end
 
+    # The guard reads the declared type's METHOD TABLE, never the type's answers about itself: a class or
+    # module may define `is_a?` or `public_method_defined?`, and one that lies would turn a declaration error
+    # into a runtime failure (or refuse a type that is perfectly empty-capable).
+    describe "a declared type whose reflection lies" do
+      it "accepts a type that has empty? but denies defining it" do
+        liar = Module.new do
+          def self.public_method_defined?(*) = false
+          def empty? = true
+        end
+
+        expect { build(type: liar, allow_empty: true) }.not_to raise_error
+      end
+
+      it "rejects a type that claims empty? without defining it" do
+        boaster = Module.new do
+          def self.public_method_defined?(*) = true
+        end
+
+        expect { build(type: boaster, allow_empty: true) }
+          .to raise_error(ArgumentError, /allow_empty:.*cannot be empty/)
+      end
+
+      it "rejects a declared klass that claims to be a Module without being one" do
+        impostor = Object.new
+        impostor.define_singleton_method(:is_a?) { |_klass| true }
+        impostor.define_singleton_method(:public_method_defined?) { |*| true }
+
+        # Declared inside the type bag, since the bare-`type:` sugar asks a value `is_a?(Hash)` before this
+        # guard is ever reached.
+        expect { build(type: { klass: impostor }, allow_empty: true) }
+          .to raise_error(ArgumentError, /allow_empty:.*cannot be empty/)
+      end
+    end
+
+    # Reporting an invalid value must not run the value's code: an `inspect` that raises replaces the
+    # declaration error with the caller's exception, and one outside StandardError escapes every rescue.
+    describe "an invalid allow_empty: value that cannot be inspected" do
+      it "reports the declaration error rather than the value's own exception" do
+        hostile = Object.new
+        hostile.define_singleton_method(:inspect) { raise "inspect ran" }
+
+        expect { build(type: Array, allow_empty: hostile) }
+          .to raise_error(ArgumentError, /allow_empty: must be true, false, or nil/)
+      end
+
+      it "survives an inspect that raises outside StandardError" do
+        hostile = Object.new
+        hostile.define_singleton_method(:inspect) { raise SystemStackError, "stack level too deep" }
+
+        expect { build(type: Array, allow_empty: hostile) }
+          .to raise_error(ArgumentError, /allow_empty: must be true, false, or nil/)
+      end
+
+      it "still describes the offending value by class" do
+        expect { build(type: Array, allow_empty: "false") }
+          .to raise_error(ArgumentError, /got a value of class String/)
+      end
+    end
+
     # The option has exactly three states, and Ruby truthiness would read anything else as one of the two
     # poles — `allow_empty: "false"` as "empty is acceptable", the precise opposite of what it says.
     describe "the value grammar" do
       it "rejects a String, which truthiness would read as the opposite of what it spells" do
         expect { build(type: Array, allow_empty: "false") }
-          .to raise_error(ArgumentError, /allow_empty: must be true, false, or nil.*got "false"/m)
+          .to raise_error(ArgumentError, /allow_empty: must be true, false, or nil.*got a value of class String/m)
       end
 
       it "rejects an Integer" do
         expect { build(type: Array, allow_empty: 1) }
-          .to raise_error(ArgumentError, /allow_empty: must be true, false, or nil.*got 1/m)
+          .to raise_error(ArgumentError, /allow_empty: must be true, false, or nil.*got a value of class Integer/m)
       end
 
       it "rejects a Symbol" do
         expect { build(type: Array, allow_empty: :nope) }
-          .to raise_error(ArgumentError, /allow_empty: must be true, false, or nil.*got :nope/m)
+          .to raise_error(ArgumentError, /allow_empty: must be true, false, or nil.*got a value of class Symbol/m)
       end
 
       it "reports a bad value as a bad value, not as a problem with the type it was declared on" do
