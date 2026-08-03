@@ -1060,7 +1060,22 @@ git commit -m "PRO-3005: docs, AGENTS namespace policy, and CHANGELOG name the n
 
 ## Task 11: Whole-repo verification
 
-**Files:** none — this task only reads and reports.
+**Files:** `internal-docs/tools/hostile_contract_harness.rb` (the one executable file under `internal-docs/`); otherwise this task only reads and reports.
+
+- [ ] **Step 0: Update the hostile-contract harness**
+
+`internal-docs/tools/hostile_contract_harness.rb` is PRO-2995's dev-only regression harness — runnable Ruby, not prose, and not run by CI. It references names from Tasks 2, 3, and 4, so it is updated once here rather than three times mid-plan:
+
+```bash
+sed -i '' \
+  -e 's/Axn\.register_tool_adapter(/Axn::Tools.register_adapter(/g' \
+  -e 's/Axn\.validate_tool_contracts!/Axn::Tools.validate_contracts!/g' \
+  -e 's/Axn::InvalidToolContract/Axn::Tools::InvalidContract/g' \
+  internal-docs/tools/hostile_contract_harness.rb
+grep -nE "Axn::InvalidToolContract|Axn\.register_tool_adapter|Axn\.validate_tool_contracts" internal-docs/tools/hostile_contract_harness.rb
+```
+
+Expected: no output from the grep. The `sed` also fixes the four expected-output regexes that match on the raised class's name (`/\AAxn::Tools::InvalidContract: HostileBootTool has an invalid tool contract/`), which is what makes the harness still pass. Then run it the way its own header documents and confirm it reports no regressions; if its header gives no command, run `ruby -Ilib internal-docs/tools/hostile_contract_harness.rb` and report what happens.
 
 - [ ] **Step 1: Confirm no old name survives anywhere in the repo**
 
@@ -1069,7 +1084,7 @@ grep -rInE "Axn\.tools_for|Axn\.versions_for|Axn\.register_tool_adapter|Axn\.val
   | grep -v "docs/.vitepress/dist\|internal-docs/\|^./\.git/"
 ```
 
-Expected: no output. `internal-docs/` is excluded deliberately — historical plans and specs describe what the code was at the time and are not edited.
+Expected: no output. `internal-docs/` **prose** is excluded deliberately — historical plans and specs describe what the code was at the time and are not edited. Its one executable file is handled by Step 0, so re-run the grep without the `internal-docs/` exclusion and confirm the only hits are inside `internal-docs/specs/` and `internal-docs/plans/` Markdown.
 
 - [ ] **Step 2: Confirm the top-level surface**
 
