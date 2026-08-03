@@ -12,7 +12,7 @@ Spec: `internal-docs/specs/2026-08-03-best-effort-cannot-be-taken-down-design.md
 
 ## Global Constraints
 
-- Ruby: repo pins 3.3.6, CI runs 3.2, 3.3 and 3.4. Never assert `Hash#inspect` text (3.4 changed its spacing). Run the suite under 3.4.1 locally before claiming done: `~/.asdf/installs/ruby/3.4.1/bin/ruby -S bundle exec rspec`.
+- Ruby: repo pins 3.3.6, CI runs 3.2, 3.3 and 3.4. Never assert `Hash#inspect` text (3.4 changed its spacing). Run the suite under 3.4.1 locally before claiming done: `ASDF_RUBY_VERSION=3.4.1 bundle exec rspec`.
 - Non-Rails specs live in `spec/`; Rails-dependent behaviour in `spec_rails/dummy_app/`. Guard every `ActiveRecord`/`Rails` constant with `defined?()`.
 - Markdown prose is **never** hard-wrapped: one line per paragraph, in specs, `AGENTS.md`, and `CHANGELOG.md` alike.
 - Comments describe current behaviour and intrinsic why. Never "used to X / now Y", never a ticket or review reference.
@@ -921,7 +921,7 @@ Delete the `rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR` backstop f
 
 - [ ] **Step 8: Run the full suite, both Rubies, and RuboCop**
 
-Run: `bundle exec rspec && bundle exec rubocop && ~/.asdf/installs/ruby/3.4.1/bin/ruby -S bundle exec rspec`
+Run: `bundle exec rspec && bundle exec rubocop && ASDF_RUBY_VERSION=3.4.1 bundle exec rspec`
 Expected: PASS all three.
 
 - [ ] **Step 9: Commit**
@@ -1181,7 +1181,9 @@ below them now, so both compose the two halves like every other layer."
 - Consumes: `Axn::Internal::Rendering.exception_message`, `.class_name` (Task 2).
 - Produces: nothing.
 
-None of these escape today — each already sits inside a guard, so a raise here degrades a log line or a message rather than replacing a verdict. Each is still a misattribution source of the identical shape, and `renderable` is byte-identical for ASCII, so no existing message text moves.
+**`validate_validator.rb:52` is already done** — Task 3 had to bring it forward, because its own misattribution spec cannot pass while that line reads `e.message` raw. Confirm it matches the replacement below and move on.
+
+Do not assume the rest are harmless. The claim these sites shared — "each already sits inside a guard, so a raise here degrades a log line rather than replacing a verdict" — was FALSE for `validate_validator.rb:52`, which reads the exception outside any guard. Check each remaining site for itself: find the enclosing `rescue`/`best_effort` and say in the report whether the read is actually inside it. A site that is not inside one is an escape, not defence in depth, and needs a spec of its own. `renderable` is byte-identical for ASCII, so no existing message text moves either way.
 
 - [ ] **Step 1: Write the failing spec for the two that reach a user-visible message**
 
@@ -1333,7 +1335,7 @@ Run each and confirm:
 ```bash
 bundle exec rspec
 bundle exec rubocop
-~/.asdf/installs/ruby/3.4.1/bin/ruby -S bundle exec rspec
+ASDF_RUBY_VERSION=3.4.1 bundle exec rspec
 BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails
 ```
 
