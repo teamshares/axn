@@ -21,7 +21,7 @@ module Axn
         end
 
         value.each do |entry|
-          next unless Axn::Configuration.broad_tool_path?(entry)
+          next unless Axn::Configuration.broad_tool_root?(entry)
 
           raise ArgumentError,
                 "tool_roots entry #{entry.inspect} is too broad: it resolves to the project root, escapes " \

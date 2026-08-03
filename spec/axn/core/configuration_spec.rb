@@ -29,56 +29,56 @@ RSpec.describe Axn::Configuration do
     it { expect(config.env.test?).to eq(true) }
     it { expect(config.tool_name_stripped_prefixes).to eq(%w[actions tools agent_tools]) }
 
-    describe ".normalize_tool_path" do
+    describe ".normalize_tool_root" do
       it "collapses a `.`-segment alternate spelling" do
-        expect(described_class.normalize_tool_path("actions/./tools")).to eq("actions/tools")
+        expect(described_class.normalize_tool_root("actions/./tools")).to eq("actions/tools")
       end
 
       it "collapses a `..`-round-trip alternate spelling" do
-        expect(described_class.normalize_tool_path("app/../agent_tools")).to eq("agent_tools")
+        expect(described_class.normalize_tool_root("app/../agent_tools")).to eq("agent_tools")
       end
 
       it "strips surrounding whitespace and slashes" do
-        expect(described_class.normalize_tool_path(" /actions/tools/ ")).to eq("actions/tools")
+        expect(described_class.normalize_tool_root(" /actions/tools/ ")).to eq("actions/tools")
       end
     end
 
-    describe ".broad_tool_path?" do
+    describe ".broad_tool_root?" do
       it "flags a bare broad `actions` entry" do
-        expect(described_class.broad_tool_path?("actions")).to be(true)
+        expect(described_class.broad_tool_root?("actions")).to be(true)
       end
 
       it "flags `./actions` (alternate spelling)" do
-        expect(described_class.broad_tool_path?("./actions")).to be(true)
+        expect(described_class.broad_tool_root?("./actions")).to be(true)
       end
 
       it "flags `app/actions`" do
-        expect(described_class.broad_tool_path?("app/actions")).to be(true)
+        expect(described_class.broad_tool_root?("app/actions")).to be(true)
       end
 
       it "flags a `..`-traversal entry" do
-        expect(described_class.broad_tool_path?("actions/..")).to be(true)
-        expect(described_class.broad_tool_path?("..")).to be(true)
+        expect(described_class.broad_tool_root?("actions/..")).to be(true)
+        expect(described_class.broad_tool_root?("..")).to be(true)
       end
 
       it "does not flag a legitimately narrow dir" do
-        expect(described_class.broad_tool_path?("actions/tools")).to be(false)
+        expect(described_class.broad_tool_root?("actions/tools")).to be(false)
       end
 
       it "does not flag a dir that merely shares a prefix with a blocklisted entry" do
-        expect(described_class.broad_tool_path?("agent_tools")).to be(false)
+        expect(described_class.broad_tool_root?("agent_tools")).to be(false)
       end
 
       it "does not flag a narrow subdir of app/actions" do
-        expect(described_class.broad_tool_path?("app/actions/tools")).to be(false)
+        expect(described_class.broad_tool_root?("app/actions/tools")).to be(false)
       end
 
       it "flags an absolute broad `actions` entry" do
-        expect(described_class.broad_tool_path?(File.expand_path("actions"))).to be(true)
+        expect(described_class.broad_tool_root?(File.expand_path("actions"))).to be(true)
       end
 
       it "does not flag an absolute narrow dir whose leaf is not a broad name" do
-        expect(described_class.broad_tool_path?(File.expand_path("actions/tools"))).to be(false)
+        expect(described_class.broad_tool_root?(File.expand_path("actions/tools"))).to be(false)
       end
     end
 
@@ -100,8 +100,8 @@ RSpec.describe Axn::Configuration do
     end
 
     it "still exposes the broad-path guard used by adapter tool_roots" do
-      expect(Axn::Configuration.broad_tool_path?("actions")).to be(true)
-      expect(Axn::Configuration.broad_tool_path?("agent_tools")).to be(false)
+      expect(Axn::Configuration.broad_tool_root?("actions")).to be(true)
+      expect(Axn::Configuration.broad_tool_root?("agent_tools")).to be(false)
     end
   end
 

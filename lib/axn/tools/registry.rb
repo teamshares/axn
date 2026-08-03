@@ -44,7 +44,7 @@ module Axn
       # classes forever. That covers both cases _currently_defined? rejects: a stale NAMED reference
       # left by a Zeitwerk reload (the reloaded constant points at a fresh object), and a transient
       # anonymous class (name nil) that never got a constant. An anonymous class can never be a usable
-      # tool anyway (no stable tool_name, no const_source_location for tool_path membership), and
+      # tool anyway (no stable tool_name, no const_source_location for tool_root membership), and
       # `members` runs at adapter setup — well after class definition — so the "anonymous now, named
       # later" window is effectively never open at enumeration. Iterates a snapshot (_classes.to_a) so
       # a mid-enumeration registration can't corrupt the backing Set and deleting while walking is safe.
@@ -315,10 +315,10 @@ module Axn
       # bulk-exposing every business action.
       def _adapter_dirs(adapter)
         _adapter_roots(adapter).filter_map do |path|
-          if Axn::Configuration.broad_tool_path?(path)
+          if Axn::Configuration.broad_tool_root?(path)
             Axn.config.logger.warn do
               "[Axn] tool_roots entry #{path.inspect} for adapter #{adapter.inspect} is too broad; " \
-                "skipping (see Axn::Configuration::BROAD_TOOL_PATH_LEAVES)"
+                "skipping (see Axn::Configuration::BROAD_TOOL_ROOT_LEAVES)"
             end
             next
           end
@@ -346,7 +346,7 @@ module Axn
         adapters.flat_map { |adapter| _adapter_dirs(adapter) }.uniq
       end
 
-      # Normalizes via the same `Axn::Configuration.normalize_tool_path` that `AdapterRoots.validate!`
+      # Normalizes via the same `Axn::Configuration.normalize_tool_root` that `AdapterRoots.validate!`
       # uses (strip + `Pathname#cleanpath`), so an entry like `"actions/./tools"` resolves to the
       # identical dir as its clean spelling `"actions/tools"` instead of a raw, uncollapsed path.
       # `File.expand_path` on the joined result makes the returned dir canonical/absolute, matching
@@ -360,7 +360,7 @@ module Axn
           # the RAW path before normalization (which would collapse the leading slash away).
           return File.expand_path(path.to_s) if File.absolute_path?(path.to_s)
 
-          rel = Axn::Configuration.normalize_tool_path(path)
+          rel = Axn::Configuration.normalize_tool_root(path)
           rel = rel.delete_prefix("app/") if rel.start_with?("app/")
           File.expand_path(Rails.root.join("app", rel).to_s)
         else
