@@ -415,6 +415,9 @@ RSpec.describe Axn::Tools::Registry do
         expect(warnings).to include(a_string_matching(/hostile_tool\.rb.*RegistryHostileFileError.*boom/m))
       ensure
         FileUtils.remove_entry(dir)
+        # The fixture defines a top-level constant, and the file is loaded for real — so it outlives the
+        # tmpdir unless it is dropped here.
+        Object.send(:remove_const, :RegistryHostileFileError) if Object.const_defined?(:RegistryHostileFileError, false)
       end
     end
   end

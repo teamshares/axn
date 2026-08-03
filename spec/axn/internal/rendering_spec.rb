@@ -110,7 +110,11 @@ RSpec.describe Axn::Internal::Rendering do
       expect(described_class.exception_source_location(exception)).to eq("unknown location")
     end
 
-    it "reads the backtrace through a bound reader, so an override cannot substitute a non-Array" do
+    # An override that answers non-nil is consulted by CRuby's own `setup_exception`, which then declines to
+    # record a real backtrace — so the bound reader sees NIL and this degrades, rather than the frame type test
+    # below catching the non-Array. Both belong here: this is the outcome for the shape that actually reaches
+    # the guard, and the type test is what makes the outcome not depend on that CRuby detail.
+    it "degrades when an override kept a real backtrace from ever being recorded" do
       klass = Class.new(StandardError) do
         def backtrace = "not an array"
       end
@@ -121,6 +125,17 @@ RSpec.describe Axn::Internal::Rendering do
       end
 
       expect(described_class.exception_source_location(exception)).to eq("unknown location")
+    end
+
+    it "reads the backtrace through a bound reader, so an override cannot substitute its own answer" do
+      # A real backtrace AND an override: the override is what a dispatched read would get, and the recorded
+      # frame is what the bound reader gets. Asserting the frame is asserting that the override never ran.
+      exception = Class.new(StandardError) do
+        def backtrace = "not an array"
+      end.new("x")
+      exception.set_backtrace(["/app/lib/thing.rb:42:in `block'"])
+
+      expect(described_class.exception_source_location(exception)).to eq("thing.rb:42")
     end
   end
 end

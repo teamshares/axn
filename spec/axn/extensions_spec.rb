@@ -36,8 +36,11 @@ RSpec.describe Axn::Extensions do
       allow(Axn).to receive_message_chain(:config, :logger).and_return(logger)
       allow(Axn).to receive_message_chain(:config, :best_effort_raises_in_dev).and_return(false)
       allow(logger).to receive(:warn)
-      # backtrace shape for the "from" extraction
-      allow_any_instance_of(StandardError).to receive(:backtrace).and_return(["/foo/bar/baz.rb:42:in `block'"])
+      # No `backtrace` stub: the guard reads through a BOUND `Exception#backtrace`, which ignores an
+      # `allow_any_instance_of` entirely — and worse, a stub that answers non-nil makes CRuby skip recording a
+      # real backtrace at all, so the "from" it was meant to supply degrades to "unknown location". `raise`
+      # inside these blocks records a real frame, which is the shape the extraction is for. An example that
+      # needs a specific backtrace sets it on the exception itself (see below).
     end
 
     it "returns the block's value on success" do
@@ -103,10 +106,7 @@ RSpec.describe Axn::Extensions do
     # decides what Core::Executor may settle onto a result, so this is the one answer to "what will
     # axn ever swallow".
     describe "the non-StandardError allowlist" do
-      before do
-        allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
-        allow_any_instance_of(Exception).to receive(:backtrace).and_return(["/foo/bar/baz.rb:42:in `block'"])
-      end
+      before { allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true) }
 
       it "swallows every class on the allowlist by default" do
         described_class::SWALLOWABLE_BEYOND_STANDARD_ERROR.each do |klass|
@@ -182,14 +182,17 @@ RSpec.describe Axn::Extensions do
     # reconstructed with `set_backtrace([])` — what a death handler rebuilding one from job data hands
     # us — keeps it empty.
     describe "an exception carrying no usable backtrace" do
-      before do
-        allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
-        allow_any_instance_of(StandardError).to receive(:backtrace).and_return([])
-      end
+      before { allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true) }
 
+      # Genuinely empty, not stubbed: `set_backtrace([])` on the object BEFORE it is raised is what survives to
+      # the bound reader, since `raise` only repopulates a backtrace that is still nil. A stubbed `backtrace`
+      # would prove nothing here — the bound reader never consults it, and the stub answering non-nil at raise
+      # time leaves the real backtrace unrecorded, so the example would pass on the nil path instead.
       it "still warns and swallows rather than raising out of the warn path" do
+        empty_backtrace = -> { raise(StandardError.new("fail message").tap { |e| e.set_backtrace([]) }) }
+
         expect(logger).to receive(:warn).with(/Ignoring exception raised while foo.*unknown location/)
-        expect(described_class.best_effort("foo", &boom)).to be_nil
+        expect(described_class.best_effort("foo", &empty_backtrace)).to be_nil
       end
     end
 
@@ -342,6 +345,19 @@ RSpec.describe Axn::Extensions do
         allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(false)
 
         expect(described_class.best_effort(Object.new) { raise ArgumentError, "ordinary" }).to be_nil
+      end
+
+      # A `desc` that IS a String is still foreign BYTES. Non-production is the case that bites: the wording
+      # decorates with `'⌵' * 30`, which puts real non-ASCII UTF-8 on axn's own side of the join, so an
+      # unrenderable desc raised `Encoding::CompatibilityError` there where the pure-ASCII production wording
+      # concatenated fine. Escaped rather than dropped, so the line still names the intent.
+      it "renders a String desc whose bytes have no UTF-8 rendering" do
+        allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(false)
+        expect(logger).to receive(:warn).with(/\\XFF/)
+
+        expect(described_class.best_effort("guarding \xFF".dup.force_encoding("ASCII-8BIT")) do
+          raise ArgumentError, "ordinary"
+        end).to be_nil
       end
 
       # Every fact ABOUT the exception is now rendered rather than dispatched, so no exception the block can
