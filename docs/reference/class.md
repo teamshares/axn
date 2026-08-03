@@ -181,6 +181,23 @@ When you specify `optional: true`, `allow_blank: true`, or `allow_nil: true` on 
 
 If neither `optional`, `allow_blank` nor `allow_nil` is specified, a default presence validation is automatically added (unless the type is `:boolean` or `:params`, which have their own validation logic as described above).
 
+Requiredness is really two independent questions — may the value be `nil` (or absent), and may it be empty? All four combinations are declarable:
+
+| Declaration | `nil` / absent | empty (`[]`, `{}`, `""`) | non-empty |
+| --- | --- | --- | --- |
+| `type: Array` | rejected | rejected | accepted |
+| `type: Array, allow_empty: true` | rejected | accepted | accepted |
+| `type: Array, optional: true` | accepted | accepted | accepted |
+| `type: Array, optional: true, allow_empty: false` | accepted | rejected | accepted |
+
+`optional:`, `allow_blank:` and `allow_nil:` are three spellings of the third row. `allow_empty:` is the only option that speaks to emptiness alone, and it requires a `type:` whose values can be empty (`Array`, `Hash`, `Set`, `String`, `:params`, or any class or module defining `empty?`) — on a type with no empty state to talk about it raises at declaration. A union type must have an empty state on *every* member: `type: [Hash, Array]` is fine, `type: [Array, Integer]` raises. Emptiness is `empty?`, not `blank?`: a whitespace-only String is not empty, so `type: String, optional: true, allow_empty: false` accepts `" "` and rejects `""`.
+
+`Set` is listed above because a `Set` has an empty state at *runtime*, and the runtime rules are exactly the four rows. Reflection is the caveat: `Set` has no JSON Schema mapping, so a `type: Set` field falls back to the permissive `{ type: "string" }` hint — and a `Set` that rejects empty therefore advertises `minLength: 1`, a string-shaped floor over a value that is not a string. Treat a reflected `Set` as a hint, not a contract.
+
+A field that rejects empty reflects that into its schema as `minItems` / `minProperties` / `minLength`.
+
+Only one thing may answer the emptiness question per declaration. An explicit `presence:` occupies the very check `allow_empty:` governs, so the two must agree — `presence: false, allow_empty: false` and `presence: true, allow_empty: true` each raise at declaration, naming both spellings. An author-declared `length:` is a different matter: it is your own size constraint, so `allow_empty: false` defers to a `length:` floor of 1 or more (and makes it fire on the empty value even under `optional:`, which would otherwise tolerate blank), adds its own floor alongside a `length:` that only caps the size, and raises for one that explicitly admits an empty value (`minimum: 0`, `is: 0`, `maximum: 0`, a range starting at 0, or its own `allow_blank: true`). `allow_empty: true` asks for nothing to be enforced, so it never conflicts with a `length:`.
+
 #### Conditional validation (`if:` / `unless:`)
 
 Both `expects` and `exposes` accept ActiveModel's `if:`/`unless:` as declaration-level options. The condition gates **every** validator in the declaration — including the automatically-added presence check — so a field can be *conditionally required*:
@@ -821,12 +838,12 @@ end
 
 FindWidget.input_schema
 #=> { type: "object",
-#     properties: { id: { type: "string", format: "uuid" },
+#     properties: { id: { type: "string", format: "uuid", minLength: 1 },
 #                   verbose: { type: "boolean", default: false } },
 #     required: ["id"] }   # `verbose` is optional — it has a default
 ```
 
-A field is marked `required` unless a **declared signal** says it may be omitted: a usable `default:` (present, and not blank — a `default: {}`/`""` can't satisfy the field's presence, so it stays required), or a nil/blank-tolerant declaration (`optional:` / `allow_nil:` / `allow_blank:` / `presence: false`). Every `exposes` field is `required` in `output_schema` (the serializer always emits every key; nullability is carried by the property's `type`, e.g. `["string", "null"]`).
+A field is marked `required` unless a **declared signal** says it may be omitted: a usable `default:` (present, and not blank — a `default: {}`/`""` can't satisfy the field's presence, so it stays required), or a nil/blank-tolerant declaration (`optional:` / `allow_nil:` / `allow_blank:`). `presence: false` alone does **not** make a typed field omittable — it only drops the presence (blank) check, leaving the type check to still reject `nil`; combine it with a tolerance flag (or use `optional:`/`allow_nil:` directly) to actually permit omission. Every `exposes` field is `required` in `output_schema` (the serializer always emits every key; nullability is carried by the property's `type`, e.g. `["string", "null"]`).
 
 ::: warning Requiredness is advisory, not a runtime guarantee
 To keep reflection cheap and free of running your code, the schema is built from your **declarations**, not by test-running your validators against each default. In these narrow cases the reflected `required` can therefore disagree with what `Axn.call` actually accepts:

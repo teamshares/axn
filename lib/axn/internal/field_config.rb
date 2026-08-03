@@ -19,6 +19,15 @@ module Axn
       # neutral, and the contradiction detectors treat a gated declaration as relaxable.
       CONDITIONAL_GATE_KEYS = %i[if unless].freeze
 
+      # The validator key `allow_empty: false` installs its own check under (ActiveModel resolves it to
+      # NonEmptinessValidator). Framework-installed only — absent from KNOWN_VALIDATION_KEYS, so a declaration
+      # cannot spell it. THE single name for it, shared by the declaration that installs it (contract.rb
+      # `_reconcile_emptiness_axis!`) and by schema reflection's `minItems`/`minProperties`/`minLength`
+      # emission, so what the runtime rejects and what the schema advertises cannot drift. It lives here, with
+      # the gate keys, because both are declaration keys the reflection layer reads: that keeps the builder's
+      # load graph free of the validator kernel, which is not loadable on its own.
+      NON_EMPTINESS_KEY = :non_emptiness
+
       # The generated `<field>_id` key for a `model:` field — the lookup-token reader Axn derives from
       # the model field's name. Single source of the `_id` suffix convention (the model resolver, the
       # `<field>_id` reader, sensitive-key/ambient filtering, and schema reflection all key off it).

@@ -61,8 +61,13 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
 
       result = action.call(items: [{ status: "ok" }, { other: "x" }])
       expect(result).not_to be_ok
-      expect(result.exception.message).to match(/element at index 1/)
-      expect(result.exception.message).to match(/status can't be blank/)
+      # An absent member is nil, which the member's own `type:` rejects — one error for one defect.
+      expect(result.exception.message).to eq("Items element at index 1: status is not a String")
+
+      # The inherited presence check is still enforced: it is what rejects a member that is PRESENT but blank.
+      blank = action.call(items: [{ status: "" }])
+      expect(blank).not_to be_ok
+      expect(blank.exception.message).to match(/status can't be blank/)
     end
 
     it "opts out of default presence with optional: (an absent member passes)" do

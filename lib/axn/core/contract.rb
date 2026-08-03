@@ -39,15 +39,20 @@ module Axn
       # condition on the wire value while runtime evaluates the user method — the looser direction).
       GENERATED_READER_SOURCE_PATH = __FILE__
 
-      # Optionality is shared by FieldConfig and ShapeConfig (axn-mcp derives `required` from BOTH —
-      # field configs and nested shape members — through the same predicate).
+      # Optionality is shared by FieldConfig and ShapeConfig: a field is optional exactly when its
+      # validators accept nil. Keyed on the validators rather than on the presence of a `presence: true`
+      # entry, so a field that rejects nil by type alone (`allow_empty: true`, `presence: false`) reads as
+      # required here and in the schema.
+      #
+      # This is the same NIL-TOLERANCE question schema reflection asks, and the only requiredness signal
+      # here — but schema requiredness ALSO admits a usable `default:` (schema.rb#optional_for_schema?), so
+      # a field carrying a literal default no presence check would reject (`default: 1`) is omittable there
+      # while reporting non-optional here. Narrowly that one shape: a Proc default is unknowable at
+      # declaration and reflects as required, and a blank literal default is rejected by the default
+      # `presence: true`, so both of those agree.
       module FieldOptionality
-        # A field is optional when it carries no `presence: true` validation, or any validator
-        # tolerates blank.
         def optional?
-          return true unless validations.key?(:presence) && validations[:presence] == true
-
-          validations.values.any? { |v| v.is_a?(Hash) && v[:allow_blank] == true }
+          Axn::Validation::Base.nil_accepted?(validations)
         end
       end
 
@@ -319,6 +324,7 @@ module Axn
           on: nil,
           allow_blank: false,
           allow_nil: false,
+          allow_empty: nil,
           optional: false,
           default: nil,
           preprocess: nil,
@@ -399,11 +405,11 @@ module Axn
           # `on` is nil-or-Symbol by construction here (canonicalized above), so routing asks the canonical
           # value rather than re-deciding presence on whatever the caller passed.
           if on
-            return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
+            return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess:, sensitive:, metadata:,
                                                reader_names:, user_facing:, method_call:, **validations)
           end
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
+          _parse_field_configs(*fields, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess:, sensitive:, metadata:,
                                         reader_names:, user_facing:, **validations).tap do |configs|
             _reject_duplicate_fields!(internal_field_configs, configs)
             # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
@@ -424,6 +430,7 @@ module Axn
           *fields,
           allow_blank: false,
           allow_nil: false,
+          allow_empty: nil,
           optional: false,
           default: nil,
           sensitive: false,
@@ -460,7 +467,8 @@ module Axn
           # the resolved members here to close that path too (see _reject_outbound_shape_user_facing!).
           _reject_outbound_shape_user_facing!(validations[:shape])
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess: nil, sensitive:, metadata:, **validations).tap do |configs|
+          _parse_field_configs(*fields, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess: nil, sensitive:, metadata:,
+                                        **validations).tap do |configs|
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
               raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
             end
@@ -778,7 +786,7 @@ module Axn
         # have nowhere to apply and are rejected rather than silently dropped when converting to a
         # ShapeConfig. `model:` is rejected separately (see `_build_shape_member`) for the related but
         # distinct reason that it resolves an id and exposes an `_id` companion reader a member lacks.
-        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil optional method_call sensitive user_facing].freeze
+        SHAPE_MEMBER_FIELD_OPTIONS = %i[allow_blank allow_nil allow_empty optional method_call sensitive user_facing].freeze
         SHAPE_MEMBER_UNSUPPORTED_OPTIONS = %i[default preprocess].freeze
 
         # Reader-renaming options (`as:`/`prefix:`) rename the reader a field generates. A shape member is
@@ -1125,6 +1133,7 @@ module Axn
           on: nil,
           allow_blank: false,
           allow_nil: false,
+          allow_empty: nil,
           optional: false,
           default: nil,
           preprocess: nil,
@@ -1143,7 +1152,7 @@ module Axn
             _reject_model_transform!(fields, on:, preprocess:, validations:)
           end
 
-          _parse_field_validations(*fields, allow_nil:, allow_blank:, **validations).map do |field, parsed_validations|
+          _parse_field_validations(*fields, allow_nil:, allow_blank:, allow_empty:, **validations).map do |field, parsed_validations|
             reader = reader_names[field] || field
             FieldConfig.new(field:, validations: parsed_validations, on:, default:, preprocess:, sensitive:, metadata:,
                             reader_as: reader, user_facing:, method_call:)
@@ -1396,12 +1405,68 @@ module Axn
           raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
         end
 
+        # Pseudo-types (Symbol type names) whose values can be empty. `:params` is Hash-backed; `:boolean`
+        # and `:uuid` have no empty state.
+        EMPTIABLE_PSEUDO_TYPES = %i[params].freeze
+
+        # Whether a declared type has an empty state for `allow_empty:` to talk about. Asked of the type
+        # rather than an allowlist: `public_method_defined?` is the same reflective test schema.rb uses for
+        # capability questions, it covers a custom container with its own `empty?`, and it avoids naming
+        # `Set`, which may not be loaded outside Rails. Asked of any MODULE, matching what a declared type
+        # may be: TypeValidator matches with `is_a?`, so a bare module is a supported `type:` and its values
+        # have whatever empty state it defines (a `Class` is a `Module`, so every class is still asked).
+        def _emptiable_type?(klass)
+          return EMPTIABLE_PSEUDO_TYPES.include?(klass) if klass.is_a?(Symbol)
+
+          klass.is_a?(Module) && klass.public_method_defined?(:empty?)
+        end
+
+        # The grammar of an `allow_empty:` value: the option's three states — `true` (an empty value is
+        # acceptable), `false` (it is not), and `nil` (unspecified, which is the option absent). Everything
+        # downstream reads the flag by truthiness, so any other value would silently land on one of the two
+        # poles — `allow_empty: "false"` on `true`, meaning the exact opposite of what it spells. A value
+        # outside the grammar is a programmer error, rejected at declaration. Asked ahead of the empty-able
+        # type guard so a bad VALUE is reported as one, rather than as a problem with the type it was
+        # declared on. Membership is tested against the three literals, so nothing of the value's own is
+        # invoked.
+        def _validate_allow_empty_value!(fields, allow_empty)
+          return if [nil, true, false].include?(allow_empty)
+
+          raise ArgumentError,
+                "allow_empty: must be true, false, or nil on #{fields.map(&:to_s).inspect} " \
+                "(got #{allow_empty.inspect}). `true` accepts an empty value, `false` rejects one, and " \
+                "omitting the option leaves the field's other rules to decide."
+        end
+
+        # `allow_empty:` permits (or forbids) an empty value of a declared type. With no `type:` there is
+        # nothing to reject a nil, so the flag would silently widen the field to accept anything; on a type
+        # with no empty state there is nothing to permit. Both are declaration errors rather than silently
+        # inert options.
+        def _validate_allow_empty!(fields, validations)
+          klasses = Array(validations.dig(:type, :klass))
+          where = fields.map(&:to_s).inspect
+
+          if klasses.empty?
+            raise ArgumentError,
+                  "allow_empty: requires a `type:` on #{where} — without one nothing rejects a nil, so the " \
+                  "flag would widen the field to accept any value. Declare the container type (e.g. `type: Array`)."
+          end
+
+          offending = klasses.reject { |k| _emptiable_type?(k) }
+          return if offending.empty?
+
+          raise ArgumentError,
+                "allow_empty: is not supported for #{offending.map(&:inspect).join('/')} on #{where} — those " \
+                "values cannot be empty, so there is no empty state to permit or forbid. Drop allow_empty:."
+        end
+
         # This method applies any top-level options to each of the individual validations given.
         # It also allows our custom validators to accept a direct value rather than a hash of options.
         def _parse_field_validations(
           *fields,
           allow_nil: false,
           allow_blank: false,
+          allow_empty: nil,
           **validations
         )
           Internal::ShapeGraph.detach_option_containers!(validations)
@@ -1426,19 +1491,29 @@ module Axn
 
           _derive_raw_shape_container!(validations)
 
-          # Push allow_blank and allow_nil to the individual validations
-          if allow_blank || allow_nil
-            # A truthy explicit presence: can never fire under a tolerance flag — the pushed-down
-            # allow_blank/allow_nil would make the presence validator accept exactly the values it
-            # exists to reject — so the combination is dead machinery, rejected at declaration.
-            # (`presence: false` is coherent: explicit suppression, same intent as the flag.)
-            if validations[:presence]
-              raise ArgumentError,
-                    "optional:/allow_blank:/allow_nil: cannot be combined with an explicit `presence:` — " \
-                    "the tolerance is pushed into every validator, so the presence check could never fail. " \
-                    "Declare one requiredness signal (drop the flag, or drop presence:)."
-            end
+          _validate_allow_empty_value!(fields, allow_empty)
+          _validate_allow_empty!(fields, validations) unless allow_empty.nil?
 
+          tolerant = allow_blank || allow_nil
+
+          # A truthy explicit presence: can never fire under a tolerance flag — the pushed-down
+          # allow_blank/allow_nil would make the presence validator accept exactly the values it
+          # exists to reject — so the combination is dead machinery, rejected at declaration.
+          # (`presence: false` is coherent: explicit suppression, same intent as the flag.)
+          if tolerant && validations[:presence]
+            raise ArgumentError,
+                  "optional:/allow_blank:/allow_nil: cannot be combined with an explicit `presence:` — " \
+                  "the tolerance is pushed into every validator, so the presence check could never fail. " \
+                  "For \"may be nil, but not empty\", declare `allow_empty: false` alongside the tolerance; " \
+                  "otherwise declare one requiredness signal (drop the flag, or drop presence:)."
+          end
+
+          # Settle the emptiness axis before the push-down, while the `presence:`/`length:` entries are
+          # still exactly as the author wrote them.
+          _reconcile_emptiness_axis!(fields, validations, allow_empty:, tolerant:) unless allow_empty.nil?
+
+          # Push allow_blank and allow_nil to the individual validations
+          if tolerant
             # ActiveModel's shared "default" options (`if:`/`unless:`/`on:`/`strict:`/`allow_blank:`/
             # `allow_nil:`) ride the hash as sibling keys of the validators but are NOT validators —
             # there is nothing to push tolerance into, and normalizing them as scalars would corrupt
@@ -1464,12 +1539,266 @@ module Axn
             end
             validations.merge!(shared_options)
           else
-            # Apply default presence validation (unless the type is boolean or params)
-            type_values = Array(validations.dig(:type, :klass))
-            validations[:presence] = true unless validations.key?(:presence) || type_values.include?(:boolean) || type_values.include?(:params)
+            _apply_default_presence!(validations, allow_empty:, tolerant:)
           end
 
+          # Asked once the validations hash is final (both tolerance branches above have run), since the
+          # answer depends on what they left behind.
+          _apply_nil_skip_to_non_type_validators!(validations)
+
           fields.map { |field| [field, validations] }
+        end
+
+        # A field whose `type:` rejects nil has already reported that nil completely; running the other
+        # validators against it only adds derivative messages (a custom `validate:` written for a real value
+        # raises, and its crash is surfaced as a second failure on the same field). Give every non-type
+        # validator nil-tolerance so the type error stands alone. Only the type validator's own nil verdict
+        # is authoritative, so it is left untouched, as are validators that already carry explicit tolerance.
+        # Mutates `validations`.
+        def _apply_nil_skip_to_non_type_validators!(validations)
+          return unless _type_rejects_nil?(validations)
+
+          shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
+          declaration_options = validations.slice(*shared_option_keys)
+
+          # Iterate a snapshot of the keys: the loop reassigns entries as it goes, and Ruby forbids
+          # mutating a Hash mid-iteration.
+          validations.keys.each do |key|
+            opt = validations[key]
+            next if key == :type || !opt || shared_option_keys.include?(key)
+
+            normalized = Axn::Validation::Base.normalize_validator_options(opt)
+            next if normalized.key?(:allow_nil) || normalized.key?(:allow_blank)
+
+            # A strict entry RAISES instead of recording an error, and EachValidator's allow_nil skip
+            # happens BEFORE validate_each — so relaxing it would swallow the raise rather than merely
+            # drop a duplicate message. Standing down here preserves baseline behavior rather than being
+            # lossless: none of axn's own custom validators (type/of/validate/model/shape) forward
+            # `**options` to `errors.add`, so a `strict:` entry among them never raises regardless — it
+            # keeps recording its own derivative message alongside the type error exactly as it did
+            # before this guard runs. Only a validator that DOES forward `strict:` into `errors.add`
+            # (an ActiveModel built-in such as presence) actually raises and so benefits from being left
+            # untouched here.
+            # Strictness is per ENTRY, so the effective value is asked (an entry's own `strict:` wins
+            # over the declaration's), and the test is truthiness — the one AM applies — not blankness:
+            # `strict: ""` is blank yet still raises.
+            next if Axn::Validation::Base.entry_effective_option(normalized, declaration_options, :strict)
+
+            validations[key] = normalized.merge(allow_nil: true)
+          end
+        end
+
+        # Whether this field's declared type rules out nil on EVERY call, all by itself — the only
+        # condition under which the type error is the field's complete account of a nil. Four ways it
+        # isn't:
+        #   * nil-tolerance pushed into the type bag — TypeValidator then skips nil outright;
+        #   * a declared klass nil is an instance of (`type: [Array, NilClass]`, `type: Object`) — the nil
+        #     is no type defect at all, so whatever else rejects it is the authoritative report. Asked
+        #     through TypeValidator's own matcher so the two can't disagree about one declaration;
+        #   * an effective if:/unless: gate on the type entry — a closed gate skips the type check, and
+        #     then the OTHER validators' nil rejections are the only thing standing between the field and
+        #     an accepted nil. Judged structurally (no condition is ever evaluated) by the same per-key
+        #     merge model schema reflection uses;
+        #   * an `on:` inside the type BAG — ActiveModel's validation-context option, which makes the entry
+        #     permanently inert and so its nil verdict vacuous (Validation::Base.entry_context_scoped?).
+        def _type_rejects_nil?(validations)
+          type = validations[:type]
+          return false unless type.is_a?(Hash) && type[:klass]
+          return false if type[:allow_nil] || type[:allow_blank]
+          return false if Axn::Validation::Base.entry_context_scoped?(type)
+
+          decl_gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+          return false if Axn::Validation::Base.entry_effective_gate_keys(type, decl_gates).any?
+
+          !Axn::Validation::Base.type_admits_nil?(type)
+        end
+
+        # Whether the automatic presence check covers this declaration — THE definition of "is an empty
+        # value already forbidden by default here", asked both when installing the check and when
+        # reconciling `allow_empty:` against the rest of the declaration. It does not apply when the
+        # field is nil-tolerant (the tolerance is pushed into every validator, so presence could never
+        # fire), when the field opted into emptiness (an empty value is exactly what presence would
+        # reject, while the type check still rejects nil), when the author declared their own
+        # `presence:`, or when the declared type is `:boolean`/`:params` (their own validation logic
+        # stands in for it).
+        def _default_presence_applies?(validations, allow_empty:, tolerant:)
+          return false if tolerant || allow_empty || validations.key?(:presence)
+
+          type_values = Array(validations.dig(:type, :klass))
+          !(type_values.include?(:boolean) || type_values.include?(:params))
+        end
+
+        def _apply_default_presence!(validations, allow_empty:, tolerant:)
+          validations[:presence] = true if _default_presence_applies?(validations, allow_empty:, tolerant:)
+        end
+
+        # Whatever enforces the emptiness axis talks about emptiness only, so it skips nil (the nil axis is
+        # `optional:`/`allow_nil:` and the type check's business) and refuses the blank-tolerance a
+        # nil-tolerance would otherwise push into it — which is what keeps it able to fire on the empty
+        # value it exists to reject. Carried by axn's own check and by an author's deferred-to `length:`
+        # floor alike, since either may be the one holding the axis.
+        EMPTINESS_AXIS_TOLERANCE = { allow_nil: true, allow_blank: false }.freeze
+
+        # `allow_empty:` is not the only thing in a declaration that can answer whether an empty value is
+        # admissible, so one question decides the axis: does anything else here already answer it, and if
+        # so does that answer agree? Two spellings can:
+        #
+        #   * an explicit `presence:` — it occupies the very check `allow_empty:` governs, so the two
+        #     answer the same question and must agree in both directions;
+        #   * an author-declared `length:` — their own size constraint, which may forbid size 0, admit it
+        #     explicitly, or say nothing about it.
+        #
+        # Standing the flag's own check down in favor of one of them settles the axis only if that spelling
+        # is GUARANTEED TO RUN, so every deferral asks that too (`_entry_guaranteed_to_run?`) — an entry a
+        # closed gate or a validation context can skip enforces nothing on the call where it is skipped.
+        #
+        # The asymmetry between the polarities is real, not an oversight: `allow_empty: false` is a
+        # promise that must be ENFORCED, so any other spelling that would defeat it has to be resolved
+        # here; `allow_empty: true` only suppresses the presence check axn would otherwise add, so a
+        # `length:` the author wrote for their own reasons is no contradiction of it. Mutates
+        # `validations`.
+        def _reconcile_emptiness_axis!(fields, validations, allow_empty:, tolerant:)
+          presence_answer = _presence_emptiness_answer(validations, tolerant:)
+
+          if allow_empty
+            if presence_answer == :rejected
+              _raise_emptiness_conflict!(fields, allow_empty:, spelling: "presence:",
+                                                 says: "that presence check rejects every empty value")
+            end
+            return
+          end
+
+          length_answer = _length_emptiness_answer(validations)
+          authored_length = _authored_length_options(validations)
+
+          # An author-declared floor of 1 or more is a stronger statement than the flag, not a
+          # contradiction — defer to it, so long as it is guaranteed to run. Under a nil-tolerance it needs
+          # the axis's own tolerance keys, or the pushed blank-tolerance would stand it down on exactly the
+          # value it is being trusted to reject.
+          if length_answer == :rejected && _entry_guaranteed_to_run?(authored_length)
+            validations[:length] = EMPTINESS_AXIS_TOLERANCE.merge(authored_length) if tolerant
+            return
+          end
+
+          return if presence_answer == :rejected && _entry_guaranteed_to_run?(validations[:presence])
+
+          # A `length:` that explicitly ADMITS an empty value is settled before asking what would enforce the
+          # axis: the inferred presence check would honor the flag, but the declaration would still answer the
+          # question two ways, so the pair reads the same in every arrangement rather than only under a
+          # tolerance. An UNVERIFIABLE floor is a different thing — not a contradiction but a floor nothing
+          # here can read — so where the inferred check carries the axis there is nothing to reconcile.
+          if length_answer == :permitted
+            _raise_emptiness_conflict!(fields, allow_empty:, spelling: "length:",
+                                               says: "that length constraint admits an empty value")
+          end
+
+          return if _default_presence_applies?(validations, allow_empty:, tolerant:)
+
+          _raise_unverifiable_length_floor!(fields) if length_answer == :unverifiable
+          if presence_answer == :permitted
+            _raise_emptiness_conflict!(fields, allow_empty:, spelling: "presence:",
+                                               says: "that presence spelling drops the only check that would reject an empty value")
+          end
+
+          # Nothing else settles the question, so the flag carries the axis on its own — with its own check
+          # (NonEmptinessValidator), which asks the value `empty?` rather than measuring its size. Installed
+          # alongside an author's `length:` rather than merged into it, so their entry keeps naming only the
+          # constraint they wrote, under only the gate they gave it; their `message:` still governs both
+          # violations, being the one wording they asked for on the size axis.
+          # The entry carries the declared klasses so the check can tell a value that IS of the declared type
+          # yet cannot answer `empty?` — an unverifiable contract — from a wrong-typed one, whose single error
+          # belongs to the type check. The declaration guard has already established a `type:` is present.
+          key = Internal::FieldConfig::NON_EMPTINESS_KEY
+          validations[key] = EMPTINESS_AXIS_TOLERANCE
+                             .merge(klass: Array(validations.dig(:type, :klass)))
+                             .merge(authored_length.slice(:message))
+        end
+
+        # Whether a validator ENTRY runs on every call, and so can be trusted with the emptiness axis in
+        # place of the flag's own check. Two things inside an entry withdraw that guarantee, both judged
+        # structurally — no condition is ever evaluated:
+        #
+        #   * a gate of its OWN (Validation::Base.entry_self_gated?) — a closed condition skips that one
+        #     validator, leaving nothing to reject the empty value while the rest of the contract still
+        #     applies. A DECLARATION-level gate is deliberately not one: it skips EVERY validator in the
+        #     declaration, the emptiness check included, so relative to the check that would replace this
+        #     entry there is nothing to withdraw.
+        #   * an `on:` — ActiveModel's validation-context option, which makes the entry permanently inert
+        #     (Validation::Base.entry_context_scoped?): it runs on no call at all.
+        def _entry_guaranteed_to_run?(entry)
+          opts = entry.is_a?(Hash) ? entry : {}
+          return false if Axn::Validation::Base.entry_context_scoped?(opts)
+
+          !Axn::Validation::Base.entry_self_gated?(opts)
+        end
+
+        # What an explicit `presence:` says about emptiness: `presence` is `!blank?`, so a live one rejects
+        # every empty value, while a disabled (`presence: false`) or blank-tolerant one admits it. Nothing
+        # is read out of it under a nil-tolerance — there the pushed tolerance means the check can never
+        # fire, however it is spelled (a truthy one is already rejected outright) — nor out of a
+        # context-scoped entry, which runs on no call at all: an entry that never runs answers NOTHING, so it
+        # can neither carry the axis nor contradict the flag, in either polarity. The AUTOMATIC presence
+        # check is deliberately not an answer here either: it is inferred rather than authored, and
+        # `allow_empty:` governs whether it is installed at all, so it can never contradict the flag.
+        def _presence_emptiness_answer(validations, tolerant:)
+          return nil if tolerant || !validations.key?(:presence)
+
+          return :permitted unless validations[:presence]
+
+          entry = Axn::Validation::Base.validator_entry_options(validations[:presence])
+          return nil if Axn::Validation::Base.entry_context_scoped?(entry)
+
+          entry[:allow_blank] ? :permitted : :rejected
+        end
+
+        # What an author-declared `length:` says about emptiness, judged from the floor it names:
+        # `:rejected` for a floor the axis can lean on, `:permitted` when it names a floor that admits size 0
+        # or carries its own blank-tolerance (which stands the whole entry aside for an empty value),
+        # `:unverifiable` for a floor ActiveModel resolves per call, and nil when the entry answers nothing.
+        #
+        # Three shapes answer nothing. An entry that says nothing about the floor at all (a `maximum:` of 1 or
+        # more, an unrecognized shape, a disabled entry); a CONTEXT-SCOPED entry, which runs on no call, so
+        # its floor is neither a promise to lean on nor a contradiction to raise over; and a floor that
+        # forbids the empty value yet is not one a schema floor can carry (`emittable_length_floor?`) — the
+        # flag then installs its own check, which IS carryable, while the author's floor goes on rejecting
+        # whatever it rejects. Both the floor and the test of what counts are the definitions schema
+        # reflection emits from, so the two layers honor exactly the same set of floors.
+        def _length_emptiness_answer(validations)
+          opts = _authored_length_options(validations)
+          return nil if opts.empty?
+          return nil if Axn::Validation::Base.entry_context_scoped?(opts)
+          return :permitted if opts[:allow_blank]
+
+          floor = Axn::Validation::Base.declared_length_floor(opts)
+          return nil if floor.nil?
+          return :unverifiable if floor == :unverifiable
+          return :rejected if Axn::Validation::Base.emittable_length_floor?(floor)
+
+          floor.positive? ? nil : :permitted
+        end
+
+        # The author's `length:` entry as ActiveModel will act on it — read through the shared entry reader,
+        # so a bare shorthand (`length: 2..5`) is judged in its expanded form and a falsy (disabled) entry
+        # names nothing.
+        def _authored_length_options(validations)
+          Axn::Validation::Base.validator_entry_options(validations[:length])
+        end
+
+        def _raise_emptiness_conflict!(fields, allow_empty:, spelling:, says:)
+          verdict = allow_empty ? "acceptable" : "not acceptable"
+          raise ArgumentError,
+                "`#{spelling}` and `allow_empty: #{allow_empty}` answer the same question two ways on " \
+                "#{fields.map(&:to_s).inspect} — #{says}, while `allow_empty: #{allow_empty}` says an empty value is " \
+                "#{verdict}. Declare the emptiness axis once: keep `allow_empty: #{allow_empty}` and drop `#{spelling}`, " \
+                "or drop `allow_empty:` and let `#{spelling}` stand."
+        end
+
+        def _raise_unverifiable_length_floor!(fields)
+          raise ArgumentError,
+                "`allow_empty: false` cannot be enforced on #{fields.map(&:to_s).inspect} alongside a `length:` " \
+                "minimum that is not a literal number — ActiveModel resolves it per call, so nothing here can tell " \
+                "whether it forbids an empty value, and one `length:` entry cannot carry two floors. Declare a " \
+                "literal `minimum:` of 1 or more (which forbids empty on its own), or drop `allow_empty:`."
         end
       end
 

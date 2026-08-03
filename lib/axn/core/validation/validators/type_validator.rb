@@ -36,10 +36,14 @@ module Axn
         record.errors.add attribute, (options[:message] || failure_message(value)) unless valid
       end
 
+      # A test double stands in for a value of any declared type: type validation waves them through so a
+      # spec need not build a real instance. Named so every check that would otherwise report a double as a
+      # contract violation can waive itself on the same terms.
+      def self.mock_value?(value) = Axn.config.env.test? && value.class.name&.start_with?("RSpec::Mocks::")
+
       # Shared matcher used by OfValidator for per-element type checking.
       def self.value_matches?(value, klass:, allow_blank: false)
-        # NOTE: allow mocks to pass type validation by default (much easier testing ergonomics)
-        return true if Axn.config.env.test? && value.class.name&.start_with?("RSpec::Mocks::")
+        return true if mock_value?(value)
 
         case klass
         when :boolean

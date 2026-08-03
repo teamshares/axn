@@ -478,6 +478,7 @@ module Axn
           on:,
           allow_blank: false,
           allow_nil: false,
+          allow_empty: nil,
           optional: false,
           default: nil,
           preprocess: nil,
@@ -526,7 +527,7 @@ module Axn
           # `provided_data` is involved. `user_facing:` stays rejected (above): an ambient value is
           # framework-supplied, so there is no caller to face regardless of resolution mechanism.
 
-          _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
+          _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, allow_empty:, optional:, preprocess:, sensitive:, default:,
                                            metadata:, reader_names:, user_facing:, method_call:, **validations).tap do |configs|
             _reject_duplicate_fields!(subfield_configs, configs)
             # The resolved half of the same identity rule: two supported spellings of one route (a dotted
@@ -587,6 +588,7 @@ module Axn
           on:,
           allow_blank: false,
           allow_nil: false,
+          allow_empty: nil,
           optional: false,
           preprocess: nil,
           sensitive: false,
@@ -599,7 +601,7 @@ module Axn
         )
           # A subfield is the on:-carrying case of the shared top-level config builder; with the ambient
           # coerce/shape guards and the dotted-name model guard gone, no per-config post-check remains.
-          _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
+          _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, allow_empty:, optional:, preprocess:, sensitive:, default:,
                                         metadata:, reader_names:, user_facing:, method_call:, **validations)
         end
 

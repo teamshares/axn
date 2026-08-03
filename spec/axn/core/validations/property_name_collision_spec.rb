@@ -2693,7 +2693,7 @@ RSpec.describe "declaration-time property name collisions" do
       it "does not charge members the schema never emits" do
         klass = wide_contract(per_field: 1_000, type: Array, of: String, container: Array)
 
-        expect(klass.input_schema.dig(:properties, :f0)).to eq({ type: "array", items: { type: "string" } })
+        expect(klass.input_schema.dig(:properties, :f0)).to eq({ type: "array", items: { type: "string" }, minItems: 1 })
       end
 
       # The corollary in the other direction: the same width of members that DO emit is still charged, and still
