@@ -306,6 +306,15 @@ module Axn
       # its own `yield`. The wrapped stack's exception is kept, not just flagged, and re-raised after
       # the observer returns if the observer absorbed it.
       #
+      # One limit is worth stating, because the guarantee below reads stronger than Ruby allows. Ruby
+      # asks an exception INSTANCE for itself on every raise — `raise` with no argument does this as
+      # surely as `raise e` — so an exception class defining a stateful or hostile `#exception` can
+      # answer with a different object when axn re-raises it, and the action's failure is replaced
+      # despite everything here. There is no re-raise form that skips that dispatch, and wrapping the
+      # exception instead would change the class every well-behaved caller rescues in order to defend
+      # against one that has already subverted `raise` process-wide, at its own original raise site.
+      # So this path preserves the action's failure against observers, not against the exception itself.
+      #
       # And the guard covers TRACING's failures only. `with_logging` and `with_timing` run inside this
       # block but outside `with_exception_handling`, so an error there is never settled onto the
       # result; absorbing it would report a default success for an action that never ran. Errors
