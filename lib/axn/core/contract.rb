@@ -224,49 +224,10 @@ module Axn
       # non-UTF-8 name (Latin-N) is a different case entirely and stays legal — it compares, it reads, and it
       # renders as the property it canonicalizes to.
       #
-      # The encoding is read from bound base implementations (`NativeMethods.ascii_compatible_name?`), so a
-      # String subclass cannot answer its way past the rule, and the encoding is named in the message from
-      # `Encoding`'s own object rather than from anything the caller supplied.
-      # Canonicalize a name to the Symbol every consumer downstream will read, holding both rules on the value
-      # AND on what it canonicalizes to. THE single place a declared name becomes a Symbol, because `to_sym` is a
-      # dispatch on the caller's object and so the canonical name is a SECOND value with its own bytes: an
-      # ASCII-compatible String whose `to_sym` answers with a wide Symbol cleared the rule as written and then
-      # raised `Encoding::CompatibilityError` from the first ASCII question asked of the Symbol — the exact
-      # non-diagnosis these rules exist to replace, reached through the guard rather than around it.
-      #
-      # Checked on the way IN as well as on the way out, so a genuinely wide name is named as one before its own
-      # `to_sym` runs at all, and the rule reads the same at a site whose value never converts.
-      #
-      # The conversion's RESULT is held to being a Symbol before anything downstream treats it as one. `to_sym` is
-      # the caller's own method on a String subclass, so what it answers with is not a given — and every site
-      # failed differently and none of them well when it answered with a non-Symbol: `prefix:` composed a reader
-      # out of it (`:"[]field"`, the silent defect this rule exists to close, and `nil` read as "no prefix" at
-      # all), while a field name and `as:` surfaced a bare `TypeError: [] is not a symbol nor a string` and `on:`
-      # an unrelated "no such reader exists". Checked ahead of the encoding rule, which has nothing to say about a
-      # value that is neither a String nor a Symbol and so passes it vacuously.
-      #
-      # A `to_sym` that answers with a DIFFERENT Symbol than the name renders as is deliberately fine: the
-      # declaration canonicalizes to that Symbol and every later reading is Ruby's own, so the two-conversion
-      # disagreement PRO-2995 rejected has nothing left to disagree about.
-      def self.canonical_name!(value, option:, names:, fix:, encoding_fix:)
-        validate_name_option!(value, option:, names:, fix:)
-        validate_name_encoding!(value, kind: option, fix: encoding_fix)
-
-        canonical = value.to_sym
-        case canonical
-        when ::Symbol then nil
-        else
-          raise ArgumentError,
-                "#{option} is canonicalized to the Symbol every consumer reads, and this name's own `to_sym` " \
-                "answered with a value of class #{Axn::Reflection::PropertyNames.renderable_class_name(canonical)} " \
-                "(from a name of class #{Axn::Reflection::PropertyNames.renderable_class_name(value)}) — so the " \
-                "declaration has no name to store. #{fix}"
-        end
-
-        validate_name_encoding!(canonical, kind: option, fix: encoding_fix)
-        canonical
-      end
-
+      # The encoding is read from bound base implementations (`NativeMethods.ascii_compatible_name?`) for the same
+      # reason the rest of this layer does — a dispatch inside a verdict is a dispatch the verdict did not need —
+      # and the encoding is named in the message from `Encoding`'s own object rather than from anything the caller
+      # supplied.
       def self.validate_name_encoding!(value, kind:, fix:)
         return if Axn::Internal::NativeMethods.ascii_compatible_name?(value)
 
@@ -275,6 +236,25 @@ module Axn
               "#{Axn::Internal::NativeMethods.name_encoding(value).name}) — a name in a wide encoding interns to a " \
               "different Symbol than the UTF-8 property it renders as, so nothing a caller sends can match it, and " \
               "every check the declaration makes against it raises rather than answering. #{fix}"
+      end
+
+      # Canonicalize a declared name to the Symbol every consumer downstream reads, holding both rules first. THE
+      # single place a name becomes a Symbol, so the rules and the conversion cannot drift apart — a site that
+      # canonicalized on its own is how `as:`, `prefix:` and the field names each ended up with a different answer
+      # for the same bad value.
+      #
+      # Scope, deliberately: these rules serve a name a developer actually WROTE — a Symbol, a String, or the
+      # `nil`/`[]`/`123` that a variable holding the wrong thing produces. They do not try to survive a String
+      # subclass whose `to_sym` lies (answering with a wide Symbol, a non-Symbol, or by raising). Verifying that a
+      # caller's object BEHAVES is unbounded — every round of verification is defeated by the next case — and the
+      # honest boundary is that such a class is not a contract axn can be asked to hold. What IS guaranteed is that
+      # nothing here consults the value's own `is_a?`, `inspect` or `encoding` to reach a verdict, so an ordinary
+      # mistake is always diagnosed as one.
+      def self.canonical_name!(value, option:, names:, fix:, encoding_fix:)
+        validate_name_option!(value, option:, names:, fix:)
+        validate_name_encoding!(value, kind: option, fix: encoding_fix)
+
+        value.to_sym
       end
 
       # The one config type for every declared inbound/outbound field, top-level or subfield — a
