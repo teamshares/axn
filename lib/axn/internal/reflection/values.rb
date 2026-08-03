@@ -3,7 +3,7 @@
 require "date"
 require "time"
 
-# Declared rather than inherited from the top-level `axn` entrypoint's require order: `axn/reflection`
+# Declared rather than inherited from the top-level `axn` entrypoint's require order: `axn/internal/reflection`
 # is loadable on its own (it composes only its own reflection files), and Axn::Extensions::Serialization
 # requires this file directly, while serializing ANY Hash/Array reaches CycleGuard and raising needs
 # Axn::Extensions::Serialization::UnserializableValue. Both are runtime references, so without these a

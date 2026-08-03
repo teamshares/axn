@@ -10,8 +10,8 @@ require "axn/internal/shape_graph"
 # this file (or `axn/extensions/serialization`) alone would NameError on its first call rather than at require
 # time. `spec/axn/standalone_require_spec.rb` derives the whole list from this file's own parse tree, so a
 # reference added later cannot go unrequired the way `NativeMethods` did.
-require "axn/reflection/schema"
-require "axn/reflection/values"
+require "axn/internal/reflection/schema"
+require "axn/internal/reflection/values"
 
 module Axn
   module Reflection

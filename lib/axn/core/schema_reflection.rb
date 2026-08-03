@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/reflection"
+require "axn/internal/reflection"
 
 module Axn
   module Core

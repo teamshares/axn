@@ -3673,7 +3673,7 @@ RSpec.describe "declaration-time property name collisions" do
 
   # The runtime defense this does NOT replace has its own coverage: a declaration check cannot see the keys
   # of a Hash the action builds during a call, so the serializer stays the last line for that case. It is
-  # covered by the "colliding Hash keys" describe block in `spec/axn/reflection/values_spec.rb`, which owns
+  # covered by the "colliding Hash keys" describe block in `spec/axn/internal/reflection/values_spec.rb`, which owns
   # every assertion about the serializer's own behavior — do not duplicate it here; a second copy would add
   # a second place to maintain the serialization surface from, for no added protection.
 end

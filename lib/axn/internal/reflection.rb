@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-require "axn/reflection/coercion"
-require "axn/reflection/schema"
-require "axn/reflection/resolved_subfields"
-require "axn/reflection/values"
-require "axn/reflection/property_names"
+require "axn/internal/reflection/coercion"
+require "axn/internal/reflection/schema"
+require "axn/internal/reflection/resolved_subfields"
+require "axn/internal/reflection/values"
+require "axn/internal/reflection/property_names"
 
 module Axn
   # Core-internal machinery for describing, checking, and rendering a contract: the JSON Schema behind

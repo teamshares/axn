@@ -53,7 +53,7 @@ RSpec.describe Axn::Extensions::Serialization do
     # property. Neither is reachable through `render`: `exposes` rejects both when the class is defined
     # (spec/axn/core/validations/property_name_collision_spec.rb), and `render` derives its configs from a
     # declared class. Those two backstops are exercised against a directly-built config list in
-    # spec/axn/reflection/values_spec.rb.
+    # spec/axn/internal/reflection/values_spec.rb.
 
     it "renders an ordinary field name as a frozen UTF-8 property" do
       klass = Class.new do

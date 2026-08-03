@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 require "axn/core/validation/fields"
-require "axn/reflection/resolved_subfields"
-require "axn/reflection/schema"
-require "axn/reflection/subfield_contradictions"
+require "axn/internal/reflection/resolved_subfields"
+require "axn/internal/reflection/schema"
+require "axn/internal/reflection/subfield_contradictions"
 
 module Axn
   module Core

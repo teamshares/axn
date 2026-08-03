@@ -827,12 +827,12 @@ RSpec.describe Axn::Reflection::Values do
     end
   end
 
-  # `axn/reflection` is loadable on its own (it composes only its own reflection files), and adapters are
+  # `axn/internal/reflection` is loadable on its own (it composes only its own reflection files), and adapters are
   # pointed at it. Serializing ANY Hash or Array now reaches CycleGuard, and raising needs
   # Axn::Extensions::Serialization::UnserializableValue — both of which live outside that entrypoint, so
   # values.rb requires them itself.
   # Asserted in a subprocess: the suite has all of axn loaded, so it cannot observe this in-process.
-  describe "the axn/reflection entrypoint on its own" do
+  describe "the axn/internal/reflection entrypoint on its own" do
     def ruby(snippet)
       lib = File.expand_path("../../../lib", __dir__)
       out = `ruby -I#{lib} -e #{Shellwords.escape(snippet)} 2>&1`
@@ -843,7 +843,7 @@ RSpec.describe Axn::Reflection::Values do
     # `{"a" => [1]}`, 3.3 `{"a"=>[1]}`), so asserting on its text would pass on one matrix ruby and fail
     # on another. What matters here is that the call works at all without the top-level entrypoint.
     it "serializes ordinary structured output without loading all of axn" do
-      out, ok = ruby('require "axn/reflection"; print Axn::Reflection::Values.serialize_value({ a: [1] }) == { "a" => [1] }')
+      out, ok = ruby('require "axn/internal/reflection"; print Axn::Reflection::Values.serialize_value({ a: [1] }) == { "a" => [1] }')
 
       expect(ok).to be(true), "subprocess failed: #{out}"
       expect(out).to eq("true")
@@ -851,7 +851,7 @@ RSpec.describe Axn::Reflection::Values do
 
     it "can still raise its own Axn::Extensions::Serialization::UnserializableValue" do
       out, ok = ruby(<<~RUBY)
-        require "axn/reflection"
+        require "axn/internal/reflection"
         cyclic = [1]
         cyclic << cyclic
         begin

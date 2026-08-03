@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 # Declared rather than inherited from the top-level `axn` entrypoint's require order, for the reason
-# axn/reflection/values.rb gives about its own: the renderer is a runtime reference, so a standalone
+# axn/internal/reflection/values.rb gives about its own: the renderer is a runtime reference, so a standalone
 # load of this file would NameError on the first call rather than at require time.
-require "axn/reflection/values"
-require "axn/reflection/property_names"
+require "axn/internal/reflection/values"
+require "axn/internal/reflection/property_names"
 
 module Axn
   module Extensions

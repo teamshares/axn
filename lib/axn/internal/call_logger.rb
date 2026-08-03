@@ -4,7 +4,7 @@
 # needed at RUNTIME (not load time), so relying on that order means a NameError on first use for
 # any load path that does not go through it.
 require "axn/internal/cycle_guard"
-require "axn/reflection/property_names"
+require "axn/internal/reflection/property_names"
 require "axn/extensions"
 require "axn/core/tagging"
 
