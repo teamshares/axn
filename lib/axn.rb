@@ -194,8 +194,7 @@ module Axn
 
   # Neither is reached with an explicit receiver: `_registered_tool_adapter!` from `tools_for`
   # and `versions_for`, `_named_invalid_tool_contract` from `validate_tool_contracts!`. Private so the
-  # top-level module's public surface is the API it means to publish (PRO-3005 re-homes them all under
-  # `Axn::Tools`).
+  # top-level module's public surface is the API it means to publish.
   private_class_method :_registered_tool_adapter!, :_named_invalid_tool_contract
 
   def self.included(base)
