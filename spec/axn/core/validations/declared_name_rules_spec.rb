@@ -71,13 +71,18 @@ RSpec.describe "the rules every declared name is held to" do
       expect(build_axn { expects "", allow_blank: true }.call("": "supplied")).to be_ok
     end
 
-    it "rejects a name in a wide encoding, naming the encoding" do
-      name = wide("ab")
+    # Both spellings a wide name arrives as, because the rule reads the ENCODING and a Symbol has one too — a
+    # caller that symbolizes before declaring (`wide.to_sym`) hands over a genuine wide Symbol, which is the only
+    # thing exercising the Symbol half of the encoding read.
+    [["String", :itself], ["Symbol", :to_sym]].each do |spelling, conversion|
+      it "rejects a #{spelling} name in a wide encoding, naming the encoding" do
+        name = wide("ab").public_send(conversion)
 
-      expect { build_axn { expects name } }
-        .to raise_error(ArgumentError, /\Aa field name must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
-      expect { build_axn { exposes name } }
-        .to raise_error(ArgumentError, /\Aan exposure name must be written in an ASCII-compatible encoding/)
+        expect { build_axn { expects name } }
+          .to raise_error(ArgumentError, /\Aa field name must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
+        expect { build_axn { exposes name } }
+          .to raise_error(ArgumentError, /\Aan exposure name must be written in an ASCII-compatible encoding/)
+      end
     end
 
     # Why such a name is refused rather than accommodated: it interns to a Symbol distinct from the UTF-8 property
@@ -134,14 +139,16 @@ RSpec.describe "the rules every declared name is held to" do
       end
     end
 
-    it "rejects a wide encoding at either option" do
-      reader = wide("bee")
-      prefix = wide("p_")
+    it "rejects a wide encoding at either option, in either spelling" do
+      %i[itself to_sym].each do |conversion|
+        reader = wide("bee").public_send(conversion)
+        prefix = wide("p_").public_send(conversion)
 
-      expect { build_axn { expects :a, as: reader } }
-        .to raise_error(ArgumentError, /\A`as:` must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
-      expect { build_axn { expects :a, prefix: } }
-        .to raise_error(ArgumentError, /\A`prefix:` must be written in an ASCII-compatible encoding/)
+        expect { build_axn { expects :a, as: reader } }
+          .to raise_error(ArgumentError, /\A`as:` must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
+        expect { build_axn { expects :a, prefix: } }
+          .to raise_error(ArgumentError, /\A`prefix:` must be written in an ASCII-compatible encoding/)
+      end
     end
 
     # The dotted rule was on `as:` only, though a dotted PREFIX composes exactly the same unusable reader — the
