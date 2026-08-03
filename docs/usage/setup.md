@@ -19,7 +19,7 @@ By default any swallowed errors are noted in the logs, but it's _highly recommen
 
 ### Metrics / Tracing
 
-If you're using an APM provider, observability can be greatly enhanced by [configuring OpenTelemetry tracing and metrics hooks](/reference/configuration#opentelemetry-tracing). Axn automatically creates OpenTelemetry spans when OpenTelemetry is available.
+If you're using an APM provider, observability can be greatly enhanced by [configuring OpenTelemetry tracing and metrics hooks](/reference/configuration#opentelemetry-tracing). Axn automatically creates spans through the OpenTelemetry tracer when OpenTelemetry is available, or through [a tracer you supply instead, or none at all](/reference/configuration#supplying-or-disabling-the-tracer).
 
 ### Rails Integration (Optional)
 

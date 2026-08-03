@@ -7,7 +7,7 @@ RSpec.describe Axn::Configurable do
 
       setting :default_model, default: "gpt-4o-mini"
       setting :mcp_text_content, default: :structured, one_of: %i[structured message]
-      setting :enabled, default: true, callable: true
+      setting :enabled, default: true
     end
   end
 
@@ -53,20 +53,36 @@ RSpec.describe Axn::Configurable do
     end
   end
 
-  describe "callable: settings" do
-    it "resolves a proc value at read time" do
-      configurable.config.enabled = -> { false }
-      expect(configurable.config.enabled).to eq(false)
+  describe "dynamic defaults" do
+    let(:derived_module) do
+      Module.new do
+        extend Axn::Configurable
+
+        def self.derivations = @derivations ||= 0
+        def self.bump! = @derivations = derivations + 1
+
+        setting :derived, default: lambda {
+          bump!
+          "derived-#{derivations}"
+        }
+      end
     end
 
-    it "returns a non-callable value as-is" do
-      configurable.config.enabled = true
-      expect(configurable.config.enabled).to eq(true)
+    it "re-derives a Proc default on every read while unset" do
+      expect(derived_module.config.derived).to eq("derived-1")
+      expect(derived_module.config.derived).to eq("derived-2")
     end
 
-    it "exposes a boolean predicate" do
-      configurable.config.enabled = -> { false }
-      expect(configurable.config.enabled?).to eq(false)
+    it "returns an explicitly assigned Proc as-is, never invoking it" do
+      assigned = -> { "not invoked" }
+      derived_module.config.derived = assigned
+      expect(derived_module.config.derived).to equal(assigned)
+    end
+
+    it "treats an explicitly assigned nil as a value, not as a reset" do
+      derived_module.config.derived = nil
+      expect(derived_module.config.derived).to be_nil
+      expect(derived_module.config.derived?).to be(false)
     end
   end
 
@@ -124,19 +140,6 @@ RSpec.describe Axn::Configurable do
       expect(klass).not_to respond_to(:default_model)
     end
 
-    it "resolves a callable override value through Setting#resolve" do
-      mod = Module.new do
-        extend Axn::Configurable
-        setting :enabled, default: true, callable: true, overridable: true
-      end
-      m = mod.overrides
-      klass = Class.new { include m }
-
-      klass.enabled(-> { false })
-
-      expect(klass.enabled).to eq(false)
-    end
-
     it "picks up overridable settings declared after the action includes overrides" do
       mod = Module.new { extend Axn::Configurable }
       overrides = mod.overrides
@@ -153,7 +156,7 @@ RSpec.describe Axn::Configurable do
       let(:boolean_mod) do
         Module.new do
           extend Axn::Configurable
-          setting :enabled, default: true, callable: true, overridable: true
+          setting :enabled, default: true, overridable: true
         end
       end
 
@@ -168,11 +171,6 @@ RSpec.describe Axn::Configurable do
 
       it "reflects a falsey per-class override" do
         boolean_class.enabled(false)
-        expect(boolean_class.enabled?).to be(false)
-      end
-
-      it "resolves a callable default at read time" do
-        boolean_mod.config.enabled = -> { false }
         expect(boolean_class.enabled?).to be(false)
       end
 
@@ -284,17 +282,76 @@ RSpec.describe Axn::Configurable::Settings do
     expect(klass.new.additional_includes).to eq([])
   end
 
+  describe "validate: rejection reasons" do
+    let(:klass) do
+      Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :bare, validate: ->(v) { v.is_a?(Integer) }
+        setting :detailed, validate: ->(v) { v.is_a?(Integer) || "must be an Integer" }
+        setting :blank_detail, validate: ->(v) { v.is_a?(Integer) || "" }
+      end
+    end
+
+    let(:instance) { klass.new }
+
+    it "raises without a detail clause when the validator returns false" do
+      expect { instance.bare = "nope" }.to raise_error(ArgumentError, 'bare got invalid value: "nope"')
+    end
+
+    it "appends a String return value as the reason" do
+      expect { instance.detailed = "nope" }.to raise_error(
+        ArgumentError, 'detailed got invalid value: "nope" — must be an Integer'
+      )
+    end
+
+    it "raises ArgumentError even when the reason's own strip would raise something else" do
+      # The blank-reason check runs while an error is already being raised, so dispatching to a
+      # caller-supplied String subclass there lets its method replace that ArgumentError with anything
+      # — including a class the surrounding rescue was never meant to catch.
+      hostile_reason = Class.new(String) do
+        def strip = raise(NotImplementedError, "hostile strip")
+      end
+
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :num, validate: ->(_v) { hostile_reason.new("must be an Integer") }
+      end
+
+      expect { klass.new.num = 5 }.to raise_error(ArgumentError, /must be an Integer/)
+    end
+
+    it "accepts a truthy result whose own is_a? would raise, rather than dispatching to it" do
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :hostile, validate: ->(_v) { Class.new { def is_a?(_klass) = raise("hostile is_a?") }.new }
+      end
+
+      expect { klass.new.hostile = 5 }.not_to raise_error
+    end
+
+    it "accepts a valid value through a String-returning validator" do
+      expect { instance.detailed = 3 }.not_to raise_error
+    end
+
+    it "falls back to the plain form when the validator returns a blank String" do
+      expect { instance.blank_detail = "nope" }.to raise_error(ArgumentError, 'blank_detail got invalid value: "nope"')
+    end
+  end
+
   describe "predicate readers" do
     let(:klass) do
       Class.new do
         extend Axn::Configurable::Settings
 
-        setting :sandbox_mode, default: -> { true }, callable: true
+        setting :sandbox_mode, default: -> { true }
         setting :emit_metrics
       end
     end
 
-    it "returns true for a truthy resolved value (callable default)" do
+    it "returns true for a truthy resolved value (dynamic default)" do
       expect(instance.sandbox_mode?).to be(true)
     end
 
@@ -305,6 +362,57 @@ RSpec.describe Axn::Configurable::Settings do
 
     it "returns false when the setting resolves to nil" do
       expect(instance.emit_metrics?).to be(false)
+    end
+  end
+
+  describe "dynamic defaults" do
+    let(:klass) do
+      Class.new do
+        extend Axn::Configurable::Settings
+
+        def self.derivations = @derivations ||= 0
+        def self.bump! = @derivations = derivations + 1
+
+        setting :derived, default: lambda {
+          bump!
+          "derived-#{derivations}"
+        }
+        setting :literal_list, default: []
+      end
+    end
+
+    let(:instance) { klass.new }
+
+    it "re-derives a Proc default on every read while unset" do
+      expect(instance.derived).to eq("derived-1")
+      expect(instance.derived).to eq("derived-2")
+    end
+
+    it "never writes a Proc default into the ivar, so the ivar stays an assignment sentinel" do
+      instance.derived
+      expect(instance.instance_variable_defined?(:@derived)).to be(false)
+    end
+
+    it "returns an explicitly assigned value instead of re-deriving" do
+      instance.derived = "explicit"
+      expect(instance.derived).to eq("explicit")
+      expect(instance.derived).to eq("explicit")
+    end
+
+    it "treats an explicitly assigned nil as a value, not as a reset" do
+      instance.derived = nil
+      expect(instance.derived).to be_nil
+      expect(instance.derived?).to be(false)
+    end
+
+    it "still memoizes a literal mutable default, so in-place mutation persists" do
+      instance.literal_list << :a
+      expect(instance.literal_list).to eq([:a])
+    end
+
+    it "does not share a literal mutable default across instances" do
+      instance.literal_list << :a
+      expect(klass.new.literal_list).to eq([])
     end
   end
 
@@ -564,5 +672,425 @@ RSpec.describe "Axn::Configurable namespaced per-class config" do
     Class.new { include mod } # include locks the (default) namespace
 
     expect { src.config_namespace(:mcp) }.to raise_error(ArgumentError, /config_namespace/)
+  end
+end
+
+RSpec.describe "#reset!" do
+  context "on the class flavor" do
+    let(:klass) do
+      Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+        setting :derived, default: -> { :derived_default }
+      end
+    end
+
+    let(:instance) { klass.new }
+
+    it "returns a named literal setting to its default" do
+      instance.literal = :changed
+      instance.reset!(:literal)
+      expect(instance.literal).to eq(:original)
+    end
+
+    it "returns a named dynamic setting to re-deriving, which an assigned nil had suppressed" do
+      instance.derived = nil
+      expect(instance.derived).to be_nil
+      instance.reset!(:derived)
+      expect(instance.derived).to eq(:derived_default)
+    end
+
+    it "resets every declared setting when called with no arguments" do
+      instance.literal = :changed
+      instance.derived = nil
+      instance.reset!
+      expect(instance.literal).to eq(:original)
+      expect(instance.derived).to eq(:derived_default)
+    end
+
+    it "raises on a name that is not a declared setting, naming the ones that exist" do
+      # Per AGENTS.md, a message explains the problem AND the fix — here, which names are valid.
+      expect { instance.reset!(:nope) }
+        .to raise_error(ArgumentError, /unknown setting :nope\. Declared settings are: .*:literal/)
+    end
+
+    it "resets nothing when any name in the list is unknown" do
+      instance.literal = :changed
+
+      expect { instance.reset!(:literal, :nope) }.to raise_error(ArgumentError, /unknown setting :nope/)
+      expect(instance.literal).to eq(:changed)
+    end
+
+    it "is a no-op for a setting that was never assigned" do
+      expect { instance.reset!(:literal) }.not_to raise_error
+      expect(instance.literal).to eq(:original)
+    end
+
+    it "returns self so it can be chained" do
+      expect(instance.reset!(:literal)).to be(instance)
+    end
+
+    it "resets both a subclass's own setting and one inherited from its superclass" do
+      base = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :base_only, default: :base_default
+      end
+      sub = Class.new(base) do
+        setting :sub_only, default: :sub_default
+      end
+      instance = sub.new
+
+      instance.base_only = :changed
+      instance.sub_only = :changed
+
+      instance.reset!(:base_only)
+      expect(instance.base_only).to eq(:base_default)
+      expect(instance.sub_only).to eq(:changed)
+
+      instance.reset!(:sub_only)
+      expect(instance.sub_only).to eq(:sub_default)
+
+      instance.base_only = :changed
+      instance.sub_only = :changed
+      instance.reset!
+      expect(instance.base_only).to eq(:base_default)
+      expect(instance.sub_only).to eq(:sub_default)
+    end
+
+    it "resets an inherited setting on a subclass that declares no settings of its own" do
+      base = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :base_only, default: :base_default
+      end
+      sub = Class.new(base)
+      instance = sub.new
+
+      instance.base_only = :changed
+      instance.reset!(:base_only)
+      expect(instance.base_only).to eq(:base_default)
+    end
+
+    it "rejects `reset!` as a setting name at declaration, in the class flavor" do
+      expect do
+        Class.new do
+          extend Axn::Configurable::Settings
+
+          setting :reset!
+        end
+      end.to raise_error(ArgumentError, /setting :reset! is reserved/)
+    end
+
+    it "rejects `reset!` as a setting name at declaration, in the module-singleton flavor" do
+      expect do
+        Module.new do
+          extend Axn::Configurable
+
+          setting :reset!
+        end
+      end.to raise_error(ArgumentError, /setting :reset! is reserved/)
+    end
+
+    it "still defers when the logger raises while leaving the collision breadcrumb" do
+      # The breadcrumb is a side channel and must not be able to take down the thing it observes —
+      # here, class DEFINITION. A faulty custom logger previously aborted `extend`, so the collision
+      # behavior it was announcing never happened at all.
+      exploding = Object.new
+      exploding.define_singleton_method(:debug) { |*| raise "logger exploded" }
+      exploding.define_singleton_method(:warn) { |*| raise "warn exploded" }
+      allow(Axn.config).to receive(:logger).and_return(exploding)
+
+      klass = nil
+      expect do
+        klass = Class.new do
+          def reset!(*) = :the_authors_own
+
+          extend Axn::Configurable::Settings
+
+          setting :literal, default: :original
+        end
+      end.not_to raise_error
+
+      expect(klass.new.reset!(:literal)).to eq(:the_authors_own)
+    end
+
+    it "defers to a reset! the class defined itself rather than replacing it" do
+      klass = Class.new do
+        def reset!(*) = :the_authors_own
+
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+      end
+
+      expect(klass.new.reset!(:literal)).to eq(:the_authors_own)
+    end
+
+    it "resolves its targets even when a setting named `class` shadows Object#class" do
+      # The generated reader for `setting :class` shadows the real one, so reading `self.class` to find
+      # the declared settings hands back the setting's VALUE — leaving no-arg reset! resetting nothing
+      # and a named reset claiming a real setting is unknown.
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :class, default: :shadowed
+        setting :other, default: 1
+      end
+      instance = klass.new
+      instance.other = 9
+
+      instance.reset!
+
+      expect(instance.other).to eq(1)
+      expect { instance.reset!(:other) }.not_to raise_error
+    end
+
+    it "defers to a reset! from a module included AFTER the extend" do
+      # A method defined directly on the class outranks every module, so generating it that way made
+      # the deferral depend on whether the author's include sat above or below the `extend`.
+      authors = Module.new { def reset!(*) = :the_authors_own }
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+
+        include authors
+      end
+
+      expect(klass.new.reset!(:literal)).to eq(:the_authors_own)
+    end
+
+    it "still lets a reset! defined on the class itself win over the generated one" do
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+
+        def reset!(*) = :defined_on_the_class
+      end
+
+      expect(klass.new.reset!(:literal)).to eq(:defined_on_the_class)
+    end
+
+    it "defers to a reset! inherited from a non-axn ancestor" do
+      ancestor = Class.new do
+        def reset!(*) = :inherited
+      end
+      klass = Class.new(ancestor) do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+      end
+
+      expect(klass.new.reset!(:literal)).to eq(:inherited)
+    end
+
+    it "canonicalizes the name once, so a shifting to_sym cannot install a reserved name" do
+      # The guard and the registration used to call `to_sym` separately, so a name answering `:safe`
+      # first and `:reset!` second passed the check and then generated `reset!` anyway — replacing the
+      # per-setting reset helper with a zero-arity reader, which is exactly what the guard exists to
+      # prevent. One `to_sym` decides the name for the check, the registry, the ivar and the reader.
+      shifty = Class.new(String) do
+        def initialize(*)
+          super
+          @calls = 0
+        end
+
+        def to_sym = (@calls += 1) == 1 ? :safe : :reset!
+      end.new("reset!")
+
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting shifty, default: 1
+      end
+
+      expect(klass.new.safe).to eq(1)
+      # The generated per-setting helper, not a zero-arity reader that shadowed it.
+      expect(klass.instance_method(:reset!).arity).to eq(-1)
+      expect(klass.new.reset!(:safe)).to be_a(klass)
+    end
+
+    it "still rejects a reserved name that canonicalizes to it on the first read" do
+      expect do
+        Class.new do
+          extend Axn::Configurable::Settings
+
+          setting "reset!", default: 1
+        end
+      end.to raise_error(ArgumentError, /setting :reset! is reserved/)
+    end
+
+    it "defers to a reset! added to an ANCESTOR after the extend" do
+      # The last load-order dependency. Being a module covers an include on the same class, and the
+      # extend-time check covers what already existed — but the generated module sits ahead of the
+      # superclass in a subclass's ancestry, so a reset! arriving on the superclass afterwards would
+      # silently lose. Deferral is therefore decided per call, not only at extend time.
+      base = Class.new
+      sub = Class.new(base) do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+      end
+
+      authors = Module.new { def reset!(*) = :added_to_the_ancestor_later }
+      base.include(authors)
+
+      expect(sub.new.reset!(:literal)).to eq(:added_to_the_ancestor_later)
+    end
+
+    it "passes its arguments through when it defers" do
+      # `define_method` forbids implicit-argument `super`, so the forwarding is written out and can
+      # silently drop the names it was called with.
+      seen = []
+      authors = Module.new do
+        define_method(:reset!) { |*names| seen = names }
+      end
+      base = Class.new
+      sub = Class.new(base) do
+        extend Axn::Configurable::Settings
+
+        setting :literal, default: :original
+      end
+      base.include(authors)
+
+      sub.new.reset!(:literal, :another)
+      expect(seen).to eq(%i[literal another])
+    end
+  end
+
+  describe "a validate: reason in an incompatible encoding" do
+    it "still raises ArgumentError rather than an encoding error" do
+      # Joining a UTF-16LE reason into axn's UTF-8 message raised Encoding::CompatibilityError, so
+      # REPORTING the validation failure replaced it — the caller saw an encoding bug instead of the
+      # rejection, which is the one thing an error path may not do.
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { "réason".encode("UTF-16LE") }
+      end
+
+      expect { klass.new.x = 1 }.to raise_error(ArgumentError, /got invalid value: 1 — réason/)
+    end
+
+    it "still raises ArgumentError when the rejected value's own inspect raises" do
+      # An inspect that raises is an ordinary bug — an uninitialized ivar, a broken association — and on
+      # an error path the exception being reported must win over anything raised while describing it.
+      # Interrupt specifically, since axn never swallows it anywhere else.
+      hostile = Class.new do
+        def inspect = raise(Interrupt)
+      end.new
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { false }
+      end
+
+      expect { klass.new.x = hostile }.to raise_error(ArgumentError, /got invalid value: #<.*inspect unavailable/)
+    end
+
+    it "describes an unrenderable value in the one_of rejection too" do
+      hostile = Class.new do
+        def inspect = raise(Interrupt)
+      end.new
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, one_of: %i[a b]
+      end
+
+      expect { klass.new.x = hostile }.to raise_error(ArgumentError, /must be one of :a, :b; got #</)
+    end
+
+    it "keeps a well-behaved value's own inspect rather than degrading it" do
+      # The reason `inspect` is still dispatched: rendering everything through Object#inspect would turn
+      # every useful message into #<String:0x…>.
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { false }
+      end
+
+      expect { klass.new.x = "foo" }.to raise_error(ArgumentError, /got invalid value: "foo"/)
+    end
+
+    it "still raises ArgumentError when the reason is TAGGED utf-8 but holds invalid bytes" do
+      # The narrowest case, and the one the first fix missed. Transcoding a String already tagged UTF-8
+      # succeeds without validating it, and the blank test ran on the RAW reason — so `strip` raised
+      # Encoding::CompatibilityError before the rendering was ever reached.
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { (+"bad \xC3(").force_encoding(Encoding::UTF_8) }
+      end
+
+      expect { klass.new.x = 1 }.to raise_error(ArgumentError, /got invalid value: 1 — bad/)
+    end
+
+    it "treats a blank reason in another encoding as no reason at all" do
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { "   ".encode("UTF-16LE") }
+      end
+
+      # No dangling separator: the rendered reason is whitespace, so the plain form is used.
+      expect { klass.new.x = 1 }.to raise_error(ArgumentError, /got invalid value: 1\z/)
+    end
+
+    it "renders a reason whose bytes cannot be transcoded at all" do
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { (+"bad \xC3(").force_encoding(Encoding::ASCII_8BIT) }
+      end
+
+      expect { klass.new.x = 1 }.to raise_error(ArgumentError, /got invalid value: 1 — bad/)
+    end
+  end
+
+  context "on the module-singleton flavor" do
+    let(:mod) do
+      Module.new do
+        extend Axn::Configurable
+
+        setting :literal, default: :original
+        setting :derived, default: -> { :derived_default }
+      end
+    end
+
+    it "returns a named setting to its default" do
+      mod.config.literal = :changed
+      mod.config.reset!(:literal)
+      expect(mod.config.literal).to eq(:original)
+    end
+
+    it "returns a dynamic setting to re-deriving after an assigned nil" do
+      mod.config.derived = nil
+      mod.config.reset!(:derived)
+      expect(mod.config.derived).to eq(:derived_default)
+    end
+
+    it "resets every setting when called with no arguments" do
+      mod.config.literal = :changed
+      mod.config.derived = nil
+      mod.config.reset!
+      expect(mod.config.literal).to eq(:original)
+      expect(mod.config.derived).to eq(:derived_default)
+    end
+
+    it "raises on an unknown setting, naming the ones that exist" do
+      expect { mod.config.reset!(:nope) }
+        .to raise_error(ArgumentError, /unknown setting :nope\. Declared settings are: .*:literal/)
+    end
+
+    it "resets nothing when any name in the list is unknown" do
+      mod.config.literal = :changed
+
+      expect { mod.config.reset!(:literal, :nope) }.to raise_error(ArgumentError, /unknown setting :nope/)
+      expect(mod.config.literal).to eq(:changed)
+    end
   end
 end

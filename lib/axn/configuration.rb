@@ -3,6 +3,11 @@
 require "axn/configurable"
 require "pathname"
 
+# The `tracer` setting's default resolves through Internal::Tracing on every read, so this file
+# cannot rely on the umbrella entrypoint having loaded it first.
+require "axn/internal/identity"
+require "axn/internal/tracing"
+
 module Axn
   class RailsConfiguration
     attr_accessor :app_actions_autoload_namespace
@@ -116,6 +121,43 @@ module Axn
             default: %w[actions tools agent_tools],
             overridable: true,
             validate: ->(v) { v.is_a?(Array) && v.all? { |s| s.is_a?(String) } }
+
+    # The tracer that receives axn's `axn.call` spans. Three states:
+    #   unset          → auto-detect: the OpenTelemetry tracer when OTel is loaded, else no spans
+    #   nil            → no tracing, even with OpenTelemetry loaded
+    #   a tracer       → that object, whether or not OpenTelemetry is loaded
+    # `Axn.config.reset!(:tracer)` returns to auto-detection.
+    #
+    # The default is dynamic — re-derived on every read — because OpenTelemetry may be loaded after
+    # axn is. Caching "absent" at gem load (plausible under Bundler.require) would permanently
+    # disable tracing for an app that configures OpenTelemetry in an initializer.
+    setting :tracer,
+            default: -> { Axn::Internal::Tracing.autodetected_tracer },
+            validate: lambda { |v|
+              # Identity against nil, not `v.nil?`: an object that overrides `nil?` to return true
+              # would otherwise be accepted as "tracing disabled" and skip the #in_span check
+              # entirely, turning a rejectable configuration into a per-call failure.
+              next true if Axn::Internal::Identity.nil_value?(v)
+
+              # A BasicObject-based proxy — the shape most likely to be wrapping a real tracer — has no
+              # `respond_to?` at all, and there is no way to introspect one: every reflection method
+              # lives on Object. Accept what cannot be inspected rather than rejecting it over the
+              # absence of a method axn never asked for. A tracer that then turns out to lack `in_span`
+              # is caught by the tracing boundary in Core::Executor, which logs it and runs the action
+              # untraced, so the cost of being wrong here is a log line rather than a broken call.
+              responds = begin
+                v.respond_to?(:in_span)
+              rescue NoMethodError => e
+                # Only a genuinely ABSENT `respond_to?` — a BasicObject-based proxy. A NoMethodError
+                # from INSIDE a present implementation is that object's own bug, and accepting it here
+                # would turn a declaration-time error into a per-call one.
+                raise unless e.name == :respond_to? && Axn::Internal::Identity.same?(e.receiver, v)
+
+                true
+              end
+
+              responds || "must respond to #in_span, or be nil to disable tracing"
+            }
 
     attr_writer :logger, :env, :on_exception, :rails
 

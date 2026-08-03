@@ -21,17 +21,20 @@ Axn::MCP.config.mcp_text_content                  # => :structured (the default)
 Axn::MCP.configure { |c| c.mcp_text_content = :message }
 Axn::MCP.config.mcp_text_content                  # => :message
 Axn::MCP.config.mcp_text_content?                 # => true (boolean predicate, available for any setting)
-Axn::MCP.reset_config!                            # discard assigned values — primarily for test isolation
+Axn::MCP.config.reset!(:mcp_text_content)          # return one setting to its declared default
+Axn::MCP.config.reset!                             # return every setting on this config to its declared default
+Axn::MCP.reset_config!                             # discard the whole config object — primarily for test isolation
 ```
+
+`config.reset!` is the supported way back to a setting's declared default — assigning `nil` is a value, not a reset, and would otherwise be the only way to undo an assignment short of reaching into the config's internals. It raises `ArgumentError` for a name that isn't a declared setting. It's distinct from `reset_config!` above: `reset_config!` discards the whole config object (so the next `.config` call rebuilds it from scratch), while `config.reset!` resets individual settings on the config object that's already there. Both flavors of the DSL get `reset!` — on `<Module>.config` for the module-singleton flavor shown here, and directly on a class-flavor config instance (see [Declaring validated settings on a class](#declaring-validated-settings-on-a-class) below).
 
 ## Setting options
 
 | Option | Effect |
 | ------ | ------ |
-| `default:` | Value returned until one is assigned. Mutable defaults (e.g. `[]`) are copied per config, so they're safe to assign-then-mutate. |
+| `default:` | Value returned until one is assigned. A Proc default is dynamic: re-derived on every read while the setting is unset, and never cached — so "unset ⇒ derive from the environment now" is expressible, e.g. `setting :sandbox_mode, default: -> { defined?(Rails) ? !Rails.env.production? : true }`. Any other default is copied per config, so a mutable one (e.g. `[]`) is safe to assign-then-mutate. Once a value is assigned, it's returned as-is on every later read — including a Proc, and including `nil` — never invoked and never re-derived. |
 | `one_of:` | Whitelist of permitted values; assigning anything else raises `ArgumentError`. |
-| `validate:` | A callable returning truthy for valid values; anything else raises `ArgumentError`. The callable may instead raise its own `ArgumentError` for a custom message. |
-| `callable:` | When `true`, a proc value is resolved (called) at read time — useful for a setting like `enabled` that may be a static boolean or a dynamic check. A callable **default** is re-evaluated on every read, so "unset ⇒ derive from the environment now" is expressible: `setting :sandbox_mode, default: -> { defined?(Rails) ? !Rails.env.production? : true }, callable: true`. |
+| `validate:` | A callable checking the assigned value. Returning a truthy non-String value passes. Returning `false` or `nil` raises `ArgumentError` with a generic message. Returning a String also raises `ArgumentError`, but uses that String as the reason — worth it for a setting whose value is an object you supply, where "invalid" alone doesn't hint at the contract. The callable may instead raise its own `ArgumentError` for a fully custom message. This is the opposite polarity of the field-level `validate:` on [`expects`/`exposes`](/reference/class#validation-details), where `nil` means valid and a String is the failure message — a validator lambda written for that DSL (`->(v) { "must be X" unless ok }`, which returns `nil` on success) rejects every value here. |
 | `overridable:` | When `true`, individual actions can override the value per-class (see below). |
 
 When migrating an existing config onto `one_of:` or `validate:`, note that the `ArgumentError` raised on an invalid assignment uses the DSL's own wording (e.g. `mode must be one of :a, :b; got :z`) rather than any message your hand-written setter used before — so any tests asserting on the old message text will need updating.
@@ -116,4 +119,6 @@ class Configuration
 end
 ```
 
-This defines instance-level `log_level` / `log_level=` accessors (with the same `default:` / `one_of:` / `validate:` / `callable:` options) while leaving you free to hand-write any other methods the class needs — which is exactly how Axn keeps its side-effecting settings (`env`, `logger`, `on_exception`, the async setters) bespoke while declaring the simple ones via the DSL.
+This defines instance-level `log_level` / `log_level=` accessors (with the same `default:` / `one_of:` / `validate:` options) while leaving you free to hand-write any other methods the class needs — which is exactly how Axn keeps its side-effecting settings (`env`, `logger`, `on_exception`, the async setters) bespoke while declaring the simple ones via the DSL.
+
+An instance also gets `reset!`, same contract as `config.reset!` above: `instance.reset!(:log_level)` returns that one setting to its declared default, `instance.reset!` with no arguments returns every setting declared on the class, and either raises `ArgumentError` for a name that isn't a declared setting. It's the supported alternative to assigning `nil`, which is a value rather than a reset.

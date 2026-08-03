@@ -1,5 +1,11 @@
 # frozen_string_literal: true
 
+require "axn/internal/identity"
+
+# Breadcrumbs below go through Extensions.best_effort, so this component needs it whether or not the
+# umbrella entrypoint loaded it.
+require "axn/extensions"
+
 module Axn
   # A small DSL for declaring configuration on a module (e.g. a satellite gem
   # namespace like Axn::MCP), so each one doesn't hand-roll its own config
@@ -18,6 +24,28 @@ module Axn
     # generated class-level override accessors.
     UNSET = Object.new.freeze
 
+    # Names the DSL installs itself, so a setting cannot be declared with one. Either direction of the
+    # collision silently breaks something: a generated `reset!` reader would replace the per-setting
+    # reset helper (leaving `reset!(:other)` an arity error), and in the module-singleton flavor
+    # `Config#reset!` wins method lookup so the declared setting becomes unreadable. Raise when the
+    # class is defined instead.
+    RESERVED_SETTING_NAMES = %i[reset!].freeze
+
+    # Canonicalizes a setting name to a Symbol and rejects the reserved ones, RETURNING the canonical
+    # form so every downstream use — the registry key, the ivar, the generated methods — derives from
+    # one `to_sym`. Calling `to_sym` again after the check would let a name whose `to_sym` answers
+    # differently each time pass the guard as one name and install itself as another, which is not
+    # only a way past the reserved list but a way to register a setting under a name whose reader and
+    # ivar disagree with it.
+    def self.canonical_setting_name!(name)
+      canonical = name.to_sym
+      return canonical unless RESERVED_SETTING_NAMES.include?(canonical)
+
+      raise ArgumentError,
+            "setting #{canonical.inspect} is reserved: Axn::Configurable defines #{canonical} on every " \
+            "config object. Pick another name."
+    end
+
     # The config source that owns `namespace` on `klass` or any ancestor, or nil. Walks the same
     # superclass chain the override store uses, so the duplicate-owner guard and the `configure`
     # writer agree on which source (if any) governs a namespace for a given class.
@@ -34,20 +62,68 @@ module Axn
       nil
     end
 
-    Setting = Struct.new(:name, :default, :one_of, :validate, :callable, :overridable, keyword_init: true) do
-      # Raises ArgumentError if the assigned value is not permitted.
+    # Every Setting declared anywhere in `klass`'s own ancestry (via `Settings#setting`), merged
+    # into one name => Setting map. Each class in the chain keeps its declarations in its own
+    # `@_declared_settings` ivar rather than one shared registry, so a subclass that declares
+    # additional settings — without re-extending `Settings` — still needs its instances to see
+    # both its own and every ancestor's. Reads the ivar directly (not through `_declared_settings`)
+    # so walking the chain never mints an empty registry on a class that never declared anything.
+    # A name declared on more than one class in the chain resolves to the most specific (deepest)
+    # declaration, since that class's Setting is merged in last.
+    def self.declared_settings_for(klass)
+      chain = []
+      current = klass
+      while current.is_a?(Class)
+        chain << current
+        current = current.superclass
+      end
+
+      chain.reverse_each.with_object({}) do |k, settings|
+        settings.merge!(k.instance_variable_get(:@_declared_settings)) if k.instance_variable_defined?(:@_declared_settings)
+      end
+    end
+
+    Setting = Struct.new(:name, :default, :one_of, :validate, :overridable, keyword_init: true) do
+      # Raises ArgumentError if the assigned value is not permitted. A `validate:` lambda may return
+      # a String instead of `true` to say WHY the value was rejected — worth it for a setting whose
+      # value is an object the app supplies, where "invalid" alone doesn't hint at the contract.
       def validate!(value)
-        raise ArgumentError, "#{name} must be one of #{one_of.map(&:inspect).join(', ')}; got #{value.inspect}" if one_of && !one_of.include?(value)
+        # `describe` for the rejected value, plain `inspect` for the allowlist: the allowlist is what the
+        # library author declared, while the value is whatever a caller assigned — and only the latter
+        # can take down the error being raised about it.
+        if one_of && !one_of.include?(value)
+          raise ArgumentError,
+                "#{name} must be one of #{one_of.map(&:inspect).join(', ')}; " \
+                "got #{Axn::Internal::Identity.describe(value)}"
+        end
+        return unless validate.respond_to?(:call)
 
-        return unless validate.respond_to?(:call) && !validate.call(value)
+        outcome = validate.call(value)
+        # `String === outcome`, not `outcome.is_a?(String)`: the value comes back from a caller's
+        # lambda, and Module#=== settles the type without dispatching anything to it.
+        return if outcome && !Axn::Internal::Identity.kind?(outcome, String)
 
-        raise ArgumentError, "#{name} got invalid value: #{value.inspect}"
+        # A blank reason is no reason: fall back to the plain form below rather than raising with a
+        # dangling " — " and nothing after it. Checked without ActiveSupport's blank extensions, since
+        # this file is loadable on its own and must not depend on them being present.
+        # Rendered to UTF-8 before it is joined: a reason in an incompatible encoding would otherwise
+        # raise Encoding::CompatibilityError out of the interpolation, replacing the ArgumentError this
+        # method promises with one about encodings.
+        # Rendered BEFORE the blank test, not after. `blank_string?` runs `strip`, which raises
+        # Encoding::CompatibilityError on invalid UTF-8 — so testing the raw reason first reintroduced
+        # the very failure the rendering exists to prevent, one step earlier.
+        rendered = Axn::Internal::Identity.utf8_string(outcome) if Axn::Internal::Identity.kind?(outcome, String)
+        detail = rendered unless Axn::Internal::Identity.nil_value?(rendered) ||
+                                 Axn::Internal::Identity.blank_string?(rendered)
+        raise ArgumentError,
+              ["#{name} got invalid value: #{Axn::Internal::Identity.describe(value)}", detail].compact.join(" — ")
       end
 
-      # Resolves the stored value, calling it if this setting is declared callable.
-      def resolve(value)
-        callable && value.respond_to?(:call) ? value.call : value
-      end
+      # A Proc default is DYNAMIC: re-derived on every read while the setting is unset, and never
+      # stored. Settings whose default depends on the host app's boot state (a tracer that
+      # OpenTelemetry may register after axn loads, a Rails.env-derived flag) would otherwise cache
+      # an answer taken before that state existed.
+      def dynamic_default? = Axn::Internal::Identity.kind?(default, Proc)
 
       # A fresh copy of the default, so mutable defaults (e.g. []) aren't shared
       # across instances. dup is a no-op for nil/true/false/Symbol/Integer.
@@ -164,10 +240,12 @@ module Axn
           [name, :"#{name}?", :"#{name}_override"].each do |accessor|
             next unless Axn::Core::MethodShadowing.externally_defined?(base, accessor)
 
-            Axn.config.logger.debug do
-              "[Axn] #{base.name || 'Action'}: per-class override accessor `#{accessor}` collides with a same-named " \
-                "class method from a non-axn ancestor (axn installs the accessor anyway; reads route through " \
-                "resolve_override_for). See PRO-2856."
+            Axn::Extensions.best_effort("logging a shadowed override accessor", action: base) do
+              Axn.config.logger.debug do
+                "[Axn] #{base.name || 'Action'}: per-class override accessor `#{accessor}` collides with a same-named " \
+                  "class method from a non-axn ancestor (axn installs the accessor anyway; reads route through " \
+                  "resolve_override_for). See PRO-2856."
+              end
             end
           end
         end
@@ -281,8 +359,12 @@ module Axn
           # source validates its own slice here, at read — surfacing a bad value when
           # the adapter first resolves it. Flat-accessor writes already validated, so
           # this is a no-op for them.
+          #
+          # An override value is used as-is. A setting's dynamic default still reaches a class with
+          # no override of its own, through the `fallback` lambda below, which reads the config's
+          # own reader.
           setting.validate!(found)
-          setting.resolve(found)
+          found
         end
 
         # Register for the collision-proof `resolve_override_for` path, so framework
@@ -373,9 +455,9 @@ module Axn
     # module, so a public `_`-prefixed method here lands on that gem's public surface.
     private :_axn_config_settings
 
-    def setting(name, default: nil, one_of: nil, validate: nil, callable: false, overridable: false)
-      name = name.to_sym
-      setting = Setting.new(name:, default:, one_of:, validate:, callable:, overridable:)
+    def setting(name, default: nil, one_of: nil, validate: nil, overridable: false)
+      name = Axn::Configurable.canonical_setting_name!(name)
+      setting = Setting.new(name:, default:, one_of:, validate:, overridable:)
       _axn_config_settings[name] = setting
       _define_override_methods(setting, -> { config.public_send(setting.name) }) if overridable
       nil
@@ -425,6 +507,24 @@ module Axn
         end
       end
 
+      # Returns the named settings to their declared defaults (all of them with no arguments).
+      # `reset_config!` on the owning module discards the whole bag; this is the per-setting form,
+      # and the supported alternative to assigning nil, which is a VALUE rather than a reset.
+      def reset!(*names)
+        targets = names.empty? ? @settings.keys : names.map(&:to_sym)
+        # Validate the WHOLE list before deleting anything, so a typo alongside a real name cannot
+        # leave the config half-reset behind the raise.
+        unknown = targets.reject { |name| @settings.key?(name) }
+        if unknown.any?
+          raise ArgumentError,
+                "reset! got unknown setting #{unknown.first.inspect}. Declared settings are: " \
+                "#{@settings.keys.map(&:inspect).join(', ')}."
+        end
+
+        targets.each { |name| @values.delete(name) }
+        self
+      end
+
       private
 
       def _write(name, value)
@@ -434,13 +534,15 @@ module Axn
 
       def _read(name)
         setting = @settings[name]
-        @values[name] = setting.dup_default unless @values.key?(name)
-        setting.resolve(@values[name])
+        return @values[name] if @values.key?(name)
+        return setting.default.call if setting.dynamic_default?
+
+        @values[name] = setting.dup_default
       end
     end
 
     # Class-level flavor: declare validated *instance* settings on a class,
-    # reusing the same Setting kernel (defaults, one_of:/validate:, callable:).
+    # reusing the same Setting kernel (defaults, one_of:/validate:).
     # Used to dogfood Axn's own Configuration without contorting the
     # module-singleton DSL above. `overridable: true` mints the same per-class
     # override accessors (via PerClassOverrides), resolving their library-level
@@ -455,6 +557,74 @@ module Axn
     module Settings
       include PerClassOverrides
 
+      # Declared Setting objects by name, on THIS class only — not merged with an ancestor's. The
+      # class flavor otherwise keeps no registry (only overridable settings are tracked, by
+      # PerClassOverrides). `reset!` reads across the full ancestry via
+      # `Axn::Configurable.declared_settings_for`, not through this method, so that walk never
+      # mints an empty registry on a class that never declared anything.
+      def _declared_settings = @_declared_settings ||= {}
+
+      # `reset!` is an INSTANCE method on the extending class (a config object), so it is installed
+      # here rather than declared in this module's body. It resolves the settings it operates on
+      # from `self.class` up through its ancestry, so an instance of a subclass sees both settings
+      # declared on the subclass and settings declared on any ancestor that extended `Settings` —
+      # regardless of whether the subclass re-extends `Settings` itself.
+      #
+      # A `reset!` the class already provides — its own, or one inherited from a non-axn ancestor —
+      # wins: axn generates this one, so it defers rather than replacing behavior the author wrote,
+      # leaving a debug breadcrumb instead. Settings still reset through the flat `<name>=` writers.
+      def self.extended(base)
+        if base.method_defined?(:reset!) || base.private_method_defined?(:reset!)
+          if defined?(Axn.config)
+            owner = base.instance_method(:reset!).owner
+            Axn::Extensions.best_effort("logging a reset! collision", action: base) do
+              Axn.config.logger.debug do
+                "[Axn] #{base.name || base}: instance method `reset!` is already defined by #{owner}, so the " \
+                  "Configurable settings DSL leaves it alone. Per-setting reset is unavailable on this class."
+              end
+            end
+          end
+          return
+        end
+
+        # INCLUDED as a module rather than defined on the class. A method defined directly on the class
+        # outranks every module in the lookup chain, so it would beat a `reset!` the author includes
+        # LATER — making the deferral depend on whether their include sits above or below the `extend`.
+        # From a module, the class's own definition still wins (as it should) and so does anything
+        # included after axn, while the pre-check above still covers what was already there.
+        generated = Module.new
+        base.include(generated)
+        generated.send(:define_method, :reset!) do |*names|
+          # Deferral has to be decided HERE, not only at extend time. The pre-check above covers a
+          # `reset!` that already existed, and being a module covers one included later on this class —
+          # but neither covers one that arrives later on an ANCESTOR, since the generated module sits
+          # ahead of the superclass in a subclass's chain and would silently win. `super` resolves to
+          # exactly the ancestors below this module, so asking for it makes the deferral independent of
+          # whether the author's include ran before or after the extend.
+          # Arguments explicit: `define_method` forbids implicit-argument `super`.
+          return super(*names) if defined?(super)
+
+          # Not `self.class`: a setting may be named `class`, and its generated reader would shadow the
+          # real one — leaving reset! resolving its targets from a setting value.
+          declared = Axn::Configurable.declared_settings_for(Axn::Internal::Identity.class_of(self))
+          targets = names.empty? ? declared.keys : names.map(&:to_sym)
+          # Validate the WHOLE list before touching anything, so `reset!(:real, :typo)` leaves the
+          # config exactly as it was instead of half-reset behind the raise.
+          unknown = targets.reject { |name| declared.key?(name) }
+          if unknown.any?
+            raise ArgumentError,
+                  "reset! got unknown setting #{unknown.first.inspect}. Declared settings are: " \
+                  "#{declared.keys.map(&:inspect).join(', ')}."
+          end
+
+          targets.each do |name|
+            ivar = :"@#{name}"
+            remove_instance_variable(ivar) if instance_variable_defined?(ivar)
+          end
+          self
+        end
+      end
+
       # Registers the live singleton whose values are the library-level fallback
       # for per-class overrides (e.g. `Axn.config`). Read lazily on each
       # resolution, so a swapped singleton is picked up. Must be declared before
@@ -463,13 +633,19 @@ module Axn
         @_overridable_config_source = block
       end
 
-      def setting(name, default: nil, one_of: nil, validate: nil, callable: false, overridable: false)
-        setting = Setting.new(name: name.to_sym, default:, one_of:, validate:, callable:, overridable:)
+      def setting(name, default: nil, one_of: nil, validate: nil, overridable: false)
+        name = Axn::Configurable.canonical_setting_name!(name)
+        setting = Setting.new(name:, default:, one_of:, validate:, overridable:)
+        _declared_settings[setting.name] = setting
         ivar = :"@#{name}"
 
         define_method(name) do
-          instance_variable_set(ivar, setting.dup_default) unless instance_variable_defined?(ivar)
-          setting.resolve(instance_variable_get(ivar))
+          return instance_variable_get(ivar) if instance_variable_defined?(ivar)
+          return setting.default.call if setting.dynamic_default?
+
+          # A literal default IS memoized: mutating it in place (`config.some_list << :x`) is a
+          # supported way to extend one, which a fresh dup per read would silently discard.
+          instance_variable_set(ivar, setting.dup_default)
         end
 
         define_method(:"#{name}?") { !!public_send(name) }

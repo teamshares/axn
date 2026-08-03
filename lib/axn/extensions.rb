@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/identity"
+
 module Axn
   # The extension-author surface: "for gems building on axn," distinct from
   # Axn::Internal (private) and the user-facing DSL. Not Ruby core-ext/refinements —
@@ -33,8 +35,22 @@ module Axn
       # True when `exception` is one axn may absorb: any StandardError, plus the allowlist above.
       # Anything else — a signal, an `exit`, another library's private control-flow signal — must pass
       # through untouched.
+      # Whether a guarded failure is re-raised rather than logged — the dev-loud mode. Exposed so
+      # anything that has to reason about what best_effort will DO consults the same condition rather
+      # than restating it.
+      def raises_in_dev? = Axn.config.best_effort_raises_in_dev && Axn.config.env.development?
+
+      # Undispatched ancestry, not `exception.is_a?`. Not as a defense against exceptions that lie
+      # about themselves — that is unwinnable — but because the object's opinion is not the question.
+      # This predicate decides whether axn may SWALLOW something, and the only thing that authorizes
+      # that is the allowlist actually being in the class's ancestry. Asking the instance made the
+      # answer depend on a method the instance defines; `Module#===` makes it depend on the hierarchy,
+      # which is deterministic for every input. Same seam the span type check and the `validate:`
+      # String check already use.
       def swallowable?(exception)
-        exception.is_a?(StandardError) || SWALLOWABLE_BEYOND_STANDARD_ERROR.any? { |klass| exception.is_a?(klass) }
+        return true if Internal::Identity.kind?(exception, StandardError)
+
+        SWALLOWABLE_BEYOND_STANDARD_ERROR.any? { |klass| Internal::Identity.kind?(exception, klass) }
       end
 
       def config
@@ -84,7 +100,7 @@ module Axn
       # Warn about a swallowed exception and return nil (best_effort's documented failure return).
       # Re-raises first in development when configured, keeping the guard dev-loud.
       def _warn_and_swallow(exception, desc, action)
-        raise exception if Axn.config.best_effort_raises_in_dev && Axn.config.env.development?
+        raise exception if raises_in_dev?
 
         src = _source_location(exception)
 

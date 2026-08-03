@@ -2,8 +2,19 @@
 
 RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
   let(:mock_tracer) { instance_double("OpenTelemetry::Trace::Tracer") }
-  let(:mock_span) { instance_double("OpenTelemetry::Trace::Span") }
   let(:mock_tracer_provider) { instance_double("OpenTelemetry::Trace::TracerProvider") }
+
+  # A real class registered as OpenTelemetry::Trace::Span below, rather than a double: axn decides
+  # whether to hand a span an `OpenTelemetry::Trace::Status` by asking whether it IS an OpenTelemetry
+  # span, so the fake has to actually be one for these examples to exercise that path.
+  let(:otel_span_class) do
+    Class.new do
+      def set_attribute(_key, _value); end
+      def record_exception(_exception); end
+      def status=(_status); end
+    end
+  end
+  let(:mock_span) { otel_span_class.new }
 
   before do
     # Save original OpenTelemetry if it exists
@@ -17,6 +28,7 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
     mock_status = instance_double("Status")
     status_class.define_singleton_method(:error) { |_msg| mock_status }
     trace_module.const_set(:Status, status_class)
+    trace_module.const_set(:Span, otel_span_class)
     otel_module.const_set(:Trace, trace_module)
     stub_const("OpenTelemetry", otel_module)
 
@@ -31,10 +43,8 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
   end
 
   after do
-    # Clear the cached tracer so it's recreated with the restored OpenTelemetry
-    Axn::Internal::Tracing.instance_variable_set(:@tracer, nil)
-    Axn::Internal::Tracing.instance_variable_set(:@tracer_provider, nil)
-    Axn::Internal::Tracing.instance_variable_set(:@supports_record_exception, nil)
+    # Clear the memos so the next example re-detects against the restored OpenTelemetry.
+    Axn::Internal::Tracing.reset!
 
     # Restore original if it existed, but don't conflict with stub_const cleanup
     if @original_otel && defined?(OpenTelemetry) && @original_otel != OpenTelemetry
@@ -170,26 +180,134 @@ RSpec.describe "Axn::Internal::Tracing OpenTelemetry" do
     end
   end
 
-  describe ".supports_record_exception_option?" do
-    before do
-      # Clear the cached value
-      if Axn::Internal::Tracing.instance_variable_defined?(:@supports_record_exception)
-        Axn::Internal::Tracing.remove_instance_variable(:@supports_record_exception)
+  describe ".autodetected_tracer" do
+    it "retries discovery after a provider fails to supply a tracer, rather than pinning the old one" do
+      # Recording the new provider before its tracer exists would leave a mismatched pair that the
+      # cache check reads as a hit — spans would go to the previous provider forever.
+      # The SAME replacement provider has to still be current on the retry — that is what makes a
+      # half-published pair read as a cache hit. A different provider on the third call would sidestep
+      # the bug entirely by forcing a re-fetch for an unrelated reason.
+      first = Object.new
+      first.define_singleton_method(:tracer) { |*| :tracer_v1 }
+
+      attempts = 0
+      flaky = Object.new
+      flaky.define_singleton_method(:tracer) do |*|
+        attempts += 1
+        raise "provider not ready" if attempts == 1
+
+        :tracer_v2
       end
+
+      providers = [first, flaky, flaky]
+      allow(OpenTelemetry).to receive(:tracer_provider) { providers.shift || flaky }
+      Axn::Internal::Tracing.reset!
+
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq(:tracer_v1)
+      expect { Axn::Internal::Tracing.autodetected_tracer }.to raise_error("provider not ready")
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq(:tracer_v2)
     end
 
-    it "caches the result" do
-      # First call - will check OpenTelemetry
-      first_result = Axn::Internal::Tracing.supports_record_exception_option?
-      expect(Axn::Internal::Tracing.instance_variable_defined?(:@supports_record_exception)).to be true
+    it "detects a replacement provider that claims to == the one it replaced" do
+      # The provider is an object the host app supplies, so validating the cache by dispatching `==`
+      # asks the replacement whether it counts as its predecessor. One that says yes would pin spans
+      # to the replaced provider for the life of the process.
+      provider = Class.new do
+        def initialize(label) = @label = label
+        def ==(_other) = true
+        def tracer(*) = "tracer-for-#{@label}"
+      end
+      current = provider.new("first")
+      allow(OpenTelemetry).to receive(:tracer_provider) { current }
+      Axn::Internal::Tracing.reset!
 
-      # Second call should return cached value
-      second_result = Axn::Internal::Tracing.supports_record_exception_option?
-      expect(first_result).to eq(second_result)
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq("tracer-for-first")
+      current = provider.new("second")
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq("tracer-for-second")
     end
 
-    # NOTE: Testing the actual detection requires a real OpenTelemetry::Trace::Tracer class
-    # with specific method signatures. The implementation uses introspection on the tracer's
-    # in_span method parameters, which is tested indirectly through the integration tests above.
+    it "does not let a provider's == abort the call from inside the cache check" do
+      # `autodetected_tracer` resolves OUTSIDE the capability probe's rescue, so a class axn never
+      # swallows escaping from `==` would take down the action over an optional lookup — the cache
+      # check must not run provider code at all.
+      hostile = Class.new do
+        def ==(_other) = raise Interrupt
+        def tracer(*) = :hostile_tracer
+      end.new
+      allow(OpenTelemetry).to receive(:tracer_provider).and_return(hostile)
+      Axn::Internal::Tracing.reset!
+
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq(:hostile_tracer)
+      expect(Axn::Internal::Tracing.autodetected_tracer).to eq(:hostile_tracer)
+    end
+  end
+
+  describe ".supports_record_exception_option?" do
+    let(:accepting) { Class.new { def in_span(_name, record_exception: nil); end }.new }
+    let(:rejecting) { Class.new { def in_span(_name, attributes: nil); end }.new }
+    let(:splatting) { Class.new { def in_span(_name, **opts); end }.new }
+    let(:positional) { Class.new { def in_span(_name, record_exception); end }.new }
+
+    before { Axn::Internal::Tracing.reset! }
+
+    it "reads the option off the tracer's own signature" do
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(accepting)).to be(true)
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(rejecting)).to be(false)
+    end
+
+    it "reads a **opts tracer as unsupported, since passing the option to a strict tracer would raise" do
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(splatting)).to be(false)
+    end
+
+    it "reads a positional parameter that merely shares the name as unsupported" do
+      # `.method(:in_span).parameters` here is [[:req, :_name], [:req, :record_exception]] — the
+      # name matches but the type doesn't, distinguishing this from the keyword case above.
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(positional)).to be(false)
+    end
+
+    # A configured tracer promises #in_span and nothing else, so the memo must not dispatch identity
+    # or nil-ness to it — that would run on every call after the first, outside the probe's rescue.
+    it "does not dispatch equal? or nil? to the tracer" do
+      hostile = Class.new do
+        def in_span(_name, record_exception: nil); end
+        def equal?(_other) = raise("tracer#equal? must not be called")
+        def nil? = raise("tracer#nil? must not be called")
+      end.new
+
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(hostile)).to be(true)
+      # Second call goes through the memo comparison, which is where a dispatched equal? would fire.
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(hostile)).to be(true)
+    end
+
+    it "is false for no tracer at all" do
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(nil)).to be(false)
+    end
+
+    it "does not serve a previous tracer's answer after a probe unwinds non-locally" do
+      # Publishing the key before the value would leave this tracer keyed to `accepting`'s `true`, and
+      # the next call would act on it — sending `record_exception:` to a tracer with no slot for it.
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(accepting)).to be(true)
+
+      thrower = Class.new do
+        def in_span(_name, attributes: nil); end
+        def method(_name) = throw(:probe_unwound)
+      end.new
+
+      expect(catch(:probe_unwound) { Axn::Internal::Tracing.supports_record_exception_option?(thrower) }).to be_nil
+      # Re-probes rather than reporting the stale answer, so it unwinds again instead of returning true.
+      expect(catch(:probe_unwound) { Axn::Internal::Tracing.supports_record_exception_option?(thrower) }).to be_nil
+    end
+
+    it "does not leak one tracer's answer to another" do
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(accepting)).to be(true)
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(rejecting)).to be(false)
+      expect(Axn::Internal::Tracing.supports_record_exception_option?(accepting)).to be(true)
+    end
+
+    it "memoizes the answer for a repeated tracer" do
+      allow(accepting).to receive(:method).and_call_original
+      2.times { Axn::Internal::Tracing.supports_record_exception_option?(accepting) }
+      expect(accepting).to have_received(:method).with(:in_span).once
+    end
   end
 end

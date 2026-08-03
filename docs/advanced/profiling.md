@@ -329,7 +329,7 @@ Use appropriate sampling rates and conditional profiling to minimize impact.
 
 ### OpenTelemetry and Datadog Integration
 
-Axn automatically creates OpenTelemetry spans for all actions when OpenTelemetry is available. These spans appear as children of your Rails request traces in APM tools.
+Axn automatically creates OpenTelemetry spans for all actions when OpenTelemetry is available, unless [a different tracer is configured, or tracing is disabled outright](/reference/configuration#supplying-or-disabling-the-tracer) via `Axn.config.tracer`. These spans appear as children of your Rails request traces in APM tools.
 
 You can combine profiling with OpenTelemetry tracing:
 
