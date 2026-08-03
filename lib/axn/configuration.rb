@@ -188,6 +188,11 @@ module Axn
       _auto_configure_sidekiq_for_async_exception_reporting(value)
     end
 
+    # Whether a default async adapter is configured — the only thing a gem needs to know about the
+    # `_default_async_*` trio below, which stays underscored because core reads all three of them
+    # across files. `present?` rather than `!!`, matching how `Axn::Async` itself tests the adapter.
+    def default_async? = _default_async_adapter.present?
+
     def _default_async_adapter = @default_async_adapter ||= false
     def _default_async_config = @default_async_config ||= {}
     def _default_async_config_block = @default_async_config_block
@@ -216,8 +221,8 @@ module Axn
     def _enqueue_all_async_config_block = @enqueue_all_async_config_block || _default_async_config_block
 
     # Read only by `_apply_async_to_enqueue_all_orchestrator` below. The `_default_async_*` trio above
-    # is public for the opposite reason: `Axn.async`, the Sidekiq adapter and axn-webhooks all read it
-    # off `Axn.config`.
+    # is public for the opposite reason: `Axn.async` and the Sidekiq adapter read it off `Axn.config`
+    # across files, so it cannot be private. A gem asking only "is async on?" uses `default_async?`.
     private :_enqueue_all_async_adapter, :_enqueue_all_async_config, :_enqueue_all_async_config_block
 
     def set_enqueue_all_async(adapter, **config, &block)

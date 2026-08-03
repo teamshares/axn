@@ -193,6 +193,27 @@ RSpec.describe Axn::Configuration do
 
       expect(config).to have_received(:_ensure_async_exception_reporting_registered_for_adapter).with(false)
     end
+
+    describe "#default_async?" do
+      it "is false by default" do
+        expect(config.default_async?).to be(false)
+      end
+
+      it "is false when only config or a block is set" do
+        config.set_default_async(false, queue: "low")
+
+        expect(config.default_async?).to be(false)
+      end
+
+      it "is true once an adapter is set" do
+        allow(config).to receive(:_ensure_async_exception_reporting_registered_for_adapter)
+        allow(config).to receive(:_apply_async_to_enqueue_all_orchestrator)
+
+        config.set_default_async(:sidekiq, queue: "default")
+
+        expect(config.default_async?).to be(true)
+      end
+    end
   end
 
   describe "set_enqueue_all_async and async exception reporting" do
