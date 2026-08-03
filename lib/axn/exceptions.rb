@@ -16,11 +16,12 @@ module Axn
     # those bytes back), so interpolating the result into a UTF-8 message can still raise
     # Encoding::CompatibilityError from the reporting itself. A layer writing a class name into prose therefore
     # renders it — `Internal::Rendering.class_name`/`module_name` compose both halves for every caller above
-    # this file, and the two message paths built ON this file (`UnserializableValue#message` below,
-    # `Reflection::Values.describe_key_classes`) compose them by hand for the same reason `Rendering` itself
-    # cannot: reaching up from here into the reflection layer, which requires THIS file, would leave a message
-    # path NameError-ing under the standalone loads `spec/axn/standalone_require_spec.rb` pins. The byte half
-    # both compose through, `Internal::Text`, has no requires of its own and sits below all three.
+    # this file, and the message paths built ON this file (`UnserializableValue#message` and
+    # `UnserializableArgument#message` below, `Reflection::Values.describe_key_classes`) compose them by hand
+    # for the same reason `Rendering` itself cannot: reaching up from here into the reflection layer, which
+    # requires THIS file, would leave a message path NameError-ing under the standalone loads
+    # `spec/axn/standalone_require_spec.rb` pins. The byte half both compose through, `Internal::Text`, has no
+    # requires of its own and sits below all three.
     module ClassName
       OBJECT_CLASS = ::Object.instance_method(:class)
       MODULE_TO_S = ::Module.instance_method(:to_s)
@@ -34,12 +35,6 @@ module Axn
       # declared type. Same reasoning: a class can define its own `to_s`, and one that raises would replace
       # the failure being reported.
       def self.of_module(mod) = MODULE_TO_S.bind_call(mod)
-
-      # Both composed halves — dispatch-safety (`.of`) and byte-safety (`Text.renderable`) — for a
-      # caller BELOW `Internal::Rendering` that names a value's class in its own message. Shared by every
-      # exception defined in this file that does so (`UnserializableValue`, `UnserializableArgument`),
-      # so the composition can't drift between them the way it would if each hand-wrote it separately.
-      def self.rendered(value) = Text.renderable(of(value))
     end
 
     # Internal only -- rescued before Axn::Result is returned
@@ -262,16 +257,19 @@ module Axn
       # is caller-supplied and may override `class`, and running that override here would replace this
       # failure with the value's own exception. Its bytes are foreign too — a constant may hold non-UTF-8
       # ones, and `Module#to_s` hands those back — so the name is RENDERED before it joins this message.
-      # This composes `Internal::Rendering.class_name` by hand (`Internal::ClassName.rendered(...)`)
+      # This composes `Internal::Rendering.class_name` by hand (`Text.renderable(ClassName.of(...))`)
       # rather than calling it: `rendering.rb` requires this file, so calling back into it here would be a
-      # require cycle. Do not "tidy" this into a delegation.
+      # require cycle. Do not "tidy" this into a delegation — and don't lift this one-line composition
+      # onto `ClassName` either, whose own header promises it never renders anything (see above); every
+      # exception in this file that names a caller-supplied value's class hand-composes it the same way,
+      # independently, for that reason.
       def message
         "Cannot serialize exposed value at `#{@path}` (#{value_class_name}): #{@reason || cycle_reason}"
       end
 
       private
 
-      def value_class_name = Axn::Internal::ClassName.rendered(@value)
+      def value_class_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of(@value))
 
       def cycle_reason
         klass = value_class_name
@@ -295,14 +293,17 @@ module Axn
         super()
       end
 
-      # Same shape as `UnserializableValue#message` above: `@value` is caller-supplied, so its class is
-      # named via `Internal::ClassName.rendered` (dispatch-safe, byte-safe) rather than the raw
-      # `@value.class`, which would both run the value's own override and risk joining non-UTF-8 bytes
-      # into this message. Composed by hand for the same reason — `rendering.rb` requires this file.
+      # Same shape as `UnserializableValue#message` above, and hand-composed for the same reason (see
+      # its comment) rather than shared with it: `@value` is caller-supplied, so its class is named via
+      # `Text.renderable(ClassName.of(...))` rather than the raw `@value.class`.
       def message
-        "Cannot serialize argument `#{@field}` (#{Axn::Internal::ClassName.rendered(@value)}) for async execution. " \
+        "Cannot serialize argument `#{@field}` (#{value_class_name}) for async execution. " \
           "#{Axn::Internal::AsyncSerialization._unserializable_hint(@value)}"
       end
+
+      private
+
+      def value_class_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of(@value))
     end
   end
 end
