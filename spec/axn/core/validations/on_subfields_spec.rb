@@ -1035,8 +1035,8 @@ RSpec.describe Axn do
 
           result = action.call(payload: { other: 1 })
           expect(result.outcome).to be_exception
-          expect(result.exception.message).to include("City can't be blank")
-          expect(result.exception.message).to include("'payload.address' is nil, so nested expectations beneath it cannot be satisfied")
+          # The stranded subfield's own single error (its type rejects the nil) plus the shared diagnostic.
+          expect(result.exception.message).to eq("City is not a String and 'payload.address' is nil, so nested expectations beneath it cannot be satisfied")
         end
 
         it "reports one diagnostic per stranded chain, shared across its failing subfields" do

@@ -15,7 +15,7 @@ module Axn
 
         self.class.external_field_configs.each do |config|
           field = config.field
-          # Check if field is optional (allow_blank or no presence validation)
+          # Check if field is optional (its validators accept nil)
           is_optional = config.optional?
 
           # If method exists, call it (user-defined methods override auto-generated ones)

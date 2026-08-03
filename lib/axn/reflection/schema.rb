@@ -18,8 +18,9 @@ module Axn
     # path — it inspects declared field configs, never runs the action or its validators.
     #
     # REQUIREDNESS IS DERIVED FROM DECLARED SIGNALS, NOT BY VALIDATING.
-    # A field is omittable (absent from `required`) when a declared signal says so — a usable default,
-    # or a nil/blank-tolerant validator set (`optional:`/`allow_nil:`/`allow_blank:`/`presence: false`).
+    # A field is omittable (absent from `required`) when a declared signal says so — a usable default, or a
+    # nil-tolerant validator set (`optional:`/`allow_nil:`/`allow_blank:`). A field that rejects nil by type
+    # alone (`allow_empty: true`) stays required and non-nullable: emptiness is permitted, absence is not.
     # We deliberately do NOT run the field's validators against its default to confirm the omitted call
     # would actually pass; that duplicate-validation pass was expensive and fragile. The tradeoff is a
     # documented divergence, narrow: a non-blank but otherwise-invalid default (`type: String,
@@ -48,6 +49,14 @@ module Axn
         Date => "date",
         DateTime => "date-time",
         Time => "date-time",
+      }.freeze
+
+      # JSON Schema spells the emptiness floor differently per type. A type absent here (integer, boolean,
+      # number) has no empty state, so no floor is expressible for it.
+      SIZE_CONSTRAINT_KEYS = {
+        "array" => :minItems,
+        "object" => :minProperties,
+        "string" => :minLength,
       }.freeze
 
       EXCLUDED_FROM_INPUT_SCHEMA = %i[ambient_context].freeze
@@ -489,7 +498,10 @@ module Axn
         # Gated on satisfiability so strict schema mode stays byte-identical to the per-config rule below.
         return true if satisfiability && node.configs.any? { |c| usable_default?(c, subfield: true, satisfiability: true) }
 
-        configs.all? { |c| usable_default?(c, subfield: true, satisfiability:) || (nil_accepted?(c) && !subtree_requires_presence?(node, ann)) }
+        configs.all? do |c|
+          usable_default?(c, subfield: true, satisfiability:) ||
+            (nil_tolerance_rescues_absence?(c, satisfiability:) && !subtree_requires_presence?(node, ann))
+        end
       end
 
       # Whether the parent's shape (`do…end`) block declares a member that isn't schema-optional.
@@ -508,7 +520,7 @@ module Axn
 
         # The parent's own nil-tolerance (optional:/allow_nil:) only makes it omittable when no required
         # child would be stranded — so it must be checked AFTER the required-child test, not ahead of it.
-        return true if nil_accepted?(config) && !has_required_child
+        return true if nil_tolerance_rescues_absence?(config, satisfiability:) && !has_required_child
 
         # No parent-level omission signal remains. A subfield default resolves only the CHILD's value on
         # the read path (ContractForSubfields.resolve_value) — it never synthesizes the parent — so a
@@ -566,7 +578,8 @@ module Axn
         # safe direction). Nil-TOLERANT entries never reject an omitted value, so a nested gate on them
         # can't affect requiredness — don't fall back on those.
         entries = Axn::Validation::Base.validator_entries(config.validations)
-        return nil if entries.any? { |key, opt| !nil_tolerant_validation?(key, opt) && entry_mentions_gate_key?(opt) }
+        shared = shared_validation_options(config)
+        return nil if entries.any? { |key, opt| !nil_tolerant_validation?(key, opt, shared) && entry_mentions_gate_key?(opt) }
 
         rule = gates.values.first
         return nil unless rule.is_a?(Symbol)
@@ -665,7 +678,22 @@ module Axn
       def optional_for_schema?(config, subfield: false, satisfiability: false)
         return true if usable_default?(config, subfield:, satisfiability:)
 
-        nil_accepted?(config)
+        nil_tolerance_rescues_absence?(config, satisfiability:)
+      end
+
+      # Whether this config's nil-tolerance actually rescues an ABSENT value. It does not when the field
+      # declares a literal default its own blankness checks reject: axn resolves a declared default for a nil
+      # value however it arrived — an omitted key or an explicit null — so the validators see that default,
+      # never nil, and the tolerance is never what decides the call. THE single definition, so requiredness
+      # and nullability (which the same resolution governs) cannot disagree.
+      #
+      # Satisfiability mode resolves toward satisfiable and ignores the veto, matching the Proc-default rule:
+      # a caller who SUPPLIES a value still has a working contract, so a dead default is no reason to reject
+      # the declaration.
+      def nil_tolerance_rescues_absence?(config, satisfiability: false)
+        return false unless nil_accepted?(config)
+
+        satisfiability || !blank_default_rejected?(config)
       end
 
       # A default lets the client omit the field (Axn applies it before validation). We judge usability
@@ -676,10 +704,10 @@ module Axn
       # reserved for provably dead declarations. For a subfield, only a truthy default is applied at runtime
       # (`next unless config.default`), so a falsey subfield default never counts.
       #
-      # An empty literal default (`{}`/`""`/`[]`) makes the field omittable only when no active presence
-      # validator would reject the synthesized blank: a non-optional field carries `presence: true` and so
-      # stays required, but a `presence: false` field (or a type like `:params` that carries no presence)
-      # accepts the blank and is optional. (A blank rejected by some OTHER validator — e.g. length — is a
+      # An empty literal default (`{}`/`""`/`[]`) makes the field omittable only when nothing here would
+      # reject the synthesized blank — asked of every check that governs blankness/emptiness
+      # (`blank_default_rejected?`), since either can be the one standing between the field and an empty
+      # value. (A blank rejected by an author's OWN size constraint — a `length:` floor — is a
       # self-contradictory contract: the same accepted divergence as a non-blank invalid default, where
       # the schema reflects optional though the omitted call fails at runtime.)
       #
@@ -696,34 +724,108 @@ module Axn
         # declaration-rejection detector) resolves toward satisfiable: the Proc DOES apply at runtime,
         # and rejection is reserved for provably dead declarations.
         return satisfiability if value.is_a?(Proc)
-        return false if presence_blank?(value) && presence_rejects_blank?(config)
+        return false if blank_default_rejected?(config)
 
         subfield ? config.applied_default? : true
       end
 
-      # Whether an active presence validator would reject a blank value, so a blank default can't relax
-      # the field. `presence: true` rejects blank; absent/`presence: false` doesn't; and
-      # `presence: { allow_blank: true }` skips (accepts) blank. (`allow_nil` alone doesn't help a
-      # non-nil blank like ""/{}/[].)
-      def presence_rejects_blank?(config)
-        presence = config.validations[:presence]
-        return false unless presence
+      # Whether this field's own checks would reject the blank/empty literal value its default supplies —
+      # THE single definition of "can this default relax the field", read both when judging the default's
+      # usability and when deciding requiredness (an omitted call resolves the default, so a rejected one
+      # cannot be omitted). Two checks govern blankness and either can be the only one present, so both are
+      # asked, each against the value IT rejects:
+      #
+      #   * a presence validator rejects a BLANK value (`presence_blank?`) — `presence: true` does,
+      #     absent/`presence: false` does not, `presence: { allow_blank: true }` accepts it (`allow_nil`
+      #     alone doesn't help a non-nil blank like ""/{}/[]);
+      #   * `allow_empty: false`'s own check rejects an EMPTY one (`empty_default?`), which is a different
+      #     value set: a whitespace-only String default is blank but not empty, and passes.
+      #
+      # A Proc default is unknowable at declaration (usable_default? settles it before reaching here) and a
+      # non-applied subfield default supplies nothing to reject. Gates are deliberately not consulted, as
+      # everywhere else on the input side: a gated check is counted as if it ran.
+      def blank_default_rejected?(config)
+        return false unless config.respond_to?(:default)
 
-        !(presence.is_a?(Hash) && presence[:allow_blank])
+        value = config.default
+        return false if value.nil? || value.is_a?(Proc)
+        return true if presence_blank?(value) && presence_rejects_blank?(config.validations)
+
+        empty_default?(value) && config.validations.key?(Axn::Internal::FieldConfig::NON_EMPTINESS_KEY)
       end
 
-      # A default value ActiveModel's presence validator treats as blank (and so rejects): an empty or
-      # whitespace-only String, an empty Hash/Array, or `false`. Detected WITHOUT dispatching methods on
-      # an arbitrary object (reflection stays side-effect-free): identity for `false`, and exact-class
-      # (instance_of?) built-in containers/strings whose emptiness is a pure in-memory check — a subclass
-      # could override empty?/strip. (nil is handled by the caller.)
+      # Whether an active `presence:` check here rejects every blank value: one is declared, it is not
+      # blank-tolerant, and it is not context-scoped (an entry that runs on no call rejects nothing). THE
+      # single definition, read by the blank-default judgment and by the size-floor emission. A truthy
+      # non-Hash entry carries no tolerance, so it rejects blank.
+      def presence_rejects_blank?(validations)
+        presence = validations[:presence]
+        return false unless presence
+
+        opts = effective_entry_options(presence, validations.slice(*Axn::Validation::Base.shared_validation_option_keys))
+        !opts[:allow_blank] && !entry_context_scoped?(opts)
+      end
+
+      # Whether an empty value is rejected by something OTHER than the author's own `length:` — either
+      # `allow_empty: false`'s own check or a live presence check (every empty value is blank, so a presence
+      # check that rejects blank rejects every empty value). THE question "can an empty value get through
+      # here", which decides both the fallback floor of 1 and whether a blank-tolerant `length:` still
+      # contributes its floor.
+      def empty_value_rejected?(validations)
+        return true if validations.key?(Axn::Internal::FieldConfig::NON_EMPTINESS_KEY)
+
+        presence_rejects_blank?(validations)
+      end
+
+      # Parameters is identified by rendered class NAME rather than by the constant: this file is one an adapter
+      # gem loads directly, and naming a Rails constant here would put an unresolvable reference in its load graph
+      # for every consumer running without Rails. It is the same identify-by-name form TypeValidator already uses
+      # to recognize a test double, and the rendering is read natively (`Internal::ClassName.of_module`) so a class
+      # cannot answer this question for itself.
+      PARAMS_CLASS_NAME = "ActionController::Parameters"
+
+      # The container classes whose `empty?` is RUBY'S OWN — the ones the emptiness axis is declared on. `Set` sits
+      # behind `defined?` because `set` is not always loaded.
+      EMPTY_CONTAINER_CLASSES = [::Hash, ::Array, ::String].freeze
+
+      # Whether a default is an EMPTY container, decided by WHOSE `empty?` would answer it. Ownership is the whole
+      # test, because it separates the two things a subclass can be: one that INHERITS the built-in's `empty?`
+      # answers with Ruby's own code, so running it is safe and its empty instance is as empty as the built-in's;
+      # one that OVERRIDES it (or carries a singleton) is caller code, which a reflection verdict must not run —
+      # and not recognizing it is also what matches the runtime, since that same override is what the emptiness
+      # check will ask. Anything else — a lazy collection, an arbitrary object — is unrecognized for the same
+      # reason, so no `empty?` of a caller's writing is ever dispatched here.
+      #
+      # The owner read is bound (`NativeMethods.method_owner`); the call that follows it needs no guard, because
+      # the implementation it dispatches is the one whose owner was just established.
+      def empty_container?(value)
+        owner = Axn::Internal::NativeMethods.method_owner(value, :empty?)
+        return false unless owner && native_empty_owner?(owner)
+
+        value.empty?
+      end
+
+      def native_empty_owner?(owner)
+        return true if EMPTY_CONTAINER_CLASSES.any? { |klass| klass.equal?(owner) }
+        return true if defined?(Set) && ::Set.equal?(owner)
+
+        # The rendered name is a Ruby-made String (the bound `Module#to_s`), so comparing it dispatches String's
+        # own `==` whatever the owner is.
+        Axn::Internal::ClassName.of_module(owner) == PARAMS_CLASS_NAME
+      end
+
+      # A default value ActiveModel's presence validator treats as blank (and so rejects): `false`, a
+      # whitespace-only String, or an empty container. (nil is handled by the caller.)
       def presence_blank?(value)
         return true if value.equal?(false)
         return value.strip.empty? if value.instance_of?(String)
-        return value.empty? if value.instance_of?(Hash) || value.instance_of?(Array)
 
-        false
+        empty_container?(value)
       end
+
+      # Whether a default is EMPTY — the question `allow_empty: false`'s own check asks of a value, which is
+      # not blankness: a whitespace-only String is blank but not empty, and `false` has no empty state at all.
+      def empty_default?(value) = empty_container?(value)
 
       # Whether an `<field>_id` default can actually serve as a model LOOKUP token — the shared test
       # for every id-rescue site (sibling_id_rescued?, which serves both the annotation credit and the
@@ -1041,6 +1143,13 @@ module Axn
 
         apply_structured_schema!(prop, config, for_output:)
 
+        # LAST, because the floor's KEY is chosen from the property's type (`minItems`/`minProperties`/
+        # `minLength`) and a shape block is what establishes that type: a custom class or module carrying one
+        # holds the permissive fallback until `apply_structured_schema!` rewrites it to `object`. Deriving
+        # the key any earlier reads an intermediate type and lands the floor under a key that cannot express
+        # it. Nothing above depends on the constraint already being there.
+        apply_size_constraints!(prop, config)
+
         prop
       end
 
@@ -1059,6 +1168,82 @@ module Axn
           # A singleton type (TrueClass/FalseClass) constrains the value via enum; nil joins it when nullable.
           prop[:enum] = nullable ? type_info[:enum] + [nil] : type_info[:enum] if type_info[:enum]
         end
+      end
+
+      # The emptiness axis, as JSON Schema sees it: `minItems`/`minProperties`/`minLength` keyed off the
+      # emitted type. A field rejects empty when it carries an explicit length minimum, or when the default
+      # presence check applies without blank-tolerance — `presence` is `!blank?`, so it forbids the empty value
+      # too. Only `allow_blank` is consulted, never `allow_nil`: nil-tolerance is the other axis and says
+      # nothing about whether an empty value is admissible. Emitting this is what keeps a required
+      # collection's schema from advertising `[]` as acceptable when the runtime rejects it — which is why it
+      # follows the emitted type into a union's `anyOf` branches as well as a single `type:`.
+      # For a String under `presence:` the runtime also rejects whitespace-only values, which
+      # `minLength` cannot express, so the emitted constraint stays a floor rather than an exact mirror.
+      def apply_size_constraints!(prop, config)
+        minimum = declared_size_minimum(config)
+        return unless minimum
+
+        if prop[:anyOf]
+          prop[:anyOf] = apply_member_size_constraints(prop[:anyOf], minimum)
+        elsif (key = size_constraint_key_for(prop[:type]))
+          prop[key] = minimum
+        end
+      end
+
+      # A union emits one branch per member type instead of a single `type:`, and the validators reject empty
+      # whichever branch the value takes — so the floor belongs on every branch that could hold an empty
+      # value. A branch with no empty state (an `integer` member) and the nullability branch carry none,
+      # decided by the same size-bearing test the single-type path uses, applied per branch.
+      def apply_member_size_constraints(members, minimum)
+        members.map do |member|
+          key = size_constraint_key_for(member[:type])
+          key ? member.merge(key => minimum) : member
+        end
+      end
+
+      # The JSON Schema floor key for an emitted type, or nil for a type with no empty state. Reads the
+      # single-type String and the `[T, "null"]` nullable pair alike; `"null"` is never size-bearing.
+      def size_constraint_key_for(type)
+        Array(type).filter_map { |t| SIZE_CONSTRAINT_KEYS[t] }.first
+      end
+
+      # The smallest size this field's validators admit, or nil when they admit an empty value. An explicit
+      # `length:` floor wins over the implicit 1 that the emptiness check and the presence check each carry —
+      # a caller needs the tightest of them, and all three forbid empty. The floor is read by
+      # Validation::Base's shared definition, the same one the
+      # emptiness reconciliation judges a declaration by, so what the runtime enforces and what the schema
+      # advertises cannot drift; a per-call (Symbol/Proc) or infinite floor is unemittable and falls through
+      # to the presence check.
+      #
+      # A blank-tolerant `length:` contributes its floor only when an empty value would be rejected ANYWAY.
+      # Blank-tolerance on one entry says an empty value stands THAT entry aside, not that an empty value gets
+      # through: with nothing else rejecting it the contract admits "empty or at least 3", which no floor
+      # expresses, so emitting 3 would reject a value the contract accepts — but where a presence or emptiness
+      # check rejects every empty value, 3 or more is all the contract admits and the floor is exact. Truthiness
+      # decides the tolerance, not key presence: a nil-tolerance injects an explicit `allow_blank: false`.
+      #
+      # A context-scoped entry contributes no floor either, for the stronger reason that it runs on NO call
+      # (Validation::Base.entry_context_scoped?), so its floor is a constraint the contract never applies.
+      # That is not the gate treatment: a GATED entry may be open on a given call, and is counted as if it
+      # were — static-maximal, which can leave the input schema stricter than a closed-gate runtime but never
+      # looser, and is the policy for every gated constraint here.
+      #
+      # Only `length:` is consulted, never a `size:`: `size` is absent from KNOWN_VALIDATION_KEYS, so a
+      # declaration carrying it raises "Unknown key(s) :size" and can never reach reflection.
+      def declared_size_minimum(config)
+        validations = config.validations
+        # Whether an empty value can get through at all decides BOTH branches below: it is the floor of 1 a
+        # presence/emptiness check imposes on its own, and it is what tells a blank-tolerant `length:` apart
+        # from one whose blank-tolerance is moot.
+        rejects_empty = empty_value_rejected?(validations)
+
+        length = effective_entry_options(validations[:length], shared_validation_options(config))
+        if !entry_context_scoped?(length) && (rejects_empty || !length[:allow_blank])
+          declared = Axn::Validation::Base.declared_length_floor(length)
+          return declared if Axn::Validation::Base.emittable_length_floor?(declared)
+        end
+
+        rejects_empty ? 1 : nil
       end
 
       # Combine of: (bare element baseline) and shape: (typed member contracts) into items:/properties:.
@@ -1190,7 +1375,7 @@ module Axn
       # projection size cap charged 25,000 properties for a gated `type: SomeData` whose members `build_property`
       # drops before it emits anything, because "exact given the plan" says nothing when the plan's input differs.
       #
-      # What survives with EVERY gate closed: entries carrying a nested gate (nested_gated?) drop, ungated
+      # What survives with EVERY gate closed: entries carrying a gate of their own (entry_self_gated?) drop, ungated
       # entries stay (a gated `inclusion:` alongside an ungated `type:` still emits the type), and
       # declaration-level gate keys stay too (inert to this reduction — a wholly gated outbound config is
       # already left untyped by its own earlier return, in both `build_property` and `shape_property_plan`).
@@ -1199,7 +1384,7 @@ module Axn
       def effective_validations(validations, for_output:)
         return validations unless for_output
 
-        effective = validations.reject { |_key, opt| nested_gated?(opt) }
+        effective = validations.reject { |_key, opt| entry_self_gated?(opt) }
         effective.size == validations.size ? validations : effective
       end
 
@@ -1416,27 +1601,10 @@ module Axn
         nil
       end
 
-      # Whether the field's validators, taken together, permit a nil/omitted value. Drives both
-      # input optionality and nullability (adding "null" to the emitted type). A lone validator's
-      # allow_nil: doesn't count if another (presence, type, …) still rejects nil.
-      #
-      # An entry is nil-tolerant if it's a disabled validator (falsy `opt` — `false` or `nil`, both of
-      # which ActiveModel skips), `absence` (nil is always
-      # "absent"), `acceptance` unless explicitly `allow_nil: false` (ActiveModel's acceptance is allow_nil
-      # by default), a Hash allowing nil/blank, an `exclusion` set not containing nil, or an `inclusion`
-      # set that explicitly contains nil. Any other active validator — including a bare `true` (e.g.
-      # `numericality: true`) — rejects nil.
-      def nil_accepted?(config)
-        # Judge only the REAL validators: ActiveModel's shared options (if:/unless:/on:/strict:/
-        # allow_blank:/allow_nil:) ride in the validations hash but aren't validators, so a restored
-        # `strict: true` under a tolerance flag must not read as a nil-rejecting validator and wrongly
-        # mark the field required. The judgment is static-maximal: gated validators are counted as if
-        # their gates were open (a condition can only relax enforcement at runtime, never tighten it).
-        v = Axn::Validation::Base.validator_entries(config.validations)
-        return true if v.empty?
-
-        v.all? { |key, opt| nil_tolerant_validation?(key, opt) }
-      end
+      # Whether the field's validators, taken together, permit a nil/omitted value — the one question
+      # requiredness and nullability turn on, owned by Validation::Base so a field config's own
+      # `optional?` answers it identically.
+      def nil_accepted?(config) = Axn::Validation::Base.nil_accepted?(config.validations)
 
       # Whether the config's declaration carries a declaration-level if:/unless: gate — the signal
       # that its enforcement (NOT its shape) is conditional at runtime. Asked of a config here and of
@@ -1449,21 +1617,14 @@ module Axn
         Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| validations.key?(k) }
       end
 
-      # Whether a single validator ENTRY's options carry a real per-validator (nested) if:/unless:
-      # gate — `opt` is a Hash AND some CONDITIONAL_GATE_KEYS key is present with a non-blank value
-      # (e.g. `presence: { if: -> { ... } }`, `type: { klass: Integer, if: :flag }`). A blank nested
-      # gate (`if: nil`/`false`/`""`/`[]`) is an ActiveModel no-op (its shared condition list is empty),
-      # so it does not count; a Symbol/Proc is never blank. Declaration-LEVEL blank gates are
-      # canonicalized away at declaration (_canonicalize_blank_gates!), but NESTED ones are not, so
-      # blankness is measured here — the same `value.blank?` rule AM applies.
-      def nested_gated?(opt)
-        return false unless opt.is_a?(Hash)
-
-        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| opt.key?(k) && !opt[k].blank? }
-      end
+      # Whether a single validator ENTRY carries a real per-validator (nested) if:/unless: gate — one that can
+      # skip that entry alone (e.g. `presence: { if: -> { ... } }`, `type: { klass: Integer, if: :flag }`).
+      # Owned by Validation::Base so the emptiness axis's deferral test and this reasoning judge one entry the
+      # same way.
+      def entry_self_gated?(opt) = Axn::Validation::Base.entry_self_gated?(opt)
 
       # Whether a single validator ENTRY's options MENTION a per-validator gate key at all — blank or
-      # not (contrast nested_gated?, which requires a NON-blank value). A blank nested gate is not inert
+      # not (contrast entry_self_gated?, which requires a NON-blank value). A blank nested gate is not inert
       # for the declaration-level requiredness clause: per AM's measured per-key merge
       # (fields.rb#validator_gate_open?), a blank nested same-key value OVERRIDES and drops the shared
       # (declaration) gate for that key before AM ignores it — un-gating the entry. So an entry that
@@ -1476,23 +1637,10 @@ module Axn
 
       # Which gate keys EFFECTIVELY gate a single validator entry, given the declaration-level gates
       # (`decl_gates` = the sliced :if/:unless off the whole declaration, already blank-canonicalized).
-      # Models AM's measured per-key precedence (fields.rb#validator_gate_open?: activemodel 7.2.2.2)
-      # STRUCTURALLY — which keys are present/blank — never by evaluating a condition (reflection is
-      # side-effect-free). Per key (:if/:unless): if the ENTRY carries the key, it counts iff its value
-      # is non-blank (a blank nested value drops the shared gate for that key and is then ignored, so the
-      # entry is UN-gated on that key); otherwise the declaration-level key counts if present. Blankness
-      # is the same measured predicate AM applies (`value.blank?` — a Proc/Symbol is never blank;
-      # nil/false/""/[] are). An entry is EFFECTIVELY GATED iff any returned key survives.
-      def entry_effective_gate_keys(entry_opts, decl_gates)
-        nested = entry_opts.is_a?(Hash) ? entry_opts : {}
-        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.select do |key|
-          if nested.key?(key)
-            !nested[key].blank?
-          else
-            decl_gates.key?(key)
-          end
-        end
-      end
+      # Owned by Validation::Base so the declaration-time nil-skip push-down judges runtime skippability
+      # identically; structural (never evaluates a condition), which is what keeps reflection
+      # side-effect-free.
+      def entry_effective_gate_keys(entry_opts, decl_gates) = Axn::Validation::Base.entry_effective_gate_keys(entry_opts, decl_gates)
 
       # Whether a config's requiredness can be RELAXED at runtime by a conditional GATE — the signal
       # that a required-looking route can't oblige an omitted/nil ancestor to be present, because a
@@ -1525,47 +1673,32 @@ module Axn
         # must not be mistaken for a nil-rejecting one (see nil_accepted?/validator_entries).
         entries = Axn::Validation::Base.validator_entries(config.validations)
 
-        some_gate = decl_gates.any? || entries.any? { |_key, opt| nested_gated?(opt) }
+        some_gate = decl_gates.any? || entries.any? { |_key, opt| entry_self_gated?(opt) }
         return false unless some_gate
 
+        shared = shared_validation_options(config)
         entries.all? do |key, opt|
-          nil_tolerant_validation?(key, opt) || entry_effective_gate_keys(opt, decl_gates).any?
+          nil_tolerant_validation?(key, opt, shared) || entry_effective_gate_keys(opt, decl_gates).any?
         end
       end
 
-      def nil_tolerant_validation?(key, opt)
-        return true unless opt # a disabled validator (falsy `opt` — `false`/`nil`); ActiveModel skips it
-        return true if opt.is_a?(Hash) && (opt[:allow_nil] || opt[:allow_blank])
-        return true if key == :absence
-        return true if key == :acceptance && !(opt.is_a?(Hash) && opt[:allow_nil] == false)
-        return true if key == :exclusion && set_includes_nil?(opt) == false
-        return true if key == :inclusion && set_includes_nil?(opt) == true
-
-        false
+      # The declaration-wide options every entry of a config rides alongside — the tier the per-entry
+      # judgments resolve against.
+      def shared_validation_options(config)
+        config.validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
       end
 
-      # Tri-state: nil = can't tell; true/false = nil's membership in the set. Only inspected for in-memory
-      # literal collections: reflection must stay side-effect-free, so a dynamic collection (e.g. an
-      # ActiveRecord::Relation, whose `include?` would query the database) is treated as unknown (nil).
-      # Detection is identity-based (`equal?(nil)`), never `include?`/`==`: an element with a custom `==`
-      # could itself run user code. A Range's bounds are Comparable, so nil is never a member.
-      # rubocop:disable Style/ReturnNilInPredicateMethodDefinition
-      def set_includes_nil?(opt)
-        # The set is the collection under in:/within: (hash long form) or the bare collection itself
-        # (shorthand — inclusion: %w[a b], exclusion: [nil, "x"]); the two are equivalent at runtime, so
-        # nil-membership is judged the same for both (PRO-2944).
-        collection = opt.is_a?(Hash) ? (opt[:in] || opt[:within]) : opt
-        return false if collection.is_a?(Range)
-        return nil unless collection.instance_of?(Array) || (defined?(Set) && collection.instance_of?(Set))
+      def nil_tolerant_validation?(key, opt, declaration_options) = Axn::Validation::Base.nil_tolerant_validation?(key, opt, declaration_options)
+      def set_includes_nil?(opt) = Axn::Validation::Base.set_includes_nil?(opt)
+      def entry_context_scoped?(opt) = Axn::Validation::Base.entry_context_scoped?(opt)
+      def validator_entry_options(entry) = Axn::Validation::Base.validator_entry_options(entry)
 
-        collection.any? { |element| element.equal?(nil) }
-      rescue StandardError
-        nil
-      end
-      # rubocop:enable Style/ReturnNilInPredicateMethodDefinition
+      # An entry's options as `validates` will hand them over — the declaration-wide shared options with the
+      # entry's own merged on top, so a shared tolerance or context is judged here exactly as at runtime.
+      def effective_entry_options(entry, declaration_options) = Axn::Validation::Base.effective_entry_options(entry, declaration_options)
 
       def nil_allowed?(config)
-        nil_accepted?(config)
+        nil_tolerance_rescues_absence?(config)
       end
 
       # Whether the TYPE validator itself tolerates a blank value (`type: :uuid, allow_blank: true`
@@ -1573,8 +1706,7 @@ module Axn
       # matters for dropping `format: "uuid"` — a blank-tolerant `length:`/other validator doesn't make
       # `TypeValidator` accept `""`, so the format must stay.
       def type_allows_blank?(config)
-        type = config.validations[:type]
-        type.is_a?(Hash) && type[:allow_blank] == true
+        effective_entry_options(config.validations[:type], shared_validation_options(config))[:allow_blank] == true
       end
 
       # Strip `format: "uuid"` from anyOf members: a blank-tolerant uuid accepts "" at runtime, which a

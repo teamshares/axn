@@ -856,7 +856,7 @@ RSpec.describe Axn::Reflection::Schema do
     strict_members = described_class.build_input(strict.internal_field_configs)[:properties][:id][:anyOf]
     expect(blank_members).to include({ type: "string" })
     expect(blank_members).not_to include(hash_including(format: "uuid"))
-    expect(strict_members).to include({ type: "string", format: "uuid" })
+    expect(strict_members).to include({ type: "string", format: "uuid", minLength: 1 })
   end
 
   it "leaves an unknown exposed class untyped in output_schema (its serialized shape isn't statically knowable)" do
@@ -1597,7 +1597,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:properties][:val][:anyOf]).to eq([{ type: "string" }, { type: "integer" }])
+      expect(schema[:properties][:val][:anyOf]).to eq([{ type: "string", minLength: 1 }, { type: "integer" }])
       expect(schema[:properties][:val]).not_to have_key(:type)
     end
 
@@ -2016,7 +2016,7 @@ RSpec.describe Axn::Reflection::Schema do
       end
       prop = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:payload]
 
-      expect(prop[:anyOf]).to match_array([{ type: "object" }, { type: "array" }])
+      expect(prop[:anyOf]).to match_array([{ type: "object", minProperties: 1 }, { type: "array", minItems: 1 }])
       expect(prop).not_to have_key(:type)       # not overwritten to "object"
       expect(prop).not_to have_key(:properties) # subfield shape omitted (can't apply to the array branch)
     end
@@ -4304,9 +4304,11 @@ RSpec.describe Axn::Reflection::Schema do
         properties: {
           payload: {
             type: "object",
+            minProperties: 1,
             properties: {
               meta: {
                 type: "object",
+                minProperties: 1,
                 properties: { id: { type: "integer" } },
                 required: ["id"],
               },
@@ -4344,9 +4346,10 @@ RSpec.describe Axn::Reflection::Schema do
         properties: {
           items: {
             type: "array",
+            minItems: 1,
             items: {
               type: "object",
-              properties: { status: { type: "string" } },
+              properties: { status: { type: "string", minLength: 1 } },
               required: ["status"],
             },
           },
@@ -4365,7 +4368,7 @@ RSpec.describe Axn::Reflection::Schema do
       expect(klass.input_schema).to eq(
         type: "object",
         properties: {
-          payload: { anyOf: [{ type: "object" }, { type: "array" }] },
+          payload: { anyOf: [{ type: "object", minProperties: 1 }, { type: "array", minItems: 1 }] },
         },
         required: ["payload"],
       )
@@ -4383,6 +4386,7 @@ RSpec.describe Axn::Reflection::Schema do
         properties: {
           payload: {
             type: "object",
+            minProperties: 1,
             properties: {
               address: {
                 type: %w[object null],
@@ -4413,10 +4417,12 @@ RSpec.describe Axn::Reflection::Schema do
         properties: {
           payload: {
             type: "object",
+            minProperties: 1,
             properties: {
-              status: { type: "string" },
+              status: { type: "string", minLength: 1 },
               meta: {
                 type: "object",
+                minProperties: 1,
                 properties: { count: { type: "integer" } },
                 required: ["count"],
               },
@@ -4448,7 +4454,7 @@ RSpec.describe Axn::Reflection::Schema do
           payload: {
             type: "object",
             properties: {
-              status: { type: "string" },
+              status: { type: "string", minLength: 1 },
               note: { type: %w[string null], default: "x" },
             },
             required: ["status"],
@@ -4477,7 +4483,7 @@ RSpec.describe Axn::Reflection::Schema do
           payload: {
             type: "object",
             properties: {
-              status: { type: "string" },
+              status: { type: "string", minLength: 1 },
               address: {
                 type: %w[object null],
                 properties: {

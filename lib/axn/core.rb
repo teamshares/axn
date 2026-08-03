@@ -26,6 +26,7 @@ require "axn/core/validation/validators/type_validator"
 require "axn/core/validation/validators/validate_validator"
 require "axn/core/validation/validators/of_validator"
 require "axn/core/validation/validators/shape_validator"
+require "axn/core/validation/validators/non_emptiness_validator"
 
 require "axn/core/field_resolvers"
 require "axn/core/ambient_context"

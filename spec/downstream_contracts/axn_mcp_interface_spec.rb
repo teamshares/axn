@@ -377,8 +377,10 @@ RSpec.describe "Axn-MCP interface contract" do
 
   describe "config#optional? (instance method on FieldConfig AND ShapeConfig members)" do
     # PRO-2883 moved optionality onto the config objects themselves; the old
-    # Axn::Internal::FieldConfig.optional?(config) module function is gone. axn-mcp derives
-    # `required` by calling `.optional?` directly on field configs and nested shape members alike.
+    # Axn::Internal::FieldConfig.optional?(config) module function is gone. axn-mcp no longer derives
+    # `required` itself from a per-config walk — it consumes the `required` array core's own
+    # `.input_schema`/`.output_schema` already compute. `.optional?` on a field config or nested shape
+    # member stays part of the interface this spec pins, for the other per-field decisions axn-mcp makes.
     it "is an instance method on both config types" do
       action = Class.new do
         include Axn
@@ -430,10 +432,24 @@ RSpec.describe "Axn-MCP interface contract" do
       expect(config.optional?).to be true
     end
 
-    it "returns true for boolean type (no presence validation)" do
+    it "returns false for a boolean field — no presence check, but the type still rejects nil" do
       action = Class.new do
         include Axn
         expects :flag, type: :boolean
+
+        def call; end
+      end
+
+      config = action.internal_field_configs.find { |c| c.field == :flag }
+      expect(config.optional?).to be false
+      # Agrees with the schema, and with runtime: an omitted `flag` fails the type check.
+      expect(action.input_schema[:required]).to eq(["flag"])
+    end
+
+    it "returns true for an explicitly optional boolean field" do
+      action = Class.new do
+        include Axn
+        expects :flag, type: :boolean, optional: true
 
         def call; end
       end
@@ -657,9 +673,10 @@ RSpec.describe "Axn-MCP interface contract" do
     # A structured field declared with a block exposes its member contracts at
     # config.validations[:shape][:members]. Each member responds to #field, #validations,
     # #metadata, and #description — the same surface as a FieldConfig — so axn-mcp can build
-    # nested properties (items.properties for Array, properties for Hash/class) and derive
-    # `required` via each member's own #optional?. Nesting recurses through the same
-    # member.validations[:shape][:members] path.
+    # nested properties (items.properties for Array, properties for Hash/class). Nested `required`
+    # comes from core's own `.input_schema`/`.output_schema`, not a hand-rolled walk over each
+    # member's own #optional?. Nesting recurses through the same member.validations[:shape][:members]
+    # path.
     #
     # NOTE: schema "enrich" — deriving bare property names from a Data.define's .members for
     # members the block did NOT annotate — is axn-mcp's responsibility, using
@@ -719,7 +736,7 @@ RSpec.describe "Axn-MCP interface contract" do
       expect(meta.validations[:shape][:container]).to eq(Hash)
     end
 
-    it "derives required vs optional per member via member#optional?" do
+    it "exposes required vs optional per member via member#optional?" do
       action = Class.new do
         include Axn
         exposes :rows, type: Array, allow_blank: true do

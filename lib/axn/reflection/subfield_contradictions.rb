@@ -211,7 +211,8 @@ module Axn
                        ""
                      end
         raise ArgumentError,
-              "#{name} is declared nil-tolerant (allow_nil:/optional:/allow_blank:/presence: false), but " \
+              "#{name} is declared nil-tolerant (allow_nil:/optional:/allow_blank:, or an untyped " \
+              "presence: false), but " \
               "#{stranded || 'its subtree'} is required and nothing rescues an omitted #{name} — " \
               "the tolerance can never be exercised (every nil/omitted #{name} fails validation). " \
               "Drop the tolerance on #{name}, or mark #{stranded || 'the subtree'} optional: or give it a " \
