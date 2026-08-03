@@ -51,6 +51,10 @@ module Axn
           "`ActiveSupport::IsolatedExecutionState.isolation_level = :fiber` to isolate it correctly.",
         )
       end
+
+      # Reached only from `tracking` above. `_current_axn_stack` stays public: the executor, the call
+      # logger and the exception-context builder all read it as `NestingTracking._current_axn_stack`.
+      private_class_method :_warn_if_fiber_isolation_mismatch
     end
   end
 end

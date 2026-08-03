@@ -36,6 +36,10 @@ module Axn
         node.children.freeze
       end
 
+      # Both are reached only from `build` above — freezing a tree that is already published would be a
+      # bug, not an entry point.
+      private_class_method :_deep_freeze!, :_freeze_node!
+
       # Convenience delegators for the tree's members.
       def roots = tree.roots
       def dropped = tree.dropped

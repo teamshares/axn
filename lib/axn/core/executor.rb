@@ -669,7 +669,8 @@ module Axn
         end
         mismatches.each { |msg| errors.add(:base, msg) }
         failures.filter_map(&:stranded_at).uniq.each do |strand|
-          errors.add(:base, "'#{strand}' is nil, so nested expectations beneath it cannot be satisfied")
+          errors.add(:base, "'#{Axn::Reflection::PropertyNames.renderable_label(strand)}' is nil, so nested " \
+                            "expectations beneath it cannot be satisfied")
         end
         errors
       end

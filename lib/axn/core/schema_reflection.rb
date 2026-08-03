@@ -27,12 +27,15 @@ module Axn
           base.extend(mod)
         end
       end
+      private_class_method :_extend_reflection
 
       module InputSchemaMethod
+        # The property-name rules run here rather than at declaration: a projection is the only thing a
+        # colliding or unrenderable name can harm, and this is where one is first demanded. Validated once per
+        # class, over the schema being returned rather than a second build of it.
         def input_schema
-          Axn::Reflection::Schema.build_input(internal_field_configs, subfield_configs, resolved: _resolved_subfields, klass: self).tap do
-            _warn_dropped_deep_subfields
-          end
+          Axn::Reflection::PropertyNames.validated_input(self) { Axn::Reflection::Schema.build_input_for(self) }
+                                        .tap { _warn_dropped_deep_subfields }
         end
 
         private
@@ -47,7 +50,11 @@ module Axn
           return if dropped.empty?
 
           @_axn_deep_subfield_warning_emitted = true
-          paths = dropped.map { |c| "#{c.field} (on: #{c.on})" }.join(", ")
+          # Names are rendered as the JSON property they canonicalize to, never interpolated raw: a declared
+          # name may hold bytes that are not UTF-8 (a valid ISO-8859-1 Symbol), and joining those into this
+          # UTF-8 message raised Encoding::CompatibilityError from the warning itself — so reflecting a schema
+          # blew up over a subfield the warning exists to mention in passing.
+          paths = dropped.map { |c| "#{_schema_name_label(c.field)} (on: #{_schema_name_label(c.on)})" }.join(", ")
           Axn.config.logger.warn(
             "[Axn] #{resolved_axn_name} input_schema omits deep subfield(s) with no JSON representation — " \
             "nested under a model: or non-object parent: #{paths}. They validate at runtime but are absent " \
@@ -55,11 +62,16 @@ module Axn
             "them in the adapter.",
           )
         end
+
+        # The UTF-8 property a declared name renders as, falling back to the escaped `inspect` when its bytes
+        # have no UTF-8 rendering at all. Same rule the declaration errors use, for the same reason.
+        def _schema_name_label(name) = Axn::Reflection::PropertyNames.renderable_label(name)
       end
 
       module OutputSchemaMethod
+        # See input_schema: validated once per class, over the schema being returned.
         def output_schema
-          Axn::Reflection::Schema.build_output(external_field_configs)
+          Axn::Reflection::PropertyNames.validated_output(self) { Axn::Reflection::Schema.build_output(external_field_configs) }
         end
       end
     end

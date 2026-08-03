@@ -369,6 +369,9 @@ module Axn
     def _axn_config_settings
       @_axn_config_settings ||= {}
     end
+    # Read only by `setting` and `config` below. This module is `extend`ed onto a gem's own namespace
+    # module, so a public `_`-prefixed method here lands on that gem's public surface.
+    private :_axn_config_settings
 
     def setting(name, default: nil, one_of: nil, validate: nil, callable: false, overridable: false)
       name = name.to_sym

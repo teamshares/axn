@@ -70,6 +70,10 @@ module Axn
           end
         end
 
+        # Reached only from `mount_method` above. Private so the strategy modules that `include Base`
+        # (and `extend self`) don't publish it as a public singleton method of their own.
+        private
+
         # Check if we should raise an error for method collision
         # Returns true if method exists AND target is not overriding a parent's method (same-class collision)
         def _should_raise_method_collision_error?(target, method_name)

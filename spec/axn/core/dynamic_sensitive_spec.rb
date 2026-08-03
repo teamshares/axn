@@ -259,13 +259,13 @@ RSpec.describe "Dynamic sensitive fields" do
     describe "._resolve_sensitive_fields" do
       it "resolves callable sensitive values against the action instance" do
         instance = action.send(:new, mode: "secret")
-        resolved = action._resolve_sensitive_fields(instance)
+        resolved = action.send(:_resolve_sensitive_fields, instance)
         expect(resolved).to include(:data)
       end
 
       it "returns empty when callable evaluates to false" do
         instance = action.send(:new, mode: "public")
-        resolved = action._resolve_sensitive_fields(instance)
+        resolved = action.send(:_resolve_sensitive_fields, instance)
         expect(resolved).not_to include(:data)
       end
     end
@@ -298,6 +298,168 @@ RSpec.describe "Dynamic sensitive fields" do
       ctx = instance.execution_context
 
       expect(ctx[:outputs][:output]).to eq("sensitive-data")
+    end
+  end
+
+  # What redaction can derive from the DECLARATION is derived once per contract, so a logged call's cost does
+  # not scale with the stored shape graph. Everything here pins the two ways that can go wrong: an answer
+  # outliving the contract it was derived from, and an answer being reused where it depends on the instance.
+  describe "facts reused across calls" do
+    def logged(klass, data, instance = klass.send(:new))
+      klass._context_slice(data:, direction: :inbound, action_instance: instance)
+    end
+
+    # A contract can grow after it has been logged: a reopened class, a subclass, a `Mountable` builder. The
+    # derived answers are keyed on the IDENTITY of the config arrays, which declaration replaces, so a grown
+    # contract misses rather than answering from the old one. `inspection_filter` had exactly this bug before
+    # the memo was keyed that way: a field declared `sensitive:` after the first logged call was logged in the
+    # clear, forever.
+    it "redacts a sensitive field declared after the first logged call" do
+      klass = build_axn { expects :a, optional: true }
+      expect(logged(klass, { a: "1" })).to eq({ a: "1" })
+
+      klass.class_eval { expects :b, sensitive: true, optional: true }
+
+      expect(logged(klass, { a: "1", b: "s3cr3t" })).to eq({ a: "1", b: "[FILTERED]" })
+      expect(klass.sensitive_fields).to eq([:b])
+      expect(klass.inspection_filter.filter({ b: "s3cr3t" })).to eq({ b: "[FILTERED]" })
+    end
+
+    it "redacts a sensitive shape member declared after the first logged call" do
+      klass = build_axn { expects(:p, type: Hash) { field :m, type: String } }
+      expect(logged(klass, { p: { m: "1" } })).to eq({ p: { m: "1" } })
+
+      klass.class_eval { expects(:q, type: Hash) { field :ssn, type: String, sensitive: true } }
+
+      expect(logged(klass, { p: { m: "1" }, q: { ssn: "9", other: "x" } }))
+        .to eq({ p: { m: "1" }, q: { ssn: "[FILTERED]", other: "x" } })
+      # The shaped value may also be a non-Hash the key filter cannot descend into, which is masked wholesale
+      # off the derived shape paths rather than the field-name set.
+      expect(logged(klass, { q: "opaque" })).to eq({ q: "[FILTERED]" })
+    end
+
+    it "starts resolving per instance once a dynamic sensitive: is declared after a static contract" do
+      klass = build_axn { expects :a, optional: true }
+      expect(logged(klass, { a: "1" })).to eq({ a: "1" })
+
+      klass.class_eval do
+        expects :flag, type: :boolean, optional: true
+        expects :secret, sensitive: :flag, optional: true
+      end
+
+      expect(logged(klass, { flag: true, secret: "s" }, klass.send(:new, flag: true))).to eq({ flag: true, secret: "[FILTERED]" })
+      expect(logged(klass, { flag: false, secret: "s" }, klass.send(:new, flag: false))).to eq({ flag: false, secret: "s" })
+    end
+
+    # A subclass that declares nothing of its own READS the superclass's config arrays, so it derives the same
+    # answers — and when the superclass's contract later grows, the subclass's derivation has to fall out of date
+    # along with it. A subclass that declares its own `sensitive:` mints its own arrays and never reaches back
+    # into the parent's answer.
+    it "re-derives for a subclass when the superclass's contract grows" do
+      parent = build_axn { expects :a, optional: true }
+      plain_child = Class.new(parent)
+      expect(logged(plain_child, { a: "1" })).to eq({ a: "1" })
+
+      own_child = Class.new(parent) { expects :b, sensitive: true, optional: true }
+      expect(logged(own_child, { a: "1", b: "s" })).to eq({ a: "1", b: "[FILTERED]" })
+      expect(parent.sensitive_fields).to eq([])
+
+      parent.class_eval { expects :c, sensitive: true, optional: true }
+
+      expect(logged(plain_child, { a: "1", c: "s" })).to eq({ a: "1", c: "[FILTERED]" })
+    end
+
+    # A dynamic `sensitive:` is resolved per instance, in BOTH orders: an answer cached from the first instance
+    # to call would over-redact for the next one, which looks safe and is still a behavior change. Both
+    # mechanisms are exercised, because they are reached differently — a Hash member is redacted by key name,
+    # while a NON-Hash value in a member-bearing position can only be masked off the resolved shape paths.
+    it "resolves a dynamic sensitive: per instance, whichever instance calls first" do
+      klass = build_axn do
+        expects :flag, type: :boolean, optional: true
+        expects :payload, type: Hash, optional: true do
+          field :ssn, type: String, sensitive: :flag
+        end
+      end
+      data = { payload: { ssn: "9", other: "x" } }
+
+      expect(logged(klass, data.merge(flag: false), klass.send(:new, flag: false))).to eq({ flag: false, payload: { ssn: "9", other: "x" } })
+      expect(logged(klass, data.merge(flag: true), klass.send(:new, flag: true))).to eq({ flag: true, payload: { ssn: "[FILTERED]", other: "x" } })
+      expect(logged(klass, data.merge(flag: false), klass.send(:new, flag: false))).to eq({ flag: false, payload: { ssn: "9", other: "x" } })
+
+      expect(logged(klass, { flag: true, payload: "opaque" }, klass.send(:new, flag: true))).to eq({ flag: true, payload: "[FILTERED]" })
+      expect(logged(klass, { flag: false, payload: "opaque" }, klass.send(:new, flag: false))).to eq({ flag: false, payload: "opaque" })
+    end
+
+    # Reusing an answer is gated on ONE question — does resolving need the instance — and that is only a single
+    # question because the value space is closed at declaration. A value outside the grammar would resolve
+    # differently depending on which path asked (the per-instance path truthiness-tests it, the instanceless one
+    # counts only a literal `true`), and it can no longer be declared at all.
+    it "needs an instance exactly when a sensitive: is a Proc or a Symbol" do
+      expect(build_axn { expects :a, sensitive: true, optional: true }._has_dynamic_sensitive_fields?).to be false
+      expect(build_axn { expects :a, sensitive: nil, optional: true }._has_dynamic_sensitive_fields?).to be false
+      expect(build_axn { expects :a, sensitive: :flag, optional: true }._has_dynamic_sensitive_fields?).to be true
+      expect(build_axn { expects :a, sensitive: -> { true }, optional: true }._has_dynamic_sensitive_fields?).to be true
+    end
+  end
+
+  # A `sensitive:` value that is not a resolution rule fails at DECLARATION, because its runtime failure mode is
+  # a leak rather than an error: a truthy non-rule (`sensitive: "yes"`, `sensitive: 1`) left the field out of the
+  # name-based redaction set and logged the secret in the clear, with no signal to the author.
+  describe "the sensitive: grammar" do
+    let(:grammar_error) { /sensitive: must be true, false, a Symbol naming an action method, or a Proc/ }
+    let(:accepted) { [true, false, nil, :flag, -> { true }] }
+
+    it "accepts every value that is a resolution rule, on a field and on a shape member" do
+      accepted.each do |value|
+        expect { build_axn { expects :a, sensitive: value, optional: true } }.not_to raise_error
+        expect { build_axn { exposes :b, sensitive: value, optional: true } }.not_to raise_error
+        expect { build_axn { expects(:p, type: Hash, optional: true) { field :m, sensitive: value } } }.not_to raise_error
+      end
+    end
+
+    # Named by CLASS, never by the offender's own `inspect` — that is caller code running while its error is
+    # built, and one raising outside StandardError would escape class definition entirely.
+    it "rejects a value that is not, naming its class" do
+      expect { build_axn { expects :a, sensitive: "yes", optional: true } }
+        .to raise_error(ArgumentError, /#{grammar_error}.*got a value of class String/m)
+      expect { build_axn { expects :a, sensitive: 1, optional: true } }.to raise_error(ArgumentError, grammar_error)
+      # A callable that is not a Proc would be truthiness-tested, i.e. always sensitive — not the rule it looks like.
+      expect { build_axn { expects :a, sensitive: Object.new.tap { |o| o.define_singleton_method(:call) { true } }, optional: true } }
+        .to raise_error(ArgumentError, grammar_error)
+    end
+
+    it "rejects it at every place sensitive: is accepted" do
+      expect { build_axn { exposes :a, sensitive: "yes" } }.to raise_error(ArgumentError, grammar_error)
+      expect do
+        build_axn do
+          expects :parent, type: Hash, optional: true
+          expects :a, on: :parent, sensitive: "yes", optional: true
+        end
+      end.to raise_error(ArgumentError, grammar_error)
+      expect { build_axn { expects :a, on: :ambient_context, sensitive: "yes", optional: true } }
+        .to raise_error(ArgumentError, grammar_error)
+      expect { build_axn { expects(:p, type: Hash, optional: true) { field :m, sensitive: "yes" } } }
+        .to raise_error(ArgumentError, grammar_error)
+    end
+
+    # A rejected declaration must leave nothing behind — the guard runs inside the config constructor, before
+    # the class-level arrays are replaced.
+    it "leaves the class carrying no config for the rejected field" do
+      klass = build_axn { expects :ok, optional: true }
+      expect { klass.class_eval { expects :bad, sensitive: "yes", optional: true } }.to raise_error(ArgumentError, grammar_error)
+
+      expect(klass.internal_field_configs.map(&:field)).to eq([:ok])
+      expect(klass.send(:new, ok: "1")).not_to respond_to(:bad)
+    end
+
+    # `nil` is accepted as `false` so `sensitive: some_flag` reads naturally when the flag is unset — and it
+    # really does behave as false rather than as "unset, therefore dynamic".
+    it "treats nil as false rather than as a rule needing an instance" do
+      klass = build_axn { expects :secret, sensitive: nil, optional: true }
+
+      expect(klass.sensitive_fields).to eq([])
+      expect(klass._context_slice(data: { secret: "SECRET" }, direction: :inbound, action_instance: klass.send(:new)))
+        .to eq({ secret: "SECRET" })
     end
   end
 end

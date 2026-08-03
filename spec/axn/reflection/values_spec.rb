@@ -158,6 +158,56 @@ RSpec.describe Axn::Reflection::Values do
     end
   end
 
+  # The renderer's own field-name guards, reached with a config list built directly rather than through a
+  # declaration. `expects`/`exposes` reject both of these names when the class is defined (see
+  # spec/axn/core/validations/property_name_collision_spec.rb), and every public route into the renderer
+  # derives its configs from a declared class — so these two branches are module-internal backstops for a
+  # config list assembled by some other route, and the two layers have to agree on what a property name may
+  # be. serialize_exposed is core-internal, so these reach it the way Extensions::Serialization does.
+  describe "field names a config list can carry that no declaration can" do
+    def bare_field_configs(*names)
+      names.map { |name| Axn::Core::Contract::FieldConfig.new(field: name, validations: {}, reader_as: name) }
+    end
+
+    it "holds a field name to the same encodability rule as a nested Hash key" do
+      configs = bare_field_configs("\xFF".b.to_sym)
+
+      expect { described_class.send(:serialize_exposed, Object.new, configs) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /no UTF-8 rendering|UTF-8/)
+    end
+
+    it "names the offending field without interpolating its bytes, so reporting cannot itself raise" do
+      configs = bare_field_configs("\xFF".b.to_sym)
+
+      # Symbol#inspect escapes the bytes to ASCII; interpolating the raw ones would raise
+      # Encoding::CompatibilityError from building the message rather than reporting the defect.
+      message = begin
+        described_class.send(:serialize_exposed, Object.new, configs)
+      rescue Axn::Reflection::UnserializableValue => e
+        e.message
+      end
+
+      # The message itself is UTF-8 prose (it contains em dashes), so the property is that building it
+      # succeeded and produced valid UTF-8 — not that it is ASCII-only.
+      expect(message).to be_a(String)
+      expect(message.encoding).to eq(Encoding::UTF_8)
+      expect(message).to satisfy(&:valid_encoding?)
+      expect(message).to include('\xFF')
+    end
+
+    # Canonicalizing field names to UTF-8 means two distinct Symbols can converge on one property, which
+    # would silently overwrite — the same collapse the Hash branch raises on, reachable one level up. Only
+    # the first name needs a reader: the collision raises before the second config's value is read.
+    it "raises when two field names render as the same JSON property" do
+      iso = "\xE9".dup.force_encoding(Encoding::ISO_8859_1).to_sym
+      configs = bare_field_configs(iso, :é)
+      exposed = Class.new { define_method(iso) { "FIRST" } }.new
+
+      expect { described_class.send(:serialize_exposed, exposed, configs) }
+        .to raise_error(Axn::Reflection::UnserializableValue, /two exposed fields render as the same JSON property/)
+    end
+  end
+
   # Stringifying a Hash's keys collapses two keys with the same #to_s into ONE JSON property, dropping
   # a value. Unlike an ugly rendering, the caller cannot tell from the output that anything went
   # missing — so this raises regardless of strictness.

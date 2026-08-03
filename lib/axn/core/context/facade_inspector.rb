@@ -111,10 +111,11 @@ module Axn
 
       # Names of sensitive shape members that render inside `field`'s displayed value (nested shapes
       # included), with dynamic `sensitive:` predicates resolved against the action instance — matching
-      # how inputs_for_logging filters. A duck-typed member without #sensitive is treated as not
-      # sensitive (mirrors the ShapeValidator member contract for #method_call).
+      # how inputs_for_logging filters. The walk itself belongs to the contract (see
+      # `Contract#_sensitive_member_names`), which reuses the answer when no `sensitive:` needs an
+      # instance; `inspect` asks once per displayed field, over the whole stored graph.
       def sensitive_member_names(field)
-        shape_bearing_configs_under(field).flat_map { |config| collect_sensitive_member_names(config) }
+        shape_bearing_configs_under(field).flat_map { |config| action.class._sensitive_member_names(config, action) }
       end
 
       # Configs whose shape members would appear inside `field`'s value: the top-level field config
@@ -128,15 +129,6 @@ module Axn
           path && path.wire_path.first == field
         end
         top_level + subfields
-      end
-
-      def collect_sensitive_member_names(config)
-        members = config.validations.dig(:shape, :members) || []
-        members.flat_map do |member|
-          names = collect_sensitive_member_names(member)
-          names << member.field if member.respond_to?(:sensitive) && action.class._resolve_sensitive_value(member.sensitive, action)
-          names
-        end
       end
     end
   end

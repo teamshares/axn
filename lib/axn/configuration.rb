@@ -173,6 +173,11 @@ module Axn
     def _enqueue_all_async_config = @enqueue_all_async_config || _default_async_config
     def _enqueue_all_async_config_block = @enqueue_all_async_config_block || _default_async_config_block
 
+    # Read only by `_apply_async_to_enqueue_all_orchestrator` below. The `_default_async_*` trio above
+    # is public for the opposite reason: `Axn.async`, the Sidekiq adapter and axn-webhooks all read it
+    # off `Axn.config`.
+    private :_enqueue_all_async_adapter, :_enqueue_all_async_config, :_enqueue_all_async_config_block
+
     def set_enqueue_all_async(adapter, **config, &block)
       @enqueue_all_async_adapter = adapter
       @enqueue_all_async_config = config.any? ? config : {}

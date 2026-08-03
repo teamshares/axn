@@ -1011,11 +1011,14 @@ RSpec.describe Axn::Reflection::Schema do
       expect(bare_prop).to eq(long_prop)
     end
 
+    # Frozen because a container that answers with its own code is only storable frozen (see
+    # `Internal::ShapeGraph.detached_option_array`) — which is also the form that reaches reflection as the caller's own
+    # object, so it is the sharp version of this check.
     it "does not run user traversal code for an Array-subclass inclusion set (reflects no enum)" do
       exploding_array = Class.new(Array) do
         def map(*) = raise("reflection must not traverse an Array subclass")
         def each(*) = raise("reflection must not traverse an Array subclass")
-      end.new(%w[a b])
+      end.new(%w[a b]).freeze
       klass = Class.new do
         include Axn
         expects :s, inclusion: exploding_array
@@ -1296,10 +1299,12 @@ RSpec.describe Axn::Reflection::Schema do
       expect(props[:required]).to include("label")
     end
 
-    # A shape member's name isn't symbolized at declaration (`field "bar"` keeps a String field), so its
-    # emitted property must still key by symbol — every other schema property key (top-level config.field,
-    # symbolized wire keys, implicit intermediates) is a Symbol. A string key would leave a duplicate
-    # alongside the symbol key a colliding subfield writes, which collide unpredictably in JSON.
+    # A shape member's name is symbolized at declaration (`field "bar"` stores `:bar`, as a top-level field
+    # name does), and its emitted property keys by symbol to match — every other schema property key
+    # (top-level config.field, symbolized wire keys, implicit intermediates) is a Symbol. A string key would
+    # leave a duplicate alongside the symbol key a colliding subfield writes, which collide unpredictably in
+    # JSON. These examples pin the emitted keys, so they hold either way; the normalization is what makes the
+    # declaration guard and this output agree by construction rather than by parallel conversion.
     context "with a string-named shape member (`field \"bar\"`)" do
       it "reflects a plain string-named member under the symbol key (no string duplicate)" do
         klass = Class.new do
@@ -5178,5 +5183,27 @@ RSpec.describe Axn::Reflection::Schema do
 
     expect { klass.input_schema }.not_to raise_error
     expect(klass.input_schema[:properties][:limit][:default]).to eq(Float::INFINITY)
+  end
+
+  # `build_input` is public, so a config a downstream caller built itself reaches the emitter without passing
+  # the declaration walk — and its member names are then whatever the caller made them. A member's property key
+  # and its `required` entry are ONE name, so they are rendered from one conversion of it: two conversions are
+  # two answers the caller can give, and a name that gave them differently listed a required property this
+  # emitter never emitted (a schema no input can satisfy). Declared members can't reach this — the walk stores
+  # the Symbol it judged — which is exactly why the tolerance needs its own example.
+  it "lists a caller-built member as required under the same name it emitted" do
+    flipping = Class.new(String) do
+      def to_sym
+        @reads = (@reads || 0) + 1
+        @reads == 1 ? :first : :second
+      end
+    end.new("ignored")
+    member = Struct.new(:field, :validations).new(flipping, { presence: true })
+    config = Axn::Core::Contract::FieldConfig.new(field: :payload, reader_as: :payload,
+                                                  validations: { type: { klass: Hash }, shape: { members: [member], container: Hash } })
+
+    schema = described_class.build_input([config])
+
+    expect(schema.dig(:properties, :payload, :required)).to eq(schema.dig(:properties, :payload, :properties).keys.map(&:to_s))
   end
 end

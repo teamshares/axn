@@ -4,6 +4,13 @@ require "date"
 require "time"
 
 require "axn/reflection/subfield_tree"
+# A property name in an emitted schema is the canonicalization's answer, so the builder cannot load without it.
+require "axn/reflection/values"
+
+# The `model:` id convention and the conditional-gate keys are both read on the build path, so the builder
+# cannot load without their owner either.
+require "axn/internal/field_config"
+require "axn/internal/shape_graph"
 
 module Axn
   module Reflection
@@ -57,6 +64,59 @@ module Axn
 
       module_function
 
+      # An attribute a config may or may not carry, read tolerantly: `#description` and `#default`, enumerated at
+      # each call site. A `FieldConfig` answers both and a `ShapeConfig` answers `#description` only (a member is
+      # reader-less, so `default:` is rejected on one), which is what this exists for — one emission path over two
+      # config types, plus the configs a downstream caller builds itself and hands to the public `build_input`.
+      #
+      # `ShapeGraph.read` is the same tolerant read the declaration guards use, so both layers agree about what a
+      # config has.
+      def declared_attribute(config, name) = Axn::Internal::ShapeGraph.read(config, name)
+
+      # A member's NAME, or nil when it has none. Even `#field` is read tolerantly, and skipped rather than
+      # raised on: a DECLARED member always has one (the walk rejects a nameless member and stores a Symbol), so
+      # what this tolerance is for is the configs a caller builds itself and hands to the public `build_input`.
+      def member_name(member)
+        name = Axn::Internal::ShapeGraph.fetch(member, :field)
+        Axn::Internal::ShapeGraph.missing?(name) ? nil : name
+      end
+
+      # The `required` entry for a property keyed by `name`: a String holding the bytes that name is KEYED by.
+      #
+      # Rendered from a String's own bytes rather than by dispatching its `to_s`, for the same reason
+      # `member_properties` renders a member's entry from the one Symbol it keyed the property by: `required` and
+      # `properties` are two readers of one name, and a name that answers them differently lists a required
+      # property this schema never emitted — a schema no input can satisfy. Ruby stores a plain String key as a
+      # frozen copy of its bytes, so a SINGLETON `to_s` on such a name diverted the `required` entry alone, needing
+      # no second declaration to go wrong.
+      #
+      # A Symbol keeps the rendering it always had, which is Ruby's own and cannot be overridden at all (a Symbol
+      # takes no subclass instance and no singleton). So does anything else, because the property-name rules refuse
+      # a name that renders through its own code (`NativeMethods.native_name_rendering?`) before any validated
+      # projection returns — only the public `build_input`/`build_output` reach here with one.
+      #
+      # Every site that writes a `required` entry goes through this, not only the two a caller's own name can reach
+      # (a top-level inbound field and an exposed one). At the others the name has already been interned to a Symbol
+      # by the time it arrives — `SubfieldTree` interns a wire segment, `model_id_key` builds the generated id, and a
+      # conditional-requiredness clause is emitted only for a framework-generated reader — so this is a no-op there.
+      # They route through it anyway so that "what String does a `required` entry hold" has one answer rather than
+      # one per site, which is how the top-level pair came to disagree with `properties` in the first place.
+      def required_key(name)
+        case name
+        when ::String then ::String.new(name)
+        else name.to_s
+        end
+      end
+
+      # The members of a shape that actually name a property, paired with that name.
+      # Captured through the shared seam rather than iterated directly: `Array(...)` preserves a caller's
+      # Array SUBCLASS and then dispatches its `filter_map`, so a list answering that differently from `each`
+      # made reflection disagree with the declaration guard and the runtime validator — which both capture with
+      # `each` — about which members exist. One owned Array, three consumers.
+      def named_members(members)
+        Axn::Internal::ShapeGraph.capture(members).filter_map { |m| (name = member_name(m)) && [m, name] }
+      end
+
       # Subfields nest recursively: a dotted `on:` path, a subfield of a subfield, and a dotted field
       # name all become nested object properties keyed by wire key (SubfieldTree resolves reader
       # aliases and dotted segments once, up front). A STRUCTURAL EXCLUSION remains: a deep subfield
@@ -68,6 +128,13 @@ module Axn
       # `resolved:` accepts a prebuilt ResolvedSubfields artifact (the per-class cache) so callers on
       # a repeated path skip the tree build + annotation derivation; it must have been built from the
       # same configs. Without it, both are computed fresh — the standalone entry point is unchanged.
+      # The inbound projection OF A CLASS. The one place `build_input`'s argument list is assembled from a
+      # class, so the reflected reader and the setup-time validator cannot drift into building two different
+      # schemas from the same declaration.
+      def build_input_for(klass)
+        build_input(klass.internal_field_configs, klass.subfield_configs, resolved: klass._resolved_subfields, klass:)
+      end
+
       def build_input(field_configs, subfield_configs = [], resolved: nil, klass: nil)
         tree = resolved&.tree || SubfieldTree.build(field_configs, Array(subfield_configs))
         ann = resolved&.annotations || derive_annotations(tree.roots)
@@ -92,7 +159,7 @@ module Axn
             properties[config.field] = prop.compact
             unless field_optional?(config, node.children, ann)
               clause = conditional_requiredness_clause(config, field_configs, node, klass)
-              clause ? conditionals << clause : required << config.field.to_s
+              clause ? conditionals << clause : required << required_key(config.field)
             end
           end
         end
@@ -157,6 +224,17 @@ module Axn
       def node_configs_block_nesting?(configs)
         configs.any? { |c| c.validations[:model] || !nestable_as_object?(c) }
       end
+
+      # The config a subfield node's own object property is BUILT from: the first route that is not a `model:`
+      # one (a model route emits `<leaf>_id` in place of the object, so it shapes no object property). Nil at a
+      # pure-model node, which emits no object property at all.
+      #
+      # One owner for three readers, because each of them has to name the SAME config: `apply_children!`, which
+      # emits the property; `annotate_node!`, which decides its nullability; and the projection size cap, which
+      # charges that config's shape and must charge no other — a second route to one wire path is enforced at
+      # runtime but its `shape:`/`of:` is never emitted, so charging it rejected a contract over a schema it
+      # does not have.
+      def property_representative(configs) = configs.reject { |c| c.validations[:model] }.first
 
       def object_type_branches(config)
         type_opt = config.validations[:type]
@@ -223,8 +301,11 @@ module Axn
       # follows a value's own `as_json` before `to_h`, so a Data/Struct that overrides `as_json` may emit
       # a scalar/array/differently-keyed hash — treat it (like any reader-only or custom-`to_h` class) as
       # statically unknowable and leave it untyped on output.
-      def shape_serializes_to_object?(config)
-        type_klass = config.validations.dig(:type, :klass)
+      #
+      # Takes VALIDATIONS rather than a config because its one caller (shape_property_plan) has already
+      # reduced the config to the validations the projection is built from — see effective_validations.
+      def shape_serializes_to_object?(validations)
+        type_klass = validations.dig(:type, :klass)
         return true if type_klass.nil?
 
         Array(type_klass).all? { |k| member_keyed_object_type?(k) }
@@ -303,10 +384,10 @@ module Axn
           nullable = !required
         else
           # required_child? (and apply_nested_subfields!'s nullability line it feeds) always reasons about
-          # the node's non-model representative config — the same one apply_children! selects
-          # (non_model_configs.first) before calling apply_nested_subfields!. A node with no non-model
+          # the node's non-model representative config — the same one apply_children! emits the property from,
+          # read through the one owner of that rule (property_representative). A node with no non-model
           # config (a pure model: route) never nests, so its nullable is unused; false is an inert default.
-          representative = node.configs.reject { |c| c.validations[:model] }.first
+          representative = property_representative(node.configs)
           nullable = representative ? nil_allowed?(representative) && !required_child?(representative, node.children, ann) : false
         end
 
@@ -413,7 +494,7 @@ module Axn
 
       # Whether the parent's shape (`do…end`) block declares a member that isn't schema-optional.
       def required_shape_member?(config)
-        Array(config.validations.dig(:shape, :members)).any? { |m| !optional_for_schema?(m) }
+        named_members(config.validations.dig(:shape, :members)).any? { |m, _name| !optional_for_schema?(m) }
       end
 
       # A field is absent from `required` when a declared signal makes it omittable.
@@ -507,11 +588,11 @@ module Axn
         return nil if gates.key?(:unless) && boolean_coercion_can_flip_truthiness?(ref)
 
         condition = {
-          required: [ref.field.to_s],
+          required: [required_key(ref.field)],
           properties: { ref.field => { not: { enum: [false, nil] } } },
         }
         branch = gates.key?(:if) ? :then : :else
-        { if: condition, branch => { required: [config.field.to_s] } }
+        { if: condition, branch => { required: [required_key(config.field)] } }
       end
 
       # The declared top-level inbound field a Symbol condition reads: an exact reader-name match,
@@ -606,9 +687,9 @@ module Axn
       # side-effect-free, and calling `empty?` on an arbitrary default (e.g. an ActiveRecord::Relation or
       # other lazy collection) could issue a query or run user code. A non-literal default is present.
       def usable_default?(config, subfield:, satisfiability: false)
-        return false unless config.respond_to?(:default)
-
-        value = config.default
+        # `#default` is beyond the documented member contract, so absent and nil are one answer here — both
+        # mean "no default to relax the field with", which is what the original respond_to? guard did.
+        value = declared_attribute(config, :default)
         return false if value.nil?
         # The governing split (PRO-2889): a Proc default is unknowable at declaration. Strict (schema)
         # mode resolves toward required — the safe direction — while satisfiability mode (the
@@ -655,7 +736,7 @@ module Axn
       def usable_id_token_default?(config)
         return false unless usable_default?(config, subfield: true, satisfiability: true)
 
-        value = config.respond_to?(:default) ? config.default : nil
+        value = declared_attribute(config, :default)
         return true if value.is_a?(Proc)
 
         !presence_blank?(value)
@@ -739,6 +820,8 @@ module Axn
 
           model_configs = node.configs.select { |c| c.validations[:model] }
           non_model_configs = node.configs.reject { |c| c.validations[:model] }
+          # The object property is built from ONE of them; see property_representative, which every layer that
+          # has to name that config reads (requiredness annotation, and the size cap's shape charge).
 
           unless model_configs.empty?
             # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
@@ -753,7 +836,7 @@ module Axn
             end
           end
 
-          representative = non_model_configs.first
+          representative = property_representative(node.configs)
           next unless representative
 
           child_prop = build_property(representative, subfield: true)
@@ -765,7 +848,7 @@ module Axn
           null_ok = non_model_configs.all? { |c| nil_allowed?(c) } && !subtree_requires_presence?(node, ann)
           reject_null!(child_prop) unless null_ok
           prop[:properties][key] = child_prop.compact
-          prop[:required] << key.to_s unless node_optional?(node, ann, non_model_configs)
+          prop[:required] << required_key(key) unless node_optional?(node, ann, non_model_configs)
         end
         # A required nested model id can't be null (a null token resolves the model to nil at runtime).
         # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
@@ -795,7 +878,7 @@ module Axn
         members = shape_members_at(parent_configs, key)
         if members.any? { |member| !nestable_as_object?(member) }
           if subtree_requires_presence?(node, ann)
-            prop[:required] << key.to_s
+            prop[:required] << required_key(key)
             reject_null!(prop[:properties][key]) if prop[:properties][key]
           end
           return
@@ -826,7 +909,7 @@ module Axn
         target[:type] = nullable ? %w[object null] : "object"
         target[:required] = nil if target[:required].empty?
         prop[:properties][key] = target.compact
-        prop[:required] << key.to_s if ann[node].required
+        prop[:required] << required_key(key) if ann[node].required
       end
 
       # Every `shape:` member declared at `key` across `parent_configs` (the implicit node collides with
@@ -834,7 +917,7 @@ module Axn
       # descent; both respond to `.validations` and expose nested members via `dig(:shape, :members)`.
       def shape_members_at(parent_configs, key)
         Array(parent_configs).flat_map do |config|
-          Array(config.validations.dig(:shape, :members)).select { |m| m.field.to_sym == key }
+          named_members(config.validations.dig(:shape, :members)).filter_map { |m, name| m if name.to_sym == key }
         end
       end
 
@@ -848,7 +931,7 @@ module Axn
 
         field_configs.each do |config|
           properties[config.field] = build_property(config, for_output: true).compact
-          required << config.field.to_s
+          required << required_key(config.field)
         end
 
         schema = { type: "object", properties: }
@@ -917,7 +1000,9 @@ module Axn
 
       def build_property(config, for_output: false, subfield: false)
         prop = {}
-        prop[:description] = config.description if config.description
+        # `#description` is beyond the documented member contract (see declared_attribute).
+        description = declared_attribute(config, :description)
+        prop[:description] = description if description
 
         # OUTPUT safety runs the other direction from input: the property must admit a SUPERSET of
         # what the serializer can emit. A closed outbound gate skips EVERY validator (not just
@@ -927,29 +1012,26 @@ module Axn
         # untyped rather than asserting a type the serialized value could contradict.
         return prop if for_output && conditionally_gated?(config)
 
-        # OUTPUT-EFFECTIVE validations: a per-validator (nested) gate can skip an INDIVIDUAL check on a
-        # given call (`type: { klass: Integer, if: :flag }` with `flag` falsey lets a nonblank
-        # wrong-typed value through), so its constraint can't be promised outbound. View the config
-        # through the subset of validations that survive with EVERY gate closed — drop each entry that
-        # carries a nested gate (nested_gated?), keeping ungated entries (their contributions stay —
-        # a gated `inclusion:` alongside an ungated `type:` still emits the type) and any declaration-
-        # level gate keys (inert here). Composes with the whole-config early return above (a fully
-        # declaration-gated field is already untyped). INPUT is untouched (static-maximal). Rebuild only
-        # when for_output AND an entry would actually drop, to keep config identity/perf everywhere else.
-        if for_output
-          effective = config.validations.reject { |_key, opt| nested_gated?(opt) }
-          config = config.with(validations: effective) if effective.size != config.validations.size
-        end
+        # OUTPUT-EFFECTIVE validations (see effective_validations, the one derivation of them): everything
+        # below reads the config through that subset, so a per-validator gate drops the same entry here as
+        # in the plan every property-name rule is charged against. Rebuild the config only when an entry
+        # actually drops, judged against the SAME read of `validations` the reduction was given — a
+        # caller-supplied member's reader may mint a fresh Hash per read, so comparing against a second read
+        # would rebuild every config (and a duck-typed member answers no `with` at all).
+        declared = config.validations
+        effective = effective_validations(declared, for_output:)
+        config = config.with(validations: effective) unless effective.equal?(declared)
 
         type_info = json_type_for(config.validations, for_output:)
         nullable = nil_allowed?(config)
         apply_type_info!(prop, type_info, config, nullable:)
 
-        if config.respond_to?(:default) && !config.default.nil? && !config.default.is_a?(Proc)
+        declared_default = declared_attribute(config, :default)
+        if !declared_default.nil? && !declared_default.is_a?(Proc)
           # Only a truthy subfield default is applied at runtime, so a falsey `default: false` subfield
           # must not advertise a default the runtime never applies. Top-level defaults apply by key-presence.
           emit_default = subfield ? config.applied_default? : true
-          prop[:default] = normalize_schema_literal(config.default) if emit_default
+          prop[:default] = normalize_schema_literal(declared_default) if emit_default
         end
 
         if (inclusion = config.validations[:inclusion])
@@ -982,42 +1064,143 @@ module Axn
       # Combine of: (bare element baseline) and shape: (typed member contracts) into items:/properties:.
       # Precedence: shape: enriches/overrides of: baseline.
       def apply_structured_schema!(prop, config, for_output:)
-        of    = config.validations[:of]
-        shape = config.validations[:shape]
-        return unless of || shape
+        return unless config.validations[:of] || config.validations[:shape]
 
-        if Array(prop[:type]).include?("array")
-          items = of ? items_schema_for(of, for_output:) : {}
-          # Overlay the shape's object properties onto items only when the ELEMENTS are objects. A scalar
-          # `of:` (e.g. `of: String` + `field :length`) reads members off the scalar element (String#length)
-          # — the elements stay strings, so forcing `type: object` would reject a valid string array. On
-          # OUTPUT the element must additionally serialize member-keyed (a custom-serialization or missing
-          # `of:` isn't provably an object). Input keeps object items for object-typed / untyped elements.
-          if shape && shape_overlay_applies?(of, for_output:)
+        plan = shape_property_plan(config, for_output:)
+        # The shape the PLAN carries, never a second read of the config: one answer to which members are
+        # emitted here, so a rule charged against the plan and this emission cannot walk different lists.
+        shape = plan.shape
+
+        if plan.in_items?
+          # The plan's own type schema, not a second `items_schema_for` call: one build, and the plan is then
+          # literally what gets emitted rather than a parallel derivation of it.
+          items = plan.type_schema
+          if shape && plan.emitted
             member_props, required = member_properties(shape[:members], for_output:)
-            base_props = items[:properties] || {}
-            items = items.merge(type: "object", properties: base_props.merge(member_props))
+            items = items.merge(type: "object", properties: plan.base_properties.merge(member_props))
             items[:required] = required unless required.empty?
           end
           prop[:items] = items unless items.empty?
         elsif shape
-          # Hash / class field — shape: members are the object's own properties. A shaped object field IS
-          # an object, even when the field's declared type: (e.g. a Data.define subclass) isn't in TYPE_MAP.
-          #
-          # On OUTPUT this holds only when the value serializes to a member-keyed object (its type defines
-          # `to_h`). A reader-only object with no `to_h` serializes to a String (to_s) — so leave that
-          # output field untyped rather than promise an `object` serialize_exposed won't produce. Input is
-          # unaffected: the shape describes the JSON object a client is expected to send.
-          return if for_output && !shape_serializes_to_object?(config)
+          return unless plan.emitted
 
           prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
           prop.delete(:format)
           member_props, required = member_properties(shape[:members], for_output:)
-          type_klass = config.validations.dig(:type, :klass)
-          base_props = type_klass.is_a?(Class) && type_klass < Data ? type_klass.members.to_h { |m| [m, {}] } : {}
-          prop[:properties] = base_props.merge(member_props)
+          prop[:properties] = plan.base_properties.merge(member_props)
           prop[:required] = required unless required.empty?
         end
+      end
+
+      # Whether a config's `shape:` members become object PROPERTIES, at which node, and which property names
+      # its declared TYPE contributes alongside them.
+      #
+      # Single source for the two layers that must agree exactly: `apply_structured_schema!` above, which
+      # emits, and `Core::Contract`'s property-claim collector, which rejects a declaration whose emitted
+      # property names would collapse onto one. The guard has to claim precisely what is emitted — a claim for
+      # a property the schema omits rejects a declaration the author is entitled to write, and a missing claim
+      # lets two names collapse silently. A guard that MIRRORED these rules did both at once, so they live
+      # here, where the emission decision already lived, and are read rather than restated.
+      #
+      # `in_items?` distinguishes the two nodes a shape's members can land at: an ARRAY's element properties
+      # are their own namespace (a non-object parent's subfields are not emitted there, so nothing else can
+      # name a property alongside them), while everything else lands in the field's own `properties`.
+      #
+      # `emitted` false means the shape contributes no properties at all, for one of four reasons:
+      #   - the config is wholly gated on output, so `build_property` leaves it untyped before reaching here;
+      #   - the config is a `model:` route on INPUT, where the client sends `<field>_id` and the record's own
+      #     structure is never emitted — `build_input` (and the nested analog) emit the id property INSTEAD of
+      #     calling `build_property` at all, at top level and at any subfield depth alike;
+      #   - a SCALAR `of:` (`of: String` + `field :length`) reads members off the element, which stays a
+      #     string — so the members are validated but never become properties;
+      #   - on OUTPUT, the value is not provably member-keyed (a custom `as_json`/`to_h` that
+      #     `serialize_value` would follow instead), so the property is left untyped rather than promising an
+      #     object shape the serializer will not produce.
+      #
+      # `type_schema` is what the declared TYPE contributes, as the emitter's own Hash: for an array, exactly
+      # what `items_schema_for` seeded from the `of:` element type; for a non-array, a `Data` field's own
+      # members. Carried whole rather than reduced to one property list, because the emitter does not put all
+      # of it at one node — a multi-class `of:` becomes one `anyOf` BRANCH per element type, each with its own
+      # `properties`. `base_properties` is the part that lands at the node itself, which is all the emitter
+      # merges the shape's members into; a consumer that must account for EVERY name (the projection size cap)
+      # walks the whole schema instead. Reducing this to `base_properties` alone is what let a contract naming
+      # 26,000 properties across 26 branches charge zero.
+      #
+      # `shape` is the shape the plan was DERIVED from — the effective one (see effective_validations), which on
+      # output is not always the declared one. Carried so that "which members does this emit" has a single
+      # answer: `apply_structured_schema!` emits these members, and a rule charged against the plan walks the
+      # same list rather than re-reading the config it came from. A plan whose `emitted` is false still carries
+      # it (nothing about that decision changes which shape was consulted), so every consumer gates on `emitted`.
+      ShapePropertyPlan = Data.define(:emitted, :in_items, :type_schema, :shape) do
+        def in_items? = in_items
+
+        def base_properties = type_schema[:properties] || {}
+      end
+
+      def shape_property_plan(config, for_output:)
+        # THE reason the charge and the emitter cannot start from different configs: the effective derivation
+        # happens HERE, on the way in, so no caller can hand this a config the emitter would not have used.
+        # `build_property` applies the same derivation before it emits, which makes the one here idempotent
+        # (nothing left to drop) rather than a second opinion.
+        validations = effective_validations(config.validations, for_output:)
+        of = validations[:of]
+        shape = validations[:shape]
+        in_items = Array(json_type_for(validations, for_output:)[:type]).include?("array")
+        nothing = ShapePropertyPlan.new(emitted: false, in_items:, type_schema: {}, shape:)
+
+        # The same two gates `apply_structured_schema!` opens with, in the same order. A declaration with
+        # neither `of:` nor `shape:` contributes no object properties AT ALL — not even its type's own members —
+        # so a `Data` used purely as a `type:` names nothing, and a rule keyed on these names must not fire on
+        # it. Likewise a wholly gated outbound config, which `build_property` leaves untyped before reaching
+        # emission.
+        return nothing unless of || shape
+        return nothing if for_output && gated_validations?(validations)
+        # An INPUT model route emits `<field>_id` in place of the field, so `apply_structured_schema!` is never
+        # reached for one — stated here rather than only in the emitter's branch, so a consumer deriving from this
+        # plan (the projection size cap; collision attribution) cannot charge or attribute a property the schema
+        # names nowhere. On OUTPUT the field itself is emitted, so its shape is emitted with it.
+        return nothing if !for_output && validations[:model]
+
+        if in_items
+          # Overlay the shape's object properties onto items only when the ELEMENTS are objects.
+          emitted = shape_overlay_applies?(of, for_output:)
+          # `items_schema_for` seeds an element type's own members whenever there is an `of:`, shape or not.
+          return ShapePropertyPlan.new(emitted:, in_items:, shape:, type_schema: of ? items_schema_for(of, for_output:) : {})
+        end
+
+        # Only the `elsif shape` branch emits object properties for a non-array field: `of:` without a shape on
+        # a non-array type reaches neither branch.
+        return nothing unless shape
+
+        # A shaped object field IS an object, even when its declared type: (e.g. a Data.define subclass) isn't
+        # in TYPE_MAP — on input unconditionally, on output only when the value serializes member-keyed.
+        emitted = !for_output || shape_serializes_to_object?(validations)
+        type_klass = validations.dig(:type, :klass)
+        base = emitted && type_klass.is_a?(Class) && type_klass < Data ? type_klass.members.to_h { |m| [m, {}] } : {}
+        # A non-array type contributes at ONE node (a multi-class `type:` reflects as `anyOf` branches of
+        # scalar types, which name no properties), so its schema is just those properties.
+        ShapePropertyPlan.new(emitted:, in_items:, shape:, type_schema: { properties: base })
+      end
+
+      # THE ONE derivation of the validations a projection is BUILT from, and the reason it is a function rather
+      # than a step inside `build_property`: a per-validator (nested) gate can skip an INDIVIDUAL check on a
+      # given call (`type: { klass: Integer, if: :flag }` with `flag` falsey lets a nonblank wrong-typed value
+      # through), so its constraint can't be promised outbound — and every rule DERIVED from what the projection
+      # emits has to start from the same reduced view, or it describes a schema the emitter never emits. The
+      # projection size cap charged 25,000 properties for a gated `type: SomeData` whose members `build_property`
+      # drops before it emits anything, because "exact given the plan" says nothing when the plan's input differs.
+      #
+      # What survives with EVERY gate closed: entries carrying a nested gate (nested_gated?) drop, ungated
+      # entries stay (a gated `inclusion:` alongside an ungated `type:` still emits the type), and
+      # declaration-level gate keys stay too (inert to this reduction — a wholly gated outbound config is
+      # already left untyped by its own earlier return, in both `build_property` and `shape_property_plan`).
+      # INPUT is untouched and returns the SAME Hash: static-maximal is the safe direction there (a gate can
+      # only relax enforcement at runtime), and identity is what lets `build_property` skip rebuilding a config.
+      def effective_validations(validations, for_output:)
+        return validations unless for_output
+
+        effective = validations.reject { |_key, opt| nested_gated?(opt) }
+        effective.size == validations.size ? validations : effective
       end
 
       # Whether a shape block should overlay object properties onto an array's items. OUTPUT: each element
@@ -1068,17 +1251,23 @@ module Axn
         end
       end
 
-      # A shape member's `field` is a raw declared name (`field "bar"`) that isn't symbolized at
-      # declaration, so key the emitted property by its symbol — every other schema property key is a
-      # Symbol (top-level `config.field`, symbolized wire keys), so this keeps a string-named member
-      # (`field "bar"`) colliding with a dotted/explicit subfield (`bar.baz`) resolving to the one `:bar`
-      # property that every downstream lookup (apply_implicit_node!'s `existing`, explicit-child overwrite)
-      # already keys by symbol — not a String duplicate alongside it. `required` already uses `.to_s`.
+      # A DECLARED member's `field` is already the Symbol the declaration walk judged it under (`ShapeConfig`
+      # normalizes, and the walk canonicalizes a duck-typed member's name once, beside the duplicate check).
+      # It is still symbolized here because `build_input` is public: a config a downstream caller built itself
+      # may carry a raw name, and every other schema property key is a Symbol (top-level `config.field`,
+      # symbolized wire keys) — so this keeps a string-named member colliding with a dotted/explicit subfield
+      # (`bar.baz`) resolving to the one `:bar` property that every downstream lookup (apply_implicit_node!'s
+      # `existing`, explicit-child overwrite) already keys by symbol, not a String duplicate alongside it.
+      #
+      # `required` renders the SAME Symbol rather than converting the name a second time: two conversions of
+      # one caller object are two answers it can give, and a name that gave them differently would list a
+      # required property this method never emitted.
       def member_properties(members, for_output:)
         props = {}
         required = []
-        members.each do |m|
-          props[m.field.to_sym] = build_property(m, for_output:).compact
+        named_members(members).each do |m, name|
+          key = name.to_sym
+          props[key] = build_property(m, for_output:).compact
           # On OUTPUT, a member whose presence obligation can be gated off — either wholesale by a
           # declaration-level gate, or because every nil-rejecting entry is nil-tolerant or covered by a
           # per-validator (nested) gate — can legitimately be skipped or emitted without a value by a
@@ -1086,7 +1275,7 @@ module Axn
           # (superset of conditionally_gated?) subsumes both cases, so requiredness is dropped along with
           # (already-handled) gated constraints. INPUT stays static-maximal (a client is still expected to
           # send the member) — stricter, and safe.
-          required << m.field.to_s unless optional_for_schema?(m) || (for_output && requiredness_conditionally_relaxable?(m))
+          required << key.to_s unless optional_for_schema?(m) || (for_output && requiredness_conditionally_relaxable?(m))
         end
         [props, required]
       end
@@ -1250,9 +1439,14 @@ module Axn
       end
 
       # Whether the config's declaration carries a declaration-level if:/unless: gate — the signal
-      # that its enforcement (NOT its shape) is conditional at runtime.
-      def conditionally_gated?(config)
-        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| config.validations.key?(k) }
+      # that its enforcement (NOT its shape) is conditional at runtime. Asked of a config here and of
+      # already-read validations in `shape_property_plan` (which holds nothing but the reduced Hash); one
+      # predicate, so the two cannot answer differently. The reduction never removes a declaration-level gate
+      # key, so both spellings see the same keys.
+      def conditionally_gated?(config) = gated_validations?(config.validations)
+
+      def gated_validations?(validations)
+        Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| validations.key?(k) }
       end
 
       # Whether a single validator ENTRY's options carry a real per-validator (nested) if:/unless:

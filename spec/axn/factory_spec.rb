@@ -28,6 +28,88 @@ RSpec.shared_examples "can build Axns from callables" do
       expect(axn.call).to be_ok
       expect(axn.call.value).to eq(123)
     end
+
+    # Its presence is asked on two sides of a boundary — whether to DECLARE the exposure at build time, and
+    # whether to WRITE it from the generated `call`. `present?` is an ActiveSupport method on Object, so a
+    # `String` subclass overrides it, and one answering differently across those two reads declared no exposure
+    # and then wrote one: `UnknownExposure` at call time for a contract that was never wrong. Canonicalized once
+    # in `build`, so both sides read the same answer.
+    it "declares and writes the same exposure when the name's own present? disagrees between reads" do
+      name = Class.new(String) do
+        def present?
+          @reads = (@reads || 0) + 1
+          @reads > 1
+        end
+
+        def blank? = !present?
+      end.new("out")
+
+      klass = Axn::Factory.build(-> { 42 }, expose_return_as: name)
+
+      expect(klass.external_field_configs.map(&:field)).to eq([:out])
+      result = klass.call
+      expect(result).to be_ok
+      expect(result.out).to eq(42)
+    end
+
+    # Absent is the whole of what `blank?` meant here — `false` and a whitespace-only String included, in any
+    # encoding — because that is what the decision this replaced answered. Narrowing it to nil/empty turned
+    # `expose_return_as: false` into a NoMethodError from `to_sym` and `"   "` into a declared exposure named
+    # `:"   "`, on input a caller could legitimately pass.
+    it "still declares no exposure when the name is genuinely absent" do
+      [nil, false, "", "   ", "\t\n", " ", (+"  ").force_encoding("ASCII-8BIT"), "  ".encode("UTF-16LE"), :""].each do |absent|
+        klass = Axn::Factory.build(-> { 42 }, expose_return_as: absent)
+
+        expect(klass.external_field_configs.map(&:field)).to be_empty
+        expect(klass.call).to be_ok
+      end
+    end
+
+    # And the complement: a name that is not blank still becomes the exposure it names, including a String
+    # subclass whose own `blank?` claims otherwise — blankness is read off the value's class and bytes.
+    it "declares the exposure when the name's own blank? lies about being absent" do
+      name = Class.new(String) do
+        def blank? = true
+        def present? = false
+      end.new("out")
+
+      klass = Axn::Factory.build(-> { 42 }, expose_return_as: name)
+
+      expect(klass.external_field_configs.map(&:field)).to eq([:out])
+      expect(klass.call.out).to eq(42)
+    end
+
+    # Everything that is neither a name nor absent is a programmer error named as one: the absent set is
+    # nil/false/empty-or-whitespace String/empty Symbol, not "anything that answers `empty?`", so `[]` is a
+    # value that cannot name an exposure rather than a spelling of "no exposure". It used to be diagnosed as
+    # whatever `to_sym` happened to raise — `NoMethodError: undefined method 'to_sym' for an instance of
+    # Array`, naming neither the option nor what was wrong with the value.
+    it "raises ArgumentError naming the option and the offending class for a return-name that is not a name" do
+      { [] => "Array", {} => "Hash", 123 => "Integer", true => "TrueClass", Object.new => "Object" }.each do |not_a_name, klass|
+        expect { Axn::Factory.build(-> { 42 }, expose_return_as: not_a_name) }.to raise_error(
+          ArgumentError,
+          /\Aexpose_return_as: must be a String or Symbol naming an exposure \(got a value of class #{klass}\)/,
+        )
+      end
+    end
+
+    # The type is decided and the class named without asking the value anything — an offender whose `is_a?`
+    # claims String, or whose `inspect`/`to_s` raises, must not route around the guard or replace the verdict
+    # with its own exception (a NotImplementedError is outside StandardError and escapes every rescue above).
+    # And it pins the narrowing: an object that merely ANSWERS `to_sym` used to be accepted and canonicalized,
+    # naming whatever its `to_sym` invented independently of what it renders as.
+    it "reports axn's own ArgumentError rather than the value's exception" do
+      hostile = Class.new do
+        def is_a?(_klass) = true
+        def inspect = raise(NotImplementedError, "inspect should not build the message")
+        def to_s = raise(NotImplementedError, "to_s should not build the message")
+        def to_sym = :invented
+      end.new
+
+      expect { Axn::Factory.build(-> { 42 }, expose_return_as: hostile) }.to raise_error(
+        ArgumentError, /\Aexpose_return_as: must be a String or Symbol naming an exposure/
+      )
+    end
   end
 
   context "setting messages, expects, exposes" do

@@ -431,6 +431,19 @@ module Axn
         [candidates.first].compact
       end
 
+      # The read-path internals of the four public entry points above (`resolve_parent`, `resolve_value`,
+      # `resolve_model_value`, `resolve_model_via_id`). Declared in one place rather than beside each
+      # definition because they interleave with those entry points; every one of them is reached with an
+      # implicit receiver from module scope, so nothing here needs a `send`. Two `_`-prefixed siblings are
+      # deliberately absent and stay public: `Core::Executor` calls `_memoized_raw_extract` and
+      # `_declared_id_token` on this module by name, and `ClassMethods`' `<field>_id` companion reader
+      # calls `_declared_id_token` the same way.
+      private_class_method :_reader_config, :_deepest_reader_name, :_resolve_parent_by_recipe,
+                           :_resolve_in_progress_set, :_transform_in_progress_set, :_raw_extract_memo,
+                           :_raw_reads?, :_reader_memo_ref, :_mark_provisional_reader,
+                           :_drop_provisional_reader_memos, :_apply_read_path_transforms,
+                           :_model_from_raw_parent
+
       module ClassMethods
         # The class's canonical resolved-subfield structure (PRO-2883), built lazily and cached on
         # the class. Cache validity is decided by IDENTITY of the two config arrays: both are
@@ -452,6 +465,14 @@ module Axn
           value
         end
 
+        # Everything below is reached only with an implicit receiver, from here and from the other declaration
+        # modules extended onto the same class (`expects` routes a subfield declaration into
+        # `_expects_subfields`). It is private because an `_`-prefixed name in a module extended onto every
+        # action class otherwise lands there as a PUBLIC singleton method, so the convention and the surface
+        # disagree. `_resolved_subfields` stays public above: reflection, the executor and the facade inspector
+        # all read the resolved tree off the action class from other files.
+        private
+
         def _expects_subfields( # rubocop:disable Metrics/ParameterLists
           *fields,
           on:,
@@ -467,15 +488,23 @@ module Axn
           method_call: false,
           **validations
         )
+          # `on:` arrives canonicalized (a Symbol — see `expects`), so every read of it here and downstream is
+          # Ruby's own and they cannot disagree about which route was declared.
+          #
           # `on:` may be a dotted path (e.g. "address.billing"); the *root* segment must be declared.
           # It's resolved by calling the parent's reader (`resolve_parent` → public_send), so it must
           # name a reader — i.e. the alias when the parent was declared with `as:`/`prefix:`, not the
           # underlying wire key (which has no reader of its own once renamed).
           root = on.to_s.split(".").first.to_sym
           unless root == Axn::Core::AmbientContext::PARENT || (internal_field_configs + subfield_configs).map(&:reader_as).include?(root)
+            # The missing SEGMENT is named through `Symbol#inspect`, which supplies its own colon — so the
+            # template carries none. `inspect` also escapes bytes with no UTF-8 rendering to ASCII and cannot
+            # be overridden (Symbol takes neither a subclass nor a singleton), which is what lets one form
+            # serve every route: `:baz`, `:a` for a dotted `on: "a.b"` (the segment that is actually missing,
+            # not the whole route), `:café`, and `:"bad\xFF"`.
             raise ArgumentError,
-                  "expects called with `on: #{on}`, but no such reader exists " \
-                  "(are you sure you've declared a field — or alias — named :#{root}?)"
+                  "expects called with `on: #{_schema_name_label(on)}`, but no such reader exists " \
+                  "(are you sure you've declared a field — or alias — named #{root.inspect}?)"
           end
 
           # An ambient subfield's value is framework-supplied (the ambient provider /
@@ -499,8 +528,10 @@ module Axn
 
           _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, optional:, preprocess:, sensitive:, default:,
                                            metadata:, reader_names:, user_facing:, method_call:, **validations).tap do |configs|
-            duplicated = _duplicate_fields(subfield_configs, configs)
-            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
+            _reject_duplicate_fields!(subfield_configs, configs)
+            # The resolved half of the same identity rule: two supported spellings of one route (a dotted
+            # `on:` and a subfield reader or its `as:` alias) resolve to one parent while differing as
+            # written, so leaf names that collapse onto one property need the tree to be seen at all.
 
             # Validate reader-name uniqueness up front (no side effects), so this error — like the checks
             # above (the dotted-name model: and model-batch-id rejections in _parse_subfield_configs) —
@@ -527,7 +558,12 @@ module Axn
           end
         end
 
-        private
+        # A route is rendered as the JSON property it canonicalizes to, never interpolated raw: `on:` may hold
+        # bytes with no UTF-8 rendering, and joining those into this UTF-8 message would raise
+        # Encoding::CompatibilityError from the reporting itself — surfacing an encoding failure instead of the
+        # missing-reader defect being reported. (Whether an unrenderable segment is a defect in its own right
+        # depends on whether the schema EMITS it, which the emitted-name walk decides.)
+        def _schema_name_label(name) = Axn::Reflection::PropertyNames.renderable_label(name)
 
         # True when on:'s chain ultimately roots at :ambient_context — directly (`on: :ambient_context`),
         # via a dotted path, or by pointing at another subfield that itself roots at ambient.

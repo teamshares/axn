@@ -392,6 +392,23 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
       end.to raise_error(ArgumentError, /reader name may not be dotted/)
     end
 
+    # The dotted check and the reader definition are two conversions of the same `as:` value, so a name that
+    # answers them differently had the guard clearing one spelling while another was defined. The value is
+    # canonicalized once, before the check, so the name JUDGED is the name generated.
+    it "judges the alias it will actually define, not another rendering of it" do
+      dotted = Class.new(String) do
+        def to_s = "ab"
+        def to_sym = :"a.b"
+      end.new("ab")
+
+      expect do
+        build_axn do
+          expects :foo
+          expects :zip, on: :foo, as: dotted
+        end
+      end.to raise_error(ArgumentError, /reader name may not be dotted/)
+    end
+
     it "rejects a dotted top-level field name (the path belongs in on:, not the field name)" do
       expect do
         build_axn { expects "a.b" }

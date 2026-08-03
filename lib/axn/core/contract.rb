@@ -6,8 +6,12 @@ require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
 require "active_support/core_ext/object/blank"
 
+require "axn/core/contract/redaction"
+require "axn/core/contract/shape_declaration"
 require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
+require "axn/internal/shape_graph"
+require "axn/internal/cycle_guard"
 require "axn/result"
 require "axn/core/context/internal"
 
@@ -49,15 +53,156 @@ module Axn
 
       # The grammar of a `user_facing:` value: `true`/`false`, a String, a Symbol (an action method
       # name), or a callable (Proc) — the full `error`/`fail!`/`fails_on` handler shape. Anything else
-      # is a programmer error, rejected at declaration. Single-sourced here so the `expects`/`exposes`
-      # field-level check AND `ShapeConfig`'s own construction hold members and fields to one grammar —
-      # a member built via the block form OR a raw `shape:` kwarg is validated identically.
+      # is a programmer error, rejected at declaration. Single-sourced here so the `expects`/`exposes` field-level
+      # check, `FieldConfig`'s and `ShapeConfig`'s own construction, the declaration walk that reads every member's
+      # value on its way into the snapshot (`_snapshot_member_attributes!`), and `ShapeValidator`'s read of a
+      # member axn never snapshotted hold members and fields to one grammar — a member built via the block form,
+      # via a raw `shape:` kwarg, or by the caller's own class is validated identically.
+      #
+      # A value outside the grammar is not inert: the executor treats a truthy one as a resolution rule, so it
+      # RECLASSIFIES the violation as user-facing (the contract bug is never reported) and then renders as the
+      # caller's own error message — `user_facing: 123` surfaced the literal `"123"`. That is why the check lives
+      # at every point a value can enter, not only at the DSL.
+      #
+      # The three literal arms are decided by `case`/`when` (`Module#===`, a C-level check) rather than by `is_a?`,
+      # and the offender is named by CLASS rather than by `inspect`, exactly as the `sensitive:` guard beside it —
+      # a declaration guard must not let the value being judged raise INSTEAD of the verdict, and outside
+      # StandardError that exception escapes every rescue above. It also closes a divergence: the executor picks
+      # the String arm with `case`/`when` too (`_resolve_user_facing_override`), so a value whose own `is_a?`
+      # claimed String passed this check and was then rendered as a literal — the failure the guard exists to
+      # prevent.
+      #
+      # The CALLABLE arm cannot be decided that way, and deliberately is not narrowed to `when ::Proc, ::Method`.
+      # What may be declared here is what `Handlers::Invoker` will actually invoke, decided by the invoker's own
+      # `callable?` so there is no second, divergent predicate — and that set is open-ended duck typing
+      # (`to_proc` + `arity`). A `case`/`when` list would reject a custom callable that works today, and asking
+      # the method table instead would ACCEPT one whose `respond_to?` answers false, which the invoker would then
+      # treat as a literal value and render as the caller's error message. So the dispatch stays and is GUARDED
+      # instead: an object that raises while being asked cannot be established as invokable, so it is refused by
+      # axn's own error naming its class (see `_invokable_user_facing?`).
       def self.validate_user_facing!(user_facing)
-        return if [false, true].include?(user_facing) || user_facing.is_a?(String) || user_facing.is_a?(Symbol) ||
-                  Axn::Core::Flow::Handlers::Invoker.callable?(user_facing)
+        case user_facing
+        when true, false, ::String, ::Symbol then return
+        end
+        return if _invokable_user_facing?(user_facing)
 
         raise ArgumentError,
-              "user_facing: must be true, a String, a Symbol, or a Proc (got #{user_facing.inspect})"
+              "user_facing: must be true, a String, a Symbol, or a Proc (got a value of class " \
+              "#{Axn::Reflection::PropertyNames.renderable_class_name(user_facing)})"
+      end
+
+      # Whether the invoker would run this value as a handler — asked of the invoker itself, so the declaration
+      # check and the call-time dispatch can never disagree, with the caller's exception kept from replacing the
+      # verdict.
+      #
+      # `respond_to?` is the caller's to override, and it consults `respond_to_missing?`, which is the caller's
+      # too; either raising would surface as the object's own exception in place of the ArgumentError. Refusing is
+      # the honest fallback: a value that cannot answer whether it is invokable has not been shown to be a
+      # resolution rule, and axn's error names its class safely rather than reporting the object's.
+      #
+      # The rescue is pinned to the same boundary as everything else axn absorbs
+      # (`Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR`), so a signal or another library's control-flow
+      # exception still passes through untouched — and it is written as a `rescue` clause rather than
+      # `Extensions.swallowable?` because `rescue` matches through `Module#===` while that predicate would ask
+      # the exception's own `is_a?`, reintroducing the dispatch one layer down.
+      def self._invokable_user_facing?(value)
+        Axn::Core::Flow::Handlers::Invoker.callable?(value)
+      rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
+        false
+      end
+      private_class_method :_invokable_user_facing?
+
+      # The grammar of a `sensitive:` value: `true`/`false`, a Symbol (an action method name), or a Proc — plus
+      # `nil`, which means `false` (so `sensitive: some_flag` reads naturally when the flag is unset). Anything
+      # else is rejected at declaration, because the runtime failure mode is a LEAK rather than an error: only
+      # those values are resolution rules, so `sensitive: "yes"` or `sensitive: 1` left the field out of the
+      # name-based redaction set entirely and logged the secret in the clear, with no signal to the author.
+      #
+      # Closing the value space is also what makes one predicate enough to decide whether redaction needs an
+      # action instance: over this grammar, "carries no Proc or Symbol" and "resolves to the same answer with
+      # and without an instance" are the same question (see `_has_dynamic_sensitive_fields?`).
+      #
+      # `case`/`when` consults the real class through `Module#===` (a C-level check) and compares the literals
+      # by identity, so nothing a caller-supplied value defines gets to answer whether it is a valid rule —
+      # and the offender is named by CLASS rather than by `inspect`, which would be running its code while its
+      # own error is being built. A Proc is the callable form the resolver actually implements
+      # (`instance_exec(&sensitive)`); a non-Proc callable would be truthiness-tested, i.e. always sensitive.
+      #
+      # Enforced in `FieldConfig`'s constructor, which every field, subfield and ambient subfield is built by, and
+      # in the DECLARATION WALK for every shape member, whatever its class — the walk reads the value once, on its
+      # way into the snapshot, so the check and the stored value are the same read
+      # (`_snapshot_member_attributes!`). `ShapeConfig`'s constructor checks it too, for the block form.
+      def self.validate_sensitive!(sensitive)
+        case sensitive
+        when true, false, nil, ::Symbol, ::Proc then return
+        end
+
+        raise ArgumentError,
+              "sensitive: must be true, false, a Symbol naming an action method, or a Proc (got a value of " \
+              "class #{Axn::Reflection::PropertyNames.renderable_class_name(sensitive)}) — any other value is not a redaction rule, and " \
+              "a truthy one would silently leave the value logged in the clear rather than raise. Use " \
+              "`sensitive: true` to always redact, or a Symbol/Proc predicate to decide per call."
+      end
+
+      # A shape member's name has to serve as TWO things: the JSON property it renders as (via `to_s`, which
+      # the declaration guard canonicalizes) and the schema property key (via `to_sym`, which
+      # Reflection::Schema#member_properties emits). A String and a Symbol are the only types for which those
+      # conversions are each other's inverse, so they are the only names that mean one property. Any other
+      # object defines the two independently, and one whose `to_s` and `to_sym` disagree makes the guard and
+      # the schema compare different property names for the same member: the guard sees no collision while
+      # the schema keys one property for two members and silently discards the first.
+      #
+      # Rejected rather than reconciled, because there is nothing to reconcile — an object whose two
+      # renderings disagree has no single property name to be. Named by class rather than by `inspect`, which
+      # is the offender's own code running while its error is built.
+      #
+      # Enforced in the DECLARATION WALK, unconditionally, for every member the class will store — the one point a
+      # member of any class passes through, and the point before the name is converted. Every STORED member is a
+      # `ShapeConfig`, whose constructor holds the same rule and normalizes a String to its Symbol, so a stored
+      # name is always the Symbol the schema keys by; that conversion is what keeps parallel `to_s`/`to_sym`
+      # readings of an unnormalized name from being two questions that can disagree.
+      def self.validate_shape_member_name!(name)
+        case name
+        when ::String, ::Symbol then return
+        end
+
+        raise ArgumentError,
+              "a shape member name must be a String or a Symbol (got a name of class " \
+              "#{Axn::Reflection::PropertyNames.renderable_class_name(name)}) — a member name is both the JSON " \
+              "property it renders as " \
+              "and the schema property key it is emitted under, and any other object converts to those two " \
+              "independently. Declare the member under a String or Symbol name."
+      end
+
+      # An option whose value NAMES something (`Axn::Factory.build`'s `expose_return_as:`, a subfield's `on:`)
+      # is canonicalized to a Symbol the moment it is read, so the only values it can carry are the two that
+      # have a Symbol as their canonical spelling: a String and a Symbol. Anything else used to be left to the
+      # caller's own `to_sym`, and was therefore diagnosed as whatever that happened to raise —
+      # `NoMethodError: undefined method 'to_sym' for an instance of Array`, which names neither the option nor
+      # what was wrong with the value — the same non-diagnosis as a mistyped option key surfacing at call time
+      # as `Unknown validator: 'TpyeValidator'`, and rejected for the same reason.
+      #
+      # Worse, an exotic object that merely ANSWERS `to_sym` was not diagnosed at all: it silently
+      # named whatever its `to_sym` invented, independently of what the object renders as — the
+      # two-independent-conversions defect `validate_shape_member_name!` rejects for a member name.
+      #
+      # Runs AFTER the absent check at each call site, so every spelling of "not supplied"
+      # (`nil`, `false`, an empty or whitespace-only String, the empty Symbol) still means the option was
+      # omitted rather than hitting a type error — see `Internal::NativeMethods.absent_name?`.
+      #
+      # `case`/`when` decides the type through `Module#===` (a C-level check) rather than `is_a?`, which a
+      # value can override to route around a guard, and the offender is named by CLASS through the renderer
+      # rather than by its own `inspect`, exactly as the `sensitive:`/`user_facing:` guards above — a
+      # declaration guard must not let the value it is judging raise INSTEAD of the verdict.
+      def self.validate_name_option!(value, option:, names:, fix:)
+        case value
+        when ::String, ::Symbol then return
+        end
+
+        raise ArgumentError,
+              "#{option} must be a String or Symbol naming #{names} (got a value of class " \
+              "#{Axn::Reflection::PropertyNames.renderable_class_name(value)}) — any other object has no single " \
+              "name to canonicalize to. #{fix}"
       end
 
       # The one config type for every declared inbound/outbound field, top-level or subfield — a
@@ -72,6 +217,14 @@ module Axn
       FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing, :on, :method_call) do
         def initialize(field:, validations:, reader_as:, default: nil, preprocess: nil, sensitive: false, metadata: {}, user_facing: false, on: nil,
                        method_call: false)
+          # THE choke point for a declared field's `sensitive:` and `user_facing:`, whichever DSL built it
+          # (`expects`, `exposes`, an `on:` subfield, an ambient subfield, `Axn::Factory`): every stored
+          # FieldConfig is built here, from kwargs, and nothing hands axn one it made itself. That is what makes
+          # it the right place for BOTH — a config ASSIGNED onto a class (`internal_field_configs=`) never passes
+          # the DSL, so a check that only lives there leaves the value unheld while the executor still resolves
+          # it. See Contract.validate_sensitive! / .validate_user_facing!.
+          Contract.validate_sensitive!(sensitive)
+          Contract.validate_user_facing!(user_facing)
           super
         end
 
@@ -103,15 +256,34 @@ module Axn
       # reading declared data (Hash keys, Struct/OpenStruct/Data members). It is threaded to the
       # member's validation read as `permit_method_call:`, the shape-block analog of a subfield's
       # `method_call:` (PRO-2907).
+      #
+      # `field` is always a Symbol on a constructed ShapeConfig: `field "bar"` and `field :bar` are one
+      # member name, and the schema keys a member's property by `field.to_sym`, so storing the Symbol makes
+      # the stored value the one every consumer reads. It is what keeps the declaration guard (which
+      # canonicalizes the name's rendering) and the reflected schema in step by construction — parallel
+      # conversions of an unnormalized name are two questions that can disagree. Same rule as a top-level
+      # field, whose name `expects`/`exposes` symbolize before anything else looks at it.
       ShapeConfig = Data.define(:field, :validations, :metadata, :method_call, :sensitive, :user_facing) do
         def initialize(field:, validations:, metadata: {}, method_call: false, sensitive: false, user_facing: false)
-          # Validate at construction so a member's `user_facing:` grammar holds however the ShapeConfig
-          # is built — the block form (via `_build_shape_member`) AND a raw `shape:` kwarg that supplies
-          # pre-built ShapeConfigs, which never route through the block path. A malformed value
-          # (`user_facing: 123`) would otherwise reach the runtime settlement path as a truthy opt-in
-          # and surface as a literal message (`"123"`) instead of failing here.
+          # Validate at construction so a member's grammar holds however the ShapeConfig is built — the block
+          # form (via `_build_shape_member`), a raw `shape:` kwarg supplying pre-built ShapeConfigs, and the
+          # declaration walk's own snapshot of a member of any other class. The walk still reads and checks each
+          # value itself, ahead of this: that keeps the error in ITS order (a member carrying both a bad
+          # `sensitive:` and an untraversable nested shape is reported as the value defect), and the read it makes
+          # is the one it stores. Here the check is the first thing the block form meets.
+          Contract.validate_shape_member_name!(field)
           Contract.validate_user_facing!(user_facing)
-          super
+          Contract.validate_sensitive!(sensitive)
+          # `to_sym` is dispatched, so a String SUBCLASS could return something other than its own spelling —
+          # but converting once is exactly what makes that harmless: every consumer then reads the one
+          # stored Symbol, so a surprising conversion picks a different property name rather than splitting
+          # the guard from the schema. That is why this must be the ONLY conversion of the name on every route
+          # here: the declaration walk canonicalizes a duck-typed member's name itself, beside the duplicate
+          # check that judges it, and hands the Symbol down — so this is a no-op for a member the walk built,
+          # and the whole normalization for one built directly (the `field "bar"` block form, a pre-built
+          # ShapeConfig in a raw `shape:`, a config assigned via `internal_field_configs=`), which is why it
+          # stays.
+          super(field: field.to_sym, validations:, metadata:, method_call:, sensitive:, user_facing:)
         end
 
         include FieldOptionality
@@ -133,6 +305,14 @@ module Axn
       end
 
       module ClassMethods
+        # The long-tail declaration/redaction machinery, extracted so this file stays the
+        # `expects`/`exposes` DSL a contributor reads. Included into ClassMethods rather than extended
+        # separately onto the action class, so ClassMethods remains the single thing `Contract.included`
+        # extends and every method is reached with the same implicit receiver, at the same visibility,
+        # and in the same lookup position as when it lived in this file.
+        include ShapeDeclaration
+        include Redaction
+
         # rubocop:disable Metrics/ParameterLists
         def expects(
           *fields,
@@ -156,6 +336,37 @@ module Axn
           # symbolizes harmlessly (it's only ever compared/split via `.to_s`). See PRO-2790.
           fields = fields.map(&:to_sym)
 
+          # A subfield's ROUTE is canonicalized on the same terms, and here — before the first guard reads it.
+          # A route is judged as written (its root must name a declared reader; `_duplicate_fields` keys a config
+          # by it) and then split again by every consumer: `SubfieldTree`, `resolve_parent`'s recipe, the ambient
+          # checks, the executor's parent memo. So a caller value whose rendering answered differently on
+          # successive reads had one layer judging one route while the tree built another — two subfields
+          # silently landing on ONE node, merged as if they were two routes to one wire slot, where the same
+          # declaration written honestly is a duplicate. A Symbol's `to_s` is Ruby's own, so afterwards every
+          # read is the same answer, and no message renders a route by running the route's own code. Dotted
+          # paths symbolize harmlessly, exactly as a dotted `on:` always did: they are only ever split via `to_s`.
+          #
+          # Absent stays absent — `nil`, `false`, an empty or whitespace-only String and the empty Symbol all
+          # mean "no route", which is the whole of what the `present?` this replaced answered — and that verdict
+          # is reached WITHOUT running the route's own code, because `present?`/`blank?` are ActiveSupport
+          # methods on Object that a String subclass overrides: one answering "blank" here and "present" to a
+          # later reader skipped this line entirely and was stored raw, reinstating the split this
+          # canonicalization exists to close. Absent canonicalizes to `nil` rather than being left as written,
+          # so that every reader below is asking nil-or-Symbol — otherwise the SAME split reopens one line
+          # down, with this deciding "absent" and a `present?` on the caller's own value deciding to route.
+          #
+          # A supplied route that is not a name at all is rejected here rather than left to `to_sym` (see
+          # Contract.validate_name_option!): the option and the offending class are what the author needs, and
+          # `NoMethodError` named neither.
+          on = if Internal::NativeMethods.absent_name?(on)
+                 nil
+               else
+                 Contract.validate_name_option!(on, option: "on:", names: "a parent reader",
+                                                    fix: "Pass the parent's name (dotted for a nested path), or omit `on:` " \
+                                                         "to declare a top-level field.")
+                 on.to_sym
+               end
+
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
           end
@@ -172,7 +383,7 @@ module Axn
           # method-dispatches — so `method_call: true` without `on:` could never take effect; reject
           # it rather than accept a silently-inert option (matching the ambient default:/coerce:
           # rejections). `method_call: false` is the default, so it's a harmless no-op anywhere.
-          if method_call && on.blank?
+          if method_call && on.nil?
             raise ArgumentError,
                   "`method_call: true` is only meaningful on a subfield (declared with `on:`) — a top-level field " \
                   "reads its wire key and never invokes a method. Add `on:` to name the parent, or drop `method_call:`."
@@ -183,16 +394,21 @@ module Axn
 
           validations, metadata = _partition_field_options(fields, **)
           validations[:shape] = _build_shape(fields, validations:, &block) if block
+          _snapshot_declared_shape!(validations, fields)
 
-          if on.present?
+          # `on` is nil-or-Symbol by construction here (canonicalized above), so routing asks the canonical
+          # value rather than re-deciding presence on whatever the caller passed.
+          if on
             return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                                reader_names:, user_facing:, method_call:, **validations)
           end
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, optional:, default:, preprocess:, sensitive:, metadata:,
                                         reader_names:, user_facing:, **validations).tap do |configs|
-            duplicated = _duplicate_fields(internal_field_configs, configs)
-            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
+            _reject_duplicate_fields!(internal_field_configs, configs)
+            # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
+            # a same-named subfield reader), so the resolved check runs here too rather than only where
+            # subfields are declared.
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
@@ -217,6 +433,11 @@ module Axn
           # Symbolize the wire key (see `expects`) so exposes shares the same symbol-keyed contract.
           fields = fields.map(&:to_sym)
 
+          # Stays pre-build, unlike every other declared name: an exposed field name is a property in the
+          # SERIALIZED BODY (`Values.serialize_exposed` iterates these configs and raises on an unrenderable
+          # one) as well as in `output_schema`, so it must be rejected whatever the schema emits.
+          _reject_unrenderable_field_names!(fields)
+
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
           end
@@ -228,6 +449,12 @@ module Axn
 
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
+          # Ahead of the `user_facing:` walk below so a member carrying both an unusable name and a rejected
+          # option is reported as the naming defect it is. That ordering only governs these two walks over
+          # resolved members: in the block form the option error surfaces first, raised inside
+          # `_build_shape_member` while `_build_shape` above is still assembling the members.
+          _snapshot_declared_shape!(validations, fields)
+
           # The block form rejects a `user_facing:` member inside `_build_shape_member` (above), but a
           # raw `shape:` kwarg supplies pre-built member objects that never route through it — so walk
           # the resolved members here to close that path too (see _reject_outbound_shape_user_facing!).
@@ -238,90 +465,14 @@ module Axn
               raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
             end
 
-            duplicated = _duplicate_fields(external_field_configs, configs)
-            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{duplicated.join(', ')}" if duplicated.any?
+            _reject_duplicate_fields!(external_field_configs, configs)
+            # The outbound claim space. `exposes` has no `on:`, so there are no routes to resolve — but a shape
+            # member (and a `Data` type's own members) still name properties under an exposure, and those pairs
+            # collapse in `output_schema` exactly as their inbound counterparts do.
 
             # Copy-on-write + freeze (see internal_field_configs above).
             self.external_field_configs = (external_field_configs + configs).freeze
           end
-        end
-
-        def inspection_filter
-          @__inspection_filter ||= ActiveSupport::ParameterFilter.new(sensitive_fields)
-        end
-
-        def sensitive_fields
-          _static_sensitive_fields
-        end
-
-        # Every config whose `sensitive:` participates in redaction: the declared inbound/outbound fields
-        # and subfields, plus (recursively) the members of any shape block they carry. Shape members live
-        # in validations[:shape][:members] at every depth, so the walk is uniform — a sensitive member at
-        # any nesting level contributes its name to the ParameterFilter set (which redacts by key name at
-        # any depth, array elements included). Single-sources the traversal for all three collectors.
-        def _sensitive_candidate_configs
-          (internal_field_configs + external_field_configs + subfield_configs)
-            .flat_map { |config| _flatten_sensitive_candidates(config) }
-        end
-
-        def _flatten_sensitive_candidates(config)
-          members = config.validations.dig(:shape, :members) || []
-          [config, *members.flat_map { |member| _flatten_sensitive_candidates(member) }]
-        end
-
-        def _static_sensitive_fields
-          _sensitive_candidate_configs
-            .select { |c| _config_sensitive(c) == true }
-            .flat_map { |c| _sensitive_field_keys(c) }
-        end
-
-        def _has_dynamic_sensitive_fields?
-          @_has_dynamic_sensitive_fields ||= _sensitive_candidate_configs.any? do |config|
-            sensitive = _config_sensitive(config)
-            sensitive.is_a?(Proc) || sensitive.is_a?(Symbol)
-          end
-        end
-
-        def _resolve_sensitive_fields(action_instance)
-          return _static_sensitive_fields unless _has_dynamic_sensitive_fields?
-
-          _sensitive_candidate_configs
-            .select { |config| _resolve_sensitive_value(_config_sensitive(config), action_instance) }
-            .flat_map { |c| _sensitive_field_keys(c) }
-        end
-
-        # A shape member's contract is duck-typed — ShapeValidator requires only #field/#validations,
-        # and `shape: { members: [...] }` may be supplied raw with member objects that implement no
-        # more than that. `#sensitive` is optional (absent on such a raw member), so read it defensively
-        # and treat a missing reader as `false`, mirroring how the validator treats a missing
-        # #method_call as not opted in.
-        def _config_sensitive(config)
-          config.respond_to?(:sensitive) ? config.sensitive : false
-        end
-
-        # A sensitive `model:` field also redacts its generated `<field>_id` alias (the id is as
-        # sensitive as the record). Non-model fields contribute only their own key.
-        def _sensitive_field_keys(config)
-          keys = [config.field]
-          keys << Internal::FieldConfig.model_id_key(config.field) if config.validations[:model]
-          keys
-        end
-
-        def _resolve_sensitive_value(sensitive, action_instance)
-          case sensitive
-          when true, false
-            sensitive
-          when Symbol
-            !!action_instance.send(sensitive)
-          when Proc
-            !!action_instance.instance_exec(&sensitive)
-          else
-            !!sensitive
-          end
-        end
-
-        def _build_instance_filter(action_instance)
-          ActiveSupport::ParameterFilter.new(_resolve_sensitive_fields(action_instance))
         end
 
         def _declared_fields(direction)
@@ -336,157 +487,12 @@ module Axn
           configs.map(&:field)
         end
 
-        # Internal method for filtering context data by direction
-        # Used by instance methods (inputs_for_logging, outputs_for_logging) and async exception reporting
-        # When action_instance is provided, dynamic sensitive fields are resolved against that instance.
-        def _context_slice(data:, direction: nil, action_instance: nil)
-          filter = if action_instance && _has_dynamic_sensitive_fields?
-                     _build_instance_filter(action_instance)
-                   else
-                     inspection_filter
-                   end
-          sliced = _mask_unfilterable_shapes(data.slice(*_declared_fields(direction)), _sensitive_shape_paths(action_instance), action_instance)
-          _filter_tolerating_cycles(filter, sliced)
-        end
-
-        # ActiveSupport::ParameterFilter has no cycle guard of its own, so a self-referential value blows
-        # its stack — and since a filter is active for any action declaring `sensitive:`, that cost the
-        # WHOLE slice: both auto_log lines dropped to warnings and the exception report degraded to empty
-        # inputs/outputs, losing the fields that had nothing to do with the cycle.
-        #
-        # Retried on a decycled copy rather than decycling up front, so acyclic data (all of it, in
-        # practice) pays nothing: no extra walk, no copy. The retry can only be reached by data that
-        # already failed, where one wasted filter pass is irrelevant.
-        def _filter_tolerating_cycles(filter, data)
-          filter.filter(data)
-        rescue SystemStackError
-          filter.filter(Axn::Internal::CycleGuard.decycle(data))
-        end
-
-        # Per-element `sensitive:` redaction works by adding the member's key name to an
-        # `ActiveSupport::ParameterFilter`, which redacts Hash keys at any depth — so a member inside a
-        # Hash (or an Array of Hashes) is filtered precisely, siblings preserved. But the filter only
-        # descends into Hashes: an object-backed shape value (a Data/Struct/PORO), or a malformed non-Hash
-        # value where a Hash was expected (which reaches logging before inbound validation can reject it),
-        # is opaque to it and would print whole. So for every field/subfield whose shape carries a
-        # sensitive member, this walks to the shaped value and replaces a non-Hash value in a
-        # member-bearing position with the mask — over-redacting the whole value (its non-sensitive
-        # siblings included) rather than risk leaking the secret. Applied to logs, exception context,
-        # and `inspect`.
-        def _mask_unfilterable_shapes(data, shape_paths, action_instance)
-          return data unless data.is_a?(Hash)
-
-          shape_paths.reduce(data) do |acc, (wire_path, shape)|
-            _mask_value_at_path(acc, wire_path, shape, action_instance)
-          end
-        end
-
-        # Single-field entry — inspect renders one field at a time. Reuses the whole-hash pass on a
-        # one-key hash so a subfield shape rooted under `field` is masked at its nested position too.
-        def _mask_unfilterable_shape_value(field, value, action_instance)
-          _mask_unfilterable_shapes({ field => value }, _sensitive_shape_paths(action_instance), action_instance)[field]
-        end
-
-        # `[(wire_path, shape)]` for every field/subfield whose shape carries a sensitive member. A
-        # top-level field's path is `[field]`; a subfield's is its resolved wire path (from the
-        # SubfieldTree cache), so a shape declared on a subfield — `expects :person, on: :payload, …
-        # do … end` — is masked at `payload[:person]`, not just where a top-level shape lives.
-        def _sensitive_shape_paths(action_instance)
-          (internal_field_configs + external_field_configs + subfield_configs).filter_map do |config|
-            shape = config.validations.is_a?(Hash) ? config.validations[:shape] : nil
-            next unless shape.is_a?(Hash) && _shape_has_sensitive_member?(shape, action_instance)
-
-            wire_path = config.subfield? ? _resolved_subfields.index[config]&.wire_path : [config.field]
-            next unless wire_path
-
-            [wire_path, shape]
-          end
-        end
-
-        # The ambient analog of `_sensitive_shape_paths`: `[(wire_path_within_ambient, shape)]` for
-        # every ambient subfield whose shape carries a sensitive member. Ambient shapes are leaf nodes
-        # (`_check_ambient_shape_placement!`), so their value is copied whole and may be a non-Hash the
-        # ParameterFilter can't descend into — this feeds `_mask_unfilterable_shapes` to mask it. The
-        # ambient tree's wire paths are rooted at the synthetic `:ambient_context` segment; drop it,
-        # since the mask applies to the ambient VALUE the reader returns, not a hash wrapped under an
-        # `:ambient_context` key.
-        def _sensitive_ambient_shape_paths(action_instance)
-          _ambient_subfield_tree.index.filter_map do |config, path|
-            shape = config.validations.is_a?(Hash) ? config.validations[:shape] : nil
-            next unless shape.is_a?(Hash) && _shape_has_sensitive_member?(shape, action_instance)
-
-            [path.wire_path.drop(1), shape]
-          end
-        end
-
-        # Walk `wire_path` through `value` — Hash keys in either symbol or string form (extraction
-        # accepts both), mapping across arrays — and mask the shaped value at the leaf. Every present
-        # key form is masked (see `_present_key_variants`); an absent key is left alone. A non-Hash,
-        # non-Array intermediate with path still remaining is an object-backed parent (a `method_call:`
-        # subfield reads the sensitive shape off it) that ParameterFilter can't descend into — mask it
-        # wholesale rather than leak the sensitive member nested inside; a nil/scalar intermediate is
-        # preserved (nothing to reach or leak).
-        # The Hash branch consumes a path segment per level so it always terminates; the Array branch
-        # maps with the path UNCHANGED, so a self-referential array would recurse until the stack
-        # blows. A revisited array masks wholesale (not the `[...]` placeholder, which would be a
-        # placeholder String masquerading as data) — the same over-redact-rather-than-leak call as
-        # `_mask_opaque_or_preserve`, since we cannot descend to redact the sensitive member inside.
-        def _mask_value_at_path(value, wire_path, shape, action_instance, seen = nil)
-          return _mask_shape_value(value, shape, action_instance) if wire_path.empty?
-
-          if value.is_a?(Array)
-            return Axn::Internal::CycleGuard.guard(value, seen, on_cycle: SENSITIVE_FILTERED_MASK) do |nested|
-              value.map { |element| _mask_value_at_path(element, wire_path, shape, action_instance, nested) }
-            end
-          end
-          return _mask_opaque_or_preserve(value) unless value.is_a?(Hash)
-
-          _present_key_variants(value, wire_path.first).reduce(value) do |acc, key|
-            acc.merge(key => _mask_value_at_path(acc[key], wire_path.drop(1), shape, action_instance, seen))
-          end
-        end
-
-        # A non-Hash/Array value in a member-bearing position. `nil` is preserved — it is valid absent
-        # data (a nil-tolerant shape) with nothing to leak, and masking it would make absent data look
-        # redacted. Anything else is malformed for a shaped field (which expects a Hash/object with
-        # members) and ParameterFilter can't redact into it: a structured object could expose the member
-        # via `inspect`, and a bare scalar could itself BE the sensitive value the caller mis-supplied
-        # (`items: ["111-11-1111"]`). Both reach logging before validation rejects them, so mask.
-        def _mask_opaque_or_preserve(value)
-          value.nil? ? value : SENSITIVE_FILTERED_MASK
-        end
-
-        # Every form of `key` present in `hash` — the key as-is, its string form, and its symbol form.
-        # Extraction accepts symbol and string keys (reading symbol-first) and a member/wire-path name
-        # may be declared in either form, so a single logical key can appear under more than one form in
-        # the same Hash; mask them all, since every form is logged and any could hold the secret.
-        def _present_key_variants(hash, key)
-          [key, key.to_s, key.to_s.to_sym].uniq.select { |variant| hash.key?(variant) }
-        end
-
-        # Whether a shape tree carries a `sensitive:` member anywhere (direct, or in a nested shape).
-        # A nil action_instance (async reporting, no instance to resolve a dynamic predicate against)
-        # counts only static `sensitive: true`, matching the static `inspection_filter` used there.
-        def _shape_has_sensitive_member?(shape, action_instance)
-          (shape[:members] || []).any? do |member|
-            _member_sensitive?(member, action_instance) ||
-              (_member_shape(member) && _shape_has_sensitive_member?(_member_shape(member), action_instance))
-          end
-        end
-
-        def _member_sensitive?(member, action_instance)
-          sensitive = _config_sensitive(member)
-          return sensitive == true if action_instance.nil?
-
-          _resolve_sensitive_value(sensitive, action_instance)
-        end
-
-        def _member_shape(member)
-          return nil unless member.respond_to?(:validations) && member.validations.is_a?(Hash)
-
-          shape = member.validations[:shape]
-          shape.is_a?(Hash) ? shape : nil
-        end
+        # Everything below is reached only with an implicit receiver, from here and from the other declaration
+        # modules extended onto the same class. It is private because an `_`-prefixed name in a module extended
+        # onto every action class otherwise lands there as a PUBLIC singleton method, so the convention and the
+        # surface disagree. `_declared_fields` stays public above: the context facade, the redaction slice and
+        # `Mountable`'s step passthrough call it on the action class from other files.
+        private
 
         # Reject `user_facing:` on any member of an `exposes` shape, at any depth. The block form
         # catches it in `_build_shape_member` on key presence; a raw `shape:` kwarg supplies pre-built
@@ -494,84 +500,137 @@ module Axn
         # Truthy-based (not key-presence): a pre-built member exposes only its resolved `#user_facing`
         # value, whose `false` default is indistinguishable from unset — only a truthy value is a real
         # opt-in (the block form, seeing the literal opts, still rejects an explicit `user_facing: false`).
-        # A member not implementing `#user_facing` (a minimal duck-typed object) is treated as no opt-in.
+        # Walks the SNAPSHOT, so what it reads is what the class will hold and nothing here re-runs a
+        # caller's reader. A cyclic graph is impossible for the same reason — every declaration path runs
+        # `_validate_and_snapshot_shape!`, which rejects one, before reaching this walk.
+        # The name is read BEFORE the violation is detected, so the message is built from a name already in
+        # hand rather than by dispatching the reader again once a failure is being reported.
         def _reject_outbound_shape_user_facing!(shape)
-          return unless shape.is_a?(Hash)
-
-          (shape[:members] || []).each do |member|
-            if member.respond_to?(:user_facing) && member.user_facing
-              field = member.respond_to?(:field) ? member.field : member.inspect
+          Internal::ShapeGraph.members(shape).each do |member|
+            name = Internal::ShapeGraph.fetch(member, :field)
+            if Internal::ShapeGraph.read(member, :user_facing)
               raise ArgumentError,
-                    "shape member `#{field}` does not support user_facing: on exposes — an outbound failure is a " \
-                    "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
+                    "shape member #{_describe_shape_member(member, name)} does not support user_facing: on exposes — an " \
+                    "outbound failure is a dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
             end
             _reject_outbound_shape_user_facing!(_member_shape(member))
           end
         end
 
-        # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches
-        # logging before validation rejects it, so its arbitrary contents could leak). An `Array` shape
-        # maps each element (member-bearing); a `Hash` shape filters the Hash's member keys; a class
-        # (Data/Struct/PORO) shape reads members off an object ParameterFilter can't descend into. Any
-        # value whose type doesn't match the container is masked wholesale rather than treated as a lone
-        # valid element/Hash — only declared member keys would be filtered, leaking arbitrary siblings.
-        # `nil` (valid absent data) is preserved throughout via `_mask_opaque_or_preserve`.
-        def _mask_shape_value(value, shape, action_instance)
-          container = shape[:container]
-          if container == Array
-            return value.map { |element| _mask_shape_element(element, shape, action_instance) } if value.is_a?(Array)
-
-            return _mask_opaque_or_preserve(value)
-          end
-          return _mask_shape_element(value, shape, action_instance) if container == Hash
-
-          _mask_opaque_or_preserve(value)
-        end
-
-        # A non-Hash value where members are expected is opaque to ParameterFilter → mask it whole. A Hash
-        # keeps its own keys (ParameterFilter redacts the sensitive ones); only recurse into a nested-shape
-        # member's value when that nested shape actually carries a sensitive member, to avoid needless
-        # masking of an unrelated non-Hash deeper down. The member key is matched in either symbol or
-        # string form, since extraction accepts both.
-        def _mask_shape_element(element, shape, action_instance)
-          return _mask_opaque_or_preserve(element) unless element.is_a?(Hash)
-
-          (shape[:members] || []).each_with_object(element.dup) do |member, masked|
-            nested = _member_shape(member)
-            next unless nested && _shape_has_sensitive_member?(nested, action_instance)
-
-            _present_key_variants(masked, member.field).each do |key|
-              masked[key] = _mask_shape_value(masked[key], nested, action_instance)
-            end
-          end
-        end
-
-        private
-
         # A true duplicate is the SAME wire key declared under the SAME parent route — keyed on the
         # `[on, field]` pair, against `existing` configs AND within `new_configs` itself (`expects :foo,
-        # "foo"` is a single batch, so its collision is intra-batch). Keys are symbol-canonical at
-        # declaration (PRO-2790), so `:note` and `"note"` are already the same field. For a top-level
-        # field `on:` is nil, so this reduces to wire-key identity. Two SUBFIELDS that share a leaf wire
-        # key but differ by `on:` are NOT duplicates: they are either two routes to one wire path (a
-        # merged node) or two distinct nested fields sharing a leaf key — both legitimate, and both
-        # gated separately on reader-name uniqueness (`_validate_subfield_reader_names!`, resolved with
-        # `as:`). Declaring a genuine duplicate is rejected because two validations would run on one
+        # "foo"` is a single batch, so its collision is intra-batch).
+        #
+        # Identity is the JSON PROPERTY a name renders as, not the Symbol itself: keys are symbol-canonical
+        # at declaration, so `:note` and `"note"` are already one field, and canonicalizing to UTF-8 closes
+        # the remaining gap — two Symbols whose bytes differ but whose property does not.
+        #
+        # For a top-level field `on:` is nil, so this reduces to property identity. Two SUBFIELDS that
+        # share a leaf wire key but differ by `on:` are NOT duplicates HERE: they are either two routes to
+        # one wire path (a merged node) or two distinct nested fields sharing a leaf key — both legitimate,
+        # and both gated separately on reader-name uniqueness (`_validate_subfield_reader_names!`, resolved
+        # with `as:`). Declaring a genuine duplicate is rejected because two validations would run on one
         # field, the generated reader would be clobbered, and per-field config would collapse
-        # ambiguously. Returns the offending wire-key names.
+        # ambiguously.
+        #
+        # This is the SYNTACTIC half of field identity: "the same name declared twice under the same route
+        # as written". It cannot see two DIFFERENT routes that resolve to one parent, nor any of the other
+        # mechanisms that name a property at a node — that is what the one claim space
+        # (`_reject_colliding_property_claims!`) answers. The two are complementary, not redundant: `on:`
+        # spelling is what distinguishes declaring one thing twice (rejected here) from reaching one wire slot
+        # by two routes (legitimate, and a MERGE under the claim rule), so this check catches exactly the case
+        # the claim space treats as legal.
+        #
+        # Returns `[claimed_field, offending_field]` pairs; equal entries are an identical-name duplicate.
         def _duplicate_fields(existing, new_configs)
-          # `on:` is normalized with `to_s` so `:payload` and `"payload"` (and any symbol/string spelling
-          # of the same dotted path) name the same route — matching how the SubfieldTree splits `on:` —
-          # rather than slipping two configs onto one wire slot on a spelling difference.
-          key_for = ->(c) { [c.on.to_s, c.field] }
-          taken = existing.map(&key_for)
-          seen = []
-          new_configs.select do |c|
+          # `on:` is rendered with `to_s` so `:payload` and `"payload"` (and any symbol/string spelling of the
+          # same dotted path) name the same route — matching how the SubfieldTree splits `on:` — rather than
+          # slipping two configs onto one wire slot on a spelling difference. The DSL already canonicalizes a
+          # declared route to a Symbol (see `expects`), so for a declared config this is Ruby's own `to_s` and
+          # cannot answer differently here than it does in the tree; the rendering stays because a config
+          # ASSIGNED onto a class carries whatever route its author built, exactly as it carries a raw `field`.
+          # The route is deliberately not resolved further; see the note above on which half of identity this is.
+          #
+          # A name with no UTF-8 rendering canonicalizes to nil and names no property, so it is SKIPPED rather
+          # than compared: two of them would otherwise key alike and be reported as duplicates of each other.
+          # Whether such a name is a defect at all depends on whether the schema emits it, which only the
+          # emitted-name walk knows (see `_raise_unrenderable_emitted_name!`).
+          #
+          # Keyed in ONE pass over `existing`, so each config's route and canonical name are derived once. The
+          # two-pass form (reject, then to_h) asked the same config twice, and a `to_s` answering differently the
+          # second time reported a different defect than the one it judged — the non-idempotent-dispatch hazard
+          # that CANONICALIZING a value always carries. `Hash#[]=` keeps the last entry for a repeated key,
+          # exactly as `to_h` did.
+          key_for = ->(c) { [c.on.to_s, Axn::Reflection::Values.canonical_wire_key(c.field)] }
+
+          claimed = existing.each_with_object({}) do |c, h|
             key = key_for.call(c)
-            collides = taken.include?(key) || seen.include?(key)
-            seen << key
-            collides
-          end.map(&:field)
+            h[key] = c.field unless key.last.nil?
+          end
+          new_configs.each_with_object([]) do |config, collisions|
+            key = key_for.call(config)
+            next if key.last.nil?
+            next collisions << [claimed[key], config.field] if claimed.key?(key)
+
+            claimed[key] = config.field
+          end
+        end
+
+        # How a shape member's name is written into any message naming that member: the JSON property it
+        # renders as, falling back to the escaped `inspect` when its bytes have no UTF-8 rendering. Every
+        # such message is a UTF-8 String, and joining raw non-UTF-8 bytes to one raises
+        # Encoding::CompatibilityError from the reporting itself — so the caller sees an encoding failure
+        # instead of the declaration error that was being reported. The canonical property is
+        # byte-identical to the raw spelling for every renderable name, so ordinary messages are unchanged;
+        # `inspect` is reserved for the name that has no property to print.
+        def _shape_member_label(name) = Axn::Reflection::PropertyNames.renderable_label(name)
+
+        # The two property-name rules are judged on the projection they would appear in, so they run when one is
+        # first demanded rather than here (see Axn::Reflection::PropertyNames). What the contract still asks of
+        # that layer eagerly is name RENDERING — `exposes` field names, whose bytes reach the serialized body
+        # regardless of any schema, and the escaping every declaration message uses.
+        def _reject_unrenderable_field_names!(names, kind: "a field name")
+          Axn::Reflection::PropertyNames.reject_unrenderable_field_names!(names, kind:)
+        end
+
+        # How a declared name is written into a message, shared with the rules above so every message that
+        # names a field or member escapes it the same way.
+        def _inspect_field_name(name) = Axn::Reflection::PropertyNames.inspect_field_name(name)
+
+        # The three declaration paths (top-level expects, exposes, subfields) report through here rather
+        # than each partitioning the result of `_duplicate_fields` themselves. An identical-name duplicate
+        # and two names collapsing onto one property are the same defect under one identity rule, but they
+        # need different messages, and the identical case keeps the wording it has always had.
+        #
+        # An identical duplicate is reported first when a batch contains both, so the error is deterministic
+        # and names the simpler defect — the one whose fix is unambiguous.
+        #
+        # The identical branch names each offender by its canonical property rather than by the Symbol: every
+        # name reaching here is renderable by construction, and joining a non-UTF-8 name to a UTF-8 one would
+        # raise Encoding::CompatibilityError from the reporting itself — surfacing the wrong exception class
+        # for the defect. Canonicalizing keeps the message valid UTF-8 and leaves an ASCII name byte-identical.
+        #
+        # WHICH of the two wordings a collision gets is decided through `PropertyNames.same_declared_name?`, not
+        # by `==`: this runs with the failure already certain, and `existing` may hold a config ASSIGNED onto the
+        # class, whose `field` is whatever its author built. Asking such a name whether it equals the declared one
+        # let it raise INSTEAD of the DuplicateFieldError — replacing the verdict, and outside StandardError
+        # escaping class definition entirely.
+        def _reject_duplicate_fields!(existing, new_configs)
+          collisions = _duplicate_fields(existing, new_configs)
+          return if collisions.empty?
+
+          identical, collapsed = collisions.partition { |claimed, offending| Axn::Reflection::PropertyNames.same_declared_name?(claimed, offending) }
+          if identical.any?
+            names = identical.map { |_claimed, offending| Axn::Reflection::Values.canonical_wire_key(offending) }
+            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}"
+          end
+
+          claimed, offending = collapsed.first
+          raise Axn::DuplicateFieldError,
+                "Duplicate field(s) declared: #{_inspect_field_name(claimed)} and #{_inspect_field_name(offending)} " \
+                "both render as the JSON property #{Axn::Reflection::Values.canonical_wire_key(offending).inspect} — a " \
+                "field name becomes a property name in the reflected schema and in serialized output, so the two would " \
+                "collapse onto one. Declare them under names that stay distinct once converted to UTF-8."
         end
 
         # Map each declared field to the name of its generated reader. Without `as:`/`prefix:` the
@@ -590,9 +649,16 @@ module Axn
 
           if as
             raise ArgumentError, "`as:` can only be provided when declaring a single field (use prefix: for several)" if fields.size > 1
-            raise ArgumentError, "`as:` reader name may not be dotted (#{as.inspect} would not name a method)" if as.to_s.include?(".")
 
-            { fields.first => as.to_sym }
+            # Canonicalized before the dotted check rather than after it, so the name the check JUDGES is the
+            # name the reader is defined under — `to_s` and `to_sym` are two dispatches on the same caller
+            # object, and a String subclass answering them differently had the guard clearing one spelling
+            # while another was generated. A Symbol's `to_s`/`inspect` are Ruby's own, so both the check and
+            # the message it may raise are now decided by axn.
+            reader = as.to_sym
+            raise ArgumentError, "`as:` reader name may not be dotted (#{reader.inspect} would not name a method)" if reader.to_s.include?(".")
+
+            { fields.first => reader }
           else
             fields.to_h { |f| [f, :"#{prefix}#{f}"] }
           end
@@ -650,6 +716,11 @@ module Axn
         # the field's own validation message; a String overrides it; a Symbol names an action method
         # and a Proc computes it from the InboundValidationError — the full `error`/`fail!`/`fails_on`
         # handler shape. Single-sourced through the module-level grammar check (see above).
+        #
+        # `FieldConfig`'s constructor holds the same rule and is the CHOKE POINT (it catches a config assigned
+        # onto a class, which never passes this DSL). This call stays because it runs earlier in the declaration:
+        # a declaration carrying both a bogus `user_facing:` and, say, a reader-name collision is reported as the
+        # value defect, exactly as the shape walk checks a member's value ahead of `ShapeConfig`'s constructor.
         def _validate_user_facing!(user_facing)
           Contract.validate_user_facing!(user_facing)
         end
@@ -716,9 +787,103 @@ module Axn
         # `_build_shape_member` rejects them explicitly with the reader-less reason instead.
         SHAPE_MEMBER_READER_OPTIONS = %i[as prefix].freeze
 
-        # The mask a sensitive value is replaced with — matches `ActiveSupport::ParameterFilter`'s default
-        # so wholesale-masked values read identically to per-key-filtered ones.
-        SENSITIVE_FILTERED_MASK = "[FILTERED]"
+        # The keys a shape member's VALIDATIONS bag may hold — derived from the two sets that already decide
+        # it, never listed again beside them. `KNOWN_VALIDATION_KEYS` is the field path's own recognized set
+        # (what `_partition_field_options` holds a field's bag to), and a member's bag is the same kind of
+        # thing: the options `validates` is called with. ActiveModel's own shared options are unioned in
+        # because a RAW member's bag reaches `validates` verbatim — nothing pushes a tolerance down into it,
+        # as `_parse_field_validations` does for a field — and four of the six (`if:`/`unless:`/`on:`/
+        # `strict:`) are in the field set already. The two the union adds are `allow_blank:`/`allow_nil:`,
+        # which are exactly the tolerance the block form takes as a member kwarg (SHAPE_MEMBER_FIELD_OPTIONS)
+        # and compiles into this bag for a field, and which already WORK on the raw route — so allowing them
+        # is the parity rather than a widening, and rejecting them would be an over-rejection of a legal
+        # declaration. Both sources are read rather than copied, so the member set cannot drift from either.
+        KNOWN_MEMBER_VALIDATION_KEYS = (KNOWN_VALIDATION_KEYS | Axn::Validation::Base.shared_validation_option_keys).freeze
+
+        # A raw `shape:` member's bag never passes `_partition_field_options`, so nothing had ever held its
+        # KEYS to a grammar: a typo declared cleanly and then raised `Unknown validator: 'TpyeValidator'` on
+        # EVERY call — naming a class the author never wrote, and neither the member nor the option — where the
+        # same typo on a field is refused at declaration. Same for the field-level options someone naturally
+        # reaches for inside a member bag (`optional:`, `default:`, `sensitive:`, `as:`). This is the field
+        # path's own check applied where a raw member arrives, so one grammar decides both routes.
+        #
+        # Order mirrors `_build_shape_member`'s: an option a member may never carry is named for what it is,
+        # and only what is left over is an unrecognized key. That is the split worth keeping — an author who
+        # wrote `default:` has a different problem from one who wrote `tpye:`, and the first has a message
+        # already, explaining WHY a reader-less member cannot carry it.
+        #
+        # Nothing a caller's key defines decides the verdict. A key that is not a Symbol is unknown by
+        # construction (String keys were canonicalized on the way in), tested with `case`/`when` rather than
+        # `is_a?` — so a key answering `hash`/`eql?` as `:type` cannot pass itself off as a recognized option,
+        # and the keys the two specific messages RENDER are axn's own Symbols (a `Symbol#==` match is
+        # identity), never the caller's object.
+        #
+        # One pass, classifying rather than raising as it goes, so the order above holds whatever order the
+        # bag was written in — and so an ordinary member (every key recognized) allocates nothing here beyond
+        # the Set lookups themselves.
+        def _check_member_option_keys!(name, validations)
+          unsupported = reader_opts = unknown = nil
+          validations.each_key do |key|
+            case key
+            when ::Symbol then next if KNOWN_MEMBER_VALIDATION_KEYS.include?(key)
+            end
+
+            if SHAPE_MEMBER_UNSUPPORTED_OPTIONS.include?(key)
+              (unsupported ||= []) << key
+            elsif SHAPE_MEMBER_READER_OPTIONS.include?(key)
+              (reader_opts ||= []) << key
+            else
+              (unknown ||= []) << key
+            end
+          end
+
+          _raise_member_unsupported_options!(name, unsupported) if unsupported
+          _raise_member_reader_options!(name, reader_opts) if reader_opts
+          return if unknown.nil?
+
+          raise ArgumentError,
+                "Unknown key(s) #{unknown.map { |key| _inspect_field_name(key) }.join(', ')} in the validations of " \
+                "shape member `#{_shape_member_label(name)}`. Not a recognized validation — ActiveModel reads the " \
+                "bag as validators, so it fails every call with `Unknown validator`. A member's other options are " \
+                "attributes of the member ITSELF rather than entries in its validations bag: " \
+                "`sensitive:`/`user_facing:`/`method_call:` are read from the member, `description:` and any " \
+                "registered metadata from its `metadata`, and the tolerance the block form spells `optional:` is " \
+                "`allow_blank:`/`allow_nil:` here."
+        end
+
+        # Shared by the block form (which passes the keys it was handed, in the order they were declared) and by
+        # the declaration walk, so both routes give one reason for one option.
+        def _raise_member_unsupported_options!(name, unsupported)
+          return if unsupported.empty?
+
+          raise ArgumentError,
+                "shape member `#{_shape_member_label(name)}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
+                "(shape blocks declare validation/schema only)"
+        end
+
+        def _raise_member_reader_options!(name, reader_opts)
+          return if reader_opts.empty?
+
+          raise ArgumentError,
+                "shape member `#{_shape_member_label(name)}` does not support #{reader_opts.map { |k| "#{k}:" }.join('/')} " \
+                "(they rename a field's generated reader, but a shape member is reader-less; " \
+                "use them on a top-level `expects` field or an `on:` subfield)."
+        end
+
+        # `coerce:` is field-only: it resolves a coerced value onto a reader, which a member has not got (see
+        # `_parse_field_validations`, which deliberately keeps the coercible-set check out of the shared
+        # canonicalization seam for the same reason). Read the same way whichever route declared it — the
+        # block form arrives after `_expand_coerce_sugar!` has folded a top-level `coerce:` into the type bag,
+        # a raw member arrives with whatever it was spelled as, and nothing expands it — so both spellings are
+        # refused on both routes. `coerce: false` inside a type bag stays a legal no-op, as it is on a field.
+        def _reject_member_coerce!(validations)
+          type_bag = Internal::ShapeGraph.hash_or_nil(validations[:type])
+          return unless validations.key?(:coerce) || (!nil.equal?(type_bag) && type_bag[:coerce])
+
+          raise ArgumentError,
+                "coerce: is not supported on a shape member (it has no reader for a coerced value to resolve " \
+                "onto; use it on a top-level `expects` field or an `on:` subfield)."
+        end
 
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
         # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than
@@ -739,20 +904,8 @@ module Axn
         # A member reuses the same option handling as a top-level field (optional/allow_blank/
         # default/etc. + validations + metadata), but yields a ShapeConfig and never a reader.
         def _build_shape_member(name, opts, subblock, outbound: false)
-          unsupported = opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS
-          if unsupported.any?
-            raise ArgumentError,
-                  "shape member `#{name}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
-                  "(shape blocks declare validation/schema only)"
-          end
-
-          reader_opts = opts.keys & SHAPE_MEMBER_READER_OPTIONS
-          if reader_opts.any?
-            raise ArgumentError,
-                  "shape member `#{name}` does not support #{reader_opts.map { |k| "#{k}:" }.join('/')} " \
-                  "(they rename a field's generated reader, but a shape member is reader-less; " \
-                  "use them on a top-level `expects` field or an `on:` subfield)."
-          end
+          _raise_member_unsupported_options!(name, opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS)
+          _raise_member_reader_options!(name, opts.keys & SHAPE_MEMBER_READER_OPTIONS)
 
           # `user_facing:` reclassifies an INBOUND violation into the user-facing failure bucket. An
           # outbound (`exposes`) failure means the action produced bad output — always a dev bug, never
@@ -762,21 +915,11 @@ module Axn
           # as an unknown key regardless of value.
           if outbound && opts.key?(:user_facing)
             raise ArgumentError,
-                  "shape member `#{name}` does not support user_facing: on exposes — an outbound failure is a " \
+                  "shape member `#{_shape_member_label(name)}` does not support user_facing: on exposes — an outbound failure is a " \
                   "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
           end
 
-          # `model:` resolves a record from an id and exposes a `<field>_id` companion reader — both live
-          # in the reader/facade layer a reader-less member never routes through, so on a member it would
-          # only type-check the element in place (what `type: Klass` already does) while implying
-          # resolution/companion behavior that never happens. Reject it loudly rather than accept the
-          # degenerate form, pointing at the plain-type-check alternative.
-          if opts.key?(:model)
-            raise ArgumentError,
-                  "shape member `#{name}` does not support model: — a model field resolves a record from an id " \
-                  "and exposes a `#{Internal::FieldConfig.model_id_key(name)}` reader, but a shape member is " \
-                  "reader-less and validates the element in place (use `type: Klass` for a plain instance check)."
-          end
+          _raise_member_model_unsupported!(name) if opts.key?(:model)
 
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
@@ -784,11 +927,7 @@ module Axn
           field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
-          if config.validations.dig(:type, :coerce)
-            raise ArgumentError,
-                  "coerce: is not supported on a shape member (it has no reader for a coerced value to resolve " \
-                  "onto; use it on a top-level `expects` field or an `on:` subfield)."
-          end
+          _reject_member_coerce!(config.validations)
 
           # `user_facing:` (full parity with a field's) is validated in ShapeConfig's constructor below,
           # so the block and raw `shape:` paths hold members to one grammar.
@@ -800,7 +939,10 @@ module Axn
         # Returns the structured klass (Array, Hash, or a member-bearing class).
         def _shape_compatible_type!(validations)
           type = validations&.dig(:type)
-          klass = type.is_a?(Hash) ? type[:klass] : type
+          # `case`/`when` (via ShapeGraph) rather than `is_a?`: `type:` is a caller-supplied bag, and a Hash
+          # subclass denying its own class would have the whole bag read as the declared class.
+          type_bag = Internal::ShapeGraph.hash_or_nil(type)
+          klass = nil.equal?(type_bag) ? type : type_bag[:klass]
           klasses = Array(klass)
           return klasses.first if klasses.size == 1 && SHAPE_INCOMPATIBLE_TYPES.exclude?(klasses.first)
 
@@ -815,11 +957,66 @@ module Axn
         # block-built shape already carries `:container`, so this fires only for the raw form; a raw
         # shape with an incompatible/missing `type:` raises the same declaration error the block form
         # does (via `_shape_compatible_type!`). Mutates `validations`.
+        #
+        # Nothing the shape object can define decides whether derivation happens: the type test goes
+        # through `ShapeGraph.hash_or_nil`, the "already has one?" test reads the key rather than asking
+        # `key?`, and `nil` is the receiver of the emptiness check rather than the caller's value (`nil?`
+        # is overridable and this is a type test). An overridden `is_a?`, `key?` or `nil?` would otherwise
+        # skip derivation, leaving a nil container that reaches ShapeValidator and raises a bare
+        # `TypeError: class or module required` on EVERY call instead of the declaration error this exists
+        # to produce. Reading the key also derives for an explicit `container: nil`, the same unusable
+        # state spelled out.
+        #
+        # `:members` is taken from `ShapeGraph.members` — the same read every guard makes — and NOT from
+        # the shape's own entries. This runs after those guards, so whatever it stores is what reflection
+        # then treats as authoritative: copying the raw entries instead would promote members a lying `[]`
+        # had hidden from the guards into a plain Hash the schema reads, which is the split the guards
+        # exist to prevent (a hidden colliding pair emits a duplicate property; a hidden cyclic member
+        # reaches reflection and overflows the stack). Every other entry is copied via `each`, the one
+        # method a walk requires. Assembled as a plain Hash rather than taken from the shape's `merge`,
+        # which a subclass can override to return anything — including a non-Hash, or something that drops
+        # the container just derived.
         def _derive_raw_shape_container!(validations)
-          shape = validations[:shape]
-          return unless shape.is_a?(Hash) && !shape.key?(:container)
+          shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
+          return if nil.equal?(shape)
 
-          validations[:shape] = shape.merge(container: _shape_compatible_type!(validations))
+          # Detached ALWAYS, not only when a container has to be derived: deriving one is a write, and what is
+          # stored IS the contract, so writing into the caller's own Hash would change a shape they still hold.
+          # One level is all this needs — the deep copy, and the bound on how much there is to copy, belong to
+          # the single declaration walk (see _validate_and_snapshot_shape!), which is also what captures the
+          # members list carried forward here. A shape nested inside a `do…end` block reaches this before that
+          # walk, which is exactly why the write must not land on the caller's object.
+          #
+          # The walk itself is the other caller, for every member's nested `shape:` (see
+          # `_check_and_copy_shape_members!`). The node it hands over is already axn's own copy, and the detach
+          # is load-bearing there for a different reason: that copy is SHARED by every member reusing the shape,
+          # while the container comes from the enclosing member's `type:` — so writing in place would give one
+          # position the container derived for another.
+          detached = Internal::ShapeGraph.detach_node(shape)
+          detached[:container] = _shape_compatible_type!(validations) if nil.equal?(detached[:container])
+          _reject_non_class_container!(detached[:container])
+          validations[:shape] = detached
+        end
+
+        # A container is what the shaped value is type-checked against (`value.is_a?(container)` in
+        # ShapeValidator), so it has to be a class or module. A raw `shape:` may name its own, and nothing
+        # checked it — so a junk value reached that check and every call raised a bare `TypeError: class or
+        # module required`, with nothing pointing at the declaration that caused it. Held to the same bar the
+        # derived container is (`_shape_compatible_type!` rejects a `type:` that is not a structured class),
+        # since this is the same value arrived at two ways.
+        #
+        # `Module` covers a class and a module both, tested with `case`/`when` so nothing the value defines
+        # decides the answer.
+        def _reject_non_class_container!(container)
+          case container
+          when ::Module then return
+          end
+
+          raise ArgumentError,
+                "a shape's `container:` must be a class (got #{_inspect_field_name(container)}) — it is what the " \
+                "shaped value is type-checked against, so a non-class makes every call raise `TypeError: class " \
+                "or module required`. Name the container class (`Hash`, `Array`, or the object's own class), or " \
+                "omit `container:` and let it be derived from `type:`."
         end
 
         def _partition_field_options(fields, **options)
@@ -839,7 +1036,86 @@ module Axn
                   "Field metadata (#{metadata.keys.join(', ')}) can only be provided when declaring a single field"
           end
 
+          _symbolize_option_bags!(validations)
+
           [validations, metadata]
+        end
+
+        # Option-bag keys are axn's own grammar — `klass:`, `in:`, `with:`, `minimum:` — and every consumer reads
+        # them as Symbols (`options[:klass]`, `options[:in]`), axn's and ActiveModel's alike. A bag keyed by
+        # STRINGS therefore answers no consumer at all, which is what a params-derived Hash or
+        # `.with_indifferent_access` produces: `type:`, `inclusion:` and `length:` declared cleanly and then
+        # rejected the values they were declared to accept, `model:` looked up a class inferred from the field
+        # name, and `of:` raised "must supply :klass". Symbol-canonical here, for the same reason a field name
+        # and a shape member name are symbol-canonical at declaration: one spelling per slot, decided once.
+        #
+        # KEYS only, and only the bag's own. Values stay the caller's objects (an `inclusion:` list must keep
+        # its own `include?`), and nothing deeper is touched — below a bag is the caller's data, whose meaning
+        # is not axn's to reinterpret.
+        #
+        # Runs AFTER the unknown-key rejection above, deliberately: a String key at the DECLARATION level
+        # (`expects :a, "type" => String`) is an unknown key and still says so, rather than being quietly
+        # accepted by this.
+        #
+        # And it declines to REPLACE a bag that answers from a Hash default, which is the same obligation seen
+        # from the other end: canonicalizing is a copy, entries only, so the plain Hash written back here holds
+        # no default — and the checks that own that rule (`ShapeGraph.detach_option_containers!` for an option
+        # bag, the declaration walk for a `shape:` node) read what is written back. A Symbol-keyed defaulting
+        # bag was refused while the same bag spelled with Strings declared silently, and an indifferent-access
+        # one — every key a String however it is written — escaped under both spellings. The bag is left exactly
+        # as it came so those checks judge what the author wrote; canonical keys are of no use to a declaration
+        # that is about to be refused anyway.
+        def _symbolize_option_bags!(validations)
+          Internal::ShapeGraph.each_entry(validations) do |key, value|
+            bag = Internal::ShapeGraph.hash_or_nil(value)
+            next if nil.equal?(bag)
+
+            symbolized = _symbol_keyed_bag(bag) { "the `#{key}:` option bag" }
+            next if nil.equal?(symbolized) || Internal::ShapeGraph.supplies_default?(bag)
+
+            validations[key] = symbolized
+          end
+        end
+
+        # The bag with String keys converted, or nil when every key is already a Symbol — so an ordinary
+        # declaration allocates nothing here. A key that is neither is left exactly as it came: it is not this
+        # grammar, and reinterpreting it would be widening rather than canonicalizing.
+        #
+        # Read through the bound-`each` seam, never by asking the bag to convert itself: `symbolize_keys` (like
+        # `transform_values` and `dup` before it) is the caller's own method, and an indifferent-access bag is a
+        # Hash subclass like any other.
+        #
+        # The label is YIELDED rather than passed, so naming the bag costs nothing until there is an error to
+        # name: every declaration pays for a String built here otherwise, which is measurable on a shape-heavy
+        # contract (240 members, ~1ms).
+        def _symbol_keyed_bag(bag)
+          found = false
+          Internal::ShapeGraph.each_entry(bag) do |key, _value|
+            case key
+            when ::String then found = true
+            end
+          end
+          return nil unless found
+
+          copy = {}
+          Internal::ShapeGraph.each_entry(bag) do |key, value|
+            canonical = case key
+                        when ::String then key.to_sym
+                        else key
+                        end
+            _raise_ambiguous_option_key!(yield, canonical) if copy.key?(canonical)
+
+            copy[canonical] = value
+          end
+          copy
+        end
+
+        def _raise_ambiguous_option_key!(label, canonical)
+          raise ArgumentError,
+                "#{label} declares #{Axn::Reflection::PropertyNames.inspect_field_name(canonical)} twice — once " \
+                "under a String key and once under a Symbol — and one option cannot hold two values, so " \
+                "canonicalizing them would silently drop one of the two declared. Declare the option once, under " \
+                "a Symbol key."
         end
 
         # Pure parse: builds the configs without touching the class (no readers defined), so callers
@@ -1077,6 +1353,49 @@ module Axn
           end
         end
 
+        # Axn's own validators accept a direct value in place of an options bag (`type: Hash`,
+        # `of: Hash`, `model: User`, `validate: ->(v){}`), and each of them owns the expansion of its own
+        # shorthand. THE seam that applies them, so a declaration reaching a validator — or a consumer
+        # reading a declared bag — meets one canonical spelling however it was written.
+        #
+        # Called for a top-level field/subfield (below) and for every shape MEMBER
+        # (`ShapeDeclaration#_symbol_keyed_member_validations`), which is the whole reason it is a seam
+        # rather than four lines: `#field` + `#validations` is the entire member contract, so nothing
+        # expanded a raw `shape:` member's bag, and the bare spelling — the only one anyone writes by hand
+        # — reached the validators and the projection as a Class. Every consumer of a declared bag reads
+        # `[:klass]`, so `type: Hash` validated nothing and failed every call with `ArgumentError: must
+        # supply :klass`, while `of: Hash` asked a Class for `[:klass]` and took the projection down with
+        # `ArgumentError: odd number of arguments for Hash`. Expanding here is what makes the parity
+        # `ShapeConfig` claims — a member declared via the block form, via a raw `shape:` kwarg, or by the
+        # caller's own class is validated identically — true of the bag as well as of the name.
+        #
+        # `fields` names the declaration for the one expander that reads it (`model:` infers its class from
+        # the field name); a member passes the canonical Symbol the declaration walk already judged it under,
+        # so nothing here converts a caller-supplied name a second time. A member never arrives carrying
+        # `model:` at all — a reader-less member cannot resolve a record, so it is refused ahead of this rather
+        # than expanded into a bag that would quietly type-check the element instead.
+        #
+        # The `of:` pair below is the same seam deliberately, not a guard that happens to sit here: both read
+        # the bag the expansion just produced (`type:`'s klass list, `of:`'s own bag), so they are the checks
+        # canonicalizing MAKES possible, and splitting them from it is what let a member expand like a field
+        # and validate like nothing. Together they are one rule with two halves — the option only means
+        # something over an Array, and it must name what the elements are — and neither has any runtime
+        # counterpart to fall back on: `OfValidator` returns before it inspects a value that is not an Array,
+        # so `of:` beside `type: Hash` never applied at all, while `of: nil` reached `check_validity!` and
+        # raised on every call instead of at the author.
+        def _canonicalize_validator_options!(validations, fields)
+          validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
+          validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
+          validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
+          return unless validations.key?(:of)
+
+          validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
+          declared_klasses = Array(validations.dig(:type, :klass))
+          raise ArgumentError, "of: requires type: Array (got #{declared_klasses.inspect})" unless declared_klasses == [Array]
+
+          raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
+        end
+
         # This method applies any top-level options to each of the individual validations given.
         # It also allows our custom validators to accept a direct value rather than a hash of options.
         def _parse_field_validations(
@@ -1085,6 +1404,7 @@ module Axn
           allow_blank: false,
           **validations
         )
+          Internal::ShapeGraph.detach_option_containers!(validations)
           _canonicalize_blank_gates!(validations)
 
           # `coerce: <Type>` sugar → a coerce flag inside the type bag (coercion binds to the type;
@@ -1092,22 +1412,17 @@ module Axn
           # hash flows through the normal path.
           _expand_coerce_sugar!(validations)
 
-          # Apply syntactic sugar for our custom validators (convert shorthand to full hash of options)
-          validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
-          validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
-          validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
-
           # Validate the coerce target set (covers BOTH the sugar above and an explicit
-          # `type: { klass:, coerce: true }`) once the type bag is canonical.
+          # `type: { klass:, coerce: true }`). Deliberately NOT part of the canonicalization seam below, and so
+          # not applied to a shape member: `coerce:` is a field-only option — it resolves a coerced value onto a
+          # reader, which a member has not got, and the block form rejects it on a member outright — so the
+          # coercible-set check would half-legitimize an option a member may not carry at all. It runs ahead of
+          # the seam rather than after it (where it sat when the `of:` checks were inline here) so that a
+          # declaration failing both is still reported by its coercion error: only `_expand_coerce_sugar!` can
+          # produce a `coerce:` key, and the type sugar never adds one, so the bag it reads is already final.
           _validate_coercion!(validations[:type]) if validations[:type].is_a?(Hash) && validations[:type].key?(:coerce)
 
-          if validations.key?(:of)
-            declared_klasses = Array(validations.dig(:type, :klass))
-            raise ArgumentError, "of: requires type: Array (got #{declared_klasses.inspect})" unless declared_klasses == [Array]
-
-            validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
-            raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
-          end
+          _canonicalize_validator_options!(validations, fields)
 
           _derive_raw_shape_container!(validations)
 

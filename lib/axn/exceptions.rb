@@ -8,6 +8,15 @@ module Axn
     # failure being reported with an exception of its own — and one outside StandardError then escapes
     # the `rescue StandardError` callers map these failures with, which is the escape naming the class
     # is meant to describe. A bound base implementation cannot be intercepted.
+    #
+    # Not dispatching is ALL this promises. What it returns is the constant path's own bytes, and a constant
+    # may hold non-UTF-8 ones (`Object.const_set(:"Caf\xE9", Class.new)` is accepted, and `Module#to_s` hands
+    # those bytes back), so interpolating the result into a UTF-8 message can still raise
+    # Encoding::CompatibilityError from the reporting itself. A layer writing a class name into prose therefore
+    # renders it — `Reflection::PropertyNames.renderable_class_name`/`renderable_module_name` compose both
+    # halves — and this module deliberately does not, because the reflection layer requires THIS file: reaching
+    # back into it here would leave a message path NameError-ing under the standalone loads
+    # `spec/axn/standalone_require_spec.rb` pins.
     module ClassName
       OBJECT_CLASS = ::Object.instance_method(:class)
       MODULE_TO_S = ::Module.instance_method(:to_s)
@@ -16,6 +25,11 @@ module Axn
       # `Module#to_s` rather than `#name`, which is nil for an anonymous class; to_s always returns a
       # String ("#<Class:0x…>" there).
       def self.of(value) = MODULE_TO_S.bind_call(OBJECT_CLASS.bind_call(value))
+
+      # The name of a class or module ITSELF, rather than of a value's class — for a message that names a
+      # declared type. Same reasoning: a class can define its own `to_s`, and one that raises would replace
+      # the failure being reported.
+      def self.of_module(mod) = MODULE_TO_S.bind_call(mod)
     end
 
     # Internal only -- rescued before Axn::Result is returned
@@ -123,6 +137,44 @@ module Axn
   end
 
   class DuplicateFieldError < ContractViolation; end
+
+  # Raised by `Axn.validate_tool_contracts!` for a tool whose contract failure cannot be reported AS ITSELF.
+  # Reporting it as itself means renaming it to say which tool it came from, and renaming an exception runs the
+  # exception's own code — `#exception`, which `raise` dispatches on whatever object it is handed, and the
+  # duplication hooks `Exception#exception(message)` reaches. axn will not run that code while reporting the
+  # failure it caused (an override that raises replaces the failure, and one outside StandardError escapes the
+  # boot rescue entirely), so when the class owns any of it, axn reports its own error instead.
+  #
+  # Nothing is lost but the class: the original is this error's `cause`, and its message is repeated here.
+  # Deliberately the only exception in this file that builds its text in `initialize` rather than in `#message`.
+  # Everything it needs is already a plain String by the time it is constructed, so there is nothing to defer —
+  # and this exception exists precisely because reporting must not depend on an exception's own methods, so it
+  # renders identically through `#message`, through a bound `Exception#to_s`, and to anything that reads the
+  # stored message directly.
+  #
+  # Every value it interpolates came from somewhere else's object — the tool's constant path, the original's
+  # message, the original's class name — so each is RENDERED into this message rather than joined to it. Bytes
+  # with no UTF-8 rendering (or in another encoding entirely) would otherwise raise
+  # Encoding::CompatibilityError from `super` itself, replacing the tool-contract failure with an encoding
+  # failure at boot, which is the outcome this error exists to prevent one indirection over. Rendering is
+  # idempotent, so the caller having already rendered them (as `Axn.validate_tool_contracts!` does, needing the
+  # same text for its other branch) costs an allocation and changes nothing: the guarantee holds for any caller
+  # rather than resting on that one's diligence.
+  #
+  # This file cannot REQUIRE the renderer (the reflection layer requires this file), so the reference resolves at
+  # call time — sound here and not for `Internal::ClassName` above, because the only code that can construct this
+  # error is `Axn.validate_tool_contracts!`, which lives in the fully-loaded gem, while a class name is written
+  # into prose by files an adapter loads standalone.
+  class InvalidToolContract < ContractViolation
+    def initialize(tool:, reason:, original_class:)
+      tool, reason, original_class = [tool, reason, original_class].map { |text| Axn::Reflection::PropertyNames.renderable_label(text) }
+
+      super("#{tool} has an invalid tool contract — #{reason} (raised as #{self.class}, and not as the original " \
+            "#{original_class}, because that class supplies its own `#exception` or duplication hook, or the " \
+            "object is frozen: axn does not run an exception's own code while reporting the failure it caused. " \
+            "The original is this error's `cause`.)")
+    end
+  end
 
   class ValidationError < ContractViolation
     attr_reader :errors, :user_facing_message

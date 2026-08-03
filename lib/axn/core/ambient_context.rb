@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/reflection/subfield_tree"
+require "axn/internal/shape_graph"
 
 module Axn
   module Core
@@ -42,6 +43,13 @@ module Axn
           @_axn_ambient_subfield_tree = AmbientSubfieldTreeCacheEntry.new(subfields:, value:)
           value
         end
+
+        # Everything below is reached only with an implicit receiver, from here and from the other
+        # declaration modules extended onto the same class. It is private because an `_`-prefixed name in a
+        # module extended onto every action class otherwise lands there as a PUBLIC singleton method, so the
+        # convention and the surface disagree. `_ambient_subfield_tree` stays public above: the runtime
+        # subfield resolver calls it on the action class from another file.
+        private
 
         # Declaration-time contradiction checks for the ambient subtree. Ambient configs are dropped
         # from the shared `_resolved_subfields` tree (it has no `:ambient_context` root), so the main
@@ -104,8 +112,8 @@ module Axn
         # Reject `user_facing:` on any member of an ambient subfield's shape, recursing into nested shapes.
         # A duck-typed member without `#user_facing` (a raw `shape: { members: [...] }`) defaults to none.
         def _reject_ambient_shape_user_facing_members!(shape_config)
-          _each_shape_member(shape_config.validations[:shape]) do |member|
-            next unless member.respond_to?(:user_facing) && member.user_facing
+          _each_shape_member(Internal::ShapeGraph.shape_in(shape_config.validations)) do |member|
+            next unless Internal::ShapeGraph.read(member, :user_facing)
 
             raise ArgumentError,
                   "`user_facing:` is not supported on a shape member of an `on: :ambient_context` subfield " \
@@ -113,16 +121,37 @@ module Axn
           end
         end
 
-        # Yield every member of `shape`, recursing into each member's own nested shape.
-        def _each_shape_member(shape, &block)
-          return unless shape.is_a?(Hash)
+        # Yield every member of `shape`, recursing into each member's own nested shape. Every read goes
+        # through Internal::ShapeGraph, so a member supplied by a raw `shape:` kwarg cannot deny a reader
+        # it defines and slip past the checks this walk feeds.
+        #
+        # Bounded both ways, and not because a DECLARED graph can be untraversable — `_validate_and_snapshot_shape!`
+        # rejects that ahead of this walk, and snapshots what it accepts. This walk re-walks whatever the class
+        # HOLDS: declaring a second ambient subfield rebuilds the tree over every ambient config, and a config
+        # assigned onto the class rather than declared (`subfield_configs=`) carries a shape no walk has traversed
+        # — one that may contain itself, or mint a fresh nested shape on every read. Either overflows the stack
+        # while the class is being defined, which no rescue in the framework can settle. Same two bounds, same two
+        # messages, as the projection walk that re-walks for its own reasons
+        # (Reflection::PropertyNames#count_shape_members!).
+        def _each_shape_member(shape, seen = nil, depth = 0, via = nil, &block)
+          hash = Internal::ShapeGraph.hash_or_nil(shape)
+          return if nil.equal?(hash)
 
-          (shape[:members] || []).each do |member|
-            yield member
-            nested = member.validations[:shape] if member.respond_to?(:validations) && member.validations.is_a?(Hash)
-            _each_shape_member(nested, &block) if nested
+          raise ArgumentError, Internal::ShapeGraph.too_deep_message(via) if depth > Internal::ShapeGraph::MAX_NESTING
+
+          outcome = Axn::Internal::CycleGuard.guard(hash, seen, on_cycle: CYCLIC_AMBIENT_SHAPE) do |nested|
+            Internal::ShapeGraph.members(hash).each do |member|
+              yield member
+              _each_shape_member(Internal::ShapeGraph.nested_shape(member), nested, depth + 1, member, &block)
+            end
           end
+          raise ArgumentError, Internal::ShapeGraph.self_containing_message(via) if CYCLIC_AMBIENT_SHAPE.equal?(outcome)
         end
+
+        # A private object of this module's own, always the RECEIVER of `equal?`, so nothing a declaration can
+        # produce is mistaken for it.
+        CYCLIC_AMBIENT_SHAPE = Object.new.freeze
+        private_constant :CYCLIC_AMBIENT_SHAPE
 
         # Depth-first walk of `node` and all its declared descendants, yielding each node.
         def _each_ambient_node(node, &block)
@@ -137,8 +166,6 @@ module Axn
         def _ambient_model_node?(node)
           node.configs.any? { |c| c.validations[:model] }
         end
-
-        private
 
         # The framework-supplied ambient parent, modeled for the ambient-scoped tree as an untyped
         # (always object-shaped) root reader — it never appears in provided_data or the input schema.
@@ -261,9 +288,10 @@ module Axn
       end
 
       # Delegates to the class-level predicate (see `ClassMethods#_ambient_model_node?`) so the filter
-      # and the declaration-time placement check share exactly one implementation.
+      # and the declaration-time placement check share exactly one implementation. Through `send` because that
+      # predicate is private on the class — an internal of the declaration walk, not a cross-layer entry point.
       def _ambient_model_node?(node)
-        self.class._ambient_model_node?(node)
+        self.class.send(:_ambient_model_node?, node)
       end
     end
   end

@@ -486,9 +486,541 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
     end
 
+    # A shape describes what is inside a container, so a raw one that names no members list is malformed. It
+    # used to be caught on the first CALL (ShapeValidator refuses a nil members list); it is rejected at
+    # declaration now, which is strictly earlier and where every other malformed declaration is answered.
+    describe "a raw shape that names no members" do
+      def declared_with(shape)
+        build_axn { expects :payload, type: Hash, shape: }
+      end
+
+      it "rejects an absent members list" do
+        expect { declared_with({ container: Hash }) }
+          .to raise_error(ArgumentError, /a raw `shape:` must supply `members:`.*do … end/m)
+      end
+
+      it "rejects an explicit nil members list on the same terms" do
+        expect { declared_with({ members: nil, container: Hash }) }
+          .to raise_error(ArgumentError, /a raw `shape:` must supply `members:`/)
+      end
+
+      it "names the member carrying a malformed nested shape" do
+        nested = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: Hash }, shape: { container: Hash } })
+
+        expect { declared_with({ members: [nested], container: Hash }) }
+          .to raise_error(ArgumentError, /a raw `shape:` at shape member `a` must supply `members:`/)
+      end
+
+      # An empty list is a real declaration — pointless, since only the container type then constrains the
+      # value, but not axn's business to refuse. It declares and calls cleanly.
+      it "accepts an explicitly empty members list" do
+        klass = declared_with({ members: [], container: Hash })
+
+        expect(klass.call(payload: { anything: 1 })).to be_ok
+        expect(klass.call(payload: "not a hash")).not_to be_ok
+      end
+    end
+
+    # Everything a stored member carries is read off the caller's object ONCE, at declaration, into axn's own
+    # `ShapeConfig` (`Contract#_snapshot_member_attributes!`) — so a duck-typed member is not stored as the
+    # caller's object at all, and the two layers that read a member cannot see different things.
+    describe "the member snapshot" do
+      def declared_with_member(member)
+        build_axn do
+          expects :payload, type: Hash, shape: { members: [member], container: Hash }
+
+          define_method(:call) { nil } # define_method, not `def`: this is inside a method body
+        end
+      end
+
+      def stored_member(klass) = klass.internal_field_configs.first.validations[:shape][:members].first
+
+      it "stores axn's own ShapeConfig rather than the caller's object" do
+        member = Struct.new(:field, :validations).new(:a, {})
+        stored = stored_member(declared_with_member(member))
+
+        expect(stored).to be_a(Axn::Core::Contract::ShapeConfig)
+        expect(stored).not_to be(member)
+      end
+
+      # A member name is stored as the Symbol every consumer keys it by (`Schema#member_properties` emits
+      # `field.to_sym`), exactly as a top-level field's is — so `field "a"` and `field :a` are one member
+      # whichever route declared it.
+      it "stores a String member name as its Symbol" do
+        member = Struct.new(:field, :validations).new("a", {})
+
+        expect(stored_member(declared_with_member(member)).field).to eq(:a)
+      end
+
+      # THE reason the canonical copy must be stored: the walk canonicalized a String-keyed bag and then threw
+      # the result away with the rest of the snapshot, so the schema omitted the constraint entirely while every
+      # call raised `ArgumentError: must supply :klass` from the raw bag — two layers, two answers, neither one
+      # the declaration.
+      it "validates and reflects a String-keyed member bag as its canonical form" do
+        klass = declared_with_member(Struct.new(:field, :validations).new(:a, { "type" => { "klass" => String } }))
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :a, :type)).to eq("string")
+        expect(klass.call(payload: { a: "x" })).to be_ok
+        expect(klass.call(payload: { a: 1 })).not_to be_ok
+      end
+
+      it "behaves identically for the Symbol-keyed spelling" do
+        klass = declared_with_member(Struct.new(:field, :validations).new(:a, { type: { klass: String } }))
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :a, :type)).to eq("string")
+        expect(klass.call(payload: { a: "x" })).to be_ok
+        expect(klass.call(payload: { a: 1 })).not_to be_ok
+      end
+
+      # A member's option containers are detached on exactly the terms a field's are — which the snapshot is what
+      # makes true, since the canonical copy is what gets stored.
+      it "does not let a mutated inclusion: list widen a declared member's enum" do
+        enum = %w[a b]
+        klass = declared_with_member(Struct.new(:field, :validations).new(:s, { inclusion: { in: enum } }))
+        enum << "c"
+
+        expect(klass.call(payload: { s: "c" })).not_to be_ok
+      end
+
+      # The outbound emitter views a gated member "through" a copy of itself (`config.with(validations: …)`), which
+      # only axn's own config types answer to — so a duck-typed member carrying a per-validator gate used to raise
+      # `NoMethodError: undefined method 'with'` from `output_schema`. Snapshotting it makes the copy axn's own.
+      it "reflects an exposes member carrying a per-validator gate, which needs a config copy" do
+        member = Struct.new(:field, :validations).new(:a, { type: { klass: Integer, if: :flag } })
+        klass = build_axn do
+          exposes :payload, type: Hash, shape: { members: [member], container: Hash }
+
+          define_method(:call) { expose(payload: {}) }
+        end
+
+        expect(klass.output_schema.dig(:properties, :payload, :properties)).to eq({ a: {} })
+      end
+
+      # `#default` is not part of the member grammar — the block form rejects `default:` outright, since a member
+      # is reader-less and nothing applies one at runtime. A duck-typed member defining the reader used to have it
+      # emitted anyway, which made the schema LIE: it advertised the member as optional with a default, and the
+      # omitted call then failed presence validation.
+      it "ignores a #default reader, so the schema no longer promises a default nothing applies" do
+        klass = declared_with_member(Struct.new(:field, :validations, :default).new(:a, { presence: true }, "dflt"))
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :a)).to eq({})
+        expect(klass.input_schema.dig(:properties, :payload, :required)).to eq(["a"])
+        expect(klass.call(payload: {})).not_to be_ok
+      end
+    end
+
+    # Axn's own validators accept a direct value in place of an options bag (`type: Hash`, `of: Hash`,
+    # `validate: ->(v){}`), and the DSL expands it into that bag before storing it. A raw member's bag was
+    # canonicalized at the KEY level only, so the bare spelling — the one every author writes — reached the
+    # validators and the projection as a Class, which both read as `[:klass]`: the member validated nothing and
+    # failed every call, while `of:` took the projection down with it. The member snapshot now applies the same
+    # expansion, from the same seam, so a member's bag is a field's bag.
+    describe "a member's shorthand validator value" do
+      def declared_with(validations)
+        member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations:)
+        build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+      end
+
+      def property(klass) = klass.input_schema.dig(:properties, :payload, :properties, :m)
+
+      def stored(klass) = klass.internal_field_configs.first.validations[:shape][:members].first.validations
+
+      it "stores `type: Hash` as the bag every consumer reads" do
+        expect(stored(declared_with({ type: Hash }))).to eq({ type: { klass: Hash } })
+      end
+
+      it "validates `type: Hash`, which used to fail every call with `must supply :klass`" do
+        klass = declared_with({ type: Hash })
+
+        expect(klass.call(payload: { m: { a: 1 } })).to be_ok
+        expect(klass.call(payload: { m: "nope" }).exception).to be_a(Axn::InboundValidationError)
+        expect(klass.call(payload: { m: "nope" }).exception.message).to match(/m is not a Hash/)
+      end
+
+      it "reflects it as exactly what the `{ klass: }` spelling reflects, inbound and outbound" do
+        %i[input_schema output_schema].each do |schema|
+          expect(declared_with({ type: Hash }).public_send(schema))
+            .to eq(declared_with({ type: { klass: Hash } }).public_send(schema))
+        end
+      end
+
+      # `of:` is the same option one layer down, and it was worse off: the projection reads it as a bag in three
+      # places, so a bare one raised `ArgumentError: odd number of arguments for Hash` (a Class asked for
+      # `[:klass]`) from `input_schema` — before any call could reach the "must supply :klass" the runtime had
+      # waiting for it.
+      it "projects and validates a bare `of:`, which used to take the projection down" do
+        klass = declared_with({ type: Array, of: Hash })
+
+        expect(property(klass)).to eq({ type: "array", items: { type: "object" } })
+        expect(klass.call(payload: { m: [{ a: 1 }] })).to be_ok
+        expect(klass.call(payload: { m: [1] }).exception.message).to match(/element at index 0 is not a Hash/)
+      end
+
+      # A member carrying BOTH a bare `type:` and a nested `shape:` is the corner the projection read as a bag
+      # unconditionally: `TypeError: #<Class:Hash> does not have #dig method`, naming neither the member nor the
+      # option, and taking `input_schema` (and so `Axn.validate_tool_contracts!`) with it.
+      it "projects a bare `type:` carrying a nested shape, and validates through it" do
+        inner = Axn::Core::Contract::ShapeConfig.new(field: :n, validations: { type: String })
+        klass = declared_with({ type: Hash, shape: { members: [inner], container: Hash } })
+
+        expect(property(klass)).to eq({ type: "object", properties: { n: { type: "string" } }, required: ["n"] })
+        expect(klass.call(payload: { m: { n: "x" } })).to be_ok
+        expect(klass.call(payload: { m: { n: 1 } }).exception.message).to match(/m n is not a String/)
+      end
+
+      # The expansion runs after the KEYS are canonicalized, which is what lets a String-keyed bag reach the
+      # expander as the bag it is: `validate:`'s expander rejects a Hash carrying no callable, and reading this
+      # one before its keys were canonical would reject a declaration that supplies one.
+      it "expands a String-keyed bag by its canonical keys" do
+        klass = declared_with({ "validate" => { "with" => ->(v) { "must be 1" unless v == 1 } } })
+
+        expect(klass.call(payload: { m: 1 })).to be_ok
+        expect(klass.call(payload: { m: 2 }).exception.message).to match(/m must be 1/)
+      end
+
+      # Reached through the same expansion, so the misuse it catches is now caught where every other malformed
+      # declaration is. It used to declare cleanly and raise the same ArgumentError on every call.
+      it "rejects a `validate:` Hash carrying no callable at declaration" do
+        expect { declared_with({ validate: { inclusion: { in: [1] } } }) }
+          .to raise_error(ArgumentError, /`validate:` expects a callable/)
+      end
+
+      # `model:` is the one shorthand a member has no meaning for — it resolves a record and exposes a
+      # companion reader, neither of which a reader-less member has — so it is refused on the raw route exactly
+      # as the block form refuses it, rather than expanded into a bag that would silently type-check the
+      # element in place. Before, it declared cleanly and failed every call with `must supply :klass`.
+      it "rejects `model:` at declaration, as the block form does" do
+        expect { declared_with({ model: Struct.new(:id) }) }
+          .to raise_error(ArgumentError, /shape member `m` does not support model:.*type: Klass/m)
+      end
+
+      # Expanding a shorthand is only half of what canonicalizing a bag is for: the compatibility guards that
+      # read the canonical bag live in the same seam, so a member is held to exactly what a field is held to.
+      # `of:` beside a non-Array `type:` is the case with no runtime signal at all — `OfValidator` returns
+      # before it inspects anything that is not an Array, so on a value the declared `type:` accepts the
+      # element constraint simply never applies. It declared cleanly and every call succeeded.
+      it "rejects `of:` beside a non-Array `type:` at declaration, with the field path's own message" do
+        expect { declared_with({ type: Hash, of: String }) }
+          .to raise_error(ArgumentError, "of: requires type: Array (got [Hash])")
+      end
+
+      # Same guard, the other spelling of the same mistake: with no `type:` at all the element check applies to
+      # an Array and to nothing else, so the member accepted every non-Array value it was declared to constrain.
+      it "rejects a bare `of:` with no `type:`, as the field path does" do
+        expect { declared_with({ of: String }) }
+          .to raise_error(ArgumentError, "of: requires type: Array (got [])")
+      end
+
+      # The required-option half of the same pair, reached through the expansion (`of: nil` expands to
+      # `{ klass: nil }`): it used to declare cleanly and raise `must supply :klass` from `check_validity!` on
+      # every call, which is the field path's message arriving at the wrong time and at the wrong person.
+      it "rejects `of: nil` at declaration, where it used to raise on every call" do
+        expect { declared_with({ type: Array, of: nil }) }
+          .to raise_error(ArgumentError, "of: must supply :klass")
+      end
+
+      # A bare `type:` naming a LIST is expanded around a copy of that list, since the detach pass runs first —
+      # so the stored contract is axn's, exactly as for a field.
+      it "detaches a bare `type:` list, so mutating it cannot widen a declared member" do
+        types = [String]
+        klass = declared_with({ type: types })
+        types << Integer
+
+        expect(stored(klass)).to eq({ type: { klass: [String] } })
+        expect(klass.call(payload: { m: "x" })).to be_ok
+        expect(klass.call(payload: { m: 1 })).not_to be_ok
+      end
+    end
+
+    # A member's nested `shape:` is a shape declared by hand exactly as a field's is, so it is held to the
+    # field's own derivation and container check — at every level the declaration walk descends through.
+    # Before, the walk recursed past both: a hand-written nested shape (the natural spelling for a raw member)
+    # reached ShapeValidator with a nil container and raised a bare `TypeError: class or module required` on
+    # EVERY call, naming neither the member nor the option, while the block form derived one and worked.
+    describe "a member's nested `shape:`" do
+      def declared_with(validations)
+        member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations:)
+        build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+      end
+
+      def nested(klass, depth = 1)
+        node = klass.internal_field_configs.first.validations[:shape]
+        depth.times { node = node[:members].first.validations[:shape] }
+        node
+      end
+
+      let(:leaf) { Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: { type: String }) }
+
+      it "derives the container from the member's own `type:`, where every call used to raise TypeError" do
+        klass = declared_with({ type: Hash, shape: { members: [leaf] } })
+
+        expect(nested(klass)[:container]).to eq(Hash)
+        expect(klass.call(payload: { m: { leaf: "x" } })).to be_ok
+        expect(klass.call(payload: { m: { leaf: 1 } }).exception.message).to match(/m leaf is not a String/)
+      end
+
+      # The container a member's nested shape gets is the one the block form gives the same declaration —
+      # verified by comparing the stored node against the route that already derived it (a block-form member
+      # carrying a raw `shape:` kwarg, which reaches the field path's derivation through `_parse_field_configs`).
+      it "stores the node the block form stores for the same declaration" do
+        raw = declared_with({ type: Hash, shape: { members: [leaf] } })
+        via_block = build_axn do
+          member_shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: { type: String })] }
+          expects :payload, type: Hash do
+            field :m, type: Hash, shape: member_shape
+          end
+        end
+
+        expect(nested(raw)[:container]).to eq(nested(via_block)[:container])
+        expect(nested(raw)[:members].map(&:to_h)).to eq(nested(via_block)[:members].map(&:to_h))
+      end
+
+      it "derives an Array container for an Array-typed member, as the field path does" do
+        klass = declared_with({ type: Array, shape: { members: [leaf] } })
+
+        expect(nested(klass)[:container]).to eq(Array)
+        expect(klass.call(payload: { m: [{ leaf: "x" }] })).to be_ok
+      end
+
+      # The walk recurses, so every level is a member of some shape and gets the same treatment: a two-level
+      # nested shape behaves exactly as a one-level one.
+      it "derives at every nesting level, not just the first" do
+        deep = Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: { type: Hash, shape: { members: [leaf] } })
+        klass = declared_with({ type: Hash, shape: { members: [deep] } })
+
+        expect(nested(klass, 1)[:container]).to eq(Hash)
+        expect(nested(klass, 2)[:container]).to eq(Hash)
+        expect(klass.call(payload: { m: { deep: { leaf: "x" } } })).to be_ok
+      end
+
+      it "rejects a non-class nested `container:` at declaration, with the field path's own message" do
+        expect { declared_with({ type: Hash, shape: { members: [], container: :junk } }) }
+          .to raise_error(ArgumentError, /a shape's `container:` must be a class \(got :junk\)/)
+      end
+
+      it "rejects one nested two levels down just the same" do
+        deep = Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: { type: Hash, shape: { members: [], container: :junk } })
+
+        expect { declared_with({ type: Hash, shape: { members: [deep], container: Hash } }) }
+          .to raise_error(ArgumentError, /a shape's `container:` must be a class \(got :junk\)/)
+      end
+
+      # Derivation reports the field path's declaration error when there is nothing structured to derive from,
+      # rather than storing a nil container for the first call to trip over.
+      it "raises when the member declares no structured `type:` to derive from" do
+        expect { declared_with({ shape: { members: [leaf] } }) }
+          .to raise_error(ArgumentError, /a shape block requires a single structured type:/)
+      end
+
+      it "leaves an explicit nested `container:` exactly as declared" do
+        klass = declared_with({ type: Hash, shape: { members: [leaf], container: Hash } })
+
+        expect(nested(klass)[:container]).to eq(Hash)
+        expect(klass.call(payload: { m: { leaf: "x" } })).to be_ok
+      end
+
+      # A container comes from the ENCLOSING member's `type:`, so it belongs to the position rather than to the
+      # node: one nested shape object reused by two members with different types needs a different container in
+      # each place. The walk's memo hands both members one copy, so the derivation detaches before it writes.
+      it "gives one shared nested shape the container each position calls for" do
+        shared = { members: [leaf] }
+        klass = build_axn do
+          node = shared
+          expects :payload, type: Hash, shape: { container: Hash, members: [
+            Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Hash, shape: node }),
+            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { type: Array, shape: node }),
+          ] }
+        end
+        members = klass.internal_field_configs.first.validations[:shape][:members]
+
+        expect(members.map { |m| m.validations[:shape][:container] }).to eq([Hash, Array])
+        expect(shared.key?(:container)).to be(false)
+        expect(klass.call(payload: { a: { leaf: "x" }, b: [{ leaf: "y" }] })).to be_ok
+      end
+
+      it "derives on the outbound route too" do
+        klass = build_axn do
+          inner = Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: { type: String })
+          member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: Hash, shape: { members: [inner] } })
+          exposes :payload, type: Hash, shape: { members: [member], container: Hash }
+          define_method(:call) { expose(payload: { m: { leaf: "x" } }) }
+        end
+
+        expect(klass.external_field_configs.first.validations[:shape][:members].first.validations[:shape][:container]).to eq(Hash)
+        expect(klass.call).to be_ok
+      end
+    end
+
+    # A raw member's bag never passes `_partition_field_options`, so nothing had ever held its KEYS to a
+    # grammar: a typo declared cleanly and raised `Unknown validator: 'TpyeValidator'` on every call, naming a
+    # class the author never wrote and neither the member nor the option, where the same typo on a field is
+    # refused at declaration. The allowed set is derived from the field path's own (KNOWN_VALIDATION_KEYS)
+    # unioned with ActiveModel's shared options, which is what a raw bag reaches `validates` as.
+    describe "a member's option keys" do
+      def declared_with(validations)
+        member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations:)
+        build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+      end
+
+      def declared_two_deep(validations)
+        leaf = Axn::Core::Contract::ShapeConfig.new(field: :deep, validations:)
+        declared_with({ type: Hash, shape: { members: [leaf] } })
+      end
+
+      it "rejects a typo at declaration, naming the member and the key" do
+        expect { declared_with({ tpye: String }) }
+          .to raise_error(ArgumentError, /Unknown key\(s\) :tpye in the validations of shape member `m`/)
+      end
+
+      it "rejects one two levels down just the same" do
+        expect { declared_two_deep({ tpye: String }) }
+          .to raise_error(ArgumentError, /Unknown key\(s\) :tpye in the validations of shape member `deep`/)
+      end
+
+      it "rejects a key that is not a Symbol at all" do
+        expect { declared_with({ 1 => String }) }
+          .to raise_error(ArgumentError, /Unknown key\(s\) .* in the validations of shape member `m`/)
+      end
+
+      # The verdict is not the caller's to decide: a key that is not a Symbol is unknown by construction, so
+      # one answering `hash`/`eql?` as `:type` cannot pass itself off as a recognized option — and its own
+      # `to_s` is not run to report it, since that is caller code running while its error is built.
+      it "refuses a key that claims to be a recognized one, naming it by class" do
+        lying = Class.new do
+          def hash = :type.hash
+          def eql?(other) = other.equal?(:type)
+          def to_s = raise(NotImplementedError)
+        end
+
+        expect { declared_with({ lying.new => String }) }
+          .to raise_error(ArgumentError, /Unknown key\(s\) a name of class .* in the validations of shape member `m`/)
+      end
+
+      # A member's non-validation options are attributes of the member itself, so the same names in its
+      # validations bag are in the wrong slot — the message says where they belong.
+      %i[optional sensitive user_facing method_call description].each do |opt|
+        it "rejects #{opt}: in the bag, pointing at where a member carries it" do
+          expect { declared_with({ opt => true, type: String }) }
+            .to raise_error(ArgumentError, /Unknown key\(s\) :#{opt} .*attributes of the member ITSELF/m)
+        end
+      end
+
+      # The two the block form already refuses with a REASON keep that reason on this route: an author who
+      # wrote `default:` has a different problem from one who wrote `tpye:`.
+      %i[default preprocess].each do |opt|
+        it "gives #{opt}: the block form's own reason rather than the unknown-key message" do
+          expect { declared_with({ opt => true, type: String }) }
+            .to raise_error(ArgumentError, %r{shape member `m` does not support #{opt}: \(shape blocks declare validation/schema only\)})
+        end
+      end
+
+      %i[as prefix].each do |opt|
+        it "gives #{opt}: the reader-less reason" do
+          expect { declared_with({ opt => :renamed, type: String }) }
+            .to raise_error(ArgumentError, /shape member `m` does not support #{opt}:.*reader-less/m)
+        end
+      end
+
+      # `coerce:` is field-only (it resolves a coerced value onto a reader a member has not got), and the block
+      # form refuses it whichever way it is spelled. The raw route refused neither: a top-level `coerce:`
+      # reached ActiveModel as a validator, and the bag spelling was accepted and silently did nothing.
+      it "refuses a top-level `coerce:`" do
+        expect { declared_with({ coerce: Integer }) }
+          .to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+      end
+
+      it "refuses the `type: { coerce: true }` spelling, which used to be silently inert" do
+        expect { declared_with({ type: { klass: Integer, coerce: true } }) }
+          .to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+      end
+
+      it "refuses one two levels down" do
+        expect { declared_two_deep({ coerce: Integer }) }
+          .to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+      end
+
+      it "leaves `coerce: false` the legal no-op it is on a field" do
+        expect(declared_with({ type: { klass: Integer, coerce: false } }).call(payload: { m: 1 })).to be_ok
+      end
+
+      it "still accepts every validation a member legitimately carries" do
+        expect(declared_with({ type: String }).call(payload: { m: "x" })).to be_ok
+        expect(declared_with({ type: Array, of: String }).call(payload: { m: ["x"] })).to be_ok
+        expect(declared_with({ presence: true }).call(payload: { m: "x" })).to be_ok
+        expect(declared_with({ inclusion: { in: %w[x] } }).call(payload: { m: "x" })).to be_ok
+        expect(declared_with({ validate: ->(v) { "no" unless v == "x" } }).call(payload: { m: "x" })).to be_ok
+      end
+
+      # ActiveModel's own shared options ride a `validates` call without being validators, and a raw bag
+      # reaches `validates` verbatim — so they work on this route today and refusing them would reject a legal
+      # declaration. They are unioned in from AM's own list rather than listed again.
+      it "accepts ActiveModel's shared options, which apply on this route" do
+        klass = declared_with({ type: String, allow_blank: true })
+
+        expect(klass.call(payload: { m: "" })).to be_ok
+        expect(declared_with({ type: String, strict: true }).call(payload: { m: "x" })).to be_ok
+        expect(declared_with({ type: String, if: -> { false } }).call(payload: { m: 1 })).to be_ok
+      end
+
+      it "leaves a member's own attributes alone — they were never bag keys" do
+        member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: String }, sensitive: true, user_facing: true)
+        klass = build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } }
+        stored = klass.internal_field_configs.first.validations[:shape][:members].first
+
+        expect([stored.sensitive, stored.user_facing, stored.validations.keys]).to eq([true, true, [:type]])
+        expect(klass.call(payload: { m: "x" })).to be_ok
+      end
+
+      # The block form reaches this bag only through `_partition_field_options`, which has always refused an
+      # unknown key — and it accepts the member options the raw route cannot take in a bag.
+      it "leaves the block form's own verdicts unchanged" do
+        expect { build_axn { expects(:payload, type: Hash) { field :m, tpye: String } } }
+          .to raise_error(ArgumentError, /Unknown key\(s\) :tpye in field declaration/)
+        expect(build_axn { expects(:payload, type: Hash) { field :m, type: String, optional: true, sensitive: true } }
+                 .call(payload: { m: "x" })).to be_ok
+      end
+    end
+
     # The documented member contract is duck-typed (#field + #validations). A raw `shape:` supplied
     # with a member object that doesn't implement #method_call must not raise — it defaults to the
     # safe no-dispatch behavior, so existing member objects don't have to grow a new method.
+    # Reflection honors the same two-method contract declaration does: a member implementing only #field and
+    # #validations reflects, with every other attribute (#description) treated as absent. Before, such a member
+    # declared cleanly and then raised NoMethodError from `input_schema`.
+    describe "duck-typed member contract (reflection)" do
+      it "reflects a member implementing only #field and #validations" do
+        member = Class.new do
+          def field = :ok
+          def validations = {}
+        end.new
+        klass = build_axn { expects :p, type: Hash, shape: { members: [member] } }
+
+        expect(klass.input_schema.dig(:properties, :p, :properties)).to eq({ ok: {} })
+        expect(klass.output_schema[:properties]).to eq({})
+      end
+
+      it "reflects such a member on exposes too" do
+        member = Class.new do
+          def field = :ok
+          def validations = {}
+        end.new
+        klass = build_axn { exposes :p, type: Hash, shape: { members: [member] } }
+
+        expect(klass.output_schema.dig(:properties, :p, :properties)).to eq({ ok: {} })
+      end
+
+      it "still emits a description when the member defines one" do
+        member = Class.new do
+          def field = :ok
+          def validations = {}
+          def description = "the ok member"
+        end.new
+        klass = build_axn { expects :p, type: Hash, shape: { members: [member] } }
+
+        expect(klass.input_schema.dig(:properties, :p, :properties, :ok)).to eq({ description: "the ok member" })
+      end
+    end
+
     describe "duck-typed member contract (member without #method_call)" do
       it "treats a member lacking #method_call as not opted in (safe default), no NoMethodError" do
         raw_member = Struct.new(:field, :validations).new(:status, { type: { klass: String } })
