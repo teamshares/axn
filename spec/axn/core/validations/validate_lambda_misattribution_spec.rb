@@ -18,11 +18,17 @@ RSpec.describe "a validate: lambda that raises an exception axn cannot describe"
     end
   end
 
+  # The per-field message is asserted alongside the exception class, and on the EXCEPTION rather than on
+  # `result.error` — the latter is the generic user-facing wording ("Something went wrong"), which cannot
+  # tell a real validation failure from a lost one. `validate_each` builds this text from the lambda's
+  # exception a second time, after the guard has reported it, so without a guarded read there the field
+  # error is where the escape happens even once `best_effort` itself is airtight.
   it "settles on the validation error for an ordinary raise (control)" do
     result = action_validating_with { raise ArgumentError, "ordinary" }.call(n: 1)
 
     expect(result).not_to be_ok
     expect(result.exception).to be_a(Axn::InboundValidationError)
+    expect(result.exception.message).to match(/failed validation: ordinary/)
   end
 
   it "settles on the validation error when the lambda's exception has a raising #message" do
@@ -30,6 +36,7 @@ RSpec.describe "a validate: lambda that raises an exception axn cannot describe"
 
     expect(result).not_to be_ok
     expect(result.exception).to be_a(Axn::InboundValidationError)
+    expect(result.exception.message).to match(/failed validation/)
   end
 
   it "settles on the validation error when the lambda's exception holds unrenderable message bytes" do
@@ -37,5 +44,7 @@ RSpec.describe "a validate: lambda that raises an exception axn cannot describe"
 
     expect(result).not_to be_ok
     expect(result.exception).to be_a(Axn::InboundValidationError)
+    # Escaped rather than scrubbed: a message naming an offender must not quietly alter what it names.
+    expect(result.exception.message).to match(/failed validation: "bad\\xFF"/)
   end
 end

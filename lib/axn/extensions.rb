@@ -40,7 +40,23 @@ module Axn
       # Whether a guarded failure is re-raised rather than logged — the dev-loud mode. Exposed so
       # anything that has to reason about what best_effort will DO consults the same condition rather
       # than restating it.
-      def raises_in_dev? = Axn.config.best_effort_raises_in_dev && Axn.config.env.development?
+      #
+      # A seam that cannot answer means NOT dev-loud. Both reads are into caller-owned config — the setting
+      # and the `env` object a host application supplies — and a half-booted or misconfigured one raises
+      # here, which would make FAILING TO DECIDE the answer: `best_effort` is called from `ensure` blocks
+      # throughout the executor, so a raise from the decision replaces the exception already in flight with
+      # one manufactured while working out how to report it. The two directions are not symmetric. Answering
+      # false where true was configured loses a deliberately loud raise in development, which is a
+      # development-time annoyance; answering by raising turns swallow-and-log into an escape in any
+      # environment, which is the failure this whole guard exists to prevent.
+      #
+      # Narrow on the same terms as everything else here: a signal is not a broken config, and axn absorbs
+      # one nowhere.
+      def raises_in_dev?
+        Axn.config.best_effort_raises_in_dev && Axn.config.env.development?
+      rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
+        false
+      end
 
       # Undispatched ancestry, not `exception.is_a?`. Not as a defense against exceptions that lie
       # about themselves — that is unwinnable — but because the object's opinion is not the question.
@@ -106,9 +122,9 @@ module Axn
       # code runs INSIDE the rescue, so a `message`, a `class`, or a backtrace read here is a second chance
       # for the exception to escape through the guard meant to contain it — and since the guard is called
       # from `ensure` all over the executor, an escape does not just lose a log line, it replaces the
-      # exception already in flight. Two shapes reached it, neither needing a hostile author: an exception
-      # whose `#message` raises, and an ordinary one whose STORED message holds bytes that cannot be joined
-      # to axn's own prose.
+      # exception already in flight. Two shapes reach it without a hostile author: an exception whose
+      # `#message` raises, and an ordinary one whose STORED message holds bytes that cannot be joined to
+      # axn's own prose.
       def _warn_and_swallow(exception, desc, action)
         raise exception if raises_in_dev?
 

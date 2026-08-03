@@ -275,21 +275,27 @@ RSpec.describe Axn::Extensions do
 
         shapes.each do |label, block|
           it "re-raises #{label} itself, never a reporting failure" do
-            raised = begin
-              described_class.best_effort("guarding", &block)
+            # The object the block raised is captured from INSIDE the guarded block, so the assertion is
+            # identity rather than class: a reporting failure of the same class as the block's exception
+            # would satisfy a class comparison, and so would both sides coming back nil. Both are asserted
+            # non-nil for the same reason — the invariant is that this exact object comes out.
+            thrown = nil
+
+            escaped = begin
+              described_class.best_effort("guarding") do
+                block.call
+              rescue Exception => e # rubocop:disable Lint/RescueException
+                thrown = e
+                raise
+              end
               nil
             rescue Exception => e # rubocop:disable Lint/RescueException
               e
             end
 
-            expected = begin
-              block.call
-              nil
-            rescue Exception => e # rubocop:disable Lint/RescueException
-              e
-            end
-
-            expect(Axn::Internal::Identity.class_of(raised)).to eq(Axn::Internal::Identity.class_of(expected))
+            expect(Axn::Internal::Identity.nil_value?(thrown)).to be(false)
+            expect(Axn::Internal::Identity.nil_value?(escaped)).to be(false)
+            expect(Axn::Internal::Identity.same?(escaped, thrown)).to be(true)
           end
         end
       end
@@ -329,14 +335,26 @@ RSpec.describe Axn::Extensions do
       # hostile `#message` — a warning nobody reads replacing the exception in flight — and it is what the
       # backstop exists for.
       describe "a reporting failure raised by the guard's own collaborators" do
+        # A realistically broken `env` — a half-booted host application, a config whose backing object is
+        # gone — cannot answer ANY predicate, so the double refuses both. Breaking one predicate at a time is
+        # what let the `development?` read hide: `production?` is read while reporting, where the backstop
+        # covers it, but `development?` is read one line earlier to decide whether dev-loud applies, where
+        # nothing did.
+        def break_env_with(exception)
+          env = double(:env)
+          allow(env).to receive(:production?).and_raise(exception)
+          allow(env).to receive(:development?).and_raise(exception)
+          allow(Axn).to receive_message_chain(:config, :env).and_return(env)
+        end
+
         it "swallows a StandardError from the environment seam" do
-          allow(Axn).to receive_message_chain(:config, :env, :production?).and_raise(NoMethodError, "env is half-booted")
+          break_env_with(NoMethodError.new("env is half-booted"))
 
           expect(described_class.best_effort("guarding") { raise ArgumentError, "ordinary" }).to be_nil
         end
 
         it "swallows an allowlisted non-StandardError from the environment seam" do
-          allow(Axn).to receive_message_chain(:config, :env, :production?).and_raise(SystemStackError)
+          break_env_with(SystemStackError.new)
 
           expect(described_class.best_effort("guarding") { raise ArgumentError, "ordinary" }).to be_nil
         end
@@ -344,9 +362,43 @@ RSpec.describe Axn::Extensions do
         # The backstop is narrow on the same terms as `best_effort` itself: a signal arriving mid-report is
         # still a signal, and axn absorbing one would break the control flow it belongs to.
         it "lets a signal through rather than absorbing it into a swallowed warning" do
-          allow(Axn).to receive_message_chain(:config, :env, :production?).and_raise(Interrupt)
+          break_env_with(Interrupt.new)
 
           expect { described_class.best_effort("guarding") { raise ArgumentError, "ordinary" } }.to raise_error(Interrupt)
+        end
+
+        # Deciding whether dev-loud applies is itself two reads into caller-owned config, and it happens
+        # BEFORE the reporting the backstop covers — so a seam that cannot answer must not make the guard
+        # raise. Failing to decide is not an answer, and the safe answer is the one that keeps swallowing.
+        it "swallows rather than raising when the dev-loud decision cannot read the environment" do
+          allow(Axn).to receive_message_chain(:config, :best_effort_raises_in_dev).and_return(true)
+          break_env_with(NoMethodError.new("env is half-booted"))
+
+          expect(described_class.best_effort("guarding") { raise ArgumentError, "ordinary" }).to be_nil
+        end
+
+        # Same narrowness as the reporting path, for the same reason: a signal is not a broken config.
+        #
+        # Modelled as TRANSIENT — only the decision's read raises, and the reporting's read answers — which
+        # is what a signal actually is: an event arriving at one moment, not a property of the env object.
+        # A uniformly broken env would make this pass either way, since the second read would raise the
+        # signal again where nothing absorbs it, and the decision's own narrowness would go unpinned.
+        it "lets a signal through from the dev-loud decision too" do
+          env = double(:env)
+          allow(env).to receive(:development?).and_raise(Interrupt)
+          allow(env).to receive(:production?).and_return(false)
+          allow(Axn).to receive_message_chain(:config, :env).and_return(env)
+          allow(Axn).to receive_message_chain(:config, :best_effort_raises_in_dev).and_return(true)
+
+          expect { described_class.best_effort("guarding") { raise ArgumentError, "ordinary" } }.to raise_error(Interrupt)
+        end
+
+        it "swallows rather than raising when the dev-loud setting itself cannot be read" do
+          allow(Axn).to receive_message_chain(:config, :best_effort_raises_in_dev)
+            .and_raise(NoMethodError, "config is half-booted")
+          allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
+
+          expect(described_class.best_effort("guarding") { raise ArgumentError, "ordinary" }).to be_nil
         end
       end
     end
