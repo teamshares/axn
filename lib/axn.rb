@@ -22,6 +22,7 @@ require "axn/tools/version_group"
 require "axn/tools/registry"
 require "axn/tools/adapter_roots"
 require "axn/tools/invoker"
+require "axn/tools"
 
 # Internal utilities
 require "axn/internal/current_call_options"
@@ -63,15 +64,6 @@ module Axn
   # Foreign exceptions reclassified via fails_on are NOT owned — they keep their technical cause.
   def self.owns_failure_exception?(exception)
     exception.is_a?(Axn::Failure) || Axn::ValidationError.user_facing?(exception)
-  end
-
-  def self.register_tool_adapter(key, config_source = nil)
-    Axn::Tools::Registry.register_adapter(key, config_source)
-  end
-
-  def self.tools_for(adapter, all_versions: false)
-    adapter = _registered_tool_adapter!(adapter)
-    Axn::Tools::Registry.tools_for(adapter, all_versions:)
   end
 
   # Validates every tool axn's contract, once each, and raises on the first invalid one.
@@ -178,24 +170,7 @@ module Axn
     EXCEPTION_EXCEPTION.bind_call(error, "#{tool} has an invalid tool contract — #{reason}")
   end
 
-  def self.versions_for(adapter, tool_name)
-    adapter = _registered_tool_adapter!(adapter)
-    Axn::Tools::Registry.versions_for(adapter, tool_name)
-  end
-
-  def self._registered_tool_adapter!(adapter)
-    adapter = adapter.to_sym
-    unless Axn::Tools::Registry.adapters.include?(adapter)
-      raise ArgumentError, "#{adapter.inspect} is not a registered tool adapter (registered: #{Axn::Tools::Registry.adapters.to_a.inspect})"
-    end
-
-    adapter
-  end
-
-  # Neither is reached with an explicit receiver: `_registered_tool_adapter!` from `tools_for` and
-  # `versions_for`, `_named_invalid_tool_contract` from `validate_tool_contracts!`. Private so the
-  # top-level module's public surface is the API it means to publish.
-  private_class_method :_registered_tool_adapter!, :_named_invalid_tool_contract
+  private_class_method :_named_invalid_tool_contract
 
   def self.included(base)
     # Re-including Axn (e.g. `include Axn` in a subclass of an existing Axn) would re-run

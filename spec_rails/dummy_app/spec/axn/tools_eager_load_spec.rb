@@ -9,7 +9,7 @@ RSpec.describe "Axn tool registry under Rails" do
     example.run
   ensure
     Axn::Tools::Registry.reset_adapters!
-    original_adapters.each { |adapter| Axn.register_tool_adapter(adapter) }
+    original_adapters.each { |adapter| Axn::Tools.register_adapter(adapter) }
   end
 
   # Registers `:mcp` with a real config source (an anonymous module carrying a validated
@@ -23,7 +23,7 @@ RSpec.describe "Axn tool registry under Rails" do
       extend Axn::Tools::AdapterRoots
     end
     @tool_source.config.tool_roots = %w[actions/tools]
-    Axn.register_tool_adapter(:mcp, @tool_source)
+    Axn::Tools.register_adapter(:mcp, @tool_source)
   end
 
   # Force the on-demand `ensure_loaded! -> eager_load_dir` branch to run regardless of the
@@ -43,14 +43,14 @@ RSpec.describe "Axn tool registry under Rails" do
     expect(Rails.autoloaders.main).to receive(:eager_load_dir)
       .with(Rails.root.join("app/actions/tools").to_s).and_call_original
 
-    tools = Axn.tools_for(:mcp)
+    tools = Axn::Tools.for(:mcp)
 
     expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
   end
 
   it "derives a clean tool_name (stripping the `actions`/`tools` namespace prefixes)" do
-    Axn.tools_for(:mcp)
+    Axn::Tools.for(:mcp)
     expect(Actions::Tools::SampleWidget.tool_name).to eq("sample_widget")
   end
 
@@ -60,7 +60,7 @@ RSpec.describe "Axn tool registry under Rails" do
     expect(Rails.autoloaders.main).to receive(:eager_load_dir)
       .with(Rails.root.join("app/actions/tools").to_s).and_call_original
 
-    tools = Axn.tools_for(:mcp)
+    tools = Axn::Tools.for(:mcp)
 
     expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
@@ -72,7 +72,7 @@ RSpec.describe "Axn tool registry under Rails" do
     expect(Rails.autoloaders.main).to receive(:eager_load_dir)
       .with(Rails.root.join("app/actions/tools").to_s).and_call_original
 
-    tools = Axn.tools_for(:mcp)
+    tools = Axn::Tools.for(:mcp)
 
     expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
@@ -84,14 +84,14 @@ RSpec.describe "Axn tool registry under Rails" do
     expect(Rails.autoloaders.main).to receive(:eager_load_dir)
       .with(Rails.root.join("app/actions/tools").to_s).and_call_original
 
-    tools = Axn.tools_for(:mcp)
+    tools = Axn::Tools.for(:mcp)
 
     expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
   end
 
   # `config.eager_load = true` only means Rails INTENDS to eager-load; that phase runs late in
-  # boot (after config/initializers). Simulates an adapter calling `Axn.tools_for` from within an
+  # boot (after config/initializers). Simulates an adapter calling `Axn::Tools.for` from within an
   # initializer, before `Rails.application.initialize!` has finished.
   it "still loads the tool dirs on demand when eager_load is true but the app hasn't finished initializing" do
     allow(Rails.application.config).to receive(:eager_load).and_return(true)
@@ -100,7 +100,7 @@ RSpec.describe "Axn tool registry under Rails" do
     expect(Rails.autoloaders.main).to receive(:eager_load_dir)
       .with(Rails.root.join("app/actions/tools").to_s).and_call_original
 
-    tools = Axn.tools_for(:mcp)
+    tools = Axn::Tools.for(:mcp)
 
     expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
@@ -114,6 +114,6 @@ RSpec.describe "Axn tool registry under Rails" do
 
     expect(Rails.autoloaders.main).not_to receive(:eager_load_dir)
 
-    Axn.tools_for(:mcp)
+    Axn::Tools.for(:mcp)
   end
 end

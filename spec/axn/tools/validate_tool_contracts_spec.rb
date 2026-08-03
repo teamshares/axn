@@ -36,7 +36,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   end
 
   it "raises for a tool whose contract collapses onto one property" do
-    Axn.register_tool_adapter(:mcp)
+    Axn::Tools.register_adapter(:mcp)
     colliding_tool
 
     expect { Axn.validate_tool_contracts! }.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
@@ -77,7 +77,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     end
 
     it "keeps the adapter's readers rather than axn's" do
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       klass = shadowing_tool(inbound: true)
 
       expect(klass.input_schema).to eq({ "transport" => "in" })
@@ -85,7 +85,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     end
 
     it "still validates its inbound contract at setup" do
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       shadowing_tool(inbound: true)
 
       expect { Axn.validate_tool_contracts! }
@@ -95,7 +95,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     # The outbound half was already immune — `validate_outbound!` builds from the configs and never called
     # `output_schema` — asserted rather than assumed, since the same shadowing applies to that name.
     it "still validates its outbound contract at setup" do
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       shadowing_tool(inbound: false)
 
       expect { Axn.validate_tool_contracts! }
@@ -106,7 +106,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   # This runs over every tool at once, so the first thing an author needs is WHICH tool — the underlying error
   # describes the property and the colliding declarations but not the class.
   it "names the offending class, keeping the original as the cause" do
-    Axn.register_tool_adapter(:mcp)
+    Axn::Tools.register_adapter(:mcp)
     colliding_tool
 
     expect { Axn.validate_tool_contracts! }.to raise_error(Axn::DuplicateFieldError) { |error|
@@ -131,7 +131,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       def message = "structured at #{@path}"
     end
     stub_const("ToolContractsSpec::Structured", structured)
-    Axn.register_tool_adapter(:mcp)
+    Axn::Tools.register_adapter(:mcp)
     klass = valid_tool
     allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
     allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).with(klass).and_raise(structured.new(path: "p"))
@@ -150,7 +150,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   # not renamed at all and is reported as axn's own error instead.
   describe "an exception whose own methods refuse to cooperate" do
     def raising_from(klass, error)
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       tool = valid_tool
       allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
       allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).with(tool).and_raise(error)
@@ -371,7 +371,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       it "renders a tool whose own constant holds non-UTF-8 bytes" do
         # Set directly rather than through `stub_const`, which parses its name argument as UTF-8 text.
         exotic = "Caf\xE9Tool".dup.force_encoding("ISO-8859-1").to_sym
-        Axn.register_tool_adapter(:mcp)
+        Axn::Tools.register_adapter(:mcp)
         klass = Class.new do
           include Axn
           tool :mcp
@@ -408,7 +408,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   # An unrenderable name raises ArgumentError rather than a ContractViolation, so both families have to be
   # wrapped or one of them would reach boot unnamed.
   it "names the offending class for an unrenderable name too" do
-    Axn.register_tool_adapter(:mcp)
+    Axn::Tools.register_adapter(:mcp)
     bad = "bad\xFF".dup.force_encoding("ASCII-8BIT").to_sym
     stub_const("ToolContractsSpec::Unrenderable", Class.new do
       include Axn
@@ -428,7 +428,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   # definition an adapter hands a model can carry a property the contract does not have. Reachable only through an
   # assigned config, which is exactly what an adapter base or a generator may build.
   it "names the offending class for a name that decides its own rendering" do
-    Axn.register_tool_adapter(:mcp)
+    Axn::Tools.register_adapter(:mcp)
     masq = Class.new(String) { def to_s = "dup" }.new("other")
     stub_const("ToolContractsSpec::OwnRendering", Class.new do
       include Axn
@@ -445,7 +445,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   end
 
   it "passes over valid tools" do
-    Axn.register_tool_adapter(:mcp)
+    Axn::Tools.register_adapter(:mcp)
     valid_tool
 
     expect { Axn.validate_tool_contracts! }.not_to raise_error
@@ -454,7 +454,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   # The point of running at setup: without it the same contract reaches an adapter, and the error surfaces from
   # whatever first projects — which for a tool is a model-facing call.
   it "leaves the same error to first projection when never called" do
-    Axn.register_tool_adapter(:mcp)
+    Axn::Tools.register_adapter(:mcp)
     klass = colliding_tool
 
     expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError)
@@ -463,8 +463,8 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   # Validation is adapter-agnostic, so a tool registered for two adapters is projected once rather than once per
   # adapter. Counted at the walk, since the memo is what makes the second projection free.
   it "validates each tool once regardless of how many adapters claim it" do
-    Axn.register_tool_adapter(:mcp)
-    Axn.register_tool_adapter(:ruby_llm)
+    Axn::Tools.register_adapter(:mcp)
+    Axn::Tools.register_adapter(:ruby_llm)
     tool = valid_tool(adapters: %i[mcp ruby_llm])
     # Counted on the TARGET class rather than globally: the registry is process-global, so another spec file's
     # named tool class may legitimately still be enumerable and would inflate a global count.
@@ -482,7 +482,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   end
 
   it "does not project non-tool axns" do
-    Axn.register_tool_adapter(:mcp)
+    Axn::Tools.register_adapter(:mcp)
     latin1 = "caf\xE9".dup.force_encoding("ISO-8859-1").to_sym
     stub_const("ToolContractsSpec::NotATool", Class.new do
       include Axn
@@ -499,7 +499,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   # A second setup pass (a dev reload calls the entry point again) must stay silent for a valid contract and stay
   # loud for an invalid one — a memo that swallowed the second would hide it from every reload after the first.
   it "keeps raising across repeated setup passes" do
-    Axn.register_tool_adapter(:mcp)
+    Axn::Tools.register_adapter(:mcp)
     colliding_tool
 
     expect { Axn.validate_tool_contracts! }.to raise_error(Axn::DuplicateFieldError)
@@ -511,7 +511,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   # is LOADED and whether any adapter is registered — not whether it lives in a directory.
   describe "what enumeration covers" do
     it "enumerates a declaration-granted tool with no tool roots configured" do
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       tool = valid_tool
 
       expect(Axn::Tools::Registry.send(:_all_adapter_dirs)).to be_empty
@@ -521,7 +521,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     # The local is NOT named `tool`: bare `tool` inside the class body would then parse as that local variable
     # (nil at that point) instead of the DSL method, and the fixture would declare no tool at all.
     it "enumerates a tool declared for every adapter (bare `tool`)" do
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       bare = stub_const("ToolContractsSpec::BareTool", Class.new do
         include Axn
         tool
@@ -546,8 +546,8 @@ RSpec.describe "Axn.validate_tool_contracts!" do
   describe "Registry.tool_classes" do
     # The registry is process-global, so this asserts membership rather than an exact set: another spec's named
     # tool class may legitimately still be defined.
-    it "enumerates tools independent of tools_for" do
-      Axn.register_tool_adapter(:mcp)
+    it "enumerates tools independent of members" do
+      Axn::Tools.register_adapter(:mcp)
       tool = valid_tool
       plain = stub_const("ToolContractsSpec::Plain", Class.new { include Axn })
 

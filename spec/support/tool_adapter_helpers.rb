@@ -10,7 +10,7 @@ module ToolAdapterHelpers
       extend Axn::Tools::AdapterRoots
     end
     source.config.tool_roots = roots
-    Axn.register_tool_adapter(key, source)
+    Axn::Tools.register_adapter(key, source)
     source
   end
 end

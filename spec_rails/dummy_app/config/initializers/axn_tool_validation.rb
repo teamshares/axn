@@ -15,4 +15,4 @@ boot_check_source = Module.new do
 end
 boot_check_source.config.tool_roots = %w[actions/boot_validated]
 
-Axn.register_tool_adapter(:boot_check, boot_check_source)
+Axn::Tools.register_adapter(:boot_check, boot_check_source)
