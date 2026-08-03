@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/internal/async_serialization"
+require "axn/internal/rendering"
 
 module Axn
   module Async
@@ -140,7 +141,7 @@ module Axn
         end
 
         def error
-          @exception&.message || "Job was discarded"
+          @exception ? Axn::Internal::Rendering.exception_message(@exception) : "Job was discarded"
         end
 
         attr_reader :exception

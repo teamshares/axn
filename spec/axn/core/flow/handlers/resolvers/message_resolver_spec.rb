@@ -260,4 +260,24 @@ RSpec.describe "join: Proc raise-safety" do
     expect { result.error }.not_to raise_error
     expect(result.error).to eq("Outer: inner")
   end
+
+  # The warn line's OWN prose contains an em dash (" — using default join"), a genuine multi-byte UTF-8
+  # character — not ASCII-only. So an ORDINARY exception (no hostile #message override) whose message
+  # holds bytes with no UTF-8 rendering is enough to collide: joining two fragments that are each
+  # non-ASCII-only, in different encodings, raises Encoding::CompatibilityError from the warn line
+  # itself — no unusual author required, just the raised exception's message and axn's own prose.
+  it "falls back to the default join when the raised exception's message holds unrenderable bytes" do
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { raise ArgumentError, "bad\xFF".dup.force_encoding("ASCII-8BIT") }
+      def call = fail!("inner")
+    end
+
+    warnings = []
+    allow(action).to receive(:warn) { |msg| warnings << msg }
+
+    result = action.call
+    expect { result.error }.not_to raise_error
+    expect(result.error).to eq("Outer: inner")
+    expect(warnings).to include(a_string_matching(/join: Proc raised ArgumentError: "bad\\xFF"/))
+  end
 end

@@ -409,6 +409,10 @@ RSpec.describe Axn::Tools::Registry do
         allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
         expect { described_class.ensure_loaded! }.not_to raise_error
+        # The other half of the funnel's contract: the warn line still gets produced, and still names
+        # the file and the raised exception's class legibly (falling back through the bound
+        # `Exception#to_s`, which reads "boom" without dispatching the overridden `#message`).
+        expect(warnings).to include(a_string_matching(/hostile_tool\.rb.*RegistryHostileFileError.*boom/m))
       ensure
         FileUtils.remove_entry(dir)
       end
@@ -421,6 +425,11 @@ RSpec.describe Axn::Tools::Registry do
     # `#message` on whatever it caught (here, a failure enumerating adapter dirs) escapes ensure_loaded!
     # entirely rather than degrading to a lost log line.
     it "does not let a hostile #message on the caught exception escape ensure_loaded!" do
+      # Captured BEFORE any other setup: the `ensure` below restores it unconditionally, so if a
+      # subsequent line here raised before this ran, `previous` would still be (Ruby-default) nil and
+      # the ensure would clobber Axn.config.logger to nil for the rest of the suite.
+      previous = Axn.config.logger
+
       hostile = Class.new(StandardError) do
         def message = raise(NotImplementedError, "message explodes")
       end
@@ -430,7 +439,6 @@ RSpec.describe Axn::Tools::Registry do
       # treats File::NULL as a no-op sink and skips evaluating a block-form call's message entirely,
       # which would hide this exact defect (the message never gets built, so it never gets the chance
       # to raise) — see non_utf8_names_in_messages_spec.rb for the same workaround.
-      previous = Axn.config.logger
       Axn.config.logger = Logger.new(StringIO.new, level: :warn)
 
       expect { described_class.ensure_loaded! }.not_to raise_error
@@ -599,6 +607,9 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "does not let a hostile #message escape ensure_loaded!" do
+      # Captured before any other setup — see the "outer rescue" example above for why.
+      previous = Axn.config.logger
+
       loader = double("zeitwerk loader")
       stub_const("Rails", double(
                             application: double(config: double(eager_load: false)),
@@ -613,7 +624,6 @@ RSpec.describe Axn::Tools::Registry do
       # See the "outer rescue" example above: a real IO-backed logger is required, or Ruby's
       # `Logger.new(File::NULL)` (this suite's default) skips evaluating the block-form warn entirely
       # and the defect never gets a chance to fire.
-      previous = Axn.config.logger
       Axn.config.logger = Logger.new(StringIO.new, level: :warn)
 
       expect { described_class.ensure_loaded! }.not_to raise_error

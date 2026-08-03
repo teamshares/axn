@@ -57,7 +57,14 @@ end
 # exception is wrapping — replacing the typed DefaultAssignmentError/PreprocessingError (and its
 # "Error applying default for field 'x': ..." framing) with the raw, untyped exception instead.
 RSpec.describe "a default:/preprocess: proc whose own raised exception axn cannot describe" do
-  it "reports a default: proc's unrenderable failure without losing the field error" do
+  # This is the brief's literal Step 1 spec, and it only proves `result.error` doesn't raise — NOT that
+  # the field-level detail survives. With no custom `error:` declared, `result.error` resolves via the
+  # generic fallback ("Something went wrong") regardless of whether the typed DefaultAssignmentError
+  # below was preserved or destroyed, so it can't be strengthened at this level: the fallback text is
+  # identical either way. The two examples below (asserting on `result.exception`'s class) are what
+  # actually pin the fix; this one is kept to match the literal brief and is deliberately named for
+  # what it checks rather than for the typing loss it can't see.
+  it "does not let result.error raise for an unrenderable default: proc failure (weak on its own)" do
     action = build_axn do
       expects :n
       exposes :thing, default: -> { raise ArgumentError, "bad\xFF".dup.force_encoding("ASCII-8BIT") }
