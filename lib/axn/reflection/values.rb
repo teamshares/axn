@@ -9,6 +9,7 @@ require "time"
 # UnserializableValue. Both are runtime references, so without these a standalone load NameErrors on
 # ordinary output.
 require "axn/internal/cycle_guard"
+require "axn/internal/text"
 require "axn/exceptions"
 
 # NOTE: we don't require "active_support/core_ext/object/json" here, but a Rails app loads it globally
@@ -55,17 +56,6 @@ module Axn
       # below read from one list and cannot disagree.
       AS_JSON_PROJECTIONS = %i[own_as_json delegated_as_json generic_as_json].freeze
       private_constant :AS_JSON_PROJECTIONS
-
-      # Bound rather than called, for the reason own_wire_key gives about `-@`/`initialize_copy`: a String
-      # SUBCLASS can override `encoding`/`valid_encoding?`/`ascii_only?`/`encode`, and one whose
-      # `valid_encoding?` returns true over bytes that aren't valid would defeat this guard on precisely the
-      # value it exists to catch (verified: a lying override is believed, and JSON::GeneratorError follows).
-      # Reached only from a `when ::String` match, so String's own methods are the right ones to bind.
-      STRING_ENCODING = ::String.instance_method(:encoding)
-      STRING_VALID_ENCODING = ::String.instance_method(:valid_encoding?)
-      STRING_ASCII_ONLY = ::String.instance_method(:ascii_only?)
-      STRING_ENCODE = ::String.instance_method(:encode)
-      private_constant :STRING_ENCODING, :STRING_VALID_ENCODING, :STRING_ASCII_ONLY, :STRING_ENCODE
 
       OPAQUE_VALUE_REASON = "it serializes only via the default Object#to_s (it would render as garbage " \
                             'like "#<User:0x…>") — declare it `type: String` and format it, or give the ' \
@@ -271,41 +261,10 @@ module Axn
         end
       end
 
-      # The UTF-8 rendering of these bytes — the ones an encoder actually emits — or nil when they have none.
-      # "Can an encoder render this as JSON text at all" and "what will it emit" are one question, since JSON
-      # is UTF-8, so one method answers both: a value's caller discards the rendering and keeps its own bytes,
-      # while a key's caller keeps the rendering, because two encodings of one property name have to compare
-      # as one property.
-      #
-      # The test is NOT `valid_encoding?`, which asks whether the bytes are valid in their OWN encoding and
-      # answers true for "\xFF" in BINARY, which JSON::GeneratorError refuses. It is equally not "are the
-      # bytes literally valid UTF-8": a valid ISO-8859-1 or Shift_JIS String transcodes cleanly and encodes
-      # fine, so demanding UTF-8 bytes would reject real data.
-      #
-      # ASCII-only bytes are already their own UTF-8 rendering in any ASCII-compatible encoding, and that
-      # covers most of what a response body holds (identifiers, enum values, keys), so it is the single-check
-      # fast path — and it is cheap twice over, since Ruby caches a String's coderange. Non-ASCII UTF-8 needs
-      # one more check and still no allocation. Only bytes outside both pay for the transcode an encoder would
-      # attempt, which is the sole exact answer for them. `US-ASCII` needs no arm of its own: a US-ASCII String
-      # is either ASCII-only (already returned) or holds a byte no transcode accepts.
-      def utf8_rendering(string)
-        return string if STRING_ASCII_ONLY.bind_call(string)
-
-        case STRING_ENCODING.bind_call(string)
-        when ::Encoding::UTF_8 then STRING_VALID_ENCODING.bind_call(string) ? string : nil
-        else transcode_to_utf8(string)
-        end
-      end
-
-      # EncodingError is exactly the three refusals a transcode can raise (no converter for the pair, an
-      # undefined mapping, an invalid byte sequence) and nothing else. The transcoded String is the answer
-      # rather than a boolean because performing the transcode IS the check — there is nothing to save by
-      # throwing the result away.
-      def transcode_to_utf8(string)
-        STRING_ENCODE.bind_call(string, ::Encoding::UTF_8)
-      rescue ::EncodingError
-        nil
-      end
+      # The byte half of a wire key, from the one primitive that owns it. Kept as a named method here
+      # because this layer's callers ask a serialization question ("is there an honest rendering, or must
+      # this value be refused?") and the nil answer is what they branch on.
+      def utf8_rendering(string) = Axn::Internal::Text.utf8_rendering(string)
 
       # A non-finite Float has no JSON literal, so a body containing one is not JSON — the same category as
       # a cycle, and unconditional for the same reason. An encoder's `allow_nan:` would emit a bare
@@ -654,7 +613,7 @@ module Axn
       # canonical_wire_key is deliberately not in this list: the same canonicalization is core's answer
       # to what a JSON property name is, so a declaration-time check in Core::Contract can share this one
       # definition rather than re-deriving it; re-privatizing later would force a send into that module.
-      private_class_method :serialize_exposed, :encodable_string!, :utf8_rendering, :transcode_to_utf8,
+      private_class_method :serialize_exposed, :encodable_string!, :utf8_rendering,
                            :finite_number!, :coerce_to_float, :within_container, :capture_hash_entries,
                            :own_wire_key, :no_entries_lost!, :raise_colliding_fields!, :owner_of,
                            :capture_elements, :raise_colliding_keys!,

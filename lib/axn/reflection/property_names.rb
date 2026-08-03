@@ -4,6 +4,7 @@ require "axn/internal/cycle_guard"
 require "axn/internal/field_config"
 require "axn/internal/native_methods"
 require "axn/internal/shape_graph"
+require "axn/internal/text"
 # Declared rather than left to the top-level entrypoint's require order: every one of these is a RUNTIME
 # reference — the rules are derived from a built schema, reported through the canonicalization, keyed by the
 # `model:` id convention, and gated on which names render through Ruby's own code — so a process that loaded
@@ -147,13 +148,12 @@ module Axn
       # consults the real class, which a singleton `is_a?` cannot lie about, and both branches therefore
       # return a plain String this layer owns.
       SYMBOL_NAME_INSPECT = ::Symbol.instance_method(:inspect)
-      STRING_NAME_INSPECT = ::String.instance_method(:inspect)
-      private_constant :SYMBOL_NAME_INSPECT, :STRING_NAME_INSPECT
+      private_constant :SYMBOL_NAME_INSPECT
 
       def field_name_spelling(name)
         case name
         when ::Symbol then SYMBOL_NAME_INSPECT.bind_call(name)
-        when ::String then STRING_NAME_INSPECT.bind_call(name)
+        when ::String then Axn::Internal::Text.escaped(name)
         end
       end
 

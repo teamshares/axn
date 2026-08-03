@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/text"
+
 module Axn
   module Internal
     # Identity comparisons that cannot be intercepted by the objects being compared.
@@ -28,12 +30,10 @@ module Axn
       EMPTY = String.instance_method(:empty?)
       private_constant :STRIP, :EMPTY
 
-      ENCODE = String.instance_method(:encode)
       DUP = String.instance_method(:dup)
       FORCE_ENCODING = String.instance_method(:force_encoding)
       SCRUB = String.instance_method(:scrub)
-      VALID_ENCODING = String.instance_method(:valid_encoding?)
-      private_constant :ENCODE, :DUP, :FORCE_ENCODING, :SCRUB, :VALID_ENCODING
+      private_constant :DUP, :FORCE_ENCODING, :SCRUB
 
       # True when `one` and `other` are the same object.
       def self.same?(one, other) = EQUAL.bind_call(one, other)
@@ -75,24 +75,16 @@ module Axn
         "#<unrenderable value>"
       end
 
-      # A caller-supplied String rendered so it can be interpolated into a UTF-8 message. Transcoding
-      # is attempted first, since that preserves the text a UTF-16 reason actually says; a String whose
-      # bytes cannot be transcoded falls back to being reinterpreted as UTF-8 and scrubbed, which is
-      # lossy but always succeeds. Without this, joining the reason to axn's own message raises
-      # `Encoding::CompatibilityError` — reporting a validation failure would REPLACE it with an
-      # encoding error, which is the one thing an error path may not do.
+      # A caller-supplied String rendered so it can be interpolated into a UTF-8 message. ALWAYS returns
+      # valid UTF-8, which is the contract callers depend on.
       #
-      # Undispatched throughout: the String came from a caller's `validate:` lambda and may be a
-      # subclass overriding any of these.
-      # ALWAYS returns valid UTF-8, which is the contract callers depend on: transcoding a String
-      # already TAGGED UTF-8 succeeds without validating it, so the encode alone can hand back invalid
-      # bytes that raise later — `strip` on them raises Encoding::CompatibilityError, which is exactly
-      # the failure this method exists to prevent.
+      # The fallback is a SCRUB rather than the escape `Internal::Text.renderable` takes, and the difference
+      # is the point: this renders text that has to appear at any cost — a reason string from a caller's
+      # `validate:` lambda, joined into the validation message a user reads — where a lossy `caf<?>` beats
+      # both an escaped spelling and no message. A layer naming an OFFENDER wants the escape instead, since
+      # it must not quietly alter what it names.
       def self.utf8_string(value)
-        encoded = ENCODE.bind_call(value, Encoding::UTF_8)
-        VALID_ENCODING.bind_call(encoded) ? encoded : SCRUB.bind_call(encoded)
-      rescue StandardError
-        SCRUB.bind_call(FORCE_ENCODING.bind_call(DUP.bind_call(value), Encoding::UTF_8))
+        Text.utf8_rendering(value) || SCRUB.bind_call(FORCE_ENCODING.bind_call(DUP.bind_call(value), Encoding::UTF_8))
       end
 
       # True when a String is empty or only whitespace, read through String's OWN implementations. A
