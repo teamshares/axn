@@ -87,7 +87,12 @@ module Axn
       # being lost.
       # True when the caller is on the thread and fiber the attempt was created on — so it is a context
       # that could legitimately have run the action, rather than one whose block was refused.
-      def originating_context? = Thread.current.equal?(@thread) && Fiber.current.equal?(@fiber)
+      # Through Internal::Identity like every other identity check on this path, rather than dispatching
+      # `equal?` to a Thread or Fiber the app may have subclassed. Same reasoning as `swallowable?`: the
+      # object's opinion of its own identity was never the question, and this answer decides whether a
+      # context may claim the notification and run the action — so it has to come from the objects
+      # themselves, not from a method one of them defines.
+      def originating_context? = Internal::Identity.same?(Thread.current, @thread) && Internal::Identity.same?(Fiber.current, @fiber)
 
       def require_originating_context!
         return if originating_context?

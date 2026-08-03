@@ -10,6 +10,19 @@ RSpec.describe Axn::Core::ActionAttempt do
   # abandonment. The settled variant gets its own example at the bottom.
   subject(:attempt) { described_class.new(settled: -> { false }) }
 
+  describe "#originating_context?" do
+    it "does not accept a Thread that merely claims to be the originating one" do
+      # The answer authorizes claiming the notification and running the action, so it must come from
+      # the objects rather than from a method either of them defines.
+      # The dispatch was on the CURRENT thread, so that is where the lie has to live: it claims to be
+      # the recorded thread, which is a different object entirely.
+      attempt.instance_variable_set(:@thread, Object.new)
+      allow(Thread.current).to receive(:equal?).and_return(true)
+
+      expect(attempt.originating_context?).to be(false)
+    end
+  end
+
   describe "#close!" do
     it "refuses both claims afterward" do
       # The attempt does not outlive the tracing boundary. A tracer that captures the block, cancels
