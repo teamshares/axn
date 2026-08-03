@@ -655,8 +655,10 @@ module Axn
                 # Only a genuinely ABSENT method. A NoMethodError raised from INSIDE a working
                 # `record_exception` is that span's own bug, and swallowing it here would hide it from
                 # the guard — including from the dev-loud path, where it should be raised like any
-                # other tracing failure.
-                raise unless e.name == :record_exception && Internal::Identity.same?(e.receiver, span)
+                # other tracing failure. The span is caller-supplied and so is the exception it raised,
+                # so the missing name is read through `NameError`'s own reader rather than dispatched.
+                raise unless Internal::Identity.name_error_for?(e, :record_exception) &&
+                             Internal::Identity.same?(e.receiver, span)
 
                 nil
               end
@@ -1015,7 +1017,14 @@ module Axn
         yield
         false
       rescue Internal::EarlyCompletion => e
-        @context.__record_early_completion(e.message, standalone: e.standalone)
+        # The exception is axn's own, but its message is the CALLER's object: `done!(msg)` hands `msg`
+        # straight to `EarlyCompletion.new`, and `Exception#message` renders whatever it was given through
+        # `rb_String`, which runs that object's `to_s`. That happens here, inside the rescue that is turning
+        # an early completion into a SUCCESSFUL result — so a raise from it escapes to the executor's
+        # exception handling and settles the success as an exception outcome instead. Read through the
+        # guarded reader, a `to_s` that raises degrades to the class name, which is the no-message sentinel
+        # `__record_early_completion` already drops.
+        @context.__record_early_completion(Internal::Rendering.exception_message(e), standalone: e.standalone)
         trigger_on_success
         true
       end
@@ -1520,7 +1529,9 @@ module Axn
       def respecting_early_completion
         yield
       rescue Internal::EarlyCompletion => e
-        @context.__record_early_completion(e.message, standalone: e.standalone)
+        # Guarded for the same reason as in `handle_early_completion_if_raised`: `done!`'s message is a
+        # caller object, and reading it runs that object's `to_s`.
+        @context.__record_early_completion(Internal::Rendering.exception_message(e), standalone: e.standalone)
         raise e
       end
 

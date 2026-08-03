@@ -409,6 +409,26 @@ RSpec.describe Axn do
         expect { action.send(:new).done!("test") }.to raise_error(Axn::Internal::EarlyCompletion, "test")
       end
 
+      # `done!`'s argument is the caller's object, and reading the resulting exception's `#message` renders it
+      # through `rb_String` — running that object's `to_s` inside the rescue that is turning an early
+      # completion into a SUCCESSFUL result. A raise from there escaped to the executor's exception handling
+      # and settled the success as an exception outcome: the same misattribution shape as a reporting failure
+      # replacing the exception it describes.
+      it "still completes successfully when the message object's to_s raises" do
+        hostile = Class.new do
+          def to_s = raise(NotImplementedError, "to_s explodes")
+        end.new
+
+        action = build_axn { define_method(:call) { done!(hostile) } }
+        result = action.call
+
+        expect(result).to be_ok
+        expect(result.outcome).to be_success
+        expect(Axn::Internal::Identity.nil_value?(result.exception)).to be(true)
+        # Nothing usable is left of the message, so the default stands rather than a half-rendered one.
+        expect(result.success).to eq("Action completed successfully")
+      end
+
       it "raises Axn::Internal::EarlyCompletion with nil message" do
         action = build_axn do
           def call
