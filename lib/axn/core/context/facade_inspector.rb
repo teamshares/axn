@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/internal/identity"
 require "axn/internal/rendering"
 
 module Axn
@@ -26,11 +27,22 @@ module Axn
 
         return "[OK]" if context.ok?
 
-        if facade.outcome.failure?
-          return context.exception.default_message? ? "[failed]" : "[failed with '#{exception_message}']"
-        end
+        return default_message? ? "[failed]" : "[failed with '#{exception_message}']" if facade.outcome.failure?
 
         %([failed with #{Axn::Internal::Rendering.class_name(context.exception)}: '#{exception_message}'])
+      end
+
+      # Whether the failure carries no reason of its own, so `inspect` can say "[failed]" plainly.
+      #
+      # `default_message?` is axn's own predicate, but it is DEFINED only on `Axn::Failure`, and the exception
+      # on a failed result frequently is not one: an exception classified into the failure bucket by
+      # `fails_on`, and a `user_facing:` validation error, both settle here carrying their own class. So it is
+      # asked only of an exception that answers it — the same guard `Result#_resolve_error` puts on the
+      # identical read. The type test is undispatched (`Module#===`) rather than `is_a?` on the same terms as
+      # the reads below: whether axn may call its own method on a caller-supplied object is a fact about the
+      # class hierarchy, not that object's opinion.
+      def default_message?
+        Axn::Internal::Identity.kind?(context.exception, Axn::Failure) && context.exception.default_message?
       end
 
       # An exception carried on a failed result is caller-supplied, and `inspect` is called from loggers,

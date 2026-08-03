@@ -992,9 +992,7 @@ In `lib/axn/core/context/facade_inspector.rb`, replace the `status` method's two
 
         return "[OK]" if context.ok?
 
-        if facade.outcome.failure?
-          return context.exception.default_message? ? "[failed]" : "[failed with '#{exception_message}']"
-        end
+        return default_message? ? "[failed]" : "[failed with '#{exception_message}']" if facade.outcome.failure?
 
         %([failed with #{Axn::Internal::Rendering.class_name(context.exception)}: '#{exception_message}'])
       end
@@ -1004,9 +1002,13 @@ In `lib/axn/core/context/facade_inspector.rb`, replace the `status` method's two
       # and the message come from the one reader that dispatches nothing the exception can override and
       # renders the bytes it answers with.
       def exception_message = Axn::Internal::Rendering.exception_message(context.exception)
+
+      def default_message?
+        Axn::Internal::Identity.kind?(context.exception, Axn::Failure) && context.exception.default_message?
+      end
 ```
 
-`default_message?` is axn's own predicate on axn's own `Failure`, not a foreign read — leave it.
+`default_message?` is axn's own predicate, but it is DEFINED only on `Axn::Failure` — and a failed result's exception is frequently not one, so it cannot stay a bare dispatch. `fails_on Boom` and `expects …, user_facing: true` both settle into the failure bucket carrying their own class, and both made `result.inspect` raise a bare `NoMethodError` before any hostile object was involved. So the predicate is asked only of an exception that answers it, behind the same guard `Result#_resolve_error` already puts on the identical read — with the undispatched `Identity.kind?` rather than `is_a?`, since whether axn may call its own method on a caller-supplied object is a fact about the hierarchy and not that object's opinion. Those two routes need their own examples: the existing hostile-exception ones raise from the action BODY, so they settle as an exception rather than a failure and never reach this branch.
 
 - [ ] **Step 4: Run the spec and confirm it passes**
 

@@ -63,7 +63,7 @@ New file `lib/axn/internal/text.rb`, module `Axn::Internal::Text`, **zero requir
 
 Three owners then delegate instead of keeping their own copy:
 
-- `Reflection::Values.utf8_rendering` / `transcode_to_utf8` delegate. `canonical_wire_key` keeps its own copy-and-freeze so its output stays byte-identical.
+- `Reflection::Values.utf8_rendering` delegates. `transcode_to_utf8` is DELETED there rather than delegated — it had no caller outside `utf8_rendering`, so `Text` becomes its only home. `canonical_wire_key` keeps its own copy-and-freeze so its output stays byte-identical.
 - `Reflection::PropertyNames.field_name_spelling`'s String branch uses `Text.escaped`.
 - `Internal::Identity.utf8_string` becomes `utf8_rendering(value) || <scrub fallback>`.
 
@@ -96,13 +96,13 @@ Then a final backstop around the whole report path, so the guarantee holds by co
 
 > **The only exception `best_effort` can raise is the exception the block raised** — re-raised under `best_effort_raises_in_dev`, or passed through when it is not swallowable. Never a third exception manufactured while reporting.
 
-The backstop absorbs every class, non-swallowables included, because it covers only the *reporting*, never the block. That is the policy `Identity.describe` already states ("on an error path the exception being reported has to win over anything raised while describing it") and `_emit_warning` already implements with a nested rescue. A lost log line is strictly better than a lost exception.
+The backstop covers only the *reporting*, never the block, and it is narrow on exactly the terms `best_effort` itself is: `StandardError` plus `SWALLOWABLE_BEYOND_STANDARD_ERROR`, which is what `_emit_warning` already does with its nested rescue. Within that set, a lost log line is strictly better than a lost exception — the policy `Identity.describe` states ("on an error path the exception being reported has to win over anything raised while describing it"), and `describe` can absorb every class because what it guards is one `inspect` on a value rather than a path a signal travels through. Absorbing everything HERE would be wrong: a signal, an `exit`, or another library's control-flow exception arriving mid-report is not axn's to eat, and swallowing one to save a warning breaks control flow somebody else owns. So the guarantee is "never a third exception manufactured while reporting", not "nothing but the block's exception can ever leave".
 
 ### 4. The rest of the class
 
 Two members escape **outside** the guard and are not fixed by anything above:
 
-- `Core::Context::FacadeInspector` (`facade_inspector.rb:28,31`) reads `context.exception.message` and `.class.name` to build `Result#inspect`. Verified: `result.inspect` raises today on a failed result carrying a hostile exception. It does not take down `.call`, but it poisons every logger, debugger, and spec failure message that touches the result.
+- `Core::Context::FacadeInspector` (`facade_inspector.rb:28,31`) reads `context.exception.message` and `.class.name` to build `Result#inspect`. Verified: `result.inspect` raises today on a failed result carrying a hostile exception. It does not take down `.call`, but it poisons every logger, debugger, and spec failure message that touches the result. A THIRD read on the failure branch is worse than either, because it needs no hostile object at all: `context.exception.default_message?` is axn's own predicate on `Axn::Failure`, and a failed result's exception is frequently not an `Axn::Failure` — `fails_on Boom` and `expects …, user_facing: true` both settle into the failure bucket carrying their own class, and `result.inspect` raises a bare `NoMethodError` for each. So the predicate is only asked of an exception that answers it, behind the undispatched type test `Result#_resolve_error` already puts on the identical read.
 - `executor.rb:852` builds `best_effort("settling #{settling.class} onto the result", …)`. `desc` is evaluated **before** the guard is entered, so dispatching `class` on the caller's exception there is covered by no rescue at all. Becomes `ClassName.of`.
 
 Two are the #208 leftovers this move exists to unblock, both now reachable because the primitive is below them:

@@ -54,6 +54,35 @@ RSpec.describe Axn do
     end
   end
 
+  # The failure branch asks `default_message?` — axn's own predicate, defined only on `Axn::Failure` — and a
+  # failed result's exception is frequently not one. Both routes below are mainstream: `fails_on` classifies a
+  # caller's own exception class into the failure bucket, and `user_facing:` does the same for an inbound
+  # validation error. Neither needs a hostile object to break `inspect`.
+  describe "inspecting a failed result whose exception is not an Axn::Failure" do
+    it "renders a fails_on-classified caller exception rather than raising" do
+      boom = Class.new(StandardError)
+      klass = build_axn do
+        fails_on boom
+        define_method(:call) { raise boom, "kaboom" }
+      end
+      result = klass.call
+
+      expect(result.outcome.failure?).to be(true)
+      expect(result.inspect).to eq("#<Axn::Result [failed with 'kaboom']>")
+    end
+
+    it "renders a user_facing validation failure rather than raising" do
+      klass = build_axn do
+        expects :n, numericality: { greater_than: 5 }, user_facing: true
+        def call = nil
+      end
+      result = klass.call(n: 1)
+
+      expect(result.outcome.failure?).to be(true)
+      expect(result.inspect).to eq("#<Axn::Result [failed with 'N must be greater than 5']>")
+    end
+  end
+
   describe "inspecting a failed result whose exception cannot describe itself" do
     # `Result#inspect` is not on the `.call` path, so this raises nothing into an action — it poisons every
     # logger, debugger and spec-failure message that touches the result instead, which is worse to diagnose.
