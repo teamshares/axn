@@ -544,10 +544,12 @@ module Axn
       #
       # Each name is RENDERED, not just fetched: a constant may hold non-UTF-8 bytes, and `Module#to_s` hands
       # those back, so joining one straight into this UTF-8 message could raise Encoding::CompatibilityError
-      # from the reporting itself.
+      # from the reporting itself. Both halves come from `Internal::RenderedClassName`, which this file's own
+      # `axn/exceptions` require brings in — the one owner of that composition below `Internal::Rendering`,
+      # which this layer cannot reach without a cycle.
       def describe_key_classes(first_key, second_key)
-        first = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of(first_key))
-        second = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of(second_key))
+        first = Axn::Internal::RenderedClassName.of(first_key)
+        second = Axn::Internal::RenderedClassName.of(second_key)
         return "both of class #{first}" if first == second
 
         "one of class #{first}, one of class #{second}"

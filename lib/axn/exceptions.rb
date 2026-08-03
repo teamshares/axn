@@ -17,11 +17,12 @@ module Axn
     # Encoding::CompatibilityError from the reporting itself. A layer writing a class name into prose therefore
     # renders it — `Internal::Rendering.class_name`/`module_name` compose both halves for every caller above
     # this file, and the message paths built ON this file (`UnserializableValue#message` and
-    # `UnserializableArgument#message` below, `Reflection::Values.describe_key_classes`) compose them by hand
-    # for the same reason `Rendering` itself cannot: reaching up from here into the reflection layer, which
-    # requires THIS file, would leave a message path NameError-ing under the standalone loads
-    # `spec/axn/standalone_require_spec.rb` pins. The byte half both compose through, `Internal::Text`, has no
-    # requires of its own and sits below all three.
+    # `UnserializableArgument#message` below, `Reflection::Values.describe_key_classes`) go through
+    # `Internal::RenderedClassName` just below, which composes the same two halves without reaching up into
+    # the reflection layer: that layer requires THIS file, so a reference in the other direction would leave a
+    # message path NameError-ing under the standalone loads `spec/axn/standalone_require_spec.rb` pins. The
+    # byte half they all compose through, `Internal::Text`, has no requires of its own and sits below every
+    # one of them.
     module ClassName
       OBJECT_CLASS = ::Object.instance_method(:class)
       MODULE_TO_S = ::Module.instance_method(:to_s)
@@ -35,6 +36,21 @@ module Axn
       # declared type. Same reasoning: a class can define its own `to_s`, and one that raises would replace
       # the failure being reported.
       def self.of_module(mod) = MODULE_TO_S.bind_call(mod)
+    end
+
+    # A caller-supplied value's CLASS written into prose, with both halves an error path owes composed: the
+    # name comes from `ClassName` so nothing the value defines runs, and the bytes it answers with are
+    # RENDERED, because a constant may hold non-UTF-8 ones (`Object.const_set(:"Caf\xE9", Class.new)` is
+    # accepted and `Module#to_s` hands those back) and those cannot be joined to axn's UTF-8 prose at all.
+    #
+    # It is `Internal::Rendering.class_name`, composed by hand. Two ways of removing the duplication are
+    # unsafe, and neither is this one: DELEGATING to `Rendering` is a require cycle, since `rendering.rb`
+    # requires this file; and LIFTING the composition onto `ClassName` breaks that module's promise never to
+    # render anything (see its own header). Sharing it here is neither — one owner in the file the callers
+    # already load, reached by every message below that names a caller-supplied value's class and by
+    # `Reflection::Values.describe_key_classes`, which requires this file.
+    module RenderedClassName
+      def self.of(value) = Text.renderable(ClassName.of(value))
     end
 
     # Internal only -- rescued before Axn::Result is returned
@@ -166,13 +182,13 @@ module Axn
   # same text for its other branch) costs an allocation and changes nothing: the guarantee holds for any caller
   # rather than resting on that one's diligence.
   #
-  # This file cannot REQUIRE the renderer (the reflection layer requires this file), so the reference resolves at
-  # call time — sound here and not for `Internal::ClassName` above, because the only code that can construct this
-  # error is `Axn.validate_tool_contracts!`, which lives in the fully-loaded gem, while a class name is written
-  # into prose by files an adapter loads standalone.
+  # Rendered through `Internal::Text`, the byte primitive this file already requires — never through the
+  # reflection layer's own renderer, which is built ON this file: a message path here that reached UP into that
+  # layer would NameError under the standalone loads `spec/axn/standalone_require_spec.rb` pins. All three
+  # values arrive as plain Strings, so this is the whole rendering they need.
   class InvalidToolContract < ContractViolation
     def initialize(tool:, reason:, original_class:)
-      tool, reason, original_class = [tool, reason, original_class].map { |text| Axn::Reflection::PropertyNames.renderable_label(text) }
+      tool, reason, original_class = [tool, reason, original_class].map { |text| Axn::Internal::Text.renderable(text) }
 
       super("#{tool} has an invalid tool contract — #{reason} (raised as #{self.class}, and not as the original " \
             "#{original_class}, because that class supplies its own `#exception` or duplication hook, or the " \
@@ -253,23 +269,20 @@ module Axn
         super()
       end
 
-      # The offending value's class is named via Axn::Internal::ClassName, not `@value.class`: the value
-      # is caller-supplied and may override `class`, and running that override here would replace this
+      # The offending value's class is named through `Internal::RenderedClassName`, not `@value.class`: the
+      # value is caller-supplied and may override `class`, and running that override here would replace this
       # failure with the value's own exception. Its bytes are foreign too — a constant may hold non-UTF-8
       # ones, and `Module#to_s` hands those back — so the name is RENDERED before it joins this message.
-      # This composes `Internal::Rendering.class_name` by hand (`Text.renderable(ClassName.of(...))`)
-      # rather than calling it: `rendering.rb` requires this file, so calling back into it here would be a
-      # require cycle. Do not "tidy" this into a delegation — and don't lift this one-line composition
-      # onto `ClassName` either, whose own header promises it never renders anything (see above); every
-      # exception in this file that names a caller-supplied value's class hand-composes it the same way,
-      # independently, for that reason.
+      # That module composes both halves without delegating to `Internal::Rendering` (a require cycle) and
+      # without lifting the composition onto `ClassName` (which promises never to render); see its own
+      # comment. Both moves stay off limits; reaching for the shared owner is the point.
       def message
         "Cannot serialize exposed value at `#{@path}` (#{value_class_name}): #{@reason || cycle_reason}"
       end
 
       private
 
-      def value_class_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of(@value))
+      def value_class_name = Axn::Internal::RenderedClassName.of(@value)
 
       def cycle_reason
         klass = value_class_name
@@ -293,9 +306,8 @@ module Axn
         super()
       end
 
-      # Same shape as `UnserializableValue#message` above, and hand-composed for the same reason (see
-      # its comment) rather than shared with it: `@value` is caller-supplied, so its class is named via
-      # `Text.renderable(ClassName.of(...))` rather than the raw `@value.class`.
+      # Same shape as `UnserializableValue#message` above, and through the same owner: `@value` is
+      # caller-supplied, so its class is named via `Internal::RenderedClassName` rather than `@value.class`.
       def message
         "Cannot serialize argument `#{@field}` (#{value_class_name}) for async execution. " \
           "#{Axn::Internal::AsyncSerialization._unserializable_hint(@value)}"
@@ -303,7 +315,7 @@ module Axn
 
       private
 
-      def value_class_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of(@value))
+      def value_class_name = Axn::Internal::RenderedClassName.of(@value)
     end
   end
 end
