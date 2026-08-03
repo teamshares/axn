@@ -1594,10 +1594,22 @@ RSpec.describe "declaration-time property name collisions" do
       end
 
       # INPUT reflects the shape a client is expected to send, regardless of how the value serializes, so a
-      # custom as_json/to_h changes nothing inbound and the collision is real there.
+      # custom as_json/to_h changes nothing inbound and the collision is real there. Both spellings, because the
+      # outbound carve-out has two of them and an inbound one that read only `as_json` would be a hole under the
+      # other.
       it "still rejects inbound, where serialization does not decide the schema" do
         custom = Data.define(:café) do
           def as_json(*) = { "totally" => "different" }
+        end
+        latin1 = latin1_name
+
+        expect { project_axn { expects(:thing, type: custom) { field latin1, type: String } } }
+          .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "thing\.café"/)
+      end
+
+      it "still rejects a custom to_h inbound too" do
+        custom = Data.define(:café) do
+          def to_h = { totally: "different" }
         end
         latin1 = latin1_name
 

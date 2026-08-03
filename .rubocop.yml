@@ -25,9 +25,6 @@ AllCops:
   Exclude:
     - 'benchmark/**/*'
     - 'bin/benchmark'
-    # Development tools, not shipped and not linted: the hostile-contract harness deliberately writes code no
-    # cop would accept (rescuing Exception, defining classes inline, hostile monkey-patched fixtures).
-    - 'internal-docs/**/*'
     - 'spec_rails/dummy_app/vendor/**/*'
     - 'spec_rails/dummy_app/tmp/**/*'
 
