@@ -34,9 +34,6 @@ module Axn
     SWALLOWABLE_BEYOND_STANDARD_ERROR = [SystemStackError, ScriptError].freeze
 
     class << self
-      # True when `exception` is one axn may absorb: any StandardError, plus the allowlist above.
-      # Anything else — a signal, an `exit`, another library's private control-flow signal — must pass
-      # through untouched.
       # Whether a guarded failure is re-raised rather than logged — the dev-loud mode. Exposed so
       # anything that has to reason about what best_effort will DO consults the same condition rather
       # than restating it.
