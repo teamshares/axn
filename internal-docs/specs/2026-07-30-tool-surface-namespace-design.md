@@ -148,4 +148,4 @@ No consumer calls `owns_failure_exception?`, and none references the renamed `Co
 
 ## Not in scope
 
-`Axn::Tools::Registry`, `Invoker`, `AdapterRoots`, and `VersionGroup` stay where they are — implementation constants that adapters reach through the public methods. `Core::Contract::ShapeDeclaration` and `Core::Contract::Redaction` (extracted in #208) are internal and unaffected. No behavior changes anywhere except the one new predicate: this is a rename of the surface and its vocabulary.
+`Axn::Tools::Registry`, `Invoker`, `AdapterRoots`, and `VersionGroup` stay where they are. `Registry` and `VersionGroup` are storage adapters reach through the public methods; `Invoker` (the sanctioned tool call path) and `AdapterRoots` (the opt-in directory-membership mixin) are adapter-facing APIs adapters name directly, and both are already documented as such. `Core::Contract::ShapeDeclaration` and `Core::Contract::Redaction` (extracted in #208) are internal and unaffected. No behavior changes anywhere except the one new predicate: this is a rename of the surface and its vocabulary.

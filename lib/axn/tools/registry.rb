@@ -70,11 +70,13 @@ module Axn
         all_classes.select { |klass| keys.any? { |adapter| member?(klass, adapter) } }
       end
 
+      # `adapter` is vetted by `Axn::Tools.for`, which is how an adapter reaches this; a direct call here
+      # trusts its caller, and an unregistered key enumerates nothing rather than naming the mistake.
       def members(adapter, all_versions: false)
         ensure_loaded!
-        members = all_classes.select { |klass| member?(klass, adapter) }
-        _assert_versioned_naming!(members)
-        groups = _version_groups(members, adapter)
+        candidates = all_classes.select { |klass| member?(klass, adapter) }
+        _assert_versioned_naming!(candidates)
+        groups = _version_groups(candidates, adapter)
         if all_versions
           # Deterministic: by tool_name, then ascending version within each group.
           groups.sort_by(&:tool_name).flat_map(&:all)
@@ -87,18 +89,21 @@ module Axn
       # The resolved version group for one logical tool under `adapter`, or nil when nothing
       # matches. Entry point for an adapter that needs one tool's versions by name (a path-routing
       # HTTP surface resolving `/{tool_name}/v{n}`) rather than the whole enumeration.
+      #
+      # `adapter` is vetted by `Axn::Tools.versions`, which is how an adapter reaches this; a direct call
+      # here trusts its caller, and an unregistered key resolves nothing rather than naming the mistake.
       def version_group(adapter, tool_name)
         ensure_loaded!
         target = tool_name.to_s
-        members = all_classes.select { |klass| member?(klass, adapter) && klass.tool_name(adapter) == target }
-        return nil if members.empty?
+        candidates = all_classes.select { |klass| member?(klass, adapter) && klass.tool_name(adapter) == target }
+        return nil if candidates.empty?
 
         # Validate the MATCHED members so this lookup never disagrees with `members`: a malformed
         # ::Vn member whose (explicit or derived) name matches `target` raises here too, exactly as
         # it would in `members`. Scoped to the matched set, so an unrelated malformed tool under a
         # different name can't derail the lookup.
-        _assert_versioned_naming!(members)
-        VersionGroup.new(adapter:, tool_name: target, members:)
+        _assert_versioned_naming!(candidates)
+        VersionGroup.new(adapter:, tool_name: target, members: candidates)
       end
 
       # Ensures tool classes under each adapter's tool roots are loaded before enumeration.

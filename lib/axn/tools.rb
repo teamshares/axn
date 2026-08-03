@@ -3,9 +3,15 @@
 module Axn
   # The tool surface: registering an adapter, enumerating its tools, and validating their contracts.
   #
-  # This module is what an adapter gem names. `Registry`, `Invoker`, `AdapterRoots` and `VersionGroup`
-  # beneath it are implementation constants an adapter reaches through these methods rather than
-  # calling directly — the registry in particular is free to change how membership is stored.
+  # This module is what an adapter gem names for all three. `Registry` and `VersionGroup` beneath it are
+  # storage an adapter reaches THROUGH these methods rather than naming directly — the registry in
+  # particular is free to change how membership is stored, and a `VersionGroup` arrives as `versions`'
+  # return value.
+  #
+  # The two other constants beneath it ARE adapter-facing, and an adapter names each directly: `Invoker`,
+  # the sanctioned path for running an Axn as a tool (docs/reference/tool-invoker.md), and `AdapterRoots`,
+  # the opt-in directory-membership mixin an adapter extends onto its own config module
+  # (docs/recipes/authoring-tool-adapters.md).
   #
   # `for` is a keyword in statement position, so every call inside axn writes the receiver
   # (`Axn::Tools.for(...)`); a receiverless `for(...)` would parse as a loop.

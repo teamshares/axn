@@ -200,7 +200,7 @@ RSpec.describe Axn::Configuration do
       end
 
       it "is false when only config or a block is set" do
-        config.set_default_async(false, queue: "low")
+        config.set_default_async(false, queue: "low") { :noop }
 
         expect(config.default_async?).to be(false)
       end

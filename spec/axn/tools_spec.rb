@@ -15,7 +15,7 @@ RSpec.describe Axn::Tools do
     end
 
     it "keeps an already-supplied config source on a re-registration with no source" do
-      source = register_tool_adapter_with_roots(:mcp, roots: ["agent_tools"])
+      source = register_adapter_with_roots(:mcp, roots: ["agent_tools"])
       described_class.register_adapter(:mcp)
 
       expect(Axn::Tools::Registry.adapter_config_source(:mcp)).to eq(source)
