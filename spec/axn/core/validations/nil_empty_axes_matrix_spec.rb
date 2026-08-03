@@ -284,6 +284,39 @@ RSpec.describe "nil and empty axes" do
       end
     end
 
+    # Naming an unsupported TYPE must not run the type's code either — a class or module can define `inspect`,
+    # and one that raises replaces an actionable declaration error with the caller's exception.
+    describe "an unsupported type that cannot be inspected" do
+      it "reports the declaration error rather than the type's own exception" do
+        hostile = Module.new do
+          def self.inspect = raise("inspect ran")
+        end
+
+        expect { build(type: hostile, allow_empty: true) }
+          .to raise_error(ArgumentError, /allow_empty: is not supported/)
+      end
+
+      it "survives an inspect that raises outside StandardError" do
+        hostile = Module.new do
+          def self.inspect = raise(SystemStackError, "stack level too deep")
+        end
+
+        expect { build(type: hostile, allow_empty: true) }
+          .to raise_error(ArgumentError, /allow_empty: is not supported/)
+      end
+
+      it "still names each offending type recognizably" do
+        expect { build(type: Integer, allow_empty: true) }
+          .to raise_error(ArgumentError, /is not supported for Integer on .*Drop allow_empty:/m)
+        expect { build(type: :boolean, allow_empty: true) }
+          .to raise_error(ArgumentError, /is not supported for :boolean/)
+        expect { build(type: :uuid, allow_empty: true) }
+          .to raise_error(ArgumentError, /is not supported for :uuid/)
+        expect { build(type: [Array, Integer, :boolean], allow_empty: true) }
+          .to raise_error(ArgumentError, %r{is not supported for Integer/:boolean})
+      end
+    end
+
     # Reporting an invalid value must not run the value's code: an `inspect` that raises replaces the
     # declaration error with the caller's exception, and one outside StandardError escapes every rescue.
     describe "an invalid allow_empty: value that cannot be inspected" do

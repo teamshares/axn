@@ -201,6 +201,44 @@ RSpec.describe "Axn class-level schema reflection" do
       end
     end
 
+    # A container SUBCLASS is judged by whose `empty?` would answer. One that INHERITS the built-in's is Ruby's
+    # own code, safe to run inside a verdict, and its empty instance is as empty as the built-in's. One that
+    # OVERRIDES it is the caller's code, which reflection must not run — so it is simply not recognized here,
+    # which is also what matches the runtime, since that same override is what the emptiness check will ask.
+    describe "a container subclass as a default" do
+      def field_required?(**opts)
+        klass = Class.new do
+          include Axn
+          def call = nil
+        end
+        klass.expects :v, **opts
+        [klass.call.ok?, Array(klass.input_schema[:required]).include?("v")]
+      end
+
+      {
+        "an Array subclass" => [Class.new(Array), Class.new(Array) { def empty? = false }],
+        "a Hash subclass" => [Class.new(Hash), Class.new(Hash) { def empty? = false }],
+        "a String subclass" => [Class.new(String), Class.new(String) { def empty? = false }],
+        "a Set subclass" => [Class.new(Set), Class.new(Set) { def empty? = false }],
+      }.each do |label, (inheriting, overriding)|
+        it "requires the key for an empty #{label} that inherits empty?" do
+          runtime_ok, required = field_required?(type: inheriting, optional: true, allow_empty: false, default: inheriting.new)
+
+          expect(runtime_ok).to be(false) # the omitted call resolves the default and fails
+          expect(required).to be(true)
+        end
+
+        # Pinned so a "simplification" to "treat anything unrecognized as unusable" cannot land: the runtime
+        # ACCEPTS this omitted call, and marking the key required would be stricter than the contract.
+        it "leaves the key omittable for #{label} that overrides empty?" do
+          runtime_ok, required = field_required?(type: overriding, optional: true, allow_empty: false, default: overriding.new)
+
+          expect(runtime_ok).to be(true)
+          expect(required).to be(false)
+        end
+      end
+    end
+
     # A default the field ACCEPTS still relaxes the key, and emptiness is `empty?`: a whitespace-only String
     # default passes the emptiness check, so it keeps working.
     {

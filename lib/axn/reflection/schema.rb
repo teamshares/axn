@@ -777,28 +777,41 @@ module Axn
         presence_rejects_blank?(validations)
       end
 
-      # The container types reflection may ask `empty?` of directly, and their emptiness. Exact-class
-      # (`instance_of?`) because a subclass could override `empty?`, and nothing else is dispatched on an
-      # arbitrary object — reflection stays side-effect-free, so a lazy collection (an ActiveRecord relation,
-      # say) is never asked. `Set` sits behind `defined?` because `set` is not always loaded. Both it and
-      # `ActionController::Parameters` belong here for the same reason the built-ins do — they are container
-      # types the emptiness axis is declared on, `:params` by name.
-      #
-      # Parameters is identified by class NAME rather than by the constant: this file is one an adapter gem
-      # loads directly, and naming a Rails constant here would put an unresolvable reference in its load graph
-      # for every consumer running without Rails. The name comparison is exact-class like the rest, and it is
-      # the same identify-by-name form TypeValidator already uses to recognize a test double.
+      # Parameters is identified by rendered class NAME rather than by the constant: this file is one an adapter
+      # gem loads directly, and naming a Rails constant here would put an unresolvable reference in its load graph
+      # for every consumer running without Rails. It is the same identify-by-name form TypeValidator already uses
+      # to recognize a test double, and the rendering is read natively (`Internal::ClassName.of_module`) so a class
+      # cannot answer this question for itself.
       PARAMS_CLASS_NAME = "ActionController::Parameters"
 
-      def empty_container?(value)
-        return value.empty? if value.instance_of?(Hash) || value.instance_of?(Array) || value.instance_of?(String)
-        return value.empty? if defined?(Set) && value.instance_of?(Set)
-        # rubocop:disable Style/ClassEqualityComparison -- the cop's `instance_of?(PARAMS_CLASS_NAME)` would
-        # compare against a String; naming the class is the very thing this avoids (see PARAMS_CLASS_NAME).
-        return value.empty? if value.class.name == PARAMS_CLASS_NAME
-        # rubocop:enable Style/ClassEqualityComparison
+      # The container classes whose `empty?` is RUBY'S OWN — the ones the emptiness axis is declared on. `Set` sits
+      # behind `defined?` because `set` is not always loaded.
+      EMPTY_CONTAINER_CLASSES = [::Hash, ::Array, ::String].freeze
 
-        false
+      # Whether a default is an EMPTY container, decided by WHOSE `empty?` would answer it. Ownership is the whole
+      # test, because it separates the two things a subclass can be: one that INHERITS the built-in's `empty?`
+      # answers with Ruby's own code, so running it is safe and its empty instance is as empty as the built-in's;
+      # one that OVERRIDES it (or carries a singleton) is caller code, which a reflection verdict must not run —
+      # and not recognizing it is also what matches the runtime, since that same override is what the emptiness
+      # check will ask. Anything else — a lazy collection, an arbitrary object — is unrecognized for the same
+      # reason, so no `empty?` of a caller's writing is ever dispatched here.
+      #
+      # The owner read is bound (`NativeMethods.method_owner`); the call that follows it needs no guard, because
+      # the implementation it dispatches is the one whose owner was just established.
+      def empty_container?(value)
+        owner = Axn::Internal::NativeMethods.method_owner(value, :empty?)
+        return false unless owner && native_empty_owner?(owner)
+
+        value.empty?
+      end
+
+      def native_empty_owner?(owner)
+        return true if EMPTY_CONTAINER_CLASSES.any? { |klass| klass.equal?(owner) }
+        return true if defined?(Set) && ::Set.equal?(owner)
+
+        # The rendered name is a Ruby-made String (the bound `Module#to_s`), so comparing it dispatches String's
+        # own `==` whatever the owner is.
+        Axn::Internal::ClassName.of_module(owner) == PARAMS_CLASS_NAME
       end
 
       # A default value ActiveModel's presence validator treats as blank (and so rejects): `false`, a

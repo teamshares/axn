@@ -145,6 +145,20 @@ module Axn
       # would be exactly the replaced-verdict failure the bound read exists to prevent.
       def self.public_instance_method?(mod, name) = MODULE_PUBLIC_METHOD_DEFINED.bind_call(mod, name)
 
+      # Which class or module OWNS the method a value would dispatch for `name` — read through the bound
+      # `Object#method`, so the answer comes from the method table rather than from the value. nil when the value
+      # has no such method at all, or is not something `Object#method` can be bound to (a `BasicObject`).
+      #
+      # This is what decides whether CALLING that method runs Ruby's own code or the caller's, which a walk needs
+      # before it may run one at all: a container subclass that INHERITS `empty?` answers with the built-in's
+      # implementation, while one that overrides it — or carries a singleton, which `Object#method` finds first —
+      # is arbitrary code that a verdict must not enter.
+      def self.method_owner(value, name)
+        OBJECT_METHOD.bind_call(value, name).owner
+      rescue ::NameError, ::TypeError
+        nil
+      end
+
       # Whether this NAME renders through Ruby's own code, which is the condition for "the property a rule judged
       # is the property every consumer reads".
       #

@@ -1428,6 +1428,19 @@ module Axn
           end
         end
 
+        # How a declared type is written into a message: a pseudo-type by its own name, a class or module by the
+        # seam that reads its name natively and renders the bytes, and anything else by its class. Nothing here
+        # dispatches to the type — a class or module can define `inspect`/`to_s`/`name`, and one that raises while
+        # a declaration error is being built replaces it with the caller's exception, which outside StandardError
+        # escapes every rescue meant to settle it.
+        def _declared_type_label(klass)
+          case klass
+          when ::Symbol then Axn::Reflection::PropertyNames.inspect_field_name(klass)
+          when ::Module then Axn::Reflection::PropertyNames.renderable_module_name(klass)
+          else "a value of class #{Axn::Reflection::PropertyNames.renderable_class_name(klass)}"
+          end
+        end
+
         # The grammar of an `allow_empty:` value: the option's three states — `true` (an empty value is
         # acceptable), `false` (it is not), and `nil` (unspecified, which is the option absent). Everything
         # downstream reads the flag by truthiness, so any other value would silently land on one of the two
@@ -1468,8 +1481,9 @@ module Axn
           return if offending.empty?
 
           raise ArgumentError,
-                "allow_empty: is not supported for #{offending.map(&:inspect).join('/')} on #{where} — those " \
-                "values cannot be empty, so there is no empty state to permit or forbid. Drop allow_empty:."
+                "allow_empty: is not supported for #{offending.map { |k| _declared_type_label(k) }.join('/')} on " \
+                "#{where} — those values cannot be empty, so there is no empty state to permit or forbid. " \
+                "Drop allow_empty:."
         end
 
         # This method applies any top-level options to each of the individual validations given.
