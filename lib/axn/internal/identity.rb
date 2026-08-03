@@ -31,7 +31,8 @@ module Axn
       DUP = String.instance_method(:dup)
       FORCE_ENCODING = String.instance_method(:force_encoding)
       SCRUB = String.instance_method(:scrub)
-      private_constant :ENCODE, :DUP, :FORCE_ENCODING, :SCRUB
+      VALID_ENCODING = String.instance_method(:valid_encoding?)
+      private_constant :ENCODE, :DUP, :FORCE_ENCODING, :SCRUB, :VALID_ENCODING
 
       # True when `one` and `other` are the same object.
       def self.same?(one, other) = EQUAL.bind_call(one, other)
@@ -57,8 +58,13 @@ module Axn
       #
       # Undispatched throughout: the String came from a caller's `validate:` lambda and may be a
       # subclass overriding any of these.
+      # ALWAYS returns valid UTF-8, which is the contract callers depend on: transcoding a String
+      # already TAGGED UTF-8 succeeds without validating it, so the encode alone can hand back invalid
+      # bytes that raise later — `strip` on them raises Encoding::CompatibilityError, which is exactly
+      # the failure this method exists to prevent.
       def self.utf8_string(value)
-        ENCODE.bind_call(value, Encoding::UTF_8)
+        encoded = ENCODE.bind_call(value, Encoding::UTF_8)
+        VALID_ENCODING.bind_call(encoded) ? encoded : SCRUB.bind_call(encoded)
       rescue StandardError
         SCRUB.bind_call(FORCE_ENCODING.bind_call(DUP.bind_call(value), Encoding::UTF_8))
       end

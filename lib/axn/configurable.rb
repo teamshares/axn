@@ -102,8 +102,12 @@ module Axn
         # Rendered to UTF-8 before it is joined: a reason in an incompatible encoding would otherwise
         # raise Encoding::CompatibilityError out of the interpolation, replacing the ArgumentError this
         # method promises with one about encodings.
-        detail = Axn::Internal::Identity.utf8_string(outcome) if Axn::Internal::Identity.kind?(outcome, String) &&
-                                                                 !Axn::Internal::Identity.blank_string?(outcome)
+        # Rendered BEFORE the blank test, not after. `blank_string?` runs `strip`, which raises
+        # Encoding::CompatibilityError on invalid UTF-8 — so testing the raw reason first reintroduced
+        # the very failure the rendering exists to prevent, one step earlier.
+        rendered = Axn::Internal::Identity.utf8_string(outcome) if Axn::Internal::Identity.kind?(outcome, String)
+        detail = rendered unless Axn::Internal::Identity.nil_value?(rendered) ||
+                                 Axn::Internal::Identity.blank_string?(rendered)
         raise ArgumentError, ["#{name} got invalid value: #{value.inspect}", detail].compact.join(" — ")
       end
 

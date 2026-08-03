@@ -975,6 +975,30 @@ RSpec.describe "#reset!" do
       expect { klass.new.x = 1 }.to raise_error(ArgumentError, /got invalid value: 1 — réason/)
     end
 
+    it "still raises ArgumentError when the reason is TAGGED utf-8 but holds invalid bytes" do
+      # The narrowest case, and the one the first fix missed. Transcoding a String already tagged UTF-8
+      # succeeds without validating it, and the blank test ran on the RAW reason — so `strip` raised
+      # Encoding::CompatibilityError before the rendering was ever reached.
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { (+"bad \xC3(").force_encoding(Encoding::UTF_8) }
+      end
+
+      expect { klass.new.x = 1 }.to raise_error(ArgumentError, /got invalid value: 1 — bad/)
+    end
+
+    it "treats a blank reason in another encoding as no reason at all" do
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { "   ".encode("UTF-16LE") }
+      end
+
+      # No dangling separator: the rendered reason is whitespace, so the plain form is used.
+      expect { klass.new.x = 1 }.to raise_error(ArgumentError, /got invalid value: 1\z/)
+    end
+
     it "renders a reason whose bytes cannot be transcoded at all" do
       klass = Class.new do
         extend Axn::Configurable::Settings
