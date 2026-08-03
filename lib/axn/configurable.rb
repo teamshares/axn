@@ -88,7 +88,14 @@ module Axn
       # a String instead of `true` to say WHY the value was rejected — worth it for a setting whose
       # value is an object the app supplies, where "invalid" alone doesn't hint at the contract.
       def validate!(value)
-        raise ArgumentError, "#{name} must be one of #{one_of.map(&:inspect).join(', ')}; got #{value.inspect}" if one_of && !one_of.include?(value)
+        # `describe` for the rejected value, plain `inspect` for the allowlist: the allowlist is what the
+        # library author declared, while the value is whatever a caller assigned — and only the latter
+        # can take down the error being raised about it.
+        if one_of && !one_of.include?(value)
+          raise ArgumentError,
+                "#{name} must be one of #{one_of.map(&:inspect).join(', ')}; " \
+                "got #{Axn::Internal::Identity.describe(value)}"
+        end
         return unless validate.respond_to?(:call)
 
         outcome = validate.call(value)
@@ -108,7 +115,8 @@ module Axn
         rendered = Axn::Internal::Identity.utf8_string(outcome) if Axn::Internal::Identity.kind?(outcome, String)
         detail = rendered unless Axn::Internal::Identity.nil_value?(rendered) ||
                                  Axn::Internal::Identity.blank_string?(rendered)
-        raise ArgumentError, ["#{name} got invalid value: #{value.inspect}", detail].compact.join(" — ")
+        raise ArgumentError,
+              ["#{name} got invalid value: #{Axn::Internal::Identity.describe(value)}", detail].compact.join(" — ")
       end
 
       # A Proc default is DYNAMIC: re-derived on every read while the setting is unset, and never

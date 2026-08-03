@@ -975,6 +975,47 @@ RSpec.describe "#reset!" do
       expect { klass.new.x = 1 }.to raise_error(ArgumentError, /got invalid value: 1 — réason/)
     end
 
+    it "still raises ArgumentError when the rejected value's own inspect raises" do
+      # An inspect that raises is an ordinary bug — an uninitialized ivar, a broken association — and on
+      # an error path the exception being reported must win over anything raised while describing it.
+      # Interrupt specifically, since axn never swallows it anywhere else.
+      hostile = Class.new do
+        def inspect = raise(Interrupt)
+      end.new
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { false }
+      end
+
+      expect { klass.new.x = hostile }.to raise_error(ArgumentError, /got invalid value: #<.*inspect unavailable/)
+    end
+
+    it "describes an unrenderable value in the one_of rejection too" do
+      hostile = Class.new do
+        def inspect = raise(Interrupt)
+      end.new
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, one_of: %i[a b]
+      end
+
+      expect { klass.new.x = hostile }.to raise_error(ArgumentError, /must be one of :a, :b; got #</)
+    end
+
+    it "keeps a well-behaved value's own inspect rather than degrading it" do
+      # The reason `inspect` is still dispatched: rendering everything through Object#inspect would turn
+      # every useful message into #<String:0x…>.
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { false }
+      end
+
+      expect { klass.new.x = "foo" }.to raise_error(ArgumentError, /got invalid value: "foo"/)
+    end
+
     it "still raises ArgumentError when the reason is TAGGED utf-8 but holds invalid bytes" do
       # The narrowest case, and the one the first fix missed. Transcoding a String already tagged UTF-8
       # succeeds without validating it, and the blank test ran on the RAW reason — so `strip` raised

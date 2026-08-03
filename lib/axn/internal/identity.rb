@@ -21,7 +21,8 @@ module Axn
       private_constant :KIND
 
       CLASS_OF = Object.instance_method(:class)
-      private_constant :CLASS_OF
+      MODULE_NAME = Module.instance_method(:to_s)
+      private_constant :CLASS_OF, :MODULE_NAME
 
       STRIP = String.instance_method(:strip)
       EMPTY = String.instance_method(:empty?)
@@ -48,6 +49,31 @@ module Axn
       # `class`, whose generated reader shadows it — so dispatching would hand back the setting's value
       # where a Class was expected.
       def self.class_of(value) = CLASS_OF.bind_call(value)
+
+      # A caller-supplied value rendered for an error message, which must not be able to replace that
+      # error. `inspect` IS dispatched, deliberately: the object's own is what makes a message useful
+      # (`"foo"` rather than `#<String:0x…>`), and rendering everything through Object#inspect would
+      # degrade every well-behaved value to defend against broken ones. So the call is made and its
+      # failure absorbed instead.
+      #
+      # Absorbs every class, including those axn never swallows. An `inspect` that raises is an ordinary
+      # bug — an uninitialized ivar, a broken association — and on an error path the exception being
+      # reported has to win over anything raised while describing it. A non-String `inspect` is treated
+      # as a failure too, since interpolating it would dispatch again.
+      def self.describe(value)
+        rendered = value.inspect
+        kind?(rendered, String) ? utf8_string(rendered) : undescribable(value)
+      rescue Exception # rubocop:disable Lint/RescueException
+        undescribable(value)
+      end
+
+      # Names the value's CLASS without asking the value anything. Nested rescue because `class_of`
+      # binds an Object method, which a BasicObject-based proxy cannot receive at all.
+      def self.undescribable(value)
+        "#<#{MODULE_NAME.bind_call(class_of(value))} (inspect unavailable)>"
+      rescue Exception # rubocop:disable Lint/RescueException
+        "#<unrenderable value>"
+      end
 
       # A caller-supplied String rendered so it can be interpolated into a UTF-8 message. Transcoding
       # is attempted first, since that preserves the text a UTF-16 reason actually says; a String whose
