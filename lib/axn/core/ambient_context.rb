@@ -132,7 +132,7 @@ module Axn
         # — one that may contain itself, or mint a fresh nested shape on every read. Either overflows the stack
         # while the class is being defined, which no rescue in the framework can settle. Same two bounds, same two
         # messages, as the projection walk that re-walks for its own reasons
-        # (Reflection::PropertyNames#count_shape_members!).
+        # (Internal::Reflection::PropertyNames#count_shape_members!).
         def _each_shape_member(shape, seen = nil, depth = 0, via = nil, &block)
           hash = Internal::ShapeGraph.hash_or_nil(shape)
           return if nil.equal?(hash)

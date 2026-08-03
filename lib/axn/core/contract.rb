@@ -151,7 +151,7 @@ module Axn
 
       # A shape member's name has to serve as TWO things: the JSON property it renders as (via `to_s`, which
       # the declaration guard canonicalizes) and the schema property key (via `to_sym`, which
-      # Reflection::Schema#member_properties emits). A String and a Symbol are the only types for which those
+      # Internal::Reflection::Schema#member_properties emits). A String and a Symbol are the only types for which those
       # conversions are each other's inverse, so they are the only names that mean one property. Any other
       # object defines the two independently, and one whose `to_s` and `to_sym` disagree makes the guard and
       # the schema compare different property names for the same member: the guard sees no collision while

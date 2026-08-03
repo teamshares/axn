@@ -132,7 +132,7 @@ module Axn
       #    `Exception#exception(message)` clones and `raise` then asks the CLONE.
       #
       # 3. Every foreign STRING it writes into the message is RENDERED into UTF-8 rather than joined to it, through
-      #    the one path axn renders foreign text with (`Reflection::PropertyNames`). A guarded dispatch is only half
+      #    the one path axn renders foreign text with (`Internal::Reflection::PropertyNames`). A guarded dispatch is only half
       #    of what a report needs: a `#message` that behaves perfectly and returns a String whose bytes are not
       #    UTF-8-compatible — the stored message of an ordinary ArgumentError is enough, no override required — made
       #    the interpolation itself raise Encoding::CompatibilityError, destroying the contract failure at boot and

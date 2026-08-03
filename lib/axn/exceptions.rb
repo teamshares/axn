@@ -13,7 +13,7 @@ module Axn
     # may hold non-UTF-8 ones (`Object.const_set(:"Caf\xE9", Class.new)` is accepted, and `Module#to_s` hands
     # those bytes back), so interpolating the result into a UTF-8 message can still raise
     # Encoding::CompatibilityError from the reporting itself. A layer writing a class name into prose therefore
-    # renders it — `Reflection::PropertyNames.renderable_class_name`/`renderable_module_name` compose both
+    # renders it — `Internal::Reflection::PropertyNames.renderable_class_name`/`renderable_module_name` compose both
     # halves — and this module deliberately does not, because the reflection layer requires THIS file: reaching
     # back into it here would leave a message path NameError-ing under the standalone loads
     # `spec/axn/standalone_require_spec.rb` pins.

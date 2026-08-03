@@ -1496,7 +1496,7 @@ RSpec.describe "declaration-time property name collisions" do
     end
 
     # A `Data`-typed field declaring a shape block emits its type's own members as properties beside the
-    # shape's (Reflection::Schema#apply_structured_schema!), so those two sets share a node. This mechanism was
+    # shape's (Internal::Reflection::Schema#apply_structured_schema!), so those two sets share a node. This mechanism was
     # not on the review's list; it was found by walking the cross-product.
     describe "the members of a Data type declared alongside a shape" do
       it "rejects a shape member that collapses onto a Data member's property" do
@@ -3435,7 +3435,7 @@ RSpec.describe "declaration-time property name collisions" do
     # ...and the size guard, which runs BEFORE the build to decide which config the emitter would have built a
     # shared wire key's property from, does not ask the name that question either. It cannot be observed through
     # a projection, because the emitter's own `properties` Hash asks `eql?` immediately afterwards and that
-    # dispatch is the merge rule rather than a report (`Reflection::Schema` is deliberately not one of the layers
+    # dispatch is the merge rule rather than a report (`Internal::Reflection::Schema` is deliberately not one of the layers
     # that refuse to dispatch) — so the guard is checked where it lives.
     it "decides which config owns a shared wire key without asking the name" do
       raising_eql = Class.new(String) do
