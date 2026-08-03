@@ -74,7 +74,14 @@ module Axn
       # read_attribute_for_validation: the facade call site (collect_errors) passes `true`; a shape
       # member passes its own `method_call:` opt-in (PRO-2907). It is deliberately independent of
       # `action:` so the two can be threaded separately.
-      def self.errors_for(validator_class, source:, validations:, action: nil, reader: nil, config: nil, permit_method_call: false)
+      #
+      # `shape_ancestry:` carries a nested shape walk's position — the value/shape pairs open on the current
+      # path and how deep it has descended — across this boundary. A nested `shape:` recurses through
+      # ActiveModel rather than by calling itself, so a fresh validator is built per level and the walk state
+      # has nowhere else to live; `ShapeValidator` reads it back off the record it is handed, the same way it
+      # reads the threaded action.
+      def self.errors_for(validator_class, source:, validations:, action: nil, reader: nil, config: nil, permit_method_call: false,
+                          shape_ancestry: nil)
         validator = validator_class.new(source)
 
         # Set the action context for model field resolution + symbol-argument delegation
@@ -83,6 +90,7 @@ module Axn
         validator.instance_variable_set(:@reader, reader)
         validator.instance_variable_set(:@config, config)
         validator.instance_variable_set(:@permit_method_call, permit_method_call)
+        validator.instance_variable_set(:@shape_ancestry, shape_ancestry)
 
         validator.valid?
         validator.errors
@@ -180,6 +188,10 @@ module Axn
       private
 
       def _action_for_validation = @action
+
+      # The nested shape walk's position, or nil at the top of one. Read off the record by
+      # `ShapeValidator`, which owns what it means.
+      def _shape_ancestry_for_validation = @shape_ancestry
     end
   end
 end

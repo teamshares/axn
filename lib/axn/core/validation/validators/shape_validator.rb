@@ -47,7 +47,50 @@ module Axn
 
       private
 
+      # Where the walk currently is: the value/shape pairs open on the path above it (`seen`, owned by
+      # `CycleGuard`) and how many levels it has descended. Threaded through `errors_for` because a nested
+      # `shape:` recurses through ActiveModel rather than by calling itself.
+      Ancestry = Data.define(:seen, :depth)
+      private_constant :Ancestry
+
+      # Descending into `source`'s members is the step that can recurse forever, so it is the step that is
+      # bounded — on the two terms every walk of a graph a class merely HOLDS is bounded on, because a
+      # declared graph cannot be either (the declaration walk refuses both) while `internal_field_configs=`
+      # carries whatever its author built.
+      #
+      # A CYCLIC graph repeats an object, which the pair guard sees. A GENERATIVE one — minting a fresh
+      # nested shape on every read — repeats nothing at all and is endless rather than cyclic, so it is the
+      # depth bound that stops it. Neither bound substitutes for the other, and `SystemStackError` is what
+      # was there before both: outside `StandardError`, so it escaped as an "exception" outcome carrying a
+      # stack overflow rather than anything naming the contract.
+      #
+      # The pair is what a REVISIT means here. This walk descends a shape and a value in lockstep, so the
+      # same value legitimately reappears under a DIFFERENT shape node with its own members still to check:
+      # an ordinary two-level declared shape handed a self-referential Hash validates that Hash's members at
+      # both levels, and value-only ancestry silently dropped the second level's verdicts. The same value
+      # under the SAME node is a genuine repeat, and skipping it adds nothing the frame that opened it is not
+      # already adding — so a cycle is treated as valid rather than reported.
+      #
+      # Keyed on the members list the node holds rather than on `options`: one validator class is built per
+      # level, so `options` is a fresh Hash each time, while a cyclic graph hands back the same members list
+      # — which is exactly the identity that repeats. A generative graph hands back a fresh one, and falls to
+      # the depth bound.
+      def guard_descent(source, ancestry)
+        depth = ancestry ? ancestry.depth : 0
+        raise ArgumentError, Axn::Internal::ShapeGraph.too_deep_message(nil) if depth >= Axn::Internal::ShapeGraph::MAX_NESTING
+
+        Axn::Internal::CycleGuard.guard_pair(source, options[:members], ancestry&.seen, on_cycle: nil) do |seen|
+          yield Ancestry.new(seen:, depth: depth + 1)
+        end
+      end
+
       def validate_members(record, attribute, source, prefix:)
+        guard_descent(source, record.send(:_shape_ancestry_for_validation)) do |ancestry|
+          validate_members_of(record, attribute, source, prefix:, ancestry:)
+        end
+      end
+
+      def validate_members_of(record, attribute, source, prefix:, ancestry:)
         # `record` is the parent field's one-off validator, which carries the action (threaded by
         # errors_for at every level) — pass it down so a member's Symbol/Proc arguments and
         # if:/unless: conditions resolve against the ACTION, exactly as at the top level (a member
@@ -72,7 +115,8 @@ module Axn
           errors = Axn::Validation::Fields.errors_for(
             member_validator_classes[member.field],
             source:, validations: member.validations,
-            action:, permit_method_call: member_method_call?(member)
+            action:, permit_method_call: member_method_call?(member),
+            shape_ancestry: ancestry
           )
           errors.each do |error|
             # A member error carries its own `user_facing:` intent. When re-wrapping an error that
