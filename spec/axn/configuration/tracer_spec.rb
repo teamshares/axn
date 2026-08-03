@@ -539,6 +539,32 @@ RSpec.describe "Axn.config.tracer" do
       Axn.config.reset!(:emit_metrics)
     end
 
+    it "does not emit metrics for an action that never ran" do
+      # The metrics ensure runs even when tracing cancelled before the action started, and an
+      # unfinalized result still reads its default `success` — so this recorded a successful action
+      # that never happened, while the cancellation carried on unwinding behind it.
+      seen = []
+      Axn.config.emit_metrics = ->(result:, **) { seen << result.outcome }
+      Axn.config.tracer = Class.new { def in_span(*, **) = raise Interrupt }.new
+
+      expect { counting_axn.call }.to raise_error(Interrupt)
+      expect(runs.size).to eq(0)
+      expect(seen).to be_empty
+    ensure
+      Axn.config.reset!(:emit_metrics)
+    end
+
+    it "still emits metrics once the result has settled" do
+      seen = []
+      Axn.config.emit_metrics = ->(result:, **) { seen << result.outcome }
+      Axn.config.tracer = Class.new { def in_span(*, **) = yield(nil) }.new
+
+      expect(counting_axn.call).to be_ok
+      expect(seen).to eq(["success"])
+    ensure
+      Axn.config.reset!(:emit_metrics)
+    end
+
     it "refuses a stored block invoked after the tracing boundary has exited" do
       # The tracer captures the block, cancels out before invoking it, and calls it later on the
       # caller's OWN thread and fiber — so context identity is satisfied and cannot be what refuses

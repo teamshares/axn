@@ -3,6 +3,31 @@
 require "timeout"
 
 RSpec.describe Axn::Extensions do
+  describe ".swallowable?" do
+    it "answers from the class hierarchy, not from the instance" do
+      # This predicate authorizes SWALLOWING, and only the allowlist actually being in the ancestry
+      # can authorize that. Asking `exception.is_a?` made the answer depend on a method the exception
+      # defines, so a direct Exception subclass claiming to be a StandardError was treated as
+      # absorbable — and a cancellation absorbed is the worst outcome available in the tracing path.
+      # Inheriting from Exception rather than StandardError is the whole point: the lie is the claim
+      # to be swallowable, so the class must genuinely not be.
+      liar = Class.new(Exception) do # rubocop:disable Lint/InheritException
+        def is_a?(klass) = klass == StandardError ? true : super
+        def kind_of?(klass) = is_a?(klass)
+      end.new("cancellation in disguise")
+
+      expect(described_class.swallowable?(liar)).to be(false)
+    end
+
+    it "still answers true for the allowlist and its subclasses" do
+      expect(described_class.swallowable?(StandardError.new)).to be(true)
+      expect(described_class.swallowable?(ArgumentError.new)).to be(true)
+      expect(described_class.swallowable?(SystemStackError.new)).to be(true)
+      expect(described_class.swallowable?(Class.new(ScriptError).new)).to be(true)
+      expect(described_class.swallowable?(Interrupt.new)).to be(false)
+    end
+  end
+
   describe ".best_effort" do
     let(:boom) { -> { raise StandardError, "fail message" } }
     let(:logger) { double(:logger) }

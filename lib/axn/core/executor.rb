@@ -302,6 +302,14 @@ module Axn
       # Signals and throws are the exception to all of it: the caller has abandoned the call, so they
       # escape without the action being started. See `resumable_after?`.
       #
+      # The dispatch count is a property of this LAYERING, not of any one re-raise: every nested
+      # rescue-and-re-raise on the unwind path asks the exception for itself once more. A cancellation
+      # currently passes four of them (exception handling declining to settle it, `execute` recording
+      # it, `observe` recording it, and the guard below) against one for a bare `raise`/`rescue` pair,
+      # so each layer added here costs another substitution opportunity for the class of exception
+      # described above. Recording WHERE an unwind happened is why the layers exist, so this is a price
+      # rather than a defect — but it is worth knowing before adding a fifth.
+      #
       # An observer RETURNING is not proof the stack it wrapped succeeded: a tracer may rescue around
       # its own `yield`. The wrapped stack's exception is kept, not just flagged, and re-raised after
       # the observer returns if the observer absorbed it.
@@ -455,7 +463,12 @@ module Axn
         # and the assignment never happened — there is no action identity to file a metric under, and
         # `best_effort` re-raises under best_effort_raises_in_dev, which would put a metrics error in
         # place of the failure that got us here.
-        emit_metrics_for(resource) if resource
+        # `action_result_finalized?` for the same reason span finalization and completion logging gate
+        # on it: an unfinalized result still reads its default `success`, so emitting here would record
+        # a successful action that never ran. Reached exactly that way — a tracer raising `Interrupt`
+        # or throwing before it yields leaves the action unstarted while this ensure still runs, and the
+        # metric outlives the cancellation that follows it.
+        emit_metrics_for(resource) if resource && action_result_finalized?
       end
 
       def emit_metrics_for(resource)

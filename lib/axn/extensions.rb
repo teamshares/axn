@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/identity"
+
 module Axn
   # The extension-author surface: "for gems building on axn," distinct from
   # Axn::Internal (private) and the user-facing DSL. Not Ruby core-ext/refinements —
@@ -38,8 +40,17 @@ module Axn
       # than restating it.
       def raises_in_dev? = Axn.config.best_effort_raises_in_dev && Axn.config.env.development?
 
+      # Undispatched ancestry, not `exception.is_a?`. Not as a defense against exceptions that lie
+      # about themselves — that is unwinnable — but because the object's opinion is not the question.
+      # This predicate decides whether axn may SWALLOW something, and the only thing that authorizes
+      # that is the allowlist actually being in the class's ancestry. Asking the instance made the
+      # answer depend on a method the instance defines; `Module#===` makes it depend on the hierarchy,
+      # which is deterministic for every input. Same seam the span type check and the `validate:`
+      # String check already use.
       def swallowable?(exception)
-        exception.is_a?(StandardError) || SWALLOWABLE_BEYOND_STANDARD_ERROR.any? { |klass| exception.is_a?(klass) }
+        return true if Internal::Identity.kind?(exception, StandardError)
+
+        SWALLOWABLE_BEYOND_STANDARD_ERROR.any? { |klass| Internal::Identity.kind?(exception, klass) }
       end
 
       def config
