@@ -66,7 +66,7 @@ eager-load), `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb
 
 - Use public `axn_class.input_schema` / `axn_class.output_schema` — plain JSON Schema **Hashes**. Wrap them
   into your transport's schema object inside `wrap`.
-- **Don't** reach into `Axn::Reflection::Schema` internals. **Don't** override `input_schema` to a non-Hash
+- **Don't** reach into `Axn::Internal::Reflection::Schema` internals. **Don't** override `input_schema` to a non-Hash
   (breaks other adapters on the shared class).
 - `on: :ambient_context` fields are **auto-excluded** from `input_schema` — you get a clean model-facing
   schema; don't re-add them.
@@ -82,7 +82,7 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/internal/reflection/schema
   Don't hand-roll (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` so output matches `output_schema`).
 - **You pass no config list** — `render` derives the declared `exposes` from the result itself. Rendering a
   subset is deliberately unsupported: it would emit a body contradicting `output_schema`.
-- **Don't reach into `Axn::Reflection::Values`.** `render` is the surface; the renderer's helpers are private, and
+- **Don't reach into `Axn::Internal::Reflection::Values`.** `render` is the surface; the renderer's helpers are private, and
   what stays public is there for core's own cross-module callers, not for you.
 - No **value** in the result is one `JSON.generate` refuses (no non-finite number, no non-UTF-8 bytes, no
   cycle, no collapsed property). That is a promise about values, NOT about your encoder's config: a structure

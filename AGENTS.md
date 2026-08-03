@@ -52,16 +52,18 @@ Formatting is enforced in CI — match the surrounding code and don't spend effo
 
 Sibling gems own their own `Axn::<GemName>` namespace (`Axn::Webhooks`, `Axn::MCP`, `Axn::RubyLLM`) — core never defines constants there.
 
-axn-core reserves the top-level public constants (`Result`, `Failure`, `Factory`, `FormObject`, `Configuration`, `RailsConfiguration`, `Strategies`, and the exception classes) plus the module namespaces `Core`, `Internal`, `Async`, `Extensions`, `Tools`, `Reflection`, `Validation`, `Configurable`, `Mountable`, `Extras`, `FieldDeclarations`, `Testing`, `Util`.
+axn-core reserves the top-level public constants (`Result`, `Failure`, `Factory`, `FormObject`, `Configuration`, `RailsConfiguration`, `Strategies`, and the exception classes) plus the module namespaces `Core`, `Internal`, `Async`, `Extensions`, `Tools`, `Validation`, `Configurable`, `Mountable`, `Extras`, `FieldDeclarations`, `Testing`, `Util`.
+
+`Axn::Reflection` is **deliberately unclaimed** — do not define anything there. It held seven internal modules until the name was vacated before release (`Axn::Internal::Reflection`), because a public-looking namespace occupied entirely by implementation detail is a name we can't later use for the thing it advertises. What a user reflects with today is `input_schema`/`output_schema` on the action class; `Axn::Reflection` stays free for a reflection API we'd be willing to support as public. `spec/axn/namespace_policy_spec.rb` fails if anything re-occupies it.
 
 `Axn::Extensions` is the extension-author surface (for gems building on axn — e.g. `Axn::Extensions.best_effort`, `Axn::Extensions.config`, `Axn::Extensions::Serialization.render`), distinct from `Axn::Internal` (private) and the user-facing DSL. `Axn::Core` holds action-assembly and runtime machinery (`Executor`, the context-facade family); it is not a public surface.
 
 Which namespace a new constant belongs in, so the next addition follows a rule instead of copying a precedent:
 
 - `Internal::X` — internal **and generically useful**: a value-level mechanism any layer can use, with no presence in the action's surface. `CycleGuard`, `ShapeGraph`, `NativeMethods`, `Timing`, `Callable`, `ClassName`, `ExceptionMessage`.
+- `Internal::Reflection::X` — the layer that derives a JSON view of a contract (`Schema`, `Values`, `PropertyNames`, `SubfieldTree`). Nothing outside axn names it; what a gem consumes are the projections, not the machinery — `input_schema`/`output_schema` on the action class, and `Extensions::Serialization.render` for a result.
 - `Core::X` — internal **and contextual to one topic**: a layer extended onto the action class, named for what the *author* writes. `Contract`, `Hooks`, `Tagging`, `Logging`, `AmbientContext`, `ToolDeclaration`.
 - `Core::Contract::X` — machinery one layer owns and that is meaningless outside it. `FieldConfig` (the contract's config object — the same-named `Internal::FieldConfig` is the field-name convention helper), `ShapeConfig`, `ShapeDeclaration`, `Redaction`.
-- `Reflection::X` — the layer that derives a JSON view of a contract (`Schema`, `Values`, `PropertyNames`, `SubfieldTree`). Internal: nothing outside axn names it. What a gem consumes are the projections, not the machinery — `input_schema`/`output_schema` on the action class, and `Extensions::Serialization.render` for a result.
 - `Extensions::X` — axn **or downstream gems**. The only namespace a gem should add constants to, and adding one is adding to the public API.
 - `Tools::X` — the tool surface: its calls (`Axn::Tools.for`) *and* its exceptions (`Axn::Tools::InvalidContract`).
 

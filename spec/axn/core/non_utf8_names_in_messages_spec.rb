@@ -108,17 +108,17 @@ RSpec.describe "non-UTF-8 declared names in messages" do
   describe "the shared renderer" do
     # An ASCII name renders byte-identically, so ordinary messages are untouched by any of this.
     it "leaves an ASCII name exactly as it was" do
-      expect(Axn::Reflection::PropertyNames.renderable_label(:status)).to eq("status")
+      expect(Axn::Internal::Reflection::PropertyNames.renderable_label(:status)).to eq("status")
     end
 
     it "renders a non-UTF-8 name as the property it canonicalizes to" do
-      expect(Axn::Reflection::PropertyNames.renderable_label(latin1_name)).to eq("café")
-      expect(Axn::Reflection::PropertyNames.renderable_label(latin1_string)).to eq("café")
+      expect(Axn::Internal::Reflection::PropertyNames.renderable_label(latin1_name)).to eq("café")
+      expect(Axn::Internal::Reflection::PropertyNames.renderable_label(latin1_string)).to eq("café")
     end
 
     # Bytes with no UTF-8 rendering at all have no property to print, so they fall back to the escaped form.
     it "escapes bytes with no UTF-8 rendering" do
-      label = Axn::Reflection::PropertyNames.renderable_label("bad\xFF".dup.force_encoding("ASCII-8BIT").to_sym)
+      label = Axn::Internal::Reflection::PropertyNames.renderable_label("bad\xFF".dup.force_encoding("ASCII-8BIT").to_sym)
 
       expect(label).to eq(':"bad\xFF"')
       expect(label).to be_readable_utf8
@@ -132,7 +132,7 @@ RSpec.describe "non-UTF-8 declared names in messages" do
         def inspect = raise(NotImplementedError, "hijacked from #inspect")
       end.new
 
-      expect(Axn::Reflection::PropertyNames.renderable_label(exotic)).to match(/\Aa name of class /)
+      expect(Axn::Internal::Reflection::PropertyNames.renderable_label(exotic)).to match(/\Aa name of class /)
     end
   end
 
@@ -152,17 +152,17 @@ RSpec.describe "non-UTF-8 declared names in messages" do
     after { Object.send(:remove_const, exotic_name) if Object.const_defined?(exotic_name) }
 
     it "names a value's class as readable text" do
-      expect(Axn::Reflection::PropertyNames.renderable_class_name(exotic_class.new)).to eq("Café")
+      expect(Axn::Internal::Reflection::PropertyNames.renderable_class_name(exotic_class.new)).to eq("Café")
     end
 
     it "names a class itself as readable text" do
-      expect(Axn::Reflection::PropertyNames.renderable_module_name(exotic_class)).to eq("Café")
+      expect(Axn::Internal::Reflection::PropertyNames.renderable_module_name(exotic_class)).to eq("Café")
     end
 
     # An ordinary class name is byte-identical, so no existing message text moves.
     it "leaves an ASCII class name exactly as it was" do
-      expect(Axn::Reflection::PropertyNames.renderable_class_name(1)).to eq("Integer")
-      expect(Axn::Reflection::PropertyNames.renderable_module_name(Hash)).to eq("Hash")
+      expect(Axn::Internal::Reflection::PropertyNames.renderable_class_name(1)).to eq("Integer")
+      expect(Axn::Internal::Reflection::PropertyNames.renderable_module_name(Hash)).to eq("Hash")
     end
 
     # A declaration error whose only handle on the offender is its class: the member name is neither a String nor
@@ -190,7 +190,7 @@ RSpec.describe "non-UTF-8 declared names in messages" do
     # The fallback the whole name-rendering path leans on: a name with no spelling to print is named by its class,
     # so that escape has to be renderable itself or it replaces the error it was reached to describe.
     it "names an unspellable name by its class" do
-      expect(Axn::Reflection::PropertyNames.inspect_field_name(exotic_class.new)).to eq("a name of class Café")
+      expect(Axn::Internal::Reflection::PropertyNames.inspect_field_name(exotic_class.new)).to eq("a name of class Café")
     end
 
     it "reports an uncopyable option container rather than an encoding failure" do

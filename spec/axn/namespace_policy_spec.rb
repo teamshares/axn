@@ -11,7 +11,7 @@ RSpec.describe "Axn top-level namespace" do
     Strategies StrategyNotFound DuplicateStrategyError
     ContractViolation DuplicateFieldError ValidationError
     InboundValidationError OutboundValidationError UnsupportedArgument
-    Core Internal Async Extensions Tools Reflection Validation
+    Core Internal Async Extensions Tools Validation
     Configurable Mountable Extras FieldDeclarations Testing Util
   ].freeze
   # rubocop:enable Lint/ConstantDefinitionInBlock
@@ -25,5 +25,12 @@ RSpec.describe "Axn top-level namespace" do
     %i[Executor Context ContextFacade ContextFacadeInspector InternalContext ExtensionConfig].each do |c|
       expect(Axn.const_defined?(c, false)).to be(false), "#{c} should not be a top-level Axn constant"
     end
+  end
+
+  # `Axn::Reflection` is deliberately unclaimed: the machinery that used to sit there is internal
+  # (`Axn::Internal::Reflection`), and the name is held open for a reflection API we would be willing to
+  # support publicly. Occupying it with internals again is what this fails on — see AGENTS.md.
+  it "leaves Axn::Reflection unclaimed" do
+    expect(Axn.const_defined?(:Reflection, false)).to be(false)
   end
 end

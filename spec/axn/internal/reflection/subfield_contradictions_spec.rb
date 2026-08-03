@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Reflection::SubfieldContradictions do
+RSpec.describe Axn::Internal::Reflection::SubfieldContradictions do
   let(:company_class) do
     Class.new do
       attr_accessor :id, :name

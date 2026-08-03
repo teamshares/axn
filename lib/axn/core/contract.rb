@@ -93,7 +93,7 @@ module Axn
 
         raise ArgumentError,
               "user_facing: must be true, a String, a Symbol, or a Proc (got a value of class " \
-              "#{Axn::Reflection::PropertyNames.renderable_class_name(user_facing)})"
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(user_facing)})"
       end
 
       # Whether the invoker would run this value as a handler — asked of the invoker itself, so the declaration
@@ -144,7 +144,7 @@ module Axn
 
         raise ArgumentError,
               "sensitive: must be true, false, a Symbol naming an action method, or a Proc (got a value of " \
-              "class #{Axn::Reflection::PropertyNames.renderable_class_name(sensitive)}) — any other value is not a redaction rule, and " \
+              "class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(sensitive)}) — any other value is not a redaction rule, and " \
               "a truthy one would silently leave the value logged in the clear rather than raise. Use " \
               "`sensitive: true` to always redact, or a Symbol/Proc predicate to decide per call."
       end
@@ -173,7 +173,7 @@ module Axn
 
         raise ArgumentError,
               "a shape member name must be a String or a Symbol (got a name of class " \
-              "#{Axn::Reflection::PropertyNames.renderable_class_name(name)}) — a member name is both the JSON " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(name)}) — a member name is both the JSON " \
               "property it renders as " \
               "and the schema property key it is emitted under, and any other object converts to those two " \
               "independently. Declare the member under a String or Symbol name."
@@ -206,7 +206,7 @@ module Axn
 
         raise ArgumentError,
               "#{option} must be a String or Symbol naming #{names} (got a value of class " \
-              "#{Axn::Reflection::PropertyNames.renderable_class_name(value)}) — any other object has no single " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}) — any other object has no single " \
               "name to canonicalize to. #{fix}"
       end
 
@@ -619,7 +619,7 @@ module Axn
           # second time reported a different defect than the one it judged — the non-idempotent-dispatch hazard
           # that CANONICALIZING a value always carries. `Hash#[]=` keeps the last entry for a repeated key,
           # exactly as `to_h` did.
-          key_for = ->(c) { [c.on.to_s, Axn::Reflection::Values.canonical_wire_key(c.field)] }
+          key_for = ->(c) { [c.on.to_s, Axn::Internal::Reflection::Values.canonical_wire_key(c.field)] }
 
           claimed = existing.each_with_object({}) do |c, h|
             key = key_for.call(c)
@@ -641,19 +641,19 @@ module Axn
         # instead of the declaration error that was being reported. The canonical property is
         # byte-identical to the raw spelling for every renderable name, so ordinary messages are unchanged;
         # `inspect` is reserved for the name that has no property to print.
-        def _shape_member_label(name) = Axn::Reflection::PropertyNames.renderable_label(name)
+        def _shape_member_label(name) = Axn::Internal::Reflection::PropertyNames.renderable_label(name)
 
         # The two property-name rules are judged on the projection they would appear in, so they run when one is
-        # first demanded rather than here (see Axn::Reflection::PropertyNames). What the contract still asks of
+        # first demanded rather than here (see Axn::Internal::Reflection::PropertyNames). What the contract still asks of
         # that layer eagerly is name RENDERING — `exposes` field names, whose bytes reach the serialized body
         # regardless of any schema, and the escaping every declaration message uses.
         def _reject_unrenderable_field_names!(names, kind: "a field name")
-          Axn::Reflection::PropertyNames.reject_unrenderable_field_names!(names, kind:)
+          Axn::Internal::Reflection::PropertyNames.reject_unrenderable_field_names!(names, kind:)
         end
 
         # How a declared name is written into a message, shared with the rules above so every message that
         # names a field or member escapes it the same way.
-        def _inspect_field_name(name) = Axn::Reflection::PropertyNames.inspect_field_name(name)
+        def _inspect_field_name(name) = Axn::Internal::Reflection::PropertyNames.inspect_field_name(name)
 
         # The three declaration paths (top-level expects, exposes, subfields) report through here rather
         # than each partitioning the result of `_duplicate_fields` themselves. An identical-name duplicate
@@ -677,16 +677,16 @@ module Axn
           collisions = _duplicate_fields(existing, new_configs)
           return if collisions.empty?
 
-          identical, collapsed = collisions.partition { |claimed, offending| Axn::Reflection::PropertyNames.same_declared_name?(claimed, offending) }
+          identical, collapsed = collisions.partition { |claimed, offending| Axn::Internal::Reflection::PropertyNames.same_declared_name?(claimed, offending) }
           if identical.any?
-            names = identical.map { |_claimed, offending| Axn::Reflection::Values.canonical_wire_key(offending) }
+            names = identical.map { |_claimed, offending| Axn::Internal::Reflection::Values.canonical_wire_key(offending) }
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}"
           end
 
           claimed, offending = collapsed.first
           raise Axn::DuplicateFieldError,
                 "Duplicate field(s) declared: #{_inspect_field_name(claimed)} and #{_inspect_field_name(offending)} " \
-                "both render as the JSON property #{Axn::Reflection::Values.canonical_wire_key(offending).inspect} — a " \
+                "both render as the JSON property #{Axn::Internal::Reflection::Values.canonical_wire_key(offending).inspect} — a " \
                 "field name becomes a property name in the reflected schema and in serialized output, so the two would " \
                 "collapse onto one. Declare them under names that stay distinct once converted to UTF-8."
         end
@@ -1223,7 +1223,7 @@ module Axn
 
         def _raise_ambiguous_option_key!(label, canonical)
           raise ArgumentError,
-                "#{label} declares #{Axn::Reflection::PropertyNames.inspect_field_name(canonical)} twice — once " \
+                "#{label} declares #{Axn::Internal::Reflection::PropertyNames.inspect_field_name(canonical)} twice — once " \
                 "under a String key and once under a Symbol — and one option cannot hold two values, so " \
                 "canonicalizing them would silently drop one of the two declared. Declare the option once, under " \
                 "a Symbol key."
@@ -1410,7 +1410,7 @@ module Axn
           validations[:type] = { klass: target, coerce: true }
         end
 
-        # A coerce target must be in the v1 coercible set (Axn::Reflection::Coercion::SUPPORTED); an
+        # A coerce target must be in the v1 coercible set (Axn::Internal::Reflection::Coercion::SUPPORTED); an
         # unsupported type raises not-yet-supported so expanding the set stays a deliberate future
         # ticket. `String` may accompany a coercible type as a passthrough branch (the raw wire scalar
         # itself), which is why `coerce: [Date, String]` is legal — but a target set with no coercible
@@ -1424,20 +1424,20 @@ module Axn
           return unless coerce
 
           klasses = Array(type_hash[:klass])
-          coercible = Axn::Reflection::Coercion.coercible_klasses(type_hash)
+          coercible = Axn::Internal::Reflection::Coercion.coercible_klasses(type_hash)
           unsupported = klasses - coercible - [String]
 
           unless unsupported.empty?
             raise ArgumentError,
                   "coerce: does not yet support #{unsupported.map(&:inspect).join(', ')} " \
-                  "(supported: #{Axn::Reflection::Coercion::SUPPORTED.join(', ')}). " \
+                  "(supported: #{Axn::Internal::Reflection::Coercion::SUPPORTED.join(', ')}). " \
                   "String may accompany a coercible type as a passthrough."
           end
 
           return unless coercible.empty?
 
           raise ArgumentError,
-                "coerce: needs at least one coercible type (#{Axn::Reflection::Coercion::SUPPORTED.join(', ')}); " \
+                "coerce: needs at least one coercible type (#{Axn::Internal::Reflection::Coercion::SUPPORTED.join(', ')}); " \
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 
@@ -1538,9 +1538,9 @@ module Axn
         # escapes every rescue meant to settle it.
         def _declared_type_label(klass)
           case klass
-          when ::Symbol then Axn::Reflection::PropertyNames.inspect_field_name(klass)
-          when ::Module then Axn::Reflection::PropertyNames.renderable_module_name(klass)
-          else "a value of class #{Axn::Reflection::PropertyNames.renderable_class_name(klass)}"
+          when ::Symbol then Axn::Internal::Reflection::PropertyNames.inspect_field_name(klass)
+          when ::Module then Axn::Internal::Reflection::PropertyNames.renderable_module_name(klass)
+          else "a value of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(klass)}"
           end
         end
 
@@ -1561,7 +1561,7 @@ module Axn
           # rescue meant to settle it.
           raise ArgumentError,
                 "allow_empty: must be true, false, or nil on #{fields.map(&:to_s).inspect} " \
-                "(got a value of class #{Axn::Reflection::PropertyNames.renderable_class_name(allow_empty)}). " \
+                "(got a value of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(allow_empty)}). " \
                 "`true` accepts an empty value, `false` rejects one, and omitting the option leaves the " \
                 "field's other rules to decide."
         end

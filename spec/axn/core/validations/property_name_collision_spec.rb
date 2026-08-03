@@ -132,7 +132,7 @@ RSpec.describe "declaration-time property name collisions" do
         exposes :b, optional: true
       end
       walks = 0
-      allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
+      allow(Axn::Internal::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
         walks += 1
         original.call(*args, &block)
       end
@@ -152,7 +152,7 @@ RSpec.describe "declaration-time property name collisions" do
       end
       result = klass.call
       walks = 0
-      allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
+      allow(Axn::Internal::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
         walks += 1
         original.call(*args, &block)
       end
@@ -890,9 +890,9 @@ RSpec.describe "declaration-time property name collisions" do
     # renderer's canonicalization rather than re-deriving it. Asserted here so narrowing the renderer's
     # public surface fails loudly rather than silently disarming the guard.
     it "is publicly callable and collapses two encodings of one property" do
-      expect(Axn::Reflection::Values).to respond_to(:canonical_wire_key)
-      expect(Axn::Reflection::Values.canonical_wire_key(latin1_name)).to eq("café")
-      expect(Axn::Reflection::Values.canonical_wire_key(utf8_name)).to eq("café")
+      expect(Axn::Internal::Reflection::Values).to respond_to(:canonical_wire_key)
+      expect(Axn::Internal::Reflection::Values.canonical_wire_key(latin1_name)).to eq("café")
+      expect(Axn::Internal::Reflection::Values.canonical_wire_key(utf8_name)).to eq("café")
     end
   end
 
@@ -1335,7 +1335,7 @@ RSpec.describe "declaration-time property name collisions" do
     # one" are distinguishable, which is the whole question.
     def canonical_props(klass, *path)
       node = path.inject(klass.input_schema) { |acc, key| acc.dig(:properties, key) }
-      (node[:properties] || {}).keys.map { |k| Axn::Reflection::Values.canonical_wire_key(k) }
+      (node[:properties] || {}).keys.map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }
     end
 
     describe "a subfield leaf and a shape member of its parent" do
@@ -1634,7 +1634,7 @@ RSpec.describe "declaration-time property name collisions" do
     # TYPE does contribute property names, at the element node.)
     describe "an of: element type's members, inside the array's items" do
       def element_props(klass)
-        klass.input_schema.dig(:properties, :list, :items, :properties).keys.map { |k| Axn::Reflection::Values.canonical_wire_key(k) }
+        klass.input_schema.dig(:properties, :list, :items, :properties).keys.map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }
       end
 
       it "rejects a shape member that collapses onto an element type's property" do
@@ -1667,7 +1667,7 @@ RSpec.describe "declaration-time property name collisions" do
         end
 
         other_props = klass.input_schema.dig(:properties, :other, :items, :properties).keys
-                           .map { |k| Axn::Reflection::Values.canonical_wire_key(k) }
+                           .map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }
 
         expect(element_props(klass)).to eq(["café"])
         expect(other_props).to eq(["café"])
@@ -1788,7 +1788,7 @@ RSpec.describe "declaration-time property name collisions" do
       end
 
       expect(klass.input_schema.dig(:properties, :payload, :properties).keys
-                  .map { |k| Axn::Reflection::Values.canonical_wire_key(k) }).to eq(["café"])
+                  .map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }).to eq(["café"])
     end
 
     it "leaves a plain ASCII dotted route alone" do
@@ -1841,7 +1841,7 @@ RSpec.describe "declaration-time property name collisions" do
       klass = build_axn { expects(:t, type: shaped, optional: true) { field :other, type: String } }
 
       expect(klass.input_schema.dig(:properties, :t, :properties).keys
-                  .map { |k| Axn::Reflection::Values.canonical_wire_key(k) }).to contain_exactly("café", "other")
+                  .map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }).to contain_exactly("café", "other")
     end
   end
 
@@ -2741,7 +2741,7 @@ RSpec.describe "declaration-time property name collisions" do
           end
 
           expect(klass.input_schema.dig(:properties, :payload, :properties, :bar)).not_to have_key(:properties)
-          expect(Axn::Reflection::Schema.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs).map(&:field))
+          expect(Axn::Internal::Reflection::Schema.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs).map(&:field))
             .to eq([:baz])
         end
 
@@ -3445,8 +3445,8 @@ RSpec.describe "declaration-time property name collisions" do
         Axn::Core::Contract::FieldConfig.new(field:, reader_as: :"x#{index}", validations: { allow_nil: true })
       end
 
-      expect { Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: false) }.not_to raise_error
-      expect { Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: true) }.not_to raise_error
+      expect { Axn::Internal::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: false) }.not_to raise_error
+      expect { Axn::Internal::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: true) }.not_to raise_error
     end
   end
 

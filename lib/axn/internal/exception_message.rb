@@ -23,7 +23,7 @@ module Axn
       EXCEPTION_TO_S = ::Exception.instance_method(:to_s)
       private_constant :EXCEPTION_TO_S
 
-      def self.of(error) = Axn::Reflection::PropertyNames.renderable_label(_raw(error))
+      def self.of(error) = Axn::Internal::Reflection::PropertyNames.renderable_label(_raw(error))
 
       # The message bytes, before rendering.
       #

@@ -86,8 +86,8 @@ module Axn
           # PropertyNames performs the same builds and the same validations against axn's own projections, and the
           # outbound call additionally records the verdict `render` reads — so a tool validated at setup also
           # renders without paying for an output-schema build on its first result.
-          Axn::Reflection::PropertyNames.validate_inbound!(klass)
-          Axn::Reflection::PropertyNames.validate_outbound!(klass)
+          Axn::Internal::Reflection::PropertyNames.validate_inbound!(klass)
+          Axn::Internal::Reflection::PropertyNames.validate_outbound!(klass)
         rescue Axn::ContractViolation, ArgumentError => e
           # Named, because this runs over every tool at once: the underlying error describes the property and the
           # declarations that collide, but at boot the first thing an author needs is WHICH tool. Both families are
@@ -153,7 +153,7 @@ module Axn
       # and carrying the original as `cause`. Only the CLASS degrades there, and `#message` is a separate question:
       # an exception that builds its message from its state keeps that message on either branch.
       def _named_invalid_contract(klass, error)
-        tool = Axn::Reflection::PropertyNames.renderable_module_name(klass)
+        tool = Axn::Internal::Reflection::PropertyNames.renderable_module_name(klass)
         reason = Axn::Internal::ExceptionMessage.of(error)
         unless Axn::Internal::NativeMethods.native_exception_reporting?(error)
           return InvalidContract.new(tool:, reason:, original_class: Axn::Internal::ClassName.of(error))

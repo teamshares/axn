@@ -100,7 +100,7 @@ RSpec.describe "the property-name rules' recorded residues" do
       end
 
       %i[input output].each do |direction|
-        expect { Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: direction == :output) }
+        expect { Axn::Internal::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: direction == :output) }
           .not_to raise_error
       end
     end

@@ -2,7 +2,7 @@
 
 require "spec_helper"
 
-RSpec.describe Axn::Reflection::Coercion do
+RSpec.describe Axn::Internal::Reflection::Coercion do
   describe ".coerce_value" do
     it "parses a string into each supported Ruby type" do
       expect(described_class.coerce_value("2026-07-08", Date)).to eq(Date.new(2026, 7, 8))
@@ -124,7 +124,7 @@ RSpec.describe Axn::Reflection::Coercion do
   describe "round-trip with the encoder" do
     it "is the inverse of Values.serialize_value for string-encoded types" do
       [Date.new(2026, 7, 8), :active, Time.utc(2026, 7, 8, 12, 0, 0)].each do |value|
-        encoded = Axn::Reflection::Values.serialize_value(value)
+        encoded = Axn::Internal::Reflection::Values.serialize_value(value)
         expect(encoded).to be_a(String)
         expect(described_class.coerce_value(encoded, value.class)).to eq(value)
       end

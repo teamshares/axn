@@ -9,7 +9,7 @@
 # (the walk, the message builders, the provenance resolution) is not among them. The module is internal per
 # AGENTS.md's namespace policy — `Core::Contract` is its only caller — so a method becoming public here is a
 # widening to make on purpose, not by accident.
-RSpec.describe Axn::Reflection::PropertyNames do
+RSpec.describe Axn::Internal::Reflection::PropertyNames do
   # Exactly the entry points its callers use: the three projection triggers reach the validated-* pair and
   # `validate_outbound!`, and the name renderers are shared by every layer that writes a declared name into a
   # message — the contract's declaration errors, a validation error naming a shape member, the stranded-path

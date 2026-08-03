@@ -9,7 +9,7 @@ require "axn/internal/reflection/property_names"
 module Axn
   module Extensions
     # The declared entry point for rendering a successful Result — the one serialization call an
-    # adapter gem makes. Everything behind it is core's own: Axn::Reflection::Values holds the
+    # adapter gem makes. Everything behind it is core's own: Axn::Internal::Reflection::Values holds the
     # rendering decisions, and a caller depending on one of them constrains core's routing.
     module Serialization
       module_function
@@ -36,13 +36,13 @@ module Axn
         # a render-only adapter would otherwise learn about a collision from serialize_exposed's runtime
         # defense on a live call, which is a last line rather than a substitute for telling the author. Costs
         # one output-schema build on the first render and nothing after.
-        Axn::Reflection::PropertyNames.validate_outbound!(action_class)
+        Axn::Internal::Reflection::PropertyNames.validate_outbound!(action_class)
 
         configs = action_class.external_field_configs
 
         # `send` because serialize_exposed is private: this facade is its only caller, and that is
         # what makes `render` the rendering path rather than one of two.
-        Axn::Reflection::Values.send(:serialize_exposed, result, configs, reject_opaque:)
+        Axn::Internal::Reflection::Values.send(:serialize_exposed, result, configs, reject_opaque:)
       end
     end
   end

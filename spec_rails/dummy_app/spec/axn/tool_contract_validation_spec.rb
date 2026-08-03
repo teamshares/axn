@@ -83,7 +83,7 @@ RSpec.describe "tool contract validation at app setup" do
     # schema solely to validate, so it would otherwise pay for one on every call).
     it "leaves render's outbound verdict already established" do
       walks = 0
-      allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
+      allow(Axn::Internal::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
         walks += 1
         original.call(*args, &block)
       end

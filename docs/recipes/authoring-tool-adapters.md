@@ -112,7 +112,7 @@ params(axn_class.input_schema)           # ruby_llm has no output-schema concept
 
 Three rules keep adapters interoperable:
 
-- **Don't reach into `Axn::Reflection::Schema` internals**, and **never override an Axn's `input_schema` to return a non-Hash.** The class is shared: a non-Hash `input_schema` breaks every *other* adapter wrapping the same class. This is the concrete defect that retired the old `Axn::MCP::Tool` base — wrap the Hash into your transport object in `wrap`, don't redefine the reflection method on the class.
+- **Don't reach into `Axn::Internal::Reflection::Schema` internals**, and **never override an Axn's `input_schema` to return a non-Hash.** The class is shared: a non-Hash `input_schema` breaks every *other* adapter wrapping the same class. This is the concrete defect that retired the old `Axn::MCP::Tool` base — wrap the Hash into your transport object in `wrap`, don't redefine the reflection method on the class.
 - **`on: :ambient_context` fields are auto-excluded from `input_schema`** (they're framework-supplied, never model input — see [ambient_context](#ambient-context)). You get a clean model-facing schema for free; don't re-add them.
 - **Reflection is best-effort and biased *stricter* than runtime** — a call that follows the schema won't be schema-rejected. There is one documented *looser* case: an invalid literal `default:` (`type: :uuid, default: "nope"`) reflects as optional though the omitted call fails at runtime. Surface this caveat to your users; don't try to fight it in the adapter. (A deep subfield under a `model:`/non-object parent has no JSON representation and is omitted with a `logger.warn` — pass it through, don't paper over it.)
 
@@ -130,7 +130,7 @@ exposed = Axn::Extensions::Serialization.render(result, reject_opaque: config.re
 
 You don't pass the field configs: `render` derives them from the result's own action class, so a rendered body always covers exactly the declared `exposes` — and therefore always matches `output_schema`. Rendering a subset isn't supported, deliberately; a partial body would contradict the schema the same adapter published.
 
-Where the rendering actually happens — `Axn::Reflection::Values` — is core-internal, exactly like `Axn::Reflection::Schema`. `render` is the declared entry point; the module's helpers are private, and what stays public is there for core's own callers rather than for an adapter.
+Where the rendering actually happens — `Axn::Internal::Reflection::Values` — is core-internal, exactly like `Axn::Internal::Reflection::Schema`. `render` is the declared entry point; the module's helpers are private, and what stays public is there for core's own callers rather than for an adapter.
 
 There are two guarantees here, and it's worth keeping them apart, because only one of them is behind a flag.
 

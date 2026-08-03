@@ -168,7 +168,7 @@ module Axn
     # written into prose by files an adapter loads standalone.
     class InvalidContract < ContractViolation
       def initialize(tool:, reason:, original_class:)
-        tool, reason, original_class = [tool, reason, original_class].map { |text| Axn::Reflection::PropertyNames.renderable_label(text) }
+        tool, reason, original_class = [tool, reason, original_class].map { |text| Axn::Internal::Reflection::PropertyNames.renderable_label(text) }
 
         super("#{tool} has an invalid tool contract — #{reason} (raised as #{self.class}, and not as the original " \
               "#{original_class}, because that class supplies its own `#exception` or duplication hook, or the " \

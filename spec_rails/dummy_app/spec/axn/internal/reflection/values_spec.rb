@@ -2,7 +2,7 @@
 
 # Rails loads ActiveSupport's Object#as_json globally, so every object responds to as_json. These
 # specs guard that serialize_value still prefers a value object's own to_h over that generic dump.
-RSpec.describe Axn::Reflection::Values do
+RSpec.describe Axn::Internal::Reflection::Values do
   it "sanity: Rails has added the generic Object#as_json" do
     expect(Object.new).to respond_to(:as_json)
   end
