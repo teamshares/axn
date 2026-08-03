@@ -243,6 +243,24 @@ RSpec.describe "join: Proc raise-safety" do
     expect(action.call.error).to eq("Outer: inner")
   end
 
+  # The non-String branch NAMES the returned value's class, and the value is caller-supplied — so the name
+  # comes from the same funnel the rescue below uses rather than from `result.class`, which the value owns.
+  it "falls back to the default join, naming the class, when the Proc returns a non-String" do
+    returned = Class.new do
+      def self.name = raise(NotImplementedError, "name explodes")
+      def class = raise(NotImplementedError, "class explodes")
+    end.new
+    warnings = []
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { returned }
+      def call = fail!("inner")
+    end
+    allow_any_instance_of(action).to receive(:warn) { |_, msg| warnings << msg }
+
+    expect(action.call.error).to eq("Outer: inner")
+    expect(warnings).to include(a_string_matching(/join: callable returned .+ \(expected a non-blank String\)/))
+  end
+
   # The rescue clause that reports the join Proc's raise builds its warn line from the raised
   # exception's own `#class`/`#message` — a read that is NOT itself guarded by anything further out:
   # `resolve_message` runs from `Result#error` with no enclosing rescue, so a hostile `#message` here

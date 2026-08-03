@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/core/flow/handlers/invoker"
+require "axn/internal/identity"
 require "axn/internal/rendering"
 
 module Axn
@@ -108,9 +109,18 @@ module Axn
               end
 
               result = proc.call(base, reason)
-              return result if result.is_a?(String) && result.present?
+              # `Module#===` rather than `result.is_a?(String)`: the joiner's return value is caller-supplied,
+              # and this test decides whether it is RETURNED as the message. A value that claimed to be a
+              # String would be handed on and interpolated by whoever reads `result.error`, dispatching its
+              # `to_s` outside this method's rescue. Naming its class goes through the same funnel as the
+              # rescue below, for the same reason: `result.class` is the value's own override.
+              return result if Axn::Internal::Identity.kind?(result, String) && result.present?
 
-              detail = result.is_a?(String) ? "a blank String" : result.class.to_s
+              detail = if Axn::Internal::Identity.kind?(result, String)
+                         "a blank String"
+                       else
+                         Axn::Internal::Rendering.class_name(result)
+                       end
               action.warn("join: callable returned #{detail} (expected a non-blank String) — using default join")
               "#{base}#{DEFAULT_JOIN}#{reason}"
             # Whatever the joiner raised, the fallback applies — this path "must never raise" (above), and
