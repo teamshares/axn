@@ -53,6 +53,14 @@ module Axn
         SWALLOWABLE_BEYOND_STANDARD_ERROR.any? { |klass| Internal::Identity.kind?(exception, klass) }
       end
 
+      # True when axn owns this exception's #message — an Axn::Failure, or a user-facing validation error —
+      # so the message is meant for the client and may carry a resolved presentation. A FOREIGN exception
+      # reclassified via `fails_on` is not owned: it travels axn's failure path, but its #message is a
+      # technical cause, and an adapter surfacing it would leak internals to a caller.
+      def owned_failure?(exception)
+        exception.is_a?(Axn::Failure) || Axn::ValidationError.user_facing?(exception)
+      end
+
       def config
         @config ||= Config.new
       end

@@ -900,7 +900,7 @@ module Axn
       # would then leak into the parent's aggregation.
       def _resolve_and_stamp_presentation(exception)
         resolved = @action.result.error
-        return unless resolved && Axn.owns_failure_exception?(exception) && exception.respond_to?(:__present_as)
+        return unless resolved && Axn::Extensions.owned_failure?(exception) && exception.respond_to?(:__present_as)
 
         exception.__present_as(resolved)
       end

@@ -28,6 +28,24 @@ RSpec.describe Axn::Extensions do
     end
   end
 
+  describe ".owned_failure?" do
+    it "is true for an Axn::Failure" do
+      expect(described_class.owned_failure?(Axn::Failure.new("nope"))).to be(true)
+    end
+
+    it "is true for a user-facing validation error" do
+      action = build_axn { expects :name, user_facing: true }
+      result = action.call
+
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(described_class.owned_failure?(result.exception)).to be(true)
+    end
+
+    it "is false for a foreign exception" do
+      expect(described_class.owned_failure?(ArgumentError.new("boom"))).to be(false)
+    end
+  end
+
   describe ".best_effort" do
     let(:boom) { -> { raise StandardError, "fail message" } }
     let(:logger) { double(:logger) }
