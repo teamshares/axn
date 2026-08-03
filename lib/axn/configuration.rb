@@ -151,8 +151,10 @@ module Axn
               rescue NoMethodError => e
                 # Only a genuinely ABSENT `respond_to?` — a BasicObject-based proxy. A NoMethodError
                 # from INSIDE a present implementation is that object's own bug, and accepting it here
-                # would turn a declaration-time error into a per-call one.
-                raise unless e.name == :respond_to? && Axn::Internal::Identity.same?(e.receiver, v)
+                # would turn a declaration-time error into a per-call one. The name is read through
+                # `NameError`'s own reader, since the exception came from the caller's object too.
+                raise unless Axn::Internal::Identity.name_error_for?(e, :respond_to?) &&
+                             Axn::Internal::Identity.same?(e.receiver, v)
 
                 true
               end

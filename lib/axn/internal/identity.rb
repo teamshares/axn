@@ -30,6 +30,9 @@ module Axn
       EMPTY = String.instance_method(:empty?)
       private_constant :STRIP, :EMPTY
 
+      NAME_ERROR_NAME = NameError.instance_method(:name)
+      private_constant :NAME_ERROR_NAME
+
       DUP = String.instance_method(:dup)
       FORCE_ENCODING = String.instance_method(:force_encoding)
       SCRUB = String.instance_method(:scrub)
@@ -49,6 +52,17 @@ module Axn
       # `class`, whose generated reader shadows it — so dispatching would hand back the setting's value
       # where a Class was expected.
       def self.class_of(value) = CLASS_OF.bind_call(value)
+
+      # Whether `error` — a NameError, or the NoMethodError that subclasses it — reports `name` as the name
+      # nothing answered to. The question is "is this method genuinely ABSENT, or did a present implementation
+      # raise from inside?", and the two answers are not interchangeable: swallowing the second hides a
+      # collaborator's own bug, while re-raising the first turns an optional method into a hard requirement.
+      #
+      # Neither half dispatches anything the error can define. The stored name is read through `NameError`'s
+      # OWN `name`, so a subclass defining (or raising from) `name` cannot answer in its place; and axn's own
+      # Symbol is the RECEIVER of `equal?`, so a returned object's `==` never runs either. `NoMethodError`
+      # inherits `name` from `NameError`, so one binding covers both.
+      def self.name_error_for?(error, name) = name.equal?(NAME_ERROR_NAME.bind_call(error))
 
       # A caller-supplied value rendered for an error message, which must not be able to replace that
       # error. `inspect` IS dispatched, deliberately: the object's own is what makes a message useful
