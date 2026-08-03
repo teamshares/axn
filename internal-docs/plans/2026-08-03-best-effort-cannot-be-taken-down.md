@@ -522,32 +522,6 @@ module Axn
         # An exception's own message, as a UTF-8 String this method owns.
         def exception_message(exception) = Text.renderable(raw_exception_message(exception))
 
-        # The message bytes, before rendering.
-        #
-        # Dispatched deliberately — an exception that derives its message from its state
-        # (`UnserializableValue`) has no other way to be reported richly — but behind a guard, because that
-        # is caller code in an error path, and the guard has to cover an ordinary class too: `Exception#to_s`
-        # renders the message OBJECT the exception was raised with (`rb_String`), so a plain ArgumentError
-        # carrying a value whose `to_s` raises raises here.
-        #
-        # The result is type-tested rather than returned as-is, because an owned `#message` may return
-        # anything, and rendering a non-String dispatches its `to_s` — outside the guard, which is the escape
-        # this exists to prevent. (A String SUBCLASS is safe: it is type-tested and rendered through bound
-        # String methods, and the renderer hands back a plain String either way.) `Exception#to_s` is the
-        # non-dispatching second choice, and the class is what is left when even that will not answer.
-        def raw_exception_message(exception)
-          case (reported = exception.message)
-          when ::String then reported
-          else EXCEPTION_TO_S.bind_call(exception)
-          end
-        rescue ::Exception # rubocop:disable Lint/RescueException
-          begin
-            EXCEPTION_TO_S.bind_call(exception)
-          rescue ::Exception # rubocop:disable Lint/RescueException
-            ClassName.of(exception)
-          end
-        end
-
         # Just the filename and line an exception came from, for a warning that names where a swallowed
         # failure happened.
         #
@@ -572,6 +546,34 @@ module Axn
         end
 
         private
+
+        # The message bytes, before rendering. Private: nothing outside this module reads unrendered bytes,
+        # and `exception_message` is the whole contract — verified with
+        # `grep -rn "_raw_reported_message" lib/ spec/ spec_rails/` before the move.
+        #
+        # Dispatched deliberately — an exception that derives its message from its state
+        # (`UnserializableValue`) has no other way to be reported richly — but behind a guard, because that
+        # is caller code in an error path, and the guard has to cover an ordinary class too: `Exception#to_s`
+        # renders the message OBJECT the exception was raised with (`rb_String`), so a plain ArgumentError
+        # carrying a value whose `to_s` raises raises here.
+        #
+        # The result is type-tested rather than returned as-is, because an owned `#message` may return
+        # anything, and rendering a non-String dispatches its `to_s` — outside the guard, which is the escape
+        # this exists to prevent. (A String SUBCLASS is safe: it is type-tested and rendered through bound
+        # String methods, and the renderer hands back a plain String either way.) `Exception#to_s` is the
+        # non-dispatching second choice, and the class is what is left when even that will not answer.
+        def raw_exception_message(exception)
+          case (reported = exception.message)
+          when ::String then reported
+          else EXCEPTION_TO_S.bind_call(exception)
+          end
+        rescue ::Exception # rubocop:disable Lint/RescueException
+          begin
+            EXCEPTION_TO_S.bind_call(exception)
+          rescue ::Exception # rubocop:disable Lint/RescueException
+            ClassName.of(exception)
+          end
+        end
 
         # The first usable frame, or nil. Type-tested rather than trusted: `set_backtrace` accepts
         # `Thread::Backtrace::Location` objects on Ruby 3.4 (and refuses them on 3.3), and while 3.4 hands
@@ -682,26 +684,21 @@ Add to `spec/axn/extensions_spec.rb`, inside `describe ".best_effort"`. Note the
         def message = Object.new.tap { |o| o.define_singleton_method(:to_s) { raise "to_s explodes" } }
       end
 
-      def binary_message_error
-        ArgumentError.new("bad\xFF".dup.force_encoding("ASCII-8BIT"))
-      end
-
-      def blank_frame_error
-        ArgumentError.new("rebuilt").tap { |e| e.set_backtrace([""]) }
-      end
-
-      def location_frame_error
-        ArgumentError.new("locations").tap { |e| e.instance_variable_set(:@frames, caller_locations(0, 1)) }
-      end
-
+      # Every shape is built INSIDE its lambda. These lambdas are created in the example-group body, so
+      # their `self` is the group CLASS rather than an example instance — a helper defined with `def` here
+      # would be an instance method and unreachable from them.
       shapes = {
         "an ordinary exception" => -> { raise ArgumentError, "ordinary" },
         "a message that raises" => -> { raise hostile_message },
-        "a message holding bytes with no UTF-8 rendering" => -> { raise binary_message_error },
+        "a message holding bytes with no UTF-8 rendering" => lambda {
+          raise ArgumentError, "bad\xFF".dup.force_encoding("ASCII-8BIT")
+        },
         "a message that is not a String and whose to_s raises" => -> { raise non_string_message },
         "a class whose name raises" => -> { raise hostile_class_name },
         "a backtrace override answering a non-Array" => -> { raise hostile_backtrace },
-        "a rebuilt backtrace holding a blank frame" => -> { raise blank_frame_error },
+        "a rebuilt backtrace holding a blank frame" => lambda {
+          raise ArgumentError.new("rebuilt").tap { |e| e.set_backtrace([""]) }
+        },
         "a valid multibyte message" => -> { raise ArgumentError, "café" },
         "a Latin-1 message" => -> { raise ArgumentError, "caf\xE9".dup.force_encoding("ISO-8859-1") },
       }
@@ -766,7 +763,7 @@ Add to `spec/axn/extensions_spec.rb`, inside `describe ".best_effort"`. Note the
         allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
         expect(logger).to receive(:warn).with(/\\xFF/)
 
-        described_class.best_effort("guarding") { raise binary_message_error }
+        described_class.best_effort("guarding") { raise ArgumentError, "bad\xFF".dup.force_encoding("ASCII-8BIT") }
       end
 
       it "tolerates a desc that is not a String" do
@@ -1363,6 +1360,6 @@ second was false, and best_effort is the counterexample."
 
 **Spec coverage.** Every numbered spec section maps to a task: §1 → Task 1; §2 → Task 2; §3 → Task 3; §4's two outside-the-guard escapes → Task 4, its #208 leftovers → Task 5, its funnel sweep → Task 6; §5's enumeration is evidence rather than work (Task 4 Step 6 acts on the one Group C site it names); §6 → Task 7. Every `Done when` bullet has a spec: the eight escapes and the invariant → Task 3 Step 1; the `validate:` misattribution → Task 3 Step 5; `café` and Latin-1 → Task 3 Step 1 and Task 2 Step 1; `result.inspect` → Task 4 Step 1; the moved-primitive equivalence → Task 1 Step 7; `standalone_require_spec` → Task 1 Step 9 and Task 2 Step 7; Ruby 3.4 → Task 3 Step 8 and Task 7 Step 3.
 
-**Type consistency.** `Text.utf8_rendering` / `.escaped` / `.renderable` and `Rendering.class_name` / `.module_name` / `.exception_message` / `.exception_source_location` are the only new names, spelled identically in every task that consumes them. `Rendering.raw_exception_message` is public (the spec's `to_s`-fallback examples call it indirectly through `exception_message` only, so it could be private — it is left public deliberately, matching the `Axn._raw_reported_message` it replaces, which #208's specs reach).
+**Type consistency.** `Text.utf8_rendering` / `.escaped` / `.renderable` and `Rendering.class_name` / `.module_name` / `.exception_message` / `.exception_source_location` are the only new names, spelled identically in every task that consumes them. `raw_exception_message` and `first_frame` are private — nothing outside the module reads unrendered bytes, confirmed by grep before the move — so both sit below the single `private`, after `exception_source_location`, which is public and specced.
 
 **Two known-answer steps, flagged rather than hidden.** Task 6 Step 2 may pass before its edit, because Task 3 already fixed the guard around it — the step says so and asks for that to be reported rather than dressed up as a fix. Task 6 Step 4 may move a specced message; it says stop and report rather than update the expectation.
