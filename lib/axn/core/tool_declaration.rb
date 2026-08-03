@@ -5,7 +5,7 @@ module Axn
     # Tool membership (the `tool` DSL) and the canonical, provider-safe `tool_name`
     # derivation. Every Axn is a potential tool; the registry (Axn::Tools::Registry)
     # decides which classes an adapter actually exposes, reading the storage declared here.
-    module Tools
+    module ToolDeclaration
       def self.included(base)
         base.class_eval do
           # instance_accessor: false — class-level DSL, not per-instance state.
