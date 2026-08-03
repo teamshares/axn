@@ -31,12 +31,19 @@ module Axn
     # class is defined instead.
     RESERVED_SETTING_NAMES = %i[reset!].freeze
 
-    def self.reject_reserved_setting_name!(name)
-      return unless RESERVED_SETTING_NAMES.include?(name.to_sym)
+    # Canonicalizes a setting name to a Symbol and rejects the reserved ones, RETURNING the canonical
+    # form so every downstream use — the registry key, the ivar, the generated methods — derives from
+    # one `to_sym`. Calling `to_sym` again after the check would let a name whose `to_sym` answers
+    # differently each time pass the guard as one name and install itself as another, which is not
+    # only a way past the reserved list but a way to register a setting under a name whose reader and
+    # ivar disagree with it.
+    def self.canonical_setting_name!(name)
+      canonical = name.to_sym
+      return canonical unless RESERVED_SETTING_NAMES.include?(canonical)
 
       raise ArgumentError,
-            "setting #{name.inspect} is reserved: Axn::Configurable defines #{name} on every config " \
-            "object. Pick another name."
+            "setting #{canonical.inspect} is reserved: Axn::Configurable defines #{canonical} on every " \
+            "config object. Pick another name."
     end
 
     # The config source that owns `namespace` on `klass` or any ancestor, or nil. Walks the same
@@ -92,8 +99,11 @@ module Axn
         # A blank reason is no reason: fall back to the plain form below rather than raising with a
         # dangling " — " and nothing after it. Checked without ActiveSupport's blank extensions, since
         # this file is loadable on its own and must not depend on them being present.
-        detail = outcome if Axn::Internal::Identity.kind?(outcome, String) &&
-                            !Axn::Internal::Identity.blank_string?(outcome)
+        # Rendered to UTF-8 before it is joined: a reason in an incompatible encoding would otherwise
+        # raise Encoding::CompatibilityError out of the interpolation, replacing the ArgumentError this
+        # method promises with one about encodings.
+        detail = Axn::Internal::Identity.utf8_string(outcome) if Axn::Internal::Identity.kind?(outcome, String) &&
+                                                                 !Axn::Internal::Identity.blank_string?(outcome)
         raise ArgumentError, ["#{name} got invalid value: #{value.inspect}", detail].compact.join(" — ")
       end
 
@@ -434,8 +444,7 @@ module Axn
     private :_axn_config_settings
 
     def setting(name, default: nil, one_of: nil, validate: nil, overridable: false)
-      Axn::Configurable.reject_reserved_setting_name!(name)
-      name = name.to_sym
+      name = Axn::Configurable.canonical_setting_name!(name)
       setting = Setting.new(name:, default:, one_of:, validate:, overridable:)
       _axn_config_settings[name] = setting
       _define_override_methods(setting, -> { config.public_send(setting.name) }) if overridable
@@ -613,8 +622,8 @@ module Axn
       end
 
       def setting(name, default: nil, one_of: nil, validate: nil, overridable: false)
-        Axn::Configurable.reject_reserved_setting_name!(name)
-        setting = Setting.new(name: name.to_sym, default:, one_of:, validate:, overridable:)
+        name = Axn::Configurable.canonical_setting_name!(name)
+        setting = Setting.new(name:, default:, one_of:, validate:, overridable:)
         _declared_settings[setting.name] = setting
         ivar = :"@#{name}"
 

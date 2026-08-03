@@ -887,6 +887,42 @@ RSpec.describe "#reset!" do
       expect(klass.new.reset!(:literal)).to eq(:inherited)
     end
 
+    it "canonicalizes the name once, so a shifting to_sym cannot install a reserved name" do
+      # The guard and the registration used to call `to_sym` separately, so a name answering `:safe`
+      # first and `:reset!` second passed the check and then generated `reset!` anyway — replacing the
+      # per-setting reset helper with a zero-arity reader, which is exactly what the guard exists to
+      # prevent. One `to_sym` decides the name for the check, the registry, the ivar and the reader.
+      shifty = Class.new(String) do
+        def initialize(*)
+          super
+          @calls = 0
+        end
+
+        def to_sym = (@calls += 1) == 1 ? :safe : :reset!
+      end.new("reset!")
+
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting shifty, default: 1
+      end
+
+      expect(klass.new.safe).to eq(1)
+      # The generated per-setting helper, not a zero-arity reader that shadowed it.
+      expect(klass.instance_method(:reset!).arity).to eq(-1)
+      expect(klass.new.reset!(:safe)).to be_a(klass)
+    end
+
+    it "still rejects a reserved name that canonicalizes to it on the first read" do
+      expect do
+        Class.new do
+          extend Axn::Configurable::Settings
+
+          setting "reset!", default: 1
+        end
+      end.to raise_error(ArgumentError, /setting :reset! is reserved/)
+    end
+
     it "defers to a reset! added to an ANCESTOR after the extend" do
       # The last load-order dependency. Being a module covers an include on the same class, and the
       # extend-time check covers what already existed — but the generated module sits ahead of the
@@ -922,6 +958,31 @@ RSpec.describe "#reset!" do
 
       sub.new.reset!(:literal, :another)
       expect(seen).to eq(%i[literal another])
+    end
+  end
+
+  describe "a validate: reason in an incompatible encoding" do
+    it "still raises ArgumentError rather than an encoding error" do
+      # Joining a UTF-16LE reason into axn's UTF-8 message raised Encoding::CompatibilityError, so
+      # REPORTING the validation failure replaced it — the caller saw an encoding bug instead of the
+      # rejection, which is the one thing an error path may not do.
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { "réason".encode("UTF-16LE") }
+      end
+
+      expect { klass.new.x = 1 }.to raise_error(ArgumentError, /got invalid value: 1 — réason/)
+    end
+
+    it "renders a reason whose bytes cannot be transcoded at all" do
+      klass = Class.new do
+        extend Axn::Configurable::Settings
+
+        setting :x, validate: ->(_v) { (+"bad \xC3(").force_encoding(Encoding::ASCII_8BIT) }
+      end
+
+      expect { klass.new.x = 1 }.to raise_error(ArgumentError, /got invalid value: 1 — bad/)
     end
   end
 

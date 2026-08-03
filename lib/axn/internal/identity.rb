@@ -27,6 +27,12 @@ module Axn
       EMPTY = String.instance_method(:empty?)
       private_constant :STRIP, :EMPTY
 
+      ENCODE = String.instance_method(:encode)
+      DUP = String.instance_method(:dup)
+      FORCE_ENCODING = String.instance_method(:force_encoding)
+      SCRUB = String.instance_method(:scrub)
+      private_constant :ENCODE, :DUP, :FORCE_ENCODING, :SCRUB
+
       # True when `one` and `other` are the same object.
       def self.same?(one, other) = EQUAL.bind_call(one, other)
 
@@ -41,6 +47,21 @@ module Axn
       # `class`, whose generated reader shadows it — so dispatching would hand back the setting's value
       # where a Class was expected.
       def self.class_of(value) = CLASS_OF.bind_call(value)
+
+      # A caller-supplied String rendered so it can be interpolated into a UTF-8 message. Transcoding
+      # is attempted first, since that preserves the text a UTF-16 reason actually says; a String whose
+      # bytes cannot be transcoded falls back to being reinterpreted as UTF-8 and scrubbed, which is
+      # lossy but always succeeds. Without this, joining the reason to axn's own message raises
+      # `Encoding::CompatibilityError` — reporting a validation failure would REPLACE it with an
+      # encoding error, which is the one thing an error path may not do.
+      #
+      # Undispatched throughout: the String came from a caller's `validate:` lambda and may be a
+      # subclass overriding any of these.
+      def self.utf8_string(value)
+        ENCODE.bind_call(value, Encoding::UTF_8)
+      rescue StandardError
+        SCRUB.bind_call(FORCE_ENCODING.bind_call(DUP.bind_call(value), Encoding::UTF_8))
+      end
 
       # True when a String is empty or only whitespace, read through String's OWN implementations. A
       # subclass may override `strip`/`empty?`, and this runs while an error is already being raised —
