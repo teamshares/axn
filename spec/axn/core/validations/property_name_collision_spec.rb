@@ -3223,12 +3223,20 @@ RSpec.describe "declaration-time property name collisions" do
         # Every declared field name is symbolized before any guard runs, so `config.field` is always a Symbol
         # and these helpers can never meet an exotic name on the field path. Asserted so the reasoning behind
         # leaving the field-path messages untouched stays true rather than assumed.
+        #
+        # What CLOSES the field path is now the type rule rather than `to_sym`'s accident: such a name used to
+        # be diagnosed as `NoMethodError: undefined method 'to_sym' for an instance of …`, naming neither the
+        # DSL nor what was wrong with the value (PRO-3026). The name is still never reached by the field-path
+        # messages — it is refused before one could be built — so the reasoning above holds either way.
         it "cannot reach the field path at all, which symbolizes every declared name" do
           klass = build_axn { expects "stringy", :symbolic }
           exotic = exotic_name_class.new("dup")
 
           expect(klass.internal_field_configs.map { |c| c.field.instance_of?(Symbol) }).to all(be(true))
-          expect { build_axn { expects exotic } }.to raise_error(NoMethodError, /to_sym/)
+          # Named by CLASS, so the offender's own `inspect` — which raises here — never runs while the verdict
+          # is being built.
+          expect { build_axn { expects exotic } }
+            .to raise_error(ArgumentError, /a field name must be a String or Symbol naming an inbound field \(got a value of class /)
         end
       end
 
