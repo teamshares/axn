@@ -719,6 +719,19 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           .to raise_error(ArgumentError, "of: must supply :klass")
       end
 
+      # RECORDED RESIDUE, and a field-path one rather than a member's: `of: false` is not `of: nil`, so the
+      # required-option check passes it through and `TypeValidator.value_matches?(el, klass: false)` raises a bare
+      # `TypeError: class or module required` on the first call carrying a non-empty Array. Asserted because it is
+      # the boundary of what the shared guard covers — and because the two routes agreeing about it, both of them
+      # wrong identically, is exactly what "a member reaches the field's own guards" means.
+      it "leaves `of: false` as inert on a member as it is on a field" do
+        member = declared_with({ type: Array, of: false })
+        field = build_axn { expects :m, type: Array, of: false }
+
+        expect(member.call(payload: { m: [1] }).exception).to be_a(TypeError)
+        expect(field.call(m: [1]).exception).to be_a(TypeError)
+      end
+
       # A bare `type:` naming a LIST is expanded around a copy of that list, since the detach pass runs first —
       # so the stored contract is axn's, exactly as for a field.
       it "detaches a bare `type:` list, so mutating it cannot widen a declared member" do

@@ -129,6 +129,27 @@ Any code that recurses through caller-supplied Hash/Array values must cycle-guar
   finder for `model:` behavior; mirror Rails-specific behavior in `spec_rails/dummy_app/`.
 - Run `bundle exec rspec` and the relevant `spec_rails` specs; verify against real output before
   claiming done.
+- **Auditing a guard's coverage: mutate it.** Remove or invert the guard, re-run the suite, and if it stays
+  green the guard is unguarded. Note what this *cannot* find: removing a guard makes a legal-behaviour
+  assertion pass more easily, never fail, so mutation says nothing about the **controls** — the examples
+  pinning what a guard must keep ACCEPTING. Over-rejection is the recurring failure mode when a guard is
+  tightened, so audit controls by **inverse** mutation instead: introduce an over-eager guard and confirm a
+  control fails.
+- **Changing a guard? A/B the spec against the prior commit.** A spec suite can only tell you the current
+  tree is self-consistent; running today's assertions against yesterday's `lib/` tells you which behaviours
+  a change actually moved.
+
+  ```sh
+  git worktree add -f --detach /tmp/axn-ab <OLDER_SHA>
+  cp spec/axn/core/validations/<the_spec>.rb /tmp/axn-ab/spec/axn/core/validations/
+  (cd /tmp/axn-ab && bundle exec rspec spec/axn/core/validations/<the_spec>.rb)
+  git worktree remove --force /tmp/axn-ab
+  ```
+
+  Read the differences one by one: an example that fails THERE and passes here is a behaviour this change
+  moved, and an unexpected one is a regression. **An example that fails in BOTH is a broken fixture, not a
+  finding** — that distinction is the one that repeatedly mattered, because a stale fixture reads exactly
+  like a regression until you check the other side.
 
 ## Changes & compatibility
 
