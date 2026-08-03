@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **No aliases, no delegating shims, no tombstones.** Nothing is released; move each method and constant outright. A pre-alpha rename gets no compatibility layer.
-- **No behavior changes.** Every task except Task 7 is a rename. If a test needs new expectations about *behavior*, something is wrong — stop and re-read the spec.
+- **No behavior changes, with two named exceptions.** Every task is a rename except: Task 3 adds `Axn::Tools.adapters` (a pure delegation to `Registry.adapters`, which already returns a fresh Set) and Task 7 adds `Axn.config.default_async?`. Outside those two additions, a test needing new expectations about *behavior* means something is wrong — stop and re-read the spec.
 - **CHANGELOG entries are edited in place** under the existing unreleased `## 0.1.0-alpha.5` heading. Never add a `[BREAKING]` entry for these renames — an unreleased changelog describes the release being assembled, not how it was assembled.
 - **No historical comments.** Comments describe current behavior and intrinsic why. Never "used to be X", "renamed from Y", or "(PRO-3005)" as a justification. The one exception already in the tree (`lib/axn.rb:212`'s "PRO-3005 re-homes them all") is deleted by Task 3, not preserved.
 - **Docs prose is not hard-wrapped.** One line per paragraph in Markdown.
