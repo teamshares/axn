@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/core/flow/handlers/invoker"
+require "axn/internal/rendering"
 
 module Axn
   module Core
@@ -118,7 +119,8 @@ module Axn
             # on_exception and the global report, and would raise again on every later `result.error`
             # read. Only what axn absorbs is caught, so a signal still propagates.
             rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-              action.warn("join: Proc raised #{e.class}: #{e.message} — using default join")
+              action.warn("join: Proc raised #{Axn::Internal::Rendering.class_name(e)}: " \
+                          "#{Axn::Internal::Rendering.exception_message(e)} — using default join")
               "#{base}#{DEFAULT_JOIN}#{reason}"
             end
 
@@ -139,7 +141,7 @@ module Axn
               if descriptor.handler
                 Invoker.call(operation: "determining message callable", action:, handler: descriptor.handler, exception:).presence
               elsif exception
-                exception.message.presence
+                Axn::Internal::Rendering.exception_message(exception).presence
               end
             end
 

@@ -665,7 +665,7 @@ module Axn
               # `is_a?` however it likes must not be able to talk its way into a vendor status object.
               if defined?(OpenTelemetry::Trace::Status) && defined?(OpenTelemetry::Trace::Span) &&
                  Axn::Internal::Identity.kind?(span, OpenTelemetry::Trace::Span)
-                error_message = result.exception.message || result.exception.class.name
+                error_message = Internal::Rendering.exception_message(result.exception)
                 span.status = OpenTelemetry::Trace::Status.error(error_message)
               end
             end

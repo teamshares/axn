@@ -250,4 +250,30 @@ RSpec.describe Axn::Core::FieldResolvers::Extract do
                                                       permit_method_call: true)).to eq(2)
     end
   end
+
+  # `arity_error?` is a PREDICATE (matches the raised ArgumentError's message to recognize a bare-call
+  # arity mismatch), not prose — a hostile `#message` here isn't lost text, it's an unrescued raise from
+  # inside the `rescue ArgumentError => e` clause in resolve_segment, which would replace the typed
+  # UnextractableError with the hostile exception. The guarded read must not change the predicate's
+  # answer for an ordinary ArgumentError.
+  describe "#arity_error? (private, the arity-mismatch predicate)" do
+    let(:instance) { described_class.new(field: :x, provided_data: {}) }
+
+    it "matches an ordinary arity ArgumentError" do
+      expect(instance.send(:arity_error?, ArgumentError.new("wrong number of arguments (given 0, expected 1)"))).to be(true)
+      expect(instance.send(:arity_error?, ArgumentError.new("missing keyword: :id"))).to be(true)
+    end
+
+    it "does not match an unrelated ArgumentError" do
+      expect(instance.send(:arity_error?, ArgumentError.new("something else entirely"))).to be(false)
+    end
+
+    it "does not let a raising #message escape the predicate" do
+      hostile = Class.new(ArgumentError) do
+        def message = raise(NotImplementedError, "message explodes")
+      end.new
+
+      expect { instance.send(:arity_error?, hostile) }.not_to raise_error
+    end
+  end
 end

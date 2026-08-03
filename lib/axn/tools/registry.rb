@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_support/core_ext/string/inflections"
+require "axn/internal/rendering"
 
 module Axn
   module Tools
@@ -153,12 +154,17 @@ module Axn
             rescue StandardError, ScriptError => e
               expanded = File.expand_path(file)
               _rollback_registrations(before) { |src| src == expanded }
-              Axn.config.logger.warn { "[Axn] tool file skipped (#{file}): #{e.class}: #{e.message}" }
+              Axn.config.logger.warn do
+                "[Axn] tool file skipped (#{file}): #{Axn::Internal::Rendering.class_name(e)}: " \
+                  "#{Axn::Internal::Rendering.exception_message(e)}"
+              end
             end
           end
         end
       rescue StandardError => e
-        Axn.config.logger.warn { "[Axn] tool eager-load skipped: #{e.class}: #{e.message}" }
+        Axn.config.logger.warn do
+          "[Axn] tool eager-load skipped: #{Axn::Internal::Rendering.class_name(e)}: #{Axn::Internal::Rendering.exception_message(e)}"
+        end
       end
 
       # Membership = (directory grant ∪ declaration grant) − except. Directory grant: adapters whose
@@ -246,7 +252,9 @@ module Axn
         _rollback_registrations(before) do |src|
           src == dir || src.start_with?(dir + File::SEPARATOR)
         end
-        Axn.config.logger.warn { "[Axn] tool dir skipped (#{dir}): #{e.class}: #{e.message}" }
+        Axn.config.logger.warn do
+          "[Axn] tool dir skipped (#{dir}): #{Axn::Internal::Rendering.class_name(e)}: #{Axn::Internal::Rendering.exception_message(e)}"
+        end
       end
 
       # Rolls back registrations added since `before`, deleting each added class whose (expanded)

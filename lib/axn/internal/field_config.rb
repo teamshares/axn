@@ -5,6 +5,7 @@
 # it for the `model:` id convention) would NameError on the first failing default rather than at require time.
 require "axn/exceptions"
 require "axn/internal/contract_error_handling"
+require "axn/internal/rendering"
 
 module Axn
   module Internal
@@ -48,7 +49,7 @@ module Axn
         identifier = config.subfield? ? "#{config.field} on #{config.on}" : config.field
         Axn::Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: Axn::ContractViolation::DefaultAssignmentError,
-          message: ->(_field, error) { "Error applying default for #{descriptor}: #{error.message}" },
+          message: ->(_field, error) { "Error applying default for #{descriptor}: #{Axn::Internal::Rendering.exception_message(error)}" },
           field_identifier: identifier,
         ) do
           config.default.respond_to?(:call) ? action.instance_exec(&config.default) : config.default
@@ -63,7 +64,7 @@ module Axn
         identifier = config.subfield? ? "#{config.field} on #{config.on}" : config.field
         Axn::Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: Axn::ContractViolation::PreprocessingError,
-          message: ->(_field, error) { "Error preprocessing #{descriptor}: #{error.message}" },
+          message: ->(_field, error) { "Error preprocessing #{descriptor}: #{Axn::Internal::Rendering.exception_message(error)}" },
           field_identifier: identifier,
         ) do
           action.instance_exec(value, &config.preprocess)

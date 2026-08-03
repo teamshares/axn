@@ -6,6 +6,7 @@ require "pathname"
 # The `tracer` setting's default resolves through Internal::Tracing on every read, so this file
 # cannot rely on the umbrella entrypoint having loaded it first.
 require "axn/internal/identity"
+require "axn/internal/rendering"
 require "axn/internal/tracing"
 
 module Axn
@@ -236,12 +237,16 @@ module Axn
         resolved_error = action.result.error
         # Compare with the default fallback message instead of calling default_error
         # to avoid triggering error message resolution multiple times
-        detail = resolved_error == Axn::Core::Flow::Handlers::Resolvers::MessageResolver::DEFAULT_ERROR ? e.message : resolved_error
+        detail = if resolved_error == Axn::Core::Flow::Handlers::Resolvers::MessageResolver::DEFAULT_ERROR
+                   Axn::Internal::Rendering.exception_message(e)
+                 else
+                   resolved_error
+                 end
       else
-        detail = e.message
+        detail = Axn::Internal::Rendering.exception_message(e)
       end
 
-      msg = "Handled exception (#{e.class.name}): #{detail}"
+      msg = "Handled exception (#{Axn::Internal::Rendering.class_name(e)}): #{detail}"
       msg = ("#" * 10) + " #{msg} " + ("#" * 10) unless Axn.config.env.production?
       action.log(msg)
 

@@ -3,6 +3,7 @@
 # The two flow-control exceptions this re-raises are rescued by class, so the class has to exist by the time a
 # wrapped block raises anything.
 require "axn/exceptions"
+require "axn/internal/rendering"
 
 module Axn
   module Internal
@@ -27,7 +28,7 @@ module Axn
         error_message = if message.is_a?(Proc)
                           message.call(field_identifier, e)
                         else
-                          format(message, field_identifier, e.message)
+                          format(message, field_identifier, Axn::Internal::Rendering.exception_message(e))
                         end
         raise exception_class, error_message, cause: e
       end

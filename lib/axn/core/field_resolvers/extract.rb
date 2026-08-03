@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_support/core_ext/hash/indifferent_access"
+require "axn/internal/rendering"
 
 module Axn
   module Core
@@ -107,7 +108,7 @@ module Axn
         end
 
         def arity_error?(error)
-          error.message.start_with?("wrong number of arguments", "missing keyword")
+          Axn::Internal::Rendering.exception_message(error).start_with?("wrong number of arguments", "missing keyword")
         end
 
         # The actionable text rides on this exception's own #message (see MethodCallNotPermittedError):

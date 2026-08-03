@@ -131,6 +131,19 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
         result = resolver.send(:body_for, descriptor)
         expect(result).to be_nil
       end
+
+      # This branch reads `exception.message` with no guard of its own — no rescue wraps it, and the
+      # caller chain (Result#error -> resolve_message -> ... -> body_for) has none either, so a raising
+      # `#message` would replace the settled `result.error` read outright.
+      it "does not let a raising #message escape" do
+        hostile = Class.new(StandardError) do
+          def message = raise(NotImplementedError, "message explodes")
+        end.new
+        hostile_resolver = described_class.new(registry, :error, action:, exception: hostile)
+        descriptor = double("descriptor", handler: nil)
+
+        expect { hostile_resolver.send(:body_for, descriptor) }.not_to raise_error
+      end
     end
   end
 
@@ -228,5 +241,23 @@ RSpec.describe "join: Proc raise-safety" do
       def call = fail!("inner")
     end
     expect(action.call.error).to eq("Outer: inner")
+  end
+
+  # The rescue clause that reports the join Proc's raise builds its warn line from the raised
+  # exception's own `#class`/`#message` — a read that is NOT itself guarded by anything further out:
+  # `resolve_message` runs from `Result#error` with no enclosing rescue, so a hostile `#message` here
+  # replaces the settled `result.error` read with the hostile exception instead of degrading to a log line.
+  it "falls back to the default join when the raised exception itself has a raising #message" do
+    hostile = Class.new(StandardError) do
+      def message = raise(NotImplementedError, "message explodes")
+    end
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { raise hostile, "boom" }
+      def call = fail!("inner")
+    end
+
+    result = action.call
+    expect { result.error }.not_to raise_error
+    expect(result.error).to eq("Outer: inner")
   end
 end

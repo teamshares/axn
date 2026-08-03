@@ -48,3 +48,52 @@ RSpec.describe "a validate: lambda that raises an exception axn cannot describe"
     expect(result.exception.message).to match(/failed validation: "bad\\xFF"/)
   end
 end
+
+# `resolve_default`/`resolve_preprocess` (Axn::Internal::FieldConfig) wrap a raising default:/preprocess:
+# proc as a typed ContractViolation, building that wrapper's own message from the ORIGINAL exception's
+# `#message` (Axn::Internal::ContractErrorHandling and the message: procs in field_config.rb). Neither
+# read is guarded: it runs directly inside `with_contract_error_handling`'s own `rescue StandardError`
+# clause, so a raise there is not caught locally, and it escapes as the caller's `default:`/`preprocess:`
+# exception is wrapping — replacing the typed DefaultAssignmentError/PreprocessingError (and its
+# "Error applying default for field 'x': ..." framing) with the raw, untyped exception instead.
+RSpec.describe "a default:/preprocess: proc whose own raised exception axn cannot describe" do
+  it "reports a default: proc's unrenderable failure without losing the field error" do
+    action = build_axn do
+      expects :n
+      exposes :thing, default: -> { raise ArgumentError, "bad\xFF".dup.force_encoding("ASCII-8BIT") }
+    end
+
+    result = action.call(n: 1)
+
+    expect { result.error }.not_to raise_error
+  end
+
+  let(:hostile_message) do
+    Class.new(StandardError) do
+      def message = raise(NotImplementedError, "message explodes")
+    end
+  end
+
+  it "keeps the DefaultAssignmentError typing when the default: proc's own error has a raising #message" do
+    hostile = hostile_message
+    action = build_axn do
+      expects :n
+      exposes :thing, default: -> { raise hostile, "inner" }
+    end
+
+    result = action.call(n: 1)
+
+    expect(result.exception).to be_a(Axn::ContractViolation::DefaultAssignmentError)
+  end
+
+  it "keeps the PreprocessingError typing when the preprocess: proc's own error has a raising #message" do
+    hostile = hostile_message
+    action = build_axn do
+      expects :n, preprocess: ->(_value) { raise hostile, "inner" }
+    end
+
+    result = action.call(n: 1)
+
+    expect(result.exception).to be_a(Axn::ContractViolation::PreprocessingError)
+  end
+end
