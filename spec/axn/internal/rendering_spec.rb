@@ -1,0 +1,126 @@
+# frozen_string_literal: true
+
+RSpec.describe Axn::Internal::Rendering do
+  describe ".class_name" do
+    it "names an ordinary value's class" do
+      expect(described_class.class_name("x")).to eq("String")
+    end
+
+    it "names the class without dispatching the value's own `class`" do
+      liar = Class.new { def class = :not_a_class }.new
+
+      expect(described_class.class_name(liar)).to match(/\A#<Class:/)
+    end
+
+    it "names an anonymous class rather than answering nil" do
+      expect(described_class.class_name(Class.new.new)).to match(/\A#<Class:/)
+    end
+  end
+
+  describe ".module_name" do
+    it "names a module without dispatching its own `to_s`" do
+      mod = Class.new { def self.to_s = raise("to_s explodes") }
+
+      expect(described_class.module_name(mod)).to match(/\A#<Class:/)
+    end
+  end
+
+  describe ".exception_message" do
+    it "returns an ordinary message verbatim" do
+      expect(described_class.exception_message(ArgumentError.new("bad input"))).to eq("bad input")
+    end
+
+    it "keeps a valid multibyte message verbatim" do
+      expect(described_class.exception_message(ArgumentError.new("café"))).to eq("café")
+    end
+
+    it "renders a Latin-1 message as its text" do
+      message = "caf\xE9".dup.force_encoding("ISO-8859-1")
+
+      expect(described_class.exception_message(ArgumentError.new(message))).to eq("café")
+    end
+
+    it "escapes a message whose bytes have no UTF-8 rendering" do
+      message = "bad\xFF".dup.force_encoding("ASCII-8BIT")
+
+      expect(described_class.exception_message(ArgumentError.new(message))).to include('\xFF')
+    end
+
+    it "falls back to the bound Exception#to_s when #message raises" do
+      klass = Class.new(StandardError) do
+        def message = raise(NotImplementedError, "message explodes")
+      end
+
+      expect(described_class.exception_message(klass.new("stored"))).to eq("stored")
+    end
+
+    it "falls back to the class name when even the bound to_s cannot answer" do
+      klass = Class.new(StandardError) do
+        def message = raise(NotImplementedError, "message explodes")
+        def to_s = raise(NotImplementedError, "to_s explodes")
+      end
+      # The stored message is the value `to_s` renders, so a value whose own `to_s` raises defeats the
+      # bound Exception#to_s too — the class is what is left.
+      exception = klass.new(Object.new.tap { |o| o.define_singleton_method(:to_s) { raise "value to_s" } })
+
+      expect(described_class.exception_message(exception)).to match(/\A#<Class:/)
+    end
+
+    it "renders a non-String #message without dispatching its to_s outside the guard" do
+      klass = Class.new(StandardError) do
+        def message = Object.new.tap { |o| o.define_singleton_method(:to_s) { raise "to_s explodes" } }
+      end
+
+      expect { described_class.exception_message(klass.new("stored")) }.not_to raise_error
+    end
+  end
+
+  describe ".exception_source_location" do
+    it "names the file and line an exception came from" do
+      exception = ArgumentError.new("x")
+      exception.set_backtrace(["/app/lib/thing.rb:42:in `block'"])
+
+      expect(described_class.exception_source_location(exception)).to eq("thing.rb:42")
+    end
+
+    it "tolerates a nil backtrace" do
+      expect(described_class.exception_source_location(ArgumentError.new("x"))).to eq("unknown location")
+    end
+
+    it "tolerates an empty backtrace" do
+      exception = ArgumentError.new("x")
+      exception.set_backtrace([])
+
+      expect(described_class.exception_source_location(exception)).to eq("unknown location")
+    end
+
+    it "tolerates a blank frame, which a rebuilt backtrace can hold" do
+      # What a death handler reconstructing a backtrace from job data hands us. `raise` repopulates a nil
+      # backtrace, but a `set_backtrace` value is kept exactly as given.
+      exception = ArgumentError.new("x")
+      exception.set_backtrace([""])
+
+      expect(described_class.exception_source_location(exception)).to eq("unknown location")
+    end
+
+    it "tolerates a whitespace-only frame" do
+      exception = ArgumentError.new("x")
+      exception.set_backtrace(["   "])
+
+      expect(described_class.exception_source_location(exception)).to eq("unknown location")
+    end
+
+    it "reads the backtrace through a bound reader, so an override cannot substitute a non-Array" do
+      klass = Class.new(StandardError) do
+        def backtrace = "not an array"
+      end
+      exception = begin
+        raise klass, "x"
+      rescue StandardError => e
+        e
+      end
+
+      expect(described_class.exception_source_location(exception)).to eq("unknown location")
+    end
+  end
+end

@@ -3,6 +3,7 @@
 require "axn/internal/cycle_guard"
 require "axn/internal/field_config"
 require "axn/internal/native_methods"
+require "axn/internal/rendering"
 require "axn/internal/shape_graph"
 require "axn/internal/text"
 # Declared rather than left to the top-level entrypoint's require order: every one of these is a RUNTIME
@@ -219,9 +220,9 @@ module Axn
       # UTF-8 rendering at all come back escaped. That cannot recurse back into `inspect_field_name`'s class
       # branch above: `Module#to_s` always answers with a genuine String (`"#<Class:0x…>"` for an anonymous
       # class), so `field_name_spelling` resolves it from its String branch.
-      def renderable_class_name(value) = renderable_label(Axn::Internal::ClassName.of(value))
+      def renderable_class_name(value) = Axn::Internal::Rendering.class_name(value)
 
-      def renderable_module_name(mod) = renderable_label(Axn::Internal::ClassName.of_module(mod))
+      def renderable_module_name(mod) = Axn::Internal::Rendering.module_name(mod)
 
       # How a name is written into a message that names ONE thing rather than distinguishing two spellings: the
       # UTF-8 property it canonicalizes to, falling back to the escaped form above when its bytes have no UTF-8

@@ -34,6 +34,7 @@ require "axn/internal/call_logger"
 require "axn/internal/contract_error_handling"
 require "axn/internal/global_id_serialization"
 require "axn/internal/async_serialization"
+require "axn/internal/rendering"
 require "axn/internal/exception_context"
 require "axn/internal/exception_classification"
 require "axn/internal/carried_presentation"
@@ -53,12 +54,10 @@ require "axn/async"
 require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
 
 module Axn
-  # `Exception`'s own implementations, for a reporting path that must not run an exception's overrides of them
-  # (see `_named_invalid_tool_contract`). `exception` clones and sets a message without running an initializer;
-  # `to_s` renders the message object the exception was raised with.
+  # `Exception`'s own implementation, for a reporting path that must not run an exception's override of it
+  # (see `_named_invalid_tool_contract`). Clones and sets a message without running an initializer.
   EXCEPTION_EXCEPTION = ::Exception.instance_method(:exception)
-  EXCEPTION_TO_S = ::Exception.instance_method(:to_s)
-  private_constant :EXCEPTION_EXCEPTION, :EXCEPTION_TO_S
+  private_constant :EXCEPTION_EXCEPTION
 
   # Whether axn owns this exception's #message (and may stamp the resolved presentation onto it).
   # Foreign exceptions reclassified via fails_on are NOT owned — they keep their technical cause.
@@ -139,7 +138,7 @@ module Axn
   # offending class's exception, at boot, with nothing left naming the tool. Three rules keep it bounded, and
   # together they are the whole design:
   #
-  # 1. Every dispatch of the exception's own code sits behind a guard (see `_reported_message`). What a guard
+  # 1. Every dispatch of the exception's own code sits behind a guard (see `Internal::Rendering.exception_message`). What a guard
   #    cannot cover is the 0-arg `#exception` that `raise` itself makes on whatever object it is handed — Ruby
   #    has no re-raise that skips it, a bare `raise` in a rescue included — so that dispatch is AVOIDED instead:
   #    the object handed to `raise` is only ever the original when its class does not own `#exception`.
@@ -149,7 +148,7 @@ module Axn
   #    `Exception#exception(message)` clones and `raise` then asks the CLONE.
   #
   # 3. Every foreign STRING it writes into the message is RENDERED into UTF-8 rather than joined to it, through
-  #    the one path axn renders foreign text with (`Reflection::PropertyNames`). A guarded dispatch is only half
+  #    the one path axn renders foreign text with (`Internal::Rendering`). A guarded dispatch is only half
   #    of what a report needs: a `#message` that behaves perfectly and returns a String whose bytes are not
   #    UTF-8-compatible — the stored message of an ordinary ArgumentError is enough, no override required — made
   #    the interpolation itself raise Encoding::CompatibilityError, destroying the contract failure at boot and
@@ -170,51 +169,13 @@ module Axn
   # and carrying the original as `cause`. Only the CLASS degrades there, and `#message` is a separate question:
   # an exception that builds its message from its state keeps that message on either branch.
   def self._named_invalid_tool_contract(klass, error)
-    tool = Axn::Reflection::PropertyNames.renderable_module_name(klass)
-    reason = _reported_message(error)
+    tool = Axn::Internal::Rendering.module_name(klass)
+    reason = Axn::Internal::Rendering.exception_message(error)
     unless Axn::Internal::NativeMethods.native_exception_reporting?(error)
       return InvalidToolContract.new(tool:, reason:, original_class: Axn::Internal::ClassName.of(error))
     end
 
     EXCEPTION_EXCEPTION.bind_call(error, "#{tool} has an invalid tool contract — #{reason}")
-  end
-
-  # An exception's own message, for a message being built ABOUT it, as a UTF-8 String this method owns.
-  #
-  # RENDERED rather than returned as it came, because what an exception's message HOLDS is foreign too, not just
-  # the code that answers it: a String whose bytes are not UTF-8-compatible cannot be joined to axn's own UTF-8
-  # prose at all (Encoding::CompatibilityError from the interpolation), and one merely in another encoding, or
-  # holding invalid bytes, silently poisons the message it lands in. Neither needs an override to reach here —
-  # the STORED message of an ordinary ArgumentError is a String the raiser chose. `renderable_label` is the one
-  # path axn renders foreign text with (a name in a message, a Hash key in a log line, this): an ASCII message
-  # is byte-identical, a legitimate multibyte one reads as its text, and bytes with no UTF-8 rendering come back
-  # escaped rather than taking the report with them. Rendering dispatches nothing here — every branch below
-  # yields a genuine String, and a String is rendered through bound String methods.
-  def self._reported_message(error) = Axn::Reflection::PropertyNames.renderable_label(_raw_reported_message(error))
-
-  # The message bytes, before rendering.
-  #
-  # Dispatched deliberately — an exception that derives its message from its state (`UnserializableValue`) has no
-  # other way to be reported richly — but behind a guard, because that is caller code in an error path, and the
-  # guard has to cover an ordinary class too: `Exception#to_s` renders the message OBJECT the exception was
-  # raised with (`rb_String`), so a plain ArgumentError carrying a value whose `to_s` raises raises here.
-  #
-  # The result is type-tested rather than returned as-is, because an owned `#message` may return anything, and
-  # rendering a non-String dispatches its `to_s` — outside the guard, which is the escape this exists to
-  # prevent. (A String SUBCLASS is safe: it is type-tested and rendered through bound String methods, and the
-  # renderer hands back a plain String either way.) `Exception#to_s` is the non-dispatching second choice, and
-  # the class is what is left when even that will not answer.
-  def self._raw_reported_message(error)
-    case (reported = error.message)
-    when ::String then reported
-    else EXCEPTION_TO_S.bind_call(error)
-    end
-  rescue ::Exception # rubocop:disable Lint/RescueException
-    begin
-      EXCEPTION_TO_S.bind_call(error)
-    rescue ::Exception # rubocop:disable Lint/RescueException
-      Axn::Internal::ClassName.of(error)
-    end
   end
 
   def self.versions_for(adapter, tool_name)
@@ -231,11 +192,11 @@ module Axn
     adapter
   end
 
-  # None of the four is reached with an explicit receiver: `_registered_tool_adapter!` from `tools_for`
-  # and `versions_for`, `_named_invalid_tool_contract` from `validate_tool_contracts!`, and the message
-  # pair from `_named_invalid_tool_contract`. Private so the top-level module's public
-  # surface is the API it means to publish (PRO-3005 re-homes them all under `Axn::Tools`).
-  private_class_method :_registered_tool_adapter!, :_named_invalid_tool_contract, :_reported_message, :_raw_reported_message
+  # Neither is reached with an explicit receiver: `_registered_tool_adapter!` from `tools_for`
+  # and `versions_for`, `_named_invalid_tool_contract` from `validate_tool_contracts!`. Private so the
+  # top-level module's public surface is the API it means to publish (PRO-3005 re-homes them all under
+  # `Axn::Tools`).
+  private_class_method :_registered_tool_adapter!, :_named_invalid_tool_contract
 
   def self.included(base)
     # Re-including Axn (e.g. `include Axn` in a subclass of an existing Axn) would re-run
