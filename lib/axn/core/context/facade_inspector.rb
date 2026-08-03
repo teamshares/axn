@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/rendering"
+
 module Axn
   module Core
     class ContextFacadeInspector
@@ -25,11 +27,17 @@ module Axn
         return "[OK]" if context.ok?
 
         if facade.outcome.failure?
-          return context.exception.default_message? ? "[failed]" : "[failed with '#{context.exception.message}']"
+          return context.exception.default_message? ? "[failed]" : "[failed with '#{exception_message}']"
         end
 
-        %([failed with #{context.exception.class.name}: '#{context.exception.message}'])
+        %([failed with #{Axn::Internal::Rendering.class_name(context.exception)}: '#{exception_message}'])
       end
+
+      # An exception carried on a failed result is caller-supplied, and `inspect` is called from loggers,
+      # debuggers and spec failure output — the places a raise is hardest to trace back. So both the class
+      # and the message come from the one reader that dispatches nothing the exception can override and
+      # renders the bytes it answers with.
+      def exception_message = Axn::Internal::Rendering.exception_message(context.exception)
 
       def visible_fields
         declared_fields.map do |field|

@@ -53,4 +53,40 @@ RSpec.describe Axn do
       }
     end
   end
+
+  describe "inspecting a failed result whose exception cannot describe itself" do
+    # `Result#inspect` is not on the `.call` path, so this raises nothing into an action — it poisons every
+    # logger, debugger and spec-failure message that touches the result instead, which is worse to diagnose.
+    let(:hostile_message) do
+      Class.new(StandardError) do
+        def message = raise(NotImplementedError, "message explodes")
+      end
+    end
+
+    it "renders rather than raising" do
+      # `build_axn`'s block runs via `class_eval`, so a bare call to the `let` above resolves against the
+      # wrong `self` once inside `define_method`; capture it as a local first so the closure carries the
+      # value rather than a method dispatch, and defer the raise to `#call` via `define_method` so it hits
+      # axn's own exception handling instead of blowing up while the class is still being defined.
+      exception_class = hostile_message
+      result = build_axn { define_method(:call) { raise exception_class } }.call
+
+      expect { result.inspect }.not_to raise_error
+    end
+
+    it "renders a message holding bytes with no UTF-8 rendering" do
+      # The raw message alone never collides: the surrounding template is pure ASCII, and one
+      # ASCII-compatible operand never trips `Encoding::CompatibilityError`. It takes a SECOND value with
+      # real non-ASCII UTF-8 content — the outbound default below, applied on the failure branch and
+      # joined into the same rendered line — to reproduce the raise the fix guards against.
+      klass = build_axn do
+        exposes :flag, default: -> { "café" }
+
+        define_method(:call) { raise ArgumentError, "bad\xFF".dup.force_encoding("ASCII-8BIT") }
+      end
+      result = klass.call
+
+      expect { result.inspect }.not_to raise_error
+    end
+  end
 end

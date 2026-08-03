@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/rendering"
+
 module Axn
   module Async
     # Custom error for missing enqueues_each configuration
@@ -151,7 +153,7 @@ module Axn
           # re-raises an exception outcome — so letting anything escape fails the job, the queue retries
           # it, and the whole batch is enqueued a SECOND time. A duplicated fan-out is far worse than a
           # warning, and "a raising callback can't abort the fan-out" is the documented guarantee.
-          Axn::Extensions.best_effort("on_enqueue_all callback for #{target.name}") do
+          Axn::Extensions.best_effort("on_enqueue_all callback for #{Axn::Internal::Rendering.module_name(target)}") do
             if handler.is_a?(Symbol)
               unless target.respond_to?(handler, true)
                 target.warn("Ignoring apparently-invalid on_enqueue_all symbol #{handler.inspect} -- class does not respond to method")

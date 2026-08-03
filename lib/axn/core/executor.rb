@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/rendering"
+
 module Axn
   module Core
     # Executor encapsulates the full execution pipeline for an action.
@@ -849,7 +851,7 @@ module Axn
       rescue Exception => e # rubocop:disable Lint/RescueException
         raise unless Axn::Extensions.swallowable?(e)
 
-        Axn::Extensions.best_effort("settling #{settling.class} onto the result", action: @action) { raise e }
+        Axn::Extensions.best_effort("settling #{Internal::Rendering.class_name(settling)} onto the result", action: @action) { raise e }
       end
 
       def _settle_exception!(e)
