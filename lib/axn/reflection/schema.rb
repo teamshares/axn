@@ -578,7 +578,8 @@ module Axn
         # safe direction). Nil-TOLERANT entries never reject an omitted value, so a nested gate on them
         # can't affect requiredness — don't fall back on those.
         entries = Axn::Validation::Base.validator_entries(config.validations)
-        return nil if entries.any? { |key, opt| !nil_tolerant_validation?(key, opt) && entry_mentions_gate_key?(opt) }
+        shared = shared_validation_options(config)
+        return nil if entries.any? { |key, opt| !nil_tolerant_validation?(key, opt, shared) && entry_mentions_gate_key?(opt) }
 
         rule = gates.values.first
         return nil unless rule.is_a?(Symbol)
@@ -1662,12 +1663,19 @@ module Axn
         some_gate = decl_gates.any? || entries.any? { |_key, opt| entry_self_gated?(opt) }
         return false unless some_gate
 
+        shared = shared_validation_options(config)
         entries.all? do |key, opt|
-          nil_tolerant_validation?(key, opt) || entry_effective_gate_keys(opt, decl_gates).any?
+          nil_tolerant_validation?(key, opt, shared) || entry_effective_gate_keys(opt, decl_gates).any?
         end
       end
 
-      def nil_tolerant_validation?(key, opt) = Axn::Validation::Base.nil_tolerant_validation?(key, opt)
+      # The declaration-wide options every entry of a config rides alongside — the tier the per-entry
+      # judgments resolve against.
+      def shared_validation_options(config)
+        config.validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
+      end
+
+      def nil_tolerant_validation?(key, opt, declaration_options) = Axn::Validation::Base.nil_tolerant_validation?(key, opt, declaration_options)
       def set_includes_nil?(opt) = Axn::Validation::Base.set_includes_nil?(opt)
       def entry_context_scoped?(opt) = Axn::Validation::Base.entry_context_scoped?(opt)
       def validator_entry_options(entry) = Axn::Validation::Base.validator_entry_options(entry)

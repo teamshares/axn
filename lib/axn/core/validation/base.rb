@@ -91,13 +91,19 @@ module Axn
         v = validator_entries(validations)
         return true if v.empty?
 
-        v.all? { |key, opt| nil_tolerant_validation?(key, opt) }
+        # The shared options are stripped from the ENTRY set but still govern how each entry runs, so they are
+        # handed to the per-entry judgment rather than discarded: `validates` applies a declaration-wide
+        # `allow_nil:`/`allow_blank:` to every validator in the call.
+        declaration_options = validations.slice(*shared_validation_option_keys)
+        v.all? { |key, opt| nil_tolerant_validation?(key, opt, declaration_options) }
       end
 
-      def self.nil_tolerant_validation?(key, opt)
+      # `declaration_options` are the shared options the entry rides alongside — required rather than defaulted,
+      # so a caller cannot omit the tier that decides several of these answers and get a quietly wrong one.
+      def self.nil_tolerant_validation?(key, opt, declaration_options)
         return true unless opt # a disabled validator (falsy `opt` — `false`/`nil`); ActiveModel skips it
         return true if entry_context_scoped?(opt)
-        return true if opt.is_a?(Hash) && (opt[:allow_nil] || opt[:allow_blank])
+        return true if entry_tolerates_nil?(opt, declaration_options)
         return true if key == :absence
         return true if key == :acceptance && acceptance_admits_nil?(opt)
         return true if key == :confirmation
@@ -108,6 +114,15 @@ module Axn
         return true if key == :inclusion && set_includes_nil?(opt) == true
 
         false
+      end
+
+      # Whether an entry runs nil-tolerant, at either tier `validates` resolves: its OWN `allow_nil:`/
+      # `allow_blank:` if it carries one, otherwise the declaration-wide value, which AM applies to every
+      # validator in the call. Read through the shared per-entry precedence model, so this answers the same
+      # way the gate and `strict:` questions do — and truthiness decides, so a hash-level `allow_nil: false`
+      # confers nothing and an entry's own `false` overrides a declaration-wide `true`.
+      def self.entry_tolerates_nil?(entry_opts, declaration_options)
+        %i[allow_nil allow_blank].any? { |key| entry_effective_option(entry_opts, declaration_options, key) }
       end
 
       # Whether a validator ENTRY is scoped to an ActiveModel validation CONTEXT — an `on:` inside the

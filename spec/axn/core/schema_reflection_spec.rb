@@ -285,6 +285,54 @@ RSpec.describe "Axn class-level schema reflection" do
   # the runtime, `optional?` and schema requiredness to one answer. It exists to fail when a validator or an
   # option shape is added whose nil behavior nobody has judged — the allowlist behind `optional?` has one row
   # per validator, and a missing row is silent until something like this walks the vocabulary.
+  # ActiveModel applies a DECLARATION-WIDE `allow_nil:`/`allow_blank:` to every validator in the `validates`
+  # call, so an entry that carries none of its own still runs tolerant. A raw shape member is where that
+  # spelling survives to be judged — a field declaration pushes the tolerance down into each entry before it
+  # is ever read — so each row here holds the runtime, the member's `optional?` and the emitted property to
+  # one answer.
+  describe "a declaration-wide tolerance on a raw shape member" do
+    def shaped(member_validations)
+      member = Axn::Core::Contract::ShapeConfig.new(field: :name, validations: member_validations)
+      klass = Class.new do
+        include Axn
+        def call = nil
+      end
+      klass.expects :payload, type: Hash, shape: { members: [member] }
+      klass
+    end
+
+    {
+      "a hash-level allow_nil: true" => [{ type: String, allow_nil: true }, true],
+      "a hash-level allow_blank: true" => [{ type: String, allow_blank: true }, true],
+      "a hash-level allow_nil: false" => [{ type: String, allow_nil: false }, false],
+      "a hash-level allow_blank: false" => [{ type: String, allow_blank: false }, false],
+      "an entry-level tolerance" => [{ type: { klass: String, allow_nil: true } }, true],
+      "an entry-level allow_nil: false over a hash-level true" =>
+        [{ type: { klass: String, allow_nil: false }, allow_nil: true }, false],
+      "no tolerance at all" => [{ type: String }, false],
+    }.each do |label, (member_validations, tolerant)|
+      it "reads #{label} the way the runtime treats a nil member" do
+        klass = shaped(member_validations)
+
+        expect(klass.call(payload: { name: nil }).ok?).to be(tolerant)
+
+        member = klass.internal_field_configs.find { _1.field == :payload }.validations.dig(:shape, :members).first
+        expect(member.optional?).to be(tolerant)
+
+        prop = klass.input_schema.dig(:properties, :payload)
+        expect(Array(prop[:required]).include?("name")).to be(!tolerant)
+        expect(Array(prop.dig(:properties, :name, :type)).include?("null")).to be(tolerant)
+      end
+    end
+
+    # The strip that discards shared keys before judging is what keeps a shared-ONLY hash from reading as a
+    # validator, which would have `validates` raise for a set with nothing in it.
+    it "still reads a validations hash carrying only shared options as no validators at all" do
+      expect(Axn::Validation::Base.validator_entries(strict: true)).to eq({})
+      expect(Axn::Validation::Base.nil_accepted?(strict: true)).to be(true)
+    end
+  end
+
   describe "the nil axis across every validator axn accepts" do
     def declare(**opts)
       klass = Class.new do
