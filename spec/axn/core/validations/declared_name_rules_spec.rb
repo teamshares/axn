@@ -176,7 +176,9 @@ RSpec.describe "the rules every declared name is held to" do
           expects :p, type: Hash
           expects :a, on: route, optional: true
         end
-      end.to raise_error(ArgumentError, /\A`on:` must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
+        # Spelled `on:` rather than `` `on:` `` — both of this option's rules name it the way its own type rule
+        # always has, since they now come from one call.
+      end.to raise_error(ArgumentError, /\Aon: must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
     end
 
     it "still accepts a dotted route" do
@@ -204,6 +206,33 @@ RSpec.describe "the rules every declared name is held to" do
       expect { build_axn { expects hostile } }.to raise_error(ArgumentError, /\Aa field name must be a String or Symbol/)
       expect { build_axn { expects :a, as: hostile } }.to raise_error(ArgumentError, /\A`as:` must be a String or Symbol/)
       expect { build_axn { expects :a, prefix: hostile } }.to raise_error(ArgumentError, /\A`prefix:` must be a String or Symbol/)
+    end
+
+    # A name is canonicalized with `to_sym`, which is a DISPATCH on the caller's object — so the canonical name
+    # is a second value with its own bytes. An ASCII-compatible String whose `to_sym` answers with a wide Symbol
+    # cleared the rule as written and then raised `Encoding::CompatibilityError` from the first ASCII question
+    # asked of the Symbol: the very non-diagnosis these rules replace, reached THROUGH the guard rather than
+    # around it. Every site that canonicalizes shares the hazard, so every site is asserted.
+    it "cannot smuggle a wide name in through its own to_sym at any site" do
+      smuggler = Class.new(String) { def to_sym = "ab".encode("UTF-16LE").to_sym }
+      wide_name = smuggler.new("ab")
+      wide_route = smuggler.new("p")
+      wide_reader = smuggler.new("bee")
+
+      expect { build_axn { expects wide_name } }
+        .to raise_error(ArgumentError, /\Aa field name must be written in an ASCII-compatible encoding/)
+      expect { build_axn { exposes wide_name } }
+        .to raise_error(ArgumentError, /\Aan exposure name must be written in an ASCII-compatible encoding/)
+      expect do
+        build_axn do
+          expects :p, type: Hash
+          expects :a, on: wide_route, optional: true
+        end
+      end.to raise_error(ArgumentError, /\Aon: must be written in an ASCII-compatible encoding/)
+      expect { build_axn { expects :a, as: wide_reader } }
+        .to raise_error(ArgumentError, /\A`as:` must be written in an ASCII-compatible encoding/)
+      expect { build_axn { expects :a, prefix: wide_reader } }
+        .to raise_error(ArgumentError, /\A`prefix:` must be written in an ASCII-compatible encoding/)
     end
 
     # The encoding is read from the bound base implementation, so what a String subclass CLAIMS is irrelevant in

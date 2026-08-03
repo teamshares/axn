@@ -227,6 +227,22 @@ module Axn
       # The encoding is read from bound base implementations (`NativeMethods.ascii_compatible_name?`), so a
       # String subclass cannot answer its way past the rule, and the encoding is named in the message from
       # `Encoding`'s own object rather than from anything the caller supplied.
+      # Canonicalize a name to the Symbol every consumer downstream will read, holding both rules on the value
+      # AND on what it canonicalizes to. THE single place a declared name becomes a Symbol, because `to_sym` is a
+      # dispatch on the caller's object and so the canonical name is a SECOND value with its own bytes: an
+      # ASCII-compatible String whose `to_sym` answers with a wide Symbol cleared the rule as written and then
+      # raised `Encoding::CompatibilityError` from the first ASCII question asked of the Symbol — the exact
+      # non-diagnosis these rules exist to replace, reached through the guard rather than around it.
+      #
+      # Checked on the way IN as well as on the way out, so a genuinely wide name is named as one before its own
+      # `to_sym` runs at all, and the rule reads the same at a site whose value never converts.
+      def self.canonical_name!(value, option:, names:, fix:, encoding_fix:)
+        validate_name_option!(value, option:, names:, fix:)
+        validate_name_encoding!(value, kind: option, fix: encoding_fix)
+
+        value.to_sym.tap { |canonical| validate_name_encoding!(canonical, kind: option, fix: encoding_fix) }
+      end
+
       def self.validate_name_encoding!(value, kind:, fix:)
         return if Axn::Internal::NativeMethods.ascii_compatible_name?(value)
 
@@ -367,8 +383,7 @@ module Axn
           # reader names, duplicate detection, the inbound read path — is symbol-keyed by construction.
           # `expects "note"` and `expects :note` are the same field; a dotted subfield key (`"a.b"`)
           # symbolizes harmlessly (it's only ever compared/split via `.to_s`). See PRO-2790.
-          _validate_field_names!(fields, kind: "a field name", names: "an inbound field")
-          fields = fields.map(&:to_sym)
+          fields = _canonical_field_names!(fields, kind: "a field name", names: "an inbound field")
 
           # A subfield's ROUTE is canonicalized on the same terms, and here — before the first guard reads it.
           # A route is judged as written (its root must name a declared reader; `_duplicate_fields` keys a config
@@ -395,14 +410,13 @@ module Axn
           on = if Internal::NativeMethods.absent_name?(on)
                  nil
                else
-                 Contract.validate_name_option!(on, option: "on:", names: "a parent reader",
-                                                    fix: "Pass the parent's name (dotted for a nested path), or omit `on:` " \
-                                                         "to declare a top-level field.")
-                 # Before the route is split — which is where a wide encoding raised instead of answering.
-                 Contract.validate_name_encoding!(on, kind: "`on:`",
-                                                      fix: "Name the parent in UTF-8 (or any other ASCII-compatible " \
-                                                           "encoding).")
-                 on.to_sym
+                 # Canonicalized through the shared rule, which also holds the encoding of what `to_sym` ANSWERS —
+                 # this is the value every consumer then splits on `.`, and a wide one raised from the split.
+                 Contract.canonical_name!(on, option: "on:", names: "a parent reader",
+                                              fix: "Pass the parent's name (dotted for a nested path), or omit `on:` " \
+                                                   "to declare a top-level field.",
+                                              encoding_fix: "Name the parent in UTF-8 (or any other ASCII-compatible " \
+                                                            "encoding).")
                end
 
           fields.each do |field|
@@ -470,8 +484,7 @@ module Axn
           &block
         )
           # Symbolize the wire key (see `expects`) so exposes shares the same symbol-keyed contract.
-          _validate_field_names!(fields, kind: "an exposure name", names: "an outbound field")
-          fields = fields.map(&:to_sym)
+          fields = _canonical_field_names!(fields, kind: "an exposure name", names: "an outbound field")
 
           # Stays pre-build, unlike every other declared name: an exposed field name is a property in the
           # SERIALIZED BODY (`Values.serialize_exposed` iterates these configs and raises on an unrenderable
@@ -708,28 +721,27 @@ module Axn
           if as
             raise ArgumentError, "`as:` can only be provided when declaring a single field (use prefix: for several)" if fields.size > 1
 
-            _validate_reader_name_option!(as, option: "`as:`", names: "the generated reader",
-                                              fix: "Pass the reader's name, or omit `as:` to name the reader for the wire key.")
-
             # Canonicalized before the dotted check rather than after it, so the name the check JUDGES is the
             # name the reader is defined under — `to_s` and `to_sym` are two dispatches on the same caller
             # object, and a String subclass answering them differently had the guard clearing one spelling
             # while another was generated. A Symbol's `to_s`/`inspect` are Ruby's own, so both the check and
-            # the message it may raise are now decided by axn.
-            reader = as.to_sym
+            # the message it may raise are now decided by axn. The shared rule holds the CANONICAL name's
+            # encoding too, so the dotted question below is asked of bytes that can answer it.
+            reader = Contract.canonical_name!(as, option: "`as:`", names: "the generated reader",
+                                                  fix: "Pass the reader's name, or omit `as:` to name the reader for the wire key.",
+                                                  encoding_fix: "Name it in UTF-8 (or any other ASCII-compatible encoding).")
             raise ArgumentError, "`as:` reader name may not be dotted (#{reader.inspect} would not name a method)" if reader.to_s.include?(".")
 
             { fields.first => reader }
           else
-            _validate_reader_name_option!(prefix, option: "`prefix:`", names: "a prefix for each generated reader",
-                                                  fix: "Pass the prefix as a String or Symbol, or omit `prefix:` to name " \
-                                                       "each reader for its wire key.")
-
             # The same dotted rule as `as:`, on the same grounds and closed at the same time: a dotted prefix
             # composes a dotted reader (`prefix: "a."` → `:"a.field"`) that no caller can invoke, which is
             # exactly what the `as:` check above refuses. Asked of the canonicalized prefix, so the value
             # judged is the one interpolated below.
-            segment = prefix.to_sym
+            segment = Contract.canonical_name!(prefix, option: "`prefix:`", names: "a prefix for each generated reader",
+                                                       fix: "Pass the prefix as a String or Symbol, or omit `prefix:` to name " \
+                                                            "each reader for its wire key.",
+                                                       encoding_fix: "Name it in UTF-8 (or any other ASCII-compatible encoding).")
             if segment.to_s.include?(".")
               raise ArgumentError,
                     "`prefix:` may not be dotted (#{segment.inspect} would compose a reader that does not name a method)"
@@ -737,13 +749,6 @@ module Axn
 
             fields.to_h { |f| [f, :"#{segment}#{f}"] }
           end
-        end
-
-        # The type and encoding rules a reader-name option shares with `on:`, applied after its absent check.
-        def _validate_reader_name_option!(value, option:, names:, fix:)
-          Contract.validate_name_option!(value, option:, names:, fix:)
-          Contract.validate_name_encoding!(value, kind: option,
-                                                  fix: "Name it in UTF-8 (or any other ASCII-compatible encoding).")
         end
 
         # Every declared field name passes here, at both DSLs, BEFORE `to_sym` canonicalizes it and before any
@@ -757,13 +762,12 @@ module Axn
         # legitimately means the option was omitted there. A field NAME is never optional: `expects nil` and
         # `expects false` name no field, so they are errors rather than absences, and running an absent check
         # here would silently accept them as declaring nothing.
-        def _validate_field_names!(fields, kind:, names:)
-          fields.each do |field|
-            Contract.validate_name_option!(field, option: kind, names:,
-                                                  fix: "Declare the field under a String or Symbol name.")
-            Contract.validate_name_encoding!(field, kind:,
-                                                    fix: "Declare it under a UTF-8 name (or any other " \
-                                                         "ASCII-compatible encoding).")
+        def _canonical_field_names!(fields, kind:, names:)
+          fields.map do |field|
+            Contract.canonical_name!(field, option: kind, names:,
+                                            fix: "Declare the field under a String or Symbol name.",
+                                            encoding_fix: "Declare it under a UTF-8 name (or any other " \
+                                                          "ASCII-compatible encoding).")
           end
         end
 

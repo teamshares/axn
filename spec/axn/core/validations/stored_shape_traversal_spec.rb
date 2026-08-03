@@ -412,6 +412,28 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
       expect(result.exception.message).to match(/nests more than 64 levels deep/)
     end
 
+    # The runtime bound must be the SAME bound the declaration applies, not one level stricter. A graph whose
+    # deepest node sits exactly at the cap declares legally (`_walk_shape_graph!` rejects only past it), so a
+    # value following that legal chain has to reach the leaf's own validators. With a `>=` comparison here the
+    # walk raised on the one depth the contract explicitly permits — the two-layers-two-64s drift the shared
+    # constant exists to prevent. Asserted at the cap and one inside it, through behaviour rather than the
+    # constant.
+    it "validates the leaf of a graph declared at the maximum depth" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: { presence: true })], container: Hash }
+      64.times do
+        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :n, validations: { type: { klass: Hash }, shape: })],
+                  container: Hash }
+      end
+      value = {}
+      64.times { value = { n: value } }
+
+      klass = build_axn { expects :p, type: Hash, shape: }
+      result = klass.call(p: value)
+
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(result.exception.message).to include("leaf can't be blank")
+    end
+
     # An ordinary shaped call is unchanged — the bound is on the descent, not on the members.
     it "leaves an ordinary nested shape validating exactly as before" do
       klass = build_axn do

@@ -75,9 +75,14 @@ module Axn
       # level, so `options` is a fresh Hash each time, while a cyclic graph hands back the same members list
       # — which is exactly the identity that repeats. A generative graph hands back a fresh one, and falls to
       # the depth bound.
+      # The depth comparison is `>`, matching the declaration walk and every other walk of a stored graph
+      # (`shape_declaration.rb`, `redaction.rb`, `property_names.rb`, `ambient_context.rb`) rather than being one
+      # level stricter. A graph whose deepest node sits exactly AT the cap declares legally, so a value following
+      # that legal chain has to reach the leaf's validators — with `>=` the runtime walk raised on the one depth
+      # the contract explicitly permits, which is the same drift as two layers holding two 64s.
       def guard_descent(source, ancestry)
         depth = ancestry ? ancestry.depth : 0
-        raise ArgumentError, Axn::Internal::ShapeGraph.too_deep_message(nil) if depth >= Axn::Internal::ShapeGraph::MAX_NESTING
+        raise ArgumentError, Axn::Internal::ShapeGraph.too_deep_message(nil) if depth > Axn::Internal::ShapeGraph::MAX_NESTING
 
         Axn::Internal::CycleGuard.guard_pair(source, options[:members], ancestry&.seen, on_cycle: nil) do |seen|
           yield Ancestry.new(seen:, depth: depth + 1)
