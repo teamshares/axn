@@ -1178,17 +1178,41 @@ RSpec.describe "declaration-time property name collisions" do
         end.to raise_error(EncodingError)
       end
 
-      # Everything that is neither a name nor blank still reaches `to_sym` and says so — the absent set is
-      # nil/false/empty-or-whitespace String/empty Symbol, not "anything that answers `empty?`".
-      it "still raises NoMethodError for a route that is not a name" do
-        [123, true].each do |not_a_name|
+      # Everything that is neither a name nor absent is a programmer error named as one — the absent set is
+      # nil/false/empty-or-whitespace String/empty Symbol, not "anything that answers `empty?`", so `[]` is a
+      # value that cannot name a route rather than a spelling of "no route". It used to be diagnosed as
+      # whatever `to_sym` happened to raise — `NoMethodError: undefined method 'to_sym' for an instance of
+      # Array`, naming neither the option nor what was wrong with the value.
+      it "raises ArgumentError naming the option and the offending class for a route that is not a name" do
+        { [] => "Array", {} => "Hash", 123 => "Integer", true => "TrueClass", Object.new => "Object" }.each do |not_a_name, klass|
           expect do
             build_axn do
               expects :p, type: Hash
               expects :a, on: not_a_name, optional: true
             end
-          end.to raise_error(NoMethodError, /to_sym/)
+          end.to raise_error(ArgumentError, /\Aon: must be a String or Symbol naming a parent reader \(got a value of class #{klass}\)/)
         end
+      end
+
+      # The type is decided and the class named without asking the route anything — an offender whose `is_a?`
+      # claims String, or whose `inspect`/`to_s` raises, must not route around the guard or replace the verdict
+      # with its own exception (a NotImplementedError is outside StandardError and escapes every rescue above).
+      # And it pins the narrowing: a route that merely ANSWERS `to_sym` used to be accepted and canonicalized,
+      # anchoring at whatever its `to_sym` invented independently of what it renders as.
+      it "reports axn's own ArgumentError rather than the route's exception" do
+        hostile = Class.new do
+          def is_a?(_klass) = true
+          def inspect = raise(NotImplementedError, "inspect should not build the message")
+          def to_s = raise(NotImplementedError, "to_s should not build the message")
+          def to_sym = :p
+        end.new
+
+        expect do
+          build_axn do
+            expects :p, type: Hash
+            expects :a, on: hostile, optional: true
+          end
+        end.to raise_error(ArgumentError, /\Aon: must be a String or Symbol naming a parent reader/)
       end
     end
   end

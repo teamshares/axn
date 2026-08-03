@@ -174,6 +174,37 @@ module Axn
               "independently. Declare the member under a String or Symbol name."
       end
 
+      # An option whose value NAMES something (`Axn::Factory.build`'s `expose_return_as:`, a subfield's `on:`)
+      # is canonicalized to a Symbol the moment it is read, so the only values it can carry are the two that
+      # have a Symbol as their canonical spelling: a String and a Symbol. Anything else used to be left to the
+      # caller's own `to_sym`, and was therefore diagnosed as whatever that happened to raise —
+      # `NoMethodError: undefined method 'to_sym' for an instance of Array`, which names neither the option nor
+      # what was wrong with the value — the same non-diagnosis as a mistyped option key surfacing at call time
+      # as `Unknown validator: 'TpyeValidator'`, and rejected for the same reason.
+      #
+      # Worse, an exotic object that merely ANSWERS `to_sym` was not diagnosed at all: it silently
+      # named whatever its `to_sym` invented, independently of what the object renders as — the
+      # two-independent-conversions defect `validate_shape_member_name!` rejects for a member name.
+      #
+      # Runs AFTER the absent check at each call site, so every spelling of "not supplied"
+      # (`nil`, `false`, an empty or whitespace-only String, the empty Symbol) still means the option was
+      # omitted rather than hitting a type error — see `Internal::NativeMethods.absent_name?`.
+      #
+      # `case`/`when` decides the type through `Module#===` (a C-level check) rather than `is_a?`, which a
+      # value can override to route around a guard, and the offender is named by CLASS through the renderer
+      # rather than by its own `inspect`, exactly as the `sensitive:`/`user_facing:` guards above — a
+      # declaration guard must not let the value it is judging raise INSTEAD of the verdict.
+      def self.validate_name_option!(value, option:, names:, fix:)
+        case value
+        when ::String, ::Symbol then return
+        end
+
+        raise ArgumentError,
+              "#{option} must be a String or Symbol naming #{names} (got a value of class " \
+              "#{Axn::Reflection::PropertyNames.renderable_class_name(value)}) — any other object has no single " \
+              "name to canonicalize to. #{fix}"
+      end
+
       # The one config type for every declared inbound/outbound field, top-level or subfield — a
       # top-level field is just the depth-0 case (`on: nil`). `reader_as` is the name of the
       # generated accessor method; it defaults to `field` (the wire key), but `expects ..., as:`/
@@ -323,7 +354,18 @@ module Axn
           # canonicalization exists to close. Absent canonicalizes to `nil` rather than being left as written,
           # so that every reader below is asking nil-or-Symbol — otherwise the SAME split reopens one line
           # down, with this deciding "absent" and a `present?` on the caller's own value deciding to route.
-          on = Internal::NativeMethods.absent_name?(on) ? nil : on.to_sym
+          #
+          # A supplied route that is not a name at all is rejected here rather than left to `to_sym` (see
+          # Contract.validate_name_option!): the option and the offending class are what the author needs, and
+          # `NoMethodError` named neither.
+          on = if Internal::NativeMethods.absent_name?(on)
+                 nil
+               else
+                 Contract.validate_name_option!(on, option: "on:", names: "a parent reader",
+                                                    fix: "Pass the parent's name (dotted for a nested path), or omit `on:` " \
+                                                         "to declare a top-level field.")
+                 on.to_sym
+               end
 
           fields.each do |field|
             raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)

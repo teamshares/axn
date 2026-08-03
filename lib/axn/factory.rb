@@ -66,12 +66,7 @@ module Axn
         executable = callable || block
         raise ArgumentError, "[Axn::Factory] Must provide either a callable or a block" unless executable
 
-        # Canonicalized once, here, because its presence is asked TWICE on two sides of a boundary: whether to
-        # declare the exposure at build time, and whether to write it from the generated `call`. A caller value
-        # answering `present?` differently across those reads declared no exposure and then wrote one, failing
-        # with UnknownExposure on a contract that was never wrong. Decided without dispatching the value's own
-        # `present?`/`blank?`, which a String subclass overrides — see Internal::NativeMethods.absent_name?.
-        expose_return_as = Internal::NativeMethods.absent_name?(expose_return_as) ? nil : expose_return_as.to_sym
+        expose_return_as = _canonical_expose_return_as(expose_return_as)
 
         args = executable.parameters.each_with_object(_hash_with_default_array) { |(type, field), hash| hash[type] << field }
 
@@ -194,6 +189,28 @@ module Axn
       # rubocop:enable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
 
       private
+
+      # Canonicalized once, in `build`, because its presence is asked TWICE on two sides of a boundary: whether
+      # to declare the exposure at build time, and whether to write it from the generated `call`. A caller value
+      # answering `present?` differently across those reads declared no exposure and then wrote one, failing
+      # with UnknownExposure on a contract that was never wrong. Absence is decided without dispatching the
+      # value's own `present?`/`blank?`, which a String subclass overrides — see
+      # Internal::NativeMethods.absent_name?.
+      #
+      # A supplied value that is not a name at all is rejected rather than left to `to_sym` (see
+      # Core::Contract.validate_name_option!): the option and the offending class are what the author needs,
+      # and `NoMethodError` named neither.
+      def _canonical_expose_return_as(expose_return_as)
+        return nil if Internal::NativeMethods.absent_name?(expose_return_as)
+
+        Core::Contract.validate_name_option!(
+          expose_return_as,
+          option: "expose_return_as:",
+          names: "an exposure",
+          fix: "Pass the exposure's name, or omit `expose_return_as:` to expose nothing.",
+        )
+        expose_return_as.to_sym
+      end
 
       def _hash_with_default_array = Hash.new { |h, k| h[k] = [] }
 

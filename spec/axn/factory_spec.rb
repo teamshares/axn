@@ -79,11 +79,36 @@ RSpec.shared_examples "can build Axns from callables" do
       expect(klass.call.out).to eq(42)
     end
 
-    # Everything that is neither a name nor blank still reaches `to_sym` and says so.
-    it "still raises NoMethodError for a return-name that is not a name" do
-      [123, true].each do |not_a_name|
-        expect { Axn::Factory.build(-> { 42 }, expose_return_as: not_a_name) }.to raise_error(NoMethodError, /to_sym/)
+    # Everything that is neither a name nor absent is a programmer error named as one: the absent set is
+    # nil/false/empty-or-whitespace String/empty Symbol, not "anything that answers `empty?`", so `[]` is a
+    # value that cannot name an exposure rather than a spelling of "no exposure". It used to be diagnosed as
+    # whatever `to_sym` happened to raise — `NoMethodError: undefined method 'to_sym' for an instance of
+    # Array`, naming neither the option nor what was wrong with the value.
+    it "raises ArgumentError naming the option and the offending class for a return-name that is not a name" do
+      { [] => "Array", {} => "Hash", 123 => "Integer", true => "TrueClass", Object.new => "Object" }.each do |not_a_name, klass|
+        expect { Axn::Factory.build(-> { 42 }, expose_return_as: not_a_name) }.to raise_error(
+          ArgumentError,
+          /\Aexpose_return_as: must be a String or Symbol naming an exposure \(got a value of class #{klass}\)/,
+        )
       end
+    end
+
+    # The type is decided and the class named without asking the value anything — an offender whose `is_a?`
+    # claims String, or whose `inspect`/`to_s` raises, must not route around the guard or replace the verdict
+    # with its own exception (a NotImplementedError is outside StandardError and escapes every rescue above).
+    # And it pins the narrowing: an object that merely ANSWERS `to_sym` used to be accepted and canonicalized,
+    # naming whatever its `to_sym` invented independently of what it renders as.
+    it "reports axn's own ArgumentError rather than the value's exception" do
+      hostile = Class.new do
+        def is_a?(_klass) = true
+        def inspect = raise(NotImplementedError, "inspect should not build the message")
+        def to_s = raise(NotImplementedError, "to_s should not build the message")
+        def to_sym = :invented
+      end.new
+
+      expect { Axn::Factory.build(-> { 42 }, expose_return_as: hostile) }.to raise_error(
+        ArgumentError, /\Aexpose_return_as: must be a String or Symbol naming an exposure/
+      )
     end
   end
 

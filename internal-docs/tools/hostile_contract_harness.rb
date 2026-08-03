@@ -3745,6 +3745,100 @@ check "a drifting on: route anchors where it was judged", "p=[:a] q=[:a]" do
   klass.input_schema[:properties].map { |key, prop| "#{key}=#{prop[:properties]&.keys.inspect}" }.join(" ")
 end
 
+puts "\n== an option that NAMES something: what a non-name is diagnosed as ======================="
+# ---------------------------------------------------------------------------------------------------
+# `on:` and `Axn::Factory.build`'s `expose_return_as:` are canonicalized to a Symbol as they are read, so
+# absence aside they can only carry a String or a Symbol. A value outside that had TWO non-diagnoses, and the
+# A/B against the previous commit shows both: one that answers nothing was reported as whatever `to_sym`
+# happened to raise (`NoMethodError: undefined method 'to_sym' for an instance of Array` — naming neither the
+# option nor the problem), and one that merely ANSWERS `to_sym` was not reported at all, silently naming
+# whatever the answer invented independently of what the object renders as.
+
+# Answers `to_sym` without being a name: accepted and canonicalized at the previous commit.
+TO_SYM_DUCK = Class.new do
+  def to_sym = :p
+end
+
+# Claims to be a String and raises from everything a message might use, so the row pins that the verdict is
+# reached and reported without asking the value anything (a NotImplementedError is outside StandardError and
+# escapes every rescue above).
+HOSTILE_NAME_OPTION = Class.new do
+  def is_a?(_klass) = true
+  def inspect = raise(NotImplementedError, "hijacked from #inspect")
+  def to_s = raise(NotImplementedError, "hijacked from #to_s")
+  def to_sym = :p
+end
+
+def route_verdict(route)
+  klass = Class.new do
+    include Axn
+    expects :p, type: Hash
+    expects :a, on: route, optional: true
+    def call; end
+  end
+  "declared routes=#{klass.subfield_configs.map(&:on).inspect} top=#{klass.internal_field_configs.map(&:field).inspect}"
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message.to_s[0, 120]}"
+end
+
+def return_name_verdict(name)
+  klass = Axn::Factory.build(-> { 42 }, expose_return_as: name)
+  "built exposures=#{klass.external_field_configs.map(&:field).inspect}"
+rescue ::Exception => e # rubocop:disable Lint/RescueException
+  "#{e.class}: #{e.message.to_s[0, 120]}"
+end
+
+check "on: [] names the option and the offending class", /\AArgumentError: on: must be a String or Symbol naming a parent reader \(got a value of class Array\)/ do
+  route_verdict([])
+end
+
+check "on: 123 likewise", /\AArgumentError: on: must be a String or Symbol naming a parent reader \(got a value of class Integer\)/ do
+  route_verdict(123)
+end
+
+check "a route that merely answers to_sym is refused, not anchored", /\AArgumentError: on: must be a String or Symbol/ do
+  route_verdict(TO_SYM_DUCK.new)
+end
+
+check "the route's own code cannot replace the verdict", /\AArgumentError: on: must be a String or Symbol/ do
+  route_verdict(HOSTILE_NAME_OPTION.new)
+end
+
+check "expose_return_as: [] names the option and the offending class",
+      /\AArgumentError: expose_return_as: must be a String or Symbol naming an exposure \(got a value of class Array\)/ do
+  return_name_verdict([])
+end
+
+check "a return name that merely answers to_sym is refused, not exposed", /\AArgumentError: expose_return_as: must be a String or Symbol/ do
+  return_name_verdict(TO_SYM_DUCK.new)
+end
+
+check "the return name's own code cannot replace the verdict", /\AArgumentError: expose_return_as: must be a String or Symbol/ do
+  return_name_verdict(HOSTILE_NAME_OPTION.new)
+end
+
+# The complement, unchanged by the narrowing and the reason it stops at "neither String nor Symbol": every
+# spelling of "not supplied" still means the option was omitted, and a String subclass whose `blank?` lies is
+# still canonicalized off its bytes.
+ABSENT_NAMES = [nil, false, "", "   ", (+"  ").force_encoding("ASCII-8BIT"), "  ".encode("UTF-16LE"), :""].freeze
+LYING_BLANK = Class.new(String) do
+  def blank? = true
+  def present? = false
+end
+
+check "absent stays absent on both options", 'on=["declared routes=[] top=[:p, :a]"] expose_return_as=["built exposures=[]"]' do
+  "on=#{ABSENT_NAMES.map { |absent| route_verdict(absent) }.uniq.inspect} " \
+    "expose_return_as=#{ABSENT_NAMES.map { |absent| return_name_verdict(absent) }.uniq.inspect}"
+end
+
+check "a lying blank? is still canonicalized on both options", "declared routes=[:p] top=[:p] | built exposures=[:p]" do
+  "#{route_verdict(LYING_BLANK.new('p'))} | #{return_name_verdict(LYING_BLANK.new('p'))}"
+end
+
+check "a dotted route is untouched", 'declared routes=[:"p.mid"] top=[:p]' do
+  route_verdict("p.mid")
+end
+
 # ---------------------------------------------------------------------------------------------------
 # A NAME's own methods, run while the name is being reported. A declared name is caller-supplied, so a String
 # subclass can define `==`/`eql?`/`to_s` — the very methods the property-name rules ask it — and every such
