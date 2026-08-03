@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/text"
+
 module Axn
   module Internal
     # The name of a value's class, derived WITHOUT dispatching anything the value can override.
@@ -13,10 +15,12 @@ module Axn
     # may hold non-UTF-8 ones (`Object.const_set(:"Caf\xE9", Class.new)` is accepted, and `Module#to_s` hands
     # those bytes back), so interpolating the result into a UTF-8 message can still raise
     # Encoding::CompatibilityError from the reporting itself. A layer writing a class name into prose therefore
-    # renders it — `Reflection::PropertyNames.renderable_class_name`/`renderable_module_name` compose both
-    # halves — and this module deliberately does not, because the reflection layer requires THIS file: reaching
-    # back into it here would leave a message path NameError-ing under the standalone loads
-    # `spec/axn/standalone_require_spec.rb` pins.
+    # renders it — `Internal::Rendering.class_name`/`module_name` compose both halves for every caller above
+    # this file, and the two message paths built ON this file (`UnserializableValue#message` below,
+    # `Reflection::Values.describe_key_classes`) compose them by hand for the same reason `Rendering` itself
+    # cannot: reaching up from here into the reflection layer, which requires THIS file, would leave a message
+    # path NameError-ing under the standalone loads `spec/axn/standalone_require_spec.rb` pins. The byte half
+    # both compose through, `Internal::Text`, has no requires of its own and sits below all three.
     module ClassName
       OBJECT_CLASS = ::Object.instance_method(:class)
       MODULE_TO_S = ::Module.instance_method(:to_s)
@@ -250,15 +254,21 @@ module Axn
 
       # The offending value's class is named via Axn::Internal::ClassName, not `@value.class`: the value
       # is caller-supplied and may override `class`, and running that override here would replace this
-      # failure with the value's own exception.
+      # failure with the value's own exception. Its bytes are foreign too — a constant may hold non-UTF-8
+      # ones, and `Module#to_s` hands those back — so the name is RENDERED before it joins this message.
+      # This composes `Internal::Rendering.class_name` by hand (`Text.renderable(ClassName.of(...))`)
+      # rather than calling it: `rendering.rb` requires this file, so calling back into it here would be a
+      # require cycle. Do not "tidy" this into a delegation.
       def message
-        "Cannot serialize exposed value at `#{@path}` (#{Axn::Internal::ClassName.of(@value)}): #{@reason || cycle_reason}"
+        "Cannot serialize exposed value at `#{@path}` (#{value_class_name}): #{@reason || cycle_reason}"
       end
 
       private
 
+      def value_class_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of(@value))
+
       def cycle_reason
-        klass = Axn::Internal::ClassName.of(@value)
+        klass = value_class_name
         article = klass.match?(/\A[aeiou]/i) ? "an" : "a"
 
         "it is self-referential (#{article} #{klass} cycle), which has no JSON representation. " \

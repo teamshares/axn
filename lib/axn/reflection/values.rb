@@ -541,9 +541,13 @@ module Axn
       # message and every pair that can actually collide differs in class: `:id`/`"id"`, `1`/`"1"`,
       # `nil`/`""`, `false`/`"false"`. When both keys DO share a class — two instances rendering a shared
       # label — saying so is itself the fact the caller needs.
+      #
+      # Each name is RENDERED, not just fetched: a constant may hold non-UTF-8 bytes, and `Module#to_s` hands
+      # those back, so joining one straight into this UTF-8 message could raise Encoding::CompatibilityError
+      # from the reporting itself.
       def describe_key_classes(first_key, second_key)
-        first = Axn::Internal::ClassName.of(first_key)
-        second = Axn::Internal::ClassName.of(second_key)
+        first = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of(first_key))
+        second = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of(second_key))
         return "both of class #{first}" if first == second
 
         "one of class #{first}, one of class #{second}"
