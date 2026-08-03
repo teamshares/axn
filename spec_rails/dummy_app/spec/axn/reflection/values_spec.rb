@@ -45,7 +45,7 @@ RSpec.describe Axn::Reflection::Values do
     it "raises under reject_opaque:, since the dump leaks internals and isn't the declared schema's shape" do
       expect { described_class.serialize_value(undeclared, path: "owner", reject_opaque: true) }
         .to raise_error(
-          Axn::Reflection::UnserializableValue,
+          Axn::Extensions::Serialization::UnserializableValue,
           %r{`owner`.*declares no JSON projection of its own.*give the value its own `as_json`/`to_h`}m,
         )
     end
@@ -69,7 +69,7 @@ RSpec.describe Axn::Reflection::Values do
     it "raises for a value with no to_hash, whose generic as_json therefore dumps instance variables" do
       expect(undeclared).not_to respond_to(:to_hash)
       expect { described_class.serialize_value(undeclared, path: "owner", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /declares no JSON projection of its own/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /declares no JSON projection of its own/)
     end
 
     # ActiveSupport's generic Object#as_json delegates to `to_hash` when the value has one and only dumps
@@ -89,7 +89,7 @@ RSpec.describe Axn::Reflection::Values do
 
     it "checks the same shape at depth, naming the nested path" do
       expect { described_class.serialize_value({ rows: [undeclared] }, path: "out", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\]`/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`out\.rows\[0\]`/)
     end
   end
 end

@@ -24,7 +24,7 @@ invocation contract); you consume its public API. Expose exactly two public meth
 the same shape:
 
 ```ruby
-GemName.tools                    # zero-arg: Axn.tools_for(:key).map { |a| wrap(a) }
+GemName.tools                    # zero-arg: Axn::Tools.for(:key).map { |a| wrap(a) }
 GemName.wrap(axn_class, **opts)  # one Axn -> the transport's native tool object
 ```
 
@@ -32,31 +32,31 @@ GemName.wrap(axn_class, **opts)  # one Axn -> the transport's native tool object
 
 ## Registration & discovery
 
-- **Register at gem load, from the entry file:** `Axn.register_tool_adapter(:key)`. Pass a config source
-  second arg (`Axn.register_tool_adapter(:key, self)`) ONLY if you offer directory discovery; else omit.
+- **Register at gem load, from the entry file:** `Axn::Tools.register_adapter(:key)`. Pass a config source
+  second arg (`Axn::Tools.register_adapter(:key, self)`) ONLY if you offer directory discovery; else omit.
   Re-registering with no source is idempotent.
-- **Enumerate with `Axn.tools_for(:key)`** — returns the latest version per `tool_name`, sorted by
+- **Enumerate with `Axn::Tools.for(:key)`** — returns the latest version per `tool_name`, sorted by
   `tool_name` (a duplicate `(tool_name, tool_version)` raises), tool-root dirs eager-loaded first. Pass
-  `all_versions: true` for every version, or use `Axn.versions_for(:key, tool_name)` for one tool's group.
+  `all_versions: true` for every version, or use `Axn::Tools.versions(:key, tool_name)` for one tool's group.
 - **Only currently-loaded classes are enumerated.** A `tool :key` class outside a tool-root dir must be
   `require`d first. Enumerate from `config.after_initialize` / `to_prepare` — **never** a
-  `config/initializers` file (runs before autoload paths are wired; `tools_for` warns).
+  `config/initializers` file (runs before autoload paths are wired; `Axn::Tools.for` warns).
 - **Membership** = `(directory grant ∪ declaration grant) − except`, computed by the registry. You don't
-  parse it — you call `tools_for`. The author declares it: `tool` (all adapters), `tool :mcp` (add),
+  parse it — you call `Axn::Tools.for`. The author declares it: `tool` (all adapters), `tool :mcp` (add),
   `tool mcp: { … }` / `configure(:mcp)` (implies `:mcp`), residency under a tool root, `tool false` (opt
   out), `tool except: :x` (narrow).
 - **Directory membership is optional.** `extend Axn::Tools::AdapterRoots` → a validated `tool_roots`
   setting the registry reads. Its `validate!` reuses core's broad-path guard (rejects `app`/`actions`/`.`/`..`).
   The reference gems don't adopt it (they use explicit `tool`/`configure`); add it only if it fits.
 
-Source: `lib/axn.rb` (`register_tool_adapter`, `tools_for`), `lib/axn/tools/registry.rb` (membership,
-eager-load), `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tools.rb` (`tool` DSL, `tool_name`).
+Source: `lib/axn/tools.rb` (`.register_adapter`, `.for`, `.versions`), `lib/axn/tools/registry.rb` (membership,
+eager-load), `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb` (`tool` DSL, `tool_name`).
 
 ## Naming & description
 
 - **Name = `axn_class.tool_name(:your_key)` — pass your adapter key.** Don't roll your own — the same Axn
   must yield the same name across adapters. It's provider-safe, never blank, honors `tool name:` and prefix
-  stripping. `tools_for` sorts on `tool_name(:your_key)` and collapses to the latest per name (uniqueness is
+  stripping. `Axn::Tools.for` sorts on `tool_name(:your_key)` and collapses to the latest per name (uniqueness is
   on `(tool_name, tool_version)`); a per-adapter `tool your_key: { name: }` override is only returned when
   you pass the key — the zero-arg form ignores per-adapter overrides, so reading it would publish a name
   the registry didn't collapse on.
@@ -88,8 +88,8 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
   cycle, no collapsed property). That is a promise about values, NOT about your encoder's config: a structure
   deeper than `max_nesting` (100 default) still raises `JSON::NestingError`. Drop your pre-*pass* over the
   value graph; **keep** your encode `rescue`.
-- Raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`), naming the path, on five unconditional
-  defects: a cycle; two exposed field NAMES that render as the same JSON property (compared the same
+- Raises `Axn::Extensions::Serialization::UnserializableValue` (an `ArgumentError`), naming the path, on five
+  unconditional defects: a cycle; two exposed field NAMES that render as the same JSON property (compared the same
   canonicalized way as a Hash key, since a declared field is itself a property name); two Hash keys that
   render as one JSON property (compared as the PROPERTY each produces, not as the Ruby String its `to_s`
   returned — keys are transcoded to UTF-8 first, so one property name in two encodings collides); a
@@ -138,7 +138,7 @@ Source: `lib/axn/extensions/config.rb`, `lib/axn/core/semantic_hints.rb`.
 - Map from: `result.ok?`; `result.error` (**user-facing** — show to the LLM/client); `result.success` /
   `result.message` (success string); `result.exception` (**dev-facing** detail, e.g. the
   `Axn::InboundValidationError` — do **NOT** surface it).
-- **`Axn.owns_failure_exception?(exception)`** — true for an axn-owned failure (`Axn::Failure` or a
+- **`Axn::Extensions.owned_failure?(exception)`** — true for an axn-owned failure (`Axn::Failure` or a
   user-facing validation error, whose `#message` is client-safe), false for a foreign exception
   reclassified via `fails_on` (technical cause — don't leak). Check it before reading `#message` off an
   exception.
@@ -148,7 +148,7 @@ Source: `lib/axn/extensions/config.rb`, `lib/axn/core/semantic_hints.rb`.
 - For per-field inbound detail: `Axn::Tools::Invoker.input_invalid?(result)` and
   `result.exception.field_errors`.
 
-Source: `lib/axn.rb` (`owns_failure_exception?`), `lib/axn/tools/invoker.rb`, `lib/axn/result.rb`.
+Source: `lib/axn/extensions.rb` (`owned_failure?`), `lib/axn/tools/invoker.rb`, `lib/axn/result.rb`.
 
 ## ambient_context
 
@@ -182,7 +182,7 @@ Source: `lib/axn/core/ambient_context.rb`, `lib/axn/tools/invoker.rb`.
 - **Don't ship a per-gem `define`.** Wrap a core `Axn::Factory.build`:
   `GemName.wrap(Axn::Factory.build(expects:, exposes:, axn_name: "…", description: "…") { … })`. The block is
   the `#call` body (keyword-only args; not available for `exposes`/`shape:` coercion). A factory-built
-  class is **not** auto-discovered by `tools_for` (synthetic name) — the constructor holds the reference
+  class is **not** auto-discovered by `Axn::Tools.for` (synthetic name) — the constructor holds the reference
   and wraps it directly. See <https://teamshares.github.io/axn/reference/factory>.
 
 ## Deprecations
@@ -214,9 +214,10 @@ Docs — <https://teamshares.github.io/axn/>: authoring a tool-adapter gem
 (`/reference/axn-result`). Action-authoring: `AGENTS-consuming.md` (this gem).
 
 Core source entry points (resolve with `bundle show axn`):
-- `lib/axn.rb` — `register_tool_adapter`, `tools_for`, `owns_failure_exception?`.
-- `lib/axn/extensions.rb` — `Axn::Extensions.best_effort`, `Axn::Extensions.config` (the extension-author surface).
-- `lib/axn/tools/registry.rb`, `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tools.rb` — membership, `tool_name`.
+- `lib/axn/tools.rb` — `Axn::Tools.register_adapter`, `.adapters`, `.for`, `.versions`, `.validate_contracts!`.
+- `lib/axn/extensions.rb` — `Axn::Extensions.best_effort`, `.config`, `.owned_failure?` (extension-author surface).
+- `lib/axn/tools/registry.rb`, `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb` —
+  membership, `tool_name`.
 - `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`, `lib/axn/reflection/values.rb` — reflection.
 - `lib/axn/configurable.rb` — `config_namespace`, `resolve_override_for`, `overrides`.
 - `lib/axn/tools/invoker.rb` — the tool call path.

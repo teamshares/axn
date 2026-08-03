@@ -5,7 +5,7 @@ module Axn
     # Tool membership (the `tool` DSL) and the canonical, provider-safe `tool_name`
     # derivation. Every Axn is a potential tool; the registry (Axn::Tools::Registry)
     # decides which classes an adapter actually exposes, reading the storage declared here.
-    module Tools
+    module ToolDeclaration
       def self.included(base)
         base.class_eval do
           # instance_accessor: false — class-level DSL, not per-instance state.
@@ -51,11 +51,11 @@ module Axn
         #   tool mcp: { title: "…" } -> add :mcp with per-adapter config (sugar over configure(:mcp));
         #     a bag `name:` overrides the provider name for that adapter only
         # Unknown adapter symbols are stored as-is (adapters self-register at load; a hard check here
-        # would be load-order-hostile) and simply never match tools_for.
+        # would be load-order-hostile) and simply never match `Axn::Tools.for`.
         def tool(*adapters, name: nil, except: EXCEPT_OMITTED, **bags)
           # Per-class guard (a plain ivar on the class object, which subclasses do NOT inherit):
           # a second `tool` on the SAME class would silently overwrite _tool_declaration (last-wins),
-          # changing membership at tools_for time instead of failing here. Per axn's fail-at-declaration
+          # changing membership at enumeration time instead of failing here. Per axn's fail-at-declaration
           # doctrine, reject the repeat. A subclass declaring its own `tool` is a fresh first call
           # (fresh object, no ivar) and is fine.
           if instance_variable_defined?(:@__axn_tool_declared)

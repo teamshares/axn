@@ -173,7 +173,7 @@ RSpec.describe Axn::Reflection::Values do
       configs = bare_field_configs("\xFF".b.to_sym)
 
       expect { described_class.send(:serialize_exposed, Object.new, configs) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /no UTF-8 rendering|UTF-8/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /no UTF-8 rendering|UTF-8/)
     end
 
     it "names the offending field without interpolating its bytes, so reporting cannot itself raise" do
@@ -183,7 +183,7 @@ RSpec.describe Axn::Reflection::Values do
       # Encoding::CompatibilityError from building the message rather than reporting the defect.
       message = begin
         described_class.send(:serialize_exposed, Object.new, configs)
-      rescue Axn::Reflection::UnserializableValue => e
+      rescue Axn::Extensions::Serialization::UnserializableValue => e
         e.message
       end
 
@@ -204,7 +204,7 @@ RSpec.describe Axn::Reflection::Values do
       exposed = Class.new { define_method(iso) { "FIRST" } }.new
 
       expect { described_class.send(:serialize_exposed, exposed, configs) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /two exposed fields render as the same JSON property/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /two exposed fields render as the same JSON property/)
     end
   end
 
@@ -255,7 +255,7 @@ RSpec.describe Axn::Reflection::Values do
   describe "the dropped-entry backstop" do
     it "raises when rendering produced fewer entries than were captured" do
       expect { described_class.send(:no_entries_lost!, 1, 2, "rec") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /produced 1 of its 2 entries.*bug in axn/m)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /produced 1 of its 2 entries.*bug in axn/m)
     end
 
     it "passes when the counts agree" do
@@ -266,7 +266,7 @@ RSpec.describe Axn::Reflection::Values do
       allow(described_class).to receive(:capture_hash_entries).and_return([["k", :k, 1], ["k", :k, 2]])
 
       expect { described_class.serialize_value({ a: 1 }, path: "rec") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /produced 1 of its 2 entries/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /produced 1 of its 2 entries/)
     end
 
     # Deliberately absent from the Array branch: `map` yields exactly one rendered element per captured one,
@@ -280,7 +280,7 @@ RSpec.describe Axn::Reflection::Values do
     it "raises rather than silently dropping a value" do
       expect { described_class.serialize_value({ id: 1, "id" => 2 }, path: "rec") }
         .to raise_error(
-          Axn::Reflection::UnserializableValue,
+          Axn::Extensions::Serialization::UnserializableValue,
           # Also pins the remediation clause: every message states the problem AND the fix (AGENTS.md).
           /`rec \(hash key\)`.*two keys stringify to the same JSON property "id".*silently collapse and drop a value.*Key the Hash by one of them/m,
         )
@@ -288,19 +288,19 @@ RSpec.describe Axn::Reflection::Values do
 
     it "names both original keys by class, so the caller can see which pair to fix" do
       expect { described_class.serialize_value({ id: 1, "id" => 2 }) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /\(one of class Symbol, one of class String\)/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /\(one of class Symbol, one of class String\)/)
     end
 
     it "names the first colliding pair in insertion order when more than two keys collide" do
       third = Object.new.tap { |o| def o.to_s = "id" }
 
       expect { described_class.serialize_value({ "id" => 1, id: 2, third => 3 }) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /\(one of class String, one of class Symbol\)/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /\(one of class String, one of class Symbol\)/)
     end
 
     it "names the nested path of the offending Hash" do
       expect { described_class.serialize_value({ rows: [{ a: 1, "a" => 2 }] }, path: "out") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\] \(hash key\)`/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`out\.rows\[0\] \(hash key\)`/)
     end
 
     it "leaves a Hash whose keys stringify distinctly unchanged" do
@@ -320,7 +320,7 @@ RSpec.describe Axn::Reflection::Values do
       expect(iso).not_to eql("é")
       expect { described_class.serialize_value(source, path: "rec") }
         .to raise_error(
-          Axn::Reflection::UnserializableValue,
+          Axn::Extensions::Serialization::UnserializableValue,
           /two keys stringify to the same JSON property "é".*silently collapse and drop a value/m,
         )
     end
@@ -354,7 +354,7 @@ RSpec.describe Axn::Reflection::Values do
 
       expect { described_class.serialize_value({ unstable => 1, "k1" => 2 }, path: "rec") }
         .to raise_error(
-          Axn::Reflection::UnserializableValue,
+          Axn::Extensions::Serialization::UnserializableValue,
           /two keys stringify to the same JSON property "k1".*silently collapse and drop a value/m,
         )
     end
@@ -372,7 +372,7 @@ RSpec.describe Axn::Reflection::Values do
       expect(source.size).to eq(2)
       expect { described_class.serialize_value(source, path: "rec") }
         .to raise_error(
-          Axn::Reflection::UnserializableValue,
+          Axn::Extensions::Serialization::UnserializableValue,
           /two keys stringify to the same JSON property "\[1\]".*silently collapse and drop a value/m,
         )
     end
@@ -391,7 +391,7 @@ RSpec.describe Axn::Reflection::Values do
 
       expect { described_class.serialize_value({ volatile => 1, "k" => 2 }, path: "rec") }
         .to raise_error(
-          Axn::Reflection::UnserializableValue,
+          Axn::Extensions::Serialization::UnserializableValue,
           /two keys stringify to the same JSON property "k".*silently collapse and drop a value/m,
         )
     end
@@ -408,7 +408,7 @@ RSpec.describe Axn::Reflection::Values do
       def key.inspect = raise(SystemStackError, "stack level too deep")
 
       expect { described_class.serialize_value({ "dup" => 1, key => 2 }, path: "rec") }
-        .to raise_error(Axn::Reflection::UnserializableValue) do |error|
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue) do |error|
           expect(error).to be_a(StandardError)
           expect(error.message).to match(/two keys stringify to the same JSON property "dup"/)
         end
@@ -420,7 +420,7 @@ RSpec.describe Axn::Reflection::Values do
       def key.class = raise(SystemStackError, "stack level too deep")
 
       expect { described_class.serialize_value({ key => 1, "k" => 2 }, path: "rec") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /\(one of class Object, one of class String\)/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /\(one of class Object, one of class String\)/)
     end
 
     it "reports an opaque key whose #class raises, under reject_opaque:" do
@@ -428,7 +428,7 @@ RSpec.describe Axn::Reflection::Values do
       def key.class = raise(SystemStackError, "stack level too deep")
 
       expect { described_class.serialize_value({ key => 1 }, path: "data", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`data \(hash key\)` \(Object\).*a Hash key is rendered via #to_s/m)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`data \(hash key\)` \(Object\).*a Hash key is rendered via #to_s/m)
     end
 
     it "serializes a key whose #to_s returns a String subclass with a hostile #-@, under a property it owns" do
@@ -450,15 +450,15 @@ RSpec.describe Axn::Reflection::Values do
       key.define_singleton_method(:to_s) { hostile.new("k") }
 
       expect { described_class.serialize_value({ key => 1, "k" => 2 }, path: "rec") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /same JSON property "k".*silently collapse/m)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /same JSON property "k".*silently collapse/m)
     end
 
     it "disambiguates a colliding pair by class, so a shared rendering still identifies both keys" do
       expect { described_class.serialize_value({ nil => 1, "" => 2 }, path: "rec") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /property "" \(one of class NilClass, one of class String\)/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /property "" \(one of class NilClass, one of class String\)/)
 
       expect { described_class.serialize_value({ 1 => "a", "1" => "b" }, path: "rec") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /property "1" \(one of class Integer, one of class String\)/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /property "1" \(one of class Integer, one of class String\)/)
     end
 
     it "says both keys share a class when they do, which is itself the actionable fact" do
@@ -466,7 +466,7 @@ RSpec.describe Axn::Reflection::Values do
       second = Object.new.tap { |o| def o.to_s = "shared" }
 
       expect { described_class.serialize_value({ first => 1, second => 2 }, path: "rec") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /property "shared" \(both of class Object\)/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /property "shared" \(both of class Object\)/)
     end
   end
 
@@ -632,7 +632,7 @@ RSpec.describe Axn::Reflection::Values do
 
       expect(source.size).to eq(2)
       expect { described_class.serialize_value(source, path: "rec") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /two keys stringify to the same JSON property "k"/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /two keys stringify to the same JSON property "k"/)
     end
   end
 
@@ -650,7 +650,7 @@ RSpec.describe Axn::Reflection::Values do
     it "raises under reject_opaque:, naming the path and how to fix it" do
       expect { described_class.serialize_value(opaque, path: "owner", reject_opaque: true) }
         .to raise_error(
-          Axn::Reflection::UnserializableValue,
+          Axn::Extensions::Serialization::UnserializableValue,
           /`owner` \(Object\).*only via the default Object#to_s.*declare it `type: String`/m,
         )
     end
@@ -670,17 +670,17 @@ RSpec.describe Axn::Reflection::Values do
 
       expect(described_class.serialize_value(only_to_hash)).to match(/\A#<Object:0x[0-9a-f]+>\z/)
       expect { described_class.serialize_value(only_to_hash, path: "dto", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`dto`.*only via the default Object#to_s/m)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`dto`.*only via the default Object#to_s/m)
     end
 
     it "checks inside an Array, naming the indexed path" do
       expect { described_class.serialize_value([1, opaque], path: "rows", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`rows\[1\]`/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`rows\[1\]`/)
     end
 
     it "checks inside a Hash, naming the keyed path" do
       expect { described_class.serialize_value({ owner: opaque }, path: "rec", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`rec\.owner`/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`rec\.owner`/)
     end
 
     it "checks a value reached through a custom to_h, since the checks live inside the recursion" do
@@ -689,7 +689,7 @@ RSpec.describe Axn::Reflection::Values do
       def wrapper.to_h = { inner: @inner }
 
       expect { described_class.serialize_value(wrapper, path: "w", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`w\.inner`/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`w\.inner`/)
     end
 
     it "checks a value reached through a custom as_json, the other recursion route" do
@@ -700,7 +700,7 @@ RSpec.describe Axn::Reflection::Values do
       def wrapper.as_json(*) = { inner: @inner }
 
       expect { described_class.serialize_value(wrapper, path: "w", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`w\.inner`.*only via the default Object#to_s/m)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`w\.inner`.*only via the default Object#to_s/m)
     end
 
     it "renders a value whose #to_s is served by method_missing instead of rejecting it" do
@@ -732,13 +732,13 @@ RSpec.describe Axn::Reflection::Values do
       cyclic << cyclic
 
       expect { described_class.serialize_value(cyclic, path: "items", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /self-referential/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /self-referential/)
     end
 
     it "raises on colliding keys under either setting, since a dropped value is wrong output" do
       [false, true].each do |reject_opaque|
         expect { described_class.serialize_value({ id: 1, "id" => 2 }, reject_opaque:) }
-          .to raise_error(Axn::Reflection::UnserializableValue, /silently collapse/)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /silently collapse/)
       end
     end
   end
@@ -784,7 +784,7 @@ RSpec.describe Axn::Reflection::Values do
       end
 
       expect { described_class.serialize_value({ liar => 1 }, path: "data", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /a Hash key is rendered via #to_s/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /a Hash key is rendered via #to_s/)
     end
 
     it "never dispatches a key's own is_a?, so one that raises cannot escape" do
@@ -804,7 +804,7 @@ RSpec.describe Axn::Reflection::Values do
     it "raises under reject_opaque:, naming the offending key in the path" do
       expect { described_class.serialize_value({ opaque_key => 1 }, path: "data", reject_opaque: true) }
         .to raise_error(
-          Axn::Reflection::UnserializableValue,
+          Axn::Extensions::Serialization::UnserializableValue,
           # Also pins the remediation clause: every message states the problem AND the fix (AGENTS.md).
           /`data \(hash key\)` \(Object\).*a Hash key is rendered via #to_s.*key the Hash by a Symbol, String, or Integer/m,
         )
@@ -823,13 +823,14 @@ RSpec.describe Axn::Reflection::Values do
 
     it "checks keys of a nested Hash, naming the nested path" do
       expect { described_class.serialize_value({ rows: [{ opaque_key => 1 }] }, path: "out", reject_opaque: true) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\] \(hash key\)` \(Object\)/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`out\.rows\[0\] \(hash key\)` \(Object\)/)
     end
   end
 
   # `axn/reflection` is loadable on its own (it composes only its own reflection files), and adapters are
   # pointed at it. Serializing ANY Hash or Array now reaches CycleGuard, and raising needs
-  # UnserializableValue — both of which live outside that entrypoint, so values.rb requires them itself.
+  # Axn::Extensions::Serialization::UnserializableValue — both of which live outside that entrypoint, so
+  # values.rb requires them itself.
   # Asserted in a subprocess: the suite has all of axn loaded, so it cannot observe this in-process.
   describe "the axn/reflection entrypoint on its own" do
     def ruby(snippet)
@@ -848,24 +849,24 @@ RSpec.describe Axn::Reflection::Values do
       expect(out).to eq("true")
     end
 
-    it "can still raise its own UnserializableValue" do
+    it "can still raise its own Axn::Extensions::Serialization::UnserializableValue" do
       out, ok = ruby(<<~RUBY)
         require "axn/reflection"
         cyclic = [1]
         cyclic << cyclic
         begin
           Axn::Reflection::Values.serialize_value(cyclic)
-        rescue Axn::Reflection::UnserializableValue => e
+        rescue Axn::Extensions::Serialization::UnserializableValue => e
           print e.class
         end
       RUBY
 
       expect(ok).to be(true), "subprocess failed: #{out}"
-      expect(out).to eq("Axn::Reflection::UnserializableValue")
+      expect(out).to eq("Axn::Extensions::Serialization::UnserializableValue")
     end
   end
 
-  describe Axn::Reflection::UnserializableValue do
+  describe Axn::Extensions::Serialization::UnserializableValue do
     it "renders a supplied reason verbatim after the path and the value's class" do
       error = described_class.new(path: "data (hash key :x)", value: :x, reason: "it is bad.")
 
@@ -916,7 +917,7 @@ RSpec.describe Axn::Reflection::Values do
       cyclic << cyclic
 
       expect { described_class.serialize_value(cyclic, path: "items") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`items\[1\]`.*self-referential.*no JSON representation/m)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`items\[1\]`.*self-referential.*no JSON representation/m)
     end
 
     it "names the offending exposure when reached through serialize_exposed" do
@@ -929,14 +930,14 @@ RSpec.describe Axn::Reflection::Values do
       end
 
       expect { Axn::Extensions::Serialization.render(klass.call) }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`items\[1\]`/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`items\[1\]`/)
     end
 
     it "is a StandardError, so an adapter's existing rescue catches it" do
       cyclic = {}
       cyclic[:self] = cyclic
 
-      expect(Axn::Reflection::UnserializableValue.ancestors).to include(StandardError)
+      expect(Axn::Extensions::Serialization::UnserializableValue.ancestors).to include(StandardError)
       expect { described_class.serialize_value(cyclic) }.to raise_error(StandardError)
     end
 
@@ -949,7 +950,7 @@ RSpec.describe Axn::Reflection::Values do
       end.new
 
       expect { described_class.serialize_value(node, path: "node") }
-        .to raise_error(Axn::Reflection::UnserializableValue, /`node.child`/)
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`node.child`/)
     end
 
     # Ancestry, not every-container-ever-seen: a container referenced twice as siblings is legitimate.
@@ -976,27 +977,27 @@ RSpec.describe Axn::Reflection::Values do
       [Float::INFINITY, -Float::INFINITY, Float::NAN].each do |value|
         it "raises for #{value}, naming the path" do
           expect { described_class.serialize_value(value, path: "price") }
-            .to raise_error(Axn::Reflection::UnserializableValue, /`price` \(Float\).*non-finite number.*Expose a finite number/m)
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`price` \(Float\).*non-finite number.*Expose a finite number/m)
         end
 
         it "raises for #{value} at both reject_opaque: settings" do
           [false, true].each do |reject_opaque|
             expect { described_class.serialize_value(value, path: "price", reject_opaque:) }
-              .to raise_error(Axn::Reflection::UnserializableValue)
+              .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
           end
         end
       end
 
       it "names the nested path inside an Array" do
         expect { described_class.serialize_value([{ price: Float::INFINITY }], path: "records") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`records\[0\]\.price`/)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`records\[0\]\.price`/)
       end
 
       it "names the nested path behind a custom to_h" do
         wrapper = Class.new { def to_h = { ratio: Float::NAN } }.new
 
         expect { described_class.serialize_value(wrapper, path: "stats") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`stats\.ratio`/)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`stats\.ratio`/)
       end
 
       it "names the offending exposure when reached through serialize_exposed" do
@@ -1009,7 +1010,7 @@ RSpec.describe Axn::Reflection::Values do
         end
 
         expect { Axn::Extensions::Serialization.render(klass.call) }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`ratio`/)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`ratio`/)
       end
 
       # The Numeric arm coerces with Float(), which is where a BigDecimal/Rational becomes non-finite —
@@ -1017,13 +1018,13 @@ RSpec.describe Axn::Reflection::Values do
       it "raises for a BigDecimal that coerces to a non-finite Float" do
         [BigDecimal("Infinity"), BigDecimal("-Infinity"), BigDecimal("NaN"), BigDecimal("1e400")].each do |value|
           expect { described_class.serialize_value(value, path: "total") }
-            .to raise_error(Axn::Reflection::UnserializableValue, /`total` \(BigDecimal\).*non-finite number/m)
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`total` \(BigDecimal\).*non-finite number/m)
         end
       end
 
       it "raises for a Rational too large for a double" do
         expect { described_class.serialize_value(Rational(10**400, 1), path: "total") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`total` \(Rational\).*non-finite number/m)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`total` \(Rational\).*non-finite number/m)
       end
 
       it "still serializes finite Floats and coercible Numerics" do
@@ -1041,7 +1042,7 @@ RSpec.describe Axn::Reflection::Values do
     describe "a String with no UTF-8 rendering" do
       it "raises for invalid UTF-8 bytes, naming the path" do
         expect { described_class.serialize_value("bad: \xFF".dup, path: "note") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`note` \(String\).*no UTF-8 rendering.*String#scrub/m)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`note` \(String\).*no UTF-8 rendering.*String#scrub/m)
       end
 
       # valid_encoding? is NOT the predicate: these bytes are perfectly valid BINARY, and
@@ -1051,26 +1052,26 @@ RSpec.describe Axn::Reflection::Values do
         expect(value.valid_encoding?).to be true
 
         expect { described_class.serialize_value(value, path: "blob") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`blob` \(String\).*no UTF-8 rendering/m)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`blob` \(String\).*no UTF-8 rendering/m)
       end
 
       it "raises at both reject_opaque: settings" do
         [false, true].each do |reject_opaque|
           expect { described_class.serialize_value(binary("\xFF"), path: "blob", reject_opaque:) }
-            .to raise_error(Axn::Reflection::UnserializableValue)
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
         end
       end
 
       it "names the nested path inside an Array, inside a Hash, and behind a custom to_h" do
         expect { described_class.serialize_value([binary("\xFF")], path: "rows") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`rows\[0\]`/)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`rows\[0\]`/)
 
         expect { described_class.serialize_value({ rows: [{ note: binary("\xFF") }] }, path: "out") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`out\.rows\[0\]\.note`/)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`out\.rows\[0\]\.note`/)
 
         wrapper = Class.new { def to_h = { note: "bad: \xFF".dup } }.new
         expect { described_class.serialize_value(wrapper, path: "doc") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`doc\.note`/)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`doc\.note`/)
       end
 
       it "does not over-reject: a BINARY String that is pure ASCII still serializes" do
@@ -1101,12 +1102,12 @@ RSpec.describe Axn::Reflection::Values do
         end.new("bad: \xFF".dup)
 
         expect { described_class.serialize_value(liar, path: "note") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /no UTF-8 rendering/)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /no UTF-8 rendering/)
       end
 
       it "raises for a Symbol whose bytes have no UTF-8 rendering, naming the Symbol" do
         expect { described_class.serialize_value(binary("\xFF").to_sym, path: "code") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`code` \(Symbol\).*no UTF-8 rendering/m)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`code` \(Symbol\).*no UTF-8 rendering/m)
       end
 
       it "raises for a to_s fallback that returns bytes with no UTF-8 rendering, naming the value's class" do
@@ -1114,19 +1115,19 @@ RSpec.describe Axn::Reflection::Values do
         def value.to_s = "bad: \xFF".dup
 
         expect { described_class.serialize_value(value, path: "label") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`label`.*no UTF-8 rendering/m)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`label`.*no UTF-8 rendering/m)
       end
 
       # A property name is a String in the output just as a leaf is, so the same bytes break it.
       it "raises for a Hash key whose String form has no UTF-8 rendering, naming the key position" do
         expect { described_class.serialize_value({ binary("\xFF") => 1 }, path: "rec") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`rec \(hash key\)` \(String\).*property name/m)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`rec \(hash key\)` \(String\).*property name/m)
 
         expect { described_class.serialize_value({ "bad: \xFF".dup => 1 }, path: "rec") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`rec \(hash key\)` \(String\).*property name/m)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`rec \(hash key\)` \(String\).*property name/m)
 
         expect { described_class.serialize_value({ binary("\xFF").to_sym => 1 }, path: "rec") }
-          .to raise_error(Axn::Reflection::UnserializableValue, /`rec \(hash key\)` \(Symbol\).*property name/m)
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`rec \(hash key\)` \(Symbol\).*property name/m)
       end
     end
 
@@ -1169,7 +1170,7 @@ RSpec.describe Axn::Reflection::Values do
       hashes.each do |hash|
         rendered = begin
           described_class.serialize_value(hash, path: "v")
-        rescue Axn::Reflection::UnserializableValue
+        rescue Axn::Extensions::Serialization::UnserializableValue
           # Refusing the Hash is the other way to keep the promise. What a caller must never be handed is
           # output that encodes cleanly and parses back holding fewer entries than it was given.
           next

@@ -1074,7 +1074,7 @@ module Axn
       # output, which does make one, is where that refusal belongs.
       def normalize_scalar_literal(value)
         Values.serialize_value(value)
-      rescue Axn::Reflection::UnserializableValue
+      rescue Axn::Extensions::Serialization::UnserializableValue
         value
       end
 

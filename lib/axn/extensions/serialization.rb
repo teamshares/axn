@@ -28,7 +28,7 @@ module Axn
       # cycle, two names collapsing to one property, a non-finite Float, bytes with no UTF-8
       # rendering — raises either way.
       #
-      # Raises Axn::Reflection::UnserializableValue (an ArgumentError) naming the path to the
+      # Raises Axn::Extensions::Serialization::UnserializableValue (an ArgumentError) naming the path to the
       # offending value, so an adapter's existing `rescue StandardError` maps it to an error response.
       def render(result, reject_opaque: false)
         action_class = result.__action__.class

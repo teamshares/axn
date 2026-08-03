@@ -18,7 +18,7 @@ module Axn
     # OWNERSHIP terminates. It is a fact about the method table rather than a prediction about behaviour: where
     # Ruby's own implementation is what answers, the operation is bounded; where it is not, axn does not perform
     # the operation at all and takes an honest fallback instead (see `Internal::ShapeGraph.detached_option_array` and
-    # `Axn._named_invalid_tool_contract`). This deliberately over-rejects — a faithful `include?` is
+    # `Axn::Tools._named_invalid_contract`). This deliberately over-rejects — a faithful `include?` is
     # indistinguishable from a lying one without running it — and bounded-and-slightly-strict is the trade every
     # unbounded verification here lost.
     #

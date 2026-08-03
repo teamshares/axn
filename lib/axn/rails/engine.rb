@@ -53,8 +53,8 @@ if defined?(Rails) && Rails.const_defined?(:Engine)
         # one-shot hook would validate only the first boot and every reload after it would go unchecked. It runs
         # once in production too, right after `after_initialize`, and the per-class memo makes the second pass
         # free.
-        config.after_initialize { Axn.validate_tool_contracts! }
-        config.to_prepare { Axn.validate_tool_contracts! }
+        config.after_initialize { Axn::Tools.validate_contracts! }
+        config.to_prepare { Axn::Tools.validate_contracts! }
 
         # Register the generator
         generators do

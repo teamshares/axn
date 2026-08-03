@@ -34,7 +34,7 @@ module Axn
 
       # Called at include-Axn time (direct include) and inherited time (subclasses) for every
       # action class. Idempotent: the backing Set drops a class already present, so a class
-      # reachable via more than one path is never enumerated twice by tools_for.
+      # reachable via more than one path is never enumerated twice by `members`.
       def register_class(klass)
         _classes << klass
       end
@@ -44,8 +44,8 @@ module Axn
       # classes forever. That covers both cases _currently_defined? rejects: a stale NAMED reference
       # left by a Zeitwerk reload (the reloaded constant points at a fresh object), and a transient
       # anonymous class (name nil) that never got a constant. An anonymous class can never be a usable
-      # tool anyway (no stable tool_name, no const_source_location for tool_path membership), and
-      # tools_for runs at adapter setup — well after class definition — so the "anonymous now, named
+      # tool anyway (no stable tool_name, no const_source_location for tool_root membership), and
+      # `members` runs at adapter setup — well after class definition — so the "anonymous now, named
       # later" window is effectively never open at enumeration. Iterates a snapshot (_classes.to_a) so
       # a mid-enumeration registration can't corrupt the backing Set and deleting while walking is safe.
       def all_classes
@@ -60,7 +60,7 @@ module Axn
         live
       end
 
-      # Every registered class that is a tool for ANY adapter, loaded dirs included. Separate from `tools_for`
+      # Every registered class that is a tool for ANY adapter, loaded dirs included. Separate from `members`
       # because validation is adapter-agnostic: a contract is valid or not, and asking per adapter would project
       # a class once per adapter it belongs to. Version groups are not collapsed either — each version is its own
       # class with its own contract, so each is worth validating.
@@ -70,11 +70,13 @@ module Axn
         all_classes.select { |klass| keys.any? { |adapter| member?(klass, adapter) } }
       end
 
-      def tools_for(adapter, all_versions: false)
+      # `adapter` is vetted by `Axn::Tools.for`, which is how an adapter reaches this; a direct call here
+      # trusts its caller, and an unregistered key enumerates nothing rather than naming the mistake.
+      def members(adapter, all_versions: false)
         ensure_loaded!
-        members = all_classes.select { |klass| member?(klass, adapter) }
-        _assert_versioned_naming!(members)
-        groups = _version_groups(members, adapter)
+        candidates = all_classes.select { |klass| member?(klass, adapter) }
+        _assert_versioned_naming!(candidates)
+        groups = _version_groups(candidates, adapter)
         if all_versions
           # Deterministic: by tool_name, then ascending version within each group.
           groups.sort_by(&:tool_name).flat_map(&:all)
@@ -87,18 +89,21 @@ module Axn
       # The resolved version group for one logical tool under `adapter`, or nil when nothing
       # matches. Entry point for an adapter that needs one tool's versions by name (a path-routing
       # HTTP surface resolving `/{tool_name}/v{n}`) rather than the whole enumeration.
-      def versions_for(adapter, tool_name)
+      #
+      # `adapter` is vetted by `Axn::Tools.versions`, which is how an adapter reaches this; a direct call
+      # here trusts its caller, and an unregistered key resolves nothing rather than naming the mistake.
+      def version_group(adapter, tool_name)
         ensure_loaded!
         target = tool_name.to_s
-        members = all_classes.select { |klass| member?(klass, adapter) && klass.tool_name(adapter) == target }
-        return nil if members.empty?
+        candidates = all_classes.select { |klass| member?(klass, adapter) && klass.tool_name(adapter) == target }
+        return nil if candidates.empty?
 
-        # Validate the MATCHED members so this lookup never disagrees with tools_for: a malformed
+        # Validate the MATCHED members so this lookup never disagrees with `members`: a malformed
         # ::Vn member whose (explicit or derived) name matches `target` raises here too, exactly as
-        # it would in tools_for. Scoped to the matched set, so an unrelated malformed tool under a
+        # it would in `members`. Scoped to the matched set, so an unrelated malformed tool under a
         # different name can't derail the lookup.
-        _assert_versioned_naming!(members)
-        VersionGroup.new(adapter:, tool_name: target, members:)
+        _assert_versioned_naming!(candidates)
+        VersionGroup.new(adapter:, tool_name: target, members: candidates)
       end
 
       # Ensures tool classes under each adapter's tool roots are loaded before enumeration.
@@ -121,14 +126,14 @@ module Axn
         if _rails_app?
           # `config.eager_load` only says Rails INTENDS to eager-load; that phase runs late in boot
           # (after config/initializers). Skip the on-demand load only once the app has finished
-          # initializing (eager-load has actually run), so a tools_for call from within an
+          # initializing (eager-load has actually run), so an `Axn::Tools.for` call from within an
           # initializer still loads the tool dirs on demand.
           return if Rails.application.config.eager_load &&
                     Rails.application.respond_to?(:initialized?) && Rails.application.initialized?
 
           loader = Rails.autoloaders.main
           # The engine only pushes app/actions into Zeitwerk `after: :load_config_initializers`
-          # (see Axn::RailsIntegration::Engine), so a `tools_for` call from within a
+          # (see Axn::RailsIntegration::Engine), so an `Axn::Tools.for` call from within a
           # `config/initializers` file runs BEFORE that hook — a configured tool dir can exist on
           # disk yet not be one Zeitwerk manages. `eager_load_dir` on an unmanaged dir would just
           # raise and get rescued below, silently yielding an empty/partial tool list. We don't push
@@ -143,7 +148,7 @@ module Axn
               # Snapshot _classes before the require so that if the file registers an Axn class (via
               # include/inherited) and THEN raises later in the same file, we can roll those
               # registrations back — otherwise a "skipped" file would still leak its classes into
-              # tools_for. The loop is single-threaded, so a before/after diff is exact. Scope the
+              # `members`. The loop is single-threaded, so a before/after diff is exact. Scope the
               # rollback to classes SOURCED FROM this file: a dependency the file `require`d before
               # raising was registered in the same window but belongs to its own (valid) file, and
               # Ruby marks that file loaded so a later glob iteration would no-op — dropping it here
@@ -195,9 +200,9 @@ module Axn
       #      `_tool_version_declared_here?` is a non-inherited marker that distinguishes the two.
       #   2. the suffix number equals the declared `tool_version` — catches the anonymous-then-named
       #      case (`V2 = Class.new { tool_version 3 }`) the declaration-time guard couldn't see.
-      # `tool_name` derivation itself is a pure reader that does not raise. `tools_for` runs this over
-      # every member (comprehensive); `versions_for` runs it over the members it matched, so a lookup
-      # never disagrees with tools_for while an unrelated malformed tool can't derail it.
+      # `tool_name` derivation itself is a pure reader that does not raise. `members` runs this over
+      # every member (comprehensive); `version_group` runs it over the members it matched, so a lookup
+      # never disagrees with `members` while an unrelated malformed tool can't derail it.
       def _assert_versioned_naming!(members)
         members.each do |klass|
           suffix = klass._tool_version_suffix # nil unless the constant is vN-suffixed (parsed by Versioning)
@@ -227,7 +232,7 @@ module Axn
 
         if managed_roots&.none? { |root| dir == root || dir.start_with?(root + File::SEPARATOR) }
           Axn.config.logger.warn do
-            "[Axn] tool dir #{dir} is not yet managed by the Rails autoloader — tools_for was likely called " \
+            "[Axn] tool dir #{dir} is not yet managed by the Rails autoloader — Axn::Tools.for was likely called " \
               "before Rails finished initializing (e.g. from a config/initializers file). Tool discovery may " \
               "be incomplete; enumerate tools from `config.after_initialize` or a `to_prepare` block for " \
               "reliable results."
@@ -236,7 +241,7 @@ module Axn
         end
 
         # Snapshot _classes before eager-loading the directory so a file that raises partway
-        # through can't leak the classes it already registered into tools_for. Zeitwerk loads a
+        # through can't leak the classes it already registered into `members`. Zeitwerk loads a
         # directory as a unit, so rollback granularity is per-DIRECTORY: drop only added classes
         # whose source file lives under this dir. A class a file `require`d from OUTSIDE the dir
         # is preserved (it isn't this directory's tool).
@@ -252,7 +257,7 @@ module Axn
       # Rolls back registrations added since `before`, deleting each added class whose (expanded)
       # source file satisfies the block predicate. Shared by both eager-load branches so the
       # scoping loop lives in one place. Added classes with no resolvable source (anonymous classes
-      # return nil) are left registered — they're excluded from tools_for by the name filter anyway,
+      # return nil) are left registered — they're excluded from `members` by the name filter anyway,
       # and dropping one risks unregistering a nested dependency's not-yet-named class.
       def _rollback_registrations(before)
         (_classes - before).each do |added|
@@ -315,10 +320,10 @@ module Axn
       # bulk-exposing every business action.
       def _adapter_dirs(adapter)
         _adapter_roots(adapter).filter_map do |path|
-          if Axn::Configuration.broad_tool_path?(path)
+          if Axn::Configuration.broad_tool_root?(path)
             Axn.config.logger.warn do
               "[Axn] tool_roots entry #{path.inspect} for adapter #{adapter.inspect} is too broad; " \
-                "skipping (see Axn::Configuration::BROAD_TOOL_PATH_LEAVES)"
+                "skipping (see Axn::Configuration::BROAD_TOOL_ROOT_LEAVES)"
             end
             next
           end
@@ -346,7 +351,7 @@ module Axn
         adapters.flat_map { |adapter| _adapter_dirs(adapter) }.uniq
       end
 
-      # Normalizes via the same `Axn::Configuration.normalize_tool_path` that `AdapterRoots.validate!`
+      # Normalizes via the same `Axn::Configuration.normalize_tool_root` that `AdapterRoots.validate!`
       # uses (strip + `Pathname#cleanpath`), so an entry like `"actions/./tools"` resolves to the
       # identical dir as its clean spelling `"actions/tools"` instead of a raw, uncollapsed path.
       # `File.expand_path` on the joined result makes the returned dir canonical/absolute, matching
@@ -360,7 +365,7 @@ module Axn
           # the RAW path before normalization (which would collapse the leading slash away).
           return File.expand_path(path.to_s) if File.absolute_path?(path.to_s)
 
-          rel = Axn::Configuration.normalize_tool_path(path)
+          rel = Axn::Configuration.normalize_tool_root(path)
           rel = rel.delete_prefix("app/") if rel.start_with?("app/")
           File.expand_path(Rails.root.join("app", rel).to_s)
         else

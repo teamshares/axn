@@ -3,7 +3,7 @@
 module Axn
   module Tools
     # The coexisting versions of ONE logical tool (one (adapter, tool_name)), and the single place
-    # `latest` resolves — so `tools_for`'s latest-collapse and a per-name lookup consume the same
+    # `latest` resolves — so `members`' latest-collapse and a per-name lookup consume the same
     # rules instead of each re-deriving them. Validates the group on construction (the relaxed
     # replacement for the old unique-tool_name assertion).
     class VersionGroup

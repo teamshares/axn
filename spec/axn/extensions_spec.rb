@@ -28,6 +28,35 @@ RSpec.describe Axn::Extensions do
     end
   end
 
+  describe ".owned_failure?" do
+    it "is true for an Axn::Failure" do
+      expect(described_class.owned_failure?(Axn::Failure.new("nope"))).to be(true)
+    end
+
+    it "is true for a user-facing validation error" do
+      action = build_axn { expects :name, user_facing: true }
+      result = action.call
+
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(described_class.owned_failure?(result.exception)).to be(true)
+    end
+
+    # The nearer boundary, and the one the executor's stamping branch actually turns on: this IS an
+    # Axn::ValidationError travelling axn's failure path, so only the `user_facing?` half separates it
+    # from the owned case above. Its message names the field for a developer, not for a client.
+    it "is false for a validation error that is not user-facing" do
+      action = build_axn { expects :name }
+      result = action.call
+
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(described_class.owned_failure?(result.exception)).to be(false)
+    end
+
+    it "is false for a foreign exception" do
+      expect(described_class.owned_failure?(ArgumentError.new("boom"))).to be(false)
+    end
+  end
+
   describe ".best_effort" do
     let(:boom) { -> { raise StandardError, "fail message" } }
     let(:logger) { double(:logger) }

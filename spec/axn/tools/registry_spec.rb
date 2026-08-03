@@ -8,46 +8,46 @@ RSpec.describe Axn::Tools::Registry do
 
   describe "adapter registration" do
     it "registers and reports adapter keys" do
-      Axn.register_tool_adapter(:mcp)
-      Axn.register_tool_adapter(:ruby_llm)
+      Axn::Tools.register_adapter(:mcp)
+      Axn::Tools.register_adapter(:ruby_llm)
       expect(described_class.adapters).to contain_exactly(:mcp, :ruby_llm)
     end
 
     it "is idempotent" do
-      Axn.register_tool_adapter(:mcp)
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       expect(described_class.adapters.to_a).to eq([:mcp])
     end
 
     it "coerces string keys to symbols" do
-      Axn.register_tool_adapter("mcp")
+      Axn::Tools.register_adapter("mcp")
       expect(described_class.adapters).to include(:mcp)
     end
 
     it "stores an optional config source and exposes it" do
       source = Module.new
-      Axn.register_tool_adapter(:mcp, source)
+      Axn::Tools.register_adapter(:mcp, source)
       expect(described_class.adapter_config_source(:mcp)).to be(source)
     end
 
     it "defaults the config source to nil" do
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       expect(described_class.adapter_config_source(:mcp)).to be_nil
     end
 
     it "last registration wins for the same key" do
       first = Module.new
       second = Module.new
-      Axn.register_tool_adapter(:mcp, first)
-      Axn.register_tool_adapter(:mcp, second)
+      Axn::Tools.register_adapter(:mcp, first)
+      Axn::Tools.register_adapter(:mcp, second)
       expect(described_class.adapters.to_a).to eq([:mcp])
       expect(described_class.adapter_config_source(:mcp)).to be(second)
     end
 
     it "keeps the existing source when re-registered with no source (idempotent ensure)" do
       source = Module.new
-      Axn.register_tool_adapter(:mcp, source)
-      Axn.register_tool_adapter(:mcp) # bare "ensure registered" must not wipe the source
+      Axn::Tools.register_adapter(:mcp, source)
+      Axn::Tools.register_adapter(:mcp) # bare "ensure registered" must not wipe the source
       expect(described_class.adapter_config_source(:mcp)).to be(source)
     end
   end
@@ -144,16 +144,10 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
-  describe "Axn.tools_for validation" do
-    it "raises for an unregistered adapter" do
-      expect { Axn.tools_for(:nope) }.to raise_error(ArgumentError, /not a registered tool adapter/)
-    end
-  end
-
-  describe ".tools_for" do
+  describe ".members" do
     before do
-      Axn.register_tool_adapter(:mcp)
-      Axn.register_tool_adapter(:ruby_llm)
+      Axn::Tools.register_adapter(:mcp)
+      Axn::Tools.register_adapter(:ruby_llm)
     end
 
     it "returns only member classes for the adapter" do
@@ -167,10 +161,10 @@ RSpec.describe Axn::Tools::Registry do
       end)
       not_a_tool = stub_const("ToolsForSpec::NotATool", Class.new { include Axn })
 
-      expect(Axn.tools_for(:mcp)).to include(mcp_only, both)
-      expect(Axn.tools_for(:mcp)).not_to include(not_a_tool)
-      expect(Axn.tools_for(:ruby_llm)).to include(both)
-      expect(Axn.tools_for(:ruby_llm)).not_to include(mcp_only)
+      expect(Axn::Tools.for(:mcp)).to include(mcp_only, both)
+      expect(Axn::Tools.for(:mcp)).not_to include(not_a_tool)
+      expect(Axn::Tools.for(:ruby_llm)).to include(both)
+      expect(Axn::Tools.for(:ruby_llm)).not_to include(mcp_only)
     end
 
     it "returns members sorted by tool_name (deterministic regardless of registration order)" do
@@ -188,25 +182,25 @@ RSpec.describe Axn::Tools::Registry do
         tool name: "bravo"
       end)
 
-      members = Axn.tools_for(:mcp)
+      members = Axn::Tools.for(:mcp)
       expect(members).to eq([alpha, bravo, charlie])
     end
 
     it "exposes a subclass of an Axn base that declares `tool` (inheritance pattern)" do
       base = stub_const("ToolsForSpec::AppBase", Class.new { include Axn })
       sub = stub_const("ToolsForSpec::ConcreteTool", Class.new(base) { tool })
-      expect(Axn.tools_for(:mcp)).to include(sub)
+      expect(Axn::Tools.for(:mcp)).to include(sub)
     end
 
     it "does NOT expose a subclass that declares `tool false`" do
       base = stub_const("ToolsForSpec::AppBase2", Class.new { include Axn })
       sub = stub_const("ToolsForSpec::OptedOutTool", Class.new(base) { tool false })
-      expect(Axn.tools_for(:mcp)).not_to include(sub)
+      expect(Axn::Tools.for(:mcp)).not_to include(sub)
     end
   end
 
-  describe ".tools_for (duplicate tool_name detection)" do
-    before { Axn.register_tool_adapter(:mcp) }
+  describe ".members (duplicate tool_name detection)" do
+    before { Axn::Tools.register_adapter(:mcp) }
 
     it "raises when two members derive the same tool_name from their class names" do
       stub_const("AgentTools::ListCompanies", Class.new do
@@ -218,7 +212,7 @@ RSpec.describe Axn::Tools::Registry do
         tool :mcp
       end)
 
-      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError) do |error|
+      expect { Axn::Tools.for(:mcp) }.to raise_error(ArgumentError) do |error|
         expect(error.message).to include("list_companies")
         expect(error.message).to include("AgentTools::ListCompanies")
         expect(error.message).to include("Actions::Tools::ListCompanies")
@@ -236,11 +230,11 @@ RSpec.describe Axn::Tools::Registry do
         tool :mcp, name: "dup"
       end)
 
-      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /dup/)
+      expect { Axn::Tools.for(:mcp) }.to raise_error(ArgumentError, /dup/)
     end
 
     it "does not raise when the same tool_name is used under different adapters" do
-      Axn.register_tool_adapter(:ruby_llm)
+      Axn::Tools.register_adapter(:ruby_llm)
 
       # Both derive "widget": distinct class names, each with a leading segment
       # ("Tools"/"AgentTools") that's in the default tool_name_stripped_prefixes list.
@@ -255,8 +249,8 @@ RSpec.describe Axn::Tools::Registry do
 
       expect(mcp_klass.tool_name).to eq(ruby_llm_klass.tool_name)
 
-      expect(Axn.tools_for(:mcp)).to contain_exactly(mcp_klass)
-      expect(Axn.tools_for(:ruby_llm)).to contain_exactly(ruby_llm_klass)
+      expect(Axn::Tools.for(:mcp)).to contain_exactly(mcp_klass)
+      expect(Axn::Tools.for(:ruby_llm)).to contain_exactly(ruby_llm_klass)
     end
 
     it "returns members normally when no collision exists" do
@@ -269,7 +263,7 @@ RSpec.describe Axn::Tools::Registry do
         tool :mcp
       end)
 
-      expect(Axn.tools_for(:mcp)).to include(distinct_a, distinct_b)
+      expect(Axn::Tools.for(:mcp)).to include(distinct_a, distinct_b)
     end
 
     it "detects a within-adapter collision produced by a per-adapter bag name" do
@@ -282,11 +276,11 @@ RSpec.describe Axn::Tools::Registry do
         tool mcp: { name: "search" }
       end)
 
-      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /search/)
+      expect { Axn::Tools.for(:mcp) }.to raise_error(ArgumentError, /search/)
     end
 
     it "does not collide when the shared derived names differ but only one adapter is overridden" do
-      Axn.register_tool_adapter(:ruby_llm)
+      Axn::Tools.register_adapter(:ruby_llm)
       a = stub_const("PerAdapterName::Alpha", Class.new do
         include Axn
         tool mcp: { name: "shared" }, ruby_llm: {}
@@ -297,8 +291,8 @@ RSpec.describe Axn::Tools::Registry do
       end)
 
       # "shared" is the mcp name of Alpha and the ruby_llm name of Beta — different adapters, no clash.
-      expect(Axn.tools_for(:mcp)).to contain_exactly(a)
-      expect(Axn.tools_for(:ruby_llm)).to contain_exactly(a, b)
+      expect(Axn::Tools.for(:mcp)).to contain_exactly(a)
+      expect(Axn::Tools.for(:ruby_llm)).to contain_exactly(a, b)
     end
 
     it "sorts members by the per-adapter name" do
@@ -314,13 +308,13 @@ RSpec.describe Axn::Tools::Registry do
         tool mcp: { name: "aaa" }
       end)
 
-      expect(Axn.tools_for(:mcp)).to eq([a, z])
+      expect(Axn::Tools.for(:mcp)).to eq([a, z])
     end
   end
 
   describe "._adapter_dirs (broad-entry bypass fail-safe)", :aggregate_failures do
     it "skips a broad entry that reached tool_roots via in-place mutation, warning about it" do
-      source = register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      source = register_adapter_with_roots(:mcp, roots: %w[agent_tools])
       source.config.tool_roots << "actions" # in-place mutation bypasses the setter's guard
 
       warnings = []
@@ -341,13 +335,13 @@ RSpec.describe Axn::Tools::Registry do
     let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools", __dir__) }
 
     before do
-      register_tool_adapter_with_roots(:mcp, roots: [fixture_dir])
+      register_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
     it "requires .rb files under a configured tool dir and exposes them as tools" do
       skip "fixture already loaded" if Object.const_defined?("RegistryFixtures::LazyRegistryTool")
 
-      tools = Axn.tools_for(:mcp)
+      tools = Axn::Tools.for(:mcp)
       expect(Object.const_defined?("RegistryFixtures::LazyRegistryTool")).to be(true)
       expect(tools).to include(RegistryFixtures::LazyRegistryTool)
       expect(RegistryFixtures::LazyRegistryTool.tool_name).to eq("registry_fixtures_lazy_registry_tool")
@@ -358,7 +352,7 @@ RSpec.describe Axn::Tools::Registry do
     let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools_mixed", __dir__) }
 
     before do
-      register_tool_adapter_with_roots(:mcp, roots: [fixture_dir])
+      register_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
     it "loads the good tool despite a sibling file raising at load time, warning about the bad one" do
@@ -367,7 +361,7 @@ RSpec.describe Axn::Tools::Registry do
       warnings = []
       allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
-      tools = Axn.tools_for(:mcp)
+      tools = Axn::Tools.for(:mcp)
 
       expect(Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")).to be(true)
       expect(tools).to include(RegistryFixturesMixed::GoodMixedTool)
@@ -380,7 +374,7 @@ RSpec.describe Axn::Tools::Registry do
       warnings = []
       allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
-      tools = Axn.tools_for(:mcp)
+      tools = Axn::Tools.for(:mcp)
 
       expect(Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")).to be(true)
       expect(tools).to include(RegistryFixturesMixed::GoodMixedTool)
@@ -411,13 +405,13 @@ RSpec.describe Axn::Tools::Registry do
         # Genuine syntax error: a def with a missing method-body expression.
         File.write(File.join(dir, "broken_tool.rb"), "class Broken\n  def call =\nend\n")
 
-        register_tool_adapter_with_roots(:mcp, roots: [dir])
+        register_adapter_with_roots(:mcp, roots: [dir])
 
         warnings = []
         allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
         tools = nil
-        expect { tools = Axn.tools_for(:mcp) }.not_to raise_error
+        expect { tools = Axn::Tools.for(:mcp) }.not_to raise_error
 
         expect(Object.const_defined?("SyntaxIsoFixture::Ok")).to be(true)
         expect(tools).to include(SyntaxIsoFixture::Ok)
@@ -432,7 +426,7 @@ RSpec.describe Axn::Tools::Registry do
     let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools_failed", __dir__) }
 
     before do
-      register_tool_adapter_with_roots(:mcp, roots: [fixture_dir])
+      register_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
     it "exposes the good tool but rolls back the class registered by the failing file" do
@@ -441,7 +435,7 @@ RSpec.describe Axn::Tools::Registry do
       warnings = []
       allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
-      tools = Axn.tools_for(:mcp)
+      tools = Axn::Tools.for(:mcp)
 
       expect(tools).to include(GoodFailedFixture::Ok)
 
@@ -459,7 +453,7 @@ RSpec.describe Axn::Tools::Registry do
     let(:fixture_dir) { File.expand_path("../../support/fixtures/registry_tools_nested", __dir__) }
 
     before do
-      register_tool_adapter_with_roots(:mcp, roots: [fixture_dir])
+      register_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
     it "keeps a valid tool required by the failing file, rolling back only the failing file's own class" do
@@ -468,7 +462,7 @@ RSpec.describe Axn::Tools::Registry do
       warnings = []
       allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
-      tools = Axn.tools_for(:mcp)
+      tools = Axn::Tools.for(:mcp)
 
       # The dependency the failing file `require`d before raising was registered inside that file's
       # require window, but it is SOURCED FROM dep_good.rb, so the file-scoped rollback must keep it.
@@ -490,10 +484,10 @@ RSpec.describe Axn::Tools::Registry do
     # adding a raising fixture under the dummy app's autoloaded tree, which would break CI boot).
     let(:dir) { File.expand_path("../../support/fixtures/registry_tools_nested", __dir__) }
 
-    before { Axn.register_tool_adapter(:mcp) }
+    before { Axn::Tools.register_adapter(:mcp) }
 
     it "deletes only added classes whose source is under the failed dir, preserving those outside it" do
-      register_tool_adapter_with_roots(:mcp, roots: [dir])
+      register_adapter_with_roots(:mcp, roots: [dir])
       allow(described_class).to receive(:_rails_app?).and_return(true)
 
       loader = double("zeitwerk loader")
@@ -537,7 +531,7 @@ RSpec.describe Axn::Tools::Registry do
 
   describe ".ensure_loaded! (Rails branch warns instead of eager-loading an unmanaged dir)", :aggregate_failures do
     # Reproduces the PRO-2921 boot-ordering hole: axn's engine pushes app/actions into Zeitwerk
-    # `after: :load_config_initializers`, so a `tools_for` call from within a
+    # `after: :load_config_initializers`, so an `Axn::Tools.for` call from within a
     # `config/initializers` file runs before that hook — the tool dir exists on disk but Zeitwerk
     # doesn't manage it yet. `eager_load_dir` would just raise/rescue in that case; we instead
     # check `loader.dirs` (Zeitwerk's managed root list) up front and warn loudly rather than
@@ -545,7 +539,7 @@ RSpec.describe Axn::Tools::Registry do
     let(:dir) { File.expand_path("../../support/fixtures/registry_tools_nested", __dir__) }
 
     before do
-      register_tool_adapter_with_roots(:mcp, roots: [dir])
+      register_adapter_with_roots(:mcp, roots: [dir])
       allow(described_class).to receive(:_rails_app?).and_return(true)
     end
 
@@ -630,8 +624,8 @@ RSpec.describe Axn::Tools::Registry do
     let(:shared_dir) { File.expand_path("agent_tools") }
 
     it "grants every adapter whose roots contain the class (directory grant)" do
-      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
-      register_tool_adapter_with_roots(:ruby_llm, roots: %w[agent_tools])
+      register_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_adapter_with_roots(:ruby_llm, roots: %w[agent_tools])
       k = klass_at("MemberUnion::Shared", File.join(shared_dir, "shared.rb"))
 
       expect(described_class.member?(k, :mcp)).to be(true)
@@ -639,17 +633,17 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "does NOT grant an adapter whose roots exclude the class" do
-      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
-      register_tool_adapter_with_roots(:openapi, roots: %w[http_tools])
+      register_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_adapter_with_roots(:openapi, roots: %w[http_tools])
       k = klass_at("MemberUnion::SharedOnly", File.join(shared_dir, "shared.rb"))
 
       expect(described_class.member?(k, :openapi)).to be(false)
     end
 
     it "adds a declared adapter on top of the directory grant (union, not replace)" do
-      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
-      register_tool_adapter_with_roots(:ruby_llm, roots: %w[agent_tools])
-      register_tool_adapter_with_roots(:openapi, roots: %w[http_tools])
+      register_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_adapter_with_roots(:ruby_llm, roots: %w[agent_tools])
+      register_adapter_with_roots(:openapi, roots: %w[http_tools])
       k = klass_at("MemberUnion::PlusOpenapi", File.join(shared_dir, "shared.rb")) { tool :openapi }
 
       expect(described_class.member?(k, :mcp)).to be(true)      # still from directory
@@ -658,8 +652,8 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "subtracts an excepted adapter from the directory grant (all-but-a-few)" do
-      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
-      register_tool_adapter_with_roots(:openapi, roots: %w[agent_tools])
+      register_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_adapter_with_roots(:openapi, roots: %w[agent_tools])
       k = klass_at("MemberUnion::AllBut", File.join(shared_dir, "shared.rb")) { tool except: :openapi }
 
       expect(described_class.member?(k, :mcp)).to be(true)
@@ -667,8 +661,8 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "except:-only does not re-expose the class to an adapter its directory never granted" do
-      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
-      register_tool_adapter_with_roots(:data_shifter_web, roots: %w[support_tools])
+      register_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_adapter_with_roots(:data_shifter_web, roots: %w[support_tools])
       k = klass_at("MemberUnion::NoLeak", File.join(shared_dir, "shared.rb")) { tool except: :mcp }
 
       expect(described_class.member?(k, :mcp)).to be(false) # excepted
@@ -676,15 +670,15 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "`tool false` opts out of every adapter regardless of directory" do
-      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_adapter_with_roots(:mcp, roots: %w[agent_tools])
       k = klass_at("MemberUnion::OptOut", File.join(shared_dir, "shared.rb")) { tool false }
 
       expect(described_class.member?(k, :mcp)).to be(false)
     end
 
     it "bare `tool` grants every registered adapter even with no matching root" do
-      register_tool_adapter_with_roots(:mcp, roots: [])
-      register_tool_adapter_with_roots(:openapi, roots: [])
+      register_adapter_with_roots(:mcp, roots: [])
+      register_adapter_with_roots(:openapi, roots: [])
       k = klass_at("MemberUnion::All", "/somewhere/else/thing.rb") { tool }
 
       expect(described_class.member?(k, :mcp)).to be(true)
@@ -692,15 +686,15 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "an adapter with no config source has an empty directory grant" do
-      Axn.register_tool_adapter(:mcp) # no source
+      Axn::Tools.register_adapter(:mcp) # no source
       k = klass_at("MemberUnion::NoSource", File.join(shared_dir, "shared.rb"))
 
       expect(described_class.member?(k, :mcp)).to be(false)
     end
 
     it "a named tool outside all roots is a member of every adapter except the excepted one" do
-      register_tool_adapter_with_roots(:mcp, roots: %w[agent_tools])
-      register_tool_adapter_with_roots(:ruby_llm, roots: %w[agent_tools])
+      register_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      register_adapter_with_roots(:ruby_llm, roots: %w[agent_tools])
       k = klass_at("MemberUnion::NamedExcept", "/outside/roots/thing.rb") { tool name: "search", except: :ruby_llm }
 
       expect(described_class.member?(k, :mcp)).to be(true) # :all grant from name:, minus nothing
@@ -709,7 +703,7 @@ RSpec.describe Axn::Tools::Registry do
   end
 
   describe "versioning" do
-    before { Axn.register_tool_adapter(:mcp) }
+    before { Axn::Tools.register_adapter(:mcp) }
 
     def versioned_tool(const, version)
       stub_const(const, Class.new do
@@ -722,7 +716,7 @@ RSpec.describe Axn::Tools::Registry do
     it "returns only the latest version per tool_name by default" do
       v1 = versioned_tool("AgentTools::ApproveLoan::V1", 1)
       v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2)
-      result = Axn.tools_for(:mcp)
+      result = Axn::Tools.for(:mcp)
       expect(result).to include(v2)
       expect(result).not_to include(v1)
     end
@@ -732,20 +726,20 @@ RSpec.describe Axn::Tools::Registry do
       v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2)
       # Scope to this tool_name: earlier examples in the suite load bare-`tool` fixtures that are
       # members of every adapter, so an unscoped strict `eq` would also see them.
-      versions = Axn.tools_for(:mcp, all_versions: true).select { |klass| klass.tool_name(:mcp) == "approve_loan" }
+      versions = Axn::Tools.for(:mcp, all_versions: true).select { |klass| klass.tool_name(:mcp) == "approve_loan" }
       expect(versions).to eq([v1, v2])
     end
 
-    it "versions_for returns the group with all/latest" do
+    it "version_group returns the group with all/latest" do
       v1 = versioned_tool("AgentTools::ApproveLoan::V1", 1)
       v2 = versioned_tool("AgentTools::ApproveLoan::V2", 2)
-      group = Axn.versions_for(:mcp, "approve_loan")
+      group = Axn::Tools.versions(:mcp, "approve_loan")
       expect(group.all).to eq([v1, v2])
       expect(group.latest).to eq(v2)
     end
 
-    it "versions_for returns nil for an unknown tool_name" do
-      expect(Axn.versions_for(:mcp, "nope")).to be_nil
+    it "version_group returns nil for an unknown tool_name" do
+      expect(Axn::Tools.versions(:mcp, "nope")).to be_nil
     end
 
     it "raises on two tools sharing (tool_name, version)" do
@@ -759,7 +753,7 @@ RSpec.describe Axn::Tools::Registry do
         tool :mcp, name: "dupe"
         tool_version 2
       end)
-      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /Duplicate tool/)
+      expect { Axn::Tools.for(:mcp) }.to raise_error(ArgumentError, /Duplicate tool/)
     end
 
     it "leaves an unversioned tool enumerated exactly as before" do
@@ -767,8 +761,8 @@ RSpec.describe Axn::Tools::Registry do
         include Axn
         tool :mcp
       end)
-      expect(Axn.tools_for(:mcp)).to include(solo)
-      expect(Axn.versions_for(:mcp, solo.tool_name(:mcp)).all).to eq([solo])
+      expect(Axn::Tools.for(:mcp)).to include(solo)
+      expect(Axn::Tools.versions(:mcp, solo.tool_name(:mcp)).all).to eq([solo])
     end
 
     it "raises at enumeration when a member's ::Vn constant declares no tool_version" do
@@ -776,7 +770,7 @@ RSpec.describe Axn::Tools::Registry do
         include Axn
         tool :mcp
       end)
-      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /::V1.*tool_version/)
+      expect { Axn::Tools.for(:mcp) }.to raise_error(ArgumentError, /::V1.*tool_version/)
     end
 
     it "raises at enumeration for a ::Vn subclass that only INHERITS a tool_version (never declared its own)" do
@@ -788,10 +782,10 @@ RSpec.describe Axn::Tools::Registry do
       # Inherits `tool :mcp` membership and _tool_version=1, but declares nothing itself. Without the
       # declared-here gate it would silently publish as version 1 while its constant says ::V2.
       stub_const("VerSpec::Thing::V2", Class.new(base))
-      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /::V2.*tool_version/)
+      expect { Axn::Tools.for(:mcp) }.to raise_error(ArgumentError, /::V2.*tool_version/)
     end
 
-    it "versions_for for one tool is not derailed by an unrelated malformed ::Vn sibling" do
+    it "version_group for one tool is not derailed by an unrelated malformed ::Vn sibling" do
       good = stub_const("AgentTools::Billing", Class.new do
         include Axn
         tool :mcp
@@ -800,10 +794,10 @@ RSpec.describe Axn::Tools::Registry do
         include Axn
         tool :mcp
       end)
-      expect(Axn.versions_for(:mcp, "billing").all).to eq([good])
+      expect(Axn::Tools.versions(:mcp, "billing").all).to eq([good])
     end
 
-    it "versions_for excludes a forgot-tool_version sibling that derives a DIFFERENT name (not in the matched set)" do
+    it "version_group excludes a forgot-tool_version sibling that derives a DIFFERENT name (not in the matched set)" do
       v2 = stub_const("AgentTools::ApproveLoan::V2", Class.new do
         include Axn
         tool :mcp
@@ -814,18 +808,18 @@ RSpec.describe Axn::Tools::Registry do
         tool :mcp
       end)
       # V1 isn't in the "approve_loan" matched set (its name is "approve_loan_v1"), so the matched-set
-      # guard doesn't fire on it; tools_for catches it comprehensively.
-      expect(Axn.versions_for(:mcp, "approve_loan").all).to eq([v2])
+      # guard doesn't fire on it; `members` catches it comprehensively.
+      expect(Axn::Tools.versions(:mcp, "approve_loan").all).to eq([v2])
     end
 
-    it "versions_for raises for a MATCHED ::Vn member that declared no tool_version (explicit name)" do
-      # Explicit `name:` means the malformed member DOES match the lookup, so versions_for must raise
-      # just like tools_for would — the two APIs cannot disagree.
+    it "version_group raises for a MATCHED ::Vn member that declared no tool_version (explicit name)" do
+      # Explicit `name:` means the malformed member DOES match the lookup, so `version_group` must raise
+      # just like `members` would — the two APIs cannot disagree.
       stub_const("VerSpec::Explicit::V1", Class.new do
         include Axn
         tool :mcp, name: "explicit_foo"
       end)
-      expect { Axn.versions_for(:mcp, "explicit_foo") }.to raise_error(ArgumentError, /::V1.*tool_version/)
+      expect { Axn::Tools.versions(:mcp, "explicit_foo") }.to raise_error(ArgumentError, /::V1.*tool_version/)
     end
 
     it "raises at enumeration for an anonymous-then-named ::Vn whose suffix disagrees with tool_version" do
@@ -836,15 +830,15 @@ RSpec.describe Axn::Tools::Registry do
         tool :mcp
         tool_version 3
       end)
-      expect { Axn.tools_for(:mcp) }.to raise_error(ArgumentError, /::V2.*tool_version 3/)
+      expect { Axn::Tools.for(:mcp) }.to raise_error(ArgumentError, /::V2.*tool_version 3/)
     end
   end
 
   describe ".member?" do
-    before { Axn.register_tool_adapter(:mcp) }
+    before { Axn::Tools.register_adapter(:mcp) }
 
     it "explicit `tool :mcp` is a member for :mcp but not :ruby_llm" do
-      Axn.register_tool_adapter(:ruby_llm)
+      Axn::Tools.register_adapter(:ruby_llm)
       k = stub_const("MemberSpec::Explicit", Class.new do
         include Axn
         tool :mcp
@@ -854,7 +848,7 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "bare `tool` is a member for every adapter" do
-      Axn.register_tool_adapter(:ruby_llm)
+      Axn::Tools.register_adapter(:ruby_llm)
       k = stub_const("MemberSpec::All", Class.new do
         include Axn
         tool
@@ -864,7 +858,7 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "a class with `configure(:mcp)` is an implicit member for :mcp only" do
-      Axn.register_tool_adapter(:ruby_llm)
+      Axn::Tools.register_adapter(:ruby_llm)
       k = stub_const("MemberSpec::ConfigNS", Class.new do
         include Axn
         configure(:mcp) { |c| c.some_setting = 1 }
@@ -875,7 +869,7 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "an undeclared class under a sibling dir whose name merely prefixes the tool dir is not a member" do
-      register_tool_adapter_with_roots(:mcp, roots: [File.expand_path("spec/support")])
+      register_adapter_with_roots(:mcp, roots: [File.expand_path("spec/support")])
       k = stub_const("MemberSpec::SiblingPrefix", Class.new { include Axn })
       allow(Object).to receive(:const_source_location).with("MemberSpec::SiblingPrefix")
                                                       .and_return([File.expand_path("spec/support_helpers/x.rb"), 1])

@@ -19,12 +19,12 @@ GemName.tools                    # zero-arg: every registered tool, wrapped
 GemName.wrap(axn_class, **opts)  # one Axn class -> the transport's native tool object
 ```
 
-`.tools` is `Axn.tools_for(:key).map { |a| wrap(a) }` — it must be callable with no arguments, which is why `wrap`'s every option defaults (see [Naming & description](#naming-description)). `wrap` returns the transport-native object: for `axn-mcp` a `::MCP::Tool` subclass, for `axn-ruby_llm` a `::RubyLLM::Tool` subclass.
+`.tools` is `Axn::Tools.for(:key).map { |a| wrap(a) }` — it must be callable with no arguments, which is why `wrap`'s every option defaults (see [Naming & description](#naming-description)). `wrap` returns the transport-native object: for `axn-mcp` a `::MCP::Tool` subclass, for `axn-ruby_llm` a `::RubyLLM::Tool` subclass.
 
 ```ruby
 # axn-mcp
 module Axn::MCP
-  def self.tools = Axn.tools_for(:mcp).map { |axn_class| wrap(axn_class) }
+  def self.tools = Axn::Tools.for(:mcp).map { |axn_class| wrap(axn_class) }
 end
 
 # a consumer wiring an MCP server
@@ -33,19 +33,19 @@ MCP::Server.new(name: "acme", version: "1", tools: Axn::MCP.tools)
 
 ## Registration & discovery
 
-**Register the adapter at gem load, from the entry file.** Call `Axn.register_tool_adapter(:key)` where the gem is first required, so the key exists in the process-global registry before any app code enumerates tools:
+**Register the adapter at gem load, from the entry file.** Call `Axn::Tools.register_adapter(:key)` where the gem is first required, so the key exists in the process-global registry before any app code enumerates tools:
 
 ```ruby
 # lib/axn/mcp.rb (required from lib/axn-mcp.rb)
-Axn.register_tool_adapter(:mcp)
+Axn::Tools.register_adapter(:mcp)
 ```
 
-`register_tool_adapter` takes an optional second argument — a config source the registry reads directory roots from (see [Directory-based membership](#directory-based-membership-optional)). Pass it (`Axn.register_tool_adapter(:mcp, self)`) only if your adapter offers directory discovery; omit it otherwise. Re-registering with no source is idempotent and won't wipe a source already supplied.
+`Axn::Tools.register_adapter` takes an optional second argument — a config source the registry reads directory roots from (see [Directory-based membership](#directory-based-membership-optional)). Pass it (`Axn::Tools.register_adapter(:mcp, self)`) only if your adapter offers directory discovery; omit it otherwise. Re-registering with no source is idempotent and won't wipe a source already supplied.
 
-**`Axn.tools_for(:key)` enumerates the members** — one entry per `tool_name` (the latest [version](#versioning) when several coexist), deterministically sorted by [`tool_name`](#naming-description), with each adapter's tool-root directories eager-loaded first. Two rules follow from *how* it enumerates:
+**`Axn::Tools.for(:key)` enumerates the members** — one entry per `tool_name` (the latest [version](#versioning) when several coexist), deterministically sorted by [`tool_name`](#naming-description), with each adapter's tool-root directories eager-loaded first. Two rules follow from *how* it enumerates:
 
-- **Only currently-loaded classes are enumerated.** `tools_for` reflects over classes that are defined *now*; a `tool :key` class that lives outside a tool-root directory must already be `require`d. Enumerate from a point where your app's classes are loaded — `config.after_initialize` or a `to_prepare` block under Rails, **not** a `config/initializers` file (which runs before the app's autoload paths are wired; `tools_for` will warn that discovery is incomplete).
-- **Two classes sharing both a `tool_name` *and* a `tool_version` for one adapter raise.** That conflict is only knowable once both are loaded, so `tools_for`/`versions_for` fail loudly with a message pointing at `tool name:` or [`tool_version`](#versioning) to disambiguate, rather than silently clobbering one. Two classes sharing a `tool_name` with *different* versions are not a conflict — they're the versioned-tool convention.
+- **Only currently-loaded classes are enumerated.** `Axn::Tools.for` reflects over classes that are defined *now*; a `tool :key` class that lives outside a tool-root directory must already be `require`d. Enumerate from a point where your app's classes are loaded — `config.after_initialize` or a `to_prepare` block under Rails, **not** a `config/initializers` file (which runs before the app's autoload paths are wired; `Axn::Tools.for` will warn that discovery is incomplete).
+- **Two classes sharing both a `tool_name` *and* a `tool_version` for one adapter raise.** That conflict is only knowable once both are loaded, so `Axn::Tools.for` and `Axn::Tools.versions` fail loudly with a message pointing at `tool name:` or [`tool_version`](#versioning) to disambiguate, rather than silently clobbering one. Two classes sharing a `tool_name` with *different* versions are not a conflict — they're the versioned-tool convention.
 
 ### Membership
 
@@ -61,7 +61,7 @@ A class is a member of adapter `:key` when the registry's `member?` says so. Mem
 | `tool false` | Opt out of **every** adapter (for a helper Axn living under a tool root). |
 | `tool except: :ruby_llm` | Narrow: keep every grant *except* this adapter. |
 
-The action author owns these declarations — see [the class reference](/reference/class) and [Configuration for Axn-based Gems](/recipes/gem-configuration#declaring-per-adapter-tool-config-inline). As an adapter author you don't parse them; you call `Axn.tools_for(:key)` and get the resolved set.
+The action author owns these declarations — see [the class reference](/reference/class) and [Configuration for Axn-based Gems](/recipes/gem-configuration#declaring-per-adapter-tool-config-inline). As an adapter author you don't parse them; you call `Axn::Tools.for(:key)` and get the resolved set.
 
 ### Directory-based membership (optional)
 
@@ -81,7 +81,7 @@ Axn::MCP.configure { |c| c.tool_roots = %w[agent_tools] }
 
 ## Naming & description
 
-**Names come from `axn_class.tool_name(:your_key)` — never roll your own.** `tool_name` is the canonical, provider-safe derivation (honors an explicit `tool name:`, strips configured prefixes, snake_cases, restricts to `[a-z0-9_]`, and is never blank). The *same Axn must yield the same name across every adapter*, so a client sees one stable identity regardless of transport. **Pass your adapter key.** `Axn.tools_for` sorts and groups the set by `tool_name(:your_key)` (collapsing to the latest [version](#versioning) per name), and a per-adapter `tool your_key: { name: "…" }` override is only returned when you pass the key — the zero-arg `tool_name` deliberately ignores per-adapter overrides. So an adapter that reads the zero-arg form would publish a *different* name than the registry grouped on:
+**Names come from `axn_class.tool_name(:your_key)` — never roll your own.** `tool_name` is the canonical, provider-safe derivation (honors an explicit `tool name:`, strips configured prefixes, snake_cases, restricts to `[a-z0-9_]`, and is never blank). The *same Axn must yield the same name across every adapter*, so a client sees one stable identity regardless of transport. **Pass your adapter key.** `Axn::Tools.for` sorts and groups the set by `tool_name(:your_key)` (collapsing to the latest [version](#versioning) per name), and a per-adapter `tool your_key: { name: "…" }` override is only returned when you pass the key — the zero-arg `tool_name` deliberately ignores per-adapter overrides. So an adapter that reads the zero-arg form would publish a *different* name than the registry grouped on:
 
 ```ruby
 tool_name = axn_class.tool_name(:mcp)    # provider-safe, never blank; honors a per-adapter `tool mcp: { name: }`
@@ -140,7 +140,7 @@ That guarantee is about the values, not about your encoder's configuration, and 
 
 **Additionally under `reject_opaque: true`:** every value was rendered through a projection *its author declared*, rather than one the serializer guessed at. That is a separate promise about meaningfulness, not about encodability — which is why the flag is named for what it rejects rather than called something like `strict:`. Reading `reject_opaque: false` should not suggest the output might not be JSON; it always is.
 
-It raises `Axn::Reflection::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it (`records[3].price`, not "something"). Five cases raise always, because the body would be *wrong* — or not JSON at all:
+It raises `Axn::Extensions::Serialization::UnserializableValue` (an `ArgumentError`) when an exposed value has no honest JSON representation, naming the path to it (`records[3].price`, not "something"). Five cases raise always, because the body would be *wrong* — or not JSON at all:
 
 - a self-referential value (a cycle has no JSON representation at all);
 - two exposed field *names* that render as the same JSON property — the same collapse as the Hash-key case, one level up: a declared field name is canonicalized to UTF-8 exactly the way a Hash key is, so two distinct Symbols (an ISO-8859-1-encoded one beside its UTF-8 counterpart) would converge on one property and silently overwrite. In practice you will not see this one from `render`: axn now rejects that pair when the class is defined, and rejects a collapse contributed by any other part of the contract (a shape member, a nested key, a `model:`-generated id) when the outbound projection is first built — which `render` itself triggers. This remains the last line under it;
@@ -229,7 +229,7 @@ end
 Two rules:
 
 - **Impose no gem-wide error headline.** Surface `result.error` and let each tool declare its own base `error "…"`. A base `error` combines with `fail!("reason")` as `"Headline: reason"` by default; `fail!("…", standalone: true)` opts out. A blanket adapter-level headline erases the per-tool message the author wrote. (See [failure semantics](/usage/writing#prefixing-failure-reasons).)
-- **`Axn.owns_failure_exception?(exception)`** distinguishes an axn-owned failure (an `Axn::Failure` or a user-facing validation error, whose `#message` is meant for the client) from a *foreign* exception reclassified via `fails_on` (whose `#message` is a technical cause you should not leak). Use it when you're tempted to read `#message` off `result.exception`.
+- **`Axn::Extensions.owned_failure?(exception)`** distinguishes an axn-owned failure (an `Axn::Failure` or a user-facing validation error, whose `#message` is meant for the client) from a *foreign* exception reclassified via `fails_on` (whose `#message` is a technical cause you should not leak). Use it when you're tempted to read `#message` off `result.exception`.
 
 For inbound-validation detail (which argument the model got wrong), the Invoker exposes `Axn::Tools::Invoker.input_invalid?(result)` and `result.exception.field_errors` — see [Tool Invoker](/reference/tool-invoker#per-field-detail).
 
@@ -286,7 +286,7 @@ Axn::MCP.wrap(
 )
 ```
 
-`Factory.build`'s block is the `#call` body — see the [factory reference](/reference/factory) for its contract (keyword-only args, `expose_return_as:`, and why factory-built classes are *not* auto-discovered by `tools_for`). A factory-built class carries a synthetic name that never resolves to a loaded constant, so the adapter constructing it must hold the reference and `wrap` it directly.
+`Factory.build`'s block is the `#call` body — see the [factory reference](/reference/factory) for its contract (keyword-only args, `expose_return_as:`, and why factory-built classes are *not* auto-discovered by `Axn::Tools.for`). A factory-built class carries a synthetic name that never resolves to a loaded constant, so the adapter constructing it must hold the reference and `wrap` it directly.
 
 ## Deprecations
 
@@ -314,9 +314,9 @@ end
 
 The registry identity is `(tool_name, tool_version)`: two tools may share a `tool_name` as long as their versions differ (same name *and* version still raises). Enumeration exposes two projections for an adapter to pick between:
 
-- `Axn.tools_for(:mcp)` returns the **latest** version per `tool_name` — a model re-reads the schema each session and wants the newest contract. Backward-compatible: today's unversioned tools are groups of one, so latest-of-one is unchanged.
-- `Axn.tools_for(:mcp, all_versions: true)` returns **every** version (sorted by `tool_name`, then ascending version) — for an adapter that addresses each one separately, e.g. path-routed HTTP.
-- `Axn.versions_for(:mcp, "approve_loan")` returns one tool's version group (`.all` ascending, `.latest`) for an adapter resolving a single name rather than walking the whole enumeration.
+- `Axn::Tools.for(:mcp)` returns the **latest** version per `tool_name` — a model re-reads the schema each session and wants the newest contract. Backward-compatible: today's unversioned tools are groups of one, so latest-of-one is unchanged.
+- `Axn::Tools.for(:mcp, all_versions: true)` returns **every** version (sorted by `tool_name`, then ascending version) — for an adapter that addresses each one separately, e.g. path-routed HTTP.
+- `Axn::Tools.versions(:mcp, "approve_loan")` returns one tool's version group (`.all` ascending, `.latest`) for an adapter resolving a single name rather than walking the whole enumeration.
 
 The latest-vs-every asymmetry is intentional: a fresh model call wants newest, while a long-lived HTTP client wants a URL that means exactly one version forever. Core resolves both; which to serve is the adapter's projection policy. Core deliberately has no "default version" concept — an adapter that wants a stable pin should make every version separately addressable (so no URL ever changes meaning) rather than blessing one behind an unqualified alias.
 
@@ -327,7 +327,7 @@ The latest-vs-every asymmetry is intentional: a fresh model call wants newest, w
 - **Single version: stay flat** — `agent_tools/approve_loan.rb`.
 - **Second version: promote to a folder** — rename to `agent_tools/approve_loan/v1.rb` (declaring `tool_version 1`) and add `v2.rb` (`tool_version 2`). With no `approve_loan.rb`, Zeitwerk treats `approve_loan/` as a namespace module (`AgentTools::ApproveLoan`) and nests `::V1`/`::V2`; the module itself is not a tool (it does not `include Axn`).
 
-When a class declares `tool_version` and its constant ends in a `::Vn` segment, `tool_name` derives from the enclosing namespace (`AgentTools::ApproveLoan::V2` → `"approve_loan"`), so both versions group. The promotion moves the Ruby constant but not the wire contract — identity stays `tool_name`. Two guardrails keep the convention honest, enforced at enumeration (and, when the constant name is already visible, at declaration): a `::Vn` member that didn't declare its own `tool_version` — a forgotten declaration, or one merely inherited from a superclass — raises rather than silently orphaning or mis-versioning itself, and a `::V2` whose declared `tool_version` disagrees with the suffix raises. `Axn.tools_for` checks every member; `Axn.versions_for` checks the members it matched, so the two never disagree while an unrelated malformed tool under a different name doesn't derail a lookup. `tool_name` derivation itself is a pure reader that does not raise.
+When a class declares `tool_version` and its constant ends in a `::Vn` segment, `tool_name` derives from the enclosing namespace (`AgentTools::ApproveLoan::V2` → `"approve_loan"`), so both versions group. The promotion moves the Ruby constant but not the wire contract — identity stays `tool_name`. Two guardrails keep the convention honest, enforced at enumeration (and, when the constant name is already visible, at declaration): a `::Vn` member that didn't declare its own `tool_version` — a forgotten declaration, or one merely inherited from a superclass — raises rather than silently orphaning or mis-versioning itself, and a `::V2` whose declared `tool_version` disagrees with the suffix raises. `Axn::Tools.for` checks every member; `Axn::Tools.versions` checks the members it matched, so the two never disagree while an unrelated malformed tool under a different name doesn't derail a lookup. `tool_name` derivation itself is a pure reader that does not raise.
 Versions group by their resolved `tool_name`, so if two versions set different per-adapter name overrides (`tool mcp: { name: … }`) they resolve to different names and won't group — keep the name consistent across versions.
 
 ## Testing

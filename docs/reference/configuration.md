@@ -88,7 +88,7 @@ A tool's final adapter membership is the union of its directory grant (adapters 
 An adapter registers itself, passing its own module as the config source the registry reads roots from:
 
 ```ruby
-Axn.register_tool_adapter(:openapi, self) # inside Axn::OpenAPI
+Axn::Tools.register_adapter(:openapi, self) # inside Axn::OpenAPI
 ```
 
 ## `on_exception`
@@ -626,6 +626,8 @@ Axn.configure do |c|
   c.set_default_async(false)
 end
 ```
+
+`Axn.config.default_async?` answers whether a default adapter is configured — the supported way for a gem to ask "is async on?".
 
 ### Async Configuration
 
