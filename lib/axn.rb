@@ -17,7 +17,7 @@ require "axn/extensions/serialization"
 # The core implementation
 require "axn/core"
 require "axn/core/executor"
-require "axn/reflection"
+require "axn/internal/reflection"
 require "axn/tools/version_group"
 require "axn/tools/registry"
 require "axn/tools/adapter_roots"

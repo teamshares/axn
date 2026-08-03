@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/reflection/subfield_tree"
+require "axn/internal/reflection/subfield_tree"
 require "axn/internal/shape_graph"
 
 module Axn
@@ -39,7 +39,7 @@ module Axn
           return cached.value if cached && cached.subfields.equal?(subfields)
 
           ambient = subfields.select { |c| _on_roots_at_ambient?(c.on) }
-          value = Axn::Reflection::SubfieldTree.build([_synthetic_ambient_root], ambient)
+          value = Axn::Internal::Reflection::SubfieldTree.build([_synthetic_ambient_root], ambient)
           @_axn_ambient_subfield_tree = AmbientSubfieldTreeCacheEntry.new(subfields:, value:)
           value
         end
@@ -63,7 +63,7 @@ module Axn
           ambient = candidate_subfields.select { |c| _on_roots_at_ambient?(c.on) }
           return if ambient.empty?
 
-          Axn::Reflection::SubfieldContradictions.check!([_synthetic_ambient_root], ambient)
+          Axn::Internal::Reflection::SubfieldContradictions.check!([_synthetic_ambient_root], ambient)
         end
 
         # A `shape:` on an ambient subfield validates the COPIED ambient value: a shape-carrying node
@@ -81,7 +81,7 @@ module Axn
           ambient = candidate_subfields.select { |c| _on_roots_at_ambient?(c.on) }
           return if ambient.empty?
 
-          tree = Axn::Reflection::SubfieldTree.build([_synthetic_ambient_root], ambient)
+          tree = Axn::Internal::Reflection::SubfieldTree.build([_synthetic_ambient_root], ambient)
           # `roots[PARENT]` is guaranteed present: `ambient` is non-empty (checked above), and every
           # config in it roots at `PARENT`, so `SubfieldTree.build` always creates that root node.
           _each_ambient_node(tree.roots[PARENT]) do |node|
@@ -132,7 +132,7 @@ module Axn
         # — one that may contain itself, or mint a fresh nested shape on every read. Either overflows the stack
         # while the class is being defined, which no rescue in the framework can settle. Same two bounds, same two
         # messages, as the projection walk that re-walks for its own reasons
-        # (Reflection::PropertyNames#count_shape_members!).
+        # (Internal::Reflection::PropertyNames#count_shape_members!).
         def _each_shape_member(shape, seen = nil, depth = 0, via = nil, &block)
           hash = Internal::ShapeGraph.hash_or_nil(shape)
           return if nil.equal?(hash)

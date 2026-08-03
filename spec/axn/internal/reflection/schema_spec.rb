@@ -2,7 +2,7 @@
 
 require "spec_helper"
 
-RSpec.describe Axn::Reflection::Schema do
+RSpec.describe Axn::Internal::Reflection::Schema do
   it "builds an input schema with required/optional and descriptions" do
     klass = Class.new do
       include Axn
@@ -719,7 +719,7 @@ RSpec.describe Axn::Reflection::Schema do
     inp = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
     expect(out[:properties][:z]).not_to have_key(:type)
     expect(inp[:properties][:w]).to include(type: "string")
-    expect(Axn::Reflection::Values.serialize_value(Complex(1, 2))).to be_a(String)
+    expect(Axn::Internal::Reflection::Values.serialize_value(Complex(1, 2))).to be_a(String)
   end
 
   it "leaves a type: Numeric output untyped (it admits a Complex value that serializes to a String)" do
@@ -4509,8 +4509,8 @@ RSpec.describe Axn::Reflection::Schema do
       resolved = action._resolved_subfields
       id_node = resolved.roots[:payload].children[:id]
 
-      strict = Axn::Reflection::Schema.derive_annotations(resolved.roots)
-      sat    = Axn::Reflection::Schema.derive_annotations(resolved.roots, satisfiability: true)
+      strict = Axn::Internal::Reflection::Schema.derive_annotations(resolved.roots)
+      sat    = Axn::Internal::Reflection::Schema.derive_annotations(resolved.roots, satisfiability: true)
 
       expect(strict[id_node].required).to be(true)   # schema: unknowable → required (safe direction)
       expect(sat[id_node].required).to be(false)     # detector: the Proc DOES apply at runtime

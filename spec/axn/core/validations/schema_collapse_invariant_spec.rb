@@ -30,12 +30,12 @@ RSpec.describe "a collision verdict and the schema it is about" do
   def collapsed_nodes(props, path = [], out = [])
     return out unless props.is_a?(Hash)
 
-    dupes = props.keys.map { |k| Axn::Reflection::Values.canonical_wire_key(k) }.tally.select { |_key, n| n > 1 }.keys
+    dupes = props.keys.map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }.tally.select { |_key, n| n > 1 }.keys
     out << [path.join("."), dupes] unless dupes.empty?
     props.each do |key, prop|
       next unless prop.is_a?(Hash)
 
-      child = path + [Axn::Reflection::Values.canonical_wire_key(key)]
+      child = path + [Axn::Internal::Reflection::Values.canonical_wire_key(key)]
       collapsed_nodes(prop[:properties], child, out)
       collapsed_nodes(prop.dig(:items, :properties), child + ["[]"], out)
       %i[anyOf allOf].each do |branch_key|
@@ -67,7 +67,7 @@ RSpec.describe "a collision verdict and the schema it is about" do
   # stub is installed once for the whole batch rather than per declaration, because it cannot be uninstalled
   # inside an example: taking a verdict after one is in place would read the guard as absent.
   def collapses_without_the_rule(declarations)
-    allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!)
+    allow(Axn::Internal::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!)
     declarations.transform_values do |declaration|
       klass = build_axn(&declaration)
       collapsed_nodes(klass.input_schema[:properties]) + collapsed_nodes(klass.output_schema[:properties])

@@ -66,7 +66,7 @@ eager-load), `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb
 
 - Use public `axn_class.input_schema` / `axn_class.output_schema` — plain JSON Schema **Hashes**. Wrap them
   into your transport's schema object inside `wrap`.
-- **Don't** reach into `Axn::Reflection::Schema` internals. **Don't** override `input_schema` to a non-Hash
+- **Don't** reach into `Axn::Internal::Reflection::Schema` internals. **Don't** override `input_schema` to a non-Hash
   (breaks other adapters on the shared class).
 - `on: :ambient_context` fields are **auto-excluded** from `input_schema` — you get a clean model-facing
   schema; don't re-add them.
@@ -74,7 +74,7 @@ eager-load), `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb
   with one documented **looser** case (an invalid literal `default:`). Surface the caveat; don't fight it.
   A deep subfield under a `model:`/non-object parent is omitted with a `logger.warn` — pass it through.
 
-Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
+Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/internal/reflection/schema.rb`.
 
 ## Value serialization
 
@@ -82,7 +82,7 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
   Don't hand-roll (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` so output matches `output_schema`).
 - **You pass no config list** — `render` derives the declared `exposes` from the result itself. Rendering a
   subset is deliberately unsupported: it would emit a body contradicting `output_schema`.
-- **Don't reach into `Axn::Reflection::Values`.** `render` is the surface; the renderer's helpers are private, and
+- **Don't reach into `Axn::Internal::Reflection::Values`.** `render` is the surface; the renderer's helpers are private, and
   what stays public is there for core's own cross-module callers, not for you.
 - No **value** in the result is one `JSON.generate` refuses (no non-finite number, no non-UTF-8 bytes, no
   cycle, no collapsed property). That is a promise about values, NOT about your encoder's config: a structure
@@ -104,7 +104,7 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
 - Keep the two guarantees apart: encodability is unconditional, declared-shape is what the flag buys.
   `reject_opaque: false` never means "might not be JSON" — that is why it isn't named `strict:`.
 
-Source: `lib/axn/extensions/serialization.rb` (the renderer itself is `lib/axn/reflection/values.rb`, core-internal).
+Source: `lib/axn/extensions/serialization.rb` (the renderer itself is `lib/axn/internal/reflection/values.rb`, core-internal).
 
 ## Per-adapter configuration
 
@@ -218,7 +218,7 @@ Core source entry points (resolve with `bundle show axn`):
 - `lib/axn/extensions.rb` — `Axn::Extensions.best_effort`, `.config`, `.owned_failure?` (extension-author surface).
 - `lib/axn/tools/registry.rb`, `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb` —
   membership, `tool_name`.
-- `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`, `lib/axn/reflection/values.rb` — reflection.
+- `lib/axn/core/schema_reflection.rb`, `lib/axn/internal/reflection/schema.rb`, `lib/axn/internal/reflection/values.rb` — reflection.
 - `lib/axn/configurable.rb` — `config_namespace`, `resolve_override_for`, `overrides`.
 - `lib/axn/tools/invoker.rb` — the tool call path.
 - `lib/axn/core/ambient_context.rb` — ambient filtering/resolution.

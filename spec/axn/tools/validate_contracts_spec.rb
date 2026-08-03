@@ -133,8 +133,8 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     stub_const("ToolContractsSpec::Structured", structured)
     Axn::Tools.register_adapter(:mcp)
     klass = valid_tool
-    allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
-    allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).with(klass).and_raise(structured.new(path: "p"))
+    allow(Axn::Internal::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
+    allow(Axn::Internal::Reflection::PropertyNames).to receive(:validate_inbound!).with(klass).and_raise(structured.new(path: "p"))
 
     expect { Axn::Tools.validate_contracts! }.to raise_error(structured) { |error|
       expect(error.message).to eq("structured at p")
@@ -152,8 +152,8 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     def raising_from(klass, error)
       Axn::Tools.register_adapter(:mcp)
       tool = valid_tool
-      allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
-      allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).with(tool).and_raise(error)
+      allow(Axn::Internal::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
+      allow(Axn::Internal::Reflection::PropertyNames).to receive(:validate_inbound!).with(tool).and_raise(error)
       stub_const("ToolContractsSpec::Hostile", klass)
     end
 
@@ -379,8 +379,8 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
           def call; end
         end
         Object.const_set(exotic, klass)
-        allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
-        allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).with(klass).and_raise(ArgumentError, "the real defect")
+        allow(Axn::Internal::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
+        allow(Axn::Internal::Reflection::PropertyNames).to receive(:validate_inbound!).with(klass).and_raise(ArgumentError, "the real defect")
 
         expect { Axn::Tools.validate_contracts! }.to raise_error(ArgumentError) { |error|
           message = Exception.instance_method(:to_s).bind_call(error)
@@ -471,7 +471,7 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     # Counted at the BUILD rather than at `input_schema`: setup validates axn's own projection directly, since
     # `input_schema` may belong to an adapter base class (see the shadowing example below).
     projections = 0
-    allow(Axn::Reflection::Schema).to receive(:build_input_for).and_wrap_original do |original, klass|
+    allow(Axn::Internal::Reflection::Schema).to receive(:build_input_for).and_wrap_original do |original, klass|
       projections += 1 if klass == tool
       original.call(klass)
     end

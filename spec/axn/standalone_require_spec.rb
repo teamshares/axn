@@ -14,9 +14,9 @@ module StandaloneRequireProbe
   # The files an adapter gem is documented to load directly (`docs/recipes/authoring-tool-adapters.md`).
   ENTRY_POINTS = %w[
     axn/extensions/serialization
-    axn/reflection/property_names
-    axn/reflection/schema
-    axn/reflection/values
+    axn/internal/reflection/property_names
+    axn/internal/reflection/schema
+    axn/internal/reflection/values
   ].freeze
 
   # The derivation is required AFTER the subject, so nothing it pulls in can satisfy a reference on axn's behalf.
@@ -81,11 +81,11 @@ RSpec.describe "standalone require completeness" do
   let(:upward_references) do
     [
       ["axn/exceptions.rb", "Axn::Internal::AsyncSerialization"],
-      ["axn/exceptions.rb", "Axn::Reflection::PropertyNames"],
-      ["axn/internal/shape_graph.rb", "Axn::Reflection::PropertyNames"],
-      ["axn/reflection/schema.rb", "Axn::Core::Contract::GENERATED_READER_SOURCE_PATH"],
-      ["axn/reflection/schema.rb", "Axn::Validation::Base"],
-      ["axn/reflection/subfield_tree.rb", "Schema"],
+      ["axn/exceptions.rb", "Axn::Internal::Reflection::PropertyNames"],
+      ["axn/internal/shape_graph.rb", "Axn::Internal::Reflection::PropertyNames"],
+      ["axn/internal/reflection/schema.rb", "Axn::Core::Contract::GENERATED_READER_SOURCE_PATH"],
+      ["axn/internal/reflection/schema.rb", "Axn::Validation::Base"],
+      ["axn/internal/reflection/subfield_tree.rb", "Schema"],
     ]
   end
 

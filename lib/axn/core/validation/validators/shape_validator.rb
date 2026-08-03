@@ -111,7 +111,7 @@ module Axn
             # unreadable-member error iff AT LEAST ONE validator would still run.
             next if no_member_validator_runs?(member, source, action)
 
-            record.errors.add(attribute, "#{prefix}#{Axn::Reflection::PropertyNames.renderable_label(member.field)} " \
+            record.errors.add(attribute, "#{prefix}#{Axn::Internal::Reflection::PropertyNames.renderable_label(member.field)} " \
                                          "could not be read (got #{source.class})",
                               axn_shape_member: true, axn_member_user_facing: member_user_facing(member))
             next
@@ -129,7 +129,7 @@ module Axn
             # intent rather than overwriting it — so a `user_facing:` member composes at any depth. A
             # member's own direct-validator errors are untagged here and take this member's intent.
             intent = error.options[:axn_shape_member] ? error.options[:axn_member_user_facing] : member_user_facing(member)
-            record.errors.add(attribute, "#{prefix}#{Axn::Reflection::PropertyNames.renderable_label(member.field)} #{error.message}",
+            record.errors.add(attribute, "#{prefix}#{Axn::Internal::Reflection::PropertyNames.renderable_label(member.field)} #{error.message}",
                               axn_shape_member: true, axn_member_user_facing: intent)
           end
         end

@@ -17,8 +17,9 @@ require "ripper"
 # ONE axn file and must not load the rest.
 module ConstantReferences
   # `[[nesting, "Some::Const"], …]`, where nesting is the lexical module/class nesting the reference appears in
-  # (`[["module", "Axn"], ["module", "Reflection"]]`). The nesting is carried because that is what decides where
-  # a relative reference resolves: `Values` inside `module Axn; module Reflection` is `Axn::Reflection::Values`.
+  # (`[["module", "Axn"], ["module", "Internal"], ["module", "Reflection"]]`). The nesting is carried because that is
+  # what decides where a relative reference resolves: `Values` inside `module Axn; module Internal; module Reflection`
+  # is `Axn::Internal::Reflection::Values`.
   def self.in_source(source)
     found = []
     walk(Ripper.sexp(source), [], found)

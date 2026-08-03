@@ -8,7 +8,7 @@ require "bigdecimal"
 require "json"
 require "singleton"
 
-RSpec.describe Axn::Reflection::Values do
+RSpec.describe Axn::Internal::Reflection::Values do
   # An object with no own as_json, no to_h, and #to_s owned by Object — but `respond_to?` is
   # overridden to hide :as_json/:to_h rather than left to chance: another spec file's
   # `require "globalid"` adds a generic Object#as_json globally for the rest of this process (a
@@ -57,7 +57,7 @@ RSpec.describe Axn::Reflection::Values do
 
     it "serializes a Symbol as its String form (matching TYPE_MAP's Symbol => \"string\")" do
       # JSON has no symbol type — a Symbol must render as a String, matching the schema's
-      # `type: Symbol` => "string" mapping (Axn::Reflection::Schema::TYPE_MAP), not fall through
+      # `type: Symbol` => "string" mapping (Axn::Internal::Reflection::Schema::TYPE_MAP), not fall through
       # to the generic `to_s` else-branch incidentally.
       expect(described_class.serialize_value(:ok)).to be_a(String).and eq("ok")
     end
@@ -65,7 +65,7 @@ RSpec.describe Axn::Reflection::Values do
     it "serializes other Numeric subclasses (BigDecimal, Rational) as JSON numbers (Float), matching the schema's number type" do
       # Regression: BigDecimal/Rational aren't Integer/Float, so without an explicit Numeric case
       # they fall through to as_json/to_s, producing STRINGS ("0.314e1", "1/3") that violate an
-      # output_schema declaring `type: Numeric` => "number" (Axn::Reflection::Schema::TYPE_MAP).
+      # output_schema declaring `type: Numeric` => "number" (Axn::Internal::Reflection::Schema::TYPE_MAP).
       expect(described_class.serialize_value(BigDecimal("3.14"))).to be_a(Float).and eq(3.14)
       expect(described_class.serialize_value(Rational(1, 3))).to be_a(Float).and eq(1.0 / 3)
     end
@@ -82,7 +82,7 @@ RSpec.describe Axn::Reflection::Values do
       # Regression: without an explicit case, Time/DateTime/Date fall through to `to_s` outside
       # Rails (no as_json, no meaningful to_h), producing a space-separated, non-RFC3339 string
       # that doesn't match the `format: "date-time"` / `format: "date"` advertised in the schema
-      # (Axn::Reflection::Schema::FORMAT_MAP). They must serialize identically whether or not
+      # (Axn::Internal::Reflection::Schema::FORMAT_MAP). They must serialize identically whether or not
       # ActiveSupport's json core_ext happens to be loaded.
       time = Time.utc(2026, 7, 3, 4, 39, 58)
       expect(described_class.serialize_value(time)).to eq(time.iso8601)
@@ -827,12 +827,12 @@ RSpec.describe Axn::Reflection::Values do
     end
   end
 
-  # `axn/reflection` is loadable on its own (it composes only its own reflection files), and adapters are
+  # `axn/internal/reflection` is loadable on its own (it composes only its own reflection files), and adapters are
   # pointed at it. Serializing ANY Hash or Array now reaches CycleGuard, and raising needs
   # Axn::Extensions::Serialization::UnserializableValue — both of which live outside that entrypoint, so
   # values.rb requires them itself.
   # Asserted in a subprocess: the suite has all of axn loaded, so it cannot observe this in-process.
-  describe "the axn/reflection entrypoint on its own" do
+  describe "the axn/internal/reflection entrypoint on its own" do
     def ruby(snippet)
       lib = File.expand_path("../../../lib", __dir__)
       out = `ruby -I#{lib} -e #{Shellwords.escape(snippet)} 2>&1`
@@ -843,7 +843,7 @@ RSpec.describe Axn::Reflection::Values do
     # `{"a" => [1]}`, 3.3 `{"a"=>[1]}`), so asserting on its text would pass on one matrix ruby and fail
     # on another. What matters here is that the call works at all without the top-level entrypoint.
     it "serializes ordinary structured output without loading all of axn" do
-      out, ok = ruby('require "axn/reflection"; print Axn::Reflection::Values.serialize_value({ a: [1] }) == { "a" => [1] }')
+      out, ok = ruby('require "axn/internal/reflection"; print Axn::Internal::Reflection::Values.serialize_value({ a: [1] }) == { "a" => [1] }')
 
       expect(ok).to be(true), "subprocess failed: #{out}"
       expect(out).to eq("true")
@@ -851,11 +851,11 @@ RSpec.describe Axn::Reflection::Values do
 
     it "can still raise its own Axn::Extensions::Serialization::UnserializableValue" do
       out, ok = ruby(<<~RUBY)
-        require "axn/reflection"
+        require "axn/internal/reflection"
         cyclic = [1]
         cyclic << cyclic
         begin
-          Axn::Reflection::Values.serialize_value(cyclic)
+          Axn::Internal::Reflection::Values.serialize_value(cyclic)
         rescue Axn::Extensions::Serialization::UnserializableValue => e
           print e.class
         end

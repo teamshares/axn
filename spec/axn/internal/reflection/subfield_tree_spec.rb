@@ -2,7 +2,7 @@
 
 require "spec_helper"
 
-RSpec.describe Axn::Reflection::SubfieldTree do
+RSpec.describe Axn::Internal::Reflection::SubfieldTree do
   def tree_for(klass)
     described_class.build(klass.internal_field_configs, klass.subfield_configs)
   end

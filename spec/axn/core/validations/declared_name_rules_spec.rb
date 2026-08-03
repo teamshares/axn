@@ -89,7 +89,7 @@ RSpec.describe "the rules every declared name is held to" do
     # it canonicalizes to, so the contract advertises a property nothing can satisfy.
     it "is refused because no caller could satisfy it" do
       expect(wide("ab").to_sym).not_to eq(:ab)
-      expect(Axn::Reflection::Values.canonical_wire_key(wide("ab").to_sym)).to eq("ab")
+      expect(Axn::Internal::Reflection::Values.canonical_wire_key(wide("ab").to_sym)).to eq("ab")
     end
 
     it "still accepts every legal spelling" do
@@ -102,7 +102,7 @@ RSpec.describe "the rules every declared name is held to" do
       name = latin1("caf\xE9")
       klass = build_axn { expects name, allow_blank: true }
 
-      expect(Axn::Reflection::Values.canonical_wire_key(klass.internal_field_configs.first.field)).to eq("café")
+      expect(Axn::Internal::Reflection::Values.canonical_wire_key(klass.internal_field_configs.first.field)).to eq("café")
       expect(klass.call(name.to_sym => "au lait")).to be_ok
     end
   end
