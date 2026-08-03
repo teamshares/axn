@@ -906,15 +906,18 @@ RSpec.describe Axn::Reflection::Values do
     end
 
     # `Module#to_s` hands back a constant path's own bytes, and a constant may hold non-UTF-8 ones — so
-    # naming the offending value's class could destroy the report it was building. A Symbol (and so a
-    # constant name) can only ever hold valid UTF-8 bytes — `const_set`/`to_sym` reject anything else
-    # outright — so the offending bytes have to belong to a DIFFERENT encoding whose bytes have no UTF-8
-    # mapping at all: ASCII-8BIT holding `\xFF`, which `String#encode(Encoding::UTF_8)` refuses
-    # (`Encoding::UndefinedConversionError`), unlike a transcodable encoding such as ISO-8859-1.
+    # naming the offending value's class could destroy the report it was building. A Symbol built from a
+    # String already TAGGED UTF-8 must hold valid UTF-8 bytes — `const_set`/`to_sym` reject anything else
+    # in that encoding outright — so a constant reaches this state by being interned from a String tagged
+    # with a DIFFERENT encoding whose bytes have no UTF-8 mapping at all: ASCII-8BIT holding `\xFF`, which
+    # `String#encode(Encoding::UTF_8)` refuses (`Encoding::UndefinedConversionError`), unlike a
+    # transcodable encoding such as ISO-8859-1.
     #
-    # The join only raises when the SURROUNDING text is non-ASCII too: two same-or-ASCII-only-compatible
-    # encodings concatenate fine regardless of validity, so an all-ASCII `path` and reason would not
-    # reproduce this — `path` carries the non-ASCII character that makes the join incompatible.
+    # `path` is genuinely non-ASCII rather than an artifact of this test: a real axn path is built from
+    # field names and canonicalized wire keys, which preserve legitimate non-ASCII (see `:naïve` elsewhere
+    # in this suite). The join only raises when that surrounding text is non-ASCII too — two
+    # same-or-ASCII-only-compatible encodings concatenate fine regardless of validity, so an all-ASCII
+    # `path` would not reproduce this.
     describe "naming a value whose class holds bytes with no UTF-8 rendering" do
       let(:unrenderable_class) do
         name = "UnrenderableCafeValue".dup
