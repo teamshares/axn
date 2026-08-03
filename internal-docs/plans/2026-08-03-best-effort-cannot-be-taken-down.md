@@ -19,7 +19,7 @@ Spec: `internal-docs/specs/2026-08-03-best-effort-cannot-be-taken-down-design.md
 - RuboCop: targeted `# rubocop:disable <Cop>` only, never blanket. `rescue Exception` needs `# rubocop:disable Lint/RescueException`.
 - Pre-release gem: remove dead code outright rather than leaving a tombstone. Keep misuse guards.
 - Every new `lib/` file **declares its own requires** for every constant its code references. `spec/axn/standalone_require_spec.rb` derives the list from each file's parse tree and fails on a gap.
-- Test commands: `bundle exec rspec <path>` for a single file, `bundle exec rspec` for all, `bundle exec rubocop` for lint. `spec_rails` needs the dummy app's bundle: `BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails`.
+- Test commands: `bundle exec rspec <path>` for a single file, `bundle exec rspec` for all, `bundle exec rubocop` for lint. For the Rails specs use `bundle exec rake spec_rails`, which is what CI runs — it chdirs into the dummy app. Running `rspec spec_rails` from the repo root instead reports `0 examples, 0 failures, 2 errors occurred outside of examples` and no failure count, because both `.rspec` files say `--require spec_helper` and the root cwd loads the non-Rails helper, so Rails never boots. A green-looking zero is the failure mode to watch for.
 
 ---
 
