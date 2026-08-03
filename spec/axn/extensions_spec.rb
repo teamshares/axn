@@ -229,6 +229,16 @@ RSpec.describe Axn::Extensions do
       hostile_backtrace = Class.new(StandardError) do
         def backtrace = "not an array"
       end
+      raising_backtrace = Class.new(StandardError) do
+        def backtrace = raise(NotImplementedError, "backtrace explodes")
+      end
+      # An override is the only route to Location frames on either Ruby the gem supports: `set_backtrace`
+      # refuses them on 3.3 (TypeError) and accepts them on 3.4, where `backtrace` hands them back as
+      # Strings. So this row pins the BOUND `Exception#backtrace` reader — the thing that keeps an override
+      # from being consulted at all — rather than the frame type test that backs it up.
+      location_backtrace = Class.new(StandardError) do
+        def backtrace = caller_locations(0, 1)
+      end
       non_string_message = Class.new(StandardError) do
         def message = Object.new.tap { |o| o.define_singleton_method(:to_s) { raise "to_s explodes" } }
       end
@@ -245,6 +255,8 @@ RSpec.describe Axn::Extensions do
         "a message that is not a String and whose to_s raises" => -> { raise non_string_message },
         "a class whose name raises" => -> { raise hostile_class_name },
         "a backtrace override answering a non-Array" => -> { raise hostile_backtrace },
+        "a backtrace override that raises" => -> { raise raising_backtrace },
+        "a backtrace override answering Thread::Backtrace::Location frames" => -> { raise location_backtrace },
         "a rebuilt backtrace holding a blank frame" => lambda {
           raise(ArgumentError.new("rebuilt").tap { |e| e.set_backtrace([""]) })
         },
@@ -259,7 +271,12 @@ RSpec.describe Axn::Extensions do
           end
 
           shapes.each do |label, block|
-            it "swallows #{label} and returns nil" do
+            # Swallowing is only half the contract: a guard that absorbed one of these silently would lose
+            # every diagnostic and still satisfy a nil return, so the warning is asserted to ARRIVE here.
+            # What it SAYS is pinned separately below, for the shapes whose rendering is the question.
+            it "swallows #{label}, and warns rather than losing the diagnostic" do
+              expect(logger).to receive(:warn).once
+
               expect(described_class.best_effort("guarding", &block)).to be_nil
             end
           end
