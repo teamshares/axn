@@ -989,8 +989,12 @@ git commit -m "PRO-3005: Core::Tools becomes Core::ToolDeclaration, freeing Tool
 
 - [ ] **Step 1: Sweep the mechanical renames through docs**
 
+Derive the file list with a grep rather than hardcoding it — a hardcoded list already missed `docs/recipes/running-without-rails.md`, which names `Axn.validate_tool_contracts!`:
+
 ```bash
-for f in AGENTS.md AGENTS-tool-adapters.md CHANGELOG.md docs/recipes/authoring-tool-adapters.md docs/recipes/gem-configuration.md docs/reference/configuration.md docs/reference/factory.md; do
+FILES=$(grep -rIl -E "Axn\.tools_for|Axn\.versions_for|Axn\.register_tool_adapter|Axn\.validate_tool_contracts|Axn\.owns_failure_exception|Axn::InvalidToolContract|Axn::Reflection::UnserializableValue|broad_tool_path|normalize_tool_path|Core::Tools|register_tool_adapter|tools_for|versions_for" docs/ AGENTS.md AGENTS-tool-adapters.md CHANGELOG.md README.md 2>/dev/null | grep -v ".vitepress/dist" | sort -u)
+echo "$FILES"
+for f in $FILES; do
   sed -i '' \
     -e 's/Axn\.tools_for(/Axn::Tools.for(/g' \
     -e 's/Axn\.versions_for(/Axn::Tools.versions(/g' \
