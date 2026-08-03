@@ -45,7 +45,7 @@ module Axn
       # `Schema.build_input`/`build_output` are reached only through them). Adding a fourth projection path
       # means adding it here, or the guarantee narrows silently.
       #
-      # For a TOOL axn, "first demanded" is made to happen at app setup: `Axn.validate_tool_contracts!` projects
+      # For a TOOL axn, "first demanded" is made to happen at app setup: `Axn::Tools.validate_contracts!` projects
       # every registered tool once, driven under Rails by `config.after_initialize` and `config.to_prepare` (see
       # Axn::RailsIntegration::Engine), and called directly by a non-Rails app. That entry point documents
       # exactly how wide its coverage is — it depends on an adapter being registered and on the tool being

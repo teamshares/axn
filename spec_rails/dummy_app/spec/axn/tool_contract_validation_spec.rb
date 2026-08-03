@@ -105,7 +105,7 @@ RSpec.describe "tool contract validation at app setup" do
     # assertion that setup validation does not fire spuriously on valid contracts.
     it "leaves a valid app booted" do
       expect(Rails.application.initialized?).to be(true)
-      expect { Axn.validate_tool_contracts! }.not_to raise_error
+      expect { Axn::Tools.validate_contracts! }.not_to raise_error
     end
   end
 

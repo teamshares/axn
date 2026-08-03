@@ -4,7 +4,7 @@
 # what an adapter hands a model — so validation is driven at app setup rather than left to a user's tool call.
 # This is the non-Rails path: there is no boot to hook, so an app calls the entry point itself. The Rails hooks
 # that call the same entry point are covered in `spec_rails`.
-RSpec.describe "Axn.validate_tool_contracts!" do
+RSpec.describe "Axn::Tools.validate_contracts!" do
   before { Axn::Tools::Registry.reset_adapters! }
   after { Axn::Tools::Registry.reset_adapters! }
 
@@ -39,7 +39,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     Axn::Tools.register_adapter(:mcp)
     colliding_tool
 
-    expect { Axn.validate_tool_contracts! }.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
   end
 
   # THE case that matters most, and the one the guarantee used to miss: a tool subclassing its adapter's base
@@ -88,7 +88,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       Axn::Tools.register_adapter(:mcp)
       shadowing_tool(inbound: true)
 
-      expect { Axn.validate_tool_contracts! }
+      expect { Axn::Tools.validate_contracts! }
         .to raise_error(Axn::DuplicateFieldError, /Shadowing has an invalid tool contract.*JSON property "café"/m)
     end
 
@@ -98,7 +98,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       Axn::Tools.register_adapter(:mcp)
       shadowing_tool(inbound: false)
 
-      expect { Axn.validate_tool_contracts! }
+      expect { Axn::Tools.validate_contracts! }
         .to raise_error(Axn::DuplicateFieldError, /Shadowing has an invalid tool contract.*JSON property "café"/m)
     end
   end
@@ -109,7 +109,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     Axn::Tools.register_adapter(:mcp)
     colliding_tool
 
-    expect { Axn.validate_tool_contracts! }.to raise_error(Axn::DuplicateFieldError) { |error|
+    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::DuplicateFieldError) { |error|
       expect(error.message).to start_with("ToolContractsSpec::Colliding has an invalid tool contract")
       expect(error.cause).to be_a(Axn::DuplicateFieldError)
     }
@@ -136,7 +136,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
     allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).with(klass).and_raise(structured.new(path: "p"))
 
-    expect { Axn.validate_tool_contracts! }.to raise_error(structured) { |error|
+    expect { Axn::Tools.validate_contracts! }.to raise_error(structured) { |error|
       expect(error.message).to eq("structured at p")
       expect(error.cause).to be_a(structured)
     }
@@ -166,7 +166,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       end
       raising_from(hostile, hostile.new("the real defect"))
 
-      expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
+      expect { Axn::Tools.validate_contracts! }.to raise_error(hostile) { |error|
         expect(Exception.instance_method(:to_s).bind_call(error))
           .to eq("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
         # `cause` on a DEGRADED path: reading the hostile `#message` rescues inside the boot rescue, and Ruby
@@ -182,7 +182,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       end
       raising_from(hostile, hostile.new)
 
-      expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
+      expect { Axn::Tools.validate_contracts! }.to raise_error(hostile) { |error|
         expect(Exception.instance_method(:to_s).bind_call(error))
           .to eq("ToolContractsSpec::Valid has an invalid tool contract — ToolContractsSpec::Hostile")
       }
@@ -200,7 +200,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       end
       raising_from(hostile, hostile.new("the stored message"))
 
-      expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
+      expect { Axn::Tools.validate_contracts! }.to raise_error(hostile) { |error|
         expect(Exception.instance_method(:to_s).bind_call(error))
           .to eq("ToolContractsSpec::Valid has an invalid tool contract — the stored message")
       }
@@ -227,7 +227,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       end
       raising_from(hostile, hostile.new("the real defect"))
 
-      expect { Axn.validate_tool_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |error|
+      expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |error|
         expect(error.message).to start_with("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
         expect(error.cause).to be_a(hostile)
       }
@@ -242,7 +242,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       end
       raising_from(hostile, hostile.new("the real defect"))
 
-      expect { Axn.validate_tool_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |error|
+      expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |error|
         expect(error.message).to start_with("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
         expect(error.cause).to be_a(hostile)
       }
@@ -259,7 +259,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       error.define_singleton_method(:exception) { |*args| args.empty? ? self : RuntimeError.new("substituted") }
       raising_from(hostile, error)
 
-      expect { Axn.validate_tool_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |raised|
+      expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |raised|
         expect(raised.message).to start_with("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
         expect(raised.cause).to be(error)
       }
@@ -271,7 +271,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       hostile = Class.new(ArgumentError)
       raising_from(hostile, hostile.new("the real defect").freeze)
 
-      expect { Axn.validate_tool_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |error|
+      expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |error|
         expect(error.message).to start_with("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
         expect(error.cause).to be_a(hostile)
       }
@@ -297,7 +297,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
         hostile = Class.new(ArgumentError) { define_method(:message) { "bad\xFF".dup.force_encoding("ASCII-8BIT") } }
         raising_from(hostile, hostile.new("stored"))
 
-        expect { Axn.validate_tool_contracts! }.to raise_error(hostile) { |error|
+        expect { Axn::Tools.validate_contracts! }.to raise_error(hostile) { |error|
           message = Exception.instance_method(:to_s).bind_call(error)
           expect(message).to eq('ToolContractsSpec::Valid has an invalid tool contract — "bad\xFF"')
           expect(message).to be_readable_utf8
@@ -310,7 +310,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       it "reports a plain exception whose STORED message holds them" do
         raising_from(Class.new(ArgumentError), ArgumentError.new(binary))
 
-        expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+        expect { Axn::Tools.validate_contracts! }.to raise_error(ArgumentError) { |error|
           expect(Exception.instance_method(:to_s).bind_call(error))
             .to eq('ToolContractsSpec::Valid has an invalid tool contract — "bad\xFF"')
         }
@@ -321,7 +321,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       it "renders a message in another encoding as its text" do
         raising_from(Class.new(ArgumentError), ArgumentError.new(latin1))
 
-        expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+        expect { Axn::Tools.validate_contracts! }.to raise_error(ArgumentError) { |error|
           message = Exception.instance_method(:to_s).bind_call(error)
           expect(message).to eq("ToolContractsSpec::Valid has an invalid tool contract — café broke")
           expect(message).to be_readable_utf8
@@ -332,7 +332,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       it "leaves a valid multibyte UTF-8 message exactly as it was" do
         raising_from(Class.new(ArgumentError), ArgumentError.new("café broke"))
 
-        expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+        expect { Axn::Tools.validate_contracts! }.to raise_error(ArgumentError) { |error|
           expect(Exception.instance_method(:to_s).bind_call(error))
             .to eq("ToolContractsSpec::Valid has an invalid tool contract — café broke")
         }
@@ -347,7 +347,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
         end
         raising_from(hostile, hostile.new("stored"))
 
-        expect { Axn.validate_tool_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |error|
+        expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |error|
           expect(error.message).to start_with('ToolContractsSpec::Valid has an invalid tool contract — "bad\xFF"')
           expect(error.message).to be_readable_utf8
           expect(error.cause).to be_a(hostile)
@@ -382,7 +382,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
         allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).and_call_original
         allow(Axn::Reflection::PropertyNames).to receive(:validate_inbound!).with(klass).and_raise(ArgumentError, "the real defect")
 
-        expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+        expect { Axn::Tools.validate_contracts! }.to raise_error(ArgumentError) { |error|
           message = Exception.instance_method(:to_s).bind_call(error)
           expect(message).to eq("CaféTool has an invalid tool contract — the real defect")
           expect(message).to be_readable_utf8
@@ -398,7 +398,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       hostile = Class.new(ArgumentError) { def exception(*_args) = self }
       raising_from(hostile, hostile.new("the real defect"))
 
-      expect { Axn.validate_tool_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |error|
+      expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |error|
         expect(Exception.instance_method(:to_s).bind_call(error)).to eq(error.message)
         expect(error.message).to include("axn does not run an exception's own code")
       }
@@ -417,7 +417,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       def call; end
     end)
 
-    expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+    expect { Axn::Tools.validate_contracts! }.to raise_error(ArgumentError) { |error|
       expect(error.message).to start_with("ToolContractsSpec::Unrenderable has an invalid tool contract")
       expect(error.message).to include("bytes that have no UTF-8 rendering")
     }
@@ -438,7 +438,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     ToolContractsSpec::OwnRendering.internal_field_configs =
       [Axn::Core::Contract::FieldConfig.new(field: masq, reader_as: :held, validations: { allow_nil: true })].freeze
 
-    expect { Axn.validate_tool_contracts! }.to raise_error(ArgumentError) { |error|
+    expect { Axn::Tools.validate_contracts! }.to raise_error(ArgumentError) { |error|
       expect(error.message).to start_with("ToolContractsSpec::OwnRendering has an invalid tool contract")
       expect(error.message).to include("does not render through Ruby's own `to_s`")
     }
@@ -448,7 +448,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     Axn::Tools.register_adapter(:mcp)
     valid_tool
 
-    expect { Axn.validate_tool_contracts! }.not_to raise_error
+    expect { Axn::Tools.validate_contracts! }.not_to raise_error
   end
 
   # The point of running at setup: without it the same contract reaches an adapter, and the error surfaces from
@@ -476,7 +476,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       original.call(klass)
     end
 
-    Axn.validate_tool_contracts!
+    Axn::Tools.validate_contracts!
 
     expect(projections).to eq(1)
   end
@@ -493,7 +493,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       def call; end
     end)
 
-    expect { Axn.validate_tool_contracts! }.not_to raise_error
+    expect { Axn::Tools.validate_contracts! }.not_to raise_error
   end
 
   # A second setup pass (a dev reload calls the entry point again) must stay silent for a valid contract and stay
@@ -502,8 +502,8 @@ RSpec.describe "Axn.validate_tool_contracts!" do
     Axn::Tools.register_adapter(:mcp)
     colliding_tool
 
-    expect { Axn.validate_tool_contracts! }.to raise_error(Axn::DuplicateFieldError)
-    expect { Axn.validate_tool_contracts! }.to raise_error(Axn::DuplicateFieldError)
+    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::DuplicateFieldError)
+    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::DuplicateFieldError)
   end
 
   # The width of the guarantee, pinned: membership is the union of a directory grant and a DECLARATION grant, so
@@ -539,7 +539,7 @@ RSpec.describe "Axn.validate_tool_contracts!" do
       colliding_tool
 
       expect(Axn::Tools::Registry.tool_classes).to be_empty
-      expect { Axn.validate_tool_contracts! }.not_to raise_error
+      expect { Axn::Tools.validate_contracts! }.not_to raise_error
     end
   end
 
