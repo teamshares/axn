@@ -47,6 +47,8 @@ module Axn
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
       STRING_EMPTY = ::String.instance_method(:empty?)
       STRING_ENCODING = ::String.instance_method(:encoding)
+      SYMBOL_ENCODING = ::Symbol.instance_method(:encoding)
+      private_constant :SYMBOL_ENCODING
       private_constant :OBJECT_METHOD, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_INSTANCE_METHODS, :MODULE_PRIVATE_INSTANCE_METHODS,
                        :MODULE_PUBLIC_METHOD_DEFINED
@@ -193,6 +195,33 @@ module Axn
         # A String that has UNDEF'd `to_s` resolves to no method at all, so it renders through whatever
         # `method_missing` serves — emphatically not String's own.
         false
+      end
+
+      # The ENCODING a name's bytes are in, read from the bound base implementation rather than asked of the
+      # name — a String subclass can override `encoding` as readily as `to_s`, and this decides a guard. Nil
+      # for anything that is neither, which has no bytes to judge and is refused by the type rule instead.
+      def self.name_encoding(value)
+        case value
+        when ::Symbol then SYMBOL_ENCODING.bind_call(value)
+        when ::String then STRING_ENCODING.bind_call(value)
+        end
+      end
+
+      # Whether a name is written in an encoding whose ASCII range is ASCII — which every declared name must
+      # be, because a name that is not can neither be ASKED the questions a declaration asks of it nor SERVE
+      # as a wire key afterwards.
+      #
+      # Not a stand-in for "is UTF-8": a Latin-N name is ASCII-compatible, compares against axn's own ASCII
+      # patterns, and works end to end (it canonicalizes to its UTF-8 rendering for every property it names).
+      # What is excluded is the wide encodings — UTF-16, UTF-32 — where `"a.b".include?(".")` raises
+      # `Encoding::CompatibilityError` rather than answering, and where the Symbol the name interns to is a
+      # DISTINCT object from its UTF-8 twin (`"ab".encode("UTF-16LE").to_sym != :ab`), so the property the
+      # schema advertises can never be the key a caller supplies.
+      def self.ascii_compatible_name?(value)
+        encoding = name_encoding(value)
+        return true if encoding.nil?
+
+        encoding.ascii_compatible?
       end
 
       # Does this caller-supplied name mean "absent" — `nil`, `false`, an all-whitespace (or empty) String, or

@@ -52,6 +52,39 @@ module Axn
         end
       end
 
+      # For a walk that descends TWO structures in lockstep — a shape graph and the value it describes —
+      # where the position on the path is the PAIR rather than the container alone. Guards on
+      # (`container`, `key`): the same value revisited under the same shape node.
+      #
+      # Keying on either half alone is wrong, in opposite directions, and both were measured. On the VALUE
+      # alone, a self-referential value under an ordinary DECLARED shape is revisited one level down under a
+      # different shape node that still has members to validate, so skipping it there drops real verdicts (a
+      # required member of the second node stops being checked at all). On the SHAPE alone, a legitimately
+      # repeated shape stops descending a value that still has members — which is why the mask in
+      # `redaction.rb` guards the value.
+      #
+      # Both halves are identity-keyed for the same reason `guard` is: a cycle is the same OBJECT
+      # reappearing, and neither a caller's value nor its shape may be asked to hash or compare itself.
+      #
+      # What this bounds is a CYCLIC graph. A GENERATIVE one — minting a fresh nested shape on every read —
+      # repeats no pair and is endless rather than cyclic, so a walk that can meet one needs
+      # `ShapeGraph::MAX_NESTING` as well. Every walk of a graph a class merely HOLDS needs both bounds.
+      def self.guard_pair(container, key, seen, on_cycle:)
+        seen ||= {}.compare_by_identity
+        nested = (seen[container] ||= {}.compare_by_identity)
+        return on_cycle if nested.key?(key)
+
+        nested[key] = true
+        begin
+          yield seen
+        ensure
+          # Popped on the way out on BOTH levels, so a pair repeated among SIBLINGS still walks in full and
+          # the outer key does not accumulate an empty bag per value the walk has finished with.
+          nested.delete(key)
+          seen.delete(container) if nested.empty?
+        end
+      end
+
       # Yields the visited-set to use for the next level down, having marked `container` as open.
       # Returns `on_cycle` instead — without yielding — when `container` is already open on the
       # current path.
