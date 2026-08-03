@@ -214,5 +214,141 @@ RSpec.describe Axn::Extensions do
         end
       end
     end
+
+    describe "the guarantee that reporting cannot replace the block's exception" do
+      # `best_effort` builds its warning FROM the exception it caught, inside the rescue, so every read of
+      # that exception is a second chance for it to escape through the code meant to contain it. This is the
+      # invariant as a property rather than as a list of inputs: whatever the block raises, the only thing
+      # that can come out is that same object.
+      hostile_message = Class.new(StandardError) do
+        def message = raise(NotImplementedError, "message explodes")
+      end
+      hostile_class_name = Class.new(StandardError) do
+        def self.name = raise(NotImplementedError, "name explodes")
+      end
+      hostile_backtrace = Class.new(StandardError) do
+        def backtrace = "not an array"
+      end
+      non_string_message = Class.new(StandardError) do
+        def message = Object.new.tap { |o| o.define_singleton_method(:to_s) { raise "to_s explodes" } }
+      end
+
+      # Every shape is built INSIDE its lambda. These lambdas are created in the example-group body, so
+      # their `self` is the group CLASS rather than an example instance — a helper defined with `def` here
+      # would be an instance method and unreachable from them.
+      shapes = {
+        "an ordinary exception" => -> { raise ArgumentError, "ordinary" },
+        "a message that raises" => -> { raise hostile_message },
+        "a message holding bytes with no UTF-8 rendering" => lambda {
+          raise ArgumentError, "bad\xFF".dup.force_encoding("ASCII-8BIT")
+        },
+        "a message that is not a String and whose to_s raises" => -> { raise non_string_message },
+        "a class whose name raises" => -> { raise hostile_class_name },
+        "a backtrace override answering a non-Array" => -> { raise hostile_backtrace },
+        "a rebuilt backtrace holding a blank frame" => lambda {
+          raise(ArgumentError.new("rebuilt").tap { |e| e.set_backtrace([""]) })
+        },
+        "a valid multibyte message" => -> { raise ArgumentError, "café" },
+        "a Latin-1 message" => -> { raise ArgumentError, "caf\xE9".dup.force_encoding("ISO-8859-1") },
+      }
+
+      %i[production development test].each do |environment|
+        context "in #{environment}" do
+          before do
+            allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(environment == :production)
+          end
+
+          shapes.each do |label, block|
+            it "swallows #{label} and returns nil" do
+              expect(described_class.best_effort("guarding", &block)).to be_nil
+            end
+          end
+        end
+      end
+
+      context "with best_effort_raises_in_dev enabled" do
+        before do
+          allow(Axn).to receive_message_chain(:config, :best_effort_raises_in_dev).and_return(true)
+          allow(Axn).to receive_message_chain(:config, :env, :development?).and_return(true)
+          allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(false)
+        end
+
+        shapes.each do |label, block|
+          it "re-raises #{label} itself, never a reporting failure" do
+            raised = begin
+              described_class.best_effort("guarding", &block)
+              nil
+            rescue Exception => e # rubocop:disable Lint/RescueException
+              e
+            end
+
+            expected = begin
+              block.call
+              nil
+            rescue Exception => e # rubocop:disable Lint/RescueException
+              e
+            end
+
+            expect(Axn::Internal::Identity.class_of(raised)).to eq(Axn::Internal::Identity.class_of(expected))
+          end
+        end
+      end
+
+      it "keeps a valid multibyte message verbatim in the warning" do
+        allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
+        expect(logger).to receive(:warn).with(/café/)
+
+        described_class.best_effort("guarding") { raise ArgumentError, "café" }
+      end
+
+      it "renders a Latin-1 message as its text rather than as escapes" do
+        allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
+        expect(logger).to receive(:warn).with(/café/)
+
+        described_class.best_effort("guarding") { raise ArgumentError, "caf\xE9".dup.force_encoding("ISO-8859-1") }
+      end
+
+      it "escapes a message with no UTF-8 rendering rather than losing the line" do
+        allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
+        expect(logger).to receive(:warn).with(/\\xFF/)
+
+        described_class.best_effort("guarding") { raise ArgumentError, "bad\xFF".dup.force_encoding("ASCII-8BIT") }
+      end
+
+      it "tolerates a desc that is not a String" do
+        allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(false)
+
+        expect(described_class.best_effort(Object.new) { raise ArgumentError, "ordinary" }).to be_nil
+      end
+
+      # Every fact ABOUT the exception is now rendered rather than dispatched, so no exception the block can
+      # raise reaches the backstop under the report path — verified by deleting that rescue and watching the
+      # table above stay green. What still reaches it is the guard's own collaborators: `Axn.config.env`
+      # decides the wording and is a configured seam, so a host application supplying a broken or half-booted
+      # env object raises here, while reporting, from inside an `ensure`. That is the same failure as a
+      # hostile `#message` — a warning nobody reads replacing the exception in flight — and it is what the
+      # backstop exists for.
+      describe "a reporting failure raised by the guard's own collaborators" do
+        it "swallows a StandardError from the environment seam" do
+          allow(Axn).to receive_message_chain(:config, :env, :production?).and_raise(NoMethodError, "env is half-booted")
+
+          expect(described_class.best_effort("guarding") { raise ArgumentError, "ordinary" }).to be_nil
+        end
+
+        it "swallows an allowlisted non-StandardError from the environment seam" do
+          allow(Axn).to receive_message_chain(:config, :env, :production?).and_raise(SystemStackError)
+
+          expect(described_class.best_effort("guarding") { raise ArgumentError, "ordinary" }).to be_nil
+        end
+
+        # The backstop is narrow on the same terms as `best_effort` itself: a signal arriving mid-report is
+        # still a signal, and axn absorbing one would break the control flow it belongs to.
+        it "lets a signal through rather than absorbing it into a swallowed warning" do
+          allow(Axn).to receive_message_chain(:config, :env, :production?).and_raise(Interrupt)
+
+          expect { described_class.best_effort("guarding") { raise ArgumentError, "ordinary" } }.to raise_error(Interrupt)
+        end
+      end
+    end
   end
 end

@@ -2,6 +2,8 @@
 
 require "active_model"
 
+require "axn/internal/rendering"
+
 module Axn
   module Validators
     class ValidateValidator < ActiveModel::EachValidator
@@ -49,7 +51,7 @@ module Axn
           # crashing custom validator fails the field rather than silently passing.
           Axn::Extensions.best_effort("applying custom validation on field '#{attribute}'") { raise e }
 
-          "failed validation: #{e.message}"
+          "failed validation: #{Axn::Internal::Rendering.exception_message(e)}"
         end
 
         record.errors.add(attribute, msg) if msg.present?

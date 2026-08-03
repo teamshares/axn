@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "axn/internal/identity"
+require "axn/internal/rendering"
+require "axn/internal/text"
 
 module Axn
   # The extension-author surface: "for gems building on axn," distinct from
@@ -99,24 +101,65 @@ module Axn
 
       # Warn about a swallowed exception and return nil (best_effort's documented failure return).
       # Re-raises first in development when configured, keeping the guard dev-loud.
+      #
+      # Every fact about the exception comes from `Internal::Rendering`, never from raw interpolation: this
+      # code runs INSIDE the rescue, so a `message`, a `class`, or a backtrace read here is a second chance
+      # for the exception to escape through the guard meant to contain it — and since the guard is called
+      # from `ensure` all over the executor, an escape does not just lose a log line, it replaces the
+      # exception already in flight. Two shapes reached it, neither needing a hostile author: an exception
+      # whose `#message` raises, and an ordinary one whose STORED message holds bytes that cannot be joined
+      # to axn's own prose.
       def _warn_and_swallow(exception, desc, action)
         raise exception if raises_in_dev?
 
-        src = _source_location(exception)
-
-        message = if Axn.config.env.production?
-                    "Ignoring exception raised while #{desc}: #{exception.class.name} - #{exception.message} (from #{src})"
-                  else
-                    msg = "!! IGNORING EXCEPTION RAISED WHILE #{desc.upcase} !!\n\n" \
-                          "\t* Exception: #{exception.class.name}\n" \
-                          "\t* Message: #{exception.message}\n" \
-                          "\t* From: #{src}"
-                    "#{'⌵' * 30}\n\n#{msg}\n\n#{'^' * 30}"
-                  end
-
-        _emit_warning(action, message)
+        _report_swallowed(exception, desc, action)
 
         nil
+      end
+
+      # The backstop over the REPORTING, and over nothing else, absorbing whatever building or emitting the
+      # warning can raise so a side-channel diagnostic is never what escapes.
+      #
+      # It lives in its own method rather than as a rescue on `_warn_and_swallow` because a method-level
+      # rescue there would also cover the dev-loud `raise exception` above — and since the block's exception
+      # is usually a StandardError, the dev-loud mode would silently stop being loud, logging and swallowing
+      # exactly where it was configured to raise. The dev-loud path re-raises the BLOCK's exception, which
+      # must leave through `best_effort`'s caller untouched.
+      #
+      # Narrow on the same terms as `best_effort` and `_emit_warning`: nothing here may absorb a class the
+      # guard itself passes through (a signal, an `exit`, another library's control-flow signal).
+      def _report_swallowed(exception, desc, action)
+        _emit_warning(action, _warning_message(exception, desc))
+      rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
+        nil
+      end
+
+      # Everything the warning names comes from `Internal::Rendering` rather than from raw interpolation.
+      def _warning_message(exception, desc)
+        described = _describe(desc)
+        klass = Internal::Rendering.class_name(exception)
+        message = Internal::Rendering.exception_message(exception)
+        src = Internal::Rendering.exception_source_location(exception)
+
+        if Axn.config.env.production?
+          "Ignoring exception raised while #{described}: #{klass} - #{message} (from #{src})"
+        else
+          msg = "!! IGNORING EXCEPTION RAISED WHILE #{described.upcase} !!\n\n" \
+                "\t* Exception: #{klass}\n" \
+                "\t* Message: #{message}\n" \
+                "\t* From: #{src}"
+          "#{'⌵' * 30}\n\n#{msg}\n\n#{'^' * 30}"
+        end
+      end
+
+      # `desc` names the intent and is a String by contract, but it is EXTENSION-AUTHOR input reaching the
+      # gem's lowest guard, and the non-production wording calls `upcase` on it — so it is type-tested and
+      # rendered on the same terms as everything else here. Anything that is not a String is named by its
+      # class instead, which is a legible desc and cannot raise.
+      def _describe(desc)
+        return Internal::Text.renderable(desc) if Internal::Identity.kind?(desc, ::String)
+
+        Internal::Rendering.class_name(desc)
       end
 
       # Emitting the warning must not raise either. This guard is frequently invoked from an `ensure`,
@@ -138,18 +181,6 @@ module Axn
         rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
           nil
         end
-      end
-
-      # Just the filename/line number the exception came from. An EMPTY backtrace has to be tolerated:
-      # `raise` repopulates a nil one, but an exception reconstructed with `set_backtrace([])` (what a
-      # death handler rebuilding one from job data hands us) keeps it, and this guard's whole job is to
-      # not raise — it frequently runs from inside an `ensure`, where a raise would replace the
-      # exception already in flight.
-      def _source_location(exception)
-        frame = exception.backtrace&.first
-        return "unknown location" unless frame
-
-        frame.split.first.split("/").last.split(":")[0, 2].join(":")
       end
     end
   end
