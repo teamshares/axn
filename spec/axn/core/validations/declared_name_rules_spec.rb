@@ -235,6 +235,55 @@ RSpec.describe "the rules every declared name is held to" do
         .to raise_error(ArgumentError, /\A`prefix:` must be written in an ASCII-compatible encoding/)
     end
 
+    # `to_sym` is the caller's own method on a String subclass, so the conversion's RESULT is not a given either.
+    # Every site failed differently and none of them well: `prefix:` composed a reader out of the answer
+    # (`:"[]field"` — the silent defect these rules exist to close — and `nil` read as "no prefix at all"), a field
+    # name and `as:` surfaced a bare `TypeError: [] is not a symbol nor a string`, and `on:` an unrelated "no such
+    # reader exists".
+    it "rejects a to_sym that answers with something other than a Symbol, at every site" do
+      [Class.new(String) { def to_sym = [] }, Class.new(String) { def to_sym = nil }].each do |smuggler|
+        name = smuggler.new("ab")
+        route = smuggler.new("p")
+        reader = smuggler.new("bee")
+
+        expect { build_axn { expects name } }
+          .to raise_error(ArgumentError, /\Aa field name is canonicalized to the Symbol every consumer reads/)
+        expect { build_axn { exposes name } }
+          .to raise_error(ArgumentError, /\Aan exposure name is canonicalized to the Symbol every consumer reads/)
+        expect do
+          build_axn do
+            expects :p, type: Hash
+            expects :a, on: route, optional: true
+          end
+        end.to raise_error(ArgumentError, /\Aon: is canonicalized to the Symbol every consumer reads/)
+        expect { build_axn { expects :a, as: reader } }
+          .to raise_error(ArgumentError, /\A`as:` is canonicalized to the Symbol every consumer reads/)
+        expect { build_axn { expects :a, prefix: reader } }
+          .to raise_error(ArgumentError, /\A`prefix:` is canonicalized to the Symbol every consumer reads/)
+      end
+    end
+
+    # Naming both classes without running either object's `inspect`, which raises here.
+    it "names the answer's class and the name's class without running their own inspect" do
+      hostile = Class.new(String) do
+        def to_sym = []
+        def inspect = raise(NotImplementedError, "inspect should not build the message")
+      end.new("ab")
+
+      expect { build_axn { expects hostile } }
+        .to raise_error(ArgumentError, /answered with a value of class Array \(from a name of class /)
+    end
+
+    # Deliberately allowed, and the flip side of canonicalizing at all: a `to_sym` that answers with a DIFFERENT
+    # Symbol than the name renders as is honoured, because the declaration stores that Symbol and every later
+    # reading of it is Ruby's own — the two-conversion disagreement PRO-2995 rejected has nothing left to disagree
+    # about once one answer is canonical.
+    it "honours a to_sym that answers with a different Symbol than the name renders as" do
+      renamer = Class.new(String) { def to_sym = :hijacked }
+
+      expect(build_axn { expects renamer.new("ab") }.internal_field_configs.map(&:field)).to eq([:hijacked])
+    end
+
     # The encoding is read from the bound base implementation, so what a String subclass CLAIMS is irrelevant in
     # both directions: real UTF-8 bytes are accepted however they answer, and real wide bytes are refused.
     it "cannot claim its way past or into the encoding rule" do

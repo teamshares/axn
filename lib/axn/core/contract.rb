@@ -236,11 +236,34 @@ module Axn
       #
       # Checked on the way IN as well as on the way out, so a genuinely wide name is named as one before its own
       # `to_sym` runs at all, and the rule reads the same at a site whose value never converts.
+      # The conversion's RESULT is held to being a Symbol before anything downstream treats it as one. `to_sym` is
+      # the caller's own method on a String subclass, so what it answers with is not a given — and every site
+      # failed differently and none of them well when it answered with a non-Symbol: `prefix:` composed a reader
+      # out of it (`:"[]field"`, the silent defect this rule exists to close, and `nil` read as "no prefix" at
+      # all), while a field name and `as:` surfaced a bare `TypeError: [] is not a symbol nor a string` and `on:`
+      # an unrelated "no such reader exists". Checked ahead of the encoding rule, which has nothing to say about a
+      # value that is neither a String nor a Symbol and so passes it vacuously.
+      #
+      # A `to_sym` that answers with a DIFFERENT Symbol than the name renders as is deliberately fine: the
+      # declaration canonicalizes to that Symbol and every later reading is Ruby's own, so the two-conversion
+      # disagreement PRO-2995 rejected has nothing left to disagree about.
       def self.canonical_name!(value, option:, names:, fix:, encoding_fix:)
         validate_name_option!(value, option:, names:, fix:)
         validate_name_encoding!(value, kind: option, fix: encoding_fix)
 
-        value.to_sym.tap { |canonical| validate_name_encoding!(canonical, kind: option, fix: encoding_fix) }
+        canonical = value.to_sym
+        case canonical
+        when ::Symbol then nil
+        else
+          raise ArgumentError,
+                "#{option} is canonicalized to the Symbol every consumer reads, and this name's own `to_sym` " \
+                "answered with a value of class #{Axn::Reflection::PropertyNames.renderable_class_name(canonical)} " \
+                "(from a name of class #{Axn::Reflection::PropertyNames.renderable_class_name(value)}) — so the " \
+                "declaration has no name to store. #{fix}"
+        end
+
+        validate_name_encoding!(canonical, kind: option, fix: encoding_fix)
+        canonical
       end
 
       def self.validate_name_encoding!(value, kind:, fix:)
