@@ -236,6 +236,7 @@ module Axn
       #
       # Checked on the way IN as well as on the way out, so a genuinely wide name is named as one before its own
       # `to_sym` runs at all, and the rule reads the same at a site whose value never converts.
+      #
       # The conversion's RESULT is held to being a Symbol before anything downstream treats it as one. `to_sym` is
       # the caller's own method on a String subclass, so what it answers with is not a given — and every site
       # failed differently and none of them well when it answered with a non-Symbol: `prefix:` composed a reader
