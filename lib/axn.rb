@@ -122,7 +122,7 @@ module Axn
       # declarations that collide, but at boot the first thing an author needs is WHICH tool. Both families are
       # caught: a collision is an Axn::ContractViolation, an unrenderable name or an oversized schema an
       # ArgumentError. Either is reported as ITSELF, renamed — except where renaming would mean running the
-      # exception's own code, which surfaces as Axn::InvalidToolContract (see _named_invalid_tool_contract).
+      # exception's own code, which surfaces as Axn::Tools::InvalidContract (see _named_invalid_tool_contract).
       # `cause:` explicitly, rather than leaving it to `$!`: reading a hostile `#message` means rescuing inside
       # this rescue, and Ruby does not restore `$!` to `e` afterwards — so the implicit cause was nil on exactly
       # the degraded paths where knowing the original matters most.
@@ -165,14 +165,14 @@ module Axn
   # wrapper promised to preserve.
   #
   # Anything else — an owned `#exception`, an owned duplication hook, a frozen exception whose clone cannot take
-  # a new message — is reported as `Axn::InvalidToolContract`, naming the tool, repeating the original's message,
+  # a new message — is reported as `Axn::Tools::InvalidContract`, naming the tool, repeating the original's message,
   # and carrying the original as `cause`. Only the CLASS degrades there, and `#message` is a separate question:
   # an exception that builds its message from its state keeps that message on either branch.
   def self._named_invalid_tool_contract(klass, error)
     tool = Axn::Reflection::PropertyNames.renderable_module_name(klass)
     reason = Axn::Internal::ExceptionMessage.of(error)
     unless Axn::Internal::NativeMethods.native_exception_reporting?(error)
-      return InvalidToolContract.new(tool:, reason:, original_class: Axn::Internal::ClassName.of(error))
+      return Tools::InvalidContract.new(tool:, reason:, original_class: Axn::Internal::ClassName.of(error))
     end
 
     EXCEPTION_EXCEPTION.bind_call(error, "#{tool} has an invalid tool contract — #{reason}")
