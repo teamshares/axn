@@ -88,8 +88,8 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`.
   cycle, no collapsed property). That is a promise about values, NOT about your encoder's config: a structure
   deeper than `max_nesting` (100 default) still raises `JSON::NestingError`. Drop your pre-*pass* over the
   value graph; **keep** your encode `rescue`.
-- Raises `Axn::Extensions::Serialization::UnserializableValue` (an `ArgumentError`), naming the path, on five unconditional
-  defects: a cycle; two exposed field NAMES that render as the same JSON property (compared the same
+- Raises `Axn::Extensions::Serialization::UnserializableValue` (an `ArgumentError`), naming the path, on five
+  unconditional defects: a cycle; two exposed field NAMES that render as the same JSON property (compared the same
   canonicalized way as a Hash key, since a declared field is itself a property name); two Hash keys that
   render as one JSON property (compared as the PROPERTY each produces, not as the Ruby String its `to_s`
   returned — keys are transcoded to UTF-8 first, so one property name in two encodings collides); a
@@ -215,8 +215,9 @@ Docs — <https://teamshares.github.io/axn/>: authoring a tool-adapter gem
 
 Core source entry points (resolve with `bundle show axn`):
 - `lib/axn/tools.rb` — `Axn::Tools.register_adapter`, `.adapters`, `.for`, `.versions`, `.validate_contracts!`.
-- `lib/axn/extensions.rb` — `Axn::Extensions.best_effort`, `Axn::Extensions.config`, `Axn::Extensions.owned_failure?` (the extension-author surface).
-- `lib/axn/tools/registry.rb`, `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb` — membership, `tool_name`.
+- `lib/axn/extensions.rb` — `Axn::Extensions.best_effort`, `.config`, `.owned_failure?` (extension-author surface).
+- `lib/axn/tools/registry.rb`, `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb` —
+  membership, `tool_name`.
 - `lib/axn/core/schema_reflection.rb`, `lib/axn/reflection/schema.rb`, `lib/axn/reflection/values.rb` — reflection.
 - `lib/axn/configurable.rb` — `config_namespace`, `resolve_override_for`, `overrides`.
 - `lib/axn/tools/invoker.rb` — the tool call path.

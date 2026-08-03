@@ -60,8 +60,9 @@ Which namespace a new constant belongs in, so the next addition follows a rule i
 
 - `Internal::X` — internal **and generically useful**: a value-level mechanism any layer can use, with no presence in the action's surface. `CycleGuard`, `ShapeGraph`, `NativeMethods`, `Timing`, `Callable`, `ClassName`, `ExceptionMessage`.
 - `Core::X` — internal **and contextual to one topic**: a layer extended onto the action class, named for what the *author* writes. `Contract`, `Hooks`, `Tagging`, `Logging`, `AmbientContext`, `ToolDeclaration`.
-- `Core::Contract::X` — machinery one layer owns and that is meaningless outside it. `FieldConfig`, `ShapeConfig`, `ShapeDeclaration`, `Redaction`.
-- `Extensions::X` — axn **or downstream gems**. The only namespace a gem should name; adding to it is adding to the public API.
+- `Core::Contract::X` — machinery one layer owns and that is meaningless outside it. `FieldConfig` (the contract's config object — the same-named `Internal::FieldConfig` is the field-name convention helper), `ShapeConfig`, `ShapeDeclaration`, `Redaction`.
+- `Reflection::X` — the layer that derives a JSON view of a contract (`Schema`, `Values`, `PropertyNames`, `SubfieldTree`). Internal: nothing outside axn names it. What a gem consumes are the projections, not the machinery — `input_schema`/`output_schema` on the action class, and `Extensions::Serialization.render` for a result.
+- `Extensions::X` — axn **or downstream gems**. The only namespace a gem should add constants to, and adding one is adding to the public API.
 - `Tools::X` — the tool surface: its calls (`Axn::Tools.for`) *and* its exceptions (`Axn::Tools::InvalidContract`).
 
 A namespace is not a substitute for `private`. `Axn::Configurable` is `extend`ed onto each consuming gem's own module, so an underscore-named method there is a public method of `Axn::MCP` / `Axn::OpenAPI` / `DataShifter` — "internal by namespace" guarantees nothing. Underscore-name AND `private` unless a cross-file caller with an explicit receiver needs it, and record why when one does.
