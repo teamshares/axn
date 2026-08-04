@@ -1,19 +1,12 @@
 # frozen_string_literal: true
 
-# `format_for_inspect` renders a Date/Time/DateTime through `to_fs(:inspect)`, which these three define — and
-# NOT requiring them made `result.inspect` raise `NoMethodError` for a plain `Date` exposure outside Rails,
-# which is the most reachable way this file could fail: no exotic value, no encoding, just a date. A Rails app
-# loads all three during boot, so declaring them here is what makes the two environments render a date the same
-# way rather than one of them crashing. `activesupport` is already a hard dependency, so this adds a load and no
-# dependency edge.
-#
-# Three files rather than two, because the branch tests `is_a?(Date)` and a `DateTime` IS a Date: without
-# `date_time/conversions` a DateTime falls back to `Date#to_fs` and renders as a bare date with its time
-# silently dropped — the same non-Rails/Rails divergence one level down.
-require "active_support/core_ext/date/conversions"
-require "active_support/core_ext/date_time/conversions"
-require "active_support/core_ext/time/conversions"
+# `Date` and `DateTime` are named below, in the branch that decides how a timestamp is displayed. Plain stdlib,
+# which is why it is required here while ActiveSupport's date/time CONVERSIONS deliberately are not — see
+# `timestamp_rendering`.
+require "date"
+
 require "axn/internal/identity"
+require "axn/internal/native_methods"
 require "axn/internal/reflection/property_names"
 require "axn/internal/rendering"
 
@@ -136,7 +129,7 @@ module Axn
         inspected_value = if value.is_a?(String) && value.length > 50
                             "#{value[0, 50]}...".inspect
                           elsif value.is_a?(Date) || value.is_a?(Time)
-                            %("#{value.to_fs(:inspect)}")
+                            %("#{timestamp_rendering(value)}")
                           elsif defined?(::ActiveRecord::Relation) && value.instance_of?(::ActiveRecord::Relation)
                             # Avoid hydrating full AR relation (i.e. avoid loading records just to report an error)
                             "#{value.name}::ActiveRecord_Relation"
@@ -172,6 +165,44 @@ module Axn
         end
 
         inspection_filter.filter_param(field, inspected_value)
+      end
+
+      # ISO-8601: unambiguous, sorts lexicographically, and assumes no locale — the right default for a value
+      # written into debug output that a human and a log search both read.
+      #
+      # Two formats rather than one, because a `DateTime` IS a `Date`: rendering both the same way would mean
+      # rendering a DateTime as a bare day and silently dropping its time. So the day-only form belongs to the
+      # value that carries no time of day, and the date-and-offset form to the two that do.
+      ISO8601_DAY = "%Y-%m-%d"
+      ISO8601_TIMESTAMP = "%Y-%m-%dT%H:%M:%S%:z"
+      private_constant :ISO8601_DAY, :ISO8601_TIMESTAMP
+
+      # How a Date/DateTime/Time is displayed: ActiveSupport's `to_fs(:inspect)` when the value actually answers
+      # to it, and axn's own ISO-8601 rendering when it does not.
+      #
+      # `to_fs` is preferred because it is the only thing that honours an app's registered
+      # `Date::DATE_FORMATS[:inspect]`, so an app that has customized how a date reads sees its own format here.
+      # Axn deliberately does NOT require the core_exts that define it: loading those replaces `Date#inspect`
+      # and `DateTime#inspect` process-wide, so requiring them would redecorate a core class in every host
+      # process that loads this gem, for the sake of this gem's own debug output. A library does not get to do
+      # that to its host. Degrading locally instead keeps the whole cost inside axn — the only difference is the
+      # exact spelling of a date in an `inspect` string when ActiveSupport's conversions are not loaded.
+      #
+      # Availability is read out of the METHOD TABLE (`NativeMethods.method_owner`, which answers nil when there
+      # is no such method) rather than asked of the value: the value is caller-supplied, a `Date` subclass can
+      # define `respond_to?`, and this is a display path that must not raise.
+      def timestamp_rendering(value)
+        return value.to_fs(:inspect) if Axn::Internal::NativeMethods.method_owner(value, :to_fs)
+
+        value.strftime(day_only?(value) ? ISO8601_DAY : ISO8601_TIMESTAMP)
+      end
+
+      # Whether this value carries a date and no time of day. `DateTime` is EXCLUDED rather than left to be
+      # tested first: it subclasses `Date`, so a plain `kind?(value, ::Date)` is true for one, and the ordering
+      # of two tests is a weaker guarantee than saying which class is meant. Undispatched (`Module#===`), on the
+      # same terms as every other type test in this file.
+      def day_only?(value)
+        Axn::Internal::Identity.kind?(value, ::Date) && !Axn::Internal::Identity.kind?(value, ::DateTime)
       end
 
       def inspection_filter

@@ -3,6 +3,7 @@
 require "logger"
 require "stringio"
 require "tmpdir"
+require "open3"
 require "support/tool_adapter_helpers"
 
 # NOTHING is required here for the `to_fs(:inspect)` date branch, deliberately: `ContextFacadeInspector`
@@ -313,84 +314,32 @@ RSpec.describe "mixed-encoding message compositions" do
       expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] thing: "value">))
     end
 
-    # The reason `inspect` normalizes at the JOIN rather than per-operand. `format_for_inspect` picks between
-    # four ways of rendering a value, and two of them were missed by rendering the others: `to_fs(:inspect)`,
-    # whose text an app supplies through the documented `Date::DATE_FORMATS`/`Time::DATE_FORMATS` extension
-    # point, and the ActiveRecord-relation branch. Neither is special — what is special is that ENUMERATING
-    # the branches is what kept being wrong, so the composed value is normalized once instead.
-    describe "a value rendered through an app-registered :inspect date format" do
-      around do |example|
-        previous_date = Date::DATE_FORMATS[:inspect]
-        previous_time = Time::DATE_FORMATS[:inspect]
-        Date::DATE_FORMATS[:inspect] = ->(_d) { "1 f\xE9vrier 2026".dup.force_encoding("ISO-8859-1") }
-        Time::DATE_FORMATS[:inspect] = ->(_t) { "midi f\xE9vrier".dup.force_encoding("ISO-8859-1") }
-        example.run
-      ensure
-        Date::DATE_FORMATS[:inspect] = previous_date
-        Time::DATE_FORMATS[:inspect] = previous_time
-      end
+    # `format_for_inspect` picks between four ways of rendering a value, and rendering some of those branches
+    # individually is what missed the others — which is why the composed value is normalized once, at the join,
+    # instead. The timestamp branch is the one that exercised that, and it has two halves: ActiveSupport's
+    # `to_fs(:inspect)` where the value answers to it (specced in `spec_rails`, since only a Rails boot loads
+    # the conversions that define it) and axn's own ISO-8601 rendering where it does not, below.
+    #
+    # THE SAME VALUE THEREFORE READS DIFFERENTLY IN THE TWO SUITES, deliberately: a DateTime is
+    # `"2026-02-01T12:30:00+00:00"` here and `"2026-02-01 12:30:00.000000000 +0000"` under Rails. Axn will not
+    # require the conversions to make the two agree — loading them replaces `Date#inspect` process-wide, which
+    # is a library redecorating a core class for its host — so the divergence is the deliberate cost, and it is
+    # confined to how a date is spelled inside axn's own debug output.
+    describe "a Date/Time exposure whose value does not answer to to_fs" do
+      # `to_fs` is undefined on the value rather than left absent from the process, because whether ActiveSupport's
+      # conversions are loaded is not this file's to decide: another spec in this suite pulls them in transitively,
+      # so an example that assumed otherwise would pass or fail on file ordering. Undefining the method asks the
+      # branch the question directly, and gets the same answer either way.
+      def without_to_fs(klass) = Class.new(klass) { undef_method(:to_fs) if method_defined?(:to_fs) }
 
-      it "inspects a Date beside a Latin-1 field name" do
-        name = latin1_name
-        klass = build_axn do
-          exposes name, allow_blank: true
-          define_method(:call) { expose(name, Date.new(2026, 2, 1)) }
-        end
-
-        result = klass.call
-
-        expect { result.inspect }.not_to raise_error
-        expect(result.inspect).to be_readable_utf8
-        expect(result.inspect).to include("café", "1 février 2026")
-      end
-
-      it "inspects a Time beside a Latin-1 field name" do
-        name = latin1_name
-        klass = build_axn do
-          exposes name, allow_blank: true
-          define_method(:call) { expose(name, Time.utc(2026, 2, 1, 12)) }
-        end
-
-        result = klass.call
-
-        expect { result.inspect }.not_to raise_error
-        expect(result.inspect).to include("café", "midi février")
-      end
-
-      # The same branch with an ASCII name, where nothing raised before either — but the Latin-1 text used to
-      # reach `inspect` as raw bytes, reading as mojibake. Normalizing at the join renders it as its text
-      # wherever it lands, so this is asserted rather than left unstated.
-      it "renders the registered format as text even where nothing would have raised" do
+      # The fallback exists because `to_fs` is ActiveSupport's, not Ruby's: reaching for it unconditionally made
+      # `result.inspect` raise `NoMethodError` for a plain Date outside Rails — the most reachable way this file
+      # could fail, needing no exotic value and no encoding at all.
+      it "inspects a Date as an ISO-8601 day" do
+        date = without_to_fs(Date).new(2026, 2, 1)
         klass = build_axn do
           exposes :on, allow_blank: true
-          def call = expose(:on, Date.new(2026, 2, 1))
-        end
-
-        expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] on: "1 février 2026">))
-      end
-    end
-
-    # THE baseline for this branch: with the DEFAULT (ASCII) date format, the output must be byte-identical, so
-    # normalizing at the join cannot be what moves ordinary `inspect` text.
-    it "leaves a Date under the default format exactly as it was" do
-      klass = build_axn do
-        exposes :on, allow_blank: true
-        def call = expose(:on, Date.new(2026, 2, 1))
-      end
-
-      expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] on: "2026-02-01">))
-    end
-
-    # This suite is the NON-RAILS one, which is exactly where these belong: `format_for_inspect` renders a date
-    # through `to_fs(:inspect)`, and with no Rails boot to load that core_ext, `result.inspect` raised
-    # `NoMethodError` for a plain `Date` — the most reachable way this file could fail, needing no exotic value
-    # and no encoding at all. `ContextFacadeInspector` declares the core_exts, so the compact rendering is the
-    # same here as it is under Rails rather than one environment crashing.
-    describe "a Date/Time exposure with no Rails boot to load ActiveSupport's conversions" do
-      it "inspects a Date in the compact form" do
-        klass = build_axn do
-          exposes :on, allow_blank: true
-          def call = expose(:on, Date.new(2026, 2, 1))
+          define_method(:call) { expose(:on, date) }
         end
 
         result = klass.call
@@ -399,27 +348,92 @@ RSpec.describe "mixed-encoding message compositions" do
         expect(result.inspect).to eq(%(#<Axn::Result [OK] on: "2026-02-01">))
       end
 
-      it "inspects a Time in the compact form" do
+      it "inspects a Time as an ISO-8601 timestamp" do
+        time = without_to_fs(Time).utc(2026, 2, 1, 12)
         klass = build_axn do
           exposes :at, allow_blank: true
-          def call = expose(:at, Time.utc(2026, 2, 1, 12))
+          define_method(:call) { expose(:at, time) }
         end
 
         result = klass.call
 
         expect { result.inspect }.not_to raise_error
-        expect(result.inspect).to eq(%(#<Axn::Result [OK] at: "2026-02-01 12:00:00.000000000 +0000">))
+        expect(result.inspect).to eq(%(#<Axn::Result [OK] at: "2026-02-01T12:00:00+00:00">))
       end
 
-      # A DateTime takes the `is_a?(Date)` branch, and rendering it through `Date#to_fs` would silently drop its
-      # time — so the DateTime conversion is declared too, and this pins that it keeps the time.
+      # A DateTime IS a Date, so a single fallback format would render it as a bare day and drop its time. This
+      # pins that the more specific class keeps it.
       it "inspects a DateTime without dropping its time" do
+        at = without_to_fs(DateTime).new(2026, 2, 1, 12, 30)
         klass = build_axn do
           exposes :at, allow_blank: true
-          def call = expose(:at, DateTime.new(2026, 2, 1, 12, 30))
+          define_method(:call) { expose(:at, at) }
         end
 
-        expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] at: "2026-02-01 12:30:00.000000000 +0000">))
+        expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] at: "2026-02-01T12:30:00+00:00">))
+      end
+
+      # Availability is read out of the method table, never asked of the value: a display path must not be
+      # steerable by a `respond_to?` the value defines, nor raisable by it.
+      it "does not consult the value's own respond_to?" do
+        hostile = Class.new(without_to_fs(Date)) do
+          def respond_to?(*) = raise(NotImplementedError, "hijacked from #respond_to?")
+        end
+        klass = build_axn do
+          exposes :on, allow_blank: true
+          define_method(:call) { expose(:on, hostile.new(2026, 2, 1)) }
+        end
+
+        result = klass.call
+
+        expect { result.inspect }.not_to raise_error
+        expect(result.inspect).to eq(%(#<Axn::Result [OK] on: "2026-02-01">))
+      end
+    end
+
+    # The real non-Rails scenario, in a FRESH Ruby that requires nothing but axn — which is the only way to assert
+    # it, since this suite's own process has ActiveSupport's conversions loaded by another spec.
+    #
+    # Two things at once, and the second is why the first is possible: a plain Date/DateTime/Time exposure
+    # inspects rather than raising, AND loading axn leaves `Date#inspect` as Ruby's own. Axn will not require the
+    # conversions that would define `to_fs`, because loading them replaces `Date#inspect` process-wide — a
+    # library redecorating a core class for its host, in service of the library's own debug output. Degrading
+    # locally keeps the cost inside axn.
+    describe "in a process that requires only axn" do
+      program = <<~RUBY
+        $LOAD_PATH.unshift("lib")
+        require "axn"
+        Axn.config.logger = Logger.new(IO::NULL)
+        klass = Class.new do
+          include Axn
+          exposes :on, :at, :ts, allow_blank: true
+          def call
+            expose(:on, Date.new(2026, 2, 1))
+            expose(:at, DateTime.new(2026, 2, 1, 12, 30))
+            expose(:ts, Time.utc(2026, 2, 1, 12))
+          end
+        end
+        puts klass.call.inspect
+        puts Date.new(2026, 2, 1).inspect
+      RUBY
+
+      # One fresh Ruby for both examples.
+      def self.fresh_run(program)
+        @fresh_run ||= begin
+          out, status = Open3.capture2e(RbConfig.ruby, "-e", program, chdir: File.expand_path("../../..", __dir__))
+          raise "fresh load failed: #{out}" unless status.success?
+
+          out.lines.map(&:chomp)
+        end
+      end
+
+      it "inspects a Date, DateTime and Time through the ISO-8601 fallback" do
+        expect(self.class.fresh_run(program).first)
+          .to eq(%(#<Axn::Result [OK] on: "2026-02-01", at: "2026-02-01T12:30:00+00:00", ts: "2026-02-01T12:00:00+00:00">))
+      end
+
+      it "leaves Date#inspect as Ruby's own" do
+        expect(self.class.fresh_run(program).last).to start_with("#<Date:")
       end
     end
   end
