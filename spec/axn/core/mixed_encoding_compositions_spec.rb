@@ -247,6 +247,69 @@ RSpec.describe "mixed-encoding message compositions" do
     end
   end
 
+  # This one is the ORIGINAL shape rather than the half-rendered one — both operands were raw, so it raised on
+  # `origin/main` too — and it is closed here because `Result#inspect` is read from loggers, debuggers and
+  # spec-failure output, which makes it the hardest raise in the library to trace back to its cause: the result
+  # itself is perfectly intact underneath, and every tool you would reach for to look at it raises instead.
+  describe "a result's own inspect" do
+    it "inspects an OK result naming an exposed Latin-1 field holding a UTF-8 value" do
+      name = latin1_name
+      klass = build_axn do
+        exposes name, allow_blank: true
+        define_method(:call) { expose(name, "naïve") }
+      end
+
+      result = klass.call
+
+      expect { result.inspect }.not_to raise_error
+      expect(result.inspect).to be_readable_utf8
+      expect(result.inspect).to include("café", "naïve")
+    end
+
+    # The path the CHANGELOG bullet's `Result#inspect` claim is about: a failed result, whose status half is
+    # rendered while the field half was not.
+    it "inspects a FAILED result naming the same field" do
+      name = latin1_name
+      klass = build_axn do
+        exposes name, allow_blank: true
+        define_method(:call) do
+          expose(name, "naïve")
+          fail!("nope")
+        end
+      end
+
+      result = klass.call
+
+      expect { result.inspect }.not_to raise_error
+      expect(result.inspect).to be_readable_utf8
+      expect(result.inspect).to include("[failed with 'nope']", "café", "naïve")
+    end
+
+    # A value's `inspect` is its own code, and this runs from inside the reporting, so it must not be what
+    # escapes either. Degrades to naming the class, exactly as every other message path does.
+    it "names a value whose own inspect raises rather than letting it escape" do
+      hostile = Class.new { def inspect = raise(NotImplementedError, "hijacked from #inspect") }.new
+      klass = build_axn do
+        exposes :thing, allow_blank: true
+        define_method(:call) { expose(:thing, hostile) }
+      end
+
+      result = klass.call
+
+      expect { result.inspect }.not_to raise_error
+      expect(result.inspect).to include("inspect unavailable")
+    end
+
+    it "leaves an ASCII field and value exactly as they were" do
+      klass = build_axn do
+        exposes :thing, allow_blank: true
+        def call = expose(:thing, "value")
+      end
+
+      expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] thing: "value">))
+    end
+  end
+
   describe "the tool-loading warn lines" do
     before { Axn::Tools::Registry.reset_adapters! }
     after { Axn::Tools::Registry.reset_adapters! }

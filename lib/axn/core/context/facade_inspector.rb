@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/internal/identity"
+require "axn/internal/reflection/property_names"
 require "axn/internal/rendering"
 
 module Axn
@@ -51,13 +52,30 @@ module Axn
       # renders the bytes it answers with.
       def exception_message = Axn::Internal::Rendering.exception_message(context.exception)
 
+      # Both operands of each pair are foreign, so both go through a funnel — every operand of a composition
+      # or none of them, since an `Encoding::CompatibilityError` needs two INCOMPATIBLE ones and rendering just
+      # one converts a working join into a raise.
+      #
+      # The NAME goes through the shared name renderer (`renderable_label`, which handles a Symbol; a declared
+      # name is one). The VALUE's rendering is made uniform where it is produced, by `format_for_inspect`
+      # routing each dispatch of a caller's `inspect` through `Internal::Identity.describe` — so what arrives
+      # here is already valid UTF-8, and this composition can just join it.
+      #
+      # `inspect` is called from loggers, debuggers and spec-failure output, which makes a raise here the
+      # hardest kind to trace back to its cause: an exposed Latin-1 field name holding a UTF-8 value made
+      # `result.inspect` raise with the result itself perfectly intact underneath.
       def visible_fields
         declared_fields.map do |field|
           value = facade.public_send(field)
 
-          "#{field}: #{format_for_inspect(field, value)}"
+          "#{rendered_field_name(field)}: #{format_for_inspect(field, value)}"
         end.join(", ")
       end
+
+      # The reflection layer's renderer, reached directly rather than re-derived: `facade_inspector` sits ABOVE
+      # that layer (nothing it requires reaches `axn/core`), so there is no cycle to route around — unlike
+      # `Internal::FieldConfig`, which the reflection layer requires and which therefore composes its own.
+      def rendered_field_name(field) = Axn::Internal::Reflection::PropertyNames.renderable_label(field)
 
       def class_name = facade.class.name
       def declared_fields = facade.send(:declared_fields)
@@ -79,7 +97,14 @@ module Axn
                             # Avoid hydrating full AR relation (i.e. avoid loading records just to report an error)
                             "#{value.name}::ActiveRecord_Relation"
                           else
-                            value.inspect
+                            # `Internal::Identity.describe`, not a bare `inspect`: this is a caller's value and
+                            # `inspect` is its own code, so the call is made (its rendering is what makes this
+                            # line useful) but its failure absorbed, and whatever it answers is rendered to
+                            # valid UTF-8 — which is what lets the composition above just join it. The three
+                            # branches beside this one build their text from ASCII or from `String#inspect`,
+                            # whose non-ASCII output is escaped for every encoding but UTF-8, so they are
+                            # already UTF-8-compatible.
+                            Axn::Internal::Identity.describe(value)
                           end
 
         # Sensitive subfields and shape members live nested inside a structured value; once it has been
@@ -94,8 +119,10 @@ module Axn
             filtered = ActiveSupport::ParameterFilter.new(nested_keys).filter({ field => value })[field]
             # Route the filtered structure back through the top-level filter (same as the scalar path
             # below) so a field that is ITSELF sensitive redacts wholesale by name — otherwise the
-            # partially-filtered structure would expose the parent's non-sensitive keys.
-            return inspection_filter.filter_param(field, filtered.inspect)
+            # partially-filtered structure would expose the parent's non-sensitive keys. Rendered through the
+            # same reader as the scalar path: the container is axn's own copy, but its CONTENTS are the
+            # caller's, and `Hash#inspect`/`Array#inspect` dispatch each element's own `inspect`.
+            return inspection_filter.filter_param(field, Axn::Internal::Identity.describe(filtered))
           end
         end
 
