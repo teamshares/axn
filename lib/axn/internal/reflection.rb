@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/internal/reflection/coercion"
+require "axn/internal/coercion"
 require "axn/internal/reflection/schema"
 require "axn/internal/reflection/resolved_subfields"
 require "axn/internal/reflection/values"
