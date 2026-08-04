@@ -5,7 +5,9 @@ require "axn/internal/rendering"
 module Axn
   module Async
     # Custom error for missing enqueues_each configuration
-    class MissingEnqueuesEachError < StandardError; end
+    class MissingEnqueuesEachError < StandardError
+      include Axn::Error
+    end
 
     # Shared trigger action for executing batch enqueueing in the background.
     # Called by enqueue_all to iterate over configured fields asynchronously.

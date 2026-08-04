@@ -147,7 +147,9 @@ module Axn
           end
         end
 
-        class ConfigurationError < StandardError; end
+        class ConfigurationError < StandardError
+          include Axn::Error
+        end
       end
     end
   end
