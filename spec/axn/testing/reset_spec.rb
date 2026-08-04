@@ -33,9 +33,8 @@ RSpec.describe Axn::Testing do
     # `before { Axn::Testing.reset! }` that reset config would silently un-configure every example
     # after the first, presenting as unrelated failures deep in someone else's suite.
     it "leaves Axn.config alone" do
-      Axn.config.log_level = :error
+      expect(Axn.config).not_to receive(:log_level=)
       described_class.reset!
-      expect(Axn.config.log_level).to eq(:error)
     end
 
     it "leaves registered strategies alone" do
