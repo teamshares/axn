@@ -18,7 +18,7 @@
 - No hard-wrapping of Markdown prose in docs — one line per paragraph (repo convention).
 - Comments describe current behavior and intrinsic why. Never "used to X / now Y", never "(PRO-2997)" attributions in code.
 - Never assert `Hash#inspect` output text in a spec — Ruby 3.4 changed its spacing and CI runs 3.4.
-- Run the suite with `bundle exec rspec`. `spec_rails/` needs its own bundle: `BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails`.
+- Run the suite with `bundle exec rspec`. `spec_rails/` needs its own bundle: `(cd spec_rails/dummy_app && bundle exec rspec spec)`.
 
 ## File Structure
 
@@ -461,7 +461,7 @@ Note: `lib/axn/tools.rb`'s `InvalidContract` comment names "an ordinary Argument
 - [ ] **Step 5: Run the full suite**
 
 Run: `bundle exec rspec`
-Expected: PASS. Then `BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails` — also PASS.
+Expected: PASS. Then `(cd spec_rails/dummy_app && bundle exec rspec spec)` — also PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -517,7 +517,7 @@ Update the raise site in `lib/axn/extensions.rb#_reraise_for_dev`, the `best_eff
 
 - [ ] **Step 5: Run the full suite**
 
-Run: `bundle exec rspec && BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails`
+Run: `bundle exec rspec && (cd spec_rails/dummy_app && bundle exec rspec spec)`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -730,7 +730,7 @@ Watch the lexical nesting: inside `module Axn; module Internal; module Reflectio
 
 - [ ] **Step 6: Run the suite**
 
-Run: `bundle exec rspec spec/axn/standalone_require_spec.rb && bundle exec rspec && BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails`
+Run: `bundle exec rspec spec/axn/standalone_require_spec.rb && bundle exec rspec && (cd spec_rails/dummy_app && bundle exec rspec spec)`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
@@ -843,7 +843,7 @@ In `_deep_freeze!`, `tree.dropped.freeze` must go — that member no longer exis
 
 - [ ] **Step 7: Run everything**
 
-Run: `bundle exec rspec spec/axn/standalone_require_spec.rb && bundle exec rspec && bundle exec rubocop && BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails`
+Run: `bundle exec rspec spec/axn/standalone_require_spec.rb && bundle exec rspec && bundle exec rubocop && (cd spec_rails/dummy_app && bundle exec rspec spec)`
 Expected: all PASS. `standalone_require_spec`'s `upward_references` list should need no new entry — `SubfieldTree` now references nothing upward, and its allowlist entry was already removed. If the list needs a new entry, the split is incomplete.
 
 - [ ] **Step 8: Commit**
@@ -931,7 +931,7 @@ Remove any now-dead require of it from `lib/axn/internal/reflection.rb`.
 
 - [ ] **Step 6: Run the suite**
 
-Run: `bundle exec rspec spec/axn/standalone_require_spec.rb && bundle exec rspec && BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails`
+Run: `bundle exec rspec spec/axn/standalone_require_spec.rb && bundle exec rspec && (cd spec_rails/dummy_app && bundle exec rspec spec)`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
@@ -1150,7 +1150,7 @@ This is the dogfooding step — axn's own suite now drives the seam, so its cove
 
 - [ ] **Step 6: Run everything**
 
-Run: `bundle exec rspec spec/axn/testing/reset_spec.rb && bundle exec rspec && BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails`
+Run: `bundle exec rspec spec/axn/testing/reset_spec.rb && bundle exec rspec && (cd spec_rails/dummy_app && bundle exec rspec spec)`
 Expected: PASS. If any spec that previously reset `Internal::Tracing` by hand now fails, replace its manual reset with `Axn::Testing.reset!`.
 
 - [ ] **Step 7: Commit**
@@ -1224,7 +1224,7 @@ Add under the existing `## 0.1.0-alpha.5` heading — that version is bumped but
 
 - [ ] **Step 5: Run everything one final time**
 
-Run: `bundle exec rspec && BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails && bundle exec rubocop`
+Run: `bundle exec rspec && (cd spec_rails/dummy_app && bundle exec rspec spec) && bundle exec rubocop`
 Expected: all PASS/clean.
 
 - [ ] **Step 6: Commit**
@@ -1245,7 +1245,7 @@ invariant. CHANGELOG entries land under the bumped-but-uncut alpha.5 heading."
 Before opening the PR:
 
 - [ ] `bundle exec rspec` — green
-- [ ] `BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails` — green (the Rails dummy app has its own bundle; the root rspec run misses it)
+- [ ] `(cd spec_rails/dummy_app && bundle exec rspec spec)` — green (the Rails dummy app has its own bundle; the root rspec run misses it)
 - [ ] `bundle exec rubocop` — clean
 - [ ] `git log --oneline --find-renames --stat` shows **renames**, not delete+add pairs, for the six moved files
 - [ ] `grep -rn "Reflection::Coercion\|Reflection::SubfieldTree\|Reflection::ResolvedSubfields\|Reflection::SubfieldContradictions\|Axn::DuplicateFieldError\|UnreraisableException" lib spec spec_rails docs internal-docs AGENTS*.md` returns nothing outside `internal-docs/specs/` and `internal-docs/plans/` (historical design docs keep their original text)
