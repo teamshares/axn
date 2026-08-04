@@ -1262,24 +1262,45 @@ module Axn
       # error **scoped to that field** (so a shared `->(e) { e.message }` sees only its own field, not
       # the aggregate). A String/Symbol/callable that resolves blank falls back to the field's own
       # validation message, so a user-facing failure never surfaces as the dev-facing generic message.
+      # Every part is decided and rendered without a dispatch axn cannot contain, because a part is whatever a
+      # `user_facing:` handler returned and this runs while the inbound failure is being CLASSIFIED — a raise
+      # here settles the run as an `exception` outcome, firing the global report, instead of as the user-facing
+      # failure the declaration configured. Absence comes from the part's class and its own bytes rather than
+      # from `presence` (the same undispatched answer `Axn::Failure#supplied_reason` gives a `fail!` reason),
+      # and it is asked FIRST — otherwise `false.to_s` would surface the literal "false" instead of falling
+      # back to the field's own validation message. The trailing `presence` reads the Array this line just
+      # built, not the handler's value.
       def _resolve_user_facing_override(setting, own:, scoped_error:)
-        override = case setting
-                   when true then own
-                   when String then setting
-                   else Core::Flow::Handlers::Invoker.call(action: @action, handler: setting,
-                                                           exception: scoped_error,
-                                                           operation: "resolving user_facing: message")
-                   end
-        # Absence first (`false`/`nil`/`""` mean "no message"), then coerce — otherwise `false.to_s` would
-        # surface the literal "false" instead of falling back to the field's own validation message.
-        #
-        # Decided from the part's class and its own bytes rather than by dispatching `presence`, because a
-        # part is whatever a `user_facing:` handler returned and this runs while the inbound failure is being
-        # classified: a `blank?` that raises settled the run as an `exception` outcome instead of the
-        # user-facing failure the declaration configured. Same undispatched answer `Axn::Failure#supplied_reason`
-        # gives a `fail!` reason. The trailing `presence` reads the Array this line just built, not the
-        # handler's value.
-        Array(override).filter_map { |m| m.to_s unless Internal::NativeMethods.absent_value?(m) }.presence || own
+        parts = case setting
+                when true then own
+                when String then [setting]
+                else
+                  _override_parts(Core::Flow::Handlers::Invoker.call(action: @action, handler: setting,
+                                                                     exception: scoped_error,
+                                                                     operation: "resolving user_facing: message"))
+                end
+        parts.filter_map { |m| _override_part(m) }.presence || own
+      end
+
+      # A handler's return value as a list of message parts. `Kernel#Array` dispatches the value's own `to_ary`
+      # and then its `to_a`, so a return value that cannot be listed contributes no parts and the field's own
+      # validation message stands — the override is what a hostile return costs, never the outcome. The two
+      # branches axn builds itself are listed without `Array()`: `own` is already axn's Array, and wrapping the
+      # String branch by hand keeps a String SUBCLASS carrying a `to_ary` out of the coercion entirely.
+      def _override_parts(override)
+        Array(override)
+      rescue ::Exception # rubocop:disable Lint/RescueException
+        []
+      end
+
+      # One part as the String it will be joined as, or nil when it is not a message: absent, or unable to
+      # render. An unrenderable part is DROPPED rather than named by its class, because this message is read by
+      # an end user and the field's own validation message is the better thing to fall back to — which is
+      # exactly what a part resolving blank already falls back to.
+      def _override_part(part)
+        return nil if Internal::NativeMethods.absent_value?(part)
+
+        Internal::Rendering.value_rendering(part)
       end
 
       # Under reject_undeclared_inputs, every provided top-level wire key that is neither a declared

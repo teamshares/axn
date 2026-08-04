@@ -45,6 +45,36 @@ module Axn
         # An exception's own message, as a UTF-8 String this method owns.
         def exception_message(exception) = Text.renderable(raw_exception_message(exception))
 
+        # A VALUE's own rendering, as a UTF-8 String this method owns — or nil when it has none.
+        #
+        # For a value that IS the message rather than one being described: a `fail!` reason, a declared
+        # `error`/`success` handler's return, a `user_facing:` handler's return. `to_s` is DISPATCHED,
+        # deliberately, on the same terms as `exception_message` dispatches `#message` — the object's own
+        # rendering is what makes the message useful, and routing everything through `Object#to_s` would
+        # degrade every well-behaved value to defend against broken ones. But these values are rendered while
+        # a failure is being SETTLED, and again on every later `result.error`/`result.message` read, and
+        # interpolating one dispatches its `to_s` under no guard at all. So the call is made here and its
+        # failure absorbed.
+        #
+        # Absorbs every class, including those axn never swallows: the outcome being settled has to win over
+        # anything raised while rendering it, and a value's `to_s` is not a path a signal travels through. A
+        # non-String `to_s` is a failure too, since rendering its answer would dispatch again.
+        #
+        # A String is rendered from its BYTES with nothing dispatched, which is what interpolation itself does
+        # (`"#{}"` takes a String as it stands), so a subclass whose `to_s` raises still renders as its text.
+        #
+        # nil rather than a fallback of its own, because what an unrenderable value should degrade TO belongs
+        # to the caller: a composed message names the value's class (`class_name`, the fallback this module and
+        # `Identity.describe` both take), while a user-facing message has a better answer to fall back on.
+        def value_rendering(value)
+          return Text.renderable(value) if Identity.kind?(value, ::String)
+
+          rendered = value.to_s
+          Identity.kind?(rendered, ::String) ? Text.renderable(rendered) : nil
+        rescue ::Exception # rubocop:disable Lint/RescueException
+          nil
+        end
+
         # Just the filename and line an exception came from, for a warning that names where a swallowed
         # failure happened.
         #

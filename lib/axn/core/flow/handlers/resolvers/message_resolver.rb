@@ -102,9 +102,27 @@ module Axn
             def combine(base, reason)
               j = join
               return apply_join_proc(j, base, reason) if j.respond_to?(:call)
-              return "#{base}#{j}#{reason}" if j.is_a?(String)
+              return joined(base, reason, j) if j.is_a?(String)
 
-              "#{base}#{DEFAULT_JOIN}#{reason}"
+              joined(base, reason, DEFAULT_JOIN)
+            end
+
+            # The composed message, with each half rendered BEFORE it is interpolated.
+            #
+            # Each half is whatever a declared `error`/`success` handler returned or a caller handed `fail!`,
+            # and interpolating it dispatches that object's `to_s` — from inside the path settling the failure,
+            # one step above the callback dispatch, and again on every later `result.error`/`result.message`
+            # read. So each is rendered behind a guard (`Rendering.value_rendering`), and a half that cannot
+            # render is named by its CLASS — the fallback `Rendering.exception_message` and `Identity.describe`
+            # both take when an object's own rendering will not answer. A raising `to_s` therefore costs that
+            # fragment, not the settlement, the callbacks, or the call.
+            #
+            # The separator is interpolated as it stands: it is axn's own String, or the caller's `join:` after
+            # the String test above, and `"#{}"` takes a String without dispatching anything.
+            def joined(base, reason, separator) = "#{fragment(base)}#{separator}#{fragment(reason)}"
+
+            def fragment(value)
+              Axn::Internal::Rendering.value_rendering(value) || Axn::Internal::Rendering.class_name(value)
             end
 
             # A join Proc runs on the presentation path, which must never raise. A Proc that raises,
@@ -114,7 +132,7 @@ module Axn
               unless join_accepts_base_and_reason?(proc)
                 reported_arity = proc.is_a?(Proc) || proc.is_a?(Method) ? proc.arity : proc.method(:call).arity
                 action.warn("join: callable cannot accept (base, reason) (arity #{reported_arity}) — using default join")
-                return "#{base}#{DEFAULT_JOIN}#{reason}"
+                return joined(base, reason, DEFAULT_JOIN)
               end
 
               result = proc.call(base, reason)
@@ -131,7 +149,7 @@ module Axn
                          Axn::Internal::Rendering.class_name(result)
                        end
               action.warn("join: callable returned #{detail} (expected a non-blank String) — using default join")
-              "#{base}#{DEFAULT_JOIN}#{reason}"
+              joined(base, reason, DEFAULT_JOIN)
             # Whatever the joiner raised, the fallback applies — this path "must never raise" (above), and
             # it is reached from `result.error` DURING settlement. A class slipping past here would abort
             # `_settle_exception!` after the exception was recorded but before on_error/on_failure/
@@ -140,7 +158,7 @@ module Axn
             rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
               action.warn("join: Proc raised #{Axn::Internal::Rendering.class_name(e)}: " \
                           "#{Axn::Internal::Rendering.exception_message(e)} — using default join")
-              "#{base}#{DEFAULT_JOIN}#{reason}"
+              joined(base, reason, DEFAULT_JOIN)
             end
 
             # A joiner accepts (base, reason) iff it takes exactly 2 positional args, or is variadic

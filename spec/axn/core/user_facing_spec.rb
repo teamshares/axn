@@ -147,6 +147,51 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.error).to eq("Please add a note")
       expect(events).to eq([:on_failure])
     end
+
+    # The same line renders the return value and lists it. Both dispatches are the caller's code: interpolating
+    # a part calls its `to_s`, and `Kernel#Array` calls its `to_ary`. Either one raising settled the run as an
+    # `exception` outcome — firing the global report for something marked the caller's fault — so both are
+    # contained, and a return value that cannot render leaves the field's own validation message standing.
+    it "settles as the user-facing failure when the override's own rendering raises" do
+      unrenderable = Object.new.tap do |o|
+        o.define_singleton_method(:to_s) { raise NotImplementedError, "to_s explodes" }
+      end
+      events = []
+      action = build_axn do
+        expects :note, user_facing: ->(_e) { unrenderable }
+        on_failure { events << :on_failure }
+        on_exception { events << :on_exception }
+        def call = nil
+      end
+
+      result = action.call
+
+      expect(result.outcome.failure?).to be(true)
+      expect { result.error }.not_to raise_error
+      expect(result.error).to eq("Note can't be blank")
+      expect(events).to eq([:on_failure])
+    end
+
+    it "settles as the user-facing failure when the override cannot be coerced to a list" do
+      unlistable = Object.new.tap do |o|
+        o.define_singleton_method(:to_ary) { raise NotImplementedError, "to_ary explodes" }
+        o.define_singleton_method(:to_s) { "Please add a note" }
+      end
+      events = []
+      action = build_axn do
+        expects :note, user_facing: ->(_e) { unlistable }
+        on_failure { events << :on_failure }
+        on_exception { events << :on_exception }
+        def call = nil
+      end
+
+      result = action.call
+
+      expect(result.outcome.failure?).to be(true)
+      expect { result.error }.not_to raise_error
+      expect(result.error).to eq("Note can't be blank")
+      expect(events).to eq([:on_failure])
+    end
   end
 
   describe "non-presence validations are equally user-facing" do
