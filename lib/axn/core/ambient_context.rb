@@ -63,7 +63,7 @@ module Axn
           ambient = candidate_subfields.select { |c| _on_roots_at_ambient?(c.on) }
           return if ambient.empty?
 
-          Axn::Internal::Reflection::SubfieldContradictions.check!([_synthetic_ambient_root], ambient)
+          Axn::Core::Contract::SubfieldContradictions.check!([_synthetic_ambient_root], ambient)
         end
 
         # A `shape:` on an ambient subfield validates the COPIED ambient value: a shape-carrying node

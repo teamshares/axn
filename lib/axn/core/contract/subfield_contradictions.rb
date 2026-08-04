@@ -4,8 +4,8 @@ require "axn/internal/subfield_tree"
 require "axn/internal/reflection/schema"
 
 module Axn
-  module Internal
-    module Reflection
+  module Core
+    module Contract
       # Declaration-time rejection of contradiction-only subfield contracts (PRO-2889). Walks a
       # CANDIDATE tree (prospective configs included; nothing committed) and raises ArgumentError on
       # the first provable contradiction. Every judgment reuses the canonical derivation in
@@ -98,7 +98,7 @@ module Axn
               if i >= reader_index && (blocker = segment_blocker(node, carried, seg))
                 raise_unanswerable!(config, blocker, seg)
               end
-              carried = node.children[seg]&.implicit? ? Schema.shape_members_at(node.configs + carried, seg) : []
+              carried = node.children[seg]&.implicit? ? Axn::Internal::Reflection::Schema.shape_members_at(node.configs + carried, seg) : []
             end
           end
         end
@@ -109,11 +109,11 @@ module Axn
         def segment_blocker(node, carried, segment)
           return nil if node.configs.any? { |c| c.validations[:model] }
 
-          (node.configs + carried).find { |c| !Schema.config_answers_segment?(c, segment) }
+          (node.configs + carried).find { |c| !Axn::Internal::Reflection::Schema.config_answers_segment?(c, segment) }
         end
 
         def raise_unanswerable!(config, blocker, segment)
-          types = Schema.object_type_branches(blocker).map { |b| b.is_a?(Class) ? b.name : b.inspect }.join(", ")
+          types = Axn::Internal::Reflection::Schema.object_type_branches(blocker).map { |b| b.is_a?(Class) ? b.name : b.inspect }.join(", ")
           raise ArgumentError,
                 "subfield #{config.field.inspect} (on #{config.on.inspect}) can never resolve: segment #{segment.inspect} " \
                 "is read from #{blocker.field.inspect}, declared #{types}, which cannot answer it (no key access, no such " \
@@ -126,29 +126,29 @@ module Axn
         # the contract can never accept. Keyed on STATIC declarations only, so a future dynamic/
         # conditional requiredness signal (PRO-2881) is outside the reject set by construction.
         def check_dead_nil_tolerance!(tree, field_configs)
-          ann = Schema.derive_annotations(tree.roots, satisfiability: true)
+          ann = Axn::Internal::Reflection::Schema.derive_annotations(tree.roots, satisfiability: true)
 
           field_configs.each do |config|
-            next if Schema::EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
-            next unless Schema.nil_accepted?(config)
+            next if Axn::Internal::Reflection::Schema::EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
+            next unless Axn::Internal::Reflection::Schema.nil_accepted?(config)
 
             node = tree.roots[config.reader_as]
             omittable = if config.validations[:model]
                           model_omittable?(config, node, field_configs, ann)
                         else
-                          Schema.field_optional?(config, node.children, ann, satisfiability: true)
+                          Axn::Internal::Reflection::Schema.field_optional?(config, node.children, ann, satisfiability: true)
                         end
             raise_dead_tolerance!(config, config.field, node, ann) unless omittable
           end
 
           each_explicit_node(tree.roots) do |parent, key, node|
             node.configs.each do |config|
-              next unless Schema.nil_accepted?(config)
-              next if Schema.node_optional?(node, ann, [config], satisfiability: true)
+              next unless Axn::Internal::Reflection::Schema.nil_accepted?(config)
+              next if Axn::Internal::Reflection::Schema.node_optional?(node, ann, [config], satisfiability: true)
               # Skip ANY nil-accepted config at a sibling-id-rescued node, not only the model route: a
               # merged nil-tolerant non-model route (and a required grandchild the resolved record answers)
               # is exercisable via the same rescue the annotation credit grants — one shared predicate.
-              next if Schema.sibling_id_rescued?(parent, key, node)
+              next if Axn::Internal::Reflection::Schema.sibling_id_rescued?(parent, key, node)
 
               # Name the declaration by the field the user wrote (config.field) — symmetric with the
               # top-level loop above; the `on:` parent is implied and the stranded descendant is named.
@@ -174,13 +174,14 @@ module Axn
         # OR a defaulted explicit `<field>_id` sibling supplies the lookup token on omission.
         def model_omittable?(config, node, field_configs, ann)
           explicit_id = field_configs.find { |c| c.field == Internal::FieldConfig.model_id_key(config.field) }
-          return true if explicit_id && Schema.usable_id_token_default?(explicit_id)
+          return true if explicit_id && Axn::Internal::Reflection::Schema.usable_id_token_default?(explicit_id)
           # The model's OWN usable default supplies a record on omission, so the tolerance is
           # exercisable regardless of a required descendant — mirrors field_optional?'s parent-default
           # short-circuit (checked BEFORE the child test, not gated behind it).
-          return true if Schema.usable_default?(config, subfield: false, satisfiability: true)
+          return true if Axn::Internal::Reflection::Schema.usable_default?(config, subfield: false, satisfiability: true)
 
-          Schema.optional_for_schema?(config, satisfiability: true) && !Schema.children_require_presence?(node.children, ann)
+          Axn::Internal::Reflection::Schema.optional_for_schema?(config, satisfiability: true) &&
+            !Axn::Internal::Reflection::Schema.children_require_presence?(node.children, ann)
         end
 
         # The shallowest explicit required descendant's dotted path (for the message) — descends
@@ -203,11 +204,11 @@ module Axn
           # an encoding failure instead of the contradiction being reported. `Symbol#inspect` supplies the leading
           # colon these read with, and escapes bytes that have no UTF-8 rendering.
           name = owner.inspect
-          segments = first_required_descendant(node, ann)&.map { |segment| PropertyNames.renderable_label(segment) }
+          segments = first_required_descendant(node, ann)&.map { |segment| Axn::Internal::Reflection::PropertyNames.renderable_label(segment) }
           stranded = segments && ":#{segments.join('.')}"
           model_hint = if config.validations[:model]
                          " For a model: field, a record-supplying default: on #{name} or a defaulted " \
-                           "#{PropertyNames.renderable_label(owner)}_id sibling (declared first) also rescues omission."
+                           "#{Axn::Internal::Reflection::PropertyNames.renderable_label(owner)}_id sibling (declared first) also rescues omission."
                        else
                          ""
                        end
@@ -218,7 +219,8 @@ module Axn
                 "the tolerance can never be exercised (every nil/omitted #{name} fails validation). " \
                 "Drop the tolerance on #{name}, or mark #{stranded || 'the subtree'} optional: or give it a " \
                 "default: (declare rescuing defaults BEFORE the dependent subfield). If it is only required when " \
-                "#{name} is supplied, gate it conditionally: `expects ..., if: -> { #{PropertyNames.renderable_label(owner)}.present? }`.#{model_hint}"
+                "#{name} is supplied, gate it conditionally: `expects ..., if: -> { " \
+                "#{Axn::Internal::Reflection::PropertyNames.renderable_label(owner)}.present? }`.#{model_hint}"
         end
       end
     end

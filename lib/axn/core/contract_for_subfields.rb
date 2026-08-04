@@ -544,7 +544,7 @@ module Axn
             # already-declared tolerance is caught at the declaration that completes it. The shared tree
             # drops ambient configs, so the ambient subtree is checked separately on its own scoped tree
             # (PRO-2909) — same candidate set, same checks.
-            Axn::Internal::Reflection::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
+            Axn::Core::Contract::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
             _check_ambient_subfield_contradictions!(subfield_configs + configs)
             _check_ambient_shape_placement!(subfield_configs + configs)
 
