@@ -10,16 +10,18 @@ module Axn
     # `input_schema`/`output_schema` (Schema), the JSON-safe rendering behind
     # Axn::Extensions::Serialization.render (Values), and the property-name rules both are judged
     # against (PropertyNames). PropertyNames is also reached directly from the contract's own
-    # declaration walk (duplicate-name and unrenderable-name checks), not only from Schema.
+    # declaration walk (duplicate-name and unrenderable-name checks, and the subfield-contradiction
+    # check's dead-tolerance diagnosis in Core::Contract::SubfieldContradictions), not only from Schema.
     #
     # Building and validating a schema, and rendering a result, all run off the execution path — but
-    # Schema and PropertyNames each keep one narrow judgment shared with it: ContractForSubfields'
+    # Schema and PropertyNames each keep narrow judgments shared with it: ContractForSubfields'
     # model-field reader consults Schema.usable_id_token_default? once, to resolve an omitted
     # `<field>_id` when that field first resolves (the reader is memoized, so this never repeats within
-    # one action instance), and CallLogger and the executor's validation-failure messages reuse
-    # PropertyNames.renderable_label to name a field — but only when there is one to name: a logged call
-    # with no context data, or a failure with no stranded nil ancestor, never reaches it. Values has no
-    # such foothold — an axn's own `.call` never reaches it, only the calling app's explicit
+    # one action instance), and CallLogger, the executor's validation-failure messages, and the shape
+    # validator's runtime member-validation errors all reuse PropertyNames.renderable_label to name a
+    # field — but only when there is one to name: a logged call with no context data, a failure with no
+    # stranded nil ancestor, or a shape member that reads and validates cleanly, never reaches it. Values
+    # has no such foothold — an axn's own `.call` never reaches it, only the calling app's explicit
     # Serialization.render and the contract's declaration-time duplicate-name check.
     #
     # Internal::ResolvedSubfields depends on this layer (composing a SubfieldTree with

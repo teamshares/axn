@@ -9,7 +9,7 @@ RSpec.describe "Axn top-level namespace" do
   RESERVED = %i[
     Result Failure Factory FormObject Configuration RailsConfiguration
     Strategies StrategyNotFound DuplicateStrategyError
-    ContractViolation ValidationError
+    Error ContractViolation ValidationError
     InboundValidationError OutboundValidationError UnsupportedArgument
     Core Internal Async Extensions Tools Validation
     Configurable Mountable Extras FieldDeclarations Testing Util

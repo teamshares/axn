@@ -19,9 +19,9 @@ The ticket was written before PRO-3005, PRO-3018, PRO-3026 and PRO-3028 landed, 
 
 | Module | Runs | Callers |
 | --- | --- | --- |
-| `Schema` | off the execution path | the `input_schema`/`output_schema` projection |
+| `Schema` | off the execution path, with one narrow foothold on it | the `input_schema`/`output_schema` projection; `ContractForSubfields`'s memoized `<field>_id` default check |
 | `Values` | off the execution path | `Extensions::Serialization.render` |
-| `PropertyNames` | declaration | `Schema`, the contract's declaration walk |
+| `PropertyNames` | declaration, plus narrow runtime footholds | `Schema`, the contract's declaration walk, the subfield-contradiction check; `CallLogger`, the executor's validation-failure messages, the shape validator |
 | `Coercion` | **inside validation** | `Core::{contract, contract_for_subfields, executor}` |
 | `SubfieldContradictions` | declaration | `Core::{contract_for_subfields, ambient_context}` |
 | `SubfieldTree` | declaration + read path | `Core::ambient_context`, `Reflection::PropertyNames` |
