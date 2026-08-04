@@ -132,7 +132,7 @@ RSpec.describe "declaration-time property name collisions" do
         exposes :b, optional: true
       end
       walks = 0
-      allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
+      allow(Axn::Internal::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
         walks += 1
         original.call(*args, &block)
       end
@@ -152,7 +152,7 @@ RSpec.describe "declaration-time property name collisions" do
       end
       result = klass.call
       walks = 0
-      allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
+      allow(Axn::Internal::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
         walks += 1
         original.call(*args, &block)
       end
@@ -890,9 +890,9 @@ RSpec.describe "declaration-time property name collisions" do
     # renderer's canonicalization rather than re-deriving it. Asserted here so narrowing the renderer's
     # public surface fails loudly rather than silently disarming the guard.
     it "is publicly callable and collapses two encodings of one property" do
-      expect(Axn::Reflection::Values).to respond_to(:canonical_wire_key)
-      expect(Axn::Reflection::Values.canonical_wire_key(latin1_name)).to eq("café")
-      expect(Axn::Reflection::Values.canonical_wire_key(utf8_name)).to eq("café")
+      expect(Axn::Internal::Reflection::Values).to respond_to(:canonical_wire_key)
+      expect(Axn::Internal::Reflection::Values.canonical_wire_key(latin1_name)).to eq("café")
+      expect(Axn::Internal::Reflection::Values.canonical_wire_key(utf8_name)).to eq("café")
     end
   end
 
@@ -1335,7 +1335,7 @@ RSpec.describe "declaration-time property name collisions" do
     # one" are distinguishable, which is the whole question.
     def canonical_props(klass, *path)
       node = path.inject(klass.input_schema) { |acc, key| acc.dig(:properties, key) }
-      (node[:properties] || {}).keys.map { |k| Axn::Reflection::Values.canonical_wire_key(k) }
+      (node[:properties] || {}).keys.map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }
     end
 
     describe "a subfield leaf and a shape member of its parent" do
@@ -1496,7 +1496,7 @@ RSpec.describe "declaration-time property name collisions" do
     end
 
     # A `Data`-typed field declaring a shape block emits its type's own members as properties beside the
-    # shape's (Reflection::Schema#apply_structured_schema!), so those two sets share a node. This mechanism was
+    # shape's (Internal::Reflection::Schema#apply_structured_schema!), so those two sets share a node. This mechanism was
     # not on the review's list; it was found by walking the cross-product.
     describe "the members of a Data type declared alongside a shape" do
       it "rejects a shape member that collapses onto a Data member's property" do
@@ -1634,7 +1634,7 @@ RSpec.describe "declaration-time property name collisions" do
     # TYPE does contribute property names, at the element node.)
     describe "an of: element type's members, inside the array's items" do
       def element_props(klass)
-        klass.input_schema.dig(:properties, :list, :items, :properties).keys.map { |k| Axn::Reflection::Values.canonical_wire_key(k) }
+        klass.input_schema.dig(:properties, :list, :items, :properties).keys.map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }
       end
 
       it "rejects a shape member that collapses onto an element type's property" do
@@ -1667,7 +1667,7 @@ RSpec.describe "declaration-time property name collisions" do
         end
 
         other_props = klass.input_schema.dig(:properties, :other, :items, :properties).keys
-                           .map { |k| Axn::Reflection::Values.canonical_wire_key(k) }
+                           .map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }
 
         expect(element_props(klass)).to eq(["café"])
         expect(other_props).to eq(["café"])
@@ -1788,7 +1788,7 @@ RSpec.describe "declaration-time property name collisions" do
       end
 
       expect(klass.input_schema.dig(:properties, :payload, :properties).keys
-                  .map { |k| Axn::Reflection::Values.canonical_wire_key(k) }).to eq(["café"])
+                  .map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }).to eq(["café"])
     end
 
     it "leaves a plain ASCII dotted route alone" do
@@ -1841,7 +1841,7 @@ RSpec.describe "declaration-time property name collisions" do
       klass = build_axn { expects(:t, type: shaped, optional: true) { field :other, type: String } }
 
       expect(klass.input_schema.dig(:properties, :t, :properties).keys
-                  .map { |k| Axn::Reflection::Values.canonical_wire_key(k) }).to contain_exactly("café", "other")
+                  .map { |k| Axn::Internal::Reflection::Values.canonical_wire_key(k) }).to contain_exactly("café", "other")
     end
   end
 
@@ -2741,7 +2741,7 @@ RSpec.describe "declaration-time property name collisions" do
           end
 
           expect(klass.input_schema.dig(:properties, :payload, :properties, :bar)).not_to have_key(:properties)
-          expect(Axn::Reflection::Schema.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs).map(&:field))
+          expect(Axn::Internal::Reflection::Schema.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs).map(&:field))
             .to eq([:baz])
         end
 
@@ -3223,12 +3223,20 @@ RSpec.describe "declaration-time property name collisions" do
         # Every declared field name is symbolized before any guard runs, so `config.field` is always a Symbol
         # and these helpers can never meet an exotic name on the field path. Asserted so the reasoning behind
         # leaving the field-path messages untouched stays true rather than assumed.
+        #
+        # What CLOSES the field path is now the type rule rather than `to_sym`'s accident: such a name used to
+        # be diagnosed as `NoMethodError: undefined method 'to_sym' for an instance of …`, naming neither the
+        # DSL nor what was wrong with the value (PRO-3026). The name is still never reached by the field-path
+        # messages — it is refused before one could be built — so the reasoning above holds either way.
         it "cannot reach the field path at all, which symbolizes every declared name" do
           klass = build_axn { expects "stringy", :symbolic }
           exotic = exotic_name_class.new("dup")
 
           expect(klass.internal_field_configs.map { |c| c.field.instance_of?(Symbol) }).to all(be(true))
-          expect { build_axn { expects exotic } }.to raise_error(NoMethodError, /to_sym/)
+          # Named by CLASS, so the offender's own `inspect` — which raises here — never runs while the verdict
+          # is being built.
+          expect { build_axn { expects exotic } }
+            .to raise_error(ArgumentError, /a field name must be a String or Symbol naming an inbound field \(got a value of class /)
         end
       end
 
@@ -3427,7 +3435,7 @@ RSpec.describe "declaration-time property name collisions" do
     # ...and the size guard, which runs BEFORE the build to decide which config the emitter would have built a
     # shared wire key's property from, does not ask the name that question either. It cannot be observed through
     # a projection, because the emitter's own `properties` Hash asks `eql?` immediately afterwards and that
-    # dispatch is the merge rule rather than a report (`Reflection::Schema` is deliberately not one of the layers
+    # dispatch is the merge rule rather than a report (`Internal::Reflection::Schema` is deliberately not one of the layers
     # that refuse to dispatch) — so the guard is checked where it lives.
     it "decides which config owns a shared wire key without asking the name" do
       raising_eql = Class.new(String) do
@@ -3437,8 +3445,8 @@ RSpec.describe "declaration-time property name collisions" do
         Axn::Core::Contract::FieldConfig.new(field:, reader_as: :"x#{index}", validations: { allow_nil: true })
       end
 
-      expect { Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: false) }.not_to raise_error
-      expect { Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: true) }.not_to raise_error
+      expect { Axn::Internal::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: false) }.not_to raise_error
+      expect { Axn::Internal::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: true) }.not_to raise_error
     end
   end
 
@@ -3665,7 +3673,7 @@ RSpec.describe "declaration-time property name collisions" do
 
   # The runtime defense this does NOT replace has its own coverage: a declaration check cannot see the keys
   # of a Hash the action builds during a call, so the serializer stays the last line for that case. It is
-  # covered by the "colliding Hash keys" describe block in `spec/axn/reflection/values_spec.rb`, which owns
+  # covered by the "colliding Hash keys" describe block in `spec/axn/internal/reflection/values_spec.rb`, which owns
   # every assertion about the serializer's own behavior — do not duplicate it here; a second copy would add
   # a second place to maintain the serialization surface from, for no added protection.
 end

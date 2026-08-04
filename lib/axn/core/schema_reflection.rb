@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/reflection"
+require "axn/internal/reflection"
 
 module Axn
   module Core
@@ -34,8 +34,8 @@ module Axn
         # colliding or unrenderable name can harm, and this is where one is first demanded. Validated once per
         # class, over the schema being returned rather than a second build of it.
         def input_schema
-          Axn::Reflection::PropertyNames.validated_input(self) { Axn::Reflection::Schema.build_input_for(self) }
-                                        .tap { _warn_dropped_deep_subfields }
+          Axn::Internal::Reflection::PropertyNames.validated_input(self) { Axn::Internal::Reflection::Schema.build_input_for(self) }
+                                                  .tap { _warn_dropped_deep_subfields }
         end
 
         private
@@ -65,13 +65,13 @@ module Axn
 
         # The UTF-8 property a declared name renders as, falling back to the escaped `inspect` when its bytes
         # have no UTF-8 rendering at all. Same rule the declaration errors use, for the same reason.
-        def _schema_name_label(name) = Axn::Reflection::PropertyNames.renderable_label(name)
+        def _schema_name_label(name) = Axn::Internal::Reflection::PropertyNames.renderable_label(name)
       end
 
       module OutputSchemaMethod
         # See input_schema: validated once per class, over the schema being returned.
         def output_schema
-          Axn::Reflection::PropertyNames.validated_output(self) { Axn::Reflection::Schema.build_output(external_field_configs) }
+          Axn::Internal::Reflection::PropertyNames.validated_output(self) { Axn::Internal::Reflection::Schema.build_output(external_field_configs) }
         end
       end
     end

@@ -228,7 +228,7 @@ module Axn
         return detached_dup(value) if own.empty?
 
         raise ArgumentError,
-              "the #{label} container (of class #{Axn::Reflection::PropertyNames.renderable_class_name(value)}) " \
+              "the #{label} container (of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}) " \
               "defines methods of its " \
               "own (#{describe_own_methods(own)}), so axn cannot copy it. A declared contract is copied at " \
               "declaration so that mutating what you still hold cannot change it — and `dup` copies the " \
@@ -243,7 +243,7 @@ module Axn
       # rather than at a rule. Sorted for a stable message, and capped because a rich subclass has dozens.
       def self.describe_own_methods(names)
         shown = names.uniq.sort
-        rendered = shown.first(3).map { |name| "`#{Axn::Reflection::PropertyNames.inspect_field_name(name)}`" }.join(", ")
+        rendered = shown.first(3).map { |name| "`#{Axn::Internal::Reflection::PropertyNames.inspect_field_name(name)}`" }.join(", ")
         shown.size > 3 ? "#{rendered}, and #{shown.size - 3} more" : rendered
       end
 
@@ -287,7 +287,7 @@ module Axn
       def self.describe_via(member)
         return "" if nil.equal?(member)
 
-        " reached from the shape member of class #{Axn::Reflection::PropertyNames.renderable_class_name(member)}"
+        " reached from the shape member of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(member)}"
       end
 
       def self.self_containing_message(member)

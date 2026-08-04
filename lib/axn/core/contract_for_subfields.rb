@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 require "axn/core/validation/fields"
-require "axn/reflection/resolved_subfields"
-require "axn/reflection/schema"
-require "axn/reflection/subfield_contradictions"
+require "axn/internal/reflection/resolved_subfields"
+require "axn/internal/reflection/schema"
+require "axn/internal/reflection/subfield_contradictions"
 
 module Axn
   module Core
@@ -265,7 +265,7 @@ module Axn
       # coercion needs no guard.
       def self._apply_read_path_transforms(action, config, value, parent)
         coerce_input_types = Axn::Internal::CurrentCallOptions.coerce_input_types_for(action)
-        value = Axn::Reflection::Coercion.coerce_config_value(value, config, coerce_input_types:)
+        value = Axn::Internal::Reflection::Coercion.coerce_config_value(value, config, coerce_input_types:)
         value = Axn::Internal::FieldConfig.resolve_preprocess(action, config, value) if config.preprocess && !parent.nil?
         value
       end
@@ -381,7 +381,7 @@ module Axn
           raw = _memoized_raw_extract(action, sibling_config, resolve_parent(action, sibling_config))
           # Absent id: only a defaulted route can rescue; skip the rest (they resolve nil and would run an
           # unguarded preprocess on the absent value).
-          next if raw.nil? && !Axn::Reflection::Schema.usable_id_token_default?(sibling_config)
+          next if raw.nil? && !Axn::Internal::Reflection::Schema.usable_id_token_default?(sibling_config)
 
           value = action.public_send(sibling_config.reader_as)
           return value unless value.nil?
@@ -422,7 +422,7 @@ module Axn
           end
 
         own_route = candidates.find { |c| c.on.to_s == config.on.to_s }
-        default_route = candidates.find { |c| Axn::Reflection::Schema.usable_id_token_default?(c) }
+        default_route = candidates.find { |c| Axn::Internal::Reflection::Schema.usable_id_token_default?(c) }
         # An own route or a credited default route is authoritative; the raw declaration-order fallback is
         # ONLY for the case where neither exists (a single undefaulted id on a non-model route), so a nil
         # own-route resolution never spills over into re-reading the shared wire value through another route.
@@ -460,7 +460,7 @@ module Axn
           cached = @_axn_resolved_subfields
           return cached.value if cached && cached.fields.equal?(fields) && cached.subfields.equal?(subfields)
 
-          value = Axn::Reflection::ResolvedSubfields.build(fields, subfields)
+          value = Axn::Internal::Reflection::ResolvedSubfields.build(fields, subfields)
           @_axn_resolved_subfields = ResolvedSubfieldsCacheEntry.new(fields:, subfields:, value:)
           value
         end
@@ -544,7 +544,7 @@ module Axn
             # already-declared tolerance is caught at the declaration that completes it. The shared tree
             # drops ambient configs, so the ambient subtree is checked separately on its own scoped tree
             # (PRO-2909) — same candidate set, same checks.
-            Axn::Reflection::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
+            Axn::Internal::Reflection::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
             _check_ambient_subfield_contradictions!(subfield_configs + configs)
             _check_ambient_shape_placement!(subfield_configs + configs)
 
@@ -564,7 +564,7 @@ module Axn
         # Encoding::CompatibilityError from the reporting itself — surfacing an encoding failure instead of the
         # missing-reader defect being reported. (Whether an unrenderable segment is a defect in its own right
         # depends on whether the schema EMITS it, which the emitted-name walk decides.)
-        def _schema_name_label(name) = Axn::Reflection::PropertyNames.renderable_label(name)
+        def _schema_name_label(name) = Axn::Internal::Reflection::PropertyNames.renderable_label(name)
 
         # True when on:'s chain ultimately roots at :ambient_context — directly (`on: :ambient_context`),
         # via a dotted path, or by pointing at another subfield that itself roots at ambient.

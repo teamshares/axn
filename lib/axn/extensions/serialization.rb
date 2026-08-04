@@ -1,15 +1,15 @@
 # frozen_string_literal: true
 
 # Declared rather than inherited from the top-level `axn` entrypoint's require order, for the reason
-# axn/reflection/values.rb gives about its own: the renderer is a runtime reference, so a standalone
+# axn/internal/reflection/values.rb gives about its own: the renderer is a runtime reference, so a standalone
 # load of this file would NameError on the first call rather than at require time.
-require "axn/reflection/values"
-require "axn/reflection/property_names"
+require "axn/internal/reflection/values"
+require "axn/internal/reflection/property_names"
 
 module Axn
   module Extensions
     # The declared entry point for rendering a successful Result — the one serialization call an
-    # adapter gem makes. Everything behind it is core's own: Axn::Reflection::Values holds the
+    # adapter gem makes. Everything behind it is core's own: Axn::Internal::Reflection::Values holds the
     # rendering decisions, and a caller depending on one of them constrains core's routing.
     module Serialization
       module_function
@@ -28,7 +28,7 @@ module Axn
       # cycle, two names collapsing to one property, a non-finite Float, bytes with no UTF-8
       # rendering — raises either way.
       #
-      # Raises Axn::Reflection::UnserializableValue (an ArgumentError) naming the path to the
+      # Raises Axn::Extensions::Serialization::UnserializableValue (an ArgumentError) naming the path to the
       # offending value, so an adapter's existing `rescue StandardError` maps it to an error response.
       def render(result, reject_opaque: false)
         action_class = result.__action__.class
@@ -36,13 +36,13 @@ module Axn
         # a render-only adapter would otherwise learn about a collision from serialize_exposed's runtime
         # defense on a live call, which is a last line rather than a substitute for telling the author. Costs
         # one output-schema build on the first render and nothing after.
-        Axn::Reflection::PropertyNames.validate_outbound!(action_class)
+        Axn::Internal::Reflection::PropertyNames.validate_outbound!(action_class)
 
         configs = action_class.external_field_configs
 
         # `send` because serialize_exposed is private: this facade is its only caller, and that is
         # what makes `render` the rendering path rather than one of two.
-        Axn::Reflection::Values.send(:serialize_exposed, result, configs, reject_opaque:)
+        Axn::Internal::Reflection::Values.send(:serialize_exposed, result, configs, reject_opaque:)
       end
     end
   end

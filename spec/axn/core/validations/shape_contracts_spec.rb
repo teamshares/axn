@@ -663,7 +663,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
 
       # A member carrying BOTH a bare `type:` and a nested `shape:` is the corner the projection read as a bag
       # unconditionally: `TypeError: #<Class:Hash> does not have #dig method`, naming neither the member nor the
-      # option, and taking `input_schema` (and so `Axn.validate_tool_contracts!`) with it.
+      # option, and taking `input_schema` (and so `Axn::Tools.validate_contracts!`) with it.
       it "projects a bare `type:` carrying a nested shape, and validates through it" do
         inner = Axn::Core::Contract::ShapeConfig.new(field: :n, validations: { type: String })
         klass = declared_with({ type: Hash, shape: { members: [inner], container: Hash } })

@@ -63,7 +63,7 @@ RSpec.describe "the property-name rules' recorded residues" do
     end
   end
 
-  # `Reflection::Schema` is deliberately NOT one of the layers that refuse to dispatch (see AGENTS.md): its
+  # `Internal::Reflection::Schema` is deliberately NOT one of the layers that refuse to dispatch (see AGENTS.md): its
   # `properties[config.field] =` is the merge rule, so one Hash key means "two declarations, one property, legal".
   # A name whose `eql?` raises therefore has no property map at all, and the emitter says so — exactly as a value
   # whose `to_s` raises cannot be rendered.
@@ -100,7 +100,7 @@ RSpec.describe "the property-name rules' recorded residues" do
       end
 
       %i[input output].each do |direction|
-        expect { Axn::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: direction == :output) }
+        expect { Axn::Internal::Reflection::PropertyNames.send(:reject_oversized_schema!, configs, [], for_output: direction == :output) }
           .not_to raise_error
       end
     end

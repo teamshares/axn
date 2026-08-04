@@ -113,7 +113,7 @@ Deciding what a message IS is only half of the settlement path, though; renderin
 
 Two are the #208 leftovers this move exists to unblock, both now reachable because the primitive is below them:
 
-- `Axn::Reflection::UnserializableValue#message` (in `exceptions.rb`).
+- `Axn::Extensions::Serialization::UnserializableValue#message` (in `exceptions.rb`).
 - `Reflection::Values.describe_key_classes` — the colliding-key report.
 
 Then the funnel sweep over the remaining dispatched reads that write a foreign exception into prose. None of these escape today — each already sits inside a guard — but each is a misattribution source of the identical shape, and `renderable` is byte-identical for ASCII so no existing message text changes:

@@ -288,6 +288,168 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
     end
   end
 
+  # Runtime shape VALIDATION descends the graph and the value in lockstep too, and was the last walk in the
+  # library carrying neither bound (PRO-3026). It differs from the mask above in where an unbounded walk lands:
+  # `SystemStackError` here is raised INSIDE the execution path, so the executor settles it onto a failed result
+  # rather than letting it escape a side channel — a result whose "exception" is a stack overflow naming none of
+  # the contract, which is why it still had to be closed.
+  #
+  # What a REVISIT means is the whole design, and it is the PAIR of value and shape node. Both single-key
+  # alternatives were measured and both are wrong, in opposite directions: see the two regression examples below.
+  describe "the validation walk that descends a shaped value" do
+    def member(field, validations) = Axn::Core::Contract::ShapeConfig.new(field:, validations:)
+
+    def validating(shape)
+      klass = build_axn
+      klass.internal_field_configs = [
+        Axn::Core::Contract::FieldConfig.new(field: :p, reader_as: :p, validations: { type: { klass: Hash }, shape: }),
+      ].freeze
+      klass
+    end
+
+    def self_referential_value
+      value = {}
+      value[:nxt] = value
+      value
+    end
+
+    # The reported repro. `nxt`'s nested shape IS the shape it lives in, so the graph is cyclic; the value
+    # follows the same cycle, so the two recursed together.
+    it "settles a cyclic graph over a self-referential value as an ordinary result" do
+      shape = { container: Hash }
+      shape[:members] = [member(:tok, { presence: true }), member(:nxt, { shape: })]
+
+      result = validating(shape).call(p: self_referential_value)
+
+      # The verdict the contract actually has, rather than a stack overflow: `tok` is missing from the value.
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(result.exception.message).to include("P tok can't be blank")
+    end
+
+    it "closes the same cycle when it runs through an Array container" do
+      members = [member(:tok, { presence: true })]
+      shape = { container: Hash, members: }
+      members << member(:list, { type: { klass: Array }, shape: { container: Array, members: } })
+      value = {}
+      value[:list] = [value]
+
+      result = validating(shape).call(p: value)
+
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(result.exception.message).to include("P tok can't be blank")
+    end
+
+    # Why the value alone cannot be the key. This declaration is ORDINARY — two levels, acyclic, no assigned
+    # config anywhere — and it terminates on its own however self-referential the value is, because the graph
+    # runs out. Keying on the value would see the same Hash one level down and skip it, silently dropping a
+    # verdict a legal contract has always produced. The guard has to stay invisible here.
+    it "still validates every level a legal declared shape reaches into a self-referential value" do
+      klass = build_axn do
+        expects :p, type: Hash do
+          field :nxt, type: Hash do
+            field :leaf, presence: true
+          end
+        end
+      end
+
+      result = klass.call(p: self_referential_value)
+
+      expect(result.exception.message).to include("P nxt leaf can't be blank")
+    end
+
+    # Why the SHAPE alone cannot be the key either — the same reason the mask above guards the value. The graph
+    # is cyclic while the value is finite, so every level has real members left to check.
+    it "descends a cyclic graph as far as an acyclic value goes" do
+      shape = { container: Hash }
+      shape[:members] = [member(:tok, { presence: true }), member(:nxt, { type: { klass: Hash }, shape: })]
+
+      result = validating(shape).call(p: { tok: "t0", nxt: { tok: "t1", nxt: { nxt: {} } } })
+
+      # The third level's `tok` is missing and reported; a shape-keyed guard stopped at the second.
+      expect(result.exception.message).to include("P nxt nxt tok can't be blank")
+    end
+
+    # The case that decides value-vs-pair, and the one the reported repro does not reach. ONE value is reached
+    # under TWO shape nodes, each with its own required member. Value-keyed ancestry skips the second node
+    # entirely and `inner_req` is never checked — a violation masked rather than a walk bounded.
+    it "reports the required member of every distinct shape node one value is reached under" do
+      outer = { container: Hash }
+      inner = { container: Hash }
+      outer[:members] = [member(:outer_req, { presence: true }), member(:nxt, { shape: inner })]
+      inner[:members] = [member(:inner_req, { presence: true }), member(:nxt, { shape: outer })]
+
+      result = validating(outer).call(p: self_referential_value)
+
+      expect(result.exception.message).to include("P outer_req can't be blank").and include("P nxt inner_req can't be blank")
+    end
+
+    # Ancestry, not sightings: the pair is popped on the way out, so one value at two SIBLING positions is
+    # validated in full at both.
+    it "validates a value repeated among siblings at both positions" do
+      leaf = { container: Hash, members: [member(:need, { presence: true })] }
+      shape = { container: Hash, members: [member(:left, { shape: leaf }), member(:right, { shape: leaf })] }
+      shared = {}
+
+      result = validating(shape).call(p: { left: shared, right: shared })
+
+      expect(result.exception.message).to include("P left need can't be blank").and include("P right need can't be blank")
+    end
+
+    # The other half of untraversability, which no identity guard can see: a member minting a FRESH nested shape
+    # on every read repeats no pair at all, so only the depth bound stops it. Reached with a self-referential
+    # value, since an acyclic one ends the walk at its own leaves whatever the graph does.
+    it "reports a bounded error for a generative graph over a self-referential value" do
+      generative = Class.new do
+        def field = :nxt
+        def validations = { type: { klass: Hash }, shape: { members: [self], container: Hash } }
+      end.new
+
+      result = validating({ members: [generative], container: Hash }).call(p: self_referential_value)
+
+      expect(result).not_to be_ok
+      expect(result.exception).to be_a(ArgumentError)
+      expect(result.exception.message).to match(/nests more than 64 levels deep/)
+    end
+
+    # The runtime bound must be the SAME bound the declaration applies, not one level stricter. A graph whose
+    # deepest node sits exactly at the cap declares legally (`_walk_shape_graph!` rejects only past it), so a
+    # value following that legal chain has to reach the leaf's own validators. With a `>=` comparison here the
+    # walk raised on the one depth the contract explicitly permits — the two-layers-two-64s drift the shared
+    # constant exists to prevent. Asserted at the cap and one inside it, through behaviour rather than the
+    # constant.
+    it "validates the leaf of a graph declared at the maximum depth" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: { presence: true })], container: Hash }
+      64.times do
+        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :n, validations: { type: { klass: Hash }, shape: })],
+                  container: Hash }
+      end
+      value = {}
+      64.times { value = { n: value } }
+
+      klass = build_axn { expects :p, type: Hash, shape: }
+      result = klass.call(p: value)
+
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(result.exception.message).to include("leaf can't be blank")
+    end
+
+    # An ordinary shaped call is unchanged — the bound is on the descent, not on the members.
+    it "leaves an ordinary nested shape validating exactly as before" do
+      klass = build_axn do
+        expects :p, type: Hash do
+          field :name, presence: true
+          field :meta, type: Hash do
+            field :id, presence: true
+          end
+        end
+      end
+
+      expect(klass.call(p: { name: "n", meta: { id: 1 } })).to be_ok
+      expect(klass.call(p: { name: "n", meta: {} }).exception.message).to include("P meta id can't be blank")
+    end
+  end
+
   # Declaring a LATER ambient subfield rebuilds the tree over every ambient config, so a graph the class was
   # handed rather than declared is re-walked there. That walk carried neither bound until it was enumerated for.
   describe "the ambient placement check" do

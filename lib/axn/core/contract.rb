@@ -93,7 +93,7 @@ module Axn
 
         raise ArgumentError,
               "user_facing: must be true, a String, a Symbol, or a Proc (got a value of class " \
-              "#{Axn::Reflection::PropertyNames.renderable_class_name(user_facing)})"
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(user_facing)})"
       end
 
       # Whether the invoker would run this value as a handler — asked of the invoker itself, so the declaration
@@ -144,14 +144,14 @@ module Axn
 
         raise ArgumentError,
               "sensitive: must be true, false, a Symbol naming an action method, or a Proc (got a value of " \
-              "class #{Axn::Reflection::PropertyNames.renderable_class_name(sensitive)}) — any other value is not a redaction rule, and " \
+              "class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(sensitive)}) — any other value is not a redaction rule, and " \
               "a truthy one would silently leave the value logged in the clear rather than raise. Use " \
               "`sensitive: true` to always redact, or a Symbol/Proc predicate to decide per call."
       end
 
       # A shape member's name has to serve as TWO things: the JSON property it renders as (via `to_s`, which
       # the declaration guard canonicalizes) and the schema property key (via `to_sym`, which
-      # Reflection::Schema#member_properties emits). A String and a Symbol are the only types for which those
+      # Internal::Reflection::Schema#member_properties emits). A String and a Symbol are the only types for which those
       # conversions are each other's inverse, so they are the only names that mean one property. Any other
       # object defines the two independently, and one whose `to_s` and `to_sym` disagree makes the guard and
       # the schema compare different property names for the same member: the guard sees no collision while
@@ -173,7 +173,7 @@ module Axn
 
         raise ArgumentError,
               "a shape member name must be a String or a Symbol (got a name of class " \
-              "#{Axn::Reflection::PropertyNames.renderable_class_name(name)}) — a member name is both the JSON " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(name)}) — a member name is both the JSON " \
               "property it renders as " \
               "and the schema property key it is emitted under, and any other object converts to those two " \
               "independently. Declare the member under a String or Symbol name."
@@ -206,8 +206,55 @@ module Axn
 
         raise ArgumentError,
               "#{option} must be a String or Symbol naming #{names} (got a value of class " \
-              "#{Axn::Reflection::PropertyNames.renderable_class_name(value)}) — any other object has no single " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}) — any other object has no single " \
               "name to canonicalize to. #{fix}"
+      end
+
+      # A name of the right TYPE can still be written in bytes no declaration can work with. Runs immediately
+      # after the type rule above, at every site that takes a name, and BEFORE anything compares the name to
+      # anything: the questions a declaration asks — is this path dotted, is this reader reserved — are asked
+      # against axn's own ASCII patterns, and a wide encoding (UTF-16, UTF-32) makes the comparison itself
+      # raise `Encoding::CompatibilityError` instead of answering. That was the whole diagnosis such a name got:
+      # an encoding error from `"a.b".include?(".")`, naming neither the option nor what was wrong with it.
+      #
+      # Rejected rather than accommodated, because there is no working declaration behind it. The name interns
+      # to a Symbol DISTINCT from its UTF-8 twin (`"ab".encode("UTF-16LE").to_sym != :ab`) while canonicalizing
+      # to the same JSON property, so the schema advertises `"ab"` and no caller can satisfy it: supplying that
+      # property, its Symbol, or the wide Symbol itself each raise from the read path. An ASCII-COMPATIBLE
+      # non-UTF-8 name (Latin-N) is a different case entirely and stays legal — it compares, it reads, and it
+      # renders as the property it canonicalizes to.
+      #
+      # The encoding is read from bound base implementations (`NativeMethods.ascii_compatible_name?`) for the same
+      # reason the rest of this layer does — a dispatch inside a verdict is a dispatch the verdict did not need —
+      # and the encoding is named in the message from `Encoding`'s own object rather than from anything the caller
+      # supplied.
+      def self.validate_name_encoding!(value, kind:, fix:)
+        return if Axn::Internal::NativeMethods.ascii_compatible_name?(value)
+
+        raise ArgumentError,
+              "#{kind} must be written in an ASCII-compatible encoding (got one encoded as " \
+              "#{Axn::Internal::NativeMethods.name_encoding(value).name}) — a name in a wide encoding interns to a " \
+              "different Symbol than the UTF-8 property it renders as, so nothing a caller sends can match it, and " \
+              "every check the declaration makes against it raises rather than answering. #{fix}"
+      end
+
+      # Canonicalize a declared name to the Symbol every consumer downstream reads, holding both rules first. THE
+      # single place a name becomes a Symbol, so the rules and the conversion cannot drift apart — a site that
+      # canonicalized on its own is how `as:`, `prefix:` and the field names each ended up with a different answer
+      # for the same bad value.
+      #
+      # Scope, deliberately: these rules serve a name a developer actually WROTE — a Symbol, a String, or the
+      # `nil`/`[]`/`123` that a variable holding the wrong thing produces. They do not try to survive a String
+      # subclass whose `to_sym` lies (answering with a wide Symbol, a non-Symbol, or by raising). Verifying that a
+      # caller's object BEHAVES is unbounded — every round of verification is defeated by the next case — and the
+      # honest boundary is that such a class is not a contract axn can be asked to hold. What IS guaranteed is that
+      # nothing here consults the value's own `is_a?`, `inspect` or `encoding` to reach a verdict, so an ordinary
+      # mistake is always diagnosed as one.
+      def self.canonical_name!(value, option:, names:, fix:, encoding_fix:)
+        validate_name_option!(value, option:, names:, fix:)
+        validate_name_encoding!(value, kind: option, fix: encoding_fix)
+
+        value.to_sym
       end
 
       # The one config type for every declared inbound/outbound field, top-level or subfield — a
@@ -340,7 +387,7 @@ module Axn
           # reader names, duplicate detection, the inbound read path — is symbol-keyed by construction.
           # `expects "note"` and `expects :note` are the same field; a dotted subfield key (`"a.b"`)
           # symbolizes harmlessly (it's only ever compared/split via `.to_s`). See PRO-2790.
-          fields = fields.map(&:to_sym)
+          fields = _canonical_field_names!(fields, kind: "a field name", names: "an inbound field")
 
           # A subfield's ROUTE is canonicalized on the same terms, and here — before the first guard reads it.
           # A route is judged as written (its root must name a declared reader; `_duplicate_fields` keys a config
@@ -367,10 +414,13 @@ module Axn
           on = if Internal::NativeMethods.absent_value?(on)
                  nil
                else
-                 Contract.validate_name_option!(on, option: "on:", names: "a parent reader",
-                                                    fix: "Pass the parent's name (dotted for a nested path), or omit `on:` " \
-                                                         "to declare a top-level field.")
-                 on.to_sym
+                 # Canonicalized through the shared rule, which also holds the encoding of what `to_sym` ANSWERS —
+                 # this is the value every consumer then splits on `.`, and a wide one raised from the split.
+                 Contract.canonical_name!(on, option: "on:", names: "a parent reader",
+                                              fix: "Pass the parent's name (dotted for a nested path), or omit `on:` " \
+                                                   "to declare a top-level field.",
+                                              encoding_fix: "Name the parent in UTF-8 (or any other ASCII-compatible " \
+                                                            "encoding).")
                end
 
           fields.each do |field|
@@ -438,7 +488,7 @@ module Axn
           &block
         )
           # Symbolize the wire key (see `expects`) so exposes shares the same symbol-keyed contract.
-          fields = fields.map(&:to_sym)
+          fields = _canonical_field_names!(fields, kind: "an exposure name", names: "an outbound field")
 
           # Stays pre-build, unlike every other declared name: an exposed field name is a property in the
           # SERIALIZED BODY (`Values.serialize_exposed` iterates these configs and raises on an unrenderable
@@ -569,7 +619,7 @@ module Axn
           # second time reported a different defect than the one it judged — the non-idempotent-dispatch hazard
           # that CANONICALIZING a value always carries. `Hash#[]=` keeps the last entry for a repeated key,
           # exactly as `to_h` did.
-          key_for = ->(c) { [c.on.to_s, Axn::Reflection::Values.canonical_wire_key(c.field)] }
+          key_for = ->(c) { [c.on.to_s, Axn::Internal::Reflection::Values.canonical_wire_key(c.field)] }
 
           claimed = existing.each_with_object({}) do |c, h|
             key = key_for.call(c)
@@ -591,19 +641,19 @@ module Axn
         # instead of the declaration error that was being reported. The canonical property is
         # byte-identical to the raw spelling for every renderable name, so ordinary messages are unchanged;
         # `inspect` is reserved for the name that has no property to print.
-        def _shape_member_label(name) = Axn::Reflection::PropertyNames.renderable_label(name)
+        def _shape_member_label(name) = Axn::Internal::Reflection::PropertyNames.renderable_label(name)
 
         # The two property-name rules are judged on the projection they would appear in, so they run when one is
-        # first demanded rather than here (see Axn::Reflection::PropertyNames). What the contract still asks of
+        # first demanded rather than here (see Axn::Internal::Reflection::PropertyNames). What the contract still asks of
         # that layer eagerly is name RENDERING — `exposes` field names, whose bytes reach the serialized body
         # regardless of any schema, and the escaping every declaration message uses.
         def _reject_unrenderable_field_names!(names, kind: "a field name")
-          Axn::Reflection::PropertyNames.reject_unrenderable_field_names!(names, kind:)
+          Axn::Internal::Reflection::PropertyNames.reject_unrenderable_field_names!(names, kind:)
         end
 
         # How a declared name is written into a message, shared with the rules above so every message that
         # names a field or member escapes it the same way.
-        def _inspect_field_name(name) = Axn::Reflection::PropertyNames.inspect_field_name(name)
+        def _inspect_field_name(name) = Axn::Internal::Reflection::PropertyNames.inspect_field_name(name)
 
         # The three declaration paths (top-level expects, exposes, subfields) report through here rather
         # than each partitioning the result of `_duplicate_fields` themselves. An identical-name duplicate
@@ -627,16 +677,16 @@ module Axn
           collisions = _duplicate_fields(existing, new_configs)
           return if collisions.empty?
 
-          identical, collapsed = collisions.partition { |claimed, offending| Axn::Reflection::PropertyNames.same_declared_name?(claimed, offending) }
+          identical, collapsed = collisions.partition { |claimed, offending| Axn::Internal::Reflection::PropertyNames.same_declared_name?(claimed, offending) }
           if identical.any?
-            names = identical.map { |_claimed, offending| Axn::Reflection::Values.canonical_wire_key(offending) }
+            names = identical.map { |_claimed, offending| Axn::Internal::Reflection::Values.canonical_wire_key(offending) }
             raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}"
           end
 
           claimed, offending = collapsed.first
           raise Axn::DuplicateFieldError,
                 "Duplicate field(s) declared: #{_inspect_field_name(claimed)} and #{_inspect_field_name(offending)} " \
-                "both render as the JSON property #{Axn::Reflection::Values.canonical_wire_key(offending).inspect} — a " \
+                "both render as the JSON property #{Axn::Internal::Reflection::Values.canonical_wire_key(offending).inspect} — a " \
                 "field name becomes a property name in the reflected schema and in serialized output, so the two would " \
                 "collapse onto one. Declare them under names that stay distinct once converted to UTF-8."
         end
@@ -648,9 +698,26 @@ module Axn
         #
         # Wire keys are never dotted (dotted field NAMES are rejected upstream by
         # _reject_dotted_field_name!), so a reader name is only ever renamed, never path-derived:
-        # `as:` renames a single field, `prefix:` prepends to each. The one dotted constraint left is on
-        # the `as:` VALUE itself — a reader name still can't be dotted.
+        # `as:` renames a single field, `prefix:` prepends to each. The dotted constraint left is on the
+        # VALUES themselves — a reader name still can't be dotted, whichever option composed it.
+        #
+        # Both options are OPTIONAL, so both get the absent set every other optional name option has
+        # (`NativeMethods.absent_value?`: `nil`, `false`, an empty or whitespace-only String in any encoding,
+        # the empty Symbol) and are canonicalized to `nil` when they carry one. Previously only `nil` meant
+        # absent to the identity check while `if as` treated `false` as absent too, so the two options
+        # disagreed about the same value — `as: false` meant "no rename" while `prefix: false` prepended the
+        # literal text "false" — and the spellings in between were neither absent nor names: `as: ""` and
+        # `as: "  "` generated readers called `:""` and `:"  "`.
+        #
+        # Beyond the absent set each must be a name, checked on the same terms as `on:`. `as:` was left to its
+        # own `to_sym` (`NoMethodError` for an Array); `prefix:` was never even a `to_sym` site — it is
+        # interpolated, so `to_s` accepted EVERY object silently and generated a reader from whatever it
+        # rendered as (`prefix: []` → `:"[]a"`, `prefix: {x: 1}` → `:"{:x=>1}a"`), which no caller can invoke
+        # and nothing later rejects.
         def _resolve_reader_names(fields, as:, prefix:)
+          as = nil if Internal::NativeMethods.absent_value?(as)
+          prefix = nil if Internal::NativeMethods.absent_value?(prefix)
+
           return fields.to_h { |f| [f, f] } if as.nil? && prefix.nil?
 
           raise ArgumentError, "`as:` and `prefix:` cannot be combined" if as && prefix
@@ -662,13 +729,49 @@ module Axn
             # name the reader is defined under — `to_s` and `to_sym` are two dispatches on the same caller
             # object, and a String subclass answering them differently had the guard clearing one spelling
             # while another was generated. A Symbol's `to_s`/`inspect` are Ruby's own, so both the check and
-            # the message it may raise are now decided by axn.
-            reader = as.to_sym
+            # the message it may raise are now decided by axn. The shared rule holds the CANONICAL name's
+            # encoding too, so the dotted question below is asked of bytes that can answer it.
+            reader = Contract.canonical_name!(as, option: "`as:`", names: "the generated reader",
+                                                  fix: "Pass the reader's name, or omit `as:` to name the reader for the wire key.",
+                                                  encoding_fix: "Name it in UTF-8 (or any other ASCII-compatible encoding).")
             raise ArgumentError, "`as:` reader name may not be dotted (#{reader.inspect} would not name a method)" if reader.to_s.include?(".")
 
             { fields.first => reader }
           else
-            fields.to_h { |f| [f, :"#{prefix}#{f}"] }
+            # The same dotted rule as `as:`, on the same grounds and closed at the same time: a dotted prefix
+            # composes a dotted reader (`prefix: "a."` → `:"a.field"`) that no caller can invoke, which is
+            # exactly what the `as:` check above refuses. Asked of the canonicalized prefix, so the value
+            # judged is the one interpolated below.
+            segment = Contract.canonical_name!(prefix, option: "`prefix:`", names: "a prefix for each generated reader",
+                                                       fix: "Pass the prefix as a String or Symbol, or omit `prefix:` to name " \
+                                                            "each reader for its wire key.",
+                                                       encoding_fix: "Name it in UTF-8 (or any other ASCII-compatible encoding).")
+            if segment.to_s.include?(".")
+              raise ArgumentError,
+                    "`prefix:` may not be dotted (#{segment.inspect} would compose a reader that does not name a method)"
+            end
+
+            fields.to_h { |f| [f, :"#{segment}#{f}"] }
+          end
+        end
+
+        # Every declared field name passes here, at both DSLs, BEFORE `to_sym` canonicalizes it and before any
+        # check compares it to anything. A value that is not a name at all used to be diagnosed as whatever
+        # `to_sym` happened to raise — `NoMethodError: undefined method 'to_sym' for an instance of Array`, which
+        # named neither the DSL nor what was wrong with the value — and a name in a wide encoding as whatever the
+        # first ASCII comparison raised (`Encoding::CompatibilityError`, from the dotted check below).
+        #
+        # Called WITHOUT the absent check that PRECEDES the same type guard at the option-shaped name sites.
+        # `on:`, `as:`, `prefix:` and `expose_return_as:` are all optional, so every spelling of "not supplied"
+        # legitimately means the option was omitted there. A field NAME is never optional: `expects nil` and
+        # `expects false` name no field, so they are errors rather than absences, and running an absent check
+        # here would silently accept them as declaring nothing.
+        def _canonical_field_names!(fields, kind:, names:)
+          fields.map do |field|
+            Contract.canonical_name!(field, option: kind, names:,
+                                            fix: "Declare the field under a String or Symbol name.",
+                                            encoding_fix: "Declare it under a UTF-8 name (or any other " \
+                                                          "ASCII-compatible encoding).")
           end
         end
 
@@ -1120,7 +1223,7 @@ module Axn
 
         def _raise_ambiguous_option_key!(label, canonical)
           raise ArgumentError,
-                "#{label} declares #{Axn::Reflection::PropertyNames.inspect_field_name(canonical)} twice — once " \
+                "#{label} declares #{Axn::Internal::Reflection::PropertyNames.inspect_field_name(canonical)} twice — once " \
                 "under a String key and once under a Symbol — and one option cannot hold two values, so " \
                 "canonicalizing them would silently drop one of the two declared. Declare the option once, under " \
                 "a Symbol key."
@@ -1307,7 +1410,7 @@ module Axn
           validations[:type] = { klass: target, coerce: true }
         end
 
-        # A coerce target must be in the v1 coercible set (Axn::Reflection::Coercion::SUPPORTED); an
+        # A coerce target must be in the v1 coercible set (Axn::Internal::Reflection::Coercion::SUPPORTED); an
         # unsupported type raises not-yet-supported so expanding the set stays a deliberate future
         # ticket. `String` may accompany a coercible type as a passthrough branch (the raw wire scalar
         # itself), which is why `coerce: [Date, String]` is legal — but a target set with no coercible
@@ -1321,20 +1424,20 @@ module Axn
           return unless coerce
 
           klasses = Array(type_hash[:klass])
-          coercible = Axn::Reflection::Coercion.coercible_klasses(type_hash)
+          coercible = Axn::Internal::Reflection::Coercion.coercible_klasses(type_hash)
           unsupported = klasses - coercible - [String]
 
           unless unsupported.empty?
             raise ArgumentError,
                   "coerce: does not yet support #{unsupported.map(&:inspect).join(', ')} " \
-                  "(supported: #{Axn::Reflection::Coercion::SUPPORTED.join(', ')}). " \
+                  "(supported: #{Axn::Internal::Reflection::Coercion::SUPPORTED.join(', ')}). " \
                   "String may accompany a coercible type as a passthrough."
           end
 
           return unless coercible.empty?
 
           raise ArgumentError,
-                "coerce: needs at least one coercible type (#{Axn::Reflection::Coercion::SUPPORTED.join(', ')}); " \
+                "coerce: needs at least one coercible type (#{Axn::Internal::Reflection::Coercion::SUPPORTED.join(', ')}); " \
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 
@@ -1435,9 +1538,9 @@ module Axn
         # escapes every rescue meant to settle it.
         def _declared_type_label(klass)
           case klass
-          when ::Symbol then Axn::Reflection::PropertyNames.inspect_field_name(klass)
-          when ::Module then Axn::Reflection::PropertyNames.renderable_module_name(klass)
-          else "a value of class #{Axn::Reflection::PropertyNames.renderable_class_name(klass)}"
+          when ::Symbol then Axn::Internal::Reflection::PropertyNames.inspect_field_name(klass)
+          when ::Module then Axn::Internal::Reflection::PropertyNames.renderable_module_name(klass)
+          else "a value of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(klass)}"
           end
         end
 
@@ -1458,7 +1561,7 @@ module Axn
           # rescue meant to settle it.
           raise ArgumentError,
                 "allow_empty: must be true, false, or nil on #{fields.map(&:to_s).inspect} " \
-                "(got a value of class #{Axn::Reflection::PropertyNames.renderable_class_name(allow_empty)}). " \
+                "(got a value of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(allow_empty)}). " \
                 "`true` accepts an empty value, `false` rejects one, and omitting the option leaves the " \
                 "field's other rules to decide."
         end

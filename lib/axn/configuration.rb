@@ -62,32 +62,32 @@ module Axn
             overridable: true,
             validate: ->(v) { [true, false].include?(v) }
 
-    # Root-ish tool_path entries that must never be accepted: both normalize to the project root
+    # Root-ish `tool_roots` entries that must never be accepted: both normalize to the project root
     # itself (an empty entry cleanpaths to `"."`, and `"."` is its own normalized form). Compared
-    # against the normalized entry (see .normalize_tool_path). The broad-DIRECTORY-NAME cases (`actions`,
+    # against the normalized entry (see .normalize_tool_root). The broad-DIRECTORY-NAME cases (`actions`,
     # `app`, `app/actions`, and any absolute spelling of them) are caught by the leaf-segment rule
     # below instead, since a blocklist of exact strings can't also catch e.g.
     # `File.expand_path("actions")` or `/srv/app/actions`.
-    TOOL_PATHS_BLOCKLIST = ["", "."].freeze
+    TOOL_ROOTS_BLOCKLIST = ["", "."].freeze
 
-    # Leaf (final path segment) names that make a tool_paths entry broad regardless of how much
+    # Leaf (final path segment) names that make a `tool_roots` entry broad regardless of how much
     # path precedes them — including an ABSOLUTE spelling (e.g. `File.expand_path("actions")`,
     # `"/srv/app/actions"`), which normalizes to a path that no longer equals any exact blocklist
     # string but still resolves to (and bulk-exposes) the same directory. An entry ending in `actions`
     # is the business-actions dir; ending in `app` is the whole app dir. Checked against the LAST
     # segment only, so a narrow subdir like `actions/tools` (leaf `tools`) is unaffected.
-    BROAD_TOOL_PATH_LEAVES = %w[actions app].freeze
+    BROAD_TOOL_ROOT_LEAVES = %w[actions app].freeze
 
     class << self
-      # Single source-of-truth predicate for "is this tool_paths entry too broad to allow" —
+      # Single source-of-truth predicate for "is this `tool_roots` entry too broad to allow" —
       # shared by `Axn::Tools::AdapterRoots.validate!` (which raises on a bad `tool_roots` entry)
       # and Tools::Registry (which skips + warns at resolve time). Validation alone can't fail-safe
       # an in-place mutation of the live array (`adapter.config.tool_roots << "actions"` never calls
       # the validated writer), so the registry re-checks every entry against this same predicate
       # before resolving it to a directory.
-      def broad_tool_path?(entry) = !_broad_tool_path_reason(entry).nil?
+      def broad_tool_root?(entry) = !_broad_tool_root_reason(entry).nil?
 
-      # Normalizes a tool_paths entry for BOTH the broad-entry blocklist check and directory
+      # Normalizes a `tool_roots` entry for BOTH the broad-entry blocklist check and directory
       # resolution (Tools::Registry#_resolve_tool_dir): strips surrounding whitespace and any
       # leading/trailing slashes, so `" /actions/ "` and `"actions"` compare equal, then collapses
       # `.`/`..` segments via `Pathname#cleanpath` so alternate spellings like `"./actions"`,
@@ -96,20 +96,20 @@ module Axn
       # string cleanpaths to `"."`, which the blocklist covers. Exposed as public API (rather than
       # kept private) so the registry's resolver can share this exact normalization — `validate!`
       # and the resolver must never disagree on what a given entry means.
-      def normalize_tool_path(entry)
+      def normalize_tool_root(entry)
         stripped = entry.to_s.strip.gsub(%r{\A/+|/+\z}, "")
         Pathname(stripped).cleanpath.to_s
       end
 
       private
 
-      # Returns :traversal, :blocklist, or nil. Distinguishes failure mode for `broad_tool_path?`
+      # Returns :traversal, :blocklist, or nil. Distinguishes failure mode for `broad_tool_root?`
       # even though current callers (`AdapterRoots.validate!`, Tools::Registry) only need the boolean.
-      def _broad_tool_path_reason(entry)
-        normalized = normalize_tool_path(entry)
+      def _broad_tool_root_reason(entry)
+        normalized = normalize_tool_root(entry)
         return :traversal if normalized == ".." || normalized.start_with?("../")
-        return :blocklist if TOOL_PATHS_BLOCKLIST.include?(normalized)
-        return :blocklist if BROAD_TOOL_PATH_LEAVES.include?(normalized.split("/").last)
+        return :blocklist if TOOL_ROOTS_BLOCKLIST.include?(normalized)
+        return :blocklist if BROAD_TOOL_ROOT_LEAVES.include?(normalized.split("/").last)
 
         nil
       end
@@ -191,6 +191,11 @@ module Axn
       _auto_configure_sidekiq_for_async_exception_reporting(value)
     end
 
+    # Whether a default async adapter is configured — the only thing a gem needs to know about the
+    # `_default_async_*` trio below, which stays underscored because core reads all three of them
+    # across files. `present?` rather than `!!`, matching how `Axn::Async` itself tests the adapter.
+    def default_async? = _default_async_adapter.present?
+
     def _default_async_adapter = @default_async_adapter ||= false
     def _default_async_config = @default_async_config ||= {}
     def _default_async_config_block = @default_async_config_block
@@ -219,8 +224,8 @@ module Axn
     def _enqueue_all_async_config_block = @enqueue_all_async_config_block || _default_async_config_block
 
     # Read only by `_apply_async_to_enqueue_all_orchestrator` below. The `_default_async_*` trio above
-    # is public for the opposite reason: `Axn.async`, the Sidekiq adapter and axn-webhooks all read it
-    # off `Axn.config`.
+    # is public for the opposite reason: `Axn.async` and the Sidekiq adapter read it off `Axn.config`
+    # across files, so it cannot be private. A gem asking only "is async on?" uses `default_async?`.
     private :_enqueue_all_async_adapter, :_enqueue_all_async_config, :_enqueue_all_async_config_block
 
     def set_enqueue_all_async(adapter, **config, &block)

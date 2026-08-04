@@ -18,7 +18,7 @@ RSpec.describe "tool contract validation at app setup" do
       example.run
     ensure
       Axn::Tools::Registry.reset_adapters!
-      sources.each { |adapter, source| Axn.register_tool_adapter(adapter, source) }
+      sources.each { |adapter, source| Axn::Tools.register_adapter(adapter, source) }
     end
   end
 
@@ -83,7 +83,7 @@ RSpec.describe "tool contract validation at app setup" do
     # schema solely to validate, so it would otherwise pay for one on every call).
     it "leaves render's outbound verdict already established" do
       walks = 0
-      allow(Axn::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
+      allow(Axn::Internal::Reflection::PropertyNames).to receive(:reject_colliding_emitted_properties!).and_wrap_original do |original, *args, &block|
         walks += 1
         original.call(*args, &block)
       end
@@ -105,7 +105,7 @@ RSpec.describe "tool contract validation at app setup" do
     # assertion that setup validation does not fire spuriously on valid contracts.
     it "leaves a valid app booted" do
       expect(Rails.application.initialized?).to be(true)
-      expect { Axn.validate_tool_contracts! }.not_to raise_error
+      expect { Axn::Tools.validate_contracts! }.not_to raise_error
     end
   end
 
@@ -113,7 +113,7 @@ RSpec.describe "tool contract validation at app setup" do
     include_context "with an isolated adapter registry"
 
     it "raises through the engine's hook, naming the offending class" do
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       colliding_tool
 
       expect { reload_hooks.each(&:call) }.to raise_error(Axn::DuplicateFieldError) { |error|
@@ -123,7 +123,7 @@ RSpec.describe "tool contract validation at app setup" do
     end
 
     it "raises again on a second reload rather than going quiet after the first" do
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       colliding_tool
 
       expect { reload_hooks.each(&:call) }.to raise_error(Axn::DuplicateFieldError)
@@ -131,7 +131,7 @@ RSpec.describe "tool contract validation at app setup" do
     end
 
     it "does not raise for a tool whose contract is fine" do
-      Axn.register_tool_adapter(:mcp)
+      Axn::Tools.register_adapter(:mcp)
       stub_const("ToolBootSpec::Fine", Class.new do
         include Axn
         tool :mcp

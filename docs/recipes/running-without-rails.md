@@ -8,7 +8,7 @@ What Rails gives you is **wiring**: an autoload path, a boot sequence to hook, a
 
 | Seam | With Rails | Without Rails |
 | --- | --- | --- |
-| [Tool-contract validation at setup](#tool-contract-validation) | Automatic (`after_initialize`, and again on each reload) | Call `Axn.validate_tool_contracts!` yourself |
+| [Tool-contract validation at setup](#tool-contract-validation) | Automatic (`after_initialize`, and again on each reload) | Call `Axn::Tools.validate_contracts!` yourself |
 | [Loading your action files](#loading-your-action-files) | `app/actions` is on the autoload path | `require` your action files yourself |
 | [Loading tool directories](#loading-tool-directories) | Zeitwerk loads each directory as one unit | One `require` per file, each isolated |
 | [Resolving tool roots](#resolving-tool-roots) | Relative entries resolve under `Rails.root/app` | Supply absolute paths |
@@ -28,7 +28,7 @@ Under Rails the engine arranges that for you. Without Rails there is no boot to 
 require "axn"
 Dir[File.expand_path("app/actions/**/*.rb", __dir__)].sort.each { |file| require file }
 
-Axn.validate_tool_contracts! # [!code focus]
+Axn::Tools.validate_contracts! # [!code focus]
 ```
 
 It projects every registered tool once and raises on the first invalid contract, naming the offending class. Nothing changes if you skip it — the same errors still raise the first time anything projects that contract — you just find out later.

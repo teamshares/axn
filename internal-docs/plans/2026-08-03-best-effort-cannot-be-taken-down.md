@@ -33,9 +33,9 @@ Spec: `internal-docs/specs/2026-08-03-best-effort-cannot-be-taken-down-design.md
 
 **Modified:**
 
-- `lib/axn/reflection/values.rb` — the byte primitive and its bound String constants move out; `canonical_wire_key` and `describe_key_classes` delegate.
+- `lib/axn/internal/reflection/values.rb` — the byte primitive and its bound String constants move out; `canonical_wire_key` and `describe_key_classes` delegate.
 - `lib/axn/internal/identity.rb` — `utf8_string` delegates to the one primitive.
-- `lib/axn/reflection/property_names.rb` — `field_name_spelling`, `renderable_class_name`, `renderable_module_name` delegate.
+- `lib/axn/internal/reflection/property_names.rb` — `field_name_spelling`, `renderable_class_name`, `renderable_module_name` delegate.
 - `lib/axn.rb` — `_reported_message` / `_raw_reported_message` move out; `_named_invalid_tool_contract` calls `Rendering`.
 - `lib/axn/extensions.rb` — `_warn_and_swallow` and `_source_location`: the actual fix.
 - `lib/axn/exceptions.rb` — `UnserializableValue#message` renders its interpolations.
@@ -49,9 +49,9 @@ Spec: `internal-docs/specs/2026-08-03-best-effort-cannot-be-taken-down-design.md
 **Files:**
 - Create: `lib/axn/internal/text.rb`
 - Create: `spec/axn/internal/text_spec.rb`
-- Modify: `lib/axn/reflection/values.rb` (remove the five bound String constants and `utf8_rendering`/`transcode_to_utf8`; delegate)
+- Modify: `lib/axn/internal/reflection/values.rb` (remove the five bound String constants and `utf8_rendering`/`transcode_to_utf8`; delegate)
 - Modify: `lib/axn/internal/identity.rb` (`utf8_string`)
-- Modify: `lib/axn/reflection/property_names.rb` (`field_name_spelling`'s String branch)
+- Modify: `lib/axn/internal/reflection/property_names.rb` (`field_name_spelling`'s String branch)
 
 **Interfaces:**
 - Consumes: nothing.
@@ -226,7 +226,7 @@ Expected: PASS (9 examples).
 
 - [ ] **Step 5: Delegate from `Reflection::Values`**
 
-In `lib/axn/reflection/values.rb`: add `require "axn/internal/text"` beside the existing requires. Delete the constants `STRING_ENCODING`, `STRING_VALID_ENCODING`, `STRING_ASCII_ONLY`, `STRING_ENCODE` and their `private_constant` line, and delete the `utf8_rendering` and `transcode_to_utf8` method bodies. Replace the two methods with delegations, keeping only the reasoning specific to this layer:
+In `lib/axn/internal/reflection/values.rb`: add `require "axn/internal/text"` beside the existing requires. Delete the constants `STRING_ENCODING`, `STRING_VALID_ENCODING`, `STRING_ASCII_ONLY`, `STRING_ENCODE` and their `private_constant` line, and delete the `utf8_rendering` and `transcode_to_utf8` method bodies. Replace the two methods with delegations, keeping only the reasoning specific to this layer:
 
 ```ruby
       # The byte half of a wire key, from the one primitive that owns it. Kept as a named method here
@@ -288,7 +288,7 @@ The consolidation must not move a single output. Add to `spec/axn/internal/ident
 
 - [ ] **Step 8: Delegate from `PropertyNames.field_name_spelling`**
 
-In `lib/axn/reflection/property_names.rb`: add `require "axn/internal/text"`. Delete the `STRING_NAME_INSPECT` constant and change the String branch:
+In `lib/axn/internal/reflection/property_names.rb`: add `require "axn/internal/text"`. Delete the `STRING_NAME_INSPECT` constant and change the String branch:
 
 ```ruby
       def field_name_spelling(name)
@@ -314,7 +314,7 @@ Expected: PASS both.
 - [ ] **Step 11: Commit**
 
 ```bash
-git add lib/axn/internal/text.rb lib/axn/internal/identity.rb lib/axn/reflection/values.rb lib/axn/reflection/property_names.rb spec/axn/internal/text_spec.rb spec/axn/internal/identity_spec.rb
+git add lib/axn/internal/text.rb lib/axn/internal/identity.rb lib/axn/internal/reflection/values.rb lib/axn/internal/reflection/property_names.rb spec/axn/internal/text_spec.rb spec/axn/internal/identity_spec.rb
 git commit -m "PRO-3018: move the byte primitive down into Internal::Text
 
 One implementation of the UTF-8-rendering question, in a zero-require file every
@@ -330,7 +330,7 @@ that must not alter what it names, scrub for text that has to render at any cost
 - Create: `lib/axn/internal/rendering.rb`
 - Create: `spec/axn/internal/rendering_spec.rb`
 - Modify: `lib/axn.rb` (delete `_reported_message` and `_raw_reported_message`; `_named_invalid_tool_contract` calls `Rendering`)
-- Modify: `lib/axn/reflection/property_names.rb` (`renderable_class_name`, `renderable_module_name`)
+- Modify: `lib/axn/internal/reflection/property_names.rb` (`renderable_class_name`, `renderable_module_name`)
 
 **Interfaces:**
 - Consumes: `Axn::Internal::Text.renderable` (Task 1).
@@ -611,7 +611,7 @@ In `lib/axn.rb`: add `require "axn/internal/rendering"` beside the other interna
 
 Keep the long comment above `_named_invalid_tool_contract` — its point 3 still describes what the code does; update the parenthetical `(Reflection::PropertyNames)` to `(Internal::Rendering)` so it names the seam it now uses.
 
-In `lib/axn/reflection/property_names.rb`: add `require "axn/internal/rendering"` and replace the two composers, keeping the comment above them (it explains the two hazards, which is still exactly right):
+In `lib/axn/internal/reflection/property_names.rb`: add `require "axn/internal/rendering"` and replace the two composers, keeping the comment above them (it explains the two hazards, which is still exactly right):
 
 ```ruby
       def renderable_class_name(value) = Axn::Internal::Rendering.class_name(value)
@@ -629,7 +629,7 @@ Expected: hits only inside `lib/axn/internal/rendering.rb`. Any hit in `spec/` i
 - [ ] **Step 7: Run the affected suites**
 
 Run: `bundle exec rspec spec/axn/internal spec/axn/reflection spec/axn/tools spec/axn/standalone_require_spec.rb`
-Expected: PASS. The tool-contract specs from #208 exercise the moved reader through `Axn.validate_tool_contracts!` and must stay green unchanged — if one fails, the move was not behaviour-preserving.
+Expected: PASS. The tool-contract specs from #208 exercise the moved reader through `Axn::Tools.validate_contracts!` and must stay green unchanged — if one fails, the move was not behaviour-preserving.
 
 - [ ] **Step 8: Run the full suite and RuboCop**
 
@@ -639,7 +639,7 @@ Expected: PASS both.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add lib/axn/internal/rendering.rb lib/axn.rb lib/axn/reflection/property_names.rb spec/axn/internal/rendering_spec.rb
+git add lib/axn/internal/rendering.rb lib/axn.rb lib/axn/internal/reflection/property_names.rb spec/axn/internal/rendering_spec.rb
 git commit -m "PRO-3018: one reader for facts about a foreign object
 
 Internal::Rendering composes both halves an error path owes — no dispatch of what
@@ -1058,8 +1058,8 @@ the guard is entered, so no rescue covered it."
 
 **Files:**
 - Modify: `lib/axn/exceptions.rb` (`UnserializableValue#message`, `cycle_reason`)
-- Modify: `lib/axn/reflection/values.rb` (`describe_key_classes`)
-- Modify: `spec/axn/reflection/values_spec.rb` (or wherever `UnserializableValue` messages are specced — `grep -rln "Cannot serialize exposed value" spec/`)
+- Modify: `lib/axn/internal/reflection/values.rb` (`describe_key_classes`)
+- Modify: `spec/axn/internal/reflection/values_spec.rb` (or wherever `UnserializableValue` messages are specced — `grep -rln "Cannot serialize exposed value" spec/`)
 
 **Interfaces:**
 - Consumes: `Axn::Internal::Text.renderable` (Task 1).
@@ -1081,14 +1081,14 @@ Add to the file that specs `UnserializableValue`:
     end
 
     it "renders the class name rather than raising from the report" do
-      error = Axn::Reflection::UnserializableValue.new(path: "thing", value: unrenderable_class.new, reason: "nope")
+      error = Axn::Extensions::Serialization::UnserializableValue.new(path: "thing", value: unrenderable_class.new, reason: "nope")
 
       expect { error.message }.not_to raise_error
       expect(error.message).to include("thing")
     end
 
     it "renders it in the cycle wording too" do
-      error = Axn::Reflection::UnserializableValue.new(path: "thing", value: unrenderable_class.new)
+      error = Axn::Extensions::Serialization::UnserializableValue.new(path: "thing", value: unrenderable_class.new)
 
       expect { error.message }.not_to raise_error
     end
@@ -1132,7 +1132,7 @@ This composition is `Rendering.class_name`, spelled out here rather than delegat
 
 - [ ] **Step 4: Render the colliding-key report**
 
-In `lib/axn/reflection/values.rb`, `describe_key_classes`:
+In `lib/axn/internal/reflection/values.rb`, `describe_key_classes`:
 
 ```ruby
       def describe_key_classes(first_key, second_key)
@@ -1157,7 +1157,7 @@ Expected: PASS both.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add lib/axn/exceptions.rb lib/axn/reflection/values.rb spec/
+git add lib/axn/exceptions.rb lib/axn/internal/reflection/values.rb spec/
 git commit -m "PRO-3018: render the two message paths that sat below the renderer
 
 UnserializableValue#message and the colliding-key report named a class by its raw

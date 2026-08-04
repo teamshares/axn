@@ -46,6 +46,22 @@ RSpec.describe Axn::Internal::Rendering do
       expect(described_class.exception_message(ArgumentError.new(message))).to include('\xFF')
     end
 
+    it "renders unrenderable bytes into text that can be interpolated" do
+      error = ArgumentError.new("caf\xE9".dup.force_encoding(Encoding::ASCII_8BIT))
+
+      rendered = described_class.exception_message(error)
+      expect(rendered.encoding).to eq(Encoding::UTF_8)
+      expect { "prose: #{rendered}" }.not_to raise_error
+    end
+
+    it "falls back to Exception#to_s when #message returns a non-String" do
+      klass = Class.new(StandardError) do
+        def message = :not_a_string
+      end
+
+      expect(described_class.exception_message(klass.new("stored"))).to eq("stored")
+    end
+
     it "falls back to the bound Exception#to_s when #message raises" do
       klass = Class.new(StandardError) do
         def message = raise(NotImplementedError, "message explodes")
@@ -64,6 +80,16 @@ RSpec.describe Axn::Internal::Rendering do
       exception = klass.new(Object.new.tap { |o| o.define_singleton_method(:to_s) { raise "value to_s" } })
 
       expect(described_class.exception_message(exception)).to match(/\A#<Class:/)
+    end
+
+    it "falls back to the class name for an ordinary class whose stored message object cannot render" do
+      # No override at all: `Exception#message` renders the stored object through `rb_String`, so both the
+      # dispatched read and the bound `Exception#to_s` raise, and the class is what is left.
+      hostile = Object.new
+      hostile.define_singleton_method(:to_s) { raise(NotImplementedError, "hostile message object") }
+      error = Class.new(StandardError).new(hostile)
+
+      expect(described_class.exception_message(error)).to eq(Axn::Internal::ClassName.of(error))
     end
 
     it "renders a non-String #message without dispatching its to_s outside the guard" do

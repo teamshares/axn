@@ -20,12 +20,12 @@ module Axn
     # renders it, and the composition has one owner per question: `Internal::RenderedClassName` just below for a
     # VALUE's class, which `Internal::Rendering.class_name` delegates to and which the message paths built ON
     # this file (`UnserializableValue#message` and `UnserializableArgument#message` below,
-    # `Reflection::Values.describe_key_classes`) reach directly; and `Internal::Rendering.module_name` for a class
-    # or module named in its own right, which only callers above this file need. The direction is forced: the
-    # reflection and rendering layers require THIS file, so a reference from here up into either would leave a
-    # message path NameError-ing under the standalone loads `spec/axn/standalone_require_spec.rb` pins. The
-    # byte half they all compose through, `Internal::Text`, has no requires of its own and sits below every
-    # one of them.
+    # `Internal::Reflection::Values.describe_key_classes`) reach directly; and `Internal::Rendering.module_name`
+    # for a class or module named in its own right, which only callers above this file need. The direction is
+    # forced: the reflection and rendering layers require THIS file, so a reference from here up into either
+    # would leave a message path NameError-ing under the standalone loads
+    # `spec/axn/standalone_require_spec.rb` pins. The byte half they all compose through, `Internal::Text`, has
+    # no requires of its own and sits below every one of them.
     module ClassName
       OBJECT_CLASS = ::Object.instance_method(:class)
       MODULE_TO_S = ::Module.instance_method(:to_s)
@@ -51,7 +51,7 @@ module Axn
     # be a require cycle — and LIFTING the composition onto `ClassName` instead breaks that module's promise never
     # to render anything (see its own header). Living here is neither, and it sits in the file every caller
     # already loads: every message below that names a caller-supplied value's class,
-    # `Reflection::Values.describe_key_classes`, and `Rendering` itself.
+    # `Internal::Reflection::Values.describe_key_classes`, and `Rendering` itself.
     module RenderedClassName
       def self.of(value) = Text.renderable(ClassName.of(value))
     end
@@ -60,7 +60,7 @@ module Axn
     #
     # `Text.renderable` is String-only by contract — it binds String methods, so anything else is a
     # `TypeError` from the message path itself — and the exceptions here are PUBLIC classes whose kwargs a
-    # caller fills in. `Axn::InvalidToolContract.new(tool: :foo, …)` is the shape that proves it: a Symbol
+    # caller fills in. `Axn::Tools::InvalidContract.new(tool: :foo, …)` is the shape that proves it: a Symbol
     # naming the tool is the obvious thing to pass, and it must render as `foo` rather than as an error about
     # rendering.
     #
@@ -220,44 +220,46 @@ module Axn
 
   class DuplicateFieldError < ContractViolation; end
 
-  # Raised by `Axn.validate_tool_contracts!` for a tool whose contract failure cannot be reported AS ITSELF.
-  # Reporting it as itself means renaming it to say which tool it came from, and renaming an exception runs the
-  # exception's own code — `#exception`, which `raise` dispatches on whatever object it is handed, and the
-  # duplication hooks `Exception#exception(message)` reaches. axn will not run that code while reporting the
-  # failure it caused (an override that raises replaces the failure, and one outside StandardError escapes the
-  # boot rescue entirely), so when the class owns any of it, axn reports its own error instead.
-  #
-  # Nothing is lost but the class: the original is this error's `cause`, and its message is repeated here.
-  # Deliberately builds its text in `initialize` rather than in `#message`, as `UnreraisableException` below does
-  # for the same reason. Everything it needs is rendered text by the time it is constructed, so there is nothing
-  # to defer — and this exception exists precisely because reporting must not depend on an exception's own
-  # methods, so it renders identically through `#message`, through a bound `Exception#to_s`, and to anything that
-  # reads the stored message directly.
-  #
-  # Every value it interpolates came from somewhere else's object — the tool's constant path, the original's
-  # message, the original's class name — so each is RENDERED into this message rather than joined to it. Bytes
-  # with no UTF-8 rendering (or in another encoding entirely) would otherwise raise
-  # Encoding::CompatibilityError from `super` itself, replacing the tool-contract failure with an encoding
-  # failure at boot, which is the outcome this error exists to prevent one indirection over. Rendering is
-  # idempotent, so the caller having already rendered them (as `Axn.validate_tool_contracts!` does, needing the
-  # same text for its other branch) costs an allocation and changes nothing: the guarantee holds for any caller
-  # rather than resting on that one's diligence.
-  #
-  # Rendered through `Internal::RenderedText`, which composes `Internal::Text` — the byte primitive this file
-  # already requires — with the type test a public class owes its callers. Never through the reflection layer's
-  # own renderer, which is built ON this file: a message path here that reached UP into that layer would
-  # NameError under the standalone loads `spec/axn/standalone_require_spec.rb` pins. The type test is what keeps
-  # `new(tool: :foo, …)` — a Symbol being the obvious way to name a tool — rendering as `foo` rather than
-  # raising a TypeError out of the message path, since `Text.renderable` binds String methods and takes Strings
-  # alone.
-  class InvalidToolContract < ContractViolation
-    def initialize(tool:, reason:, original_class:)
-      tool, reason, original_class = [tool, reason, original_class].map { |text| Axn::Internal::RenderedText.of(text) }
+  module Tools
+    # Raised by `Axn::Tools.validate_contracts!` for a tool whose contract failure cannot be reported AS ITSELF.
+    # Reporting it as itself means renaming it to say which tool it came from, and renaming an exception runs the
+    # exception's own code — `#exception`, which `raise` dispatches on whatever object it is handed, and the
+    # duplication hooks `Exception#exception(message)` reaches. axn will not run that code while reporting the
+    # failure it caused (an override that raises replaces the failure, and one outside StandardError escapes the
+    # boot rescue entirely), so when the class owns any of it, axn reports its own error instead.
+    #
+    # Nothing is lost but the class: the original is this error's `cause`, and its message is repeated here.
+    # Deliberately builds its text in `initialize` rather than in `#message`, as `UnreraisableException` below
+    # does for the same reason. Everything it needs is rendered text by the time it is constructed, so there is
+    # nothing to defer — and this exception exists precisely because reporting must not depend on an exception's
+    # own methods, so it renders identically through `#message`, through a bound `Exception#to_s`, and to
+    # anything that reads the stored message directly.
+    #
+    # Every value it interpolates came from somewhere else's object — the tool's constant path, the original's
+    # message, the original's class name — so each is RENDERED into this message rather than joined to it. Bytes
+    # with no UTF-8 rendering (or in another encoding entirely) would otherwise raise
+    # Encoding::CompatibilityError from `super` itself, replacing the tool-contract failure with an encoding
+    # failure at boot, which is the outcome this error exists to prevent one indirection over. Rendering is
+    # idempotent, so the caller having already rendered them (as `Axn::Tools.validate_contracts!` does, needing
+    # the same text for its other branch) costs an allocation and changes nothing: the guarantee holds for any
+    # caller rather than resting on that one's diligence.
+    #
+    # Rendered through `Internal::RenderedText`, which composes `Internal::Text` — the byte primitive this file
+    # already requires — with the type test a public class owes its callers. Never through the reflection
+    # layer's own renderer, which is built ON this file: a message path here that reached UP into that layer
+    # would NameError under the standalone loads `spec/axn/standalone_require_spec.rb` pins. The type test is
+    # what keeps `new(tool: :foo, …)` — a Symbol being the obvious way to name a tool — rendering as `foo`
+    # rather than raising a TypeError out of the message path, since `Text.renderable` binds String methods and
+    # takes Strings alone.
+    class InvalidContract < ContractViolation
+      def initialize(tool:, reason:, original_class:)
+        tool, reason, original_class = [tool, reason, original_class].map { |text| Axn::Internal::RenderedText.of(text) }
 
-      super("#{tool} has an invalid tool contract — #{reason} (raised as #{self.class}, and not as the original " \
-            "#{original_class}, because that class supplies its own `#exception` or duplication hook, or the " \
-            "object is frozen: axn does not run an exception's own code while reporting the failure it caused. " \
-            "The original is this error's `cause`.)")
+        super("#{tool} has an invalid tool contract — #{reason} (raised as #{self.class}, and not as the original " \
+              "#{original_class}, because that class supplies its own `#exception` or duplication hook, or the " \
+              "object is frozen: axn does not run an exception's own code while reporting the failure it caused. " \
+              "The original is this error's `cause`.)")
+      end
     end
   end
 
@@ -272,7 +274,7 @@ module Axn
   # to do.
   #
   # The decision is by OWNERSHIP, never by behaviour (`NativeMethods.native_exception_reraise?`), and the
-  # dispatch is AVOIDED rather than guarded — the doctrine `Axn._named_invalid_tool_contract` settled for the
+  # dispatch is AVOIDED rather than guarded — the doctrine `Axn::Tools._named_invalid_contract` settled for the
   # boot path, for the same reason: an `#exception` that answers itself once and raises the second time defeats
   # any probe, so the only bounded question is whether Ruby's own implementation is what will answer. When it is
   # — the overwhelmingly common case, an ordinary `ArgumentError` included, and a frozen exception too — the
@@ -283,7 +285,7 @@ module Axn
   # enclosing `rescue => e` catches it exactly where it would have caught the ordinary case.
   #
   # Every value interpolated came from someone else's object, so each is RENDERED rather than joined — the whole
-  # point being that reporting must not become the failure (see `InvalidToolContract` above, which composes the
+  # point being that reporting must not become the failure (see `Tools::InvalidContract` above, which composes the
   # same way for the same reason). The caller renders them too, needing the same text for its warning path;
   # rendering is idempotent, so the guarantee holds for any caller rather than resting on that one's diligence.
   class UnreraisableException < StandardError
@@ -349,51 +351,53 @@ module Axn
     end
   end
 
-  module Reflection
-    # Raised when an exposed value has no honest JSON representation, so a serializing adapter
-    # (axn-openapi, axn-mcp, axn-ruby_llm) fails the call rather than emitting garbage or a placeholder
-    # where data belongs. Six shapes, in two categories. The rendering would be WRONG, or not JSON at
-    # all: a self-referential container (no JSON representation at all), two Hash keys that stringify
-    # to one JSON property (a value silently dropped), a non-finite Float (no JSON literal exists), or
-    # a String whose bytes have no UTF-8 rendering (JSON is a UTF-8 format). The rendering would be
-    # UGLY, rejected only under `serialize_value(reject_opaque: true)`: a value or a Hash key whose
-    # only `to_s` is the inherited Object#to_s, which renders an object address into a response body.
-    #
-    # An ArgumentError so an adapter's existing `rescue StandardError` maps it to an error response
-    # with no adapter-side change; a SystemStackError, being outside StandardError, would escape the
-    # adapter entirely. Names the path to the offending value.
-    class UnserializableValue < ArgumentError
-      # `reason:` names the specific defect, punctuation included. It defaults to the cycle case —
-      # both the original meaning of this error and the only one an external caller is likely to
-      # construct — so `new(path:, value:)` remains a complete call.
-      def initialize(path:, value:, reason: nil)
-        @path = path
-        @value = value
-        @reason = reason
-        super()
-      end
+  module Extensions
+    module Serialization
+      # Raised when an exposed value has no honest JSON representation, so a serializing adapter
+      # (axn-openapi, axn-mcp, axn-ruby_llm) fails the call rather than emitting garbage or a placeholder
+      # where data belongs. Six shapes, in two categories. The rendering would be WRONG, or not JSON at
+      # all: a self-referential container (no JSON representation at all), two Hash keys that stringify
+      # to one JSON property (a value silently dropped), a non-finite Float (no JSON literal exists), or
+      # a String whose bytes have no UTF-8 rendering (JSON is a UTF-8 format). The rendering would be
+      # UGLY, rejected only under `serialize_value(reject_opaque: true)`: a value or a Hash key whose
+      # only `to_s` is the inherited Object#to_s, which renders an object address into a response body.
+      #
+      # An ArgumentError so an adapter's existing `rescue StandardError` maps it to an error response
+      # with no adapter-side change; a SystemStackError, being outside StandardError, would escape the
+      # adapter entirely. Names the path to the offending value.
+      class UnserializableValue < ArgumentError
+        # `reason:` names the specific defect, punctuation included. It defaults to the cycle case —
+        # both the original meaning of this error and the only one an external caller is likely to
+        # construct — so `new(path:, value:)` remains a complete call.
+        def initialize(path:, value:, reason: nil)
+          @path = path
+          @value = value
+          @reason = reason
+          super()
+        end
 
-      # The offending value's class is named through `Internal::RenderedClassName`, not `@value.class`: the
-      # value is caller-supplied and may override `class`, and running that override here would replace this
-      # failure with the value's own exception. Its bytes are foreign too — a constant may hold non-UTF-8
-      # ones, and `Module#to_s` hands those back — so the name is RENDERED before it joins this message.
-      # That module composes both halves without delegating to `Internal::Rendering` (a require cycle) and
-      # without lifting the composition onto `ClassName` (which promises never to render); see its own
-      # comment. Both moves stay off limits; reaching for the shared owner is the point.
-      def message
-        "Cannot serialize exposed value at `#{@path}` (#{value_class_name}): #{@reason || cycle_reason}"
-      end
+        # The offending value's class is named through `Internal::RenderedClassName`, not `@value.class`: the
+        # value is caller-supplied and may override `class`, and running that override here would replace this
+        # failure with the value's own exception. Its bytes are foreign too — a constant may hold non-UTF-8
+        # ones, and `Module#to_s` hands those back — so the name is RENDERED before it joins this message.
+        # That module composes both halves without delegating to `Internal::Rendering` (a require cycle) and
+        # without lifting the composition onto `ClassName` (which promises never to render); see its own
+        # comment. Both moves stay off limits; reaching for the shared owner is the point.
+        def message
+          "Cannot serialize exposed value at `#{@path}` (#{value_class_name}): #{@reason || cycle_reason}"
+        end
 
-      private
+        private
 
-      def value_class_name = Axn::Internal::RenderedClassName.of(@value)
+        def value_class_name = Axn::Internal::RenderedClassName.of(@value)
 
-      def cycle_reason
-        klass = value_class_name
-        article = klass.match?(/\A[aeiou]/i) ? "an" : "a"
+        def cycle_reason
+          klass = value_class_name
+          article = klass.match?(/\A[aeiou]/i) ? "an" : "a"
 
-        "it is self-referential (#{article} #{klass} cycle), which has no JSON representation. " \
-          "Expose a finite projection of it instead (e.g. ids rather than the objects that point back)."
+          "it is self-referential (#{article} #{klass} cycle), which has no JSON representation. " \
+            "Expose a finite projection of it instead (e.g. ids rather than the objects that point back)."
+        end
       end
     end
   end
