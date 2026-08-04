@@ -122,12 +122,16 @@ module Axn
             # fragment, not the settlement, the callbacks, or the call.
             #
             # ALL THREE operands go through the same `fragment`, here at the join, whatever each of them is and
-            # wherever it came from. That is the requirement rather than a convenience: an
-            # `Encoding::CompatibilityError` needs two INCOMPATIBLE operands, so rendering a SUBSET converts a
-            # join that worked (a Latin-1 base beside a Latin-1 separator) into a raise — while a raw join and a
-            # fully-rendered one both compose. Rendering the separator at ITS source instead meant six call
-            # sites had to agree (three branches of `combine`, three of `apply_join_proc`); one normalization
-            # point here cannot be partially applied.
+            # wherever it came from.
+            #
+            # That is a requirement rather than a convenience, and the reason is that an
+            # `Encoding::CompatibilityError` needs two INCOMPATIBLE operands: a wholly raw join composes (a
+            # Latin-1 base beside a Latin-1 separator) and a wholly rendered one composes, while rendering a
+            # SUBSET is what raises. So the rendering has to live where the join is, because there is no way to
+            # be sure every place that SUPPLIES an operand rendered it — six call sites decide the separator
+            # alone (three branches of `combine`, three of `apply_join_proc`), and correctness that depends on
+            # all of them agreeing is correctness that a seventh silently breaks. One normalization point
+            # cannot be partially applied.
             def joined(base, reason, separator) = "#{fragment(base)}#{fragment(separator)}#{fragment(reason)}"
 
             def fragment(value)

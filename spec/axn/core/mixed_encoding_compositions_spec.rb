@@ -5,11 +5,9 @@ require "stringio"
 require "tmpdir"
 require "support/tool_adapter_helpers"
 
-# `ContextFacadeInspector#format_for_inspect` renders a Date/Time through `to_fs(:inspect)`, which these two
-# core_exts define along with the `DATE_FORMATS` registry an app customizes it through. A Rails app has both
-# loaded; this suite is non-Rails, so the branch is unreachable without them.
-require "active_support/core_ext/date/conversions"
-require "active_support/core_ext/time/conversions"
+# NOTHING is required here for the `to_fs(:inspect)` date branch, deliberately: `ContextFacadeInspector`
+# declares those core_exts itself, and requiring them from the spec would make these examples pass whether or
+# not it does.
 
 # An `Encoding::CompatibilityError` needs INCOMPATIBLE operands, so rendering one operand of a message can CREATE
 # one where none existed. Two ISO-8859-1 non-ASCII Strings concatenate fine; transcode one to UTF-8, leave its
@@ -381,6 +379,48 @@ RSpec.describe "mixed-encoding message compositions" do
       end
 
       expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] on: "2026-02-01">))
+    end
+
+    # This suite is the NON-RAILS one, which is exactly where these belong: `format_for_inspect` renders a date
+    # through `to_fs(:inspect)`, and with no Rails boot to load that core_ext, `result.inspect` raised
+    # `NoMethodError` for a plain `Date` — the most reachable way this file could fail, needing no exotic value
+    # and no encoding at all. `ContextFacadeInspector` declares the core_exts, so the compact rendering is the
+    # same here as it is under Rails rather than one environment crashing.
+    describe "a Date/Time exposure with no Rails boot to load ActiveSupport's conversions" do
+      it "inspects a Date in the compact form" do
+        klass = build_axn do
+          exposes :on, allow_blank: true
+          def call = expose(:on, Date.new(2026, 2, 1))
+        end
+
+        result = klass.call
+
+        expect { result.inspect }.not_to raise_error
+        expect(result.inspect).to eq(%(#<Axn::Result [OK] on: "2026-02-01">))
+      end
+
+      it "inspects a Time in the compact form" do
+        klass = build_axn do
+          exposes :at, allow_blank: true
+          def call = expose(:at, Time.utc(2026, 2, 1, 12))
+        end
+
+        result = klass.call
+
+        expect { result.inspect }.not_to raise_error
+        expect(result.inspect).to eq(%(#<Axn::Result [OK] at: "2026-02-01 12:00:00.000000000 +0000">))
+      end
+
+      # A DateTime takes the `is_a?(Date)` branch, and rendering it through `Date#to_fs` would silently drop its
+      # time — so the DateTime conversion is declared too, and this pins that it keeps the time.
+      it "inspects a DateTime without dropping its time" do
+        klass = build_axn do
+          exposes :at, allow_blank: true
+          def call = expose(:at, DateTime.new(2026, 2, 1, 12, 30))
+        end
+
+        expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] at: "2026-02-01 12:30:00.000000000 +0000">))
+      end
     end
   end
 

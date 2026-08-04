@@ -1,5 +1,18 @@
 # frozen_string_literal: true
 
+# `format_for_inspect` renders a Date/Time/DateTime through `to_fs(:inspect)`, which these three define — and
+# NOT requiring them made `result.inspect` raise `NoMethodError` for a plain `Date` exposure outside Rails,
+# which is the most reachable way this file could fail: no exotic value, no encoding, just a date. A Rails app
+# loads all three during boot, so declaring them here is what makes the two environments render a date the same
+# way rather than one of them crashing. `activesupport` is already a hard dependency, so this adds a load and no
+# dependency edge.
+#
+# Three files rather than two, because the branch tests `is_a?(Date)` and a `DateTime` IS a Date: without
+# `date_time/conversions` a DateTime falls back to `Date#to_fs` and renders as a bare date with its time
+# silently dropped — the same non-Rails/Rails divergence one level down.
+require "active_support/core_ext/date/conversions"
+require "active_support/core_ext/date_time/conversions"
+require "active_support/core_ext/time/conversions"
 require "axn/internal/identity"
 require "axn/internal/reflection/property_names"
 require "axn/internal/rendering"
