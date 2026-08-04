@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/error"
 require "axn/internal/identity"
 require "axn/internal/native_methods"
 require "axn/internal/text"
@@ -160,10 +161,14 @@ module Axn
   end
 
   module Mountable
-    class MountingError < ArgumentError; end
+    class MountingError < ArgumentError
+      include Axn::Error
+    end
   end
 
   class ContractViolation < StandardError
+    include Axn::Error
+
     class ReservedAttributeError < ContractViolation
       def initialize(name)
         @name = name
@@ -289,6 +294,8 @@ module Axn
   # same way for the same reason). The caller renders them too, needing the same text for its warning path;
   # rendering is idempotent, so the guarantee holds for any caller rather than resting on that one's diligence.
   class UnreraisableException < StandardError
+    include Axn::Error
+
     def initialize(desc:, reason:, original_class:)
       desc, reason, original_class = [desc, reason, original_class].map { |text| Axn::Internal::RenderedText.of(text) }
 
@@ -339,6 +346,8 @@ module Axn
   class OutboundValidationError < ValidationError; end
 
   class UnsupportedArgument < ArgumentError
+    include Axn::Error
+
     def initialize(feature)
       @feature = feature
       super()
@@ -366,6 +375,8 @@ module Axn
       # with no adapter-side change; a SystemStackError, being outside StandardError, would escape the
       # adapter entirely. Names the path to the offending value.
       class UnserializableValue < ArgumentError
+        include Axn::Error
+
         # `reason:` names the specific defect, punctuation included. It defaults to the cycle case —
         # both the original meaning of this error and the only one an external caller is likely to
         # construct — so `new(path:, value:)` remains a complete call.
@@ -420,6 +431,8 @@ module Axn
     # delegated to the serialization layer (Axn::Internal::AsyncSerialization), resolved at
     # message time so this stays a pure exception definition.
     class UnserializableArgument < ArgumentError
+      include Axn::Error
+
       def initialize(field:, value:)
         @field = field
         @value = value
