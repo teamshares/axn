@@ -1240,6 +1240,163 @@ invariant. CHANGELOG entries land under the bumped-but-uncut alpha.5 heading."
 
 ---
 
+### Task 13: Fold in the final review's follow-ups — accuracy and one hardening
+
+**Files:**
+- Modify: `lib/axn/internal/registry.rb:65-73`
+- Modify: `lib/axn/internal/reflection.rb` (header enumeration)
+- Modify: `CHANGELOG.md`
+- Modify: `internal-docs/specs/2026-08-04-namespace-taxonomy-design.md`
+- Test: `spec/axn/error_policy_spec.rb` or a registry spec, for the hardening
+
+**Interfaces:**
+- Consumes: everything Tasks 1–12 produced.
+- Produces: `Internal::Registry.{not_found_error_class, duplicate_error_class}` become abstract (raising `NotImplementedError`) instead of defaulting to the untagged internal bases.
+
+Five items, all from the final whole-branch review. Four are accuracy; one is the only behavior change.
+
+**(a) The registry leak is closed by convention, not construction.** `lib/axn/internal/registry.rb:65-73` still *defaults* `not_found_error_class`/`duplicate_error_class` to the untagged `Internal::Registry::{NotFound, DuplicateError}`. All three current registries override both, so the bases are unreachable today — but a fourth registry that forgets an override would raise an untagged `Axn::Internal::` exception publicly, re-opening exactly the leak Task 2 closed, and `error_policy_spec.rb` could not catch it (it pins those classes AS untagged, which is what a new leak looks like). Make both abstract in the shape `registry_directory` already uses at line 76-78 — `raise NotImplementedError, "Subclasses must implement …"`. Verify all three registries override both before doing this, and add a spec proving a registry subclass that omits an override raises `NotImplementedError` rather than leaking an internal class.
+
+**(b) `CHANGELOG.md:178` is now false.** It lists "registered tool-adapter sources" among what `Axn::Testing.reset!` drops, but the final fix wave removed `reset_adapters!` from `reset!` precisely because adapter gems register at file-load time and the registration cannot come back. Correct the entry: drop that item from the list, and add registered tool adapters to the "deliberately leaves alone" clause with the reason. Cross-check the whole entry against `lib/axn/testing.rb`'s actual body and docstring so the released record matches the code.
+
+**(c) `reflection.rb`'s header under-enumerates and undercounts.** It names `CallLogger`, the executor's validation-failure messages, and the shape validator as `PropertyNames.renderable_label` consumers, then claims those three conditions are the only ways in. It omits `Core::Context::FacadeInspector#rendered_field_name` (`facade_inspector.rb:115`), reached by `result.inspect` on a **successful** result for every displayed field with none of those conditions to short-circuit, and `Core::SchemaReflection#_schema_name_label` (`schema_reflection.rb:68`). Separately it says `Schema.usable_id_token_default?` is consulted "once" when it is reached from three distinct runtime call sites, each individually memoized. Verify every caller before naming it, and keep the existing precision about WHEN each fires — do not regress a conditional into an unconditional.
+
+**(d) The §2 audit record states a false pre-existing break.** `internal-docs/specs/2026-08-04-namespace-taxonomy-design.md:188` says axn-openapi "references `Axn::Reflection::UnserializableValue` in `lib/` … that gem is broken on its next bump." All three references (`openapi.rb:29`, `dispatcher.rb:95`, `dispatcher.rb:120`) are inside **comments**; the live handler rescues `StandardError, SystemStackError`. Since that section's whole purpose is to stop the next person re-running the audit, a wrong record is the costliest defect in it. Correct it to say what is true — the references are prose, and the gem is not broken — and adjust the "Downstream" section's port list accordingly. This is the one file under `internal-docs/` you may edit.
+
+**(e) CHANGELOG tag style.** The entries this branch added use bold `**[BREAKING]**` / `**[FEAT]**`; the other 241 entries in the file use plain `[BREAKING]` / `[FEAT]`. Match the file.
+
+- [ ] **Step 1: Verify the three registries override both methods**
+
+Run: `grep -rn "not_found_error_class\|duplicate_error_class" lib`
+Expected: `strategies.rb`, `async/adapters.rb`, `mounting_strategies.rb` each define both, plus the definitions and raise sites in `internal/registry.rb`. If any registry does NOT override both, stop and report — making the methods abstract would break it.
+
+- [ ] **Step 2: Write the failing test for (a)**
+
+Add to `spec/axn/error_policy_spec.rb`, inside the top-level describe:
+
+```ruby
+  # The six public registry errors stopped inheriting from Internal::Registry's bases. Those bases
+  # remain as the registry's own defaults, so a new registry that forgets to name its error classes
+  # would raise an untagged Axn::Internal:: exception publicly — the leak this spec cannot see, since
+  # it pins those two classes AS untagged. Abstract methods make that unreachable by construction.
+  it "refuses to raise an internal base class for a registry that names no error classes" do
+    registry = Class.new(Axn::Internal::Registry) do
+      def self.built_in = {}
+    end
+
+    expect { registry.find(:anything) }.to raise_error(NotImplementedError, /error_class/)
+  end
+```
+
+- [ ] **Step 3: Run it to verify it fails**
+
+Run: `bundle exec rspec spec/axn/error_policy_spec.rb -e "refuses to raise an internal base class"`
+Expected: FAIL — it currently raises `Axn::Internal::Registry::NotFound`, not `NotImplementedError`.
+
+- [ ] **Step 4: Make both methods abstract**
+
+In `lib/axn/internal/registry.rb`, replace both bodies with the shape `registry_directory` uses:
+
+```ruby
+        # Abstract on purpose. A registry names its OWN error classes, which are public and carry
+        # Axn::Error; defaulting to the classes below would let a registry that forgot raise an
+        # internal class to a caller.
+        def not_found_error_class
+          raise NotImplementedError, "Subclasses must implement not_found_error_class method"
+        end
+
+        def duplicate_error_class
+          raise NotImplementedError, "Subclasses must implement duplicate_error_class method"
+        end
+```
+
+Leave `NotFound` and `DuplicateError` defined at lines 8-9 — `error_policy_spec.rb` pins them as untagged internal classes, and other code may still reference them. Verify nothing else raises them.
+
+- [ ] **Step 5: Apply (b), (c), (d), (e)**
+
+Each is described above. For (c), verify each caller by reading the code before naming it.
+
+- [ ] **Step 6: Run everything**
+
+Run: `bundle exec rspec && bundle exec rubocop && (cd spec_rails/dummy_app && bundle exec rspec spec)`
+Expected: all PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "PRO-2997: close the registry leak by construction, and fix four records
+
+A registry that named no error classes inherited defaults pointing at the
+untagged Internal:: bases, so forgetting an override would raise an internal
+class publicly — and error_policy_spec pins those two AS untagged, so it is
+the one leak that spec cannot see. Both are abstract now.
+
+The rest is accuracy: the CHANGELOG still listed tool adapters among what
+Axn::Testing.reset! drops after the fix that stopped it dropping them; the
+reflection header omitted two renderable_label callers and undercounted the
+id-default check; the audit record called axn-openapi pre-broken over three
+references that are comments."
+```
+
+---
+
+### Task 14: Document the error boundary for downstream gem authors
+
+**Files:**
+- Modify: `AGENTS-tool-adapters.md`
+- Modify: `docs/recipes/authoring-tool-adapters.md`
+- Modify: `docs/recipes/testing.md`
+- Modify: `docs/reference/axn-result.md` (or wherever exceptions are documented — verify)
+
+**Interfaces:**
+- Consumes: `Axn::Error` and `Axn::Testing.reset!` as Tasks 1–13 left them.
+- Produces: documentation only.
+
+Neither of this branch's two new public APIs reaches `docs/` at all — `grep -rn "Axn::Error\|Testing.reset!" docs/` returns nothing. `Axn::Error` matters most to the audience `AGENTS-tool-adapters.md` and `docs/recipes/authoring-tool-adapters.md` serve, because the convention it establishes is theirs to follow.
+
+What the adapter-author documentation must convey, in whatever structure those files already use:
+
+- **The convention, as one line of code.** A gem roots its own hierarchy at `Axn::Error`: `class Axn::Webhooks::Error < StandardError; include Axn::Error; end`, with its specific errors subclassing that. Two of the four sibling gems already have such a base class and need only the `include`.
+- **Why it is a module rather than a base class**, because this is the part an author needs in order to trust it: `rescue` matches a module by `is_a?`, so including it costs the class no ancestry. That is what lets an adapter keep whatever superclass its own ecosystem requires — `< Faraday::Error`, `< Timeout::Error` — and still be catchable as an axn error. A base class would force a choice.
+- **What including it MEANS**, since it is a promise, not decoration: the class is public, documented, rescuable, and breaking to remove. It is the boundary declaration.
+- **The tag is inherited**, so a tagged class cannot have an untagged subclass — a public error family should not have secretly-internal members.
+- **What is deliberately outside the boundary**, so an author is not surprised: `Axn::Failure` (a control-flow signal from `call!`, not a fault — a caller who wants that too writes `rescue StandardError`), and generic `ArgumentError`s raised for DSL misuse, which stay plain by design.
+- **What a consuming app gets from it**: `rescue Axn::Error` catches core's errors and every participating adapter's, which is the reason the convention is worth following rather than inventing a per-gem base.
+
+`docs/recipes/testing.md` is the natural home for `Axn::Testing.reset!`. Document: it is opt-in via `require "axn/testing"` (`require "axn"` does not define `Axn::Testing`); it is safe and idempotent in a suite-wide `before`; what it drops (tracer auto-detection memos, Sidekiq auto-configure flags, the one-time fiber-isolation warning); and — the part that matters most — what it deliberately leaves alone and why, since those exclusions are load-bearing: `Axn.config` and `Axn::Extensions.config` (a host app configures axn once in an initializer, so resetting it would silently un-configure every example after the first), the three registries, and registered tool adapters (adapter gems register at file-load time, and `require` is once-per-process, so a reset could never be undone).
+
+- [ ] **Step 1: Read the existing files before writing**
+
+Read `AGENTS-tool-adapters.md` and `docs/recipes/authoring-tool-adapters.md` in full, plus `docs/recipes/testing.md`. Match each file's existing structure, voice, and heading conventions rather than appending a foreign-looking section. Note that `AGENTS-tool-adapters.md` already documents `Axn::Extensions::Serialization::UnserializableValue` and `Axn::Extensions.owned_failure?` around lines 89-149 — the error boundary belongs near that material.
+
+- [ ] **Step 2: Check whether the docs site needs a nav entry**
+
+Look for a VitePress config (`docs/.vitepress/config.*`). If the pages you touch are already in the nav, nothing to do; if you add a new page, wire it in. Prefer extending existing pages over adding new ones.
+
+- [ ] **Step 3: Write the documentation**
+
+Cover the points above. Apply the repo's code-focus rubric selectively: `[!code focus]` earns its place in a full scaffold block teaching one or two lines, not in a tight snippet.
+
+- [ ] **Step 4: Verify the docs build and the claims are true**
+
+Run: `bundle exec rspec && bundle exec rubocop`. If the repo has a docs build or link check, run it. Then re-read every factual claim you wrote against the code — a doc that overclaims the boundary is the defect this branch already had to fix twice.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "PRO-2997: document the error boundary for adapter authors
+
+Axn::Error's convention is the adapter author's to follow, and neither it nor
+Axn::Testing.reset! appeared in docs/ at all. Covers the one-line convention,
+why a module rather than a base class (an adapter keeps the superclass its own
+ecosystem needs and is still catchable), what including it promises, and what
+sits outside the boundary on purpose."
+```
+
+---
+
 ## Verification checklist
 
 Before opening the PR:
