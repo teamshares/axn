@@ -68,9 +68,8 @@ RSpec.describe "standalone require completeness" do
   # because the reverse require is either a CYCLE or a layer inversion:
   #
   #   - a lower file calling back into the layer that composes it. `PropertyNames` is the name renderer every
-  #     message goes through, built on `Values`/`exceptions` (see AGENTS.md), and `Schema` composes
-  #     `SubfieldTree`. Each such reference runs only from a message being built or a schema being walked, which
-  #     the composing layer's own load has already made possible.
+  #     message goes through, built on `Values`/`exceptions` (see AGENTS.md). Each such reference runs only from
+  #     a message being built, which the composing layer's own load has already made possible.
   #   - reflection reaching UP for something only a declared axn class has: `Validation::Base` supplies the
   #     validator entries a schema is derived from, `Core::Contract` records the file its generated readers are
   #     defined in, and `Internal::AsyncSerialization` renders an unserializable async argument. Reflecting over a
@@ -84,7 +83,6 @@ RSpec.describe "standalone require completeness" do
       ["axn/internal/shape_graph.rb", "Axn::Internal::Reflection::PropertyNames"],
       ["axn/internal/reflection/schema.rb", "Axn::Core::Contract::GENERATED_READER_SOURCE_PATH"],
       ["axn/internal/reflection/schema.rb", "Axn::Validation::Base"],
-      ["axn/internal/subfield_tree.rb", "Reflection::Schema"],
     ]
   end
 

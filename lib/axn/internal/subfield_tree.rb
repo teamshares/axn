@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+# The two nesting predicates below call back into Schema; schema.rb's own require of this file resolves
+# instantly (this file is already mid-load by then) rather than cycling.
+require "axn/internal/reflection/schema"
+
 module Axn
   module Internal
     # Groups an Axn's subfield configs into per-root trees keyed by WIRE KEY (the JSON property name
