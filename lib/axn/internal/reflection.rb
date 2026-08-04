@@ -2,7 +2,7 @@
 
 require "axn/internal/coercion"
 require "axn/internal/reflection/schema"
-require "axn/internal/reflection/resolved_subfields"
+require "axn/internal/resolved_subfields"
 require "axn/internal/reflection/values"
 require "axn/internal/reflection/property_names"
 

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "axn/internal/reflection/subfield_tree"
+require "axn/internal/subfield_tree"
 require "axn/internal/reflection/schema"
 
 module Axn
