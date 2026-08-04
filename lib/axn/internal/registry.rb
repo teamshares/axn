@@ -62,14 +62,15 @@ module Axn
           "Item"
         end
 
+        # Abstract on purpose. A registry names its OWN error classes, which are public and carry
+        # Axn::Error; defaulting to the classes below would let a registry that forgot raise an
+        # internal class to a caller.
         def not_found_error_class
-          # Subclasses can override this to return their specific error class
-          NotFound
+          raise NotImplementedError, "Subclasses must implement not_found_error_class method"
         end
 
         def duplicate_error_class
-          # Subclasses can override this to return their specific error class
-          DuplicateError
+          raise NotImplementedError, "Subclasses must implement duplicate_error_class method"
         end
 
         def registry_directory

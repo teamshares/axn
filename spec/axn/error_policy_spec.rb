@@ -67,4 +67,16 @@ RSpec.describe "Axn exception tagging" do
     expect(Axn.const_defined?(:ReraiseFailed, false)).to be(true)
     expect(Axn.const_defined?(:UnreraisableException, false)).to be(false)
   end
+
+  # The six public registry errors stopped inheriting from Internal::Registry's bases. Those bases
+  # remain as the registry's own defaults, so a new registry that forgets to name its error classes
+  # would raise an untagged Axn::Internal:: exception publicly — the leak this spec cannot see, since
+  # it pins those two classes AS untagged. Abstract methods make that unreachable by construction.
+  it "refuses to raise an internal base class for a registry that names no error classes" do
+    registry = Class.new(Axn::Internal::Registry) do
+      def self.built_in = {}
+    end
+
+    expect { registry.find(:anything) }.to raise_error(NotImplementedError, /error_class/)
+  end
 end
