@@ -11,8 +11,6 @@ RSpec.describe "Fiber isolation mismatch warning" do
 
   before do
     allow(Axn.config).to receive(:logger).and_return(logger)
-    # warn-once is process-global; reset so each example starts fresh
-    Axn::Core::NestingTracking.instance_variable_set(:@_isolation_mismatch_warned, false)
     stub_const("NoopAxn", build_axn { def call = nil })
   end
 

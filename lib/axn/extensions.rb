@@ -84,7 +84,7 @@ module Axn
       # Runs the block, guarding a best-effort side effect (a hook, callback, observability
       # facet, or a reporter that itself throws). The exception is logged and swallowed (returning
       # nil) so it never breaks the main action flow — EXCEPT in development when
-      # Axn.config.best_effort_raises_in_dev is set, where it re-raises (as `Axn::UnreraisableException`
+      # Axn.config.best_effort_raises_in_dev is set, where it re-raises (as `Axn::ReraiseFailed`
       # carrying the original as `cause` for the rare exception `raise` cannot hand back as itself).
       # `desc` names the intent ("resolving webhook subscribers"); `action` is an optional
       # warn-target (an action instance/class responding to :warn), defaulting to the config logger.
@@ -161,9 +161,9 @@ module Axn
       def _reraise_for_dev(exception, desc)
         raise exception if Internal::NativeMethods.native_exception_reraise?(exception)
 
-        raise Axn::UnreraisableException.new(desc: _describe(desc),
-                                             reason: Internal::Rendering.exception_message(exception),
-                                             original_class: Internal::Rendering.class_name(exception)),
+        raise Axn::ReraiseFailed.new(desc: _describe(desc),
+                                     reason: Internal::Rendering.exception_message(exception),
+                                     original_class: Internal::Rendering.class_name(exception)),
               cause: exception
       end
 
@@ -174,7 +174,7 @@ module Axn
       # rescue there would also cover the dev-loud raise above — and since the block's exception is usually a
       # StandardError, the dev-loud mode would silently stop being loud, logging and swallowing exactly where it
       # was configured to raise. What the dev-loud path raises must leave through `best_effort`'s caller
-      # untouched, the block's own exception and `Axn::UnreraisableException` alike.
+      # untouched, the block's own exception and `Axn::ReraiseFailed` alike.
       #
       # Narrow on the same terms as `best_effort` and `_emit_warning`: nothing here may absorb a class the
       # guard itself passes through (a signal, an `exit`, another library's control-flow signal).

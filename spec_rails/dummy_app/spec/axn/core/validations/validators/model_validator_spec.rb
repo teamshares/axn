@@ -408,7 +408,7 @@ RSpec.describe Axn::Validators::ModelValidator do
     it "rejects the contract at declaration: an optional parent can never rescue a required nested model (PRO-2889)" do
       # No contract-valid input ever satisfies a required :user under a nil-tolerant :data (every
       # nil/omitted :data fails validation before :user is even reached), so the tolerance on :data
-      # is dead machinery — Axn::Internal::Reflection::SubfieldContradictions rejects it at declaration.
+      # is dead machinery — Axn::Core::Contract::SubfieldContradictions rejects it at declaration.
       expect do
         build_axn do
           expects :data, optional: true

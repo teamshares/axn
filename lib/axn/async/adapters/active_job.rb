@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "active_support/concern"
 require_relative "../exception_reporting"
 
 module Axn

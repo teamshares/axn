@@ -116,7 +116,7 @@ RSpec.describe "tool contract validation at app setup" do
       Axn::Tools.register_adapter(:mcp)
       colliding_tool
 
-      expect { reload_hooks.each(&:call) }.to raise_error(Axn::DuplicateFieldError) { |error|
+      expect { reload_hooks.each(&:call) }.to raise_error(Axn::ContractViolation::DuplicateFieldError) { |error|
         expect(error.message).to include("ToolBootSpec::Colliding has an invalid tool contract")
         expect(error.message).to include('both render as the JSON property "café"')
       }
@@ -126,8 +126,8 @@ RSpec.describe "tool contract validation at app setup" do
       Axn::Tools.register_adapter(:mcp)
       colliding_tool
 
-      expect { reload_hooks.each(&:call) }.to raise_error(Axn::DuplicateFieldError)
-      expect { reload_hooks.each(&:call) }.to raise_error(Axn::DuplicateFieldError)
+      expect { reload_hooks.each(&:call) }.to raise_error(Axn::ContractViolation::DuplicateFieldError)
+      expect { reload_hooks.each(&:call) }.to raise_error(Axn::ContractViolation::DuplicateFieldError)
     end
 
     it "does not raise for a tool whose contract is fine" do

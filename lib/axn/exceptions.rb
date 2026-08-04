@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/error"
 require "axn/internal/identity"
 require "axn/internal/native_methods"
 require "axn/internal/text"
@@ -160,10 +161,14 @@ module Axn
   end
 
   module Mountable
-    class MountingError < ArgumentError; end
+    class MountingError < ArgumentError
+      include Axn::Error
+    end
   end
 
   class ContractViolation < StandardError
+    include Axn::Error
+
     class ReservedAttributeError < ContractViolation
       def initialize(name)
         @name = name
@@ -194,6 +199,8 @@ module Axn
     # this exception's own #message (see the design at PRO-2898).
     class MethodCallNotPermittedError < ContractViolation; end
 
+    class DuplicateFieldError < ContractViolation; end
+
     class UnknownExposure < ContractViolation
       def initialize(key)
         @key = key
@@ -218,8 +225,6 @@ module Axn
     end
   end
 
-  class DuplicateFieldError < ContractViolation; end
-
   module Tools
     # Raised by `Axn::Tools.validate_contracts!` for a tool whose contract failure cannot be reported AS ITSELF.
     # Reporting it as itself means renaming it to say which tool it came from, and renaming an exception runs the
@@ -229,7 +234,7 @@ module Axn
     # boot rescue entirely), so when the class owns any of it, axn reports its own error instead.
     #
     # Nothing is lost but the class: the original is this error's `cause`, and its message is repeated here.
-    # Deliberately builds its text in `initialize` rather than in `#message`, as `UnreraisableException` below
+    # Deliberately builds its text in `initialize` rather than in `#message`, as `ReraiseFailed` below
     # does for the same reason. Everything it needs is rendered text by the time it is constructed, so there is
     # nothing to defer — and this exception exists precisely because reporting must not depend on an exception's
     # own methods, so it renders identically through `#message`, through a bound `Exception#to_s`, and to
@@ -288,7 +293,9 @@ module Axn
   # point being that reporting must not become the failure (see `Tools::InvalidContract` above, which composes the
   # same way for the same reason). The caller renders them too, needing the same text for its warning path;
   # rendering is idempotent, so the guarantee holds for any caller rather than resting on that one's diligence.
-  class UnreraisableException < StandardError
+  class ReraiseFailed < StandardError
+    include Axn::Error
+
     def initialize(desc:, reason:, original_class:)
       desc, reason, original_class = [desc, reason, original_class].map { |text| Axn::Internal::RenderedText.of(text) }
 
@@ -339,6 +346,8 @@ module Axn
   class OutboundValidationError < ValidationError; end
 
   class UnsupportedArgument < ArgumentError
+    include Axn::Error
+
     def initialize(feature)
       @feature = feature
       super()
@@ -366,6 +375,8 @@ module Axn
       # with no adapter-side change; a SystemStackError, being outside StandardError, would escape the
       # adapter entirely. Names the path to the offending value.
       class UnserializableValue < ArgumentError
+        include Axn::Error
+
         # `reason:` names the specific defect, punctuation included. It defaults to the cycle case —
         # both the original meaning of this error and the only one an external caller is likely to
         # construct — so `new(path:, value:)` remains a complete call.
@@ -420,6 +431,8 @@ module Axn
     # delegated to the serialization layer (Axn::Internal::AsyncSerialization), resolved at
     # message time so this stays a pure exception definition.
     class UnserializableArgument < ArgumentError
+      include Axn::Error
+
       def initialize(field:, value:)
         @field = field
         @value = value

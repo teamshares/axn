@@ -382,14 +382,14 @@ module Axn
           # Two members of one shape keep the wording that case has always had: it is by far the most common
           # collision, and its fix reads better in its own terms than as a resolved path.
           if [first, second].all? { |source| source&.kind == :member }
-            raise Axn::DuplicateFieldError,
+            raise Axn::ContractViolation::DuplicateFieldError,
                   "Duplicate shape member declared: #{inspect_field_name(first_name)} and " \
                   "#{inspect_field_name(second_name)} both render as the JSON property #{canonical.inspect}, so " \
                   "the reflected schema would emit it twice. Declare them under names that stay distinct once " \
                   "converted to UTF-8."
           end
 
-          raise Axn::DuplicateFieldError,
+          raise Axn::ContractViolation::DuplicateFieldError,
                 "Duplicate field(s) declared: #{first&.description || inspect_field_name(first_name)} and " \
                 "#{second&.description || inspect_field_name(second_name)} both resolve to the JSON property " \
                 "#{property.inspect} — a declared name becomes a property name in the reflected schema and in " \
@@ -494,7 +494,7 @@ module Axn
         private_constant :PropertySource
 
         def inbound_property_sources(field_configs, subfield_configs)
-          tree = Axn::Internal::Reflection::SubfieldTree.build(field_configs, subfield_configs)
+          tree = Axn::Internal::SubfieldTree.build(field_configs, subfield_configs)
 
           (field_configs + subfield_configs).flat_map do |config|
             resolved = tree.index[config]
@@ -817,7 +817,7 @@ module Axn
         # `build_input` skips outright (`EXCLUDED_FROM_INPUT_SCHEMA`) emits nothing at all; only a config assigned
         # onto a class can carry such a name, since `ambient_context` is a reserved field name.
         #
-        # `path_blocked?` is the predicate that decides the second one: the same call `compute_dropped` makes, so
+        # `Schema.path_blocked?` is the predicate that decides the second one: the same call the drop pass makes, so
         # the charge and the drop cannot disagree. It is asked at EVERY depth, because the emitter blocks at every
         # depth (`apply_nested_subfields!` returns at the blocking node) while `dropped` deliberately records only
         # the deep configs it reports to the author, a depth-1 subfield under such a parent being silently omitted.
@@ -845,12 +845,12 @@ module Axn
           end
 
           subfields = Array(subfield_configs)
-          tree = resolved&.tree || SubfieldTree.build(field_configs, subfields)
+          tree = resolved&.tree || Axn::Internal::SubfieldTree.build(field_configs, subfields)
           # A `model:` route writes `<field>_id` instead of the field, so it never claims a top-level slot.
           top_level = surviving_configs(field_configs.reject { |c| c.validations[:model] })
           (field_configs + subfields).filter_map do |config|
             path = tree.index[config]
-            next unless path && !SubfieldTree.path_blocked?(path.ancestors)
+            next unless path && !Schema.path_blocked?(path.ancestors)
             # `Array#include?` asks each reserved Symbol whether it equals the name, so the name's own `==` is
             # never the one dispatched.
             next if Schema::EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)

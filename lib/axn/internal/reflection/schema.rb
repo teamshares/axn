@@ -3,7 +3,7 @@
 require "date"
 require "time"
 
-require "axn/internal/reflection/subfield_tree"
+require "axn/internal/subfield_tree"
 # A property name in an emitted schema is the canonicalization's answer, so the builder cannot load without it.
 require "axn/internal/reflection/values"
 
@@ -146,7 +146,7 @@ module Axn
         end
 
         def build_input(field_configs, subfield_configs = [], resolved: nil, klass: nil)
-          tree = resolved&.tree || SubfieldTree.build(field_configs, Array(subfield_configs))
+          tree = resolved&.tree || Axn::Internal::SubfieldTree.build(field_configs, Array(subfield_configs))
           ann = resolved&.annotations || derive_annotations(tree.roots)
           properties = {}
           required = []
@@ -195,9 +195,83 @@ module Axn
         # Subfields rooted at a deliberately-excluded parent (EXCLUDED_FROM_INPUT_SCHEMA, e.g.
         # ambient_context) are skipped: their absence is intentional. Side-effect-free (SubfieldTree
         # inspects declared configs only).
+        #
+        # `resolved:` accepts the per-class ResolvedSubfields cache, whose `dropped` was already computed
+        # from the same tree at build time (see ResolvedSubfields.build) — reading it here is a cheap
+        # reader, not a recomputation. Without it, both the tree and the verdict are built fresh.
         def dropped_deep_subfields(field_configs, subfield_configs, resolved: nil)
-          (resolved || SubfieldTree.build(field_configs, Array(subfield_configs))).dropped
+          return resolved.dropped if resolved
+
+          dropped_from_deep_paths(Axn::Internal::SubfieldTree.build(field_configs, Array(subfield_configs)).deep_paths)
         end
+
+        # The judgment over a tree's deep candidates: which of the `[config, hops]` pairs SubfieldTree.build
+        # collected (a config reached through more than one hop) have no JSON-object representation. Tree
+        # construction only COLLECTS these — whether a chain can hold JSON object properties is a question
+        # about what this layer can EMIT, so the two public entry points (this one, and dropped_deep_subfields
+        # for a caller that has only configs, not a built tree) both funnel through the same private judgment.
+        def dropped_from_deep_paths(deep_paths)
+          compute_dropped(deep_paths)
+        end
+
+        # A deep config is dropped when a node it passes THROUGH (each hop's parent; never the leaf itself)
+        # can't hold JSON object properties. Judged on the finished tree so declaration order doesn't matter.
+        def compute_dropped(deep_paths)
+          deep_paths.filter_map { |config, hops| config if path_blocked?(hops) }
+        end
+
+        # Walk a deep config's ancestor chain hop by hop, carrying the shape members an implicit hop merged
+        # into so a deeper implicit hop can test their OWN nested shape members (a member-of-a-member).
+        # `carried` is the object-shaped member configs the current node stands in for (empty for a real
+        # node or a fresh implicit intermediate that claimed no shape member).
+        #
+        # Public: PropertyNames.emitted_configs asks this at EVERY depth (not just the deep configs
+        # compute_dropped reports), because the emitter blocks a property at whichever ancestor blocks it —
+        # so property attribution needs the same per-hop answer, not a second predicate that could drift.
+        def path_blocked?(hops)
+          carried = []
+          hops.each do |node, key|
+            return true if blocking_ancestor?(node, key, carried)
+
+            carried = merged_shape_members(node, key, carried)
+          end
+          false
+        end
+
+        # An explicit ancestor blocks nesting when its configs forbid it (a `model:` route, or a non-object /
+        # mixed-union type on any route) — node_configs_block_nesting? is the single source of truth emission's
+        # apply_nested_subfields! gates on too, so the drop pass and the schema agree (they are the same method,
+        # not two copies of one rule). An implicit ancestor never blocks on its own type — but descending into
+        # an IMPLICIT child whose key collides with a non-object `shape:` member does: the member property
+        # already claims that key with a non-object type, so the deep structure has nowhere to live. Those
+        # members come from the node's own explicit configs AND every member this implicit node merged into
+        # (`carried`), so a member of a member is tested at depth.
+        def blocking_ancestor?(node, key, carried = [])
+          return true if node_configs_block_nesting?(node.configs)
+          return false unless node.children[key]&.implicit?
+
+          colliding_shape_members(node, key, carried).any? { |m| !nestable_as_object?(m) }
+        end
+
+        # The object-shaped shape members a node (via its explicit configs or the `carried` members it merged
+        # into) declares at `key`, when descending merges an implicit child there — carried into the next
+        # hop. Empty when nothing merges. ALL nestable colliding members are carried (not just the first), so
+        # a deeper hop tests every route's nested member; a non-nestable one would already have blocked. This
+        # mirrors emission's apply_implicit_node!, which carries every colliding member.
+        def merged_shape_members(node, key, carried)
+          return [] unless node.children[key]&.implicit?
+
+          colliding_shape_members(node, key, carried).select { |m| nestable_as_object?(m) }
+        end
+
+        # Every `shape:` member declared at `key` across the node's own configs AND the members carried from
+        # a shallower hop — via shape_members_at, the same locator emission uses, so the two sides can't
+        # disagree on which members collide with the implicit child at `key`.
+        def colliding_shape_members(node, key, carried)
+          shape_members_at(node.configs + carried, key)
+        end
+
+        private_class_method :compute_dropped, :blocking_ancestor?, :merged_shape_members, :colliding_shape_members
 
         # Whether a field's declared type can be represented as a JSON object (so its subfields can nest
         # as object properties): Hash, `:params`, or untyped. A `type: Array` (or other non-object) parent
@@ -228,9 +302,9 @@ module Axn
         # Whether the configs declared at a subfield node forbid nesting its children as object properties:
         # a `model:` route (the client sends `<field>_id`, not the object) or a non-nestable type (a
         # non-object type or a mixed union) on ANY config. Single source of truth for the drop pass
-        # (SubfieldTree.path_blocked?) and emission (apply_nested_subfields!), so the two never disagree
-        # on which deep structure is representable — a node the tree drops from is never re-nested in the
-        # schema. Every route is enforced at runtime, so any one non-nestable route defeats nesting.
+        # (blocking_ancestor?, via path_blocked?) and emission (apply_nested_subfields!), so the two never
+        # disagree on which deep structure is representable — a node the tree drops from is never re-nested
+        # in the schema. Every route is enforced at runtime, so any one non-nestable route defeats nesting.
         def node_configs_block_nesting?(configs)
           configs.any? { |c| c.validations[:model] || !nestable_as_object?(c) }
         end
@@ -961,7 +1035,7 @@ module Axn
         # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
         # property whose only content is its children. When a `shape:` member of any `parent_configs`
         # claims the key, merge into it only if EVERY colliding member is `nestable_as_object?` — the SAME
-        # predicate on the SAME member configs that SubfieldTree.blocking_ancestor? uses (it scans ALL of
+        # predicate on the SAME member configs that blocking_ancestor? uses (it scans ALL of
         # the node's configs), so emission and the drop pass agree: a non-nestable member (a scalar, or a
         # mixed union like `type: [Hash, Array]`) on ANY route blocks and its deep configs stay in
         # dropped_deep_subfields rather than forcing a self-contradictory property. The block is judged from

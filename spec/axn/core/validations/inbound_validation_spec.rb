@@ -358,7 +358,7 @@ RSpec.describe Axn do
       end
 
       it "raises" do
-        expect { action.call(foo: 100) }.to raise_error(Axn::DuplicateFieldError, "Duplicate field(s) declared: foo")
+        expect { action.call(foo: 100) }.to raise_error(Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: foo")
       end
     end
 
@@ -372,7 +372,7 @@ RSpec.describe Axn do
             expects :foo
             expects "foo", user_facing: true
           end
-        end.to raise_error(Axn::DuplicateFieldError, /foo/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /foo/)
       end
 
       it "raises when both normalize-equal names are in the same declaration" do
@@ -380,7 +380,7 @@ RSpec.describe Axn do
         # exists in prior configs) — it must still be caught, or the generated reader is clobbered.
         expect do
           build_axn { expects :foo, "foo" }
-        end.to raise_error(Axn::DuplicateFieldError, /foo/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /foo/)
       end
     end
 
@@ -395,7 +395,7 @@ RSpec.describe Axn do
         # leaves an orphaned config or generated reader behind.
         expect do
           klass.class_eval { expects :fresh, :existing }
-        end.to raise_error(Axn::DuplicateFieldError, /existing/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /existing/)
 
         expect(klass.internal_field_configs.map(&:field)).not_to include(:fresh)
         expect(klass.method_defined?(:fresh)).to be(false)

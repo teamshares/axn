@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/testing"
+
 module Axn
   module Testing
     module SpecHelpers

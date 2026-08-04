@@ -374,7 +374,7 @@ module Axn
       #
       # nil is the SAFE answer in the direction that matters: `owner.equal?(nil)` is false for every expected
       # owner, so this answers false, both predicates above read "not native", and each takes its degraded
-      # branch — `native_exception_reraise?` re-raises through `Axn::UnreraisableException` carrying the
+      # branch — `native_exception_reraise?` re-raises through `Axn::ReraiseFailed` carrying the
       # original as `cause`, and `native_exception_reporting?` returns axn's own `InvalidContract` rather than
       # renaming the original. Both are the outcomes those branches exist for; neither runs the missing method.
       def self._object_owns_none?(value, expected)

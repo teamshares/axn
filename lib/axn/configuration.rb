@@ -397,7 +397,6 @@ module Axn
     def config = @config ||= Configuration.new
 
     def configure
-      self.config ||= Configuration.new
       yield(config) if block_given?
     end
   end

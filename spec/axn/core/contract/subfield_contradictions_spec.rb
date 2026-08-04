@@ -1,6 +1,11 @@
 # frozen_string_literal: true
 
-RSpec.describe Axn::Internal::Reflection::SubfieldContradictions do
+RSpec.describe Axn::Core::Contract::SubfieldContradictions do
+  it "belongs to the contract layer it validates, not to the reflection layer" do
+    expect(Axn::Core::Contract.const_defined?(:SubfieldContradictions, false)).to be(true)
+    expect(Axn::Internal::Reflection.const_defined?(:SubfieldContradictions, false)).to be(false)
+  end
+
   let(:company_class) do
     Class.new do
       attr_accessor :id, :name

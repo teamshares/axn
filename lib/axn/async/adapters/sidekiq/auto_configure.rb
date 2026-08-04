@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/error"
 require_relative "middleware"
 require_relative "death_handler"
 
@@ -137,17 +138,35 @@ module Axn
               MSG
             end
 
-            # Reset state (for testing)
+            # Reset all state (for testing). Clears the registration flags along with the
+            # validation memo, so a spec that calls this can exercise `register!` again from a
+            # clean slate.
             def reset!
               @registered = false
               @middleware_registered = false
               @death_handler_registered = false
               @validated = false
             end
+
+            # Clears only the validation memo (for testing). `@validated` records that
+            # `validate_configuration!` already ran in this process, so clearing it makes
+            # validation re-run against a config that a spec just changed.
+            #
+            # The registration flags stay put: `register_middleware!`/`register_death_handler!`
+            # install onto Sidekiq's actual global middleware chain and death-handler list once
+            # per process, and that installation cannot be undone or redone from here. Clearing
+            # the flags would make this in-memory record disagree with Sidekiq's real state —
+            # `validate_configuration!` would then read `middleware_registered?` as false and
+            # raise `ConfigurationError` even though the middleware is still installed.
+            def reset_validation!
+              @validated = false
+            end
           end
         end
 
-        class ConfigurationError < StandardError; end
+        class ConfigurationError < StandardError
+          include Axn::Error
+        end
       end
     end
   end

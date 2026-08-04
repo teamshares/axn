@@ -117,7 +117,7 @@ RSpec.describe "Resolved-subfield cache (PRO-2883)" do
       # Force class definition first: the PRO-2889 contradiction detector builds a candidate tree
       # at each `expects` declaration, and those builds must not count against the per-call stub.
       klass
-      expect(Axn::Internal::Reflection::SubfieldTree).to receive(:build).once.and_call_original
+      expect(Axn::Internal::SubfieldTree).to receive(:build).once.and_call_original
       klass.input_schema
       klass.input_schema
     end

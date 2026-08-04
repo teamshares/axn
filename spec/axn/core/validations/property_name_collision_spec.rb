@@ -77,7 +77,7 @@ RSpec.describe "declaration-time property name collisions" do
     it "raises when input_schema is first demanded" do
       klass = colliding_shape
 
-      expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      expect { klass.input_schema }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     # A verdict is recorded only after both rules pass, so a failure is never memoized as success. A swallowed
@@ -85,8 +85,8 @@ RSpec.describe "declaration-time property name collisions" do
     it "raises again on a second demand rather than memoizing the failure" do
       klass = colliding_shape
 
-      expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError)
-      expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError)
+      expect { klass.input_schema }.to raise_error(Axn::ContractViolation::DuplicateFieldError)
+      expect { klass.input_schema }.to raise_error(Axn::ContractViolation::DuplicateFieldError)
     end
 
     it "raises when output_schema is first demanded, for an outbound collision" do
@@ -99,7 +99,7 @@ RSpec.describe "declaration-time property name collisions" do
         end
       end
 
-      expect { klass.output_schema }.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      expect { klass.output_schema }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     # `render` builds no schema of its own, so it is a trigger by construction rather than by accident: an
@@ -119,7 +119,7 @@ RSpec.describe "declaration-time property name collisions" do
 
       expect(result).to be_ok
       expect { Axn::Extensions::Serialization.render(result) }
-        .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     # A projection that is BUILT is validated, every time. The memo cannot be trusted to stand in for that: a
@@ -190,7 +190,7 @@ RSpec.describe "declaration-time property name collisions" do
         end
       end
 
-      expect { child.input_schema }.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      expect { child.input_schema }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
       expect { parent.input_schema }.not_to raise_error
     end
   end
@@ -210,7 +210,7 @@ RSpec.describe "declaration-time property name collisions" do
       end
 
       expect { klass.input_schema }.to raise_error(
-        Axn::DuplicateFieldError,
+        Axn::ContractViolation::DuplicateFieldError,
         'Duplicate shape member declared: :café and :"caf\xE9" both render as the JSON property "café", so the ' \
         "reflected schema would emit it twice. Declare them under names that stay distinct once converted to UTF-8.",
       )
@@ -385,7 +385,7 @@ RSpec.describe "declaration-time property name collisions" do
         shape = { members: [member(name), member(:collide)], container: Hash }
 
         expect { build_axn { expects :payload, type: Hash, shape: } }
-          .to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared/)
       end
 
       it "holds at every level of nesting" do
@@ -901,14 +901,14 @@ RSpec.describe "declaration-time property name collisions" do
       names = [utf8_name, latin1_name]
 
       expect { build_axn { exposes(*names) } }
-        .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     it "rejects them on expects" do
       names = [utf8_name, latin1_name]
 
       expect { build_axn { expects(*names) } }
-        .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     it "rejects them across separate declarations, not just within one batch" do
@@ -920,13 +920,13 @@ RSpec.describe "declaration-time property name collisions" do
           expects first
           expects second
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     it "names both spellings and the fix" do
       names = [utf8_name, latin1_name]
 
-      expect { build_axn { exposes(*names) } }.to raise_error(Axn::DuplicateFieldError) { |error|
+      expect { build_axn { exposes(*names) } }.to raise_error(Axn::ContractViolation::DuplicateFieldError) { |error|
         expect(error.message).to include(":café", 'caf\xE9', "stay distinct once converted to UTF-8")
       }
     end
@@ -939,7 +939,7 @@ RSpec.describe "declaration-time property name collisions" do
           expects :payload, type: Hash
           expects(*leaves, on: :payload)
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     it "still allows one leaf spelling under two different routes" do
@@ -973,7 +973,7 @@ RSpec.describe "declaration-time property name collisions" do
           expects utf8, on: "foo.bar", optional: true
           expects latin1, on: :bar, optional: true
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "foo\.bar\.café"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "foo\.bar\.café"/)
     end
 
     it "rejects them when the second route is an as: alias of the parent" do
@@ -987,7 +987,7 @@ RSpec.describe "declaration-time property name collisions" do
           expects utf8, on: "foo.bar", optional: true
           expects latin1, on: :aliased, optional: true
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "foo\.bar\.café"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "foo\.bar\.café"/)
     end
 
     it "names both offenders with the route each was declared under" do
@@ -1001,7 +1001,7 @@ RSpec.describe "declaration-time property name collisions" do
           expects utf8, on: "foo.bar", optional: true
           expects latin1, on: :bar, optional: true
         end
-      end.to raise_error(Axn::DuplicateFieldError) { |error|
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError) { |error|
         # A route is canonicalized to a Symbol at declaration (see `_expects_subfields`), so a dotted route
         # is named as the Symbol it is stored as whichever spelling declared it — the PATH is what tells the
         # two declarations apart, and it is still each one's own.
@@ -1071,7 +1071,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects :a, on: :p, optional: true
             expects :a, on: route, as: :pa, optional: true
           end
-        end.to raise_error(Axn::DuplicateFieldError, /Duplicate field\(s\) declared: a/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate field\(s\) declared: a/)
       end
 
       # A String route is not the defect — the route is stored as the Symbol it names, whichever spelling
@@ -1239,7 +1239,7 @@ RSpec.describe "declaration-time property name collisions" do
           expects utf8, model: widget, optional: true
           expects latin1_id, optional: true
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "café_id"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "café_id"/)
     end
 
     it "names it as generated, so the author is not sent looking for a name they never wrote" do
@@ -1252,7 +1252,7 @@ RSpec.describe "declaration-time property name collisions" do
           expects utf8, model: widget, optional: true
           expects latin1_id, optional: true
         end
-      end.to raise_error(Axn::DuplicateFieldError, /the `model:`-generated :café_id of :café/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /the `model:`-generated :café_id of :café/)
     end
 
     it "collides for a subfield model: too" do
@@ -1266,7 +1266,7 @@ RSpec.describe "declaration-time property name collisions" do
           expects utf8, on: :p, model: widget, optional: true
           expects latin1_id, on: :p, optional: true
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "p\.café_id"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "p\.café_id"/)
     end
 
     # THE control, and the reason the rule is "canonical equal, raw different" rather than "generated ids
@@ -1298,7 +1298,7 @@ RSpec.describe "declaration-time property name collisions" do
           expects utf8, model: widget, optional: true
           expects latin1, model: widget, optional: true
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     # Checked mirror that does NOT apply: an outbound `model:` field reflects under its own name and emits no
@@ -1348,7 +1348,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects(:payload, type: Hash) { field utf8, type: String }
             expects latin1, on: :payload, optional: true
           end
-        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
       end
 
       it "names the shape member and the subfield as the two sources" do
@@ -1360,7 +1360,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects(:payload, type: Hash) { field utf8, type: String }
             expects latin1, on: :payload, optional: true
           end
-        end.to raise_error(Axn::DuplicateFieldError) { |error|
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError) { |error|
           expect(error.message).to include("shape member :café of :payload", "(on: :payload)")
         }
       end
@@ -1385,7 +1385,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects(:payload, type: Hash) { field(:mid, type: Hash) { field utf8, type: String } }
             expects latin1, on: "payload.mid", optional: true
           end
-        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.mid\.café"/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "payload\.mid\.café"/)
       end
     end
 
@@ -1400,7 +1400,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects(:payload, type: Hash) { field utf8_id, type: String }
             expects latin1, on: :payload, model:, optional: true
           end
-        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café_id"/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "payload\.café_id"/)
       end
 
       it "still merges them when the spelling matches" do
@@ -1427,7 +1427,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects(:payload, type: Hash) { field utf8, type: Hash }
             expects :leaf, on: route, optional: true
           end
-        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
       end
 
       it "names itself as a nested key rather than as something the author declared" do
@@ -1439,7 +1439,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects(:payload, type: Hash) { field utf8, type: Hash }
             expects :leaf, on: route, optional: true
           end
-        end.to raise_error(Axn::DuplicateFieldError, /a nested key introduced by :leaf/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /a nested key introduced by :leaf/)
       end
 
       it "collides with a subfield declared at the same parent" do
@@ -1452,7 +1452,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects :leaf, on: "payload.#{utf8}", optional: true
             expects latin1, on: :payload, type: Hash, optional: true
           end
-        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
       end
 
       it "collides with a model:-generated id at the same parent" do
@@ -1466,7 +1466,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects utf8, on: :payload, model:, optional: true
             expects :leaf, on: route, optional: true
           end
-        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café_id"/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "payload\.café_id"/)
       end
 
       it "collides with another implicit intermediate at the same parent" do
@@ -1479,7 +1479,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects :a, on: "payload.#{utf8}", optional: true
             expects :b, on: "payload.#{latin1}", optional: true
           end
-        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
       end
 
       it "still merges with a subfield of the same spelling" do
@@ -1505,7 +1505,7 @@ RSpec.describe "declaration-time property name collisions" do
 
         expect do
           project_axn { expects(:payload, type: shaped) { field latin1, type: String } }
-        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
       end
 
       it "names the Data type as the source" do
@@ -1514,7 +1514,7 @@ RSpec.describe "declaration-time property name collisions" do
 
         expect do
           project_axn { expects(:payload, type: shaped) { field latin1, type: String } }
-        end.to raise_error(Axn::DuplicateFieldError, /a member of the .* type declared on :payload/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /a member of the .* type declared on :payload/)
       end
 
       # Naming the type runs a bound `Module#to_s`: a class can define its own, and one that raises would
@@ -1526,7 +1526,7 @@ RSpec.describe "declaration-time property name collisions" do
         latin1 = latin1_name
 
         expect { project_axn { expects(:payload, type: shaped) { field latin1, type: String } } }
-          .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
       end
 
       # Naming the type is also writing foreign BYTES into the message: a constant may hold non-UTF-8 ones
@@ -1539,7 +1539,7 @@ RSpec.describe "declaration-time property name collisions" do
         latin1 = latin1_name
 
         expect { project_axn { expects(:payload, type: shaped) { field latin1, type: String } } }
-          .to raise_error(Axn::DuplicateFieldError) { |error|
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError) { |error|
             expect(error.message).to include("a member of the CaféType type declared on :payload")
             expect(error.message.encoding).to eq(Encoding::UTF_8)
             expect(error.message).to be_valid_encoding
@@ -1590,7 +1590,7 @@ RSpec.describe "declaration-time property name collisions" do
         latin1 = latin1_name
 
         expect { project_axn { exposes(:thing, type: shaped) { field latin1, type: String } } }
-          .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "thing\.café"/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "thing\.café"/)
       end
 
       # INPUT reflects the shape a client is expected to send, regardless of how the value serializes, so a
@@ -1604,7 +1604,7 @@ RSpec.describe "declaration-time property name collisions" do
         latin1 = latin1_name
 
         expect { project_axn { expects(:thing, type: custom) { field latin1, type: String } } }
-          .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "thing\.café"/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "thing\.café"/)
       end
 
       it "still rejects a custom to_h inbound too" do
@@ -1614,7 +1614,7 @@ RSpec.describe "declaration-time property name collisions" do
         latin1 = latin1_name
 
         expect { project_axn { expects(:thing, type: custom) { field latin1, type: String } } }
-          .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "thing\.café"/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "thing\.café"/)
       end
 
       # A scalar `of:` reads members off the element (`String#length`), which stays a string — the members are
@@ -1642,7 +1642,7 @@ RSpec.describe "declaration-time property name collisions" do
         members = [Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: { type: String })]
 
         expect { project_axn { expects :list, type: Array, of: shaped, shape: { members:, container: Array } } }
-          .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "list\.\[\]\.café"/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "list\.\[\]\.café"/)
       end
 
       it "still merges an element type's property with a shape member of the same spelling" do
@@ -1681,7 +1681,7 @@ RSpec.describe "declaration-time property name collisions" do
 
         expect do
           project_axn { exposes(:payload, type: shaped) { field latin1, type: String } }
-        end.to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
+        end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "payload\.café"/)
       end
 
       # Inbound and outbound are separate spaces: one name may legitimately be both expected and exposed, and
@@ -1888,7 +1888,7 @@ RSpec.describe "declaration-time property name collisions" do
       other = Data.define(:other)
 
       expect { project_axn { expects :l, type: Array, of: [colliding, other], optional: true } }
-        .to raise_error(Axn::DuplicateFieldError, /both resolve to the JSON property .*café/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property .*café/)
     end
 
     it "still declares the same name in two different branches" do
@@ -1958,7 +1958,7 @@ RSpec.describe "declaration-time property name collisions" do
                                    Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {}))
 
       expect { project_axn { expects :p, type: Hash, shape: { members:, container: Hash } } }
-        .to raise_error(Axn::DuplicateFieldError, /café/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /café/)
     end
   end
 
@@ -1969,12 +1969,12 @@ RSpec.describe "declaration-time property name collisions" do
           expects :foo, type: String
           expects :foo, numericality: { greater_than: 10 }
         end
-      end.to raise_error(Axn::DuplicateFieldError, "Duplicate field(s) declared: foo")
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: foo")
     end
 
     it "names every offending occurrence, not just the first" do
       expect { build_axn { expects :foo, :foo, :foo } }
-        .to raise_error(Axn::DuplicateFieldError, "Duplicate field(s) declared: foo, foo")
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: foo, foo")
     end
 
     # The message names each offender by its canonical property. Naming it by the Symbol would concatenate a
@@ -1988,7 +1988,7 @@ RSpec.describe "declaration-time property name collisions" do
           expects name
           expects name
         end
-      end.to raise_error(Axn::DuplicateFieldError) { |error|
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError) { |error|
         expect(error.message.encoding).to eq(Encoding::UTF_8)
         expect(error.message).to satisfy(&:valid_encoding?)
         expect(error.message).to include("café")
@@ -1998,7 +1998,7 @@ RSpec.describe "declaration-time property name collisions" do
     it "reports a batch mixing encodings without the join failing" do
       names = [latin1_name, latin1_name, :naïve, :naïve]
 
-      expect { build_axn { expects(*names) } }.to raise_error(Axn::DuplicateFieldError) { |error|
+      expect { build_axn { expects(*names) } }.to raise_error(Axn::ContractViolation::DuplicateFieldError) { |error|
         expect(error.message.encoding).to eq(Encoding::UTF_8)
         expect(error.message).to satisfy(&:valid_encoding?)
         expect(error.message).to eq("Duplicate field(s) declared: café, naïve")
@@ -2018,7 +2018,7 @@ RSpec.describe "declaration-time property name collisions" do
             field second, type: Integer
           end
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     it "rejects a duplicate member name, which previously kept only the last in the schema" do
@@ -2029,7 +2029,7 @@ RSpec.describe "declaration-time property name collisions" do
             field :a, type: Integer
           end
         end
-      end.to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared: :a\b/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: :a\b/)
     end
 
     # A member name is normalized to a Symbol at declaration, exactly as a top-level field name is, so these
@@ -2044,7 +2044,7 @@ RSpec.describe "declaration-time property name collisions" do
             field "a", type: Integer
           end
         end
-      end.to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared: :a —/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: :a —/)
     end
 
     it "rejects a member name with no UTF-8 rendering" do
@@ -2070,7 +2070,7 @@ RSpec.describe "declaration-time property name collisions" do
             field second, type: Integer
           end
         end
-      end.to raise_error(Axn::DuplicateFieldError) { |error|
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError) { |error|
         expect(error.message.encoding).to eq(Encoding::UTF_8)
         expect(error.message).to satisfy(&:valid_encoding?)
       }
@@ -2171,7 +2171,7 @@ RSpec.describe "declaration-time property name collisions" do
             end
           end
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     it "reaches members supplied as a raw shape: kwarg, which never route through the builder" do
@@ -2181,7 +2181,7 @@ RSpec.describe "declaration-time property name collisions" do
       ]
 
       expect { project_axn { expects :payload, type: Hash, shape: { members: } } }
-        .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     it "rejects them on an exposes shape too" do
@@ -2195,7 +2195,7 @@ RSpec.describe "declaration-time property name collisions" do
             field second, type: Integer
           end
         end
-      end.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
     end
 
     it "leaves distinct member names alone" do
@@ -2260,7 +2260,7 @@ RSpec.describe "declaration-time property name collisions" do
         shape[:container] = Hash
 
         expect { project_axn { expects :payload, type: Hash, shape: } }
-          .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
       end
 
       # The same lie against the sibling guard on the same walk: `user_facing:` on an outbound member is
@@ -2282,7 +2282,7 @@ RSpec.describe "declaration-time property name collisions" do
         ]
 
         expect { project_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-          .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
       end
 
       # A member with genuinely no `field` is rejected, not skipped. The documented member contract is `#field`
@@ -2346,7 +2346,7 @@ RSpec.describe "declaration-time property name collisions" do
 
         expect(members.map { |m| m.field.class }).to eq([Symbol, Symbol])
         expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-          .to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared: :dup —/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: :dup —/)
       end
 
       # A duck-typed member's reader is not ours to normalize, so this is the one route by which a
@@ -2357,7 +2357,7 @@ RSpec.describe "declaration-time property name collisions" do
         members = [duck_typed_member(hostile.new("dup")), duck_typed_member(hostile.new("dup"))]
 
         expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-          .to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared: "dup" —/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: "dup" —/)
       end
 
       # A shape graph reachable from inside itself has no traversal at all: the walk recurses until the
@@ -2389,7 +2389,7 @@ RSpec.describe "declaration-time property name collisions" do
         members = [member_class.new(utf8_name), member_class.new(latin1_name)]
 
         expect { project_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-          .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
       end
 
       it "still rejects a user_facing: member whose readers exist only through method_missing" do
@@ -2573,7 +2573,7 @@ RSpec.describe "declaration-time property name collisions" do
                      Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {}))
 
         expect { project_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-          .to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
       end
 
       # `nil?` is a type test, so nothing the container defines gets to decide whether derivation runs — and the
@@ -3309,7 +3309,7 @@ RSpec.describe "declaration-time property name collisions" do
       it "reports the #{direction} collision rather than running the name's ==" do
         klass = assigned(raising_eq("dup"), :dup, direction:)
 
-        expect { project(klass, direction) }.to raise_error(Axn::DuplicateFieldError, /"dup" and :dup/)
+        expect { project(klass, direction) }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /"dup" and :dup/)
       end
     end
 
@@ -3374,7 +3374,7 @@ RSpec.describe "declaration-time property name collisions" do
     it "reports a duplicate against an exotic assigned name, whatever its to_s says next" do
       klass = assigned(flipping_name("dup", "other"))
 
-      expect { klass.expects(:dup) }.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "dup"/)
+      expect { klass.expects(:dup) }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "dup"/)
     end
 
     # The collision message names the whole resolved path, so an ancestor's name is rendered there as well as at
@@ -3391,7 +3391,7 @@ RSpec.describe "declaration-time property name collisions" do
       klass.internal_field_configs = [parent].freeze
       klass.subfield_configs = children.freeze
 
-      expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError, /the JSON property "p\.café"/)
+      expect { klass.input_schema }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /the JSON property "p\.café"/)
     end
 
     # The declaration path's own report: which of the two duplicate wordings a collision gets is "is it the same
@@ -3400,7 +3400,7 @@ RSpec.describe "declaration-time property name collisions" do
       klass = assigned(raising_eq("dup"))
 
       expect { klass.expects(:dup) }
-        .to raise_error(Axn::DuplicateFieldError, /"dup" and :dup both render as the JSON property "dup"/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /"dup" and :dup both render as the JSON property "dup"/)
     end
 
     # The same check reads the name's canonical property, and reads it off a String's own BYTES. That is what the
@@ -3411,7 +3411,7 @@ RSpec.describe "declaration-time property name collisions" do
       klass = assigned(raising_to_s("dup"))
 
       expect { klass.expects(:dup) }
-        .to raise_error(Axn::DuplicateFieldError, /"dup" and :dup both render as the JSON property "dup"/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /"dup" and :dup both render as the JSON property "dup"/)
     end
 
     # Two names that are the same content in two objects are ONE property, exactly as two identical spellings
@@ -3604,7 +3604,7 @@ RSpec.describe "declaration-time property name collisions" do
       end
       klass.internal_field_configs = configs.freeze
 
-      expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError, /"dup" and :dup both resolve to the JSON property "dup"/)
+      expect { klass.input_schema }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /"dup" and :dup both resolve to the JSON property "dup"/)
     end
 
     # A member's name is never emitted as itself — the declaration walk stores the Symbol it judged, and
@@ -3663,7 +3663,7 @@ RSpec.describe "declaration-time property name collisions" do
       klass = build_axn
       methods_before = klass.instance_methods(false) + klass.private_instance_methods(false)
 
-      expect { klass.expects(*names) }.to raise_error(Axn::DuplicateFieldError)
+      expect { klass.expects(*names) }.to raise_error(Axn::ContractViolation::DuplicateFieldError)
 
       expect(klass.internal_field_configs).to be_empty
       expect(klass.external_field_configs).to be_empty

@@ -1,12 +1,20 @@
 # frozen_string_literal: true
 
+require "axn/error"
 require "axn/internal/registry"
 require "active_support/core_ext/string/inflections"
 
 module Axn
   module Async
-    class AdapterNotFound < Axn::Internal::Registry::NotFound; end
-    class DuplicateAdapterError < Axn::Internal::Registry::DuplicateError; end
+    # Deliberately NOT descended from the registry's internal base classes: a public class must not put
+    # an Axn::Internal constant in its ancestry, and "any registry lookup miss" is `rescue Axn::Error`.
+    class AdapterNotFound < StandardError
+      include Axn::Error
+    end
+
+    class DuplicateAdapterError < StandardError
+      include Axn::Error
+    end
 
     class Adapters < Axn::Internal::Registry
       class << self

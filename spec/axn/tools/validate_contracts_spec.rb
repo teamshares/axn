@@ -39,7 +39,7 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     Axn::Tools.register_adapter(:mcp)
     colliding_tool
 
-    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::DuplicateFieldError, /both render as the JSON property "café"/)
+    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
   end
 
   # THE case that matters most, and the one the guarantee used to miss: a tool subclassing its adapter's base
@@ -89,7 +89,7 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
       shadowing_tool(inbound: true)
 
       expect { Axn::Tools.validate_contracts! }
-        .to raise_error(Axn::DuplicateFieldError, /Shadowing has an invalid tool contract.*JSON property "café"/m)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Shadowing has an invalid tool contract.*JSON property "café"/m)
     end
 
     # The outbound half was already immune — `validate_outbound!` builds from the configs and never called
@@ -99,7 +99,7 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
       shadowing_tool(inbound: false)
 
       expect { Axn::Tools.validate_contracts! }
-        .to raise_error(Axn::DuplicateFieldError, /Shadowing has an invalid tool contract.*JSON property "café"/m)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Shadowing has an invalid tool contract.*JSON property "café"/m)
     end
   end
 
@@ -109,9 +109,9 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     Axn::Tools.register_adapter(:mcp)
     colliding_tool
 
-    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::DuplicateFieldError) { |error|
+    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::ContractViolation::DuplicateFieldError) { |error|
       expect(error.message).to start_with("ToolContractsSpec::Colliding has an invalid tool contract")
-      expect(error.cause).to be_a(Axn::DuplicateFieldError)
+      expect(error.cause).to be_a(Axn::ContractViolation::DuplicateFieldError)
     }
   end
 
@@ -513,7 +513,7 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     Axn::Tools.register_adapter(:mcp)
     klass = colliding_tool
 
-    expect { klass.input_schema }.to raise_error(Axn::DuplicateFieldError)
+    expect { klass.input_schema }.to raise_error(Axn::ContractViolation::DuplicateFieldError)
   end
 
   # Validation is adapter-agnostic, so a tool registered for two adapters is projected once rather than once per
@@ -558,8 +558,8 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     Axn::Tools.register_adapter(:mcp)
     colliding_tool
 
-    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::DuplicateFieldError)
-    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::DuplicateFieldError)
+    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::ContractViolation::DuplicateFieldError)
+    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::ContractViolation::DuplicateFieldError)
   end
 
   # The width of the guarantee, pinned: membership is the union of a directory grant and a DECLARATION grant, so

@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 
 require "axn/core/validation/fields"
-require "axn/internal/reflection/resolved_subfields"
+require "axn/internal/coercion"
+require "axn/internal/resolved_subfields"
 require "axn/internal/reflection/schema"
-require "axn/internal/reflection/subfield_contradictions"
+require "axn/core/contract/subfield_contradictions"
 
 module Axn
   module Core
@@ -265,7 +266,7 @@ module Axn
       # coercion needs no guard.
       def self._apply_read_path_transforms(action, config, value, parent)
         coerce_input_types = Axn::Internal::CurrentCallOptions.coerce_input_types_for(action)
-        value = Axn::Internal::Reflection::Coercion.coerce_config_value(value, config, coerce_input_types:)
+        value = Axn::Internal::Coercion.coerce_config_value(value, config, coerce_input_types:)
         value = Axn::Internal::FieldConfig.resolve_preprocess(action, config, value) if config.preprocess && !parent.nil?
         value
       end
@@ -460,7 +461,7 @@ module Axn
           cached = @_axn_resolved_subfields
           return cached.value if cached && cached.fields.equal?(fields) && cached.subfields.equal?(subfields)
 
-          value = Axn::Internal::Reflection::ResolvedSubfields.build(fields, subfields)
+          value = Axn::Internal::ResolvedSubfields.build(fields, subfields)
           @_axn_resolved_subfields = ResolvedSubfieldsCacheEntry.new(fields:, subfields:, value:)
           value
         end
@@ -544,7 +545,7 @@ module Axn
             # already-declared tolerance is caught at the declaration that completes it. The shared tree
             # drops ambient configs, so the ambient subtree is checked separately on its own scoped tree
             # (PRO-2909) — same candidate set, same checks.
-            Axn::Internal::Reflection::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
+            Axn::Core::Contract::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
             _check_ambient_subfield_contradictions!(subfield_configs + configs)
             _check_ambient_shape_placement!(subfield_configs + configs)
 

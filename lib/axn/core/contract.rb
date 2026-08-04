@@ -10,6 +10,7 @@ require "axn/core/contract/redaction"
 require "axn/core/contract/shape_declaration"
 require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
+require "axn/internal/coercion"
 require "axn/internal/shape_graph"
 require "axn/internal/cycle_guard"
 require "axn/result"
@@ -680,11 +681,11 @@ module Axn
           identical, collapsed = collisions.partition { |claimed, offending| Axn::Internal::Reflection::PropertyNames.same_declared_name?(claimed, offending) }
           if identical.any?
             names = identical.map { |_claimed, offending| Axn::Internal::Reflection::Values.canonical_wire_key(offending) }
-            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}"
+            raise Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}"
           end
 
           claimed, offending = collapsed.first
-          raise Axn::DuplicateFieldError,
+          raise Axn::ContractViolation::DuplicateFieldError,
                 "Duplicate field(s) declared: #{_inspect_field_name(claimed)} and #{_inspect_field_name(offending)} " \
                 "both render as the JSON property #{Axn::Internal::Reflection::Values.canonical_wire_key(offending).inspect} — a " \
                 "field name becomes a property name in the reflected schema and in serialized output, so the two would " \
@@ -1410,7 +1411,7 @@ module Axn
           validations[:type] = { klass: target, coerce: true }
         end
 
-        # A coerce target must be in the v1 coercible set (Axn::Internal::Reflection::Coercion::SUPPORTED); an
+        # A coerce target must be in the v1 coercible set (Axn::Internal::Coercion::SUPPORTED); an
         # unsupported type raises not-yet-supported so expanding the set stays a deliberate future
         # ticket. `String` may accompany a coercible type as a passthrough branch (the raw wire scalar
         # itself), which is why `coerce: [Date, String]` is legal — but a target set with no coercible
@@ -1424,20 +1425,20 @@ module Axn
           return unless coerce
 
           klasses = Array(type_hash[:klass])
-          coercible = Axn::Internal::Reflection::Coercion.coercible_klasses(type_hash)
+          coercible = Axn::Internal::Coercion.coercible_klasses(type_hash)
           unsupported = klasses - coercible - [String]
 
           unless unsupported.empty?
             raise ArgumentError,
                   "coerce: does not yet support #{unsupported.map(&:inspect).join(', ')} " \
-                  "(supported: #{Axn::Internal::Reflection::Coercion::SUPPORTED.join(', ')}). " \
+                  "(supported: #{Axn::Internal::Coercion::SUPPORTED.join(', ')}). " \
                   "String may accompany a coercible type as a passthrough."
           end
 
           return unless coercible.empty?
 
           raise ArgumentError,
-                "coerce: needs at least one coercible type (#{Axn::Internal::Reflection::Coercion::SUPPORTED.join(', ')}); " \
+                "coerce: needs at least one coercible type (#{Axn::Internal::Coercion::SUPPORTED.join(', ')}); " \
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 

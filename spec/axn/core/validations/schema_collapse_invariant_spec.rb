@@ -58,7 +58,7 @@ RSpec.describe "a collision verdict and the schema it is about" do
       klass.output_schema
     end
     false
-  rescue Axn::DuplicateFieldError
+  rescue Axn::ContractViolation::DuplicateFieldError
     true
   end
 

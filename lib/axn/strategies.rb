@@ -1,10 +1,18 @@
 # frozen_string_literal: true
 
+require "axn/error"
 require "axn/internal/registry"
 
 module Axn
-  class StrategyNotFound < Axn::Internal::Registry::NotFound; end
-  class DuplicateStrategyError < Axn::Internal::Registry::DuplicateError; end
+  # Deliberately NOT descended from the registry's internal base classes: a public class must not put
+  # an Axn::Internal constant in its ancestry, and "any registry lookup miss" is `rescue Axn::Error`.
+  class StrategyNotFound < StandardError
+    include Axn::Error
+  end
+
+  class DuplicateStrategyError < StandardError
+    include Axn::Error
+  end
 
   class Strategies < Axn::Internal::Registry
     class << self

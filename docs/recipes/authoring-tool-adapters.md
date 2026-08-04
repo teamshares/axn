@@ -233,6 +233,31 @@ Two rules:
 
 For inbound-validation detail (which argument the model got wrong), the Invoker exposes `Axn::Tools::Invoker.input_invalid?(result)` and `result.exception.field_errors` — see [Tool Invoker](/reference/tool-invoker#per-field-detail).
 
+## Error boundary
+
+Give your gem's own errors the same convention core uses internally: root them at a class that includes `Axn::Error`, then subclass everything specific from that.
+
+```ruby
+module Axn::Webhooks
+  class Error < StandardError
+    include Axn::Error
+  end
+
+  class RetryLater < Error; end
+end
+```
+
+`Axn::Error` is a **module**, not a base class, deliberately: `rescue` matches a module by `is_a?`, so including it costs `Error` no ancestry. That's what lets an adapter's own error class keep whatever superclass its ecosystem needs — `< Faraday::Error`, `< Timeout::Error` — and still be caught by `rescue Axn::Error`. A base class would force a choice between the superclass an adapter needs and being catchable as an axn error; the module forces nothing.
+
+Including it is a promise, not decoration: the class becomes public, documented, rescuable, and breaking to remove. The tag is also inherited, so a tagged class can't grow an untagged subclass — a public error family shouldn't gain a secretly-internal member.
+
+Two things sit outside the boundary on purpose, so you aren't surprised when they don't get caught alongside the rest:
+
+- **`Axn::Failure`** is a control-flow signal raised by `call!`, not a fault, so it's deliberately untagged. `rescue Axn::Error` around a `call!` is meant to mean "axn objected"; folding the action's own deliberate failure into that same catch would blur the two together. A caller who wants both writes `rescue StandardError`.
+- **Generic `ArgumentError`s raised for DSL misuse** — a malformed `on:`, an unregistered tool adapter — stay plain `ArgumentError`s. That's this repo's convention for a declaration mistake rather than a runtime fault, and it applies to your adapter's own DSL misuse too, not just core's.
+
+The payoff for following the convention: a consuming app's `rescue Axn::Error` catches core's errors and every participating adapter's in one clause, rather than needing a separate `rescue` per gem in the stack.
+
 ## ambient_context
 
 Server/session data an app injects (`current_user`, `company`) reaches a tool through Axn's [`ambient_context`](/reference/class#ambient-context-on-ambient-context) — an author declares `expects :user_id, on: :ambient_context` and the value resolves from whatever the caller supplied. Three rules make this work adapter-agnostically:

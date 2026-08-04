@@ -150,6 +150,30 @@ Source: `lib/axn/extensions/config.rb`, `lib/axn/core/semantic_hints.rb`.
 
 Source: `lib/axn/extensions.rb` (`owned_failure?`), `lib/axn/tools/invoker.rb`, `lib/axn/result.rb`.
 
+## Error boundary
+
+- **Root your gem's errors at `Axn::Error`.** Give the gem a base class that `include`s the module, and
+  subclass every specific error from it: `class Axn::Webhooks::Error < StandardError; include Axn::Error;
+  end`. Two sibling gems already have such a base and need only the `include`.
+- **It's a module, not a base class, on purpose.** `rescue` matches a module via `is_a?`, so including it
+  costs a class no ancestry — the adapter keeps whatever superclass its ecosystem needs (`< Faraday::Error`,
+  `< Timeout::Error`) and is still `rescue Axn::Error`-catchable. A base class would force a choice.
+- **Including it is a promise, not decoration**: the class becomes public, documented, rescuable, and
+  breaking to remove.
+- **The tag is inherited** — a tagged class cannot have an untagged subclass, so a public error family
+  can't grow a secretly-internal member.
+- **Two things stay outside the boundary on purpose.** `Axn::Failure` is a control-flow signal from
+  `call!`, not a fault, so it is deliberately untagged — `rescue Axn::Error` around a `call!` should mean
+  "axn objected," not "axn objected or the action intentionally failed"; a caller wanting both writes
+  `rescue StandardError`. Generic `ArgumentError`s raised for DSL misuse (a malformed `on:`, an
+  unregistered tool adapter) also stay plain — that's this repo's convention for a declaration mistake, not
+  a runtime fault, and it isn't specific to what your adapter raises.
+- **Why bother:** a consuming app's `rescue Axn::Error` catches core's errors AND every participating
+  adapter's, which is the payoff for following the convention instead of inventing a per-gem base with no
+  shared catch.
+
+Source: `lib/axn/error.rb`.
+
 ## ambient_context
 
 Server/session data (`current_user`, `company`) an author declares via `expects :user_id, on: :ambient_context`.
@@ -223,3 +247,4 @@ Core source entry points (resolve with `bundle show axn`):
 - `lib/axn/tools/invoker.rb` — the tool call path.
 - `lib/axn/core/ambient_context.rb` — ambient filtering/resolution.
 - `lib/axn/factory.rb` — `Axn::Factory.build`.
+- `lib/axn/error.rb` — `Axn::Error`, the public-error boundary tag.

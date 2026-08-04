@@ -1,11 +1,19 @@
 # frozen_string_literal: true
 
+require "axn/error"
 require "axn/internal/registry"
 
 module Axn
   module Mountable
-    class MountingTypeNotFound < Axn::Internal::Registry::NotFound; end
-    class DuplicateMountingTypeError < Axn::Internal::Registry::DuplicateError; end
+    # Deliberately NOT descended from the registry's internal base classes: a public class must not put
+    # an Axn::Internal constant in its ancestry, and "any registry lookup miss" is `rescue Axn::Error`.
+    class MountingTypeNotFound < StandardError
+      include Axn::Error
+    end
+
+    class DuplicateMountingTypeError < StandardError
+      include Axn::Error
+    end
 
     class MountingStrategies < Axn::Internal::Registry
       class << self
