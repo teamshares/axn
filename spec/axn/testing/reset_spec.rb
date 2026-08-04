@@ -4,6 +4,34 @@ require "axn/testing"
 
 RSpec.describe Axn::Testing do
   describe ".reset!" do
+    # Sidekiq isn't in the root bundle, so `register!` can't run for real here (it no-ops without
+    # `defined?(::Sidekiq)`). Setting the flags directly simulates a process where registration
+    # already happened — which is the only state `reset!` needs to tell apart from "never
+    # registered". Restored in `ensure` because these ivars are real process-global state this
+    # example doesn't own.
+    it "leaves the Sidekiq auto-configure registration flags alone, but drops the validation memo" do
+      autoconfig = Axn::Async::Adapters::Sidekiq::AutoConfigure
+      before_registered = autoconfig.registered?
+      before_middleware = autoconfig.middleware_registered?
+      before_death_handler = autoconfig.death_handler_registered?
+
+      autoconfig.instance_variable_set(:@registered, true)
+      autoconfig.instance_variable_set(:@middleware_registered, true)
+      autoconfig.instance_variable_set(:@death_handler_registered, true)
+      autoconfig.instance_variable_set(:@validated, true)
+
+      described_class.reset!
+
+      expect(autoconfig.registered?).to be(true)
+      expect(autoconfig.middleware_registered?).to be(true)
+      expect(autoconfig.death_handler_registered?).to be(true)
+      expect(autoconfig.validated?).to be(false)
+    ensure
+      autoconfig.instance_variable_set(:@registered, before_registered)
+      autoconfig.instance_variable_set(:@middleware_registered, before_middleware)
+      autoconfig.instance_variable_set(:@death_handler_registered, before_death_handler)
+    end
+
     it "drops the tracer auto-detection memos" do
       Axn::Internal::Tracing.autodetected_tracer
       described_class.reset!

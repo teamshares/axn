@@ -113,7 +113,7 @@ end
 
 It's safe and idempotent to call in a suite-wide `before`, even on an example with nothing to reset.
 
-What it drops: tracer auto-detection memos (so the next example re-detects rather than reusing a stale tracer), the Sidekiq auto-configure flags, and the one-time fiber-isolation warning (so a later example can still trigger it).
+What it drops: tracer auto-detection memos (so the next example re-detects rather than reusing a stale tracer), the Sidekiq auto-configure validation memo, and the one-time fiber-isolation warning (so a later example can still trigger it).
 
 What it deliberately leaves alone, because resetting it would be wrong rather than merely unnecessary:
 
@@ -121,6 +121,7 @@ What it deliberately leaves alone, because resetting it would be wrong rather th
 - **The registries** (`Strategies`, `Async::Adapters`, `Mountable::MountingStrategies`). Clearing them restores built-ins and discards deliberate registrations — that's axn's own suite's business, not a host app's.
 - **`Tools::Registry`'s recorded action classes.** That set accumulates every action class defined in the process; clearing it mid-suite would make `Axn.tools_for` blind to classes that are still loaded.
 - **Registered tool adapters.** An adapter gem registers at file-load time, and `require` runs once per process — a registration dropped here could never be re-established within that process, so a host app with any tool-adapter gem in its Gemfile would have `Axn.tools_for` (and every adapter lookup) fail after the first example.
+- **The Sidekiq auto-configure registration flags** (`registered?`, `middleware_registered?`, `death_handler_registered?`). Registering installs onto Sidekiq's actual global middleware chain and death-handler list once per process, so these flags are a record of that installation, not state axn can regenerate. Clearing them would make the record disagree with Sidekiq's real state — the middleware would still be installed, but validation would read it as missing and raise on the next job.
 
 ## RSpec configuration
 
