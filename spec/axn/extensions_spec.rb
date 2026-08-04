@@ -426,6 +426,35 @@ RSpec.describe Axn::Extensions do
           expect(escaped).to be_a(Axn::UnreraisableException)
           expect(Axn::Internal::Identity.same?(escaped.cause, original)).to be(true)
         end
+
+        # The same absence, on an object that answers questions about names it does not have. Ruby consults
+        # `respond_to_missing?` whenever a name is looked up on a VALUE and the method table has no such entry —
+        # so an ownership lookup put to the object, rather than to its method table, runs the object's own code on
+        # exactly the path where `#exception` has just removed itself. One that raises outside `StandardError`
+        # then leaves through the guard as the verdict, and the block's exception is gone entirely.
+        #
+        # The hook answers for `:exception` ALONE, which is what makes this an assertion about axn rather than
+        # about Ruby: `raise <instance>` probes the object for `:to_str` on its own account, so a hook that
+        # answered every name would detonate inside the caller's `raise` and never reach the guard at all.
+        it "raises an axn-owned error carrying the original OBJECT when it answers about the absent #exception" do
+          original = Class.new(StandardError) do
+            def exception(*)
+              singleton_class.send(:undef_method, :exception)
+              self
+            end
+
+            def respond_to_missing?(name, _include_private = false)
+              raise(NotImplementedError, "the ownership lookup ran the object's own code") if name == :exception
+
+              false
+            end
+          end.new("the original")
+
+          escaped = escaping_exception(-> { raise original })
+
+          expect(escaped).to be_a(Axn::UnreraisableException)
+          expect(Axn::Internal::Identity.same?(escaped.cause, original)).to be(true)
+        end
       end
 
       it "keeps a valid multibyte message verbatim in the warning" do

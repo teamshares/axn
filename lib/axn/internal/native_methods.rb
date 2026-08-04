@@ -37,14 +37,21 @@ module Axn
     # question is not whether axn can copy or dispatch the name safely but whether the name HAS a single property
     # to be, since a String carries bytes as well as a rendering and three separate readers pick between them.
     module NativeMethods
-      # `#method`, `#frozen?`, `#singleton_class`, `#ancestors` and the two method-table readers are all
+      # `#class`, `#frozen?`, `#singleton_class`, `#ancestors` and the four method-table readers are all
       # overridable, so each is BOUND: one that raised would replace the verdict being decided with the object's
       # own exception — and outside StandardError it escapes every rescue above. `Kernel#frozen?` reads the
       # object's frozen flag in C.
-      OBJECT_METHOD = ::Object.instance_method(:method)
+      #
+      # Every one of them is a question put to a MODULE — a class, a singleton class, an included module — and
+      # never to the value itself, which is what keeps a lookup here from dispatching. `Object#method` is
+      # deliberately absent from this list: it is a question put to the VALUE, and Ruby consults the value's
+      # `respond_to_missing?` when the name is absent, so it cannot answer an ownership question without
+      # possibly running the very code the answer decides whether to run.
+      KERNEL_CLASS = ::Kernel.instance_method(:class)
       KERNEL_FROZEN = ::Kernel.instance_method(:frozen?)
       KERNEL_SINGLETON_CLASS = ::Kernel.instance_method(:singleton_class)
       MODULE_ANCESTORS = ::Module.instance_method(:ancestors)
+      MODULE_INSTANCE_METHOD = ::Module.instance_method(:instance_method)
       MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
       MODULE_PUBLIC_METHOD_DEFINED = ::Module.instance_method(:public_method_defined?)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
@@ -52,9 +59,9 @@ module Axn
       STRING_ENCODING = ::String.instance_method(:encoding)
       SYMBOL_ENCODING = ::Symbol.instance_method(:encoding)
       private_constant :SYMBOL_ENCODING
-      private_constant :OBJECT_METHOD, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
-                       :MODULE_ANCESTORS, :MODULE_INSTANCE_METHODS, :MODULE_PRIVATE_INSTANCE_METHODS,
-                       :MODULE_PUBLIC_METHOD_DEFINED
+      private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
+                       :MODULE_ANCESTORS, :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS,
+                       :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PUBLIC_METHOD_DEFINED
 
       # ActiveSupport's own definition of a blank String, matched against the value's BYTES rather than asked
       # of the value (`Regexp#match?` reads a String operand's bytes in C — no `to_str`, no `=~`, and the
@@ -169,19 +176,64 @@ module Axn
       # would be exactly the replaced-verdict failure the bound read exists to prevent.
       def self.public_instance_method?(mod, name) = MODULE_PUBLIC_METHOD_DEFINED.bind_call(mod, name)
 
-      # Which class or module OWNS the method a value would dispatch for `name` — read through the bound
-      # `Object#method`, so the answer comes from the method table rather than from the value. nil when the value
-      # has no such method at all, or is not something `Object#method` can be bound to (a `BasicObject`).
+      # Which class or module OWNS the method a value would dispatch for `name` — resolved out of the value's
+      # method table, so the answer comes from the table rather than from the value. nil when the value has no
+      # such method at all.
       #
       # This is what decides whether CALLING that method runs Ruby's own code or the caller's, which a walk needs
       # before it may run one at all: a container subclass that INHERITS `empty?` answers with the built-in's
-      # implementation, while one that overrides it — or carries a singleton, which `Object#method` finds first —
-      # is arbitrary code that a verdict must not enter.
+      # implementation, while one that overrides it — or carries a singleton, which sits ahead of its class — is
+      # arbitrary code that a verdict must not enter.
+      #
+      # Resolved through the value's SINGLETON CLASS, on the same terms and for the same reason as
+      # `own_array_methods`: that one module's ancestry is the whole of what the value would dispatch — its
+      # singleton methods, a module EXTENDED onto it, and its class's own methods with anything mixed in or
+      # prepended — so one lookup against it is the complete question. `Module#instance_method` resolves it,
+      # rather than a hand-rolled walk over `MODULE_ANCESTORS`, because it is the same C-level resolver
+      # `Object#method` uses over that same ancestry: it finds private and protected definitions, honours a
+      # PREPENDED module's position, and treats a name `undef_method` removed as absent — three things a walk
+      # comparing name lists gets wrong in the unsafe direction, since an UNDEF'd `to_s` would otherwise resolve
+      # to the superclass implementation that no longer answers.
+      #
+      # Asking the singleton class rather than the value is the whole point: `Object#method` is a question put to
+      # the VALUE, and Ruby consults the value's `respond_to_missing?` whenever the name is ABSENT — so on a
+      # value that defines that hook, an ownership lookup ran the caller's code, and one that raised outside
+      # `NameError` left through the predicate as the verdict. Absence is not a corner here (`facade_inspector`
+      # asks for a `to_fs` that exists in no process without ActiveSupport's conversions), and the exception path is the one
+      # place a predicate must not become the failure: an exception that removes its own `#exception` while
+      # answering is asked about a method that is by then gone.
+      #
+      # The cost of asking the complete question is that reading the singleton class materializes an empty one,
+      # exactly as in `own_array_methods`, and nothing observes the difference.
+      #
+      # A `method_missing`-backed method is reported ABSENT here, where `Object#method` reports the class that
+      # would dispatch it. That is the answer this module's question wants: `method_missing` is by definition
+      # the caller's own code, so it is never Ruby's own implementation that answers, and every caller compares
+      # the owner against a specific built-in — so nil and "the value's own class" take the identical branch.
       def self.method_owner(value, name)
-        OBJECT_METHOD.bind_call(value, name).owner
-      rescue ::NameError, ::TypeError
+        MODULE_INSTANCE_METHOD.bind_call(method_table(value), name).owner
+      rescue ::NameError
         nil
       end
+
+      # The module whose ancestry holds everything `value` would dispatch.
+      #
+      # Normally the singleton class. A few values REFUSE one (`TypeError: can't define singleton`) — the
+      # immediates, and an interned frozen String literal — and for those the class is the same complete answer,
+      # because a value that cannot be given a singleton class cannot be carrying a singleton method either:
+      # defining one raises, extending it raises, and the refusal is what makes both true. Reaching for the
+      # class only on the refusal keeps that narrower answer off every other value, where a singleton is exactly
+      # what the lookup must see.
+      #
+      # Frozen is NOT one of those cases — an ordinary frozen object hands back a frozen singleton class — which
+      # matters because re-raising a frozen exception is supported and asks this question first.
+      def self.method_table(value)
+        KERNEL_SINGLETON_CLASS.bind_call(value)
+      rescue ::TypeError
+        KERNEL_CLASS.bind_call(value)
+      end
+
+      private_class_method :method_table
 
       # Whether this NAME renders through Ruby's own code, which is the condition for "the property a rule judged
       # is the property every consumer reads".
@@ -315,8 +367,10 @@ module Axn
       #
       # That matters because ABSENCE is reachable here, not hypothetical. `raise <instance>` dispatches the
       # 0-arg `#exception` on the object, and an `#exception` that undefines itself while answering leaves the
-      # exception with no such method by the time this is asked — so a raw lookup raised `NameError` from inside
-      # the guard whose whole promise is that it emits no third exception.
+      # exception with no such method by the time this is asked — so absence is the state of the very object the
+      # guard whose whole promise is that it emits no third exception is asking about. Which is also why the
+      # lookup may not be a question put to the value: on an absent name Ruby consults the value's
+      # `respond_to_missing?`, and that same exception would have been the one thing running inside the guard.
       #
       # nil is the SAFE answer in the direction that matters: `owner.equal?(nil)` is false for every expected
       # owner, so this answers false, both predicates above read "not native", and each takes its degraded
