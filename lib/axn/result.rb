@@ -212,7 +212,10 @@ module Axn
       return unless exception.is_a?(Axn::Failure)
       return if exception.default_message?
 
-      exception.raw_reason.presence
+      # `supplied_reason`, not `raw_reason.presence`: the reason is the caller's object, this runs while the
+      # failure is being reported, and `presence` dispatches the object's own `blank?` (see
+      # `Axn::Failure#supplied_reason`).
+      exception.supplied_reason
     end
 
     def _fail_standalone?

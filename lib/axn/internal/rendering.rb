@@ -32,7 +32,11 @@ module Axn
         # implementations so nothing the value defines runs, and the constant path it answers with is
         # rendered because a constant may hold non-UTF-8 bytes (`Object.const_set(:"Caf\xE9", Class.new)` is
         # accepted, and `Module#to_s` hands those bytes back).
-        def class_name(value) = Text.renderable(ClassName.of(value))
+        #
+        # DELEGATED to `Internal::RenderedClassName`, which owns that composition for the message paths built on
+        # `axn/exceptions` — they cannot reach this file (it requires theirs), but this file requires theirs, so
+        # the dependency runs one way and there is one composer rather than two identical ones.
+        def class_name(value) = RenderedClassName.of(value)
 
         # A class or module named in its own right — a declared `type:`, a tool axn — rather than a value's
         # class. Same two halves.

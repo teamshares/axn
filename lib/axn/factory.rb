@@ -195,13 +195,13 @@ module Axn
       # answering `present?` differently across those reads declared no exposure and then wrote one, failing
       # with UnknownExposure on a contract that was never wrong. Absence is decided without dispatching the
       # value's own `present?`/`blank?`, which a String subclass overrides — see
-      # Internal::NativeMethods.absent_name?.
+      # Internal::NativeMethods.absent_value?.
       #
       # A supplied value that is not a name at all is rejected rather than left to `to_sym` (see
       # Core::Contract.validate_name_option!): the option and the offending class are what the author needs,
       # and `NoMethodError` named neither.
       def _canonical_expose_return_as(expose_return_as)
-        return nil if Internal::NativeMethods.absent_name?(expose_return_as)
+        return nil if Internal::NativeMethods.absent_value?(expose_return_as)
 
         Core::Contract.validate_name_option!(
           expose_return_as,

@@ -193,7 +193,7 @@ module Axn
       #
       # Runs AFTER the absent check at each call site, so every spelling of "not supplied"
       # (`nil`, `false`, an empty or whitespace-only String, the empty Symbol) still means the option was
-      # omitted rather than hitting a type error — see `Internal::NativeMethods.absent_name?`.
+      # omitted rather than hitting a type error — see `Internal::NativeMethods.absent_value?`.
       #
       # `case`/`when` decides the type through `Module#===` (a C-level check) rather than `is_a?`, which a
       # value can override to route around a guard, and the offender is named by CLASS through the renderer
@@ -364,7 +364,7 @@ module Axn
           # A supplied route that is not a name at all is rejected here rather than left to `to_sym` (see
           # Contract.validate_name_option!): the option and the offending class are what the author needs, and
           # `NoMethodError` named neither.
-          on = if Internal::NativeMethods.absent_name?(on)
+          on = if Internal::NativeMethods.absent_value?(on)
                  nil
                else
                  Contract.validate_name_option!(on, option: "on:", names: "a parent reader",

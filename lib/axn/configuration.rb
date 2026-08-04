@@ -162,7 +162,7 @@ module Axn
               responds || "must respond to #in_span, or be nil to disable tracing"
             }
 
-    attr_writer :logger, :env, :on_exception, :rails
+    attr_writer :logger, :on_exception, :rails
 
     # Optional callable returning a Hash of ambient context data (e.g. from request-local state).
     # Consulted when no explicit `ambient_context:` kwarg is passed to an Axn call. Falls back to
@@ -281,6 +281,33 @@ module Axn
       return @logger = resolved if resolved
 
       @fallback_logger ||= Logger.new($stdout).tap { |l| l.level = Logger::INFO }
+    end
+
+    # Validated at ASSIGNMENT because the reader below wraps the stored value in
+    # `ActiveSupport::StringInquirer`, which takes a String and nothing else — so anything it refuses has to be
+    # refused HERE. Accepted silently and left to the reader, a Symbol raises `TypeError: no implicit conversion of
+    # Symbol into String` from every LATER read instead — six sites inside the gem plus every
+    # `Axn.config.env.production?` in user code — which puts the failure nowhere near the line that caused it, and
+    # makes `c.env = :production` in an initializer detonate on the first action to run.
+    #
+    # A Symbol is COERCED rather than refused: it is a reasonable thing to write and its meaning is unambiguous.
+    # `nil` is accepted as the way to clear an override, since the reader's `@env ||= ENV[…]` fallback is what
+    # "auto-detect the environment" means. A String subclass is a String (`Rails.env` is a `StringInquirer`
+    # already, and `c.env = Rails.env` is the documented Rails wiring), so it is stored as it stands.
+    #
+    # Anything else is a declaration error, named on the same terms as every other one: `case`/`when` decides the
+    # type through `Module#===`, a C-level check running none of the value's own code, and the offender is named
+    # by CLASS through the undispatched renderer — a value that raises from its own `inspect` must not replace
+    # the verdict being reached.
+    def env=(value)
+      @env = case value
+             when nil, ::String then value
+             when ::Symbol then value.to_s
+             else
+               raise ArgumentError,
+                     "env must be a String or Symbol naming the environment, or nil to auto-detect it from " \
+                     "RACK_ENV/RAILS_ENV (got a value of class #{Axn::Internal::Rendering.class_name(value)})"
+             end
     end
 
     def env

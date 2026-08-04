@@ -118,4 +118,48 @@ RSpec.describe Axn do
       expect { result.inspect }.not_to raise_error
     end
   end
+
+  describe "inspecting a failed result whose fail! REASON cannot answer whether it is blank" do
+    # A different route to the same defect, and the one no type guard could catch: the exception genuinely IS
+    # an `Axn::Failure`, so the undispatched `Module#===` test in front of `default_message?` admits it, and the
+    # raise comes from inside axn's own predicate — `@raw_reason.presence`, dispatching the caller's `blank?`.
+    # `fail!` takes an arbitrary object, so the reason is caller code as surely as an exception's `#message` is.
+    #
+    # Everything that resolves through the reason is asserted, not just `inspect`: `result.error` and
+    # `result.message` read it through `Result#_user_provided_error_message`, and all three raised.
+    let(:unblankable) do
+      Object.new.tap do |o|
+        o.define_singleton_method(:empty?) { raise NotImplementedError, "empty? explodes" }
+        o.define_singleton_method(:blank?) { raise NotImplementedError, "blank? explodes" }
+        o.define_singleton_method(:to_s) { "the reason" }
+      end
+    end
+
+    it "renders rather than raising, and still settles as a failure carrying that reason" do
+      reason = unblankable
+      result = build_axn { define_method(:call) { fail!(reason) } }.call
+
+      expect(result.outcome.failure?).to be(true)
+      expect { result.inspect }.not_to raise_error
+      expect(result.inspect).to include("the reason")
+      expect(result.error.to_s).to eq("the reason")
+      expect(result.message.to_s).to eq("the reason")
+    end
+
+    # Settling an exception onto a result is a sequence, and a raise part-way through it skips the rest: the
+    # reason was read while stamping the resolved presentation, one line ABOVE the `on_error` dispatch, so a
+    # reason that could not answer `blank?` silently cost the callbacks rather than only a rendering.
+    it "still dispatches on_error" do
+      reason = unblankable
+      fired = []
+      klass = build_axn do
+        on_error { fired << :on_error }
+        define_method(:call) { fail!(reason) }
+      end
+
+      klass.call
+
+      expect(fired).to eq([:on_error])
+    end
+  end
 end

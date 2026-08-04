@@ -28,9 +28,12 @@ module Axn
     # class, and a container answering membership from either diverges from its copy with entirely native
     # duplication. Hence `own_array_methods`, which asks for the whole of what a container answers with rather
     # than for a set of names, and asks the OBJECT (through its singleton class) rather than only its class.
-    # `native_exception_reporting?` keeps a named set and an object lookup for its own reason: it is not copying
-    # anything, it is deciding what raising will dispatch — `clone` copies the singleton class, and `raise` asks
-    # the object it is handed. `native_name_rendering?` asks about one method for a third reason again: the
+    # The exception pair keeps a named set and an object lookup for its own reason: neither is copying anything,
+    # each is deciding what raising will dispatch — `clone` copies the singleton class, and `raise` asks the object
+    # it is handed. They are two predicates rather than one because they gate two different operations: RENAMING an
+    # exception clones it and hands the clone to `raise`, while re-raising it hands `raise` the object itself, so
+    # the set of methods reached differs and the narrower question must not inherit the wider one's refusals.
+    # `native_name_rendering?` asks about one method for a third reason again: the
     # question is not whether axn can copy or dispatch the name safely but whether the name HAS a single property
     # to be, since a String carries bytes as well as a rendering and three separate readers pick between them.
     module NativeMethods
@@ -63,13 +66,19 @@ module Axn
       STRING_TO_S = ::String.instance_method(:to_s).owner
       private_constant :STRING_TO_S
       #
-      # `raise` dispatches the 0-arg `#exception` on whatever object it is handed, and
-      # `Exception#exception(message)` clones the receiver — so renaming reaches `#exception` plus the three
-      # hooks `Kernel#clone` runs (`initialize_clone`, `initialize_dup`, `initialize_copy`).
-      EXCEPTION_REPORTING = { exception: ::Exception.instance_method(:exception).owner,
-                              initialize_clone: ::Exception.instance_method(:initialize_clone).owner,
-                              initialize_dup: ::Exception.instance_method(:initialize_dup).owner,
-                              initialize_copy: ::Exception.instance_method(:initialize_copy).owner }.freeze
+      # `raise` dispatches the 0-arg `#exception` on whatever object it is handed — the whole of what handing an
+      # exception BACK to `raise` runs, since `Exception#exception` with no arguments returns the receiver
+      # without copying it.
+      EXCEPTION_DISPATCH = { exception: ::Exception.instance_method(:exception).owner }.freeze
+      private_constant :EXCEPTION_DISPATCH
+
+      # RENAMING one reaches further: `Exception#exception(message)` clones the receiver, so the three hooks
+      # `Kernel#clone` runs are dispatched too, and then the clone is handed to `raise`.
+      EXCEPTION_REPORTING = EXCEPTION_DISPATCH.merge(
+        initialize_clone: ::Exception.instance_method(:initialize_clone).owner,
+        initialize_dup: ::Exception.instance_method(:initialize_dup).owner,
+        initialize_copy: ::Exception.instance_method(:initialize_copy).owner,
+      ).freeze
       private_constant :EXCEPTION_REPORTING
 
       # Every method name this Array answers with CODE OF ITS OWN, read from the method table. Empty means every
@@ -133,6 +142,19 @@ module Axn
         !frozen?(error) && _object_owns_none?(error, EXCEPTION_REPORTING)
       end
 
+      # Whether handing this exception BACK to `raise` unchanged re-raises that same object. `raise error`
+      # dispatches the 0-arg `#exception` on it, and Ruby has no re-raise that skips that dispatch (a bare
+      # `raise` re-raising `$!` included), so a class owning `#exception` can answer with a different object
+      # or raise something else entirely — which is how a guard that re-raises what it caught came to emit a
+      # third exception. Looked up on the OBJECT, because `raise` asks the object it is handed.
+      #
+      # Deliberately NARROWER than `native_exception_reporting?`, which additionally refuses a frozen
+      # exception and the duplication hooks. Both of those are about the CLONE that renaming makes; a bare
+      # re-raise makes no clone, so `raise` hands back a frozen exception, and one owning only
+      # `initialize_copy`, exactly as it received them (verified). Refusing them here would substitute axn's
+      # own error for an original that could have been re-raised faithfully.
+      def self.native_exception_reraise?(error) = _object_owns_none?(error, EXCEPTION_DISPATCH)
+
       def self.frozen?(value) = KERNEL_FROZEN.bind_call(value)
 
       # Whether a MODULE defines a public instance method — read out of its method table, not asked of it. A
@@ -195,12 +217,18 @@ module Axn
         false
       end
 
-      # Does this caller-supplied name mean "absent" — `nil`, `false`, an all-whitespace (or empty) String, or
-      # the empty Symbol?
+      # Does this caller-supplied value mean "nothing was supplied" — `nil`, `false`, an all-whitespace (or
+      # empty) String, or the empty Symbol?
+      #
+      # Two questions of that shape, both about a value axn was handed and neither able to ask the value: what a
+      # declared name means (`on:`, `as:`, `expose_return_as:`) and whether a `fail!` reason was given at all
+      # (`Axn::Failure#supplied_reason`).
       #
       # `present?`/`blank?` cannot answer it: they are ActiveSupport methods on Object, so a String subclass
       # overrides them, and a value that answered "blank" here and "present" to a later reader skipped
       # canonicalization and was stored raw — the exact guard/consumer split canonicalizing exists to close.
+      # The reason case fails harder still, because it is read while a failure is already being reported: an
+      # override that raises replaces the failure with its own exception rather than merely disagreeing.
       #
       # But the SET has to stay what `blank?` meant, because this decides whether an option was supplied at all
       # and every spelling of "not supplied" a caller could reasonably write was one: `expose_return_as: false`
@@ -217,8 +245,10 @@ module Axn
       # caller's `to_sym` exactly as before — `on: 123` still raises NoMethodError rather than being silently
       # treated as no route. That is deliberately narrower than `blank?`, which called every empty container
       # blank (it dispatches `empty?` on anything that answers it): `[]` names nothing and is not a spelling of
-      # "no option", so it earns the same NoMethodError as `123` rather than being silently ignored.
-      def self.absent_name?(value)
+      # "no option", so it earns the same NoMethodError as `123` rather than being silently ignored. A reason
+      # gets the same treatment from the other direction — `fail!([])` carries `[]` as its reason rather than
+      # falling back to the default message, which is the honest reading of a caller passing a container.
+      def self.absent_value?(value)
         case value
         when nil, false then true
         when ::Symbol then value.empty?

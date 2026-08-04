@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/internal/identity"
+require "axn/internal/native_methods"
 require "axn/internal/rendering"
 require "axn/internal/text"
 
@@ -75,7 +76,8 @@ module Axn
       # Runs the block, guarding a best-effort side effect (a hook, callback, observability
       # facet, or a reporter that itself throws). The exception is logged and swallowed (returning
       # nil) so it never breaks the main action flow — EXCEPT in development when
-      # Axn.config.best_effort_raises_in_dev is set, where it re-raises.
+      # Axn.config.best_effort_raises_in_dev is set, where it re-raises (as `Axn::UnreraisableException`
+      # carrying the original as `cause` for the rare exception `raise` cannot hand back as itself).
       # `desc` names the intent ("resolving webhook subscribers"); `action` is an optional
       # warn-target (an action instance/class responding to :warn), defaulting to the config logger.
       #
@@ -115,6 +117,10 @@ module Axn
       # Warn about a swallowed exception and return nil (best_effort's documented failure return).
       # Re-raises first in development when configured, keeping the guard dev-loud.
       #
+      # The invariant this whole class holds: `best_effort` raises the block's exception, or — where Ruby's
+      # `raise` cannot re-raise that object faithfully — an axn-owned error carrying it as `cause`, or a signal
+      # the guard deliberately passes through. Never a third exception manufactured while reporting.
+      #
       # Every fact about the exception comes from `Internal::Rendering`, never from raw interpolation: this
       # code runs INSIDE the rescue, so a `message`, a `class`, or a backtrace read here is a second chance
       # for the exception to escape through the guard meant to contain it — and since the guard is called
@@ -123,21 +129,44 @@ module Axn
       # `#message` raises, and an ordinary one whose STORED message holds bytes that cannot be joined to
       # axn's own prose.
       def _warn_and_swallow(exception, desc, action)
-        raise exception if raises_in_dev?
+        _reraise_for_dev(exception, desc) if raises_in_dev?
 
         _report_swallowed(exception, desc, action)
 
         nil
       end
 
+      # The dev-loud raise. Hands `raise` the block's own exception whenever doing so re-raises THAT object, and
+      # axn's own error naming it when it would not.
+      #
+      # `raise` dispatches the 0-arg `#exception` on whatever object it is handed, and Ruby has no re-raise that
+      # skips it — a bare `raise` re-raising `$!` included. So a class owning `#exception` decided what left this
+      # guard: one answering a different object escaped as that object with the block's exception gone entirely,
+      # one that raises escaped as whatever it raised, and each is the third exception the invariant forbids.
+      # Decided by OWNERSHIP rather than by behaviour, and by AVOIDING the dispatch rather than guarding it,
+      # since no guard can cover a dispatch `raise` itself makes (the doctrine
+      # `Axn._named_invalid_tool_contract` settled for the boot path).
+      #
+      # `cause:` is passed explicitly rather than left to `$!`. Building the message reads the exception behind
+      # guards that rescue, and Ruby does not restore `$!` afterwards — so the implicit cause would be nil on
+      # exactly the degraded path where reaching the original matters most.
+      def _reraise_for_dev(exception, desc)
+        raise exception if Internal::NativeMethods.native_exception_reraise?(exception)
+
+        raise Axn::UnreraisableException.new(desc: _describe(desc),
+                                             reason: Internal::Rendering.exception_message(exception),
+                                             original_class: Internal::Rendering.class_name(exception)),
+              cause: exception
+      end
+
       # The backstop over the REPORTING, and over nothing else, absorbing whatever building or emitting the
       # warning can raise so a side-channel diagnostic is never what escapes.
       #
       # It lives in its own method rather than as a rescue on `_warn_and_swallow` because a method-level
-      # rescue there would also cover the dev-loud `raise exception` above — and since the block's exception
-      # is usually a StandardError, the dev-loud mode would silently stop being loud, logging and swallowing
-      # exactly where it was configured to raise. The dev-loud path re-raises the BLOCK's exception, which
-      # must leave through `best_effort`'s caller untouched.
+      # rescue there would also cover the dev-loud raise above — and since the block's exception is usually a
+      # StandardError, the dev-loud mode would silently stop being loud, logging and swallowing exactly where it
+      # was configured to raise. What the dev-loud path raises must leave through `best_effort`'s caller
+      # untouched, the block's own exception and `Axn::UnreraisableException` alike.
       #
       # Narrow on the same terms as `best_effort` and `_emit_warning`: nothing here may absorb a class the
       # guard itself passes through (a signal, an `exit`, another library's control-flow signal).

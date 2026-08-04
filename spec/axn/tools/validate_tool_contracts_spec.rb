@@ -365,6 +365,37 @@ RSpec.describe "Axn.validate_tool_contracts!" do
         expect(error.message).to start_with('"bad\xFF" has an invalid tool contract — café broke')
       end
 
+      # Being a public class means the kwargs are filled in by callers who did not write the message path, and a
+      # Symbol naming the tool is the obvious thing to pass — so the type is tested before the bytes are rendered.
+      # Rendering alone is String-only (it binds String methods), which would make naming a tool by Symbol raise a
+      # TypeError out of the very error meant to report the contract.
+      it "tolerates a Symbol, which is the obvious way to name a tool" do
+        error = Axn::InvalidToolContract.new(tool: :foo, reason: "bad", original_class: "ArgumentError")
+
+        expect(error.message).to start_with("foo has an invalid tool contract — bad")
+      end
+
+      # A Symbol's bytes are as foreign as a String's — `const_set` accepts non-UTF-8 ones — so the Symbol branch
+      # renders after converting rather than joining what `to_s` hands back.
+      it "renders a Symbol whose bytes have no UTF-8 rendering" do
+        error = Axn::InvalidToolContract.new(tool: "bad\xFF".dup.force_encoding("ASCII-8BIT").to_sym,
+                                             reason: "bad", original_class: "ArgumentError")
+
+        expect(error.message).to be_readable_utf8
+        expect(error.message).to start_with('"bad\xFF" has an invalid tool contract')
+      end
+
+      # Anything else is named by its CLASS, which is legible and cannot raise. Dispatching `to_s` on an arbitrary
+      # object is what this message path must never do — the object is the caller's, and the whole point of the
+      # class is that reporting a contract failure does not become a second failure.
+      it "names an unrenderable object by its class rather than dispatching its to_s" do
+        hostile = Object.new.tap { |o| o.define_singleton_method(:to_s) { raise NotImplementedError, "to_s explodes" } }
+
+        error = Axn::InvalidToolContract.new(tool: hostile, reason: "bad", original_class: "ArgumentError")
+
+        expect(error.message).to start_with("Object has an invalid tool contract — bad")
+      end
+
       # The TOOL's own name is foreign text on the same terms: a constant may hold non-UTF-8 bytes (`const_set`
       # accepts them, and `Module#to_s` hands them back), so naming the tool could destroy the report it exists
       # to improve. Rendered like everything else — a valid ISO-8859-1 constant reads as its text.

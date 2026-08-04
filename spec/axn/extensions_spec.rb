@@ -245,6 +245,16 @@ RSpec.describe Axn::Extensions do
       non_string_message = Class.new(StandardError) do
         def message = Object.new.tap { |o| o.define_singleton_method(:to_s) { raise "to_s explodes" } }
       end
+      # The one dispatch no rescue inside the guard can cover: `raise` calls the 0-arg `#exception` on whatever
+      # object it is handed, a bare `raise` re-raising `$!` included. Both forms defeat a faithful re-raise —
+      # the first substitutes a different object for the block's exception, the second replaces it with
+      # something else entirely — so the dev-loud path avoids the dispatch instead (see `hijack_labels` below).
+      hijacking_exception = Class.new(StandardError) do
+        def exception(*) = RuntimeError.new("hijacked")
+      end
+      raising_exception = Class.new(StandardError) do
+        def exception(*) = raise(NotImplementedError, "exception explodes")
+      end
 
       # Every shape is built INSIDE its lambda. These lambdas are created in the example-group body, so
       # their `self` is the group CLASS rather than an example instance — a helper defined with `def` here
@@ -265,6 +275,18 @@ RSpec.describe Axn::Extensions do
         },
         "a valid multibyte message" => -> { raise ArgumentError, "café" },
         "a Latin-1 message" => -> { raise ArgumentError, "caf\xE9".dup.force_encoding("ISO-8859-1") },
+        "an #exception answering a different object" => -> { raise hijacking_exception },
+        "an #exception that raises" => -> { raise raising_exception },
+      }
+
+      # The two shapes `raise` cannot hand back AS THEMSELVES, so the dev-loud outcome is axn's own error
+      # carrying the original as `cause` rather than the original object. Kept as their own set rather than
+      # branched on inline so the identity example below still covers every OTHER shape: an example that
+      # accepted "either the same object or an axn error" would have quietly stopped asserting identity for all
+      # eleven of them.
+      hijacks = {
+        "an #exception answering a different object" => hijacking_exception,
+        "an #exception that raises" => raising_exception,
       }
 
       %i[production development test].each do |environment|
@@ -293,29 +315,61 @@ RSpec.describe Axn::Extensions do
           allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(false)
         end
 
-        shapes.each do |label, block|
-          it "re-raises #{label} itself, never a reporting failure" do
-            # The object the block raised is captured from INSIDE the guarded block, so the assertion is
-            # identity rather than class: a reporting failure of the same class as the block's exception
-            # would satisfy a class comparison, and so would both sides coming back nil. Both are asserted
-            # non-nil for the same reason — the invariant is that this exact object comes out.
-            thrown = nil
+        # `[what the block raised, what left the guard]`, both captured rather than reconstructed: the object
+        # the block raised is caught from INSIDE the guarded block, so every assertion below can be identity
+        # rather than class. A reporting failure of the same class as the block's exception would satisfy a
+        # class comparison, and so would both sides coming back nil.
+        def dev_loud_outcome(block)
+          thrown = nil
 
-            escaped = begin
-              described_class.best_effort("guarding") do
-                block.call
-              rescue Exception => e # rubocop:disable Lint/RescueException
-                thrown = e
-                raise
-              end
-              nil
+          escaped = begin
+            Axn::Extensions.best_effort("guarding") do
+              block.call
             rescue Exception => e # rubocop:disable Lint/RescueException
-              e
+              thrown = e
+              raise
             end
+            nil
+          rescue Exception => e # rubocop:disable Lint/RescueException
+            e
+          end
 
-            expect(Axn::Internal::Identity.nil_value?(thrown)).to be(false)
-            expect(Axn::Internal::Identity.nil_value?(escaped)).to be(false)
+          expect(Axn::Internal::Identity.nil_value?(thrown)).to be(false)
+          expect(Axn::Internal::Identity.nil_value?(escaped)).to be(false)
+
+          [thrown, escaped]
+        end
+
+        # What left the guard, with nothing in between: the harness above cannot be used for a hijacking shape,
+        # because CAPTURING the block's exception means re-raising it and every `raise` re-runs the hijack — the
+        # wrapper's own bare `raise` produced the substitute before `best_effort` was ever entered.
+        def escaping_exception(block)
+          Axn::Extensions.best_effort("guarding", &block)
+          nil
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          e
+        end
+
+        (shapes.keys - hijacks.keys).each do |label|
+          it "re-raises #{label} itself, never a reporting failure" do
+            thrown, escaped = dev_loud_outcome(shapes.fetch(label))
+
             expect(Axn::Internal::Identity.same?(escaped, thrown)).to be(true)
+          end
+        end
+
+        # Dev-loud stays LOUD for the two shapes it cannot re-raise faithfully — degrading to log-and-swallow
+        # would lose the raise a developer configured. Only the CLASS is given up: the original is reachable as
+        # `cause`, which the guard sets EXPLICITLY rather than leaving to `$!`, since the rescues that build the
+        # message have already cleared it. `cause` is asserted by class rather than by identity because the object
+        # cannot be captured, and the class is one this file defines and raises nowhere else.
+        hijacks.each do |label, klass|
+          it "raises an axn-owned error carrying #{label} as its cause, not what the hijack produced" do
+            escaped = escaping_exception(shapes.fetch(label))
+
+            expect(escaped).to be_a(Axn::UnreraisableException)
+            expect(escaped.cause).to be_a(klass)
+            expect(escaped.message).to include("guarding", Axn::Internal::ClassName.of_module(klass))
           end
         end
       end
