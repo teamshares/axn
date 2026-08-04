@@ -1208,8 +1208,18 @@ module Axn
       # base_extras are :base-level message strings (model-consistency mismatches and, under
       # reject_undeclared_inputs, unknown-input messages) that compose into the user-facing message and
       # aggregate onto :base. Empty by default, so the per-field-declared path is unchanged.
+      #
+      # EVERY part is rendered here, where they are JOINED, and that is the whole requirement — a subset is
+      # worse than none. The parts come from three places with three encodings: a `user_facing:` handler's
+      # return (rendered by `_override_part`), a field's own ActiveModel `full_message` (whose bytes follow the
+      # declared name's, so a Latin-1 field name yields a Latin-1 message), and a `base_extras` entry axn built
+      # around a provided wire key. Two raw Latin-1 parts joined fine; one rendered UTF-8 part beside a raw
+      # Latin-1 one raises `Encoding::CompatibilityError` out of `to_sentence`, from inside the CLASSIFICATION
+      # of an inbound failure — so the run settles as an `exception` outcome and reports globally, instead of
+      # as the non-reported user-facing failure the declaration asked for. Rendering is idempotent, so the
+      # parts `_resolve_user_facing_override` already rendered are unchanged by passing through again.
       def _composed_user_facing_error(failures, base_extras = [])
-        parts = failures.flat_map { |failure| _user_facing_parts(failure) } + base_extras
+        parts = (failures.flat_map { |failure| _user_facing_parts(failure) } + base_extras).filter_map { |part| _override_part(part) }
         InboundValidationError.new(_aggregate_errors(failures, base_extras),
                                    user_facing: true, user_facing_message: parts.uniq.to_sentence)
       end
@@ -1297,6 +1307,10 @@ module Axn
       # render. An unrenderable part is DROPPED rather than named by its class, because this message is read by
       # an end user and the field's own validation message is the better thing to fall back to — which is
       # exactly what a part resolving blank already falls back to.
+      #
+      # Asked of every part of the composed message, whatever produced it: a `user_facing:` handler's return
+      # here (so `.presence` below can decide the fallback undispatched), and then each part again where they
+      # are joined (`_composed_user_facing_error`, which is what makes the composition's encoding uniform).
       def _override_part(part)
         return nil if Internal::NativeMethods.absent_value?(part)
 

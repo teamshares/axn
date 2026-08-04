@@ -383,8 +383,17 @@ module Axn
         # That module composes both halves without delegating to `Internal::Rendering` (a require cycle) and
         # without lifting the composition onto `ClassName` (which promises never to render); see its own
         # comment. Both moves stay off limits; reaching for the shared owner is the point.
+        #
+        # `path:` and `reason:` are rendered on the same terms, because EVERY operand of a composition owes it
+        # or none of them do. Inside the gem both are axn's own UTF-8 text (a canonicalized wire path, or an
+        # escaped spelling for a name that has no UTF-8 rendering), but this is a PUBLIC class an adapter
+        # constructs directly — `new(path:, value:)` is documented as a complete call — so a `path` in another
+        # encoding is a caller away. A raw Latin-1 path beside a raw Latin-1 class name joined fine; beside a
+        # RENDERED class name it raises `Encoding::CompatibilityError` from `#message` itself, which is the
+        # serialization failure destroyed by the report of it.
         def message
-          "Cannot serialize exposed value at `#{@path}` (#{value_class_name}): #{@reason || cycle_reason}"
+          "Cannot serialize exposed value at `#{Axn::Internal::RenderedText.of(@path)}` (#{value_class_name}): " \
+            "#{@reason ? Axn::Internal::RenderedText.of(@reason) : cycle_reason}"
         end
 
         private
@@ -414,11 +423,13 @@ module Axn
         super()
       end
 
-      # Same shape as `UnserializableValue#message` above, and through the same owner: `@value` is
-      # caller-supplied, so its class is named via `Internal::RenderedClassName` rather than `@value.class`.
+      # Same shape as `UnserializableValue#message` above, and through the same owners: `@value` is
+      # caller-supplied, so its class is named via `Internal::RenderedClassName` rather than `@value.class`,
+      # and `@field` is a DECLARED name — foreign bytes of its own — so it is rendered rather than joined to
+      # the rendered class name beside it.
       def message
-        "Cannot serialize argument `#{@field}` (#{value_class_name}) for async execution. " \
-          "#{Axn::Internal::AsyncSerialization._unserializable_hint(@value)}"
+        "Cannot serialize argument `#{Axn::Internal::RenderedText.of(@field)}` (#{value_class_name}) for " \
+          "async execution. #{Axn::Internal::AsyncSerialization._unserializable_hint(@value)}"
       end
 
       private

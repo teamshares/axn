@@ -45,8 +45,8 @@ module Axn
       # #apply_defaults!, which fills exposed_data) AND the value-level read-path fallback
       # (PRO-2889), so the two can't drift on Proc/error semantics.
       def resolve_default(action, config)
-        descriptor = config.subfield? ? "subfield '#{config.field}' on '#{config.on}'" : "field '#{config.field}'"
-        identifier = config.subfield? ? "#{config.field} on #{config.on}" : config.field
+        descriptor = describe_field(config)
+        identifier = identify_field(config)
         Axn::Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: Axn::ContractViolation::DefaultAssignmentError,
           message: ->(_field, error) { "Error applying default for #{descriptor}: #{Axn::Internal::Rendering.exception_message(error)}" },
@@ -60,8 +60,8 @@ module Axn
       # PreprocessingError. Used by the read-path resolution (ContractForSubfields.resolve_value) for
       # both top-level and subfield preprocess — mirrors resolve_default's error-wrapping shape.
       def resolve_preprocess(action, config, value)
-        descriptor = config.subfield? ? "subfield '#{config.field}' on '#{config.on}'" : "field '#{config.field}'"
-        identifier = config.subfield? ? "#{config.field} on #{config.on}" : config.field
+        descriptor = describe_field(config)
+        identifier = identify_field(config)
         Axn::Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: Axn::ContractViolation::PreprocessingError,
           message: ->(_field, error) { "Error preprocessing #{descriptor}: #{Axn::Internal::Rendering.exception_message(error)}" },
@@ -70,6 +70,40 @@ module Axn
           action.instance_exec(value, &config.preprocess)
         end
       end
+
+      # How a field is named in these wrappers' messages, and the identifier they carry alongside.
+      #
+      # Both compose a declared NAME with something else — `describe_field` with the rendered exception
+      # message the wrapper reports, `identify_field` with a second declared name — so every name goes
+      # through the renderer. Rendering a subset would be worse than rendering none: two Latin-1 names join
+      # as they stand, while a UTF-8 half beside a Latin-1 one raises `Encoding::CompatibilityError` from the
+      # interpolation, and the wrapper would then report an encoding failure in place of the `default:`/
+      # `preprocess:` failure it exists to name.
+      #
+      # `Reflection::PropertyNames.renderable_label` is the same rendering one layer up, and deliberately not
+      # reached from here: that file requires THIS one, so a reference back would be a require cycle. The pair
+      # below is what this layer can honestly get — `value_rendering` renders a String from its bytes with
+      # nothing dispatched, and a Symbol through its own `to_s` (which a Symbol cannot override), while a name
+      # that is neither is named by its CLASS, the fallback every composed message here takes.
+      def describe_field(config)
+        return "field '#{rendered_name(config.field)}'" unless config.subfield?
+
+        "subfield '#{rendered_name(config.field)}' on '#{rendered_name(config.on)}'"
+      end
+
+      # The `field_identifier` the wrapper carries. A top-level field is passed as the NAME itself rather
+      # than as text — nothing joins it here, and the wrapper's own message path renders it where it does.
+      def identify_field(config)
+        return config.field unless config.subfield?
+
+        "#{rendered_name(config.field)} on #{rendered_name(config.on)}"
+      end
+
+      def rendered_name(name)
+        Axn::Internal::Rendering.value_rendering(name) || Axn::Internal::Rendering.class_name(name)
+      end
+
+      private_class_method :describe_field, :identify_field, :rendered_name
     end
   end
 end

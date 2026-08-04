@@ -247,7 +247,14 @@ module Axn
         detail = if resolved_error == Axn::Core::Flow::Handlers::Resolvers::MessageResolver::DEFAULT_ERROR
                    Axn::Internal::Rendering.exception_message(e)
                  else
-                   resolved_error
+                   # `result.error` resolves to the caller's own object when they handed one to `fail!` (or
+                   # returned one from a declared `error` handler), so it is rendered on the same terms as the
+                   # class name it is joined to. Both halves or neither: a raw Latin-1 detail beside a raw
+                   # Latin-1 class name joined fine, while a rendered UTF-8 class name beside a raw Latin-1
+                   # detail raises `Encoding::CompatibilityError` — which, since this whole handler runs inside
+                   # `best_effort`, loses BOTH this log line and the configured `on_exception` callback below.
+                   Axn::Internal::Rendering.value_rendering(resolved_error) ||
+                     Axn::Internal::Rendering.class_name(resolved_error)
                  end
       else
         detail = Axn::Internal::Rendering.exception_message(e)

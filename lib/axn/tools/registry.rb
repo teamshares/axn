@@ -160,7 +160,7 @@ module Axn
               expanded = File.expand_path(file)
               _rollback_registrations(before) { |src| src == expanded }
               Axn.config.logger.warn do
-                "[Axn] tool file skipped (#{file}): #{Axn::Internal::Rendering.class_name(e)}: " \
+                "[Axn] tool file skipped (#{_rendered_path(file)}): #{Axn::Internal::Rendering.class_name(e)}: " \
                   "#{Axn::Internal::Rendering.exception_message(e)}"
               end
             end
@@ -258,7 +258,8 @@ module Axn
           src == dir || src.start_with?(dir + File::SEPARATOR)
         end
         Axn.config.logger.warn do
-          "[Axn] tool dir skipped (#{dir}): #{Axn::Internal::Rendering.class_name(e)}: #{Axn::Internal::Rendering.exception_message(e)}"
+          "[Axn] tool dir skipped (#{_rendered_path(dir)}): #{Axn::Internal::Rendering.class_name(e)}: " \
+            "#{Axn::Internal::Rendering.exception_message(e)}"
         end
       end
 
@@ -379,6 +380,18 @@ module Axn
         else
           File.expand_path(path.to_s)
         end
+      end
+
+      # A configured (or globbed) path written into a warn line, as a UTF-8 String this module owns.
+      #
+      # The path is foreign: `tool_roots` entries come from an adapter's config, and a glob answers in
+      # whatever encoding the entry carried. Each of those warn lines also names the exception behind the skip
+      # through the renderer, so the path is rendered too — a rendered UTF-8 half beside a raw non-ASCII path
+      # raises `Encoding::CompatibilityError` out of the interpolation, and since these blocks are evaluated
+      # inside the rescue that isolates one bad file or directory, a raise there aborts the enumeration the
+      # rescue exists to keep going. Both halves or neither.
+      def _rendered_path(path)
+        Axn::Internal::Rendering.value_rendering(path) || Axn::Internal::Rendering.class_name(path)
       end
 
       def _classes
