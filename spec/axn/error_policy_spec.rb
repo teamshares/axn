@@ -62,4 +62,9 @@ RSpec.describe "Axn exception tagging" do
     expect(Axn::ContractViolation.const_defined?(:DuplicateFieldError, false)).to be(true)
     expect(Axn.const_defined?(:DuplicateFieldError, false)).to be(false)
   end
+
+  it "names the substitute for what happened, not for the exception it replaced" do
+    expect(Axn.const_defined?(:ReraiseFailed, false)).to be(true)
+    expect(Axn.const_defined?(:UnreraisableException, false)).to be(false)
+  end
 end

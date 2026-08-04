@@ -234,7 +234,7 @@ module Axn
     # boot rescue entirely), so when the class owns any of it, axn reports its own error instead.
     #
     # Nothing is lost but the class: the original is this error's `cause`, and its message is repeated here.
-    # Deliberately builds its text in `initialize` rather than in `#message`, as `UnreraisableException` below
+    # Deliberately builds its text in `initialize` rather than in `#message`, as `ReraiseFailed` below
     # does for the same reason. Everything it needs is rendered text by the time it is constructed, so there is
     # nothing to defer — and this exception exists precisely because reporting must not depend on an exception's
     # own methods, so it renders identically through `#message`, through a bound `Exception#to_s`, and to
@@ -293,7 +293,7 @@ module Axn
   # point being that reporting must not become the failure (see `Tools::InvalidContract` above, which composes the
   # same way for the same reason). The caller renders them too, needing the same text for its warning path;
   # rendering is idempotent, so the guarantee holds for any caller rather than resting on that one's diligence.
-  class UnreraisableException < StandardError
+  class ReraiseFailed < StandardError
     include Axn::Error
 
     def initialize(desc:, reason:, original_class:)

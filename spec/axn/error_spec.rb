@@ -26,6 +26,15 @@ RSpec.describe Axn::Error do
     expect { raise Axn::ContractViolation::DuplicateFieldError, "dup" }.to raise_error(Axn::Error)
   end
 
+  # ReraiseFailed is the substitute Axn raises in place of an exception `raise` cannot hand back AS
+  # ITSELF (one owning its own `#exception`), so it must be catchable the same way the original would
+  # have been.
+  it "catches ReraiseFailed, the substitute for an exception raise cannot hand back as itself" do
+    expect do
+      raise Axn::ReraiseFailed.new(desc: "doing a thing", reason: "boom", original_class: "SomeError")
+    end.to raise_error(Axn::Error)
+  end
+
   # Failure is a control-flow signal from call!, not a fault. Tagging it would make
   # `rescue Axn::Error` catch the INTENDED outcome while still missing an unintended
   # NoMethodError from the action body.

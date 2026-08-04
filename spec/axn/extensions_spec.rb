@@ -396,7 +396,7 @@ RSpec.describe Axn::Extensions do
           it "raises an axn-owned error carrying #{label} as its cause, not what the hijack produced" do
             escaped = escaping_exception(shapes.fetch(label))
 
-            expect(escaped).to be_a(Axn::UnreraisableException)
+            expect(escaped).to be_a(Axn::ReraiseFailed)
             expect(escaped.cause).to be_a(klass)
             expect(escaped.message).to include("guarding", Axn::Internal::ClassName.of_module(klass))
           end
@@ -423,7 +423,7 @@ RSpec.describe Axn::Extensions do
 
           escaped = escaping_exception(-> { raise original })
 
-          expect(escaped).to be_a(Axn::UnreraisableException)
+          expect(escaped).to be_a(Axn::ReraiseFailed)
           expect(Axn::Internal::Identity.same?(escaped.cause, original)).to be(true)
         end
 
@@ -452,7 +452,7 @@ RSpec.describe Axn::Extensions do
 
           escaped = escaping_exception(-> { raise original })
 
-          expect(escaped).to be_a(Axn::UnreraisableException)
+          expect(escaped).to be_a(Axn::ReraiseFailed)
           expect(Axn::Internal::Identity.same?(escaped.cause, original)).to be(true)
         end
       end
