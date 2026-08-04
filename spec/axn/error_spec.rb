@@ -30,4 +30,30 @@ RSpec.describe Axn::Error do
   it "does not catch internal-only exceptions" do
     expect(Axn::Internal::EarlyCompletion.include?(described_class)).to be(false)
   end
+
+  # A public class must not inherit out of Axn::Internal: it puts an internal constant in a
+  # documented class's ancestry, and makes that constant the only way to express "any registry
+  # lookup miss". rescue Axn::Error is that expression now.
+  describe "registry errors" do
+    subject(:registry_errors) do
+      [Axn::StrategyNotFound, Axn::DuplicateStrategyError,
+       Axn::Async::AdapterNotFound, Axn::Async::DuplicateAdapterError,
+       Axn::Mountable::MountingTypeNotFound, Axn::Mountable::DuplicateMountingTypeError]
+    end
+
+    it "have no Axn::Internal constant in their ancestry" do
+      leaked = registry_errors.reject do |klass|
+        klass.ancestors.grep(Class).none? { |a| a.name.to_s.start_with?("Axn::Internal") }
+      end
+      expect(leaked).to be_empty
+    end
+
+    it "are all catchable as Axn::Error" do
+      expect(registry_errors.reject { |k| k.include?(Axn::Error) }).to be_empty
+    end
+
+    it "still descend from StandardError" do
+      expect(registry_errors.reject { |k| k <= StandardError }).to be_empty
+    end
+  end
 end
