@@ -11,14 +11,6 @@ RSpec.describe Axn::Testing do
       expect(Axn::Internal::Tracing.instance_variable_defined?(:@probe_entry)).to be(false)
     end
 
-    it "drops registered tool-adapter sources" do
-      Axn::Tools.register_adapter(:reset_probe)
-      expect(Axn::Tools::Registry.adapters).to include(:reset_probe)
-
-      described_class.reset!
-      expect(Axn::Tools::Registry.adapters).to be_empty
-    end
-
     it "re-arms the one-time fiber-isolation warning" do
       Axn::Core::NestingTracking.instance_variable_set(:@_isolation_mismatch_warned, true)
       described_class.reset!
@@ -65,6 +57,21 @@ RSpec.describe Axn::Testing do
       described_class.reset!
 
       expect(Axn::Tools::Registry.all_classes).to eq(before_classes)
+    end
+
+    # An adapter gem registers at file-load time, and `require` runs once per process — a
+    # registration dropped here could never be re-established, unlike the rest of this describe
+    # block's derived state, which the process can always regenerate. Registering the probe adapter
+    # is what this exclusion needs to demonstrate (nothing else in the suite exercises registration
+    # to give us a fixture), and it costs nothing to leave in place: axn's own spec_helper resets
+    # adapters before every example, so the probe is gone before the next example runs.
+    it "leaves Tools::Registry's registered adapters alone" do
+      Axn::Tools.register_adapter(:reset_probe)
+      before_adapters = Axn::Tools::Registry.adapters
+
+      described_class.reset!
+
+      expect(Axn::Tools::Registry.adapters).to eq(before_adapters)
     end
   end
 end

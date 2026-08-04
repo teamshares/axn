@@ -23,6 +23,10 @@ module Axn
       #   * `Tools::Registry`'s recorded action classes. That set accumulates every action class
       #     defined in the process, and clearing it mid-suite would make `Axn.tools_for` blind to
       #     classes that are still loaded.
+      #   * `Tools::Registry`'s registered ADAPTERS. An adapter gem registers at file-load time
+      #     (`require` runs once per process), so a registration dropped here can never be
+      #     re-established within that process — a host app with any tool-adapter gem in its Gemfile
+      #     would have `Axn.tools_for` (and every adapter lookup) fail after the first example.
       #
       # Two further pieces of per-execution state need nothing here: Internal::ExceptionClassification
       # and Internal::CarriedPresentation both store in ActiveSupport::IsolatedExecutionState and are
@@ -31,7 +35,6 @@ module Axn
         Axn::Internal::Tracing.reset!
         Axn::Async::Adapters::Sidekiq::AutoConfigure.reset! if defined?(Axn::Async::Adapters::Sidekiq::AutoConfigure)
         Axn::Core::NestingTracking._reset_isolation_warning!
-        Axn::Tools::Registry.reset_adapters!
 
         nil
       end

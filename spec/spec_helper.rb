@@ -32,7 +32,13 @@ RSpec.configure do |config|
     end
   end
 
-  config.before { Axn::Testing.reset! }
+  # `Axn::Testing.reset!` deliberately leaves registered tool adapters alone (they register at
+  # file-load time and cannot be re-established mid-process), so axn's own suite — which does
+  # register adapters, unlike a host app — resets them separately here.
+  config.before do
+    Axn::Testing.reset!
+    Axn::Tools::Registry.reset_adapters!
+  end
 end
 
 def expect_best_effort_called(message_substring:, action: nil, times: 1)

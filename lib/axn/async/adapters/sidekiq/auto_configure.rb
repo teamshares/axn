@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/error"
 require_relative "middleware"
 require_relative "death_handler"
 

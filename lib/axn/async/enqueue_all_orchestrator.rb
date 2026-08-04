@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/error"
 require "axn/internal/rendering"
 
 module Axn

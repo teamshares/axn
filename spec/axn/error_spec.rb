@@ -6,7 +6,7 @@ RSpec.describe Axn::Error do
     expect(described_class).not_to be_a(Class)
   end
 
-  # The whole point: one rescue for anything axn objected to, whatever it descends from.
+  # The whole point: one rescue for a tagged exception class, whatever it descends from.
   it "catches a tagged exception rooted at StandardError" do
     expect { raise Axn::ContractViolation::MethodNotAllowed, "nope" }.to raise_error(Axn::Error)
   end
