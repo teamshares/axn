@@ -14,10 +14,12 @@ module Axn
     #
     # Building and validating a schema, and rendering a result, all run off the execution path — but
     # Schema and PropertyNames each keep one narrow judgment shared with it: ContractForSubfields'
-    # model-field reader consults Schema.usable_id_token_default? to resolve an omitted `<field>_id`
-    # on every read, and CallLogger and the executor's validation-failure messages reuse
-    # PropertyNames.renderable_label to name a field on every logged or failed call. Values has no such
-    # foothold — an axn's own `.call` never reaches it, only the calling app's explicit
+    # model-field reader consults Schema.usable_id_token_default? once, to resolve an omitted
+    # `<field>_id` when that field first resolves (the reader is memoized, so this never repeats within
+    # one action instance), and CallLogger and the executor's validation-failure messages reuse
+    # PropertyNames.renderable_label to name a field — but only when there is one to name: a logged call
+    # with no context data, or a failure with no stranded nil ancestor, never reaches it. Values has no
+    # such foothold — an axn's own `.call` never reaches it, only the calling app's explicit
     # Serialization.render and the contract's declaration-time duplicate-name check.
     #
     # Internal::ResolvedSubfields depends on this layer (composing a SubfieldTree with

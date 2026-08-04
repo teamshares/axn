@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/internal/coercion"
 require "axn/internal/native_methods"
 require "axn/internal/rendering"
 

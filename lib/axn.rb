@@ -26,7 +26,6 @@ require "axn/tools"
 
 # Internal utilities
 require "axn/internal/current_call_options"
-require "axn/internal/coercion"
 require "axn/internal/memoization"
 require "axn/internal/callable"
 require "axn/internal/cycle_guard"

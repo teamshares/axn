@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/core/validation/fields"
+require "axn/internal/coercion"
 require "axn/internal/resolved_subfields"
 require "axn/internal/reflection/schema"
 require "axn/core/contract/subfield_contradictions"
