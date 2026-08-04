@@ -2,6 +2,7 @@
 
 require "axn/core/flow/handlers/invoker"
 require "axn/internal/identity"
+require "axn/internal/native_methods"
 require "axn/internal/rendering"
 
 module Axn
@@ -28,6 +29,9 @@ module Axn
             # handler block), so the winning entry's message block runs a single time. Memoized — a
             # resolver is single-use — so an external caller (Result#_resolve_error, deciding whether a
             # parent override should beat a bubbled child message) and resolve_message share one pass.
+            #
+            # Plain truthiness: an entry that supplied no body is already nil, decided undispatched in
+            # `body_for`, which is the one place that question is asked about a handler's own return value.
             def matched_reason
               return @matched_reason if defined?(@matched_reason)
 
@@ -35,15 +39,20 @@ module Axn
                 next unless reason?(d)
 
                 body = body_for(d)
-                [d, body] if body.present?
+                [d, body] if body
               end.first
             end
 
             def resolve_default_message = base_message || fallback_message
 
             # Combine an externally-supplied reason (e.g. a fail!/done! message) with the base.
+            #
+            # Truthiness rather than `present?`, on the same terms as `matched_reason` above: a base that
+            # resolved to nothing is already nil, and what a resolved base HOLDS is the handler's own return
+            # value — asking that object whether it is blank runs the caller's code from inside the path
+            # settling the failure.
             def with_base(reason)
-              return reason unless base_message.present?
+              return reason unless base_message
 
               combine(base_message, reason)
             end
@@ -145,15 +154,29 @@ module Axn
               arity == 2 || (arity.negative? && (-arity - 1) <= 2)
             end
 
+            # This descriptor's message body, or nil when it supplied none — the ONE place that question is
+            # asked, so every reader downstream (`matched_reason`, `resolved_base`, `with_base`,
+            # `Result#_error_from_declared_source?`) takes the nil as the answer and asks nothing further.
+            #
+            # A handler's return value is the CALLER's object, and this runs while a failure is being settled
+            # and again on every later `result.error`/`result.message` read, so `presence` here dispatched that
+            # object's `blank?` from inside axn's own reporting: an override that raises replaces the failure
+            # being reported with its own exception, and outside StandardError it escapes the rescue meant to
+            # settle it. `error -> { obj }` with an object that could not answer aborted settlement — the
+            # warning named a reporting failure and the outcome read `exception` — and raised again on every
+            # `result.error` read afterwards. Decided instead from the value's class and its own bytes, the
+            # same undispatched answer `Axn::Failure#supplied_reason` gives a `fail!` reason.
             def body_for(descriptor)
               return nil unless descriptor
 
               if descriptor.handler
-                Invoker.call(operation: "determining message callable", action:, handler: descriptor.handler, exception:).presence
+                supplied_body(Invoker.call(operation: "determining message callable", action:, handler: descriptor.handler, exception:))
               elsif exception
-                Axn::Internal::Rendering.exception_message(exception).presence
+                supplied_body(Axn::Internal::Rendering.exception_message(exception))
               end
             end
+
+            def supplied_body(body) = Axn::Internal::NativeMethods.absent_value?(body) ? nil : body
 
             def fallback_message = event_type == :success ? DEFAULT_SUCCESS : DEFAULT_ERROR
           end

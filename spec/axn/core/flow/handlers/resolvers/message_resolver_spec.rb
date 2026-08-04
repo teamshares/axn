@@ -299,3 +299,61 @@ RSpec.describe "join: Proc raise-safety" do
     expect(warnings).to include(a_string_matching(/join: Proc raised ArgumentError: "bad\\xFF"/))
   end
 end
+
+RSpec.describe "a message handler whose return value cannot answer whether it is blank" do
+  # Whether a handler supplied a body at all was asked of the RETURN VALUE with `presence`, dispatching the
+  # caller's own `blank?`. That runs while the failure is being settled and again on every later
+  # `result.error` read, with no rescue over either: the settle path aborted (warning about a reporting
+  # failure and settling the run as an `exception` outcome), and the read raised afresh every time.
+  let(:unblankable) do
+    Object.new.tap do |o|
+      o.define_singleton_method(:empty?) { raise NotImplementedError, "empty? explodes" }
+      o.define_singleton_method(:blank?) { raise NotImplementedError, "blank? explodes" }
+      o.define_singleton_method(:to_s) { "the resolved body" }
+    end
+  end
+
+  it "resolves a base error's body and keeps settlement intact" do
+    body = unblankable
+    events = []
+    action = build_axn do
+      error(-> { body })
+      on_error { events << :on_error }
+      on_exception { events << :on_exception }
+      def call = raise("boom")
+    end
+
+    result = action.call
+
+    expect(result.outcome.exception?).to be(true)
+    expect { result.error }.not_to raise_error
+    expect(result.error.to_s).to eq("the resolved body")
+    expect(result.error.to_s).to eq("the resolved body") # a second read must not re-ask and raise
+    expect(events).to eq(%i[on_error on_exception])
+  end
+
+  it "resolves a conditional error's body under a declared base" do
+    body = unblankable
+    action = build_axn do
+      error "Charge failed"
+      error(if: -> { true }) { body }
+      def call = raise("boom")
+    end
+
+    expect(action.call.error).to eq("Charge failed: the resolved body")
+  end
+
+  it "resolves a success handler's body on the done! path" do
+    body = unblankable
+    action = build_axn do
+      success(-> { body })
+      def call = nil
+    end
+
+    result = action.call
+
+    expect(result.ok?).to be(true)
+    expect { result.success }.not_to raise_error
+    expect(result.success.to_s).to eq("the resolved body")
+  end
+end

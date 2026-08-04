@@ -37,10 +37,10 @@ module Axn
       # `default_message?` is axn's own predicate, but it is DEFINED only on `Axn::Failure`, and the exception
       # on a failed result frequently is not one: an exception classified into the failure bucket by
       # `fails_on`, and a `user_facing:` validation error, both settle here carrying their own class. So it is
-      # asked only of an exception that answers it — the same guard `Result#_resolve_error` puts on the
-      # identical read. The type test is undispatched (`Module#===`) rather than `is_a?` on the same terms as
-      # the reads below: whether axn may call its own method on a caller-supplied object is a fact about the
-      # class hierarchy, not that object's opinion.
+      # asked only of an exception that answers it — the same guard `Result#_user_provided_error_message` puts
+      # on the identical read, which spells it as a dispatched `is_a?`. Here the type test is undispatched
+      # (`Module#===`), on the same terms as the reads below: whether axn may call its own method on a
+      # caller-supplied object is a fact about the class hierarchy, not that object's opinion.
       def default_message?
         Axn::Internal::Identity.kind?(context.exception, Axn::Failure) && context.exception.default_message?
       end

@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/internal/native_methods"
 require "axn/internal/rendering"
 
 module Axn
@@ -1269,10 +1270,16 @@ module Axn
                                                            exception: scoped_error,
                                                            operation: "resolving user_facing: message")
                    end
-        # `presence` first (blank-aware: a handler returning `false`/`nil`/"" means "no message"),
-        # then coerce — otherwise `false.to_s` would surface the literal "false" instead of falling
-        # back to the field's own validation message.
-        Array(override).filter_map { |m| m.presence&.to_s }.presence || own
+        # Absence first (`false`/`nil`/`""` mean "no message"), then coerce — otherwise `false.to_s` would
+        # surface the literal "false" instead of falling back to the field's own validation message.
+        #
+        # Decided from the part's class and its own bytes rather than by dispatching `presence`, because a
+        # part is whatever a `user_facing:` handler returned and this runs while the inbound failure is being
+        # classified: a `blank?` that raises settled the run as an `exception` outcome instead of the
+        # user-facing failure the declaration configured. Same undispatched answer `Axn::Failure#supplied_reason`
+        # gives a `fail!` reason. The trailing `presence` reads the Array this line just built, not the
+        # handler's value.
+        Array(override).filter_map { |m| m.to_s unless Internal::NativeMethods.absent_value?(m) }.presence || own
       end
 
       # Under reject_undeclared_inputs, every provided top-level wire key that is neither a declared

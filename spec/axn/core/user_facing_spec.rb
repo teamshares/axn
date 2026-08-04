@@ -122,6 +122,31 @@ RSpec.describe "expects ..., user_facing:" do
       # false means "no message" — must fall back, never surface "false"
       expect(action.call.error).to eq("Note can't be blank")
     end
+
+    # The handler's return value is the CALLER's object, and whether it counts as a message is decided while
+    # the inbound failure is being classified. Asking that object `presence` there let it replace the failure
+    # the declaration configured: the run settled as an `exception` outcome — firing the global report for
+    # something marked the caller's fault — instead of as the user-facing failure.
+    it "settles as the user-facing failure when the override cannot answer whether it is blank" do
+      unanswerable = Object.new.tap do |o|
+        o.define_singleton_method(:empty?) { raise NotImplementedError, "empty? explodes" }
+        o.define_singleton_method(:blank?) { raise NotImplementedError, "blank? explodes" }
+        o.define_singleton_method(:to_s) { "Please add a note" }
+      end
+      events = []
+      action = build_axn do
+        expects :note, user_facing: ->(_e) { unanswerable }
+        on_failure { events << :on_failure }
+        on_exception { events << :on_exception }
+        def call = nil
+      end
+
+      result = action.call
+
+      expect(result.outcome.failure?).to be(true)
+      expect(result.error).to eq("Please add a note")
+      expect(events).to eq([:on_failure])
+    end
   end
 
   describe "non-presence validations are equally user-facing" do

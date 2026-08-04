@@ -371,3 +371,37 @@ RSpec.describe "callbacks observe the stamped presentation" do
     expect(seen).to eq(["Checkout failed: declined"]) # not the raw "declined"
   end
 end
+
+RSpec.describe "a bubbled fail! reason that cannot answer whether it is blank" do
+  # `call!` decides whether the child's presentation is worth carrying to an ancestor, and that decision asked
+  # the reason `present?` — dispatching the caller's own `blank?` from the middle of the bubble, where no rescue
+  # covers it. `fail!` takes an arbitrary object, so the reason is caller code as surely as an exception's
+  # `#message` is: one that could not answer replaced the child's DELIBERATE failure with its own exception, so
+  # the parent settled as an `exception` outcome (firing the global report) with the failure intact underneath.
+  let(:unblankable) do
+    Object.new.tap do |o|
+      o.define_singleton_method(:empty?) { raise NotImplementedError, "empty? explodes" }
+      o.define_singleton_method(:blank?) { raise NotImplementedError, "blank? explodes" }
+      o.define_singleton_method(:to_s) { "card declined" }
+    end
+  end
+
+  it "settles the parent as the child's failure, with the parent's base prefixed onto the reason" do
+    reason = unblankable
+    stub_const("Inner", build_axn { define_method(:call) { fail!(reason) } })
+    events = []
+    outer = build_axn do
+      error "Charge failed"
+      on_failure { events << :on_failure }
+      on_exception { events << :on_exception }
+      def call = Inner.call!
+    end
+
+    result = outer.call
+
+    expect(result.outcome.failure?).to be(true)
+    expect(result.exception).to be_a(Axn::Failure)
+    expect(result.error).to eq("Charge failed: card declined")
+    expect(events).to eq([:on_failure])
+  end
+end
