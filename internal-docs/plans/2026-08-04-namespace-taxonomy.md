@@ -158,7 +158,7 @@ require "axn/error"
 
 Then add `include Axn::Error` as the first line of each of these class bodies. Do **not** touch `Axn::Failure` or `Axn::Internal::EarlyCompletion`.
 
-- `Axn::ContractViolation` — one include covers all twelve descendants (`ValidationError`, `InboundValidationError`, `OutboundValidationError`, `Tools::InvalidContract`, `DuplicateFieldError`, and the eight nested)
+- `Axn::ContractViolation` — one include covers all thirteen descendants (`ValidationError`, `InboundValidationError`, `OutboundValidationError`, `Tools::InvalidContract`, `DuplicateFieldError`, and the eight nested)
 - `Axn::UnreraisableException`
 - `Axn::UnsupportedArgument`
 - `Axn::Mountable::MountingError`
