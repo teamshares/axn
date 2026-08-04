@@ -163,5 +163,19 @@ RSpec.describe Axn::Internal::Rendering do
 
       expect(described_class.exception_source_location(exception)).to eq("thing.rb:42")
     end
+
+    it "reads the first frame through a bound reader, so the backtrace CONTAINER cannot dispatch either" do
+      # `set_backtrace` keeps the object it was handed rather than copying it, subclass included — verified on
+      # 3.3 and 3.4 — so an Array subclass gets to answer `first` while a failure is being reported. `Interrupt`
+      # rather than a StandardError because the guard around reporting deliberately does not absorb a signal:
+      # a dispatched read here would carry it out in place of the exception being reported.
+      hostile_container = Class.new(Array) do
+        def first(*) = raise(Interrupt, "the container answered")
+      end
+      exception = ArgumentError.new("x")
+      exception.set_backtrace(hostile_container.new(["/app/lib/thing.rb:42:in `block'"]))
+
+      expect(described_class.exception_source_location(exception)).to eq("thing.rb:42")
+    end
   end
 end

@@ -23,7 +23,8 @@ module Axn
       EXCEPTION_TO_S = ::Exception.instance_method(:to_s)
       EXCEPTION_BACKTRACE = ::Exception.instance_method(:backtrace)
       STRING_SPLIT = ::String.instance_method(:split)
-      private_constant :EXCEPTION_TO_S, :EXCEPTION_BACKTRACE, :STRING_SPLIT
+      ARRAY_FIRST = ::Array.instance_method(:first)
+      private_constant :EXCEPTION_TO_S, :EXCEPTION_BACKTRACE, :STRING_SPLIT, :ARRAY_FIRST
 
       UNKNOWN_LOCATION = "unknown location"
 
@@ -132,11 +133,16 @@ module Axn
         # `Thread::Backtrace::Location` objects on Ruby 3.4 (and refuses them on 3.3), and while 3.4 hands
         # them back from `backtrace` as Strings, a type test costs one `Module#===` and does not depend on
         # which version is running.
+        # The CONTAINER is foreign too, not only the frames it holds: `set_backtrace` keeps the very object it
+        # was handed, subclass and all, so an Array subclass overriding `first` would run its own code here —
+        # while this method is reporting a failure, and outside anything that could absorb a class the guard
+        # does not swallow. Read through `Array`'s own `first` for the same reason the backtrace itself is read
+        # through `Exception`'s own reader.
         def first_frame(exception)
           backtrace = EXCEPTION_BACKTRACE.bind_call(exception)
           return nil unless Identity.kind?(backtrace, ::Array)
 
-          frame = backtrace.first
+          frame = ARRAY_FIRST.bind_call(backtrace)
           return nil unless Identity.kind?(frame, ::String)
           return nil if Identity.blank_string?(frame)
 
