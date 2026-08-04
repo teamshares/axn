@@ -13,10 +13,37 @@ module Axn
         @context = context
       end
 
+      # `inspect` composes at three nested levels, and EACH LEVEL NORMALIZES ITS OWN OPERANDS through
+      # `rendered` — never by trusting what the level below happened to return.
+      #
+      # That is the whole discipline, and it is the opposite of rendering per-OPERAND: an
+      # `Encoding::CompatibilityError` needs two INCOMPATIBLE operands, so a join that renders some of what it
+      # receives and not the rest converts a working composition into a raise. Deciding which is which means
+      # ENUMERATING the branches that can feed the join, and that enumeration is exactly what kept being
+      # incomplete — a `to_fs(:inspect)` branch reachable through the documented `Date::DATE_FORMATS` extension
+      # point, and an ActiveRecord-relation branch, both of which `format_for_inspect` can return and neither of
+      # which was covered by rendering its other branches. Normalizing at the join makes the branch count
+      # irrelevant, present and future.
+      #
+      # Here that means `status` and `visible_fields`, each of which is one of several shapes its own method
+      # chose. `class_name` is not normalized because it is not foreign: it is the facade's OWN class (an
+      # `Axn::Result` or a context facade), named by axn.
       def call
-        str = [status, visible_fields].compact_blank.join(" ")
+        str = [rendered(status), rendered(visible_fields)].compact_blank.join(" ")
 
         "#<#{class_name} #{str}>"
+      end
+
+      # THE normalization point every join in this class runs its operands through: a UTF-8 String axn owns, for
+      # any object, without letting that object's own `to_s` replace the `inspect` being built. Byte-identical
+      # for ASCII, so ordinary output does not move.
+      #
+      # `nil` passes through as `nil` rather than becoming `""`, because `call` distinguishes them —
+      # `compact_blank` drops an absent `status` so an inputs facade reads `#<… a: 1>` rather than `#<…  a: 1>`.
+      def rendered(value)
+        return value if Axn::Internal::Identity.nil_value?(value)
+
+        Axn::Internal::Rendering.value_rendering(value) || Axn::Internal::Rendering.class_name(value)
       end
 
       private
@@ -52,23 +79,27 @@ module Axn
       # renders the bytes it answers with.
       def exception_message = Axn::Internal::Rendering.exception_message(context.exception)
 
-      # Both operands of each pair are foreign, so both go through a funnel — every operand of a composition
-      # or none of them, since an `Encoding::CompatibilityError` needs two INCOMPATIBLE ones and rendering just
-      # one converts a working join into a raise.
+      # One entry per declared field, and the middle of the three joins: it normalizes BOTH of its operands
+      # rather than either the name or the formatter's answer.
       #
-      # The NAME goes through the shared name renderer (`renderable_label`, which handles a Symbol; a declared
-      # name is one). The VALUE's rendering is made uniform where it is produced, by `format_for_inspect`
-      # routing each dispatch of a caller's `inspect` through `Internal::Identity.describe` — so what arrives
-      # here is already valid UTF-8, and this composition can just join it.
+      # The name goes through the shared NAME renderer, which is a different question from `rendered` and has a
+      # better answer for it — a Symbol's escaped spelling, or the property it canonicalizes to — so a declared
+      # name reads the way it reads in every other axn message. The formatter's answer goes through `rendered`
+      # AFTER `format_for_inspect` has finished, which is what makes this independent of how many branches that
+      # method has and of what any of them returns. Rendering its branches individually is what missed the
+      # `to_fs(:inspect)` and ActiveRecord-relation ones (see `call`).
       #
-      # `inspect` is called from loggers, debuggers and spec-failure output, which makes a raise here the
-      # hardest kind to trace back to its cause: an exposed Latin-1 field name holding a UTF-8 value made
+      # Deliberately AFTER the masking and filtering too, so redaction decides what the text is and this only
+      # decides its encoding: `[FILTERED]` is ASCII and renders byte-identically.
+      #
+      # `inspect` is read from loggers, debuggers and spec-failure output, which makes a raise here the hardest
+      # kind to trace back to its cause: an exposed Latin-1 field name holding a UTF-8 value made
       # `result.inspect` raise with the result itself perfectly intact underneath.
       def visible_fields
         declared_fields.map do |field|
           value = facade.public_send(field)
 
-          "#{rendered_field_name(field)}: #{format_for_inspect(field, value)}"
+          "#{rendered_field_name(field)}: #{rendered(format_for_inspect(field, value))}"
         end.join(", ")
       end
 
@@ -99,11 +130,11 @@ module Axn
                           else
                             # `Internal::Identity.describe`, not a bare `inspect`: this is a caller's value and
                             # `inspect` is its own code, so the call is made (its rendering is what makes this
-                            # line useful) but its failure absorbed, and whatever it answers is rendered to
-                            # valid UTF-8 — which is what lets the composition above just join it. The three
-                            # branches beside this one build their text from ASCII or from `String#inspect`,
-                            # whose non-ASCII output is escaped for every encoding but UTF-8, so they are
-                            # already UTF-8-compatible.
+                            # line useful) but its failure absorbed. That is the DISPATCH half, and it has to
+                            # live here rather than at the join — a raise from `inspect` happens while this
+                            # value is being formatted, before there is anything to normalize. The ENCODING
+                            # half is settled once, at the join in `visible_fields`, for whichever branch of
+                            # this method answered.
                             Axn::Internal::Identity.describe(value)
                           end
 
@@ -119,9 +150,10 @@ module Axn
             filtered = ActiveSupport::ParameterFilter.new(nested_keys).filter({ field => value })[field]
             # Route the filtered structure back through the top-level filter (same as the scalar path
             # below) so a field that is ITSELF sensitive redacts wholesale by name — otherwise the
-            # partially-filtered structure would expose the parent's non-sensitive keys. Rendered through the
-            # same reader as the scalar path: the container is axn's own copy, but its CONTENTS are the
-            # caller's, and `Hash#inspect`/`Array#inspect` dispatch each element's own `inspect`.
+            # partially-filtered structure would expose the parent's non-sensitive keys. Read through the same
+            # guarded reader as the scalar path, for the same dispatch reason: the container is axn's own copy,
+            # but its CONTENTS are the caller's, and `Hash#inspect`/`Array#inspect` dispatch each element's own
+            # `inspect`.
             return inspection_filter.filter_param(field, Axn::Internal::Identity.describe(filtered))
           end
         end

@@ -4,7 +4,6 @@ require "axn/core/flow/handlers/invoker"
 require "axn/internal/identity"
 require "axn/internal/native_methods"
 require "axn/internal/rendering"
-require "axn/internal/text"
 
 module Axn
   module Core
@@ -101,17 +100,13 @@ module Axn
             # Combine base and reason. A String join is the infix separator; a Proc join receives
             # (base, reason) and returns the combined string. DEFAULT_JOIN is used when unset.
             #
-            # The caller's separator is RENDERED here, where it enters the message, on the same terms as the
-            # two halves it sits between (see `joined`). It is the third foreign operand of one composition,
-            # and rendering only the halves is worse than rendering none: a Latin-1 base and a Latin-1
-            # separator join as they stand, while a UTF-8 half beside a Latin-1 separator raises
-            # `Encoding::CompatibilityError` from the interpolation — the reporting failure replacing the
-            # failure being reported. `Text.renderable` is the byte half alone, which is all a separator needs:
-            # it is already known to be a String, so nothing is dispatched to read it.
+            # The separator is handed on AS IT CAME. Which separator this is depends on a branch here and on
+            # three more inside `apply_join_proc`, so rendering it per-branch would put the composition's
+            # correctness back on enumerating six call sites; `joined` normalizes it instead (see there).
             def combine(base, reason)
               j = join
               return apply_join_proc(j, base, reason) if j.respond_to?(:call)
-              return joined(base, reason, Axn::Internal::Text.renderable(j)) if j.is_a?(String)
+              return joined(base, reason, j) if j.is_a?(String)
 
               joined(base, reason, DEFAULT_JOIN)
             end
@@ -126,11 +121,14 @@ module Axn
             # both take when an object's own rendering will not answer. A raising `to_s` therefore costs that
             # fragment, not the settlement, the callbacks, or the call.
             #
-            # The separator arrives already rendered — axn's own `DEFAULT_JOIN`, or the caller's `join:` put
-            # through the byte renderer by `combine` — so all three operands of this composition are UTF-8
-            # Strings axn owns. That is the whole requirement: rendering a SUBSET of them would convert a join
-            # that worked (a Latin-1 base beside a Latin-1 separator) into an `Encoding::CompatibilityError`.
-            def joined(base, reason, separator) = "#{fragment(base)}#{separator}#{fragment(reason)}"
+            # ALL THREE operands go through the same `fragment`, here at the join, whatever each of them is and
+            # wherever it came from. That is the requirement rather than a convenience: an
+            # `Encoding::CompatibilityError` needs two INCOMPATIBLE operands, so rendering a SUBSET converts a
+            # join that worked (a Latin-1 base beside a Latin-1 separator) into a raise — while a raw join and a
+            # fully-rendered one both compose. Rendering the separator at ITS source instead meant six call
+            # sites had to agree (three branches of `combine`, three of `apply_join_proc`); one normalization
+            # point here cannot be partially applied.
+            def joined(base, reason, separator) = "#{fragment(base)}#{fragment(separator)}#{fragment(reason)}"
 
             def fragment(value)
               Axn::Internal::Rendering.value_rendering(value) || Axn::Internal::Rendering.class_name(value)

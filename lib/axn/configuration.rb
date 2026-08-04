@@ -244,23 +244,23 @@ module Axn
         resolved_error = action.result.error
         # Compare with the default fallback message instead of calling default_error
         # to avoid triggering error message resolution multiple times
+        # Each branch picks WHICH detail to report; none of them renders it. Rendering happens once, at the
+        # join below, so the composition does not depend on every branch here having remembered to.
         detail = if resolved_error == Axn::Core::Flow::Handlers::Resolvers::MessageResolver::DEFAULT_ERROR
-                   Axn::Internal::Rendering.exception_message(e)
+                   e
                  else
-                   # `result.error` resolves to the caller's own object when they handed one to `fail!` (or
-                   # returned one from a declared `error` handler), so it is rendered on the same terms as the
-                   # class name it is joined to. Both halves or neither: a raw Latin-1 detail beside a raw
-                   # Latin-1 class name joined fine, while a rendered UTF-8 class name beside a raw Latin-1
-                   # detail raises `Encoding::CompatibilityError` — which, since this whole handler runs inside
-                   # `best_effort`, loses BOTH this log line and the configured `on_exception` callback below.
-                   Axn::Internal::Rendering.value_rendering(resolved_error) ||
-                     Axn::Internal::Rendering.class_name(resolved_error)
+                   resolved_error
                  end
       else
-        detail = Axn::Internal::Rendering.exception_message(e)
+        detail = e
       end
 
-      msg = "Handled exception (#{Axn::Internal::Rendering.class_name(e)}): #{detail}"
+      # Both operands normalized at the join. `detail` is the caller's own object whenever they handed one to
+      # `fail!` (or returned one from a declared `error` handler), so a rendered UTF-8 class name beside a raw
+      # Latin-1 detail raised `Encoding::CompatibilityError` — and since this whole handler runs inside
+      # `best_effort`, that lost BOTH this log line and the configured `on_exception` callback below. An
+      # exception detail reads through the guarded message reader; anything else through the value renderer.
+      msg = "Handled exception (#{Axn::Internal::Rendering.class_name(e)}): #{_rendered_detail(detail)}"
       msg = ("#" * 10) + " #{msg} " + ("#" * 10) unless Axn.config.env.production?
       action.log(msg)
 
@@ -269,6 +269,16 @@ module Axn
       # Only pass the args and kwargs that the given block expects
       Axn::Internal::Callable.call_with_desired_shape(@on_exception, args: [e], kwargs: { action:, context: })
     end
+
+    # The log line's detail half, as a UTF-8 String this method owns. An EXCEPTION reads through the guarded
+    # message reader (which is what makes an exception whose `#message` raises reportable at all); anything else
+    # is a value, read through the value renderer and named by its class when it has no rendering of its own.
+    def _rendered_detail(detail)
+      return Axn::Internal::Rendering.exception_message(detail) if Axn::Internal::Identity.kind?(detail, ::Exception)
+
+      Axn::Internal::Rendering.value_rendering(detail) || Axn::Internal::Rendering.class_name(detail)
+    end
+    private :_rendered_detail
 
     def logger
       return @logger if @logger

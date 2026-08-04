@@ -5,6 +5,12 @@ require "stringio"
 require "tmpdir"
 require "support/tool_adapter_helpers"
 
+# `ContextFacadeInspector#format_for_inspect` renders a Date/Time through `to_fs(:inspect)`, which these two
+# core_exts define along with the `DATE_FORMATS` registry an app customizes it through. A Rails app has both
+# loaded; this suite is non-Rails, so the branch is unreachable without them.
+require "active_support/core_ext/date/conversions"
+require "active_support/core_ext/time/conversions"
+
 # An `Encoding::CompatibilityError` needs INCOMPATIBLE operands, so rendering one operand of a message can CREATE
 # one where none existed. Two ISO-8859-1 non-ASCII Strings concatenate fine; transcode one to UTF-8, leave its
 # neighbour in ISO-8859-1, and the join raises where it previously succeeded.
@@ -307,6 +313,74 @@ RSpec.describe "mixed-encoding message compositions" do
       end
 
       expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] thing: "value">))
+    end
+
+    # The reason `inspect` normalizes at the JOIN rather than per-operand. `format_for_inspect` picks between
+    # four ways of rendering a value, and two of them were missed by rendering the others: `to_fs(:inspect)`,
+    # whose text an app supplies through the documented `Date::DATE_FORMATS`/`Time::DATE_FORMATS` extension
+    # point, and the ActiveRecord-relation branch. Neither is special — what is special is that ENUMERATING
+    # the branches is what kept being wrong, so the composed value is normalized once instead.
+    describe "a value rendered through an app-registered :inspect date format" do
+      around do |example|
+        previous_date = Date::DATE_FORMATS[:inspect]
+        previous_time = Time::DATE_FORMATS[:inspect]
+        Date::DATE_FORMATS[:inspect] = ->(_d) { "1 f\xE9vrier 2026".dup.force_encoding("ISO-8859-1") }
+        Time::DATE_FORMATS[:inspect] = ->(_t) { "midi f\xE9vrier".dup.force_encoding("ISO-8859-1") }
+        example.run
+      ensure
+        Date::DATE_FORMATS[:inspect] = previous_date
+        Time::DATE_FORMATS[:inspect] = previous_time
+      end
+
+      it "inspects a Date beside a Latin-1 field name" do
+        name = latin1_name
+        klass = build_axn do
+          exposes name, allow_blank: true
+          define_method(:call) { expose(name, Date.new(2026, 2, 1)) }
+        end
+
+        result = klass.call
+
+        expect { result.inspect }.not_to raise_error
+        expect(result.inspect).to be_readable_utf8
+        expect(result.inspect).to include("café", "1 février 2026")
+      end
+
+      it "inspects a Time beside a Latin-1 field name" do
+        name = latin1_name
+        klass = build_axn do
+          exposes name, allow_blank: true
+          define_method(:call) { expose(name, Time.utc(2026, 2, 1, 12)) }
+        end
+
+        result = klass.call
+
+        expect { result.inspect }.not_to raise_error
+        expect(result.inspect).to include("café", "midi février")
+      end
+
+      # The same branch with an ASCII name, where nothing raised before either — but the Latin-1 text used to
+      # reach `inspect` as raw bytes, reading as mojibake. Normalizing at the join renders it as its text
+      # wherever it lands, so this is asserted rather than left unstated.
+      it "renders the registered format as text even where nothing would have raised" do
+        klass = build_axn do
+          exposes :on, allow_blank: true
+          def call = expose(:on, Date.new(2026, 2, 1))
+        end
+
+        expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] on: "1 février 2026">))
+      end
+    end
+
+    # THE baseline for this branch: with the DEFAULT (ASCII) date format, the output must be byte-identical, so
+    # normalizing at the join cannot be what moves ordinary `inspect` text.
+    it "leaves a Date under the default format exactly as it was" do
+      klass = build_axn do
+        exposes :on, allow_blank: true
+        def call = expose(:on, Date.new(2026, 2, 1))
+      end
+
+      expect(klass.call.inspect).to eq(%(#<Axn::Result [OK] on: "2026-02-01">))
     end
   end
 

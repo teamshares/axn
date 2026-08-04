@@ -391,9 +391,12 @@ module Axn
         # encoding is a caller away. A raw Latin-1 path beside a raw Latin-1 class name joined fine; beside a
         # RENDERED class name it raises `Encoding::CompatibilityError` from `#message` itself, which is the
         # serialization failure destroyed by the report of it.
+        # Every operand normalized AT the join, including the reason — whose two sources (the caller's `reason:`
+        # and this class's own `cycle_reason`) are normalized by one call rather than one each, so which source
+        # answered cannot decide whether the message composes.
         def message
           "Cannot serialize exposed value at `#{Axn::Internal::RenderedText.of(@path)}` (#{value_class_name}): " \
-            "#{@reason ? Axn::Internal::RenderedText.of(@reason) : cycle_reason}"
+            "#{Axn::Internal::RenderedText.of(@reason || cycle_reason)}"
         end
 
         private
@@ -427,9 +430,13 @@ module Axn
       # caller-supplied, so its class is named via `Internal::RenderedClassName` rather than `@value.class`,
       # and `@field` is a DECLARED name — foreign bytes of its own — so it is rendered rather than joined to
       # the rendered class name beside it.
+      #
+      # The hint is normalized here too, at the join. It is another module's method choosing between three
+      # texts, and which text that is must not be able to decide whether this message composes — the ordinary
+      # reason `#message` renders every operand of a composition rather than the ones known today to need it.
       def message
         "Cannot serialize argument `#{Axn::Internal::RenderedText.of(@field)}` (#{value_class_name}) for " \
-          "async execution. #{Axn::Internal::AsyncSerialization._unserializable_hint(@value)}"
+          "async execution. #{Axn::Internal::RenderedText.of(Axn::Internal::AsyncSerialization._unserializable_hint(@value))}"
       end
 
       private

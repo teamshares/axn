@@ -49,7 +49,7 @@ module Axn
         identifier = identify_field(config)
         Axn::Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: Axn::ContractViolation::DefaultAssignmentError,
-          message: ->(_field, error) { "Error applying default for #{descriptor}: #{Axn::Internal::Rendering.exception_message(error)}" },
+          message: ->(_field, error) { "Error applying default for #{rendered(descriptor)}: #{rendered_exception_message(error)}" },
           field_identifier: identifier,
         ) do
           config.default.respond_to?(:call) ? action.instance_exec(&config.default) : config.default
@@ -64,31 +64,32 @@ module Axn
         identifier = identify_field(config)
         Axn::Internal::ContractErrorHandling.with_contract_error_handling(
           exception_class: Axn::ContractViolation::PreprocessingError,
-          message: ->(_field, error) { "Error preprocessing #{descriptor}: #{Axn::Internal::Rendering.exception_message(error)}" },
+          message: ->(_field, error) { "Error preprocessing #{rendered(descriptor)}: #{rendered_exception_message(error)}" },
           field_identifier: identifier,
         ) do
           action.instance_exec(value, &config.preprocess)
         end
       end
 
-      # How a field is named in these wrappers' messages, and the identifier they carry alongside.
+      # How a field is named in these wrappers' messages, and the identifier they carry alongside. Each is a
+      # composition of its own — `describe_field` joins two declared names in its subfield branch,
+      # `identify_field` likewise — so each normalizes its OWN operands at its own join, exactly as the message
+      # lambdas above normalize theirs. Two Latin-1 names join as they stand; a UTF-8 one beside a Latin-1 one
+      # raises, so a nested join owes the same discipline as an outer one.
       #
-      # Both compose a declared NAME with something else — `describe_field` with the rendered exception
-      # message the wrapper reports, `identify_field` with a second declared name — so every name goes
-      # through the renderer. Rendering a subset would be worse than rendering none: two Latin-1 names join
-      # as they stand, while a UTF-8 half beside a Latin-1 one raises `Encoding::CompatibilityError` from the
-      # interpolation, and the wrapper would then report an encoding failure in place of the `default:`/
-      # `preprocess:` failure it exists to name.
+      # What those lambdas deliberately do NOT do is trust these return values: `describe_field` picks one of
+      # two shapes, so the outer join renders whatever it chose rather than depending on both branches having
+      # rendered everything they interpolate. A third branch added later is then already covered.
       #
       # `Reflection::PropertyNames.renderable_label` is the same rendering one layer up, and deliberately not
-      # reached from here: that file requires THIS one, so a reference back would be a require cycle. The pair
-      # below is what this layer can honestly get — `value_rendering` renders a String from its bytes with
-      # nothing dispatched, and a Symbol through its own `to_s` (which a Symbol cannot override), while a name
-      # that is neither is named by its CLASS, the fallback every composed message here takes.
+      # reached from here: that file requires THIS one, so a reference back would be a require cycle. `rendered`
+      # is what this layer can honestly get — `value_rendering` renders a String from its bytes with nothing
+      # dispatched, and a Symbol through its own `to_s` (which a Symbol cannot override), while a name that is
+      # neither is named by its CLASS, the fallback every composed message here takes.
       def describe_field(config)
-        return "field '#{rendered_name(config.field)}'" unless config.subfield?
+        return "field '#{rendered(config.field)}'" unless config.subfield?
 
-        "subfield '#{rendered_name(config.field)}' on '#{rendered_name(config.on)}'"
+        "subfield '#{rendered(config.field)}' on '#{rendered(config.on)}'"
       end
 
       # The `field_identifier` the wrapper carries. A top-level field is passed as the NAME itself rather
@@ -96,14 +97,19 @@ module Axn
       def identify_field(config)
         return config.field unless config.subfield?
 
-        "#{rendered_name(config.field)} on #{rendered_name(config.on)}"
+        "#{rendered(config.field)} on #{rendered(config.on)}"
       end
 
-      def rendered_name(name)
-        Axn::Internal::Rendering.value_rendering(name) || Axn::Internal::Rendering.class_name(name)
+      # THE normalization point for every join in this module.
+      def rendered(value)
+        Axn::Internal::Rendering.value_rendering(value) || Axn::Internal::Rendering.class_name(value)
       end
 
-      private_class_method :describe_field, :identify_field, :rendered_name
+      # An exception's message is read through the one guarded reader; naming it here keeps both lambdas short
+      # enough to read as compositions.
+      def rendered_exception_message(error) = Axn::Internal::Rendering.exception_message(error)
+
+      private_class_method :describe_field, :identify_field, :rendered, :rendered_exception_message
     end
   end
 end
