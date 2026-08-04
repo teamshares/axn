@@ -3,7 +3,7 @@
 The `client` strategy provides a declarative way to configure HTTP clients for API integrations. It creates a memoized Faraday connection with sensible defaults and optional error handling.
 
 ::: warning Peer Dependency
-This strategy requires the `faraday` gem to be available. It is only registered when Faraday is loaded.
+This strategy requires the `faraday` gem. It is always registered — regardless of whether Faraday is loaded, and regardless of gem load order — and requires `faraday` when you declare it, so `use :client` raises a `LoadError` naming the missing gem if it isn't in your bundle. Add `gem "faraday", "~> 2.0"` to your Gemfile to use it.
 :::
 
 ## Basic Usage
