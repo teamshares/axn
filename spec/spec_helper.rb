@@ -32,7 +32,7 @@ RSpec.configure do |config|
     end
   end
 
-  config.before { Axn::Tools::Registry.reset_adapters! }
+  config.before { Axn::Testing.reset! }
 end
 
 def expect_best_effort_called(message_substring:, action: nil, times: 1)

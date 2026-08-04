@@ -52,6 +52,12 @@ module Axn
         )
       end
 
+      # Re-arms the once-per-process warning above, for a spec suite that asserts on it. Named for
+      # the caller it exists for: Axn::Testing.reset! is the supported entry point.
+      def self._reset_isolation_warning!
+        remove_instance_variable(:@_isolation_mismatch_warned) if instance_variable_defined?(:@_isolation_mismatch_warned)
+      end
+
       # Reached only from `tracking` above. `_current_axn_stack` stays public: the executor, the call
       # logger and the exception-context builder all read it as `NestingTracking._current_axn_stack`.
       private_class_method :_warn_if_fiber_isolation_mismatch
