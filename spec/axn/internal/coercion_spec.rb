@@ -2,7 +2,12 @@
 
 require "spec_helper"
 
-RSpec.describe Axn::Internal::Reflection::Coercion do
+RSpec.describe Axn::Internal::Coercion do
+  it "is a value-level mechanism at Internal::, not a member of the reflection layer" do
+    expect(Axn::Internal.const_defined?(:Coercion, false)).to be(true)
+    expect(Axn::Internal::Reflection.const_defined?(:Coercion, false)).to be(false)
+  end
+
   describe ".coerce_value" do
     it "parses a string into each supported Ruby type" do
       expect(described_class.coerce_value("2026-07-08", Date)).to eq(Date.new(2026, 7, 8))

@@ -1040,7 +1040,7 @@ module Axn
         type_opt = field_validations[:type]
         return field_validations if type_opt.nil?
         return field_validations if type_opt.is_a?(Hash) && type_opt.key?(:coerce)
-        return field_validations if Axn::Internal::Reflection::Coercion.coercible_klasses(type_opt).empty?
+        return field_validations if Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
 
         type_hash = type_opt.is_a?(Hash) ? type_opt : { klass: type_opt }
         field_validations.merge(type: type_hash.merge(coerce: true))

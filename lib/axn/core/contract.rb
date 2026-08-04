@@ -1410,7 +1410,7 @@ module Axn
           validations[:type] = { klass: target, coerce: true }
         end
 
-        # A coerce target must be in the v1 coercible set (Axn::Internal::Reflection::Coercion::SUPPORTED); an
+        # A coerce target must be in the v1 coercible set (Axn::Internal::Coercion::SUPPORTED); an
         # unsupported type raises not-yet-supported so expanding the set stays a deliberate future
         # ticket. `String` may accompany a coercible type as a passthrough branch (the raw wire scalar
         # itself), which is why `coerce: [Date, String]` is legal — but a target set with no coercible
@@ -1424,20 +1424,20 @@ module Axn
           return unless coerce
 
           klasses = Array(type_hash[:klass])
-          coercible = Axn::Internal::Reflection::Coercion.coercible_klasses(type_hash)
+          coercible = Axn::Internal::Coercion.coercible_klasses(type_hash)
           unsupported = klasses - coercible - [String]
 
           unless unsupported.empty?
             raise ArgumentError,
                   "coerce: does not yet support #{unsupported.map(&:inspect).join(', ')} " \
-                  "(supported: #{Axn::Internal::Reflection::Coercion::SUPPORTED.join(', ')}). " \
+                  "(supported: #{Axn::Internal::Coercion::SUPPORTED.join(', ')}). " \
                   "String may accompany a coercible type as a passthrough."
           end
 
           return unless coercible.empty?
 
           raise ArgumentError,
-                "coerce: needs at least one coercible type (#{Axn::Internal::Reflection::Coercion::SUPPORTED.join(', ')}); " \
+                "coerce: needs at least one coercible type (#{Axn::Internal::Coercion::SUPPORTED.join(', ')}); " \
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 
