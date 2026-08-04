@@ -3,7 +3,7 @@
 require "axn/core/validation/fields"
 require "axn/internal/resolved_subfields"
 require "axn/internal/reflection/schema"
-require "axn/internal/reflection/subfield_contradictions"
+require "axn/core/contract/subfield_contradictions"
 
 module Axn
   module Core
