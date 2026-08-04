@@ -3,6 +3,13 @@
 require "spec_helper"
 
 RSpec.describe Axn::Internal::SubfieldTree do
+  # The module's placement at Internal:: claims it is a value-level mechanism any layer can use.
+  # That is only true if building a tree needs nothing from the reflection layer.
+  it "constructs a tree without reaching into the reflection layer" do
+    source = File.read(File.expand_path("../../../lib/axn/internal/subfield_tree.rb", __dir__))
+    expect(source).not_to match(/Reflection/)
+  end
+
   it "lives at Internal::, being used by both the contract layer and the reflection layer" do
     expect(Axn::Internal.const_defined?(:SubfieldTree, false)).to be(true)
     expect(Axn::Internal.const_defined?(:ResolvedSubfields, false)).to be(true)
@@ -12,6 +19,14 @@ RSpec.describe Axn::Internal::SubfieldTree do
 
   def tree_for(klass)
     described_class.build(klass.internal_field_configs, klass.subfield_configs)
+  end
+
+  # The tree itself only collects the deep `[config, hops]` candidates (`deep_paths`); whether one is
+  # representable is the reflection layer's judgment, made over that raw list through the same entry
+  # point `ResolvedSubfields.build` uses. Asserting through it here (rather than duplicating these cases
+  # under `Reflection::Schema`) keeps the coverage next to the tree shapes that provoke it.
+  def dropped_for(tree)
+    Axn::Internal::Reflection::Schema.dropped_from_deep_paths(tree.deep_paths)
   end
 
   it "groups shallow subfields as direct children of their top-level root, keyed by wire key" do
@@ -27,7 +42,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
     expect(root.children.keys).to eq([:zip])
     expect(root.children[:zip].config.field).to eq(:zip)
     expect(root.children[:zip]).not_to be_implicit
-    expect(tree.dropped).to eq([])
+    expect(dropped_for(tree)).to eq([])
   end
 
   it "expands a dotted on: path into implicit intermediate nodes" do
@@ -41,7 +56,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
     address = tree.roots[:payload].children[:address]
     expect(address).to be_implicit
     expect(address.children[:zip].config.field).to eq(:zip)
-    expect(tree.dropped).to eq([])
+    expect(dropped_for(tree)).to eq([])
   end
 
   it "anchors a subfield-of-a-subfield under the parent subfield's node, resolving on: through the READER (as: alias) while keying children by WIRE KEY" do
@@ -116,7 +131,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
     tree = tree_for(klass)
 
     expect(tree.roots).to eq({})
-    expect(tree.dropped).to eq([])
+    expect(dropped_for(tree)).to eq([])
   end
 
   describe "dropped (deep configs with no JSON-object representation)" do
@@ -128,7 +143,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:name])
+      expect(dropped_for(tree).map(&:field)).to eq([:name])
       expect(tree.roots[:user].children[:profile].children[:name].config.field).to eq(:name)
     end
 
@@ -141,7 +156,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped).to eq([])
+      expect(dropped_for(tree)).to eq([])
     end
 
     it "drops a deep config under a non-object (Array) ancestor, even one declared AFTER the deep config" do
@@ -153,7 +168,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:zip])
+      expect(dropped_for(tree).map(&:field)).to eq([:zip])
     end
 
     it "drops a deep config under a mixed-union ancestor" do
@@ -164,7 +179,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:id])
+      expect(dropped_for(tree).map(&:field)).to eq([:id])
     end
 
     it "drops a deep config whose implicit intermediate collides with a non-object shape member" do
@@ -179,7 +194,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:baz])
+      expect(dropped_for(tree).map(&:field)).to eq([:baz])
     end
 
     it "drops a deep config whose implicit intermediate collides with a mixed-union shape member" do
@@ -192,7 +207,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:baz])
+      expect(dropped_for(tree).map(&:field)).to eq([:baz])
     end
 
     it "drops a deep config colliding with a non-object shape member declared on a merged node's SECOND config" do
@@ -213,7 +228,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
 
       baz = tree.roots[:foo].children[:bar].children[:baz]
       expect(baz.configs.size).to eq(2) # merged node
-      expect(tree.dropped.map(&:field)).to eq([:y])
+      expect(dropped_for(tree).map(&:field)).to eq([:y])
     end
 
     it "drops a deep config when merged colliding members carry DISAGREEING nested members (all carried, not just the first nestable)" do
@@ -238,7 +253,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
 
       baz = tree.roots[:foo].children[:bar].children[:baz]
       expect(baz.configs.size).to eq(2) # merged node
-      expect(tree.dropped.map(&:field)).to eq([:z])
+      expect(dropped_for(tree).map(&:field)).to eq([:z])
     end
 
     it "drops a deep config whose implicit intermediate collides with a non-object member of a member (carried through implicit descent)" do
@@ -255,7 +270,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:qux])
+      expect(dropped_for(tree).map(&:field)).to eq([:qux])
     end
 
     it "drops a deep config whose implicit intermediate collides with a mixed-union member of a member" do
@@ -270,7 +285,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped.map(&:field)).to eq([:qux])
+      expect(dropped_for(tree).map(&:field)).to eq([:qux])
     end
 
     it "does NOT drop a deep config nesting through an OBJECT member of a member (member-of-member is nestable)" do
@@ -285,7 +300,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped).to eq([])
+      expect(dropped_for(tree)).to eq([])
     end
 
     it "does not drop a representable deep chain (object-shaped explicit ancestors)" do
@@ -299,7 +314,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped).to eq([])
+      expect(dropped_for(tree)).to eq([])
     end
 
     it "never drops a depth-1 subfield, even under a non-object parent (silent omission is preserved)" do
@@ -310,7 +325,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
       end
       tree = tree_for(klass)
 
-      expect(tree.dropped).to eq([])
+      expect(dropped_for(tree)).to eq([])
     end
   end
 end

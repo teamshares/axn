@@ -6,22 +6,25 @@ require "axn/internal/reflection/schema"
 module Axn
   module Internal
     # The canonical resolved-subfield artifact (PRO-2883): the SubfieldTree plus its derived
-    # `{required, nullable}` annotations, built once from a class's declared configs and cached per
-    # class (see ContractForSubfields::ClassMethods#_resolved_subfields). Deep-frozen before it is
-    # published, so the runtime hot path can never mutate it — and a benign first-call build race
-    # between threads just produces two identical values.
-    ResolvedSubfields = Data.define(:tree, :annotations) do
+    # `{required, nullable}` annotations and its dropped-deep-config verdict, built once from a class's
+    # declared configs and cached per class (see ContractForSubfields::ClassMethods#_resolved_subfields).
+    # Both annotations and dropped are Reflection::Schema's judgment over the tree, composed in here so
+    # `Core::` reads either as a cheap reader on the runtime path rather than recomputing it. Deep-frozen
+    # before it is published, so the runtime hot path can never mutate it — and a benign first-call build
+    # race between threads just produces two identical values.
+    ResolvedSubfields = Data.define(:tree, :annotations, :dropped) do
       def self.build(field_configs, subfield_configs)
         tree = SubfieldTree.build(field_configs, Array(subfield_configs))
         annotations = Reflection::Schema.derive_annotations(tree.roots)
+        dropped = Reflection::Schema.dropped_from_deep_paths(tree.deep_paths)
         _deep_freeze!(tree)
-        new(tree:, annotations: annotations.freeze)
+        new(tree:, annotations: annotations.freeze, dropped: dropped.freeze)
       end
 
       def self._deep_freeze!(tree)
         tree.roots.each_value { |node| _freeze_node!(node) }
         tree.roots.freeze
-        tree.dropped.freeze
+        tree.deep_paths.freeze
         tree.index.each_value do |path|
           path.wire_path.freeze
           path.ancestors.each(&:freeze)
@@ -40,9 +43,10 @@ module Axn
       # bug, not an entry point.
       private_class_method :_deep_freeze!, :_freeze_node!
 
-      # Convenience delegators for the tree's members.
+      # Convenience delegators for the tree's members. `dropped` is its own Data member (above), not a
+      # delegator: the tree only collects the deep candidate pairs (`deep_paths`), and the drop verdict
+      # is what this artifact composes in on top, once, at build time.
       def roots = tree.roots
-      def dropped = tree.dropped
       def index = tree.index
     end
   end

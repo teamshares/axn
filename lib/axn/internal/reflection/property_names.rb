@@ -817,7 +817,7 @@ module Axn
         # `build_input` skips outright (`EXCLUDED_FROM_INPUT_SCHEMA`) emits nothing at all; only a config assigned
         # onto a class can carry such a name, since `ambient_context` is a reserved field name.
         #
-        # `path_blocked?` is the predicate that decides the second one: the same call `compute_dropped` makes, so
+        # `Schema.path_blocked?` is the predicate that decides the second one: the same call the drop pass makes, so
         # the charge and the drop cannot disagree. It is asked at EVERY depth, because the emitter blocks at every
         # depth (`apply_nested_subfields!` returns at the blocking node) while `dropped` deliberately records only
         # the deep configs it reports to the author, a depth-1 subfield under such a parent being silently omitted.
@@ -850,7 +850,7 @@ module Axn
           top_level = surviving_configs(field_configs.reject { |c| c.validations[:model] })
           (field_configs + subfields).filter_map do |config|
             path = tree.index[config]
-            next unless path && !Axn::Internal::SubfieldTree.path_blocked?(path.ancestors)
+            next unless path && !Schema.path_blocked?(path.ancestors)
             # `Array#include?` asks each reserved Symbol whether it equals the name, so the name's own `==` is
             # never the one dispatched.
             next if Schema::EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
