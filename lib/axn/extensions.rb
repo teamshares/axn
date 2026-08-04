@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require "axn/internal/identity"
+require "axn/internal/native_methods"
+require "axn/internal/rendering"
+require "axn/internal/text"
 
 module Axn
   # The extension-author surface: "for gems building on axn," distinct from
@@ -32,13 +35,26 @@ module Axn
     SWALLOWABLE_BEYOND_STANDARD_ERROR = [SystemStackError, ScriptError].freeze
 
     class << self
-      # True when `exception` is one axn may absorb: any StandardError, plus the allowlist above.
-      # Anything else — a signal, an `exit`, another library's private control-flow signal — must pass
-      # through untouched.
       # Whether a guarded failure is re-raised rather than logged — the dev-loud mode. Exposed so
       # anything that has to reason about what best_effort will DO consults the same condition rather
       # than restating it.
-      def raises_in_dev? = Axn.config.best_effort_raises_in_dev && Axn.config.env.development?
+      #
+      # A seam that cannot answer means NOT dev-loud. Both reads are into caller-owned config — the setting
+      # and the `env` object a host application supplies — and a half-booted or misconfigured one raises
+      # here, which would make FAILING TO DECIDE the answer: `best_effort` is called from `ensure` blocks
+      # throughout the executor, so a raise from the decision replaces the exception already in flight with
+      # one manufactured while working out how to report it. The two directions are not symmetric. Answering
+      # false where true was configured loses a deliberately loud raise in development, which is a
+      # development-time annoyance; answering by raising turns swallow-and-log into an escape in any
+      # environment, which is the failure this whole guard exists to prevent.
+      #
+      # Narrow on the same terms as everything else here: a signal is not a broken config, and axn absorbs
+      # one nowhere.
+      def raises_in_dev?
+        Axn.config.best_effort_raises_in_dev && Axn.config.env.development?
+      rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
+        false
+      end
 
       # Undispatched ancestry, not `exception.is_a?`. Not as a defense against exceptions that lie
       # about themselves — that is unwinnable — but because the object's opinion is not the question.
@@ -68,7 +84,8 @@ module Axn
       # Runs the block, guarding a best-effort side effect (a hook, callback, observability
       # facet, or a reporter that itself throws). The exception is logged and swallowed (returning
       # nil) so it never breaks the main action flow — EXCEPT in development when
-      # Axn.config.best_effort_raises_in_dev is set, where it re-raises.
+      # Axn.config.best_effort_raises_in_dev is set, where it re-raises (as `Axn::UnreraisableException`
+      # carrying the original as `cause` for the rare exception `raise` cannot hand back as itself).
       # `desc` names the intent ("resolving webhook subscribers"); `action` is an optional
       # warn-target (an action instance/class responding to :warn), defaulting to the config logger.
       #
@@ -107,24 +124,92 @@ module Axn
 
       # Warn about a swallowed exception and return nil (best_effort's documented failure return).
       # Re-raises first in development when configured, keeping the guard dev-loud.
+      #
+      # The invariant this whole class holds: `best_effort` raises the block's exception, or — where Ruby's
+      # `raise` cannot re-raise that object faithfully — an axn-owned error carrying it as `cause`, or a signal
+      # the guard deliberately passes through. Never a third exception manufactured while reporting.
+      #
+      # Every fact about the exception comes from `Internal::Rendering`, never from raw interpolation: this
+      # code runs INSIDE the rescue, so a `message`, a `class`, or a backtrace read here is a second chance
+      # for the exception to escape through the guard meant to contain it — and since the guard is called
+      # from `ensure` all over the executor, an escape does not just lose a log line, it replaces the
+      # exception already in flight. Two shapes reach it without a hostile author: an exception whose
+      # `#message` raises, and an ordinary one whose STORED message holds bytes that cannot be joined to
+      # axn's own prose.
       def _warn_and_swallow(exception, desc, action)
-        raise exception if raises_in_dev?
+        _reraise_for_dev(exception, desc) if raises_in_dev?
 
-        src = _source_location(exception)
-
-        message = if Axn.config.env.production?
-                    "Ignoring exception raised while #{desc}: #{exception.class.name} - #{exception.message} (from #{src})"
-                  else
-                    msg = "!! IGNORING EXCEPTION RAISED WHILE #{desc.upcase} !!\n\n" \
-                          "\t* Exception: #{exception.class.name}\n" \
-                          "\t* Message: #{exception.message}\n" \
-                          "\t* From: #{src}"
-                    "#{'⌵' * 30}\n\n#{msg}\n\n#{'^' * 30}"
-                  end
-
-        _emit_warning(action, message)
+        _report_swallowed(exception, desc, action)
 
         nil
+      end
+
+      # The dev-loud raise. Hands `raise` the block's own exception whenever doing so re-raises THAT object, and
+      # axn's own error naming it when it would not.
+      #
+      # `raise` dispatches the 0-arg `#exception` on whatever object it is handed, and Ruby has no re-raise that
+      # skips it — a bare `raise` re-raising `$!` included. So a class owning `#exception` decided what left this
+      # guard: one answering a different object escaped as that object with the block's exception gone entirely,
+      # one that raises escaped as whatever it raised, and each is the third exception the invariant forbids.
+      # Decided by OWNERSHIP rather than by behaviour, and by AVOIDING the dispatch rather than guarding it,
+      # since no guard can cover a dispatch `raise` itself makes (the doctrine
+      # `Axn._named_invalid_tool_contract` settled for the boot path).
+      #
+      # `cause:` is passed explicitly rather than left to `$!`. Building the message reads the exception behind
+      # guards that rescue, and Ruby does not restore `$!` afterwards — so the implicit cause would be nil on
+      # exactly the degraded path where reaching the original matters most.
+      def _reraise_for_dev(exception, desc)
+        raise exception if Internal::NativeMethods.native_exception_reraise?(exception)
+
+        raise Axn::UnreraisableException.new(desc: _describe(desc),
+                                             reason: Internal::Rendering.exception_message(exception),
+                                             original_class: Internal::Rendering.class_name(exception)),
+              cause: exception
+      end
+
+      # The backstop over the REPORTING, and over nothing else, absorbing whatever building or emitting the
+      # warning can raise so a side-channel diagnostic is never what escapes.
+      #
+      # It lives in its own method rather than as a rescue on `_warn_and_swallow` because a method-level
+      # rescue there would also cover the dev-loud raise above — and since the block's exception is usually a
+      # StandardError, the dev-loud mode would silently stop being loud, logging and swallowing exactly where it
+      # was configured to raise. What the dev-loud path raises must leave through `best_effort`'s caller
+      # untouched, the block's own exception and `Axn::UnreraisableException` alike.
+      #
+      # Narrow on the same terms as `best_effort` and `_emit_warning`: nothing here may absorb a class the
+      # guard itself passes through (a signal, an `exit`, another library's control-flow signal).
+      def _report_swallowed(exception, desc, action)
+        _emit_warning(action, _warning_message(exception, desc))
+      rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
+        nil
+      end
+
+      # Everything the warning names comes from `Internal::Rendering` rather than from raw interpolation.
+      def _warning_message(exception, desc)
+        described = _describe(desc)
+        klass = Internal::Rendering.class_name(exception)
+        message = Internal::Rendering.exception_message(exception)
+        src = Internal::Rendering.exception_source_location(exception)
+
+        if Axn.config.env.production?
+          "Ignoring exception raised while #{described}: #{klass} - #{message} (from #{src})"
+        else
+          msg = "!! IGNORING EXCEPTION RAISED WHILE #{described.upcase} !!\n\n" \
+                "\t* Exception: #{klass}\n" \
+                "\t* Message: #{message}\n" \
+                "\t* From: #{src}"
+          "#{'⌵' * 30}\n\n#{msg}\n\n#{'^' * 30}"
+        end
+      end
+
+      # `desc` names the intent and is a String by contract, but it is EXTENSION-AUTHOR input reaching the
+      # gem's lowest guard, and the non-production wording calls `upcase` on it — so it is type-tested and
+      # rendered on the same terms as everything else here. Anything that is not a String is named by its
+      # class instead, which is a legible desc and cannot raise.
+      def _describe(desc)
+        return Internal::Text.renderable(desc) if Internal::Identity.kind?(desc, ::String)
+
+        Internal::Rendering.class_name(desc)
       end
 
       # Emitting the warning must not raise either. This guard is frequently invoked from an `ensure`,
@@ -146,18 +231,6 @@ module Axn
         rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
           nil
         end
-      end
-
-      # Just the filename/line number the exception came from. An EMPTY backtrace has to be tolerated:
-      # `raise` repopulates a nil one, but an exception reconstructed with `set_backtrace([])` (what a
-      # death handler rebuilding one from job data hands us) keeps it, and this guard's whole job is to
-      # not raise — it frequently runs from inside an `ensure`, where a raise would replace the
-      # exception already in flight.
-      def _source_location(exception)
-        frame = exception.backtrace&.first
-        return "unknown location" unless frame
-
-        frame.split.first.split("/").last.split(":")[0, 2].join(":")
       end
     end
   end

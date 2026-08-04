@@ -6,6 +6,7 @@ require "pathname"
 # The `tracer` setting's default resolves through Internal::Tracing on every read, so this file
 # cannot rely on the umbrella entrypoint having loaded it first.
 require "axn/internal/identity"
+require "axn/internal/rendering"
 require "axn/internal/tracing"
 
 module Axn
@@ -150,8 +151,10 @@ module Axn
               rescue NoMethodError => e
                 # Only a genuinely ABSENT `respond_to?` — a BasicObject-based proxy. A NoMethodError
                 # from INSIDE a present implementation is that object's own bug, and accepting it here
-                # would turn a declaration-time error into a per-call one.
-                raise unless e.name == :respond_to? && Axn::Internal::Identity.same?(e.receiver, v)
+                # would turn a declaration-time error into a per-call one. The name is read through
+                # `NameError`'s own reader, since the exception came from the caller's object too.
+                raise unless Axn::Internal::Identity.name_error_for?(e, :respond_to?) &&
+                             Axn::Internal::Identity.same?(e.receiver, v)
 
                 true
               end
@@ -159,7 +162,7 @@ module Axn
               responds || "must respond to #in_span, or be nil to disable tracing"
             }
 
-    attr_writer :logger, :env, :on_exception, :rails
+    attr_writer :logger, :on_exception, :rails
 
     # Optional callable returning a Hash of ambient context data (e.g. from request-local state).
     # Consulted when no explicit `ambient_context:` kwarg is passed to an Axn call. Falls back to
@@ -241,12 +244,23 @@ module Axn
         resolved_error = action.result.error
         # Compare with the default fallback message instead of calling default_error
         # to avoid triggering error message resolution multiple times
-        detail = resolved_error == Axn::Core::Flow::Handlers::Resolvers::MessageResolver::DEFAULT_ERROR ? e.message : resolved_error
+        # Each branch picks WHICH detail to report; none of them renders it. Rendering happens once, at the
+        # join below, so the composition does not depend on every branch here having remembered to.
+        detail = if resolved_error == Axn::Core::Flow::Handlers::Resolvers::MessageResolver::DEFAULT_ERROR
+                   e
+                 else
+                   resolved_error
+                 end
       else
-        detail = e.message
+        detail = e
       end
 
-      msg = "Handled exception (#{e.class.name}): #{detail}"
+      # Both operands normalized at the join. `detail` is the caller's own object whenever they handed one to
+      # `fail!` (or returned one from a declared `error` handler), so a rendered UTF-8 class name beside a raw
+      # Latin-1 detail raised `Encoding::CompatibilityError` — and since this whole handler runs inside
+      # `best_effort`, that lost BOTH this log line and the configured `on_exception` callback below. An
+      # exception detail reads through the guarded message reader; anything else through the value renderer.
+      msg = "Handled exception (#{Axn::Internal::Rendering.class_name(e)}): #{_rendered_detail(detail)}"
       msg = ("#" * 10) + " #{msg} " + ("#" * 10) unless Axn.config.env.production?
       action.log(msg)
 
@@ -255,6 +269,16 @@ module Axn
       # Only pass the args and kwargs that the given block expects
       Axn::Internal::Callable.call_with_desired_shape(@on_exception, args: [e], kwargs: { action:, context: })
     end
+
+    # The log line's detail half, as a UTF-8 String this method owns. An EXCEPTION reads through the guarded
+    # message reader (which is what makes an exception whose `#message` raises reportable at all); anything else
+    # is a value, read through the value renderer and named by its class when it has no rendering of its own.
+    def _rendered_detail(detail)
+      return Axn::Internal::Rendering.exception_message(detail) if Axn::Internal::Identity.kind?(detail, ::Exception)
+
+      Axn::Internal::Rendering.value_rendering(detail) || Axn::Internal::Rendering.class_name(detail)
+    end
+    private :_rendered_detail
 
     def logger
       return @logger if @logger
@@ -279,6 +303,33 @@ module Axn
       return @logger = resolved if resolved
 
       @fallback_logger ||= Logger.new($stdout).tap { |l| l.level = Logger::INFO }
+    end
+
+    # Validated at ASSIGNMENT because the reader below wraps the stored value in
+    # `ActiveSupport::StringInquirer`, which takes a String and nothing else — so anything it refuses has to be
+    # refused HERE. Accepted silently and left to the reader, a Symbol raises `TypeError: no implicit conversion of
+    # Symbol into String` from every LATER read instead — six sites inside the gem plus every
+    # `Axn.config.env.production?` in user code — which puts the failure nowhere near the line that caused it, and
+    # makes `c.env = :production` in an initializer detonate on the first action to run.
+    #
+    # A Symbol is COERCED rather than refused: it is a reasonable thing to write and its meaning is unambiguous.
+    # `nil` is accepted as the way to clear an override, since the reader's `@env ||= ENV[…]` fallback is what
+    # "auto-detect the environment" means. A String subclass is a String (`Rails.env` is a `StringInquirer`
+    # already, and `c.env = Rails.env` is the documented Rails wiring), so it is stored as it stands.
+    #
+    # Anything else is a declaration error, named on the same terms as every other one: `case`/`when` decides the
+    # type through `Module#===`, a C-level check running none of the value's own code, and the offender is named
+    # by CLASS through the undispatched renderer — a value that raises from its own `inspect` must not replace
+    # the verdict being reached.
+    def env=(value)
+      @env = case value
+             when nil, ::String then value
+             when ::Symbol then value.to_s
+             else
+               raise ArgumentError,
+                     "env must be a String or Symbol naming the environment, or nil to auto-detect it from " \
+                     "RACK_ENV/RAILS_ENV (got a value of class #{Axn::Internal::Rendering.class_name(value)})"
+             end
     end
 
     def env

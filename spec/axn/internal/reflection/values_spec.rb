@@ -905,6 +905,41 @@ RSpec.describe Axn::Internal::Reflection::Values do
 
       expect(described_class.new(path: "items", value: anonymous).message).to match(/\(a #<Class:0x[0-9a-f]+> cycle\)/)
     end
+
+    # `Module#to_s` hands back a constant path's own bytes, and a constant may hold non-UTF-8 ones — so
+    # naming the offending value's class could destroy the report it was building. A Symbol built from a
+    # String already TAGGED UTF-8 must hold valid UTF-8 bytes — `const_set`/`to_sym` reject anything else
+    # in that encoding outright — so a constant reaches this state by being interned from a String tagged
+    # with a DIFFERENT encoding whose bytes have no UTF-8 mapping at all: ASCII-8BIT holding `\xFF`, which
+    # `String#encode(Encoding::UTF_8)` refuses (`Encoding::UndefinedConversionError`), unlike a
+    # transcodable encoding such as ISO-8859-1.
+    #
+    # `path` is genuinely non-ASCII rather than an artifact of this test: a real axn path is built from
+    # field names and canonicalized wire keys, which preserve legitimate non-ASCII (see `:naïve` elsewhere
+    # in this suite). The join only raises when that surrounding text is non-ASCII too — two
+    # same-or-ASCII-only-compatible encodings concatenate fine regardless of validity, so an all-ASCII
+    # `path` would not reproduce this.
+    describe "naming a value whose class holds bytes with no UTF-8 rendering" do
+      let(:unrenderable_class) do
+        name = "UnrenderableCafeValue".dup
+        name[15] = "\xFF".dup.force_encoding(Encoding::BINARY)
+        Object.const_set(name, Class.new) unless Object.const_defined?(name)
+        Object.const_get(name)
+      end
+
+      it "renders the class name rather than raising from the report" do
+        error = described_class.new(path: "thïng", value: unrenderable_class.new, reason: "nope")
+
+        expect { error.message }.not_to raise_error
+        expect(error.message).to include("thïng")
+      end
+
+      it "renders it in the cycle wording too" do
+        error = described_class.new(path: "thïng", value: unrenderable_class.new)
+
+        expect { error.message }.not_to raise_error
+      end
+    end
   end
 
   # A cycle has no JSON representation, so this is a serialization FAILURE rather than something to

@@ -243,6 +243,38 @@ RSpec.describe Axn::Configuration do
       config.env = "production"
       expect(config.env.production?).to eq(true)
     end
+
+    # The reader wraps what was stored in `ActiveSupport::StringInquirer`, which takes a String and nothing
+    # else — so anything it refuses has to be refused HERE. Accepted silently at assignment, a Symbol raised
+    # `TypeError: no implicit conversion of Symbol into String` from every later read instead: six sites inside
+    # the gem plus every `Axn.config.env.production?` in user code, none of them near the line that caused it.
+    it "coerces a Symbol, whose meaning is unambiguous" do
+      config.env = :production
+
+      expect(config.env.production?).to eq(true)
+    end
+
+    # A String SUBCLASS is a String, which is what `c.env = Rails.env` assigns — `Rails.env` is itself a
+    # StringInquirer.
+    it "accepts a String subclass, which is what the documented Rails wiring assigns" do
+      config.env = ActiveSupport::StringInquirer.new("staging")
+
+      expect(config.env.staging?).to eq(true)
+    end
+
+    # nil is how an override is CLEARED, not an error: the reader's `@env ||= ENV[…]` fallback is what
+    # auto-detection is.
+    it "accepts nil and falls back to auto-detection" do
+      config.env = "production"
+      config.env = nil
+
+      expect(config.env.test?).to eq(true)
+    end
+
+    it "rejects anything else at assignment, naming the option and the offending value's class" do
+      expect { config.env = 123 }.to raise_error(ArgumentError, /env must be a String or Symbol.*class Integer/m)
+      expect { config.env = %w[production] }.to raise_error(ArgumentError, /class Array/)
+    end
   end
 
   describe "#async_exception_reporting" do

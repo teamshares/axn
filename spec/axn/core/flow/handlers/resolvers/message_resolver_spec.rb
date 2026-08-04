@@ -131,6 +131,19 @@ RSpec.describe Axn::Core::Flow::Handlers::Resolvers::MessageResolver do
         result = resolver.send(:body_for, descriptor)
         expect(result).to be_nil
       end
+
+      # This branch reads `exception.message` with no guard of its own — no rescue wraps it, and the
+      # caller chain (Result#error -> resolve_message -> ... -> body_for) has none either, so a raising
+      # `#message` would replace the settled `result.error` read outright.
+      it "does not let a raising #message escape" do
+        hostile = Class.new(StandardError) do
+          def message = raise(NotImplementedError, "message explodes")
+        end.new
+        hostile_resolver = described_class.new(registry, :error, action:, exception: hostile)
+        descriptor = double("descriptor", handler: nil)
+
+        expect { hostile_resolver.send(:body_for, descriptor) }.not_to raise_error
+      end
     end
   end
 
@@ -228,5 +241,119 @@ RSpec.describe "join: Proc raise-safety" do
       def call = fail!("inner")
     end
     expect(action.call.error).to eq("Outer: inner")
+  end
+
+  # The non-String branch NAMES the returned value's class, and the value is caller-supplied — so the name
+  # comes from the same funnel the rescue below uses rather than from `result.class`, which the value owns.
+  it "falls back to the default join, naming the class, when the Proc returns a non-String" do
+    returned = Class.new do
+      def self.name = raise(NotImplementedError, "name explodes")
+      def class = raise(NotImplementedError, "class explodes")
+    end.new
+    warnings = []
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { returned }
+      def call = fail!("inner")
+    end
+    allow_any_instance_of(action).to receive(:warn) { |_, msg| warnings << msg }
+
+    expect(action.call.error).to eq("Outer: inner")
+    expect(warnings).to include(a_string_matching(/join: callable returned .+ \(expected a non-blank String\)/))
+  end
+
+  # The rescue clause that reports the join Proc's raise builds its warn line from the raised
+  # exception's own `#class`/`#message` — a read that is NOT itself guarded by anything further out:
+  # `resolve_message` runs from `Result#error` with no enclosing rescue, so a hostile `#message` here
+  # replaces the settled `result.error` read with the hostile exception instead of degrading to a log line.
+  it "falls back to the default join when the raised exception itself has a raising #message" do
+    hostile = Class.new(StandardError) do
+      def message = raise(NotImplementedError, "message explodes")
+    end
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { raise hostile, "boom" }
+      def call = fail!("inner")
+    end
+
+    result = action.call
+    expect { result.error }.not_to raise_error
+    expect(result.error).to eq("Outer: inner")
+  end
+
+  # The warn line's OWN prose contains an em dash (" — using default join"), a genuine multi-byte UTF-8
+  # character — not ASCII-only. So an ORDINARY exception (no hostile #message override) whose message
+  # holds bytes with no UTF-8 rendering is enough to collide: joining two fragments that are each
+  # non-ASCII-only, in different encodings, raises Encoding::CompatibilityError from the warn line
+  # itself — no unusual author required, just the raised exception's message and axn's own prose.
+  it "falls back to the default join when the raised exception's message holds unrenderable bytes" do
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { raise ArgumentError, "bad\xFF".dup.force_encoding("ASCII-8BIT") }
+      def call = fail!("inner")
+    end
+
+    warnings = []
+    allow(action).to receive(:warn) { |msg| warnings << msg }
+
+    result = action.call
+    expect { result.error }.not_to raise_error
+    expect(result.error).to eq("Outer: inner")
+    expect(warnings).to include(a_string_matching(/join: Proc raised ArgumentError: "bad\\xFF"/))
+  end
+end
+
+RSpec.describe "a message handler whose return value cannot answer whether it is blank" do
+  # Whether a handler supplied a body at all was asked of the RETURN VALUE with `presence`, dispatching the
+  # caller's own `blank?`. That runs while the failure is being settled and again on every later
+  # `result.error` read, with no rescue over either: the settle path aborted (warning about a reporting
+  # failure and settling the run as an `exception` outcome), and the read raised afresh every time.
+  let(:unblankable) do
+    Object.new.tap do |o|
+      o.define_singleton_method(:empty?) { raise NotImplementedError, "empty? explodes" }
+      o.define_singleton_method(:blank?) { raise NotImplementedError, "blank? explodes" }
+      o.define_singleton_method(:to_s) { "the resolved body" }
+    end
+  end
+
+  it "resolves a base error's body and keeps settlement intact" do
+    body = unblankable
+    events = []
+    action = build_axn do
+      error(-> { body })
+      on_error { events << :on_error }
+      on_exception { events << :on_exception }
+      def call = raise("boom")
+    end
+
+    result = action.call
+
+    expect(result.outcome.exception?).to be(true)
+    expect { result.error }.not_to raise_error
+    expect(result.error.to_s).to eq("the resolved body")
+    expect(result.error.to_s).to eq("the resolved body") # a second read must not re-ask and raise
+    expect(events).to eq(%i[on_error on_exception])
+  end
+
+  it "resolves a conditional error's body under a declared base" do
+    body = unblankable
+    action = build_axn do
+      error "Charge failed"
+      error(if: -> { true }) { body }
+      def call = raise("boom")
+    end
+
+    expect(action.call.error).to eq("Charge failed: the resolved body")
+  end
+
+  it "resolves a success handler's body on the done! path" do
+    body = unblankable
+    action = build_axn do
+      success(-> { body })
+      def call = nil
+    end
+
+    result = action.call
+
+    expect(result.ok?).to be(true)
+    expect { result.success }.not_to raise_error
+    expect(result.success.to_s).to eq("the resolved body")
   end
 end

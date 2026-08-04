@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_support/core_ext/string/inflections"
+require "axn/internal/rendering"
 
 module Axn
   module Tools
@@ -158,12 +159,17 @@ module Axn
             rescue StandardError, ScriptError => e
               expanded = File.expand_path(file)
               _rollback_registrations(before) { |src| src == expanded }
-              Axn.config.logger.warn { "[Axn] tool file skipped (#{file}): #{e.class}: #{e.message}" }
+              Axn.config.logger.warn do
+                "[Axn] tool file skipped (#{_rendered_path(file)}): #{Axn::Internal::Rendering.class_name(e)}: " \
+                  "#{Axn::Internal::Rendering.exception_message(e)}"
+              end
             end
           end
         end
       rescue StandardError => e
-        Axn.config.logger.warn { "[Axn] tool eager-load skipped: #{e.class}: #{e.message}" }
+        Axn.config.logger.warn do
+          "[Axn] tool eager-load skipped: #{Axn::Internal::Rendering.class_name(e)}: #{Axn::Internal::Rendering.exception_message(e)}"
+        end
       end
 
       # Membership = (directory grant ∪ declaration grant) − except. Directory grant: adapters whose
@@ -251,7 +257,10 @@ module Axn
         _rollback_registrations(before) do |src|
           src == dir || src.start_with?(dir + File::SEPARATOR)
         end
-        Axn.config.logger.warn { "[Axn] tool dir skipped (#{dir}): #{e.class}: #{e.message}" }
+        Axn.config.logger.warn do
+          "[Axn] tool dir skipped (#{_rendered_path(dir)}): #{Axn::Internal::Rendering.class_name(e)}: " \
+            "#{Axn::Internal::Rendering.exception_message(e)}"
+        end
       end
 
       # Rolls back registrations added since `before`, deleting each added class whose (expanded)
@@ -371,6 +380,18 @@ module Axn
         else
           File.expand_path(path.to_s)
         end
+      end
+
+      # A configured (or globbed) path written into a warn line, as a UTF-8 String this module owns.
+      #
+      # The path is foreign: `tool_roots` entries come from an adapter's config, and a glob answers in
+      # whatever encoding the entry carried. Each of those warn lines also names the exception behind the skip
+      # through the renderer, so the path is rendered too — a rendered UTF-8 half beside a raw non-ASCII path
+      # raises `Encoding::CompatibilityError` out of the interpolation, and since these blocks are evaluated
+      # inside the rescue that isolates one bad file or directory, a raise there aborts the enumeration the
+      # rescue exists to keep going. Both halves or neither.
+      def _rendered_path(path)
+        Axn::Internal::Rendering.value_rendering(path) || Axn::Internal::Rendering.class_name(path)
       end
 
       def _classes

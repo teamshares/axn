@@ -248,6 +248,7 @@ end
 - This setting only applies in the development environment—errors are always swallowed in test and production
 - Test and production environments behave identically (errors swallowed), ensuring tests verify actual production behavior
 - When enabled in development, errors in framework code (like logging hooks, exception handlers, validators) will be raised instead of logged, putting issues front and center during manual testing
+- What you get is the exception your code raised, re-raised as itself. The one exception is an exception class that defines its own `#exception` method: Ruby's `raise` always calls that method on the object it is handed, so re-raising such an object would run its code and could surface something else entirely. Axn refuses to run it, and raises `Axn::UnreraisableException` instead — it names what was being attempted and the original class, repeats the original's message, and carries the original as its `cause`. It is a `StandardError`, so an enclosing `rescue => e` catches it in the same place. This is rare and only affects which class you see; the raise itself is never downgraded to a log line
 
 ## OpenTelemetry Tracing
 
@@ -540,6 +541,24 @@ Axn.configure do |c|
 end
 
 Axn.config.env.staging?  # => true
+```
+
+A Symbol works too, and so does handing over Rails' own environment object:
+
+```ruby
+Axn.configure do |c|
+  c.env = :staging   # coerced to "staging"
+  c.env = Rails.env  # a String subclass, stored as-is
+  c.env = nil        # clears the override, back to auto-detection
+end
+```
+
+Anything that is not a String, a Symbol, or `nil` is rejected on the spot with an `ArgumentError`, rather than being accepted and then failing on every later read of `Axn.config.env`:
+
+```ruby
+Axn.configure { |c| c.env = 123 }
+# => ArgumentError: env must be a String or Symbol naming the environment,
+#    or nil to auto-detect it from RACK_ENV/RAILS_ENV (got a value of class Integer)
 ```
 
 ## Async Exception Reporting

@@ -81,7 +81,6 @@ RSpec.describe "standalone require completeness" do
   let(:upward_references) do
     [
       ["axn/exceptions.rb", "Axn::Internal::AsyncSerialization"],
-      ["axn/exceptions.rb", "Axn::Internal::Reflection::PropertyNames"],
       ["axn/internal/shape_graph.rb", "Axn::Internal::Reflection::PropertyNames"],
       ["axn/internal/reflection/schema.rb", "Axn::Core::Contract::GENERATED_READER_SOURCE_PATH"],
       ["axn/internal/reflection/schema.rb", "Axn::Validation::Base"],

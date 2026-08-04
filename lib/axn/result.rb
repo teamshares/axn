@@ -158,11 +158,20 @@ module Axn
     # carrying to an ancestor (a baseless level that only produced the fallback contributes nothing).
     # Keys off declaration, NOT the resolved text — so a base/reason that legitimately resolves to the
     # default copy (e.g. `error "Something went wrong"`) is still recognized as declared and carried.
+    #
+    # Each read is plain TRUTHINESS, because its producer has already answered whether anything was supplied
+    # and answered it undispatched: `_user_provided_error_message` normalizes an absent reason to nil below,
+    # and `MessageResolver#body_for` does the same for a base. A second `present?` here put the caller's own
+    # `blank?` back onto the path — `fail!` takes an arbitrary object, and this runs from `call!` while a
+    # child's failure is bubbling — so a reason that could not answer it replaced that deliberate failure with
+    # its own exception, settling the PARENT as an exception outcome with the child's failure intact
+    # underneath.
     def _error_from_declared_source?
       return false if ok?
-      return true if _user_provided_error_message.present?
+      return true if _user_provided_error_message
+      return true if _error_resolver.base_message
 
-      _error_resolver.base_message.present? || !_error_resolver.matched_reason.nil?
+      !_error_resolver.matched_reason.nil?
     end
 
     def _resolve_error
@@ -212,7 +221,10 @@ module Axn
       return unless exception.is_a?(Axn::Failure)
       return if exception.default_message?
 
-      exception.raw_reason.presence
+      # `supplied_reason`, not `raw_reason.presence`: the reason is the caller's object, this runs while the
+      # failure is being reported, and `presence` dispatches the object's own `blank?` (see
+      # `Axn::Failure#supplied_reason`).
+      exception.supplied_reason
     end
 
     def _fail_standalone?

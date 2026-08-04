@@ -122,7 +122,8 @@ module Axn
       # offending class's exception, at boot, with nothing left naming the tool. Three rules keep it bounded, and
       # together they are the whole design:
       #
-      # 1. Every dispatch of the exception's own code sits behind a guard (see `Internal::ExceptionMessage`). What a guard
+      # 1. Every dispatch of the exception's own code sits behind a guard (see
+      #    `Internal::Rendering.exception_message`). What a guard
       #    cannot cover is the 0-arg `#exception` that `raise` itself makes on whatever object it is handed — Ruby
       #    has no re-raise that skips it, a bare `raise` in a rescue included — so that dispatch is AVOIDED instead:
       #    the object handed to `raise` is only ever the original when its class does not own `#exception`.
@@ -132,7 +133,7 @@ module Axn
       #    `Exception#exception(message)` clones and `raise` then asks the CLONE.
       #
       # 3. Every foreign STRING it writes into the message is RENDERED into UTF-8 rather than joined to it, through
-      #    the one path axn renders foreign text with (`Internal::Reflection::PropertyNames`). A guarded dispatch is only half
+      #    the one path axn renders foreign text with (`Internal::Rendering`). A guarded dispatch is only half
       #    of what a report needs: a `#message` that behaves perfectly and returns a String whose bytes are not
       #    UTF-8-compatible — the stored message of an ordinary ArgumentError is enough, no override required — made
       #    the interpolation itself raise Encoding::CompatibilityError, destroying the contract failure at boot and
@@ -153,8 +154,8 @@ module Axn
       # and carrying the original as `cause`. Only the CLASS degrades there, and `#message` is a separate question:
       # an exception that builds its message from its state keeps that message on either branch.
       def _named_invalid_contract(klass, error)
-        tool = Axn::Internal::Reflection::PropertyNames.renderable_module_name(klass)
-        reason = Axn::Internal::ExceptionMessage.of(error)
+        tool = Axn::Internal::Rendering.module_name(klass)
+        reason = Axn::Internal::Rendering.exception_message(error)
         unless Axn::Internal::NativeMethods.native_exception_reporting?(error)
           return InvalidContract.new(tool:, reason:, original_class: Axn::Internal::ClassName.of(error))
         end

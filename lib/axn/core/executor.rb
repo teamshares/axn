@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "axn/internal/native_methods"
+require "axn/internal/rendering"
+
 module Axn
   module Core
     # Executor encapsulates the full execution pipeline for an action.
@@ -653,8 +656,10 @@ module Axn
                 # Only a genuinely ABSENT method. A NoMethodError raised from INSIDE a working
                 # `record_exception` is that span's own bug, and swallowing it here would hide it from
                 # the guard — including from the dev-loud path, where it should be raised like any
-                # other tracing failure.
-                raise unless e.name == :record_exception && Internal::Identity.same?(e.receiver, span)
+                # other tracing failure. The span is caller-supplied and so is the exception it raised,
+                # so the missing name is read through `NameError`'s own reader rather than dispatched.
+                raise unless Internal::Identity.name_error_for?(e, :record_exception) &&
+                             Internal::Identity.same?(e.receiver, span)
 
                 nil
               end
@@ -663,7 +668,7 @@ module Axn
               # `is_a?` however it likes must not be able to talk its way into a vendor status object.
               if defined?(OpenTelemetry::Trace::Status) && defined?(OpenTelemetry::Trace::Span) &&
                  Axn::Internal::Identity.kind?(span, OpenTelemetry::Trace::Span)
-                error_message = result.exception.message || result.exception.class.name
+                error_message = Internal::Rendering.exception_message(result.exception)
                 span.status = OpenTelemetry::Trace::Status.error(error_message)
               end
             end
@@ -849,7 +854,7 @@ module Axn
       rescue Exception => e # rubocop:disable Lint/RescueException
         raise unless Axn::Extensions.swallowable?(e)
 
-        Axn::Extensions.best_effort("settling #{settling.class} onto the result", action: @action) { raise e }
+        Axn::Extensions.best_effort("settling #{Internal::Rendering.class_name(settling)} onto the result", action: @action) { raise e }
       end
 
       def _settle_exception!(e)
@@ -1013,7 +1018,14 @@ module Axn
         yield
         false
       rescue Internal::EarlyCompletion => e
-        @context.__record_early_completion(e.message, standalone: e.standalone)
+        # The exception is axn's own, but its message is the CALLER's object: `done!(msg)` hands `msg`
+        # straight to `EarlyCompletion.new`, and `Exception#message` renders whatever it was given through
+        # `rb_String`, which runs that object's `to_s`. That happens here, inside the rescue that is turning
+        # an early completion into a SUCCESSFUL result — so a raise from it escapes to the executor's
+        # exception handling and settles the success as an exception outcome instead. Read through the
+        # guarded reader, a `to_s` that raises degrades to the class name, which is the no-message sentinel
+        # `__record_early_completion` already drops.
+        @context.__record_early_completion(Internal::Rendering.exception_message(e), standalone: e.standalone)
         trigger_on_success
         true
       end
@@ -1196,8 +1208,18 @@ module Axn
       # base_extras are :base-level message strings (model-consistency mismatches and, under
       # reject_undeclared_inputs, unknown-input messages) that compose into the user-facing message and
       # aggregate onto :base. Empty by default, so the per-field-declared path is unchanged.
+      #
+      # EVERY part is rendered here, where they are JOINED, and that is the whole requirement — a subset is
+      # worse than none. The parts come from three places with three encodings: a `user_facing:` handler's
+      # return (rendered by `_override_part`), a field's own ActiveModel `full_message` (whose bytes follow the
+      # declared name's, so a Latin-1 field name yields a Latin-1 message), and a `base_extras` entry axn built
+      # around a provided wire key. Two raw Latin-1 parts joined fine; one rendered UTF-8 part beside a raw
+      # Latin-1 one raises `Encoding::CompatibilityError` out of `to_sentence`, from inside the CLASSIFICATION
+      # of an inbound failure — so the run settles as an `exception` outcome and reports globally, instead of
+      # as the non-reported user-facing failure the declaration asked for. Rendering is idempotent, so the
+      # parts `_resolve_user_facing_override` already rendered are unchanged by passing through again.
       def _composed_user_facing_error(failures, base_extras = [])
-        parts = failures.flat_map { |failure| _user_facing_parts(failure) } + base_extras
+        parts = (failures.flat_map { |failure| _user_facing_parts(failure) } + base_extras).filter_map { |part| _override_part(part) }
         InboundValidationError.new(_aggregate_errors(failures, base_extras),
                                    user_facing: true, user_facing_message: parts.uniq.to_sentence)
       end
@@ -1250,18 +1272,49 @@ module Axn
       # error **scoped to that field** (so a shared `->(e) { e.message }` sees only its own field, not
       # the aggregate). A String/Symbol/callable that resolves blank falls back to the field's own
       # validation message, so a user-facing failure never surfaces as the dev-facing generic message.
+      # Every part is decided and rendered without a dispatch axn cannot contain, because a part is whatever a
+      # `user_facing:` handler returned and this runs while the inbound failure is being CLASSIFIED — a raise
+      # here settles the run as an `exception` outcome, firing the global report, instead of as the user-facing
+      # failure the declaration configured. Absence comes from the part's class and its own bytes rather than
+      # from `presence` (the same undispatched answer `Axn::Failure#supplied_reason` gives a `fail!` reason),
+      # and it is asked FIRST — otherwise `false.to_s` would surface the literal "false" instead of falling
+      # back to the field's own validation message. The trailing `presence` reads the Array this line just
+      # built, not the handler's value.
       def _resolve_user_facing_override(setting, own:, scoped_error:)
-        override = case setting
-                   when true then own
-                   when String then setting
-                   else Core::Flow::Handlers::Invoker.call(action: @action, handler: setting,
-                                                           exception: scoped_error,
-                                                           operation: "resolving user_facing: message")
-                   end
-        # `presence` first (blank-aware: a handler returning `false`/`nil`/"" means "no message"),
-        # then coerce — otherwise `false.to_s` would surface the literal "false" instead of falling
-        # back to the field's own validation message.
-        Array(override).filter_map { |m| m.presence&.to_s }.presence || own
+        parts = case setting
+                when true then own
+                when String then [setting]
+                else
+                  _override_parts(Core::Flow::Handlers::Invoker.call(action: @action, handler: setting,
+                                                                     exception: scoped_error,
+                                                                     operation: "resolving user_facing: message"))
+                end
+        parts.filter_map { |m| _override_part(m) }.presence || own
+      end
+
+      # A handler's return value as a list of message parts. `Kernel#Array` dispatches the value's own `to_ary`
+      # and then its `to_a`, so a return value that cannot be listed contributes no parts and the field's own
+      # validation message stands — the override is what a hostile return costs, never the outcome. The two
+      # branches axn builds itself are listed without `Array()`: `own` is already axn's Array, and wrapping the
+      # String branch by hand keeps a String SUBCLASS carrying a `to_ary` out of the coercion entirely.
+      def _override_parts(override)
+        Array(override)
+      rescue ::Exception # rubocop:disable Lint/RescueException
+        []
+      end
+
+      # One part as the String it will be joined as, or nil when it is not a message: absent, or unable to
+      # render. An unrenderable part is DROPPED rather than named by its class, because this message is read by
+      # an end user and the field's own validation message is the better thing to fall back to — which is
+      # exactly what a part resolving blank already falls back to.
+      #
+      # Asked of every part of the composed message, whatever produced it: a `user_facing:` handler's return
+      # here (so `.presence` below can decide the fallback undispatched), and then each part again where they
+      # are joined (`_composed_user_facing_error`, which is what makes the composition's encoding uniform).
+      def _override_part(part)
+        return nil if Internal::NativeMethods.absent_value?(part)
+
+        Internal::Rendering.value_rendering(part)
       end
 
       # Under reject_undeclared_inputs, every provided top-level wire key that is neither a declared
@@ -1518,7 +1571,9 @@ module Axn
       def respecting_early_completion
         yield
       rescue Internal::EarlyCompletion => e
-        @context.__record_early_completion(e.message, standalone: e.standalone)
+        # Guarded for the same reason as in `handle_early_completion_if_raised`: `done!`'s message is a
+        # caller object, and reading it runs that object's `to_s`.
+        @context.__record_early_completion(Internal::Rendering.exception_message(e), standalone: e.standalone)
         raise e
       end
 

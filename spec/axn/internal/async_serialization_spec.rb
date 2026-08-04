@@ -17,6 +17,21 @@ RSpec.describe Axn::Internal::AsyncSerialization do
       error = described_class.new(field: :doc, value: StringIO.new("x"))
       expect(error.message).to include("Persist it to ActiveStorage")
     end
+
+    # The value is caller-supplied and may override `#class`; naming it via the raw `@value.class` would
+    # dispatch that override and replace this failure with whatever it does instead (here, a raise). This
+    # message's own prose is plain ASCII, so — unlike UnserializableValue's message, which sits beside an
+    # em dash — only the dispatch axis is reachable here; a class name holding non-UTF-8 bytes would still
+    # join fine against all-ASCII prose.
+    it "does not dispatch a value's overridden #class when naming it" do
+      value = Object.new
+      def value.class = raise(NotImplementedError, "class hijacked")
+
+      error = described_class.new(field: :thing, value:)
+
+      expect { error.message }.not_to raise_error
+      expect(error.message).to include("Object") # named via the bound base implementation, not the override
+    end
   end
 
   describe "fallback path (ActiveJob unavailable)" do

@@ -193,7 +193,7 @@ module Axn
       #
       # Runs AFTER the absent check at each call site, so every spelling of "not supplied"
       # (`nil`, `false`, an empty or whitespace-only String, the empty Symbol) still means the option was
-      # omitted rather than hitting a type error — see `Internal::NativeMethods.absent_name?`.
+      # omitted rather than hitting a type error — see `Internal::NativeMethods.absent_value?`.
       #
       # `case`/`when` decides the type through `Module#===` (a C-level check) rather than `is_a?`, which a
       # value can override to route around a guard, and the offender is named by CLASS through the renderer
@@ -411,7 +411,7 @@ module Axn
           # A supplied route that is not a name at all is rejected here rather than left to `to_sym` (see
           # Contract.validate_name_option!): the option and the offending class are what the author needs, and
           # `NoMethodError` named neither.
-          on = if Internal::NativeMethods.absent_name?(on)
+          on = if Internal::NativeMethods.absent_value?(on)
                  nil
                else
                  # Canonicalized through the shared rule, which also holds the encoding of what `to_sym` ANSWERS —
@@ -702,7 +702,7 @@ module Axn
         # VALUES themselves — a reader name still can't be dotted, whichever option composed it.
         #
         # Both options are OPTIONAL, so both get the absent set every other optional name option has
-        # (`NativeMethods.absent_name?`: `nil`, `false`, an empty or whitespace-only String in any encoding,
+        # (`NativeMethods.absent_value?`: `nil`, `false`, an empty or whitespace-only String in any encoding,
         # the empty Symbol) and are canonicalized to `nil` when they carry one. Previously only `nil` meant
         # absent to the identity check while `if as` treated `false` as absent too, so the two options
         # disagreed about the same value — `as: false` meant "no rename" while `prefix: false` prepended the
@@ -715,8 +715,8 @@ module Axn
         # rendered as (`prefix: []` → `:"[]a"`, `prefix: {x: 1}` → `:"{:x=>1}a"`), which no caller can invoke
         # and nothing later rejects.
         def _resolve_reader_names(fields, as:, prefix:)
-          as = nil if Internal::NativeMethods.absent_name?(as)
-          prefix = nil if Internal::NativeMethods.absent_name?(prefix)
+          as = nil if Internal::NativeMethods.absent_value?(as)
+          prefix = nil if Internal::NativeMethods.absent_value?(prefix)
 
           return fields.to_h { |f| [f, f] } if as.nil? && prefix.nil?
 

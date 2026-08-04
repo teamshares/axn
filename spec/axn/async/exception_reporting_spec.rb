@@ -314,5 +314,57 @@ RSpec.describe Axn::Async::ExceptionReporting do
         expect(Axn.config).to have_received(:on_exception)
       end
     end
+
+    context "when the discarded/exhausted exception's own #message raises" do
+      # DiscardedJobResult#error feeds `action.result.error` inside Axn.config.on_exception's own
+      # message build (configuration.rb). The best_effort here contains the raise (it does not escape
+      # the process), but the guarded operation IS the global report itself — nothing else records a
+      # discarded/exhausted job — so a raise mid-build silently drops the ONLY report for that job
+      # rather than merely degrading a log line.
+      let(:hostile_exception) do
+        Class.new(StandardError) do
+          def message = raise(NotImplementedError, "message explodes")
+        end.new
+      end
+
+      it "still delivers the global report instead of losing it to the guard" do
+        reported = []
+        Axn.config.on_exception = ->(e, action:, context:) { reported << [e, action.result.error, context] }
+
+        described_class.trigger_on_exception(
+          exception: hostile_exception,
+          action_class:,
+          retry_context:,
+          job_args:,
+          extra_context: {},
+          log_prefix: "test",
+        )
+
+        expect(reported.size).to eq(1)
+        expect(reported.first[1]).to be_a(String) # result.error resolved to something, not a raise
+      ensure
+        Axn.config.on_exception = nil
+      end
+    end
+  end
+end
+
+RSpec.describe Axn::Async::ExceptionReporting::DiscardedJobResult do
+  describe "#error" do
+    it "returns the exception's message" do
+      expect(described_class.new(StandardError.new("boom")).error).to eq("boom")
+    end
+
+    it "returns the generic fallback when there is no exception" do
+      expect(described_class.new(nil).error).to eq("Job was discarded")
+    end
+
+    it "does not let a raising #message escape" do
+      hostile = Class.new(StandardError) do
+        def message = raise(NotImplementedError, "message explodes")
+      end.new
+
+      expect { described_class.new(hostile).error }.not_to raise_error
+    end
   end
 end

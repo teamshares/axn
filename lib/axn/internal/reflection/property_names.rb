@@ -3,7 +3,9 @@
 require "axn/internal/cycle_guard"
 require "axn/internal/field_config"
 require "axn/internal/native_methods"
+require "axn/internal/rendering"
 require "axn/internal/shape_graph"
+require "axn/internal/text"
 # Declared rather than left to the top-level entrypoint's require order: every one of these is a RUNTIME
 # reference — the rules are derived from a built schema, reported through the canonicalization, keyed by the
 # `model:` id convention, and gated on which names render through Ruby's own code — so a process that loaded
@@ -148,13 +150,12 @@ module Axn
         # consults the real class, which a singleton `is_a?` cannot lie about, and both branches therefore
         # return a plain String this layer owns.
         SYMBOL_NAME_INSPECT = ::Symbol.instance_method(:inspect)
-        STRING_NAME_INSPECT = ::String.instance_method(:inspect)
-        private_constant :SYMBOL_NAME_INSPECT, :STRING_NAME_INSPECT
+        private_constant :SYMBOL_NAME_INSPECT
 
         def field_name_spelling(name)
           case name
           when ::Symbol then SYMBOL_NAME_INSPECT.bind_call(name)
-          when ::String then STRING_NAME_INSPECT.bind_call(name)
+          when ::String then Axn::Internal::Text.escaped(name)
           end
         end
 
@@ -215,14 +216,15 @@ module Axn
         #    interpolating the name into a UTF-8 message raises Encoding::CompatibilityError from the reporting
         #    itself, destroying the failure exactly as a hostile `class` would.
         #
-        # So a class name is rendered through `renderable_label`, the one path every foreign string axn writes into
-        # prose takes: an ordinary ASCII name is byte-identical, a Latin-1 one reads as its text, and bytes with no
-        # UTF-8 rendering at all come back escaped. That cannot recurse back into `inspect_field_name`'s class
-        # branch above: `Module#to_s` always answers with a genuine String (`"#<Class:0x…>"` for an anonymous
-        # class), so `field_name_spelling` resolves it from its String branch.
-        def renderable_class_name(value) = renderable_label(Axn::Internal::ClassName.of(value))
+        # So a class name is composed through `Internal::Rendering`, which pairs the same undispatched
+        # `Internal::ClassName` read with a render of its bytes: an ordinary ASCII name is byte-identical, a
+        # Latin-1 one reads as its text, and bytes with no UTF-8 rendering at all come back escaped. That cannot
+        # recurse back into `inspect_field_name`'s class branch above: `Module#to_s` always answers with a genuine
+        # String (`"#<Class:0x…>"` for an anonymous class), so `field_name_spelling` resolves it from its String
+        # branch.
+        def renderable_class_name(value) = Axn::Internal::Rendering.class_name(value)
 
-        def renderable_module_name(mod) = renderable_label(Axn::Internal::ClassName.of_module(mod))
+        def renderable_module_name(mod) = Axn::Internal::Rendering.module_name(mod)
 
         # How a name is written into a message that names ONE thing rather than distinguishing two spellings: the
         # UTF-8 property it canonicalizes to, falling back to the escaped form above when its bytes have no UTF-8

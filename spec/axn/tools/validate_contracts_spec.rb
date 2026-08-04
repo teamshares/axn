@@ -265,6 +265,31 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
       }
     end
 
+    # The other direction of the same question: not an `#exception` that ANSWERS wrongly, but one that is GONE by
+    # the time ownership is asked. `raise <instance>` dispatches the 0-arg `#exception` on the object, so an
+    # `#exception` that removes itself while answering leaves the exception with no such method — and looking up
+    # an owner for a method that does not exist raises `NameError`, from inside the reporting path, which is the
+    # third exception this whole path exists to prevent. Absence answers "not native", so axn's own error is
+    # reported exactly as it is for an exception that owns too much.
+    #
+    # The INSTANCE form is essential and is why a first attempt at this looks like a false positive: `raise
+    # <Class>, msg` calls the CLASS's `exception`, never the instance's, so the singleton is never touched.
+    it "reports one whose #exception undefines itself during the raise as axn's own error" do
+      hostile = Class.new(ArgumentError) do
+        def exception(*)
+          singleton_class.send(:undef_method, :exception)
+          self
+        end
+      end
+      error = hostile.new("the real defect")
+      raising_from(hostile, error)
+
+      expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |raised|
+        expect(raised.message).to start_with("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
+        expect(raised.cause).to be(error)
+      }
+    end
+
     # A FROZEN exception owns nothing at all and still cannot be renamed: `clone` preserves frozen state, so
     # storing the new message on the copy raises FrozenError from inside the reporting path.
     it "reports a frozen exception as axn's own error" do
@@ -363,6 +388,37 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
 
         expect(error.message).to be_readable_utf8
         expect(error.message).to start_with('"bad\xFF" has an invalid tool contract — café broke')
+      end
+
+      # Being a public class means the kwargs are filled in by callers who did not write the message path, and a
+      # Symbol naming the tool is the obvious thing to pass — so the type is tested before the bytes are rendered.
+      # Rendering alone is String-only (it binds String methods), which would make naming a tool by Symbol raise a
+      # TypeError out of the very error meant to report the contract.
+      it "tolerates a Symbol, which is the obvious way to name a tool" do
+        error = Axn::Tools::InvalidContract.new(tool: :foo, reason: "bad", original_class: "ArgumentError")
+
+        expect(error.message).to start_with("foo has an invalid tool contract — bad")
+      end
+
+      # A Symbol's bytes are as foreign as a String's — `const_set` accepts non-UTF-8 ones — so the Symbol branch
+      # renders after converting rather than joining what `to_s` hands back.
+      it "renders a Symbol whose bytes have no UTF-8 rendering" do
+        error = Axn::Tools::InvalidContract.new(tool: "bad\xFF".dup.force_encoding("ASCII-8BIT").to_sym,
+                                                reason: "bad", original_class: "ArgumentError")
+
+        expect(error.message).to be_readable_utf8
+        expect(error.message).to start_with('"bad\xFF" has an invalid tool contract')
+      end
+
+      # Anything else is named by its CLASS, which is legible and cannot raise. Dispatching `to_s` on an arbitrary
+      # object is what this message path must never do — the object is the caller's, and the whole point of the
+      # class is that reporting a contract failure does not become a second failure.
+      it "names an unrenderable object by its class rather than dispatching its to_s" do
+        hostile = Object.new.tap { |o| o.define_singleton_method(:to_s) { raise NotImplementedError, "to_s explodes" } }
+
+        error = Axn::Tools::InvalidContract.new(tool: hostile, reason: "bad", original_class: "ArgumentError")
+
+        expect(error.message).to start_with("Object has an invalid tool contract — bad")
       end
 
       # The TOOL's own name is foreign text on the same terms: a constant may hold non-UTF-8 bytes (`const_set`

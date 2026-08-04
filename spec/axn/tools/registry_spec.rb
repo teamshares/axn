@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "stringio"
 require "support/tool_adapter_helpers"
 
 RSpec.describe Axn::Tools::Registry do
@@ -382,6 +383,67 @@ RSpec.describe Axn::Tools::Registry do
     end
   end
 
+  describe ".ensure_loaded! (per-file rescue reads the raised exception's own #message)", :aggregate_failures do
+    # The per-file rescue (`rescue StandardError, ScriptError => e`) builds its warn line from `e.class`
+    # and `e.message`. A raising `#message` answers with a NON-StandardError (whatever the override
+    # raises), so it is NOT caught by ensure_loaded!'s own outer `rescue StandardError => e` — it escapes
+    # the method entirely rather than degrading to that outer warn line.
+    it "does not let a hostile #message on the raised exception escape ensure_loaded!" do
+      dir = Dir.mktmpdir("axn_registry_hostile_file")
+      begin
+        File.write(File.join(dir, "hostile_tool.rb"), <<~RUBY)
+          class RegistryHostileFileError < StandardError
+            def message = raise(NotImplementedError, "message explodes")
+          end
+          raise RegistryHostileFileError, "boom"
+        RUBY
+        register_adapter_with_roots(:mcp, roots: [dir])
+
+        warnings = []
+        allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+        expect { described_class.ensure_loaded! }.not_to raise_error
+        # The other half of the funnel's contract: the warn line still gets produced, and still names
+        # the file and the raised exception's class legibly (falling back through the bound
+        # `Exception#to_s`, which reads "boom" without dispatching the overridden `#message`).
+        expect(warnings).to include(a_string_matching(/hostile_tool\.rb.*RegistryHostileFileError.*boom/m))
+      ensure
+        FileUtils.remove_entry(dir)
+        # The fixture defines a top-level constant, and the file is loaded for real — so it outlives the
+        # tmpdir unless it is dropped here.
+        Object.send(:remove_const, :RegistryHostileFileError) if Object.const_defined?(:RegistryHostileFileError, false)
+      end
+    end
+  end
+
+  describe ".ensure_loaded! (outer rescue reads its own caught exception's #message)", :aggregate_failures do
+    # The method-level `rescue StandardError => e` at the bottom of ensure_loaded! is the LAST guard in
+    # this method — nothing further out catches a raise from building its own warn line, so a hostile
+    # `#message` on whatever it caught (here, a failure enumerating adapter dirs) escapes ensure_loaded!
+    # entirely rather than degrading to a lost log line.
+    it "does not let a hostile #message on the caught exception escape ensure_loaded!" do
+      # Captured BEFORE any other setup: the `ensure` below restores it unconditionally, so if a
+      # subsequent line here raised before this ran, `previous` would still be (Ruby-default) nil and
+      # the ensure would clobber Axn.config.logger to nil for the rest of the suite.
+      previous = Axn.config.logger
+
+      hostile = Class.new(StandardError) do
+        def message = raise(NotImplementedError, "message explodes")
+      end
+      allow(described_class).to receive(:_all_adapter_dirs).and_raise(hostile, "boom")
+
+      # A real IO-backed logger, not the test suite's default `Logger.new(File::NULL)`: Ruby's Logger
+      # treats File::NULL as a no-op sink and skips evaluating a block-form call's message entirely,
+      # which would hide this exact defect (the message never gets built, so it never gets the chance
+      # to raise) — see non_utf8_names_in_messages_spec.rb for the same workaround.
+      Axn.config.logger = Logger.new(StringIO.new, level: :warn)
+
+      expect { described_class.ensure_loaded! }.not_to raise_error
+    ensure
+      Axn.config.logger = previous
+    end
+  end
+
   describe ".ensure_loaded! (non-Rails, isolates a SyntaxError in one tool file from valid siblings)", :aggregate_failures do
     # A committed malformed `.rb` would fail rubocop, so the bad fixture is generated at runtime in a
     # temp dir. SyntaxError inherits from ScriptError (not StandardError/LoadError), so the per-file
@@ -526,6 +588,44 @@ RSpec.describe Axn::Tools::Registry do
     ensure
       described_class.send(:_classes).delete(under_dir)
       described_class.send(:_classes).delete(outside)
+    end
+  end
+
+  describe ".ensure_loaded! (Rails eager_load_dir branch reads its own caught exception's #message)", :aggregate_failures do
+    # Same shape as the non-Rails per-file rescue: `_eager_load_rails_dir`'s own
+    # `rescue StandardError, ScriptError => e` builds its warn line from `e.class`/`e.message`, and a
+    # hostile `#message` answers with a non-StandardError that ensure_loaded!'s outer
+    # `rescue StandardError => e` does not catch either.
+    let(:dir) { File.expand_path("../../support/fixtures/registry_tools_nested", __dir__) }
+
+    before do
+      register_adapter_with_roots(:mcp, roots: [dir])
+      allow(described_class).to receive(:_rails_app?).and_return(true)
+    end
+
+    it "does not let a hostile #message escape ensure_loaded!" do
+      # Captured before any other setup — see the "outer rescue" example above for why.
+      previous = Axn.config.logger
+
+      loader = double("zeitwerk loader")
+      stub_const("Rails", double(
+                            application: double(config: double(eager_load: false)),
+                            autoloaders: double(main: loader),
+                          ))
+      allow(loader).to receive(:dirs).and_return([File.dirname(dir)])
+      hostile = Class.new(StandardError) do
+        def message = raise(NotImplementedError, "message explodes")
+      end
+      allow(loader).to receive(:eager_load_dir).and_raise(hostile, "boom during eager load")
+
+      # See the "outer rescue" example above: a real IO-backed logger is required, or Ruby's
+      # `Logger.new(File::NULL)` (this suite's default) skips evaluating the block-form warn entirely
+      # and the defect never gets a chance to fire.
+      Axn.config.logger = Logger.new(StringIO.new, level: :warn)
+
+      expect { described_class.ensure_loaded! }.not_to raise_error
+    ensure
+      Axn.config.logger = previous
     end
   end
 
