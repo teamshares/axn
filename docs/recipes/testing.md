@@ -99,6 +99,29 @@ Stubbing a `Current` reader — `allow(Current).to receive(:user).and_return(u)`
 
 `with_ambient_context` swaps a process-global provider, so it is isolated under process-based parallel test runners (e.g. `parallel_tests`) but not under thread-based ones.
 
+## Resetting derived state between examples
+
+`Axn::Testing.reset!` clears axn's process-global state that gets *derived* from what already ran, so one example's auto-detection can't decide the next example's behavior. It's opt-in — `require "axn"` does not define `Axn::Testing`:
+
+```ruby
+require "axn/testing"
+
+RSpec.configure do |config|
+  config.before { Axn::Testing.reset! }
+end
+```
+
+It's safe and idempotent to call in a suite-wide `before`, even on an example with nothing to reset.
+
+What it drops: tracer auto-detection memos (so the next example re-detects rather than reusing a stale tracer), the Sidekiq auto-configure flags, and the one-time fiber-isolation warning (so a later example can still trigger it).
+
+What it deliberately leaves alone, because resetting it would be wrong rather than merely unnecessary:
+
+- **`Axn.config` and `Axn::Extensions.config`.** A host app configures axn once in an initializer; resetting it here would silently un-configure every example after the first, surfacing as unrelated failures deep in someone else's suite rather than as anything traceable to this call.
+- **The registries** (`Strategies`, `Async::Adapters`, `Mountable::MountingStrategies`). Clearing them restores built-ins and discards deliberate registrations — that's axn's own suite's business, not a host app's.
+- **`Tools::Registry`'s recorded action classes.** That set accumulates every action class defined in the process; clearing it mid-suite would make `Axn.tools_for` blind to classes that are still loaded.
+- **Registered tool adapters.** An adapter gem registers at file-load time, and `require` runs once per process — a registration dropped here could never be re-established within that process, so a host app with any tool-adapter gem in its Gemfile would have `Axn.tools_for` (and every adapter lookup) fail after the first example.
+
 ## RSpec configuration
 
 Configuring rspec to treat files in spec/actions as service specs (very optional):
