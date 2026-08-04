@@ -97,8 +97,17 @@ module Axn
       # `validate:` lambda, joined into the validation message a user reads — where a lossy `caf<?>` beats
       # both an escaped spelling and no message. A layer naming an OFFENDER wants the escape instead, since
       # it must not quietly alter what it names.
+      #
+      # A successful rendering is COPIED and retagged rather than returned as it came, because
+      # `Text.utf8_rendering` answers its ASCII-only fast path with the argument itself — which for ASCII bytes
+      # tagged BINARY, US-ASCII or Latin-1 is not UTF-8, and for a String subclass is an object the caller still
+      # owns. Both would break the promise above: the encoding one silently, since ASCII-only bytes concatenate
+      # with anything and so the wrong tag only surfaces once the result is joined to something else.
       def self.utf8_string(value)
-        Text.utf8_rendering(value) || SCRUB.bind_call(FORCE_ENCODING.bind_call(DUP.bind_call(value), Encoding::UTF_8))
+        rendered = Text.utf8_rendering(value)
+        return FORCE_ENCODING.bind_call(::String.new(rendered), Encoding::UTF_8) if rendered
+
+        SCRUB.bind_call(FORCE_ENCODING.bind_call(DUP.bind_call(value), Encoding::UTF_8))
       end
 
       # True when a String is empty or only whitespace, read through String's OWN implementations. A

@@ -7,6 +7,12 @@ RSpec.describe Axn::Internal::Identity do
     # to the primitive cannot move them silently.
     {
       "ASCII" => %w[plain plain],
+      # ASCII bytes carrying a non-UTF-8 tag are the case the byte primitive's fast path answers with the
+      # argument itself. They matter precisely because nothing downstream complains: ASCII-only bytes
+      # concatenate with any encoding, so a wrong tag survives every join until one of them carries non-ASCII.
+      "ASCII tagged BINARY" => ["plain".b, "plain"],
+      "ASCII tagged US-ASCII" => ["plain".dup.force_encoding("US-ASCII"), "plain"],
+      "ASCII tagged Latin-1" => ["plain".dup.force_encoding("ISO-8859-1"), "plain"],
       "valid multibyte UTF-8" => %w[café café],
       "transcodable Latin-1" => ["caf\xE9".dup.force_encoding("ISO-8859-1"), "café"],
       "UTF-16" => ["hi".encode("UTF-16"), "hi"],
@@ -21,6 +27,14 @@ RSpec.describe Axn::Internal::Identity do
         expect(rendered.encoding).to eq(Encoding::UTF_8)
         expect(rendered.valid_encoding?).to be(true)
       end
+    end
+
+    it "answers with a plain String rather than a caller-owned subclass" do
+      # The byte primitive's ASCII-only fast path answers with the argument itself, so without a copy this
+      # hands a caller's own object back into axn's prose — where every later method call on it is caller code.
+      subclass = Class.new(String)
+
+      expect(described_class.utf8_string(subclass.new("plain")).class).to be(String)
     end
   end
 end
