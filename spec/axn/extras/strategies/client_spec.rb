@@ -227,11 +227,9 @@ RSpec.describe Axn::Extras::Strategies::Client do
     end
   end
 
+  # Registration itself is pinned in `client_registration_spec.rb`: this file's `before` hook clears the registry
+  # and registers the strategy, so nothing here can speak to how it gets registered on load.
   describe "strategy registration" do
-    it "registers the strategy when faraday is available" do
-      expect(Axn::Strategies.all[:client]).to be(described_class)
-    end
-
     it "can be used via use method" do
       instance = create_client_instance(test_action)
 

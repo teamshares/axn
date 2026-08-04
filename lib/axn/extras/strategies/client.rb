@@ -47,7 +47,28 @@ module Axn
           end)
         end
 
+        # faraday is a peer dependency, loaded on demand rather than at file load: declaring the strategy is
+        # what demands it, and this runs at `use :client` — so a missing gem fails at declaration, where the
+        # dependency is visible, rather than at the first request.
+        def self.ensure_faraday_available!
+          require "faraday"
+        rescue LoadError => e
+          # A LoadError raised from INSIDE faraday's own requires names a different file; reported as a
+          # missing faraday it would send the reader after a gem they already have.
+          raise unless e.path.nil? || e.path == "faraday"
+
+          raise LoadError, <<~ERROR
+            Faraday is not available. To use the :client strategy, add 'faraday' to your Gemfile:
+
+              gem 'faraday', '~> 2.0'
+
+            Then run: bundle install
+          ERROR
+        end
+
         def self.configure(name: :client, prepend_config: nil, debug: false, user_agent: nil, error_handler: nil, **options, &block)
+          ensure_faraday_available!
+
           # Aliasing to avoid shadowing/any confusion
           client_name = name
           error_handler_config = error_handler
@@ -85,7 +106,7 @@ module Axn
                   conn.response :logger if debug
 
                   # Inject error handler middleware if configured
-                  if error_handler_config && defined?(Faraday)
+                  if error_handler_config
                     unless Client.const_defined?(:ErrorHandlerMiddleware, false)
                       Client.const_set(:ErrorHandlerMiddleware, Class.new(::Faraday::Middleware) do
                         def initialize(app, config)
@@ -192,5 +213,9 @@ module Axn
 end
 # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity, Metrics/BlockNesting
 
-# Register the strategy only if faraday is available
-Axn::Strategies.register(:client, Axn::Extras::Strategies::Client) if defined?(Faraday)
+# Registration is unconditional, and cannot be conditional on the peer dependency being loaded: `require` is
+# idempotent, so whichever gem happens to require "axn" first would decide once and for all whether the strategy
+# exists — leaving `use :client` to raise StrategyNotFound in a process that has faraday. Nothing here needs
+# faraday DEFINED (every reference to it sits inside a method), and `.configure` requires it before any of them
+# can run, so the gem stays optional for anyone not declaring the strategy.
+Axn::Strategies.register(:client, Axn::Extras::Strategies::Client)
