@@ -508,7 +508,7 @@ module Axn
         # none is made: they arrived under one `to_sym` key, which is the identity the schema itself uses, so
         # nothing a name's class can define (an `==` that raises) is dispatched to reach this conclusion.
         def _raise_duplicate_member!(offending)
-          raise Axn::DuplicateFieldError,
+          raise Axn::ContractViolation::DuplicateFieldError,
                 "Duplicate shape member declared: #{_inspect_field_name(offending)} — two members of one shape would " \
                 "validate the same key, and the reflected schema would keep only the last. Declare each member once."
         end

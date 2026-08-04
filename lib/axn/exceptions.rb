@@ -199,6 +199,8 @@ module Axn
     # this exception's own #message (see the design at PRO-2898).
     class MethodCallNotPermittedError < ContractViolation; end
 
+    class DuplicateFieldError < ContractViolation; end
+
     class UnknownExposure < ContractViolation
       def initialize(key)
         @key = key
@@ -222,8 +224,6 @@ module Axn
       end
     end
   end
-
-  class DuplicateFieldError < ContractViolation; end
 
   module Tools
     # Raised by `Axn::Tools.validate_contracts!` for a tool whose contract failure cannot be reported AS ITSELF.

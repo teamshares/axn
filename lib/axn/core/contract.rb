@@ -680,11 +680,11 @@ module Axn
           identical, collapsed = collisions.partition { |claimed, offending| Axn::Internal::Reflection::PropertyNames.same_declared_name?(claimed, offending) }
           if identical.any?
             names = identical.map { |_claimed, offending| Axn::Internal::Reflection::Values.canonical_wire_key(offending) }
-            raise Axn::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}"
+            raise Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}"
           end
 
           claimed, offending = collapsed.first
-          raise Axn::DuplicateFieldError,
+          raise Axn::ContractViolation::DuplicateFieldError,
                 "Duplicate field(s) declared: #{_inspect_field_name(claimed)} and #{_inspect_field_name(offending)} " \
                 "both render as the JSON property #{Axn::Internal::Reflection::Values.canonical_wire_key(offending).inspect} — a " \
                 "field name becomes a property name in the reflected schema and in serialized output, so the two would " \

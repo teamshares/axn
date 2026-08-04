@@ -141,7 +141,7 @@ module Axn
       #    exempt: the tool's own name is a constant path, and a constant may hold non-UTF-8 bytes too.
       #
       # So a class that owns none of `#exception` or the duplication hooks (the overwhelmingly common case, an
-      # ordinary ArgumentError or DuplicateFieldError included) is renamed and reported as itself, class and state
+      # ordinary ArgumentError or ContractViolation::DuplicateFieldError included) is renamed and reported as itself, class and state
       # intact, through a BOUND `Exception#exception`: the C implementation clones the object and sets the message,
       # running no initializer, where a dispatched `exception` is caller code free to return a different object or to
       # raise. Naming the CLASS (`raise e.class, message`) is a third thing and worse than either — it CONSTRUCTS an

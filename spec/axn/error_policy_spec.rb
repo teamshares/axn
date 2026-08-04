@@ -57,4 +57,9 @@ RSpec.describe "Axn exception tagging" do
     missing = UNTAGGED.reject { |name| all_exceptions.any? { |k| k.name.to_s == name } }
     expect(missing).to be_empty, "pinned as untagged but no longer defined: #{missing.inspect}"
   end
+
+  it "nests DuplicateFieldError with its ContractViolation siblings" do
+    expect(Axn::ContractViolation.const_defined?(:DuplicateFieldError, false)).to be(true)
+    expect(Axn.const_defined?(:DuplicateFieldError, false)).to be(false)
+  end
 end

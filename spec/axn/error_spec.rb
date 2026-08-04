@@ -20,6 +20,12 @@ RSpec.describe Axn::Error do
     expect(Axn::InboundValidationError.ancestors).to include(Axn::ContractViolation)
   end
 
+  # DuplicateFieldError nests under ContractViolation with its siblings and has no include of
+  # its own, so this exercises the tag it inherits rather than one it declares.
+  it "catches DuplicateFieldError through its ContractViolation superclass" do
+    expect { raise Axn::ContractViolation::DuplicateFieldError, "dup" }.to raise_error(Axn::Error)
+  end
+
   # Failure is a control-flow signal from call!, not a fault. Tagging it would make
   # `rescue Axn::Error` catch the INTENDED outcome while still missing an unintended
   # NoMethodError from the action body.

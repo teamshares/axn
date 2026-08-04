@@ -382,14 +382,14 @@ module Axn
           # Two members of one shape keep the wording that case has always had: it is by far the most common
           # collision, and its fix reads better in its own terms than as a resolved path.
           if [first, second].all? { |source| source&.kind == :member }
-            raise Axn::DuplicateFieldError,
+            raise Axn::ContractViolation::DuplicateFieldError,
                   "Duplicate shape member declared: #{inspect_field_name(first_name)} and " \
                   "#{inspect_field_name(second_name)} both render as the JSON property #{canonical.inspect}, so " \
                   "the reflected schema would emit it twice. Declare them under names that stay distinct once " \
                   "converted to UTF-8."
           end
 
-          raise Axn::DuplicateFieldError,
+          raise Axn::ContractViolation::DuplicateFieldError,
                 "Duplicate field(s) declared: #{first&.description || inspect_field_name(first_name)} and " \
                 "#{second&.description || inspect_field_name(second_name)} both resolve to the JSON property " \
                 "#{property.inspect} — a declared name becomes a property name in the reflected schema and in " \

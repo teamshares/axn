@@ -59,7 +59,7 @@ RSpec.describe "the property-name rules' recorded residues" do
           expects "dup".dup, optional: true
         end
       end
-        .to raise_error(Axn::DuplicateFieldError, /Duplicate field\(s\) declared: dup/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate field\(s\) declared: dup/)
     end
   end
 
@@ -133,14 +133,14 @@ RSpec.describe "the property-name rules' recorded residues" do
     # declaration, so the residue is confusing prose rather than a contract that declares wrong.
     it "is refused rather than collapsed, even for byte-distinct names" do
       expect { members_named(non_symbol_to_sym.new("a"), non_symbol_to_sym.new("b")) }
-        .to raise_error(Axn::DuplicateFieldError, /Duplicate shape member declared/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared/)
     end
 
     # ...and this is the residue itself: the message names the INTERMEDIATE the first conversion returned, which
     # is not the key the snapshot stores and not a name the author wrote.
     it "reports the intermediate its to_sym returned rather than the name declared" do
       expect { members_named(non_symbol_to_sym.new("a"), non_symbol_to_sym.new("b")) }
-        .to raise_error(Axn::DuplicateFieldError, /"a-mid"|"b-mid"/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /"a-mid"|"b-mid"/)
     end
 
     it "stores the intermediate as the member's name, not the Symbol a further conversion would give" do

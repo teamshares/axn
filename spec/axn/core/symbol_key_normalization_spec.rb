@@ -77,7 +77,7 @@ RSpec.describe Axn do
 
       it "treats :note and \"note\" as the same field (duplicate)" do
         expect { build_axn { expects :note, "note" } }
-          .to raise_error(Axn::DuplicateFieldError, /note/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /note/)
       end
 
       it "symbolizes exposes wire keys too" do

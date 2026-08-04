@@ -640,7 +640,7 @@ RSpec.describe Axn do
               expects :x, on: :payload
               expects :x, on: "payload", as: :x2
             end
-          end.to raise_error(Axn::DuplicateFieldError, /x/)
+          end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /x/)
         end
       end
     end
