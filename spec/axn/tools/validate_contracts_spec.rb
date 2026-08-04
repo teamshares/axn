@@ -265,6 +265,31 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
       }
     end
 
+    # The other direction of the same question: not an `#exception` that ANSWERS wrongly, but one that is GONE by
+    # the time ownership is asked. `raise <instance>` dispatches the 0-arg `#exception` on the object, so an
+    # `#exception` that removes itself while answering leaves the exception with no such method — and looking up
+    # an owner for a method that does not exist raises `NameError`, from inside the reporting path, which is the
+    # third exception this whole path exists to prevent. Absence answers "not native", so axn's own error is
+    # reported exactly as it is for an exception that owns too much.
+    #
+    # The INSTANCE form is essential and is why a first attempt at this looks like a false positive: `raise
+    # <Class>, msg` calls the CLASS's `exception`, never the instance's, so the singleton is never touched.
+    it "reports one whose #exception undefines itself during the raise as axn's own error" do
+      hostile = Class.new(ArgumentError) do
+        def exception(*)
+          singleton_class.send(:undef_method, :exception)
+          self
+        end
+      end
+      error = hostile.new("the real defect")
+      raising_from(hostile, error)
+
+      expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::Tools::InvalidContract) { |raised|
+        expect(raised.message).to start_with("ToolContractsSpec::Valid has an invalid tool contract — the real defect")
+        expect(raised.cause).to be(error)
+      }
+    end
+
     # A FROZEN exception owns nothing at all and still cannot be renamed: `clone` preserves frozen state, so
     # storing the new message on the copy raises FrozenError from inside the reporting path.
     it "reports a frozen exception as axn's own error" do

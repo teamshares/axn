@@ -401,6 +401,31 @@ RSpec.describe Axn::Extensions do
             expect(escaped.message).to include("guarding", Axn::Internal::ClassName.of_module(klass))
           end
         end
+
+        # A shape that is not a hijack but an ABSENCE: `raise <instance>` dispatches the 0-arg `#exception` on the
+        # object, and this one removes itself while answering — so by the time the guard asks which module owns
+        # `#exception`, nothing does. Asking for an owner of a method that does not exist raises `NameError`,
+        # inside the guard whose entire promise is that it never emits a third exception.
+        #
+        # The INSTANCE form is what makes it reachable, and is why a first attempt at reproducing it looks like a
+        # false positive: `raise <Class>, msg` calls the CLASS's `exception` and never invokes the instance's, so
+        # the singleton is never touched and the guard behaves perfectly.
+        #
+        # `cause` is asserted by IDENTITY here, unlike the hijack cases above: the object is built before it is
+        # raised and answers the dispatch with itself, so it can be held onto and compared.
+        it "raises an axn-owned error carrying the original OBJECT when its #exception undefines itself" do
+          original = Class.new(StandardError) do
+            def exception(*)
+              singleton_class.send(:undef_method, :exception)
+              self
+            end
+          end.new("the original")
+
+          escaped = escaping_exception(-> { raise original })
+
+          expect(escaped).to be_a(Axn::UnreraisableException)
+          expect(Axn::Internal::Identity.same?(escaped.cause, original)).to be(true)
+        end
       end
 
       it "keeps a valid multibyte message verbatim in the warning" do

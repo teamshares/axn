@@ -207,16 +207,16 @@ module Axn
       # emitted property they read is the frozen copy Ruby makes of a plain String Hash key — which is why the
       # emitter reads one name once as well (`Reflection::Schema.required_key`), the two together being what keeps
       # every artifact naming one property.
+      # The lookup goes through `method_owner`, the one place this module resolves an owner and the one place it
+      # decides what ABSENCE means. A String that has UNDEF'd `to_s` resolves to no method at all, so it renders
+      # through whatever `method_missing` serves — emphatically not String's own — and a nil owner is never
+      # `equal?` to `STRING_TO_S`, so that is the answer without a rescue wrapping the whole method body.
       def self.native_name_rendering?(name)
         case name
         when ::Symbol then true
-        when ::String then STRING_TO_S.equal?(OBJECT_METHOD.bind_call(name, :to_s).owner)
+        when ::String then STRING_TO_S.equal?(method_owner(name, :to_s))
         else false
         end
-      rescue ::NameError
-        # A String that has UNDEF'd `to_s` resolves to no method at all, so it renders through whatever
-        # `method_missing` serves — emphatically not String's own.
-        false
       end
 
       # The ENCODING a name's bytes are in, read from the bound base implementation rather than asked of the
@@ -310,8 +310,21 @@ module Axn
 
       private_class_method :_blank_string?, :_blank_in_own_encoding?
 
+      # Through `method_owner`, which is the ONE lookup in this module and carries the one absence policy: a
+      # method that does not exist has no owner, so it answers nil rather than raising.
+      #
+      # That matters because ABSENCE is reachable here, not hypothetical. `raise <instance>` dispatches the
+      # 0-arg `#exception` on the object, and an `#exception` that undefines itself while answering leaves the
+      # exception with no such method by the time this is asked — so a raw lookup raised `NameError` from inside
+      # the guard whose whole promise is that it emits no third exception.
+      #
+      # nil is the SAFE answer in the direction that matters: `owner.equal?(nil)` is false for every expected
+      # owner, so this answers false, both predicates above read "not native", and each takes its degraded
+      # branch — `native_exception_reraise?` re-raises through `Axn::UnreraisableException` carrying the
+      # original as `cause`, and `native_exception_reporting?` returns axn's own `InvalidContract` rather than
+      # renaming the original. Both are the outcomes those branches exist for; neither runs the missing method.
       def self._object_owns_none?(value, expected)
-        expected.all? { |name, owner| owner.equal?(OBJECT_METHOD.bind_call(value, name).owner) }
+        expected.all? { |name, owner| owner.equal?(method_owner(value, name)) }
       end
 
       private_class_method :_object_owns_none?
