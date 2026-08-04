@@ -146,7 +146,7 @@ module Axn
         end
 
         def build_input(field_configs, subfield_configs = [], resolved: nil, klass: nil)
-          tree = resolved&.tree || SubfieldTree.build(field_configs, Array(subfield_configs))
+          tree = resolved&.tree || Axn::Internal::SubfieldTree.build(field_configs, Array(subfield_configs))
           ann = resolved&.annotations || derive_annotations(tree.roots)
           properties = {}
           required = []
@@ -196,7 +196,7 @@ module Axn
         # ambient_context) are skipped: their absence is intentional. Side-effect-free (SubfieldTree
         # inspects declared configs only).
         def dropped_deep_subfields(field_configs, subfield_configs, resolved: nil)
-          (resolved || SubfieldTree.build(field_configs, Array(subfield_configs))).dropped
+          (resolved || Axn::Internal::SubfieldTree.build(field_configs, Array(subfield_configs))).dropped
         end
 
         # Whether a field's declared type can be represented as a JSON object (so its subfields can nest

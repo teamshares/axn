@@ -21,7 +21,7 @@ module Axn
         # parent kills an old subfield's answerability (e.g. `expects "bar.baz", on: :payload` accepted
         # while `bar` is unknown, then `expects :bar, ..., type: String` retro-strands `bar.baz`).
         def check!(field_configs, subfield_configs)
-          tree = SubfieldTree.build(field_configs, subfield_configs)
+          tree = Axn::Internal::SubfieldTree.build(field_configs, subfield_configs)
           check_unanswerable_segments!(tree) # first: an unreachable path moots any conflict on it
           check_conflicting_defaults!(tree)  # before dead-tolerance: an explicit conflict is the plainer diagnosis
           check_dead_nil_tolerance!(tree, field_configs)

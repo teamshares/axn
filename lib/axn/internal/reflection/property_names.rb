@@ -494,7 +494,7 @@ module Axn
         private_constant :PropertySource
 
         def inbound_property_sources(field_configs, subfield_configs)
-          tree = Axn::Internal::Reflection::SubfieldTree.build(field_configs, subfield_configs)
+          tree = Axn::Internal::SubfieldTree.build(field_configs, subfield_configs)
 
           (field_configs + subfield_configs).flat_map do |config|
             resolved = tree.index[config]
@@ -845,12 +845,12 @@ module Axn
           end
 
           subfields = Array(subfield_configs)
-          tree = resolved&.tree || SubfieldTree.build(field_configs, subfields)
+          tree = resolved&.tree || Axn::Internal::SubfieldTree.build(field_configs, subfields)
           # A `model:` route writes `<field>_id` instead of the field, so it never claims a top-level slot.
           top_level = surviving_configs(field_configs.reject { |c| c.validations[:model] })
           (field_configs + subfields).filter_map do |config|
             path = tree.index[config]
-            next unless path && !SubfieldTree.path_blocked?(path.ancestors)
+            next unless path && !Axn::Internal::SubfieldTree.path_blocked?(path.ancestors)
             # `Array#include?` asks each reserved Symbol whether it equals the name, so the name's own `==` is
             # never the one dispatched.
             next if Schema::EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)

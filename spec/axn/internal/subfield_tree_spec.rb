@@ -2,7 +2,14 @@
 
 require "spec_helper"
 
-RSpec.describe Axn::Internal::Reflection::SubfieldTree do
+RSpec.describe Axn::Internal::SubfieldTree do
+  it "lives at Internal::, being used by both the contract layer and the reflection layer" do
+    expect(Axn::Internal.const_defined?(:SubfieldTree, false)).to be(true)
+    expect(Axn::Internal.const_defined?(:ResolvedSubfields, false)).to be(true)
+    expect(Axn::Internal::Reflection.const_defined?(:SubfieldTree, false)).to be(false)
+    expect(Axn::Internal::Reflection.const_defined?(:ResolvedSubfields, false)).to be(false)
+  end
+
   def tree_for(klass)
     described_class.build(klass.internal_field_configs, klass.subfield_configs)
   end

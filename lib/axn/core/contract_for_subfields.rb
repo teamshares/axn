@@ -460,7 +460,7 @@ module Axn
           cached = @_axn_resolved_subfields
           return cached.value if cached && cached.fields.equal?(fields) && cached.subfields.equal?(subfields)
 
-          value = Axn::Internal::Reflection::ResolvedSubfields.build(fields, subfields)
+          value = Axn::Internal::ResolvedSubfields.build(fields, subfields)
           @_axn_resolved_subfields = ResolvedSubfieldsCacheEntry.new(fields:, subfields:, value:)
           value
         end
