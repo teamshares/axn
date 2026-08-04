@@ -746,6 +746,129 @@ meaningless outside it — fails on its own terms. Two layers means Internal::."
 
 ---
 
+### Task 8b: Make `Internal::SubfieldTree` genuinely layer-free
+
+**Files:**
+- Modify: `lib/axn/internal/subfield_tree.rb`
+- Modify: `lib/axn/internal/reflection/schema.rb`
+- Modify: `lib/axn/internal/resolved_subfields.rb`
+- Modify: `spec/axn/internal/subfield_tree_spec.rb`
+- Test: existing suite
+
+**Interfaces:**
+- Consumes: `Axn::Internal::SubfieldTree` and `Axn::Internal::ResolvedSubfields` as Task 8 left them.
+- Produces: `SubfieldTree::ResolutionResult` with members `roots`, `deep_paths`, `index` — **no `dropped`**. `Internal::ResolvedSubfields` gains a third Data member `dropped`, so `#dropped` stays a cheap reader for `Core::`. `Reflection::Schema.dropped_deep_subfields` keeps its current signature and return value.
+
+Why this task exists: Task 8 moved `SubfieldTree` to `Internal::` on the grounds that two layers consume it, but AGENTS.md:63's bar for `Internal::X` is "generically useful… a value-level mechanism **any layer can use**," and the module as moved cannot complete a single `build` without `Reflection::Schema` — `compute_dropped` → `path_blocked?` → `blocking_ancestor?` call `node_configs_block_nesting?`, `nestable_as_object?` and `shape_members_at` unconditionally. The rule was checked against *who calls it* and never against *what it reads*. Separating the pure tree construction from the JSON-representability judgment makes the destination true rather than merely defensible.
+
+`Internal::ResolvedSubfields` deliberately keeps its `Reflection::Schema` dependency and stays at `Internal::`. It exists to pair a tree with `Schema.derive_annotations`, and `Core::` consumes it on the runtime read path — so it can be neither purified (the annotations are its purpose) nor moved into `Reflection` (whose members are guaranteed off the execution path). A composition depending on the layer it composes is an ordinary dependency direction, not the inversion this task fixes.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `spec/axn/internal/subfield_tree_spec.rb`, at the top of its outermost describe:
+
+```ruby
+  # The module's placement at Internal:: claims it is a value-level mechanism any layer can use.
+  # That is only true if building a tree needs nothing from the reflection layer.
+  it "constructs a tree without reaching into the reflection layer" do
+    source = File.read(File.expand_path("../../../lib/axn/internal/subfield_tree.rb", __dir__))
+    expect(source).not_to match(/Reflection/)
+  end
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `bundle exec rspec spec/axn/internal/subfield_tree_spec.rb -e "without reaching into the reflection layer"`
+Expected: FAIL — the file currently names `Reflection::Schema` in five places plus a require.
+
+- [ ] **Step 3: Strip the judgment out of `SubfieldTree`**
+
+Delete `compute_dropped`, `path_blocked?`, `blocking_ancestor?`, `merged_shape_members` and `colliding_shape_members` (currently lines ~110-160), and delete `require "axn/internal/reflection/schema"`.
+
+Change `ResolutionResult` to carry the raw pairs instead of the verdict:
+
+```ruby
+      # The finished build: per-root node trees, the deep `[config, hops]` pairs whose representability is
+      # the reflection layer's to judge, and the per-config ResolvedPath index. (Named to be unmistakable
+      # next to the public Axn::Result.)
+      ResolutionResult = Data.define(:roots, :deep_paths, :index)
+```
+
+and the return at the end of `build`:
+
+```ruby
+        ResolutionResult.new(roots:, deep_paths:, index:)
+```
+
+Keep the `deep_paths << [config, hops] if hops.size > 1` line and its comment — collecting the candidates is tree construction; judging them is not.
+
+- [ ] **Step 4: Move the judgment into `Reflection::Schema`**
+
+Move all five deleted methods into `lib/axn/internal/reflection/schema.rb` as **private** class methods, adjusting each `Reflection::Schema.foo` call to a bare `foo` (they are now in that module). Carry each method's comment across unchanged in substance — those comments explain why the drop pass and emission must agree, which is exactly the reason they now live beside emission.
+
+Rewrite `dropped_deep_subfields` (line ~198) to compute from the raw pairs:
+
+```ruby
+        def dropped_deep_subfields(field_configs, subfield_configs, resolved: nil)
+          return resolved.dropped if resolved
+
+          compute_dropped(Axn::Internal::SubfieldTree.build(field_configs, Array(subfield_configs)).deep_paths)
+        end
+```
+
+Verify that signature against its call sites before committing to it — `resolved:` is passed a `ResolvedSubfields` at some sites and possibly something else at others. If the shape differs, keep the method's external contract identical and adapt the body, reporting what you found.
+
+- [ ] **Step 5: Give `ResolvedSubfields` a stored `dropped`**
+
+`Core::` reads `_resolved_subfields.dropped` on the read path, so it must stay a cheap reader rather than a recomputation. Add it as a third Data member, computed once at build time:
+
+```ruby
+    ResolvedSubfields = Data.define(:tree, :annotations, :dropped) do
+      def self.build(field_configs, subfield_configs)
+        tree = SubfieldTree.build(field_configs, Array(subfield_configs))
+        annotations = Reflection::Schema.derive_annotations(tree.roots)
+        dropped = Reflection::Schema.dropped_deep_subfields(nil, nil, resolved: nil, deep_paths: tree.deep_paths)
+        _deep_freeze!(tree)
+        new(tree:, annotations: annotations.freeze, dropped: dropped.freeze)
+      end
+```
+
+That `dropped_deep_subfields` call shape is a guess and probably wrong — do NOT force it. What the code needs is a Reflection-side entry point that turns `tree.deep_paths` into the dropped list. Pick the cleanest one (a small public `Schema.dropped_from_deep_paths(deep_paths)` beside `dropped_deep_subfields`, with both funnelling through the same private `compute_dropped`, is likely tidier than overloading one method with four kwargs) and say in your report which you chose and why.
+
+In `_deep_freeze!`, `tree.dropped.freeze` must go — that member no longer exists. Freeze the new stored `dropped` at the point it is assigned instead, as shown. Delete the `def dropped = tree.dropped` delegator, since `dropped` is now a real member.
+
+- [ ] **Step 6: Update the specs that asserted through the tree**
+
+`spec/axn/internal/subfield_tree_spec.rb` asserts `tree.dropped` at five sites (~lines 30, 44, 119, 131, 144). Those assertions are about the DROP JUDGMENT, not about tree construction, so they belong with the layer that now owns it. Move each to assert through the Reflection entry point you built in Step 5, or relocate them to `spec/axn/internal/reflection/schema_spec.rb` if that reads better — your call, but every one of the five behaviors must still be asserted somewhere. Do not delete a case to make the suite green.
+
+- [ ] **Step 7: Run everything**
+
+Run: `bundle exec rspec spec/axn/standalone_require_spec.rb && bundle exec rspec && bundle exec rubocop && BUNDLE_GEMFILE=spec_rails/dummy_app/Gemfile bundle exec rspec spec_rails`
+Expected: all PASS. `standalone_require_spec`'s `upward_references` list should need no new entry — `SubfieldTree` now references nothing upward, and its allowlist entry was already removed. If the list needs a new entry, the split is incomplete.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add -A
+git commit -m "PRO-2997: SubfieldTree constructs, the reflection layer judges
+
+Internal::X promises a value-level mechanism any layer can use, and the module
+could not complete a build without Reflection::Schema — compute_dropped walked
+every deep path through node_configs_block_nesting?, nestable_as_object? and
+shape_members_at.
+
+Tree construction stays: the build now returns the deep [config, hops] pairs and
+says nothing about whether they are representable. The five methods that judged
+them move beside the emission they have to agree with, and ResolvedSubfields
+stores the verdict so the read path still reads it for free.
+
+Internal::ResolvedSubfields keeps its Schema dependency deliberately: deriving the
+annotations is its purpose, and Core:: reads it on the execution path, so it can
+neither be purified nor filed under Reflection."
+```
+
+---
+
 ### Task 9: `SubfieldContradictions` → `Core::Contract::SubfieldContradictions`
 
 **Files:**
