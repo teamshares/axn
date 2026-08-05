@@ -51,8 +51,15 @@ require "axn/util/execution_context"
 require "axn/mountable"
 require "axn/async"
 
-# Rails integration (if in Rails context)
-require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
+# Rails integration. The `defined?` check runs once and re-requiring axn is a no-op, so a host that
+# loads axn before Rails -- the conventional RSpec layout does -- would otherwise never get the
+# engine. `:before_configuration` fires from `Rails::Application#initialize`, before railties are
+# collected, and runs immediately if Rails is already past that point.
+if defined?(Rails) && Rails.const_defined?(:Engine)
+  require "axn/rails/engine"
+else
+  ActiveSupport.on_load(:before_configuration) { require "axn/rails/engine" }
+end
 
 module Axn
   def self.included(base)
