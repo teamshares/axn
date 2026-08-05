@@ -1444,6 +1444,40 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(described_class.build_output(plain.external_field_configs)[:properties][:cfg][:type]).to eq("object")
     end
 
+    # A NON-PUBLIC `to_h` override displaces the member-keyed serialization just as completely as a public one,
+    # and it does so for a DIFFERENT reason in each environment — which is why the assertion below is about what
+    # gets serialized rather than about which projection route was taken.
+    #
+    #   without ActiveSupport's json core_ext: `value.to_h` is unreachable, so neither the override nor
+    #     `Struct#to_h` is dispatched and the value renders through `to_s` — a String, not an object.
+    #   with it: `Struct#as_json` is `to_h.as_json`, and an implicit-receiver call reaches a protected/private
+    #     method fine — so the OVERRIDE's output is what gets emitted, keyed however it likes.
+    #
+    # Either way the emitted value is not an object keyed by the declared members, so advertising one is the
+    # mismatch `serializable_shape?` exists to prevent. Both visibilities are covered because the two obvious
+    # readers each miss one: `method_defined?` sees protected but not private, `public_method_defined?` neither.
+    %i[protected private].each do |visibility|
+      it "does not advertise object OUTPUT for a Struct whose to_h override is #{visibility}" do
+        hidden = Struct.new(:name) do
+          def to_h = { custom: true }
+          send(visibility, :to_h)
+        end
+        klass = Class.new do
+          include Axn
+          exposes(:cfg, type: hidden) { field :name, type: String }
+          def call = nil
+        end
+
+        # The runtime fact the schema has to agree with, stated so it holds in both environments: whatever is
+        # emitted, it is not an object carrying the declared member.
+        serialized = Axn::Internal::Reflection::Values.serialize_value(hidden.new("x"), path: "cfg")
+        expect(serialized.is_a?(Hash) && serialized.key?("name")).to be(false)
+
+        out = described_class.build_output(klass.external_field_configs)[:properties][:cfg]
+        expect(out).not_to have_key(:type)
+      end
+    end
+
     it "detects a custom as_json provided by an INCLUDED MODULE (not just directly defined)" do
       json_mod = Module.new { def as_json(*) = "scalar" }
       mod_data = Data.define(:name) { include json_mod }

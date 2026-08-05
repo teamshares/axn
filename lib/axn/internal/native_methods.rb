@@ -176,27 +176,31 @@ module Axn
       # would be exactly the replaced-verdict failure the bound read exists to prevent.
       def self.public_instance_method?(mod, name) = MODULE_PUBLIC_METHOD_DEFINED.bind_call(mod, name)
 
-      # The UnboundMethod a MODULE defines for `name`, or nil when it defines no PUBLIC one — the same
-      # question as `public_instance_method?` with the method itself as the answer, for a caller that needs
-      # more than the boolean (its `owner`, its `source_location`).
+      # The UnboundMethod a MODULE declares for `name` at ANY visibility, or nil when it declares none — the
+      # module-level twin of `method_owner`, for a caller that needs the method itself (its `owner`, its
+      # `source_location`) rather than just its owner.
       #
       # One lookup with one absence policy, on the same terms as `method_owner`: nil rather than a raise, so a
-      # caller compares against what it expects and an absent name simply fails that comparison. The two
-      # readers are the same fact — `public_method_defined?` deciding, `instance_method` resolving — so a
-      # consumer cannot get a yes from one and a different answer from the other.
+      # caller compares against what it expects and an absent name simply fails that comparison.
       #
-      # Restricted to PUBLIC deliberately, rather than resolving whatever `instance_method` would find: the
-      # callers here are deciding what a CONSUMER will dispatch (`serialize_value` calling `as_json`, a
-      # generated reader being invoked), and a private definition is not that. A bare `instance_method` would
-      # report one and change the verdict.
+      # Any visibility, deliberately, and the distinction is not academic. A caller here is asking whether the
+      # module DECLARES something of its own — which is what decides whether an inherited implementation still
+      # governs — and a non-public definition SHADOWS the inherited one just as completely as a public one
+      # does: a `protected`/`private` `to_h` on a Struct makes `value.to_h` unreachable, so neither the
+      # override nor `Struct#to_h` serializes it and the value degrades to `to_s`. A public-only reader calls
+      # that "no override" and a `method_defined?` reader misses the private case, so both judge such a class
+      # as provably member-keyed while its runtime rendering is a String.
       #
-      # Same precondition as `public_instance_method?` above, for the same reason: the caller must have
-      # established that `mod` IS a Module undispatched, since binding either reader to anything else is a
-      # TypeError — which is exactly the replaced-verdict failure a bound read exists to prevent.
-      def self.public_instance_method(mod, name)
-        return nil unless public_instance_method?(mod, name)
-
+      # A caller asking the DIFFERENT question — "would a consumer be able to dispatch this?" — wants
+      # `public_instance_method?` above, which is the right reader for a segment that has to be readable.
+      #
+      # Same precondition as that one, for the same reason: the caller must have established that `mod` IS a
+      # Module undispatched, since binding this to anything else is a TypeError — exactly the replaced-verdict
+      # failure a bound read exists to prevent.
+      def self.declared_instance_method(mod, name)
         MODULE_INSTANCE_METHOD.bind_call(mod, name)
+      rescue ::NameError
+        nil
       end
 
       # Which class or module OWNS the method a value would dispatch for `name` — resolved out of the value's

@@ -418,18 +418,21 @@ module Axn
         # method, which serialize_value would follow — so the serialized shape is no longer provably an
         # object keyed by the declared members.
         FRAMEWORK_SERIALIZATION_OWNERS = [Data, Struct, Hash, Object].freeze
-        # Read out of the method table (`NativeMethods.public_instance_method`) rather than asked of the class:
+        # Read out of the method table (`NativeMethods.declared_instance_method`) rather than asked of the class:
         # `klass` is the caller's declared type, and `method_defined?`/`instance_method` are as overridable as
         # anything else — one answering wrongly inverts whether a shape is judged provable. One lookup, so the
         # existence test and the owner it reports cannot disagree.
         #
-        # PUBLIC only, which is what the previous `method_defined?` also meant: `serialize_value` calls
-        # `as_json`/`to_h` publicly, so a private definition is not what it would follow, and counting one
-        # would reject a Data/Struct whose shape is provable after all.
+        # ANY visibility, which is wider than `method_defined?` (public + protected) and is the property this
+        # actually needs. The question is whether the built-in member-keyed serialization still governs, and a
+        # non-public override SHADOWS the inherited one just as completely as a public override: a
+        # `protected`/`private` `to_h` on a Struct makes `value.to_h` unreachable, so `Values.projection_for`
+        # reaches neither it nor `Struct#to_h` and the value renders through `to_s`. Judging such a class
+        # provably member-keyed advertises an object in the schema for something that serializes as a String.
         def custom_serialization?(klass, method)
           return false unless Axn::Internal::Identity.kind?(klass, ::Module)
 
-          owner = Axn::Internal::NativeMethods.public_instance_method(klass, method)&.owner
+          owner = Axn::Internal::NativeMethods.declared_instance_method(klass, method)&.owner
           !owner.nil? && !FRAMEWORK_SERIALIZATION_OWNERS.include?(owner)
         end
 
@@ -763,7 +766,7 @@ module Axn
         def framework_generated_reader?(klass, rule_name)
           return false unless Axn::Internal::Identity.kind?(klass, ::Module)
 
-          reader = Axn::Internal::NativeMethods.public_instance_method(klass, rule_name)
+          reader = Axn::Internal::NativeMethods.declared_instance_method(klass, rule_name)
           reader&.source_location&.first == Axn::Core::Contract::GENERATED_READER_SOURCE_PATH
         end
 
