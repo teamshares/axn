@@ -208,6 +208,13 @@ module Axn
     end
 
     class Executor # rubocop:disable Metrics/ClassLength
+      # The two `__present_as` implementations axn owns, held unbound so settlement stamps a presentation
+      # through the one the ANCESTRY selects rather than through whatever the exception's class provides.
+      # `Extensions.owned_failure?` admits exactly these two hierarchies. See `_resolve_and_stamp_presentation`.
+      FAILURE_PRESENT_AS = Axn::Failure.instance_method(:__present_as)
+      VALIDATION_PRESENT_AS = Axn::ValidationError.instance_method(:__present_as)
+      private_constant :FAILURE_PRESENT_AS, :VALIDATION_PRESENT_AS
+
       def initialize(action)
         @action = action
         @action_class = action.class
@@ -877,14 +884,14 @@ module Axn
 
         @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
-        if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
+        if Internal::Identity.kind?(e, Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
            Axn::ValidationError.user_facing?(e)
           # Make a `fails_on` (or user-facing `expects ..., user_facing:`) classification sticky to this
           # exception object (per call tree), so it stays a failure (fires on_failure, no report) as it
           # propagates through ancestor `call!`s — mirroring how Axn::Failure is sticky via its class.
           # Also record it on this result's context so result.outcome reports `failure` after the
           # per-execution set is cleared.
-          Internal::ExceptionClassification.mark_failure!(e) unless e.is_a?(Failure)
+          Internal::ExceptionClassification.mark_failure!(e) unless Internal::Identity.kind?(e, Failure)
           @context.__classify_as_failure!
           @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
         else
@@ -904,11 +911,24 @@ module Axn
       # `call!` bubbling. Setting it at every level would leave a presentation on a child run via plain
       # `.call`, which an explicit `.call` + re-raise (e.g. `step`'s bug path, `raise step_result.exception`)
       # would then leak into the parent's aggregation.
+      # Stamped through AXN'S OWN `__present_as`, bound to the exception rather than dispatched to it.
+      #
+      # `owned_failure?` is an undispatched ancestry test admitting exactly two hierarchies, and both define
+      # this method — so which implementation to run is decided by the ancestry that has already answered. That
+      # is stronger than asking the exception whether it can be stamped, and stronger than the `respond_to?`
+      # that used to sit here: a SUBCLASS that makes `__present_as` private or undefines it still passes
+      # `owned_failure?` by ancestry, so a dispatch raised `NoMethodError` from inside `_settle_exception!` —
+      # after the exception was recorded and BEFORE on_error/on_failure ran, costing both callbacks (verified).
+      # A bound call cannot be intercepted, so there is no availability question left to get wrong.
+      #
+      # This method is called bare from `_settle_exception!`, which is the whole reason nothing here may be
+      # asked of the exception.
       def _resolve_and_stamp_presentation(exception)
         resolved = @action.result.error
-        return unless resolved && Axn::Extensions.owned_failure?(exception) && exception.respond_to?(:__present_as)
+        return unless resolved && Axn::Extensions.owned_failure?(exception)
 
-        exception.__present_as(resolved)
+        stamper = Internal::Identity.kind?(exception, Failure) ? FAILURE_PRESENT_AS : VALIDATION_PRESENT_AS
+        stamper.bind_call(exception, resolved)
       end
 
       def trigger_on_exception(exception)
@@ -1294,15 +1314,33 @@ module Axn
                                                                      exception: scoped_error,
                                                                      operation: "resolving user_facing: message"))
                 end
-        parts.filter_map { |m| _override_part(m) }.presence || own
+        _rendered_parts(parts).presence || _rendered_parts(own)
       end
+
+      # Every exit from the resolution above renders through the same reader, so the fallback to the field's own
+      # message cannot disagree by bytes with the `when true` branch that renders the identical Array.
+      #
+      # Consistency rather than a behaviour fix, and worth being precise about which: `_composed_user_facing_error`
+      # runs EVERY part through `_override_part` again at the join, so a raw part handed back here was rendered
+      # downstream anyway and no caller could observe the difference. What it buys is that this method has one
+      # exit shape instead of two, so a future reader of its return value does not have to know that one branch
+      # is rendered and one is raw.
+      def _rendered_parts(list) = list.filter_map { |m| _override_part(m) }
 
       # A handler's return value as a list of message parts. `Kernel#Array` dispatches the value's own `to_ary`
       # and then its `to_a`, so a return value that cannot be listed contributes no parts and the field's own
       # validation message stands — the override is what a hostile return costs, never the outcome. The two
       # branches axn builds itself are listed without `Array()`: `own` is already axn's Array, and wrapping the
       # String branch by hand keeps a String SUBCLASS carrying a `to_ary` out of the coercion entirely.
+      #
+      # A HANDLER that returns such a subclass is short-circuited here on the same terms, which is what makes
+      # this method agree with the argument above rather than covering only the literal branch: `Kernel#Array`
+      # prefers `to_ary`, so a String subclass carrying one was expanded into whatever that method answered and
+      # its real text was dropped in favour of the field's validation message. A String IS one part, and it is
+      # rendered from its own bytes downstream, so listing it by hand costs nothing and settles it.
       def _override_parts(override)
+        return [override] if Internal::Identity.kind?(override, ::String)
+
         Array(override)
       rescue ::Exception # rubocop:disable Lint/RescueException
         []

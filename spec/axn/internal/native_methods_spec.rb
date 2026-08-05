@@ -306,3 +306,74 @@ RSpec.describe Axn::Internal::NativeMethods do
     end
   end
 end
+
+RSpec.describe Axn::Internal::NativeMethods, ".declared_instance_method" do
+  it "answers the UnboundMethod a module defines" do
+    mod = Module.new { def greet = "hi" }
+
+    resolved = described_class.declared_instance_method(mod, :greet)
+
+    expect(resolved).to be_a(UnboundMethod)
+    expect(resolved.owner).to equal(mod)
+  end
+
+  it "answers nil rather than raising when nothing defines the name" do
+    expect(described_class.declared_instance_method(Module.new, :nope_not_here)).to be_nil
+  end
+
+  # The nil policy is what lets a caller write `…&.owner` / `…&.source_location` and compare, instead of
+  # wrapping the lookup in a rescue and inventing a second absence policy — the split `method_owner` exists to
+  # prevent.
+  it "reports an INHERITED method with the ancestor that owns it" do
+    parent = Class.new { def greet = "hi" }
+    child = Class.new(parent)
+
+    expect(described_class.declared_instance_method(child, :greet).owner).to equal(parent)
+  end
+
+  # ANY visibility on purpose. A caller here asks whether the module DECLARES something of its own, which is
+  # what decides whether an inherited implementation still governs — and a non-public definition shadows the
+  # inherited one just as completely. `method_defined?` sees protected but not private, and
+  # `public_method_defined?` sees neither, so both would call a shadowed built-in "still in force".
+  it "reports a definition at every visibility, where the two predicates disagree" do
+    klass = Class.new do
+      def pub = 1
+      def prot = 2
+      def priv = 3
+      protected :prot
+      private :priv
+    end
+
+    %i[pub prot priv].each do |name|
+      expect(described_class.declared_instance_method(klass, name)&.owner).to equal(klass), "expected to find #{name}"
+    end
+
+    # The disagreement this reader exists to sit above.
+    expect(klass.method_defined?(:prot)).to be(true)
+    expect(klass.method_defined?(:priv)).to be(false)
+    expect(klass.public_method_defined?(:prot)).to be(false)
+  end
+
+  it "reads from the method table rather than asking the module" do
+    liar = Module.new do
+      def self.public_method_defined?(*) = raise(NotImplementedError, "must not be asked")
+      def self.instance_method(*) = raise(NotImplementedError, "must not be asked")
+      def greet = "hi"
+    end
+
+    expect(described_class.declared_instance_method(liar, :greet)).to be_a(UnboundMethod)
+    expect(described_class.declared_instance_method(liar, :nope)).to be_nil
+  end
+
+  # `public_instance_method?` answers the DIFFERENT question — "could a consumer dispatch this?" — and stays
+  # the right reader where that is what is being asked (a shape segment that has to be readable).
+  it "is deliberately wider than the public-dispatch predicate" do
+    klass = Class.new do
+      def hidden = 1
+      private :hidden
+    end
+
+    expect(described_class.declared_instance_method(klass, :hidden)).to be_a(UnboundMethod)
+    expect(described_class.public_instance_method?(klass, :hidden)).to be(false)
+  end
+end

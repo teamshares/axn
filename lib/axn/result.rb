@@ -2,6 +2,7 @@
 
 require "axn/core/context/facade"
 require "axn/core/context/facade_inspector"
+require "axn/internal/identity"
 
 module Axn
   # Outbound / External ContextFacade
@@ -82,7 +83,7 @@ module Axn
     # e.g. by an ancestor's on_error before this level's context flag is set — must not be frozen in.
     # The recompute is cheap: it short-circuits on the common paths and only allocates a StringInquirer.
     def outcome
-      label = if exception.is_a?(Axn::Failure)
+      label = if Axn::Internal::Identity.kind?(exception, Axn::Failure)
                 OUTCOME_FAILURE
               elsif exception
                 # Three records of "this settled as a failure", in priority order:
@@ -218,7 +219,10 @@ module Axn
       # an attachable reason, so a declared base `error` headlines it exactly like a `fail!` reason.
       return exception.user_facing_message.presence if Axn::ValidationError.user_facing?(exception)
 
-      return unless exception.is_a?(Axn::Failure)
+      # Undispatched, like every other type test on this object: the exception is caller-supplied, this
+      # runs while the failure is being reported and again on every later `result.error` read, and what
+      # it gates is whether axn calls its own readers on the object at all.
+      return unless Axn::Internal::Identity.kind?(exception, Axn::Failure)
       return if exception.default_message?
 
       # `supplied_reason`, not `raw_reason.presence`: the reason is the caller's object, this runs while the
@@ -230,7 +234,7 @@ module Axn
     def _fail_standalone?
       # A user-facing validation reason attaches by default (no per-field opt-out yet — deferred),
       # so anything that isn't a fail! Failure is NOT standalone.
-      return false unless exception.is_a?(Axn::Failure)
+      return false unless Axn::Internal::Identity.kind?(exception, Axn::Failure)
       # standalone: is scoped to the action that called fail!. A bubbled child Failure resolved at an
       # ancestor still gets the ancestor's base (child opt-out is local) → not standalone here.
       return false unless exception.__originating_action.equal?(action)

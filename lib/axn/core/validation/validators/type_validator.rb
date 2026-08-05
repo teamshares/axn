@@ -2,6 +2,8 @@
 
 require "active_model"
 
+require "axn/internal/rendering"
+
 module Axn
   module Validators
     class TypeValidator < ActiveModel::EachValidator
@@ -39,7 +41,15 @@ module Axn
       # A test double stands in for a value of any declared type: type validation waves them through so a
       # spec need not build a real instance. Named so every check that would otherwise report a double as a
       # contract violation can waive itself on the same terms.
-      def self.mock_value?(value) = Axn.config.env.test? && value.class.name&.start_with?("RSpec::Mocks::")
+      #
+      # The class is NAMED rather than asked: `value.class` is the value's own reader, and what this decides
+      # is whether type validation is waived entirely — so a value answering for itself waives its own
+      # contract check, and one that raises replaces the validation verdict with its exception. Reading it
+      # through the shared renderer (bound `Object#class` plus `Module#to_s`) also drops the `&.`, since it
+      # always answers a String — an anonymous class's `#<Class:0x…>` takes the same branch `nil` did.
+      def self.mock_value?(value)
+        Axn.config.env.test? && Axn::Internal::Rendering.class_name(value).start_with?("RSpec::Mocks::")
+      end
 
       # Shared matcher used by OfValidator for per-element type checking.
       def self.value_matches?(value, klass:, allow_blank: false)

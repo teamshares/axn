@@ -246,11 +246,21 @@ module Axn
         # to avoid triggering error message resolution multiple times
         # Each branch picks WHICH detail to report; none of them renders it. Rendering happens once, at the
         # join below, so the composition does not depend on every branch here having remembered to.
-        detail = if resolved_error == Axn::Core::Flow::Handlers::Resolvers::MessageResolver::DEFAULT_ERROR
-                   e
-                 else
-                   resolved_error
-                 end
+        #
+        # Two halves, and both are load-bearing. `resolved_error` is the CALLER's object whenever they handed
+        # one to `fail!` or returned one from a declared `error` handler (`resolve_message` returns a
+        # standalone reason unchanged), so the comparison dispatched that object's own `==` — from inside a
+        # handler that runs within `best_effort`, meaning a raise there lost both this log line and the
+        # configured `on_exception` callback. Putting axn's frozen literal on the LEFT is not sufficient on its
+        # own: `String#==` hands off to the argument's `==` when the argument is not a String. The undispatched
+        # type test is what makes this a byte comparison in C.
+        # Yoda deliberately, and the cop is disabled rather than obeyed: axn's own frozen literal has to be the
+        # RECEIVER. `String#==` compares bytes in C for any String argument, subclass included, so with the
+        # literal on the left nothing the value defines runs; flipping it would dispatch the subclass's `==`
+        # and undo half of what the type test above is for.
+        default_message = Axn::Internal::Identity.kind?(resolved_error, ::String) &&
+                          Axn::Core::Flow::Handlers::Resolvers::MessageResolver::DEFAULT_ERROR == resolved_error # rubocop:disable Style/YodaCondition
+        detail = default_message ? e : resolved_error
       else
         detail = e
       end

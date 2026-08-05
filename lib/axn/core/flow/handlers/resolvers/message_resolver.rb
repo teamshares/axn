@@ -103,12 +103,28 @@ module Axn
             # The separator is handed on AS IT CAME. Which separator this is depends on a branch here and on
             # three more inside `apply_join_proc`, so rendering it per-branch would put the composition's
             # correctness back on enumerating six call sites; `joined` normalizes it instead (see there).
+            #
+            # Neither branch asks the `join:` value anything, and the ORDER is what removes the need for a
+            # callable probe at all. `join:` is the declaring author's object rather than an arbitrary
+            # caller's, but this runs on the settlement path, so a `respond_to?` here escaped `.call`
+            # entirely rather than costing the separator.
+            #
+            # `MessageDescriptor.build` has already rejected a join that is neither a String nor callable, so
+            # what arrives here has answered both questions once. That is evidence about the FIRST call and
+            # nothing more — the same bound that made a non-idempotent `Exception#exception` reachable after
+            # the object had already been raised once — which is why the answer is taken from the hierarchy
+            # here rather than from the declaration having passed.
+            #
+            # String first, so an explicit `""` is honored verbatim before absence is considered; then
+            # absence (an unset `nil` join) through the gem's single undispatched answer to "was anything
+            # supplied"; then everything else to `apply_join_proc`, which already carries the guard this path
+            # needs. Nothing is left to fall through to a silent default.
             def combine(base, reason)
               j = join
-              return apply_join_proc(j, base, reason) if j.respond_to?(:call)
-              return joined(base, reason, j) if j.is_a?(String)
+              return joined(base, reason, j) if Axn::Internal::Identity.kind?(j, ::String)
+              return joined(base, reason, DEFAULT_JOIN) if Axn::Internal::NativeMethods.absent_value?(j)
 
-              joined(base, reason, DEFAULT_JOIN)
+              apply_join_proc(j, base, reason)
             end
 
             # The composed message, with each half rendered BEFORE it is interpolated.
@@ -141,20 +157,37 @@ module Axn
             # A join Proc runs on the presentation path, which must never raise. A Proc that raises,
             # mismatches arity, or returns a non-String falls back to the default join (and warns) —
             # mirroring how a base-header block that raises falls back down the headline chain.
+            #
+            # The Proc receives the halves ALREADY RENDERED — the same `fragment` every other branch of the
+            # join composes through — so what it is handed is a UTF-8 String this class owns rather than
+            # whatever a declared `error` handler returned or a caller passed `fail!`. Two things follow.
+            # The Proc's own interpolation can no longer dispatch a hostile `to_s`, which is the one dispatch
+            # on this path axn could not otherwise contain: it happens inside the caller's block, and outside
+            # StandardError it escapes the rescue below. And `reason.upcase` — the recasing the interface is
+            # documented for — works on the object it is documented to work on.
+            #
+            # Rendering here rather than in `combine` keeps it at the point the Proc is actually handed the
+            # operands; the DEFAULT_JOIN fallbacks below pass the raw halves to `joined`, which renders them
+            # itself, and rendering is idempotent either way.
             def apply_join_proc(proc, base, reason)
               unless join_accepts_base_and_reason?(proc)
-                reported_arity = proc.is_a?(Proc) || proc.is_a?(Method) ? proc.arity : proc.method(:call).arity
-                action.warn("join: callable cannot accept (base, reason) (arity #{reported_arity}) — using default join")
+                action.warn("join: callable cannot accept (base, reason) (arity #{callable_arity(proc)}) — using default join")
                 return joined(base, reason, DEFAULT_JOIN)
               end
 
-              result = proc.call(base, reason)
+              result = proc.call(fragment(base), fragment(reason))
               # `Module#===` rather than `result.is_a?(String)`: the joiner's return value is caller-supplied,
               # and this test decides whether it is RETURNED as the message. A value that claimed to be a
               # String would be handed on and interpolated by whoever reads `result.error`, dispatching its
               # `to_s` outside this method's rescue. Naming its class goes through the same funnel as the
               # rescue below, for the same reason: `result.class` is the value's own override.
-              return result if Axn::Internal::Identity.kind?(result, String) && result.present?
+              # Blankness comes from `absent_value?` rather than `present?`, on the same terms as the
+              # `kind?` beside it: `present?` is an ActiveSupport method on Object, so the String SUBCLASS
+              # this line has just admitted can override it — and a value answering "present" here and
+              # "blank" to a later reader is returned AS the message and interpolated by whoever reads
+              # `result.error`. Reading its own bytes is the one undispatched answer the gem gives that
+              # question.
+              return result if Axn::Internal::Identity.kind?(result, String) && !Axn::Internal::NativeMethods.absent_value?(result)
 
               detail = if Axn::Internal::Identity.kind?(result, String)
                          "a blank String"
@@ -177,12 +210,24 @@ module Axn
             # A joiner accepts (base, reason) iff it takes exactly 2 positional args, or is variadic
             # with <= 2 required args. Matches how a lambda would accept the call (non-lambda Procs
             # don't enforce arity themselves, so we check explicitly).
-            # Procs/Methods answer #arity directly. Any other callable (a plain object with #call)
-            # reports its arity via #call.arity — we must NOT use .method(:call).arity on a Proc
-            # because Proc#call is variadic (arity -1) and would defeat the check.
             def join_accepts_base_and_reason?(callable)
-              arity = callable.is_a?(Proc) || callable.is_a?(Method) ? callable.arity : callable.method(:call).arity
+              arity = callable_arity(callable)
               arity == 2 || (arity.negative? && (-arity - 1) <= 2)
+            end
+
+            # Procs/Methods answer #arity directly. Any other callable (a plain object with #call) reports its
+            # arity via #call.arity — we must NOT use .method(:call).arity on a Proc because Proc#call is
+            # variadic (arity -1) and would defeat the check. One reader, because the guard and the warning
+            # that names why the guard failed have to agree on which arity they are talking about.
+            #
+            # Undispatched type tests, and the `.method(:call)`/`#arity` reads that follow are the caller's —
+            # deliberately, since asking what a callable ACCEPTS has no undispatched form. They stay inside
+            # `apply_join_proc`'s rescue, which is where a value with no `call` at all (`join: 123`) lands.
+            def callable_arity(callable)
+              own_arity = Axn::Internal::Identity.kind?(callable, ::Proc) || Axn::Internal::Identity.kind?(callable, ::Method)
+              return callable.arity if own_arity
+
+              callable.method(:call).arity
             end
 
             # This descriptor's message body, or nil when it supplied none — the ONE place that question is

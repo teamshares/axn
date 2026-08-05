@@ -323,9 +323,15 @@ module Axn
     end
 
     # Single source of truth for "did this (arbitrary) exception settle into the user-facing failure
-    # bucket?" — folds in the `is_a?` guard so the Executor (classification) and Result (outcome +
+    # bucket?" — folds in the type guard so the Executor (classification) and Result (outcome +
     # surfaced reason) ask the question one way and can't drift apart.
-    def self.user_facing?(exception) = exception.is_a?(self) && exception.user_facing?
+    #
+    # The type test is undispatched, because it gates a second dispatch to the same instance: an
+    # exception's own answer deciding whether axn may call `user_facing?` on it means one that lies
+    # routes an arbitrary object into that call, and one that raises replaces the failure being
+    # classified. Once the hierarchy has answered, `user_facing?` is axn's own reader on an axn-owned
+    # class and is dispatched normally.
+    def self.user_facing?(exception) = Axn::Internal::Identity.kind?(exception, self) && exception.user_facing?
 
     def user_facing? = @user_facing
 
