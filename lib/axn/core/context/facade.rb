@@ -43,11 +43,7 @@ module Axn
         end
       end
 
-      def _model_fields
-        action.internal_field_configs.each_with_object({}) do |config, hash|
-          hash[config.field] = config.validations[:model] if config.validations.key?(:model)
-        end
-      end
+      def _model_fields = action.class._model_fields
 
       def action_name = @action.class.name.presence || "The action"
 

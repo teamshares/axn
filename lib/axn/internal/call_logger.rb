@@ -48,6 +48,13 @@ module Axn
         return unless level
 
         Axn::Extensions.best_effort(error_context, action: action_class) do
+          # Guarded by the same best_effort boundary as everything else in this block: a custom
+          # logger's severity predicate can itself raise, and that must be absorbed exactly like any
+          # other formatting failure here — some callers (call_async's invocation log, the
+          # enqueue-all completion log) invoke log_at_level with no other best_effort wrapping it, so
+          # checking the predicate outside this boundary could abort the call it only meant to log.
+          next unless would_log?(level)
+
           # Prepare and format context if needed
           context_str = if context_instance && context_direction
                           # Instance-level: use private inputs_for_logging / outputs_for_logging
@@ -89,6 +96,21 @@ module Axn
       # emitted by a plain Logger). Public so the Executor can gate the in-flight body context on it.
       def semantic_logger?
         defined?(SemanticLogger::Logger) && Axn.config.logger.is_a?(SemanticLogger::Logger)
+      end
+
+      # Whether the configured logger would actually emit at `level`, read via the logger's OWN
+      # severity predicate (`debug?`/`info?`/`warn?`/`error?`/`fatal?` — the same query Ruby's stdlib
+      # `Logger` and `SemanticLogger::Logger` already expose). A logger that doesn't respond to the
+      # predicate is assumed to emit, which matches today's behavior exactly — a custom logger
+      # implementing only the plain level methods loses nothing. This is deliberately NOT a switch to
+      # block-form logging (`logger.info { msg }`): that would silently drop the message for a custom
+      # logger whose level methods take a positional argument only and ignore an unused block. Public:
+      # `log_at_level` is the only caller, from this same module, but kept alongside `semantic_logger?`
+      # for the same reason that one is public.
+      def would_log?(level)
+        logger = Axn.config.logger
+        predicate = :"#{level}?"
+        !logger.respond_to?(predicate) || logger.public_send(predicate)
       end
 
       private

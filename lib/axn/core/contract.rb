@@ -7,6 +7,7 @@ require "active_support/core_ext/module/delegation"
 require "active_support/core_ext/object/blank"
 
 require "axn/core/contract/redaction"
+require "axn/core/contract/validator_class_cache"
 require "axn/core/contract/shape_declaration"
 require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
@@ -365,6 +366,7 @@ module Axn
         # and in the same lookup position as when it lived in this file.
         include ShapeDeclaration
         include Redaction
+        include ValidatorClassCache
 
         # rubocop:disable Metrics/ParameterLists
         def expects(
@@ -534,23 +536,70 @@ module Axn
           end
         end
 
+        DeclaredFieldsCacheEntry = Data.define(:internal_field_configs, :external_field_configs, :fields)
+
+        # `configs.map(&:field)` was a fresh Array on every call — `Redaction#_context_slice` alone
+        # calls this twice per logged line (inbound + outbound), and the context facade calls it twice
+        # per action call. Cached per direction, invalidated by the identity of BOTH config arrays
+        # (rather than only the one a given direction reads) for simplicity: an outbound-only
+        # redeclaration then occasionally invalidates the (unaffected) :inbound slot too, which is
+        # never a wrong answer, only an avoidable rebuild.
+        #
+        # The cached Array is FROZEN before it's stored: `ContextFacade` exposes this exact object
+        # publicly as `Result#declared_fields`, so a fresh Array per call used to confine any caller
+        # mutation to that one facade — reusing the same object across every future call turns that
+        # mutation into permanent cache corruption (a caller-appended field name would start defining
+        # readers/passing `expose` for undeclared output on every subsequent call of the class) unless
+        # the shared object refuses to be mutated at all.
         def _declared_fields(direction)
           raise ArgumentError, "Invalid direction: #{direction}" unless direction.nil? || %i[inbound outbound].include?(direction)
 
+          internals = internal_field_configs
+          externals = external_field_configs
+          cache = (@_axn_declared_fields_cache ||= {})
+          cached = cache[direction]
+          return cached.fields if cached && cached.internal_field_configs.equal?(internals) && cached.external_field_configs.equal?(externals)
+
           configs = case direction
-                    when :inbound then internal_field_configs
-                    when :outbound then external_field_configs
-                    else (internal_field_configs + external_field_configs)
+                    when :inbound then internals
+                    when :outbound then externals
+                    else (internals + externals)
                     end
 
-          configs.map(&:field)
+          cache[direction] = DeclaredFieldsCacheEntry.new(internal_field_configs: internals, external_field_configs: externals,
+                                                          fields: configs.map(&:field).freeze)
+          cache[direction].fields
+        end
+
+        ModelFieldsCacheEntry = Data.define(:internal_field_configs, :value)
+
+        # Field => model options for every internal field carrying `model:`, cached per class: a pure
+        # function of `internal_field_configs`, rebuilt only when that array's identity changes (any
+        # redeclaration, subclass, or Mountable/Factory rebuild — see Redaction's doctrine comment).
+        # Moved here from the context facade instance (was rebuilt from scratch on every reader
+        # definition — O(fields defined × contract size) per action instance, since both the outbound
+        # Result facade and the inbound InternalContext facade instantiate one per call).
+        #
+        # Frozen before caching, same reasoning as `_declared_fields`: this is a public class method
+        # (so any caller can hold the live Hash), and the old per-call rebuild used to confine a
+        # caller mutation to that one read — reusing the same Hash across every future call would
+        # otherwise turn a mutation into permanent cross-call cache corruption.
+        def _model_fields
+          fields = internal_field_configs
+          cached = @_axn_model_fields
+          return cached.value if cached && cached.internal_field_configs.equal?(fields)
+
+          value = fields.each_with_object({}) { |config, hash| hash[config.field] = config.validations[:model] if config.validations.key?(:model) }
+          @_axn_model_fields = ModelFieldsCacheEntry.new(internal_field_configs: fields, value: value.freeze)
+          value
         end
 
         # Everything below is reached only with an implicit receiver, from here and from the other declaration
         # modules extended onto the same class. It is private because an `_`-prefixed name in a module extended
         # onto every action class otherwise lands there as a PUBLIC singleton method, so the convention and the
         # surface disagree. `_declared_fields` stays public above: the context facade, the redaction slice and
-        # `Mountable`'s step passthrough call it on the action class from other files.
+        # `Mountable`'s step passthrough call it on the action class from other files. `_model_fields` stays
+        # public for the same reason: the context facade reads it from `facade.rb`.
         private
 
         # Reject `user_facing:` on any member of an `exposes` shape, at any depth. The block form
