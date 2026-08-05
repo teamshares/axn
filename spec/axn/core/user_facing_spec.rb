@@ -192,6 +192,48 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.error).to eq("Note can't be blank")
       expect(events).to eq([:on_failure])
     end
+
+    # The literal `user_facing: "…"` branch is listed by hand precisely so a String subclass carrying a
+    # `to_ary` never reaches `Kernel#Array`. A HANDLER returning the same object went through it, and
+    # `Kernel#Array` prefers `to_ary` — so the text was expanded into whatever that method answered and
+    # dropped, leaving the field's validation message where the override should have been. Contained, but a
+    # String is one part however it arrived.
+    it "surfaces a handler's String return whose class also defines to_ary" do
+      sneaky = Class.new(String) do
+        def to_ary = []
+      end.new("Please add a note")
+
+      action = build_axn do
+        expects :note, user_facing: ->(_e) { sneaky }
+        def call = nil
+      end
+
+      result = action.call
+
+      expect(result.outcome.failure?).to be(true)
+      expect(result.error).to eq("Please add a note")
+    end
+
+    # Every exit renders through the same reader, including the fall back to the field's own message. A
+    # Latin-1 field name yields a Latin-1 `full_message`, and that Array was previously handed back raw on
+    # the fallback path while the `user_facing: true` branch rendered the identical value — so which bytes a
+    # caller got depended on whether a handler happened to resolve.
+    it "renders the fallback to the field's own message on the same terms as user_facing: true" do
+      latin1_name = "n\xF4te".dup.force_encoding("ISO-8859-1").to_sym
+
+      resolved = build_axn do
+        expects latin1_name, user_facing: ->(_e) {}
+        def call = nil
+      end.call.error
+
+      declared = build_axn do
+        expects latin1_name, user_facing: true
+        def call = nil
+      end.call.error
+
+      expect(resolved.encoding).to eq(Encoding::UTF_8)
+      expect(resolved).to eq(declared)
+    end
   end
 
   describe "non-presence validations are equally user-facing" do

@@ -1300,15 +1300,29 @@ module Axn
                                                                      exception: scoped_error,
                                                                      operation: "resolving user_facing: message"))
                 end
-        parts.filter_map { |m| _override_part(m) }.presence || own
+        _rendered_parts(parts).presence || _rendered_parts(own)
       end
+
+      # Every exit from the resolution above renders through the same reader. The fallback used to hand `own`
+      # back raw while the `when true` branch rendered the identical Array, so for a non-UTF-8 validation
+      # message — a Latin-1 field name yields a Latin-1 `full_message` — the two disagreed by bytes, and which
+      # one a caller got depended on whether a handler happened to resolve.
+      def _rendered_parts(list) = list.filter_map { |m| _override_part(m) }
 
       # A handler's return value as a list of message parts. `Kernel#Array` dispatches the value's own `to_ary`
       # and then its `to_a`, so a return value that cannot be listed contributes no parts and the field's own
       # validation message stands — the override is what a hostile return costs, never the outcome. The two
       # branches axn builds itself are listed without `Array()`: `own` is already axn's Array, and wrapping the
       # String branch by hand keeps a String SUBCLASS carrying a `to_ary` out of the coercion entirely.
+      #
+      # A HANDLER that returns such a subclass is short-circuited here on the same terms, which is what makes
+      # this method agree with the argument above rather than covering only the literal branch: `Kernel#Array`
+      # prefers `to_ary`, so a String subclass carrying one was expanded into whatever that method answered and
+      # its real text was dropped in favour of the field's validation message. A String IS one part, and it is
+      # rendered from its own bytes downstream, so listing it by hand costs nothing and settles it.
       def _override_parts(override)
+        return [override] if Internal::Identity.kind?(override, ::String)
+
         Array(override)
       rescue ::Exception # rubocop:disable Lint/RescueException
         []
