@@ -38,7 +38,11 @@ New ordering, which removes both dispatches **and** the need for a callable prob
 2. `NativeMethods.absent_value?(j)` → `joined(base, reason, DEFAULT_JOIN)` (covers the unset `nil` join and `join: false`)
 3. anything else → `apply_join_proc`, which already carries the guard
 
-Behaviour change: a non-String, non-callable join (`join: 123`) now reaches `apply_join_proc`, so it warns and falls back instead of silently defaulting. That is the honest outcome for a declaration bug, and the fallback text is unchanged.
+**No** behaviour change for a non-String, non-callable join. `MessageDescriptor.build:47` already rejects one at declaration (`ArgumentError: join: must be a String or a callable`), so `join: 123` never reaches `combine` at all — the third branch is only ever a callable, and the reordering leaves nothing falling through to a silent default.
+
+Which narrows what the hardening is *for*, and the narrower claim is the honest one. Because the declaration guard has already asked both questions, what arrives at `combine` has answered them **once**. That is evidence about the first call and nothing more — the same bound that made a non-idempotent `Exception#exception` reachable after the object had already been raised once (`native_methods.rb`'s header: "an `#exception` that succeeds on its first call and raises on its second is not excluded by the object having been raised once"). So the reachable hazard is a `join:` whose answer is not idempotent, and the fix is to stop asking rather than to trust that the declaration passing settles it.
+
+Note the declaration guard at `message_descriptor.rb:47` itself stays dispatched. It is a declaration guard on the self-correcting side of PRO-3027's boundary, and with `combine` routing every non-String through `apply_join_proc`'s guard, a value that lies to it is now contained rather than escaping.
 
 ### C1.4 `MessageResolver#apply_join_proc` (`message_resolver.rb:144`)
 
@@ -140,7 +144,7 @@ Each row is a site; each column is how a caller's object unwinds. The cell is wh
 
 | Site | `respond_to?` raises | `to_s` raises (in `StandardError`) | `to_s` raises (outside) | overridden `==`/`is_a?`/`class` answers wrongly | `to_ary` on a String subclass | non-UTF-8 bytes both sides |
 | --- | --- | --- | --- | --- | --- | --- |
-| `combine` join test | escapes `.call`, bare `RuntimeError`, `events=[]` | — | — | wrong join branch | — | — |
+| `combine` join test | escapes `.call` — but only for a join whose answer is not idempotent, since declaration already asked once | — | — | wrong join branch | — | — |
 | join Proc interpolation | — | degrades to default join (correct) | escapes `.call` | — | — | `Encoding::CompatibilityError` → default join |
 | join Proc return `present?` | — | — | — | blank treated as present, returned as the message | — | — |
 | `_resolve_and_stamp_presentation` | escapes `_settle_exception!` after the exception is recorded but before `on_error`/`on_failure`/`on_exception` and the global report | — | — | presentation not stamped | — | — |

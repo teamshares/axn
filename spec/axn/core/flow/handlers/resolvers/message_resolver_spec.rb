@@ -298,6 +298,120 @@ RSpec.describe "join: Proc raise-safety" do
     expect(result.error).to eq("Outer: inner")
     expect(warnings).to include(a_string_matching(/join: Proc raised ArgumentError: "bad\\xFF"/))
   end
+
+  # Choosing WHICH join branch applies is itself a read of the caller's `join:` value, and it happens before
+  # any of the guards above — so `respond_to?`/`is_a?` there escaped `.call` outright rather than costing the
+  # separator. The branch is now decided from the hierarchy.
+  #
+  # `MessageDescriptor.build` already rejects a join that is neither a String nor callable, so what reaches
+  # `combine` has answered those questions once, at declaration. That bounds this to a value whose answer is
+  # NOT IDEMPOTENT — the same shape the repo has already been bitten by on `Exception#exception`, where an
+  # implementation succeeding on its first call and raising on its second was not excluded by the object
+  # having been raised once. Declaration passing is evidence about the first call and nothing else.
+  it "does not re-ask the join: value which branch it belongs in" do
+    hostile = Class.new do
+      def initialize = @armed = false
+      def arm! = @armed = true
+      # Ruby's own signature — `respond_to?` takes the private flag positionally, so a keyword here would
+      # not be the method Ruby dispatches.
+      def respond_to?(name, include_private = false) = @armed ? raise(NotImplementedError, "respond_to? must not decide the branch") : super # rubocop:disable Style/OptionalBooleanParameter
+      def is_a?(klass) = @armed ? raise(NotImplementedError, "is_a? must not decide the branch") : super
+      def kind_of?(klass) = is_a?(klass)
+      def call(base, reason) = "#{base} / #{reason}"
+    end.new
+
+    action = build_axn do
+      error "Outer", join: hostile
+      def call = fail!("inner")
+    end
+    hostile.arm!
+
+    result = nil
+    expect { result = action.call }.not_to raise_error
+    expect(result.error).to eq("Outer / inner")
+  end
+
+  # An explicit "" is honored verbatim, which is why the String branch is tested BEFORE absence: `""` is
+  # blank by every spelling of the question, so an absence test reached first would silently substitute ": ".
+  it "still honors an explicit empty-String join" do
+    action = build_axn do
+      error "Outer", join: ""
+      def call = fail!("inner")
+    end
+    expect(action.call.error).to eq("Outerinner")
+  end
+
+  # Pinning why `combine` needs no callable probe of its own: a non-String, non-callable join never gets far
+  # enough to be one of its branches.
+  it "rejects a join: value that is neither a String nor callable at declaration" do
+    expect { build_axn { error "Outer", join: 123 } }
+      .to raise_error(ArgumentError, /join: must be a String or a callable/)
+  end
+
+  describe "the operands a join Proc receives" do
+    # The Proc is handed rendered halves, so its own interpolation cannot dispatch a hostile `to_s`. That was
+    # the one dispatch on this path axn could not contain by guarding: it happens inside the caller's block,
+    # and the raise here is outside StandardError AND outside SWALLOWABLE_BEYOND_STANDARD_ERROR
+    # (SystemStackError, ScriptError), so it escaped the rescue in `apply_join_proc` entirely.
+    it "renders a reason whose to_s raises unswallowably, instead of letting the Proc dispatch it" do
+      unswallowable = Class.new(Exception) # rubocop:disable Lint/InheritException
+      reason = Class.new do
+        define_method(:to_s) { raise(unswallowable, "to_s must not be dispatched by the join Proc") }
+      end.new
+
+      action = build_axn do
+        error "Outer", join: ->(base, r) { "#{base} <#{r}>" }
+        define_method(:call) { fail!(reason) }
+      end
+
+      result = nil
+      expect { result = action.call }.not_to raise_error
+
+      # The unrenderable half degrades to its CLASS — the same fallback every other branch of the join
+      # takes — and the Proc still composed around it.
+      expect(result.error).to match(/\AOuter <.+>\z/)
+    end
+
+    it "hands the Proc Strings, so the documented recasing works" do
+      action = build_axn do
+        error "Outer", join: ->(base, reason) { "#{base} — #{reason.upcase}" }
+        def call = fail!("inner")
+      end
+
+      expect(action.call.error).to eq("Outer — INNER")
+    end
+
+    # Non-ASCII on BOTH sides, which is what an Encoding::CompatibilityError actually needs: a Latin-1
+    # reason against an all-ASCII template concatenates silently and would pass vacuously.
+    it "renders a Latin-1 reason before the Proc joins it to non-ASCII prose" do
+      latin1 = "caf\xE9".dup.force_encoding("ISO-8859-1")
+      action = build_axn do
+        error "Outer", join: ->(base, reason) { "#{base} — #{reason} ✓" }
+        define_method(:call) { fail!(latin1) }
+      end
+
+      result = nil
+      expect { result = action.call }.not_to raise_error
+      expect(result.error).to include("café")
+      expect(result.error.encoding).to eq(Encoding::UTF_8)
+    end
+  end
+
+  # The Proc's return value decides whether it is RETURNED as the message, so its blankness is read from its
+  # own bytes rather than by dispatching `present?` — which a String subclass overrides as readily as `to_s`.
+  it "does not let the returned String's own present? decide that it is a usable message" do
+    liar = Class.new(String) do
+      def present? = true
+      def blank? = false
+    end.new("   ")
+
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { liar }
+      def call = fail!("inner")
+    end
+
+    expect(action.call.error).to eq("Outer: inner")
+  end
 end
 
 RSpec.describe "a message handler whose return value cannot answer whether it is blank" do
