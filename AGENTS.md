@@ -176,6 +176,16 @@ Any code that recurses through caller-supplied Hash/Array values must cycle-guar
   otherwise every example fails for the same uninteresting reason, which is the commonest cause of a
   fails-in-both reading.
 
+  **Run each side from inside its own checkout**, as above — never require the other tree's files from this
+  one. axn's internal requires are non-relative (`require "axn/…"`), so they resolve against `$LOAD_PATH`,
+  which under this checkout's bundle points back here: only the outermost `require_relative` lands in the
+  other tree and everything beneath it is silently THIS tree's code. Between nearby refs that succeeds and
+  reports today's behaviour for both sides — a zero delta that looks like "the change had no effect" —
+  while between distant ones it surfaces as a confusing `LoadError` for a file the other tree never had.
+  The benchmark harness hard-fails on the mismatch (`benchmark/support/axn_scenarios.rb` compares
+  `Object.const_source_location("Axn::VERSION")` against its own root), so a profiling A/B cannot make this
+  mistake quietly; a hand-rolled script that loads `lib/axn` some other way still can.
+
 ## Changes & compatibility
 
 - **CHANGELOG every user-visible change** under `## Unreleased`, tagged `[FEAT]` / `[BREAKING]` /

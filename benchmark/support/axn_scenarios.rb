@@ -2,6 +2,34 @@
 
 require_relative "../../lib/axn"
 
+# Every benchmark path loads axn through this file, so this is where "am I measuring the axn I think
+# I am?" gets answered. It is not rhetorical: comparing this tree against a worktree at an older ref
+# is the whole technique for attributing a regression (see AGENTS.md), and requiring that worktree's
+# scenarios from THIS checkout's bundle silently measures this tree twice. axn's internal requires are
+# non-relative (`require "axn/..."`), so they resolve against `$LOAD_PATH` — which this bundle points
+# back here — and only the outermost `require_relative` above lands in the other tree. The delta then
+# reads as zero, or as noise, with nothing anywhere saying why. Fail loudly instead: run each side
+# under its own checkout's bundle (`BUNDLE_GEMFILE=<root>/Gemfile bundle exec …`).
+begin
+  expected_root = File.realpath(File.expand_path("../..", __dir__))
+  version_file = Object.const_source_location("Axn::VERSION")&.first
+  loaded_root = version_file && File.realpath(File.expand_path("../../..", version_file))
+
+  if loaded_root != expected_root
+    abort <<~MSG
+      Benchmark load-path mismatch — refusing to measure the wrong axn.
+
+        scenarios from: #{expected_root}
+        axn loaded from: #{loaded_root || '(unknown)'}
+
+      axn's internal requires are non-relative, so they resolved against this process's $LOAD_PATH
+      rather than the checkout holding these scenarios. Run each side under its own bundle:
+
+        (cd #{expected_root} && BUNDLE_GEMFILE=#{expected_root}/Gemfile bundle exec ruby <script> #{expected_root})
+    MSG
+  end
+end
+
 module Benchmark
   module AxnScenarios
     # Bare minimum - just confirms Axn runs without raising
