@@ -92,6 +92,10 @@ The trap to avoid: `Identity.class_of(value).name` returns `"ActiveRecord::Relat
 
 This activates a dormant path, so it changes `inspect` output for **every** AR-relation exposure. Own commit, own CHANGELOG entry.
 
+**Found while writing the spec, and folded into the same commit:** `Internal::CallLogger#format_object` has no relation branch at all — only one for `ActiveRecord::Base` — so it falls through to the same `data.inspect`. That runs on **every logged call**, not only when something asks for an inspect, so an action exposing a relation issued a `SELECT` per call purely to build its log line. Fixing only the inspector would have left the cost fully in place and made the CHANGELOG entry misleading. Note `data.class.name`, the spelling the neighbouring `ActiveRecord::Base` branch uses, is exactly the trap above — it would lose the model — so this one also goes through `Rendering.class_name`.
+
+The test measures **SELECTs via `sql.active_record` notifications**, not `relation.loaded?`. `loaded?` is vacuous here and passes against the broken code: ActiveRecord's `Relation#inspect` reads through `annotate("loading for inspect")`, which builds a separate relation, so the query runs while the original object is never marked loaded.
+
 ## C3 — Ownership and availability lookups
 
 ### C3.1 `ShapeValidator` (`shape_validator.rb:205` and `:182`)
@@ -136,7 +140,9 @@ The neighbouring `Module#<`/`#<=`/`#==` comparisons at `:365-368` and `:401-402`
 
 ## C5 — `AGENTS.md`
 
-The error-path rule is one line of 8,483 characters (line **135**, not the ticket's `:120` — the file has moved). The repo forbids hard-wrapping prose, so it splits into several one-line paragraphs. Its neighbours at `:131`, `:133`, `:137`, `:139`, `:141` are 1–2k each and stay as they are; the rules inside `:135` are what stopped being findable.
+The error-path rule is one line of 8,483 characters (line **135**, not the ticket's `:120` — the file has moved). The repo forbids hard-wrapping prose, so it splits into several one-line paragraphs. Its neighbours at `:131`, `:133` and the one after are 1–2k each and stay as they are; the rules inside `:135` are what stopped being findable.
+
+Landed as **twelve** paragraphs, longest 1,287 characters — in line with those neighbours. The split was applied mechanically at rule boundaries and asserted lossless by rejoining the parts and comparing against the original, so no prose changed.
 
 ## Failure grid
 
