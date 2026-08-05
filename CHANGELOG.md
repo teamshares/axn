@@ -5,6 +5,7 @@
 ### Performance
 
 * [INTERNAL] The one-off ActiveModel validator class for a declared field/subfield is now compiled once per class and reused across every `.call`, instead of being recompiled (and its ActiveModel validator machinery re-instantiated) on every call. `auto_log` no longer builds its before/after payload when the configured logger's own severity level would discard it. `_model_fields` and `_declared_fields` are now cached per class instead of being rebuilt from the full contract on every reader definition / every read. Recovers roughly half of alpha-5's per-call allocation increase on the `basic` benchmark scenario — 489 → 250 objects/call (see PRO-3050).
+* [BREAKING] `Result#declared_fields` now returns a frozen Array. Previously each call built a fresh Array, so appending to the one handed to a given result had no effect beyond that call; the Array is now cached and shared across every call of the class (see above), so mutating it raises `FrozenError` instead of silently being a no-op.
 
 ## 0.1.0-alpha.5
 
