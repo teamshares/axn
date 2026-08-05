@@ -20,7 +20,9 @@ Steps are a way to organize action logic into smaller, focused pieces that:
 
 The context is a shared blackboard, not isolated per-step state:
 
-- A step receives the **full** accumulated context, regardless of what it declares via `expects` (its `expects` only controls what it reads and validates).
+- A step receives the **full** accumulated context, regardless of what it declares via `expects` (its `expects` only controls what it reads and validates). But `expects` is also what gives the step block its **readers**: a field the step doesn't declare is in the context and still raises `NameError` when the block names it.
+- Declare a step's `expects` with the same **tolerances** the parent gave it, not just the same names. A parent's `expects :age, optional: true` re-declared as a bare `expects: [:age]` is *required* in the step, and a parent's `expects :admin, type: :boolean, default: false` arrives as `false` — which a bare presence check rejects as blank.
+- The context is the blackboard, so **instance variables are not**: a step runs as its own action, and `@ivar` set in the parent (or in a `before` hook) is not visible inside a step block. Pass values through `expose` / `expects`.
 - A step's exposures are merged into the parent's context, visible to every later step.
 - If two steps expose the **same** key, the later step **overwrites** the earlier value — silently. This is intentional (it's how chaining transforms a value through the pipeline), but name your exposures deliberately.
 

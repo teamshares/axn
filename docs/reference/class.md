@@ -133,7 +133,7 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
 
     **Record / id consistency.** For the default `:find` finder, passing **both** a record and a `<field>_id` that disagree (`user: <rec id=5>, user_id: 9`) raises `InboundValidationError` rather than silently preferring one — contradictory input is a developer error. Passing just one, or both in agreement, is fine. The check is skipped for custom finders, where the `<field>_id` value is a lookup token, not a primary key, so a record-vs-id comparison would be meaningless.
 
-#### Describing the shape of structured fields (block syntax)
+#### Describing the shape of structured fields (block syntax) {#shape-blocks}
 
 For a structured field — `type: Array`, `type: Hash`, or a class such as a `Data.define` — you can pass a block to declare per-member contracts (types, enums, descriptions, nesting). This works on both `expects` and `exposes`:
 

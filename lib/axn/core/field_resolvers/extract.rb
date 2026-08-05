@@ -15,11 +15,25 @@ module Axn
         end
 
         def call
+          # `Symbol#name` hands back the interned, frozen String rather than a fresh copy per read, and
+          # `String#to_s` returns the receiver, so reading the path itself allocates nothing. This is a
+          # per-read cost on the hottest path in the library: every top-level field resolves through
+          # here, several times per call.
+          path = field.is_a?(Symbol) ? field.name : field.to_s
+
+          # An empty path names no segment and reads as the source itself, which is what an empty split
+          # reduced to. Kept explicit so the single-segment shortcut below can't change it.
+          return provided_data if path.empty?
+
+          # One segment — every top-level field, and every subfield spelled against its own parent — is
+          # the overwhelmingly common case, and needs neither the segment Array nor the reduce block.
+          return resolve_segment(provided_data, path) unless path.include?(".")
+
           # A dotted path is resolved one segment at a time, re-dispatching on the type reached at
           # each step, so "items.count" behaves identically to `:count on :items`: the Hash segment
           # is read by key, the nested Array segment via its reader method. Digging the whole path off
           # the top-level source instead would push a String key into a nested Array and blow up.
-          field.to_s.split(".").reduce(provided_data) { |current, segment| resolve_segment(current, segment) }
+          path.split(".").reduce(provided_data) { |current, segment| resolve_segment(current, segment) }
         end
 
         private

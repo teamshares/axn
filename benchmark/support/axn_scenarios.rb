@@ -2,6 +2,34 @@
 
 require_relative "../../lib/axn"
 
+# Every benchmark path loads axn through this file, so this is where "am I measuring the axn I think
+# I am?" gets answered. It is not rhetorical: comparing this tree against a worktree at an older ref
+# is the whole technique for attributing a regression (see AGENTS.md), and requiring that worktree's
+# scenarios from THIS checkout's bundle silently measures this tree twice. axn's internal requires are
+# non-relative (`require "axn/..."`), so they resolve against `$LOAD_PATH` — which this bundle points
+# back here — and only the outermost `require_relative` above lands in the other tree. The delta then
+# reads as zero, or as noise, with nothing anywhere saying why. Fail loudly instead: run each side
+# under its own checkout's bundle (`BUNDLE_GEMFILE=<root>/Gemfile bundle exec …`).
+begin
+  expected_root = File.realpath(File.expand_path("../..", __dir__))
+  version_file = Object.const_source_location("Axn::VERSION")&.first
+  loaded_root = version_file && File.realpath(File.expand_path("../../..", version_file))
+
+  if loaded_root != expected_root
+    abort <<~MSG
+      Benchmark load-path mismatch — refusing to measure the wrong axn.
+
+        scenarios from: #{expected_root}
+        axn loaded from: #{loaded_root || '(unknown)'}
+
+      axn's internal requires are non-relative, so they resolved against this process's $LOAD_PATH
+      rather than the checkout holding these scenarios. Run each side under its own bundle:
+
+        (cd #{expected_root} && BUNDLE_GEMFILE=#{expected_root}/Gemfile bundle exec ruby <script> #{expected_root})
+    MSG
+  end
+end
+
 module Benchmark
   module AxnScenarios
     # Bare minimum - just confirms Axn runs without raising
@@ -195,22 +223,21 @@ module Benchmark
       expects :name, :email
       exposes :greeting, :processed_at
 
-      step :validate_input do
+      # A step receives the full accumulated context whatever it declares, but `expects` is what gives
+      # it READERS — without it these blocks raise NameError on `name`, and the scenario measures a
+      # failed run instead of a successful composition.
+      step :validate_input, expects: %i[name email] do
         fail!("Name is required") if name.blank?
         fail!("Email is required") if email.blank?
       end
 
-      step :generate_greeting do
+      step :generate_greeting, expects: %i[name email], exposes: [:greeting] do
         greeting = "Hello, #{name}! Your email is #{email}."
         expose :greeting, greeting
       end
 
-      step :add_timestamp do
+      step :add_timestamp, exposes: [:processed_at] do
         expose :processed_at, Time.now
-      end
-
-      def call
-        # Steps handle the logic
       end
     end
 
@@ -313,7 +340,6 @@ module Benchmark
 
       before do
         @start_time = Time.now
-        @user_id = rand(1000)
       end
 
       after do
@@ -321,13 +347,19 @@ module Benchmark
         expose :processed_at, @end_time
       end
 
-      step :validate_input do
+      # See CompositionAction: `expects` on a step is what gives its block readers.
+      step :validate_input, expects: %i[name email] do
         fail!("Name is required") if name.blank?
         fail!("Email is required") if email.blank?
         fail!("Email format invalid") unless email.include?("@")
       end
 
-      step :generate_greeting do
+      # A step's `expects` must mirror the parent's tolerances, not just name the fields: `age` is
+      # optional upstream, and `admin` arrives as the parent's `false` default, which a bare presence
+      # check rejects as blank. `type: :boolean` injects no presence check, so it reads `false` fine.
+      step :generate_greeting,
+           expects: [:name, :email, { age: { type: Integer, optional: true }, admin: { type: :boolean } }],
+           exposes: %i[greeting admin_status] do
         greeting = "Hello, #{name}! Your email is #{email}."
         greeting += " You are #{age} years old." if age
         expose :greeting, greeting
@@ -336,12 +368,10 @@ module Benchmark
         expose :admin_status, admin_status
       end
 
-      step :add_metadata do
-        expose :user_id, @user_id
-      end
-
-      def call
-        # Steps handle the logic
+      # A step runs as its own action, so a parent ivar is NOT visible here — reading `@user_id` set by
+      # the parent's `before` hook exposed nil and failed the parent's own outbound contract.
+      step :add_metadata, exposes: [:user_id] do
+        expose :user_id, rand(1000)
       end
     end
 
