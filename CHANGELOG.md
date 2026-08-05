@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Performance
+
+* [INTERNAL] The one-off ActiveModel validator class for a declared field/subfield is now compiled once per class and reused across every `.call`, instead of being recompiled (and its ActiveModel validator machinery re-instantiated) on every call. `auto_log` no longer builds its before/after payload when the configured logger's own severity level would discard it. `_model_fields` and `_declared_fields` are now cached per class instead of being rebuilt from the full contract on every reader definition / every read. Recovers roughly half of alpha-5's per-call allocation increase on the `basic` benchmark scenario — 489 → 250 objects/call (see PRO-3050).
+
 ## 0.1.0-alpha.5
 
 Most of what follows announces itself: a new option, a rename, or a declaration error you now get at class definition instead of on every call. These are the changes that do **not** — re-run your suite and look at these areas.
