@@ -89,6 +89,36 @@ RSpec.describe "settling an exception that answers type questions for itself" do
     end
   end
 
+  # Stamping the resolved presentation runs through axn's OWN `__present_as`, bound rather than dispatched.
+  # `owned_failure?` admits a subclass by ancestry, so a subclass that makes the method private or undefines it
+  # is still admitted — and dispatching to it raised `NoMethodError` from inside `_settle_exception!`, after the
+  # exception was recorded and before any callback ran, costing on_error AND on_failure.
+  #
+  # A bound call has no availability question to get wrong, so it is strictly stronger than the `respond_to?`
+  # guard this replaced: that one kept the callbacks but silently skipped the stamping.
+  describe "an Axn::Failure subclass that removes __present_as" do
+    {
+      "private" => Class.new(Axn::Failure) { private :__present_as },
+      "undefined" => Class.new(Axn::Failure) { undef_method :__present_as },
+    }.each do |label, failure_class|
+      it "settles fully, with callbacks, when the subclass makes it #{label}" do
+        fired = []
+        action = build_axn do
+          on_error { fired << :on_error }
+          on_failure { fired << :on_failure }
+          define_method(:call) { raise failure_class, "boom" }
+        end
+
+        result = nil
+        expect { result = action.call }.not_to raise_error
+
+        expect(result.outcome.failure?).to be(true)
+        expect(fired).to eq(%i[on_error on_failure])
+        expect(result.error).to eq("boom")
+      end
+    end
+  end
+
   # `result.error`/`#inspect` re-ask these questions on every later read, outside any settlement guard — so a
   # result handed back to a caller has to stay readable, not merely settle once.
   describe "reading the settled result afterwards" do

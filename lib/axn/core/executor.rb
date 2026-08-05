@@ -208,6 +208,13 @@ module Axn
     end
 
     class Executor # rubocop:disable Metrics/ClassLength
+      # The two `__present_as` implementations axn owns, held unbound so settlement stamps a presentation
+      # through the one the ANCESTRY selects rather than through whatever the exception's class provides.
+      # `Extensions.owned_failure?` admits exactly these two hierarchies. See `_resolve_and_stamp_presentation`.
+      FAILURE_PRESENT_AS = Axn::Failure.instance_method(:__present_as)
+      VALIDATION_PRESENT_AS = Axn::ValidationError.instance_method(:__present_as)
+      private_constant :FAILURE_PRESENT_AS, :VALIDATION_PRESENT_AS
+
       def initialize(action)
         @action = action
         @action_class = action.class
@@ -904,17 +911,24 @@ module Axn
       # `call!` bubbling. Setting it at every level would leave a presentation on a child run via plain
       # `.call`, which an explicit `.call` + re-raise (e.g. `step`'s bug path, `raise step_result.exception`)
       # would then leak into the parent's aggregation.
-      # Availability comes from the CLASS check, not from asking the exception. `owned_failure?` is an
-      # undispatched ancestry test, and both classes it admits define `__present_as` (`Axn::Failure`,
-      # `Axn::ValidationError`) — so the class having answered IS the answer to "can this be stamped",
-      # and a `respond_to?` on top of it would be a foreign dispatch buying nothing. This method is
-      # called bare from `_settle_exception!`, with the exception already recorded and the callbacks not
-      # yet dispatched, which is the whole reason nothing here may be asked of the exception.
+      # Stamped through AXN'S OWN `__present_as`, bound to the exception rather than dispatched to it.
+      #
+      # `owned_failure?` is an undispatched ancestry test admitting exactly two hierarchies, and both define
+      # this method — so which implementation to run is decided by the ancestry that has already answered. That
+      # is stronger than asking the exception whether it can be stamped, and stronger than the `respond_to?`
+      # that used to sit here: a SUBCLASS that makes `__present_as` private or undefines it still passes
+      # `owned_failure?` by ancestry, so a dispatch raised `NoMethodError` from inside `_settle_exception!` —
+      # after the exception was recorded and BEFORE on_error/on_failure ran, costing both callbacks (verified).
+      # A bound call cannot be intercepted, so there is no availability question left to get wrong.
+      #
+      # This method is called bare from `_settle_exception!`, which is the whole reason nothing here may be
+      # asked of the exception.
       def _resolve_and_stamp_presentation(exception)
         resolved = @action.result.error
         return unless resolved && Axn::Extensions.owned_failure?(exception)
 
-        exception.__present_as(resolved)
+        stamper = Internal::Identity.kind?(exception, Failure) ? FAILURE_PRESENT_AS : VALIDATION_PRESENT_AS
+        stamper.bind_call(exception, resolved)
       end
 
       def trigger_on_exception(exception)
