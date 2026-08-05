@@ -2,6 +2,7 @@
 
 # Every ownership question this module answers is answered out of the method table, so a process that loaded
 # this file alone must have the reader of that table: the reference is a runtime one, inside the copy.
+require "axn/internal/identity"
 require "axn/internal/native_methods"
 
 module Axn
@@ -43,12 +44,7 @@ module Axn
       OBJECT_METHOD = ::Object.instance_method(:method)
       OBJECT_PUBLIC_SEND = ::Object.instance_method(:public_send)
 
-      # The missing name a NameError carries, read through the implementation that STORES it. `NoMethodError`
-      # inherits `name` from `NameError`, so binding NameError's reaches the stored symbol whatever a
-      # subclass defines on top — and a subclass whose `name` raises cannot then replace a declaration
-      # verdict from inside the line that decides it.
-      NAME_ERROR_NAME = ::NameError.instance_method(:name)
-      private_constant :OBJECT_METHOD, :OBJECT_PUBLIC_SEND, :NAME_ERROR_NAME
+      private_constant :OBJECT_METHOD, :OBJECT_PUBLIC_SEND
 
       # `value` when it is genuinely a Hash, else nil. `case`/`when` consults the real class through
       # `Module#===` (a C-level check), while `is_a?` is overridable — and a Hash subclass answering
@@ -447,11 +443,10 @@ module Axn
       # skipped rather than raising: the distinction drawn is that a LIE cannot bypass a guard, not that
       # a member must be a full ShapeConfig.
       #
-      # Neither half of that comparison dispatches anything the exception's class can define. The stored name
-      # is extracted through `NameError`'s own `name` (see NAME_ERROR_NAME), never the subclass's, and axn's
-      # own Symbol is the receiver of `equal?` — so a subclass overriding `name` to raise, or returning an
-      # object whose `==` raises, changes nothing here. Putting axn's Symbol on the left alone would not be
-      # enough: reading `e.name` is itself the dispatch.
+      # Which name a NoMethodError reports is asked through `Identity.name_error_for?`, the ONE home for that
+      # question — it reads the name through `NameError`'s own implementation and makes axn's Symbol the
+      # receiver of `equal?`, so neither a subclass overriding `name` nor a returned object's `==` can answer
+      # in its place. The full reasoning lives there.
       # The Method the real method table defines for `name`, or nil when nothing does. Asked without dispatching
       # `respond_to?`, which an object can override to deny a method it has.
       def self.bound_method(object, name)
@@ -467,7 +462,7 @@ module Axn
         begin
           OBJECT_PUBLIC_SEND.bind_call(object, name)
         rescue ::NoMethodError => e
-          raise unless name.equal?(NAME_ERROR_NAME.bind_call(e))
+          raise unless Axn::Internal::Identity.name_error_for?(e, name)
 
           NOT_DEFINED
         end
