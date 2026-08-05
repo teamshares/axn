@@ -877,14 +877,14 @@ module Axn
 
         @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
-        if e.is_a?(Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
+        if Internal::Identity.kind?(e, Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
            Axn::ValidationError.user_facing?(e)
           # Make a `fails_on` (or user-facing `expects ..., user_facing:`) classification sticky to this
           # exception object (per call tree), so it stays a failure (fires on_failure, no report) as it
           # propagates through ancestor `call!`s — mirroring how Axn::Failure is sticky via its class.
           # Also record it on this result's context so result.outcome reports `failure` after the
           # per-execution set is cleared.
-          Internal::ExceptionClassification.mark_failure!(e) unless e.is_a?(Failure)
+          Internal::ExceptionClassification.mark_failure!(e) unless Internal::Identity.kind?(e, Failure)
           @context.__classify_as_failure!
           @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
         else
@@ -904,9 +904,15 @@ module Axn
       # `call!` bubbling. Setting it at every level would leave a presentation on a child run via plain
       # `.call`, which an explicit `.call` + re-raise (e.g. `step`'s bug path, `raise step_result.exception`)
       # would then leak into the parent's aggregation.
+      # Availability comes from the CLASS check, not from asking the exception. `owned_failure?` is an
+      # undispatched ancestry test, and both classes it admits define `__present_as` (`Axn::Failure`,
+      # `Axn::ValidationError`) — so the class having answered IS the answer to "can this be stamped",
+      # and a `respond_to?` on top of it would be a foreign dispatch buying nothing. This method is
+      # called bare from `_settle_exception!`, with the exception already recorded and the callbacks not
+      # yet dispatched, which is the whole reason nothing here may be asked of the exception.
       def _resolve_and_stamp_presentation(exception)
         resolved = @action.result.error
-        return unless resolved && Axn::Extensions.owned_failure?(exception) && exception.respond_to?(:__present_as)
+        return unless resolved && Axn::Extensions.owned_failure?(exception)
 
         exception.__present_as(resolved)
       end

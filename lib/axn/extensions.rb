@@ -73,8 +73,15 @@ module Axn
       # so the message is meant for the client and may carry a resolved presentation. A FOREIGN exception
       # reclassified via `fails_on` is not owned: it travels axn's failure path, but its #message is a
       # technical cause, and an adapter surfacing it would leak internals to a caller.
+      #
+      # Undispatched ancestry, on the same terms as `swallowable?` above and for a consequence of the same
+      # shape: what this authorizes is stamping a client-facing presentation onto the exception, so an
+      # instance answering wrongly in the true direction is how a technical cause reaches a caller. It is
+      # also read from a settlement path — `Executor#_resolve_and_stamp_presentation` gates on it, called
+      # bare inside `_settle_exception!` — where an `is_a?` that raised would abort the settlement after the
+      # exception was recorded but before on_error/on_failure/on_exception and the global report.
       def owned_failure?(exception)
-        exception.is_a?(Axn::Failure) || Axn::ValidationError.user_facing?(exception)
+        Internal::Identity.kind?(exception, Axn::Failure) || Axn::ValidationError.user_facing?(exception)
       end
 
       def config
