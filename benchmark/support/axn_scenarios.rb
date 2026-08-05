@@ -208,10 +208,6 @@ module Benchmark
       step :add_timestamp do
         expose :processed_at, Time.now
       end
-
-      def call
-        # Steps handle the logic
-      end
     end
 
     # With simulated database operations (no actual DB)
@@ -338,10 +334,6 @@ module Benchmark
 
       step :add_metadata do
         expose :user_id, @user_id
-      end
-
-      def call
-        # Steps handle the logic
       end
     end
 
