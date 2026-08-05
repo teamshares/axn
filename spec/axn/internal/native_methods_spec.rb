@@ -306,3 +306,60 @@ RSpec.describe Axn::Internal::NativeMethods do
     end
   end
 end
+
+RSpec.describe Axn::Internal::NativeMethods, ".public_instance_method" do
+  it "answers the UnboundMethod a module defines" do
+    mod = Module.new { def greet = "hi" }
+
+    resolved = described_class.public_instance_method(mod, :greet)
+
+    expect(resolved).to be_a(UnboundMethod)
+    expect(resolved.owner).to equal(mod)
+  end
+
+  it "answers nil rather than raising when nothing defines the name" do
+    expect(described_class.public_instance_method(Module.new, :nope_not_here)).to be_nil
+  end
+
+  # The nil policy is what lets a caller write `…&.owner` / `…&.source_location` and compare, instead of
+  # wrapping the lookup in a rescue and inventing a second absence policy — the split `method_owner` exists to
+  # prevent.
+  it "reports an INHERITED method with the ancestor that owns it" do
+    parent = Class.new { def greet = "hi" }
+    child = Class.new(parent)
+
+    expect(described_class.public_instance_method(child, :greet).owner).to equal(parent)
+  end
+
+  # Restricted to PUBLIC on purpose: callers use this to decide what a CONSUMER will dispatch, and a private
+  # definition is not that. A bare `Module#instance_method` reports one and would invert those verdicts.
+  it "treats a private definition as absent" do
+    klass = Class.new do
+      def secret = "shh"
+      private :secret
+    end
+
+    expect(described_class.public_instance_method(klass, :secret)).to be_nil
+    expect(klass.instance_method(:secret)).to be_a(UnboundMethod) # the widening this deliberately avoids
+  end
+
+  it "reads from the method table rather than asking the module" do
+    liar = Module.new do
+      def self.public_method_defined?(*) = raise(NotImplementedError, "must not be asked")
+      def self.instance_method(*) = raise(NotImplementedError, "must not be asked")
+      def greet = "hi"
+    end
+
+    expect(described_class.public_instance_method(liar, :greet)).to be_a(UnboundMethod)
+    expect(described_class.public_instance_method(liar, :nope)).to be_nil
+  end
+
+  it "agrees with the boolean predicate it shares a lookup with" do
+    mod = Module.new { def greet = "hi" }
+
+    %i[greet nope].each do |name|
+      expect(described_class.public_instance_method(mod, name).nil?)
+        .to eq(!described_class.public_instance_method?(mod, name))
+    end
+  end
+end

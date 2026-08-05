@@ -321,6 +321,70 @@ RSpec.describe "expects ..., user_facing:" do
     end
   end
 
+  # A member is the one thing in a contract axn has no constructor for: the config arrays are writable, so a
+  # config ASSIGNED onto a class carries the caller's own member objects, unwalked. Reading whether one
+  # carries `user_facing:`/`method_call:` therefore reads a caller's object, on the path that CLASSIFIES the
+  # failure — so `respond_to?` there was the member deciding whether axn reads the setting that decides
+  # whether its failure is reported.
+  describe "reading a member's settings off a caller-supplied member object" do
+    # OpenStruct answers through method_missing, which is exactly why the fix is an availability read rather
+    # than a method-table ownership probe: an ownership probe reports a method_missing-backed method absent by
+    # design, so it would have silently stopped honouring this member's user_facing: while `field` and
+    # `validations` — dispatched unconditionally a few lines away — kept working.
+    it "honours a member that answers through method_missing" do
+      require "ostruct"
+      member = OpenStruct.new(field: :status, validations: { presence: true }, user_facing: true) # rubocop:disable Style/OpenStructUse
+
+      action = build_axn do
+        expects :payload, type: Hash, shape: { members: [member], container: Hash }
+        def call = nil
+      end
+
+      result = action.call(payload: { "status" => "" })
+
+      expect(result.outcome).to be_failure
+      expect(result.error).to include("status")
+    end
+
+    # Raises rather than lies, so the test fails if the question is asked at all. Outside StandardError and
+    # outside SWALLOWABLE_BEYOND_STANDARD_ERROR, so a dispatch would escape `.call` rather than degrade.
+    it "does not ask the member whether it carries the setting" do
+      unswallowable = Class.new(Exception) # rubocop:disable Lint/InheritException
+      member = Struct.new(:field, :validations, :user_facing) do
+        define_method(:respond_to?) { |*| raise(unswallowable, "respond_to? must not decide this") }
+      end.new(:status, { presence: true }, true)
+
+      action = build_axn do
+        expects :payload, type: Hash, shape: { members: [member], container: Hash }
+        def call = nil
+      end
+
+      result = nil
+      expect { result = action.call(payload: { "status" => "" }) }.not_to raise_error
+      expect(result.outcome).to be_failure
+      expect(result.error).to include("status")
+    end
+
+    # A member with no such reader at all is the absent case, and it must stay dev-facing rather than becoming
+    # an error of its own.
+    it "treats a member with no user_facing reader as not opted in" do
+      member = Struct.new(:field, :validations).new(:status, { presence: true })
+
+      action = build_axn do
+        expects :payload, type: Hash, shape: { members: [member], container: Hash }
+        def call = nil
+      end
+
+      result = action.call(payload: { "status" => "" })
+
+      # The full contrast with the opted-in member above: an un-opted member is DEV-facing, so it settles as a
+      # reported `exception` outcome rather than the non-reported user-facing failure.
+      expect(result.outcome).to be_exception
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+      expect(Axn::ValidationError.user_facing?(result.exception)).to be(false)
+    end
+  end
+
   describe "user_facing: on a shape member" do
     it "surfaces the member's own message when the member opts in with true" do
       action = build_axn do

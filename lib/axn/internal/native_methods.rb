@@ -176,6 +176,29 @@ module Axn
       # would be exactly the replaced-verdict failure the bound read exists to prevent.
       def self.public_instance_method?(mod, name) = MODULE_PUBLIC_METHOD_DEFINED.bind_call(mod, name)
 
+      # The UnboundMethod a MODULE defines for `name`, or nil when it defines no PUBLIC one — the same
+      # question as `public_instance_method?` with the method itself as the answer, for a caller that needs
+      # more than the boolean (its `owner`, its `source_location`).
+      #
+      # One lookup with one absence policy, on the same terms as `method_owner`: nil rather than a raise, so a
+      # caller compares against what it expects and an absent name simply fails that comparison. The two
+      # readers are the same fact — `public_method_defined?` deciding, `instance_method` resolving — so a
+      # consumer cannot get a yes from one and a different answer from the other.
+      #
+      # Restricted to PUBLIC deliberately, rather than resolving whatever `instance_method` would find: the
+      # callers here are deciding what a CONSUMER will dispatch (`serialize_value` calling `as_json`, a
+      # generated reader being invoked), and a private definition is not that. A bare `instance_method` would
+      # report one and change the verdict.
+      #
+      # Same precondition as `public_instance_method?` above, for the same reason: the caller must have
+      # established that `mod` IS a Module undispatched, since binding either reader to anything else is a
+      # TypeError — which is exactly the replaced-verdict failure a bound read exists to prevent.
+      def self.public_instance_method(mod, name)
+        return nil unless public_instance_method?(mod, name)
+
+        MODULE_INSTANCE_METHOD.bind_call(mod, name)
+      end
+
       # Which class or module OWNS the method a value would dispatch for `name` — resolved out of the value's
       # method table, so the answer comes from the table rather than from the value. nil when the value has no
       # such method at all.

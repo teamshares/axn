@@ -3,6 +3,8 @@
 require "date"
 require "time"
 
+require "axn/internal/identity"
+require "axn/internal/native_methods"
 require "axn/internal/subfield_tree"
 # A property name in an emitted schema is the canonicalization's answer, so the builder cannot load without it.
 require "axn/internal/reflection/values"
@@ -362,11 +364,15 @@ module Axn
                     else [branch]
                     end
           klasses.any? do |k|
-            next true unless k.is_a?(Class)
+            next true unless Axn::Internal::Identity.kind?(k, ::Class)
             next true if k <= Hash
 
+            # Read from the method table, on the same terms as `custom_serialization?` and
+            # `framework_generated_reader?` — the three sites that ask this class of question now ask it one
+            # way. (The `<=` comparisons around it stay dispatched: those are declared-type checks whose
+            # failure mode is a self-correcting declaration error.)
             judged = SEGMENT_JUDGED_SCALARS.any? { |s| k <= s }
-            !judged || k.public_method_defined?(segment)
+            !judged || Axn::Internal::NativeMethods.public_instance_method?(k, segment)
           end
         end
 
@@ -412,8 +418,19 @@ module Axn
         # method, which serialize_value would follow — so the serialized shape is no longer provably an
         # object keyed by the declared members.
         FRAMEWORK_SERIALIZATION_OWNERS = [Data, Struct, Hash, Object].freeze
+        # Read out of the method table (`NativeMethods.public_instance_method`) rather than asked of the class:
+        # `klass` is the caller's declared type, and `method_defined?`/`instance_method` are as overridable as
+        # anything else — one answering wrongly inverts whether a shape is judged provable. One lookup, so the
+        # existence test and the owner it reports cannot disagree.
+        #
+        # PUBLIC only, which is what the previous `method_defined?` also meant: `serialize_value` calls
+        # `as_json`/`to_h` publicly, so a private definition is not what it would follow, and counting one
+        # would reject a Data/Struct whose shape is provable after all.
         def custom_serialization?(klass, method)
-          klass.method_defined?(method) && !FRAMEWORK_SERIALIZATION_OWNERS.include?(klass.instance_method(method).owner)
+          return false unless Axn::Internal::Identity.kind?(klass, ::Module)
+
+          owner = Axn::Internal::NativeMethods.public_instance_method(klass, method)&.owner
+          !owner.nil? && !FRAMEWORK_SERIALIZATION_OWNERS.include?(owner)
         end
 
         # One bottom-up pass over the whole subfield tree, computed once from build_input and threaded
@@ -739,10 +756,15 @@ module Axn
         # generation site is recorded on Contract::GENERATED_READER_SOURCE_PATH; a generated reader —
         # and a boolean predicate alias, which shares the aliased definition's source_location — reports
         # that file, while a user `def` reports the declaring file. Pure introspection, side-effect-free.
+        # `respond_to?(:method_defined?)` was standing in for "is this a Module" — a dispatched proxy for a
+        # question `Module#===` answers directly, and one the class itself got to answer. Asked properly here,
+        # then resolved through the same single method-table lookup `custom_serialization?` uses, so the two
+        # sites no longer disagree about how this class of question is asked.
         def framework_generated_reader?(klass, rule_name)
-          return false unless klass.respond_to?(:method_defined?) && klass.method_defined?(rule_name)
+          return false unless Axn::Internal::Identity.kind?(klass, ::Module)
 
-          klass.instance_method(rule_name).source_location&.first == Axn::Core::Contract::GENERATED_READER_SOURCE_PATH
+          reader = Axn::Internal::NativeMethods.public_instance_method(klass, rule_name)
+          reader&.source_location&.first == Axn::Core::Contract::GENERATED_READER_SOURCE_PATH
         end
 
         # Optional (client may omit) iff a usable default exists, or — with no usable default — the
