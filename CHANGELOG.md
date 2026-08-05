@@ -2,7 +2,21 @@
 
 ## 0.1.0-alpha.5
 
-Most of what follows is a new option, a rename, or a declaration error you get at class definition instead of on every call. These are the **behavioral** changes — re-run your suite and look at these areas: `on_success` now fires after the enclosing transaction commits; the Sidekiq adapter no longer makes actions `Sidekiq::Job`s and the wire format changed; subfield `coerce:`/`preprocess:`/`default:` resolve on the read path and never write back to the parent; a nested `call!` re-raises the inner action's exception instead of wrapping it; exception reports carry the declared, filtered `ambient_context` in place of `current_attributes`; `SystemStackError`/`ScriptError` now settle as exception outcomes instead of escaping `.call`; and `sensitive:`/`user_facing:` reject values they used to accept and silently ignore.
+Most of what follows announces itself: a new option, a rename, or a declaration error you now get at class definition instead of on every call. These are the changes that do **not** — re-run your suite and look at these areas.
+
+* `on_success` fires after the enclosing transaction commits, and is skipped on rollback.
+* A step that raises an unexpected exception settles its parent as an exception rather than a failure, so `on_failure` no longer fires for it.
+* The Sidekiq adapter no longer makes actions `Sidekiq::Job`s, and the wire format changed — drain the queue across the deploy.
+* Subfield `coerce:`/`preprocess:`/`default:` resolve on the read path, and the parent is never materialized or mutated to apply them.
+* A `model:` field's record and key reads route through the canonical reader path, and passing a record together with a contradictory `<field>_id` now fails the call instead of silently preferring the record.
+* A nested `call!` re-raises the inner action's own exception instead of wrapping it in `Axn::Failure`.
+* Exception reports carry the declared, filtered `ambient_context` in place of the `current_attributes` key.
+* `SystemStackError` and `ScriptError` settle as exception outcomes instead of escaping `.call` unreported.
+* An empty container is now a failure reason: `fail!([])`, or an `error`/`success` handler returning `{}`, renders that object rather than falling back to the default message.
+* `Axn::Extensions::Serialization.render` rejects values it used to emit (a cycle, a non-finite Float, two Hash keys that render as one property), which an adapter sees as a failed render rather than a wrong body.
+* On an `Axn::Configurable` setting, a Proc `default:` is now invoked on every unset read, while an assigned Proc is returned as-is rather than called.
+
+One audit rather than a re-test: `sensitive:` and `user_facing:` now reject values they used to accept and silently ignore, so a declaration that starts raising at load is telling you it never did anything — `sensitive: 1` was logging that field in the clear.
 
 ### Field contract & subfields
 

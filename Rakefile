@@ -49,45 +49,73 @@ task verify: %i[spec spec_rubocop spec_rails rubocop verify_async] do
   puts "=" * 60
 end
 
+# Records the current tree's numbers as the baseline every later `benchmark:check` is compared against.
+# Shared because two callers need different answers to "a snapshot for this version already exists":
+#
+#   :abort     — `benchmark:release` invoked by hand, where an existing snapshot means you are about to
+#                lose a recorded baseline by accident.
+#   :overwrite — `benchmark:accept`, where replacing it deliberately is the whole point.
+#   :skip      — the tail of `rake release`, which must not fail a release whose gem is already pushed
+#                just because `benchmark:accept` recorded this version's snapshot beforehand.
+#
+# Baselines live under the gitignored tmp/, so they are per-machine: a fresh clone has none and the
+# gate no-ops rather than gating on numbers it cannot compare.
+RECORD_BENCHMARK_BASELINE = lambda { |on_existing:, heading:|
+  require_relative "benchmark/support/benchmark_runner"
+  require_relative "benchmark/support/storage"
+  require_relative "benchmark/support/colors"
+  require_relative "lib/axn/version"
+
+  puts Colors.bold(Colors.info("🔬 #{heading}"))
+  puts Colors.dim("=" * 80)
+  puts ""
+
+  version = Axn::VERSION
+  puts Colors.info("Version: #{version}")
+  puts ""
+
+  filename = Benchmark::Storage.benchmark_filename(version)
+  if File.exist?(filename)
+    case on_existing
+    when :skip
+      puts Colors.info("ℹ️  A baseline for #{version} is already recorded (#{filename}) — keeping it.")
+      puts Colors.dim("=" * 80)
+      return
+    when :abort
+      puts Colors.error("❌ Benchmark file already exists for version #{version}")
+      puts Colors.info("   File: #{filename}")
+      puts Colors.info("   Use `rake benchmark:accept` to replace it deliberately, or delete the file to regenerate.")
+      abort
+    end
+  end
+
+  data = Benchmark::BenchmarkRunner.run_all_scenarios(verbose: true)
+
+  saved_filename = Benchmark::Storage.save_benchmark(data, version)
+  puts ""
+  puts Colors.success("✅ Benchmark data saved to: #{saved_filename}")
+
+  Benchmark::Storage.set_last_release_version(version)
+  puts Colors.success("✅ Last release version updated to: #{version}")
+  puts ""
+  puts Colors.dim("=" * 80)
+}
+
 # Benchmark tasks
 namespace :benchmark do
   desc "Run benchmarks and save results for current gem version (runs automatically after rake release)"
   task :release do
-    require_relative "benchmark/support/benchmark_runner"
-    require_relative "benchmark/support/storage"
-    require_relative "lib/axn/version"
-    require_relative "benchmark/support/colors"
+    RECORD_BENCHMARK_BASELINE.call(on_existing: :abort, heading: "Running benchmarks for release...")
+  end
 
-    puts Colors.bold(Colors.info("🔬 Running benchmarks for release..."))
-    puts Colors.dim("=" * 80)
-    puts ""
-
-    version = Axn::VERSION
-    puts Colors.info("Version: #{version}")
-    puts ""
-
-    # Check if benchmark already exists for this version
-    filename = Benchmark::Storage.benchmark_filename(version)
-    if File.exist?(filename)
-      puts Colors.error("❌ Benchmark file already exists for version #{version}")
-      puts Colors.info("   File: #{filename}")
-      puts Colors.info("   Delete the file if you want to regenerate benchmarks for this version.")
-      abort
-    end
-
-    # Run benchmarks with verbose output
-    data = Benchmark::BenchmarkRunner.run_all_scenarios(verbose: true)
-
-    # Save benchmark data (filename already determined above)
-    saved_filename = Benchmark::Storage.save_benchmark(data, version)
-    puts ""
-    puts Colors.success("✅ Benchmark data saved to: #{saved_filename}")
-
-    # Update last release version
-    Benchmark::Storage.set_last_release_version(version)
-    puts Colors.success("✅ Last release version updated to: #{version}")
-    puts ""
-    puts Colors.dim("=" * 80)
+  desc "Accept the current numbers as the release baseline — for a REVIEWED regression (replaces this version's snapshot)"
+  task :accept do
+    RECORD_BENCHMARK_BASELINE.call(
+      on_existing: :overwrite,
+      heading: "Recording the current numbers as the #{Axn::VERSION} baseline...",
+    )
+    puts Colors.info("   Every later run is now compared against these numbers. `rake benchmark:check` is green until")
+    puts Colors.info("   something moves off them, so make sure the regression you just accepted is written down.")
   end
 
   desc "Compare current code performance against last release"
@@ -182,13 +210,13 @@ Rake::Task["build"].enhance([:verify])
 # benchmark:check exits 1 on regression, aborting the release before any push.
 Rake::Task["release:guard_clean"].enhance([:"benchmark:check"])
 
-# Automatically run benchmark:release after rake release (saves snapshot + bumps .last_release)
+# Automatically record the released version's snapshot after rake release (bumps .last_release too).
+# `on_existing: :skip` rather than the by-hand task's abort: accepting a reviewed regression with
+# `rake benchmark:accept` writes this version's snapshot BEFORE the release, and aborting here would
+# fail the rake invocation with the gem already pushed and the tag already up.
 Rake::Task["release"].enhance do
-  require_relative "benchmark/support/colors"
   puts ""
-  puts Colors.bold(Colors.info("🔬 Running benchmarks for released version..."))
-  Rake::Task["benchmark:release"].reenable
-  Rake::Task["benchmark:release"].invoke
+  RECORD_BENCHMARK_BASELINE.call(on_existing: :skip, heading: "Running benchmarks for released version...")
 end
 
 # Downstream gem compatibility check.
