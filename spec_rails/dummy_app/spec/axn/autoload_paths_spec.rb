@@ -36,6 +36,18 @@ RSpec.describe "Axn Rails autoload paths" do
       # Verify the namespace configuration is properly set
       expect(Axn.config.rails.app_actions_autoload_namespace).to eq(:Actions)
     end
+
+    # Membership in `dirs` (above) is true whether the engine namespaced the directory or Rails
+    # pushed it at the root namespace on its own, so it cannot tell the two apart. The root's
+    # namespace can, and a constant that only autoloading can supply proves it took effect.
+    it "maps the directory to the configured namespace, not the root" do
+      actions_path = Rails.root.join("app/actions").to_s
+      expect(Rails.autoloaders.main.send(:roots)[actions_path]).to eq(Actions)
+    end
+
+    it "resolves a constant under the configured namespace" do
+      expect(Actions::Clients::User.name).to eq("Actions::Clients::User")
+    end
   end
 
   describe "duplicate path prevention" do

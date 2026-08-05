@@ -4,10 +4,11 @@ RSpec.describe "Axn::RailsIntegration::Engine" do
   before(:all) do
     # Ensure Rails is fully initialized
     Rails.application.initialize! unless Rails.application.initialized?
-
-    # Ensure the engine is loaded
-    require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
   end
+
+  # Deliberately does NOT `require "axn/rails/engine"` first: that would load the engine itself and
+  # make every example below pass whether or not booting the app registered it, which is what let
+  # the alpha.5 regression through.
 
   describe "Engine loading" do
     it "loads the Engine when Rails is available" do

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* [BUGFIX] The Rails engine now registers even when `axn` is required before Rails. `require "axn"` loaded `axn/rails/engine` only if `Rails` was already defined, and re-requiring axn later is a no-op — so a host whose `spec_helper.rb` requires `axn/testing/spec_helpers` (the placement we document) ahead of the `rails_helper.rb` that boots the app got no engine at all. Without it `app/actions` never received its configured `app_actions_autoload_namespace`, Rails pushed the directory at the root namespace instead, and every constant under it was unresolvable — in the test environment only, so a passing boot said nothing. Introduced in 0.1.0-alpha.5, when `axn/testing/spec_helpers` began requiring `axn/testing` (and through it the full gem). The engine load is now deferred to `ActiveSupport.on_load(:before_configuration)` when Rails is absent at require time.
+
 ### Performance
 
 * [INTERNAL] The one-off ActiveModel validator class for a declared field/subfield is now compiled once per class and reused across every `.call`, instead of being recompiled (and its ActiveModel validator machinery re-instantiated) on every call. `auto_log` no longer builds its before/after payload when the configured logger's own severity level would discard it. `_model_fields` and `_declared_fields` are now cached per class instead of being rebuilt from the full contract on every reader definition / every read. Recovers roughly half of alpha-5's per-call allocation increase on the `basic` benchmark scenario — 489 → 250 objects/call (see PRO-3050).

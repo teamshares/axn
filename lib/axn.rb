@@ -51,8 +51,25 @@ require "axn/util/execution_context"
 require "axn/mountable"
 require "axn/async"
 
-# Rails integration (if in Rails context)
-require "axn/rails/engine" if defined?(Rails) && Rails.const_defined?(:Engine)
+# Rails integration (if in Rails context).
+#
+# A bare `if defined?(Rails)` here would be evaluated once and never revisited, so a host that
+# requires axn BEFORE Rails would silently never get the engine -- `require "axn"` is a no-op by
+# the time Rails exists. That is the normal order in a conventional Rails test suite, where
+# `.rspec` loads a Rails-free `spec_helper.rb` (the file we tell people to put
+# `require "axn/testing/spec_helpers"` in) ahead of the `rails_helper.rb` that boots the app.
+# Without the engine, `app/actions` never gets its configured autoload namespace and every
+# constant under it is unresolvable -- in the test environment only.
+#
+# `:before_configuration` runs from `Rails::Application#initialize`, well before railties are
+# collected, so an engine defined there is still picked up. ActiveSupport is already loaded (see
+# the top of this file), and `on_load` fires immediately if the hook has already run, so the
+# deferred branch is safe whenever Rails arrives.
+if defined?(Rails) && Rails.const_defined?(:Engine)
+  require "axn/rails/engine"
+else
+  ActiveSupport.on_load(:before_configuration) { require "axn/rails/engine" }
+end
 
 module Axn
   def self.included(base)

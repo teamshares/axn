@@ -3,11 +3,15 @@
 ENV["RAILS_ENV"] ||= "test"
 ENV["RACK_ENV"] ||= "test"
 
+# Load axn testing helpers BEFORE the application, deliberately. A conventional Rails suite splits
+# a Rails-free `spec_helper.rb` (loaded by `.rspec`) from the `rails_helper.rb` that boots the app,
+# so the axn require we document lands before Rails exists. This dummy app has a single helper, so
+# ordering it the other way would make every boot-order-sensitive behavior in the suite pass for a
+# reason no host app enjoys — which is exactly how the alpha.5 engine-registration bug shipped.
+require "axn/testing/spec_helpers"
+
 # Load the dummy Rails application
 require File.expand_path("../config/environment", __dir__)
-
-# Load axn testing helpers
-require "axn/testing/spec_helpers"
 
 # Load sidekiq testing helpers
 require "sidekiq/testing"
