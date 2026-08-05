@@ -214,11 +214,14 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.error).to eq("Please add a note")
     end
 
-    # Every exit renders through the same reader, including the fall back to the field's own message. A
-    # Latin-1 field name yields a Latin-1 `full_message`, and that Array was previously handed back raw on
-    # the fallback path while the `user_facing: true` branch rendered the identical value — so which bytes a
-    # caller got depended on whether a handler happened to resolve.
-    it "renders the fallback to the field's own message on the same terms as user_facing: true" do
+    # A handler that resolves to nothing falls back to the field's own message, and that message is Latin-1
+    # when the declared name is — so this pins that both routes to it reach the caller as the same UTF-8 text.
+    #
+    # It does NOT pin `_rendered_parts` specifically, and that is worth saying rather than implying: the join
+    # in `_composed_user_facing_error` renders every part again, so whether the fallback hands back a rendered
+    # or a raw Array is not observable here. That fix is a single-exit-shape cleanup, not a behaviour change
+    # (verified by inverse mutation — reverting it changes nothing any caller can see).
+    it "reaches the field's own message as the same UTF-8 text whether or not a handler resolved" do
       latin1_name = "n\xF4te".dup.force_encoding("ISO-8859-1").to_sym
 
       resolved = build_axn do
@@ -318,70 +321,6 @@ RSpec.describe "expects ..., user_facing:" do
       # each handler sees only its own field's error — were the aggregate passed, every part would
       # read "Bad: Note can't be blank and Title can't be blank"
       expect(action.call.error).to eq("Bad: Note can't be blank and Bad: Title can't be blank")
-    end
-  end
-
-  # A member is the one thing in a contract axn has no constructor for: the config arrays are writable, so a
-  # config ASSIGNED onto a class carries the caller's own member objects, unwalked. Reading whether one
-  # carries `user_facing:`/`method_call:` therefore reads a caller's object, on the path that CLASSIFIES the
-  # failure — so `respond_to?` there was the member deciding whether axn reads the setting that decides
-  # whether its failure is reported.
-  describe "reading a member's settings off a caller-supplied member object" do
-    # OpenStruct answers through method_missing, which is exactly why the fix is an availability read rather
-    # than a method-table ownership probe: an ownership probe reports a method_missing-backed method absent by
-    # design, so it would have silently stopped honouring this member's user_facing: while `field` and
-    # `validations` — dispatched unconditionally a few lines away — kept working.
-    it "honours a member that answers through method_missing" do
-      require "ostruct"
-      member = OpenStruct.new(field: :status, validations: { presence: true }, user_facing: true) # rubocop:disable Style/OpenStructUse
-
-      action = build_axn do
-        expects :payload, type: Hash, shape: { members: [member], container: Hash }
-        def call = nil
-      end
-
-      result = action.call(payload: { "status" => "" })
-
-      expect(result.outcome).to be_failure
-      expect(result.error).to include("status")
-    end
-
-    # Raises rather than lies, so the test fails if the question is asked at all. Outside StandardError and
-    # outside SWALLOWABLE_BEYOND_STANDARD_ERROR, so a dispatch would escape `.call` rather than degrade.
-    it "does not ask the member whether it carries the setting" do
-      unswallowable = Class.new(Exception) # rubocop:disable Lint/InheritException
-      member = Struct.new(:field, :validations, :user_facing) do
-        define_method(:respond_to?) { |*| raise(unswallowable, "respond_to? must not decide this") }
-      end.new(:status, { presence: true }, true)
-
-      action = build_axn do
-        expects :payload, type: Hash, shape: { members: [member], container: Hash }
-        def call = nil
-      end
-
-      result = nil
-      expect { result = action.call(payload: { "status" => "" }) }.not_to raise_error
-      expect(result.outcome).to be_failure
-      expect(result.error).to include("status")
-    end
-
-    # A member with no such reader at all is the absent case, and it must stay dev-facing rather than becoming
-    # an error of its own.
-    it "treats a member with no user_facing reader as not opted in" do
-      member = Struct.new(:field, :validations).new(:status, { presence: true })
-
-      action = build_axn do
-        expects :payload, type: Hash, shape: { members: [member], container: Hash }
-        def call = nil
-      end
-
-      result = action.call(payload: { "status" => "" })
-
-      # The full contrast with the opted-in member above: an un-opted member is DEV-facing, so it settles as a
-      # reported `exception` outcome rather than the non-reported user-facing failure.
-      expect(result.outcome).to be_exception
-      expect(result.exception).to be_a(Axn::InboundValidationError)
-      expect(Axn::ValidationError.user_facing?(result.exception)).to be(false)
     end
   end
 
@@ -620,6 +559,49 @@ RSpec.describe "expects ..., user_facing:" do
         field: :payload, reader_as: :payload,
         validations: { type: { klass: Hash }, shape: { members: [member], container: Hash } }
       )
+    end
+
+    # Reading whether a member carries `user_facing:`/`method_call:` reads a CALLER's object here — this is the
+    # path with no walk behind it — and it happens while the failure is being CLASSIFIED, which decides whether
+    # the failure is reported at all. So the reader is asked for the VALUE (a bound `public_send`, absent told
+    # from nil by the name the NoMethodError reports) rather than asked whether it has one.
+    #
+    # Deliberately an availability read, not a method-table ownership probe: `member.field` and
+    # `member.validations` are dispatched unconditionally a few lines away, so a member answering through
+    # `method_missing` already works, and an ownership probe reports such a method absent BY DESIGN — it would
+    # silently stop honouring this member's `user_facing:` while its other readers kept working.
+    it "honours a member whose readers answer through method_missing" do
+      require "ostruct"
+      member = OpenStruct.new(field: :status, validations: { presence: true }, user_facing: true) # rubocop:disable Style/OpenStructUse
+
+      result = assigned(shaped_config(member)).call(payload: { "status" => "" })
+
+      expect(result.outcome).to be_failure
+      expect(Axn::ValidationError.user_facing?(result.exception)).to be(true)
+    end
+
+    # Raises rather than lies, so the example fails if the question is asked at all. Outside StandardError AND
+    # outside SWALLOWABLE_BEYOND_STANDARD_ERROR, so a dispatch escapes `.call` instead of degrading.
+    it "does not ask the member whether it carries the setting" do
+      unswallowable = Class.new(Exception) # rubocop:disable Lint/InheritException
+      member = Struct.new(:field, :validations, :user_facing) do
+        define_method(:respond_to?) { |*| raise(unswallowable, "respond_to? must not decide this") }
+      end.new(:status, { presence: true }, true)
+
+      result = nil
+      expect { result = assigned(shaped_config(member)).call(payload: { "status" => "" }) }.not_to raise_error
+      expect(result.outcome).to be_failure
+      expect(Axn::ValidationError.user_facing?(result.exception)).to be(true)
+    end
+
+    # A member with no such reader at all is the absent case: not opted in, so the failure stays DEV-facing and
+    # settles as a reported `exception` outcome. The full contrast with the two above.
+    it "treats a member with no user_facing reader as not opted in" do
+      result = assigned(shaped_config(duck_member(field: :status, validations: { presence: true })))
+               .call(payload: { "status" => "" })
+
+      expect(result.outcome).to be_exception
+      expect(Axn::ValidationError.user_facing?(result.exception)).to be(false)
     end
 
     # The FIELD half, closed where every stored field config passes: a FieldConfig cannot be CONSTRUCTED with a

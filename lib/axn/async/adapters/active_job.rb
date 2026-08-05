@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_support/concern"
+require "axn/internal/identity"
 require_relative "../exception_reporting"
 
 module Axn
@@ -179,8 +180,13 @@ module Axn
                 # Skip if no exception (shouldn't happen, but be safe)
                 return unless exception
 
-                # Skip Axn::Failure - it's a business decision, not an error to report
-                return if exception.is_a?(Axn::Failure)
+                # Skip Axn::Failure - it's a business decision, not an error to report.
+                #
+                # Undispatched ancestry, on the same terms as `Extensions.owned_failure?`/`_fails_on?`: what
+                # this decides is whether the exception gets REPORTED, so an instance answering for itself is
+                # an instance suppressing its own report — and this runs from a discard hook, where a raise
+                # replaces the reporting of a job that has already exhausted its retries.
+                return if Axn::Internal::Identity.kind?(exception, Axn::Failure)
 
                 # Use per-class override if set, otherwise fall back to global config
                 config_mode = axn_class.try(:_async_exception_reporting) || Axn.config.async_exception_reporting

@@ -1303,10 +1303,14 @@ module Axn
         _rendered_parts(parts).presence || _rendered_parts(own)
       end
 
-      # Every exit from the resolution above renders through the same reader. The fallback used to hand `own`
-      # back raw while the `when true` branch rendered the identical Array, so for a non-UTF-8 validation
-      # message — a Latin-1 field name yields a Latin-1 `full_message` — the two disagreed by bytes, and which
-      # one a caller got depended on whether a handler happened to resolve.
+      # Every exit from the resolution above renders through the same reader, so the fallback to the field's own
+      # message cannot disagree by bytes with the `when true` branch that renders the identical Array.
+      #
+      # Consistency rather than a behaviour fix, and worth being precise about which: `_composed_user_facing_error`
+      # runs EVERY part through `_override_part` again at the join, so a raw part handed back here was rendered
+      # downstream anyway and no caller could observe the difference. What it buys is that this method has one
+      # exit shape instead of two, so a future reader of its return value does not have to know that one branch
+      # is rendered and one is raw.
       def _rendered_parts(list) = list.filter_map { |m| _override_part(m) }
 
       # A handler's return value as a list of message parts. `Kernel#Array` dispatches the value's own `to_ary`
