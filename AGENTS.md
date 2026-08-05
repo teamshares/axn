@@ -207,23 +207,6 @@ Any code that recurses through caller-supplied Hash/Array values must cycle-guar
 - **Comments explain *why*, not *what*** — justify the non-obvious choice; skip comments that restate
   the code.
 
-## Releasing
-
-`rake release` runs `verify` (main specs, RuboCop specs, Rails specs, RuboCop, `verify_async`), builds the
-gem, runs the allocation gate, then tags, pushes, `gem push`es, and records this version's benchmark
-baseline.
-
-- **`verify_async` needs a local Redis**, and no CI job covers it — a green PR says nothing about it.
-- `gem push` requires MFA; have your OTP to hand.
-- The gate (`benchmark:check`) exits non-zero when any scenario is 3% over the baseline, which aborts the
-  release **before** anything is pushed. Baselines live in the gitignored `tmp/benchmark_reports/`, so they
-  are per-machine: a fresh clone has none and the gate no-ops rather than gating on numbers it cannot
-  compare. Release from the machine that holds the previous baseline, or the gate tells you nothing.
-- **Accepting a known regression:** review it, write it down (a ticket, plus the CHANGELOG when a consumer
-  would notice), then `rake benchmark:accept` to record the current numbers as the baseline, then release.
-  It is not a way to quiet a red gate — whatever you accept is what every later release is measured
-  against, so an unexamined acceptance silently raises the floor for everyone after you.
-
 ## Docs & planning artifacts
 
 `docs/` is the **published VitePress site** (CI deploys it — see `.github/workflows/docs.yml`), so

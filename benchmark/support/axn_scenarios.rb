@@ -223,17 +223,20 @@ module Benchmark
       expects :name, :email
       exposes :greeting, :processed_at
 
-      step :validate_input do
+      # A step receives the full accumulated context whatever it declares, but `expects` is what gives
+      # it READERS — without it these blocks raise NameError on `name`, and the scenario measures a
+      # failed run instead of a successful composition.
+      step :validate_input, expects: %i[name email] do
         fail!("Name is required") if name.blank?
         fail!("Email is required") if email.blank?
       end
 
-      step :generate_greeting do
+      step :generate_greeting, expects: %i[name email], exposes: [:greeting] do
         greeting = "Hello, #{name}! Your email is #{email}."
         expose :greeting, greeting
       end
 
-      step :add_timestamp do
+      step :add_timestamp, exposes: [:processed_at] do
         expose :processed_at, Time.now
       end
     end
@@ -337,7 +340,6 @@ module Benchmark
 
       before do
         @start_time = Time.now
-        @user_id = rand(1000)
       end
 
       after do
@@ -345,13 +347,19 @@ module Benchmark
         expose :processed_at, @end_time
       end
 
-      step :validate_input do
+      # See CompositionAction: `expects` on a step is what gives its block readers.
+      step :validate_input, expects: %i[name email] do
         fail!("Name is required") if name.blank?
         fail!("Email is required") if email.blank?
         fail!("Email format invalid") unless email.include?("@")
       end
 
-      step :generate_greeting do
+      # A step's `expects` must mirror the parent's tolerances, not just name the fields: `age` is
+      # optional upstream, and `admin` arrives as the parent's `false` default, which a bare presence
+      # check rejects as blank. `type: :boolean` injects no presence check, so it reads `false` fine.
+      step :generate_greeting,
+           expects: [:name, :email, { age: { type: Integer, optional: true }, admin: { type: :boolean } }],
+           exposes: %i[greeting admin_status] do
         greeting = "Hello, #{name}! Your email is #{email}."
         greeting += " You are #{age} years old." if age
         expose :greeting, greeting
@@ -360,8 +368,10 @@ module Benchmark
         expose :admin_status, admin_status
       end
 
-      step :add_metadata do
-        expose :user_id, @user_id
+      # A step runs as its own action, so a parent ivar is NOT visible here — reading `@user_id` set by
+      # the parent's `before` hook exposed nil and failed the parent's own outbound contract.
+      step :add_metadata, exposes: [:user_id] do
+        expose :user_id, rand(1000)
       end
     end
 
