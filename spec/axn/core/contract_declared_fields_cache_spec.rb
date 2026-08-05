@@ -39,4 +39,23 @@ RSpec.describe "_declared_fields cache" do
 
     expect { action._declared_fields(:sideways) }.to raise_error(ArgumentError, /Invalid direction/)
   end
+
+  it "returns a frozen Array, so a caller mutating the publicly-exposed declared_fields can't poison the class cache" do
+    action = build_axn { expects :name }
+
+    expect(action._declared_fields(:inbound)).to be_frozen
+  end
+
+  it "does not let a mutation attempt on result.declared_fields corrupt what the next call sees" do
+    action = build_axn do
+      expects :name
+      exposes :greeting
+      def call = expose(greeting: "hi")
+    end
+
+    result = action.call(name: "x")
+    expect { result.declared_fields << :sneaked_in }.to raise_error(FrozenError)
+
+    expect(action._declared_fields(:outbound)).to eq([:greeting])
+  end
 end

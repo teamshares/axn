@@ -46,9 +46,15 @@ module Axn
         facets: nil
       )
         return unless level
-        return unless would_log?(level)
 
         Axn::Extensions.best_effort(error_context, action: action_class) do
+          # Guarded by the same best_effort boundary as everything else in this block: a custom
+          # logger's severity predicate can itself raise, and that must be absorbed exactly like any
+          # other formatting failure here — some callers (call_async's invocation log, the
+          # enqueue-all completion log) invoke log_at_level with no other best_effort wrapping it, so
+          # checking the predicate outside this boundary could abort the call it only meant to log.
+          next unless would_log?(level)
+
           # Prepare and format context if needed
           context_str = if context_instance && context_direction
                           # Instance-level: use private inputs_for_logging / outputs_for_logging

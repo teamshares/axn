@@ -544,6 +544,13 @@ module Axn
         # (rather than only the one a given direction reads) for simplicity: an outbound-only
         # redeclaration then occasionally invalidates the (unaffected) :inbound slot too, which is
         # never a wrong answer, only an avoidable rebuild.
+        #
+        # The cached Array is FROZEN before it's stored: `ContextFacade` exposes this exact object
+        # publicly as `Result#declared_fields`, so a fresh Array per call used to confine any caller
+        # mutation to that one facade — reusing the same object across every future call turns that
+        # mutation into permanent cache corruption (a caller-appended field name would start defining
+        # readers/passing `expose` for undeclared output on every subsequent call of the class) unless
+        # the shared object refuses to be mutated at all.
         def _declared_fields(direction)
           raise ArgumentError, "Invalid direction: #{direction}" unless direction.nil? || %i[inbound outbound].include?(direction)
 
@@ -559,7 +566,8 @@ module Axn
                     else (internals + externals)
                     end
 
-          cache[direction] = DeclaredFieldsCacheEntry.new(internal_field_configs: internals, external_field_configs: externals, fields: configs.map(&:field))
+          cache[direction] = DeclaredFieldsCacheEntry.new(internal_field_configs: internals, external_field_configs: externals,
+                                                          fields: configs.map(&:field).freeze)
           cache[direction].fields
         end
 
@@ -571,13 +579,18 @@ module Axn
         # Moved here from the context facade instance (was rebuilt from scratch on every reader
         # definition — O(fields defined × contract size) per action instance, since both the outbound
         # Result facade and the inbound InternalContext facade instantiate one per call).
+        #
+        # Frozen before caching, same reasoning as `_declared_fields`: this is a public class method
+        # (so any caller can hold the live Hash), and the old per-call rebuild used to confine a
+        # caller mutation to that one read — reusing the same Hash across every future call would
+        # otherwise turn a mutation into permanent cross-call cache corruption.
         def _model_fields
           fields = internal_field_configs
           cached = @_axn_model_fields
           return cached.value if cached && cached.internal_field_configs.equal?(fields)
 
           value = fields.each_with_object({}) { |config, hash| hash[config.field] = config.validations[:model] if config.validations.key?(:model) }
-          @_axn_model_fields = ModelFieldsCacheEntry.new(internal_field_configs: fields, value:)
+          @_axn_model_fields = ModelFieldsCacheEntry.new(internal_field_configs: fields, value: value.freeze)
           value
         end
 

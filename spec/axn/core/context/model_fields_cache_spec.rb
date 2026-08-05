@@ -42,6 +42,13 @@ RSpec.describe "_model_fields cache" do
     expect(child._model_fields).to eq(parent._model_fields)
   end
 
+  it "returns a frozen Hash, since it's a public class method any caller could hold onto and mutate" do
+    klass = co_class
+    action = build_axn { expects :company, model: { klass:, finder: :find } }
+
+    expect(action._model_fields).to be_frozen
+  end
+
   it "still resolves a model field's reader correctly through the facade" do
     klass = co_class
     action = build_axn do

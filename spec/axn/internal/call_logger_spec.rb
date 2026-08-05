@@ -31,5 +31,24 @@ RSpec.describe Axn::Internal::CallLogger do
 
       action_class.call(name: "x")
     end
+
+    it "never lets a raising severity predicate escape — the same best_effort boundary as everything else in here" do
+      logger = double("broken logger")
+      allow(logger).to receive(:info?).and_raise(StandardError, "logger is misconfigured")
+      allow(Axn.config).to receive(:logger).and_return(logger)
+      action_class = build_axn do
+        expects :name
+        def call; end
+      end
+
+      expect do
+        described_class.log_at_level(
+          action_class,
+          level: :info,
+          message_parts: ["hi"],
+          error_context: "test",
+        )
+      end.not_to raise_error
+    end
   end
 end
