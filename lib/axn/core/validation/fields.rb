@@ -8,7 +8,10 @@ module Axn
     # THE one-off validator collector, for every declared config at every level: a top-level field
     # validates against the context facade (which resolves model records and reads by wire key), a
     # subfield against its canonically-resolved parent value. One (field, validations) pair per
-    # one-off class; raising/settling is the caller's concern (see Executor#_validate_inbound!).
+    # one-off class. The top-level/subfield path (Executor) and ShapeValidator both cache the compiled
+    # class and reuse it across calls/sources — see Contract::ValidatorClassCache and
+    # ShapeValidator#member_validator_classes respectively; raising/settling is the caller's concern
+    # (see Executor#_validate_inbound!).
     class Fields < Base
       def initialize(source)
         super()
@@ -31,7 +34,8 @@ module Axn
           # Two occupants reach here. A top-level/outbound FACADE read: its source is the framework's
           # own context/result facade, whose per-field reader is a safe generated accessor — method
           # dispatch is always permitted (it's not the caller-object dispatch the method_call gate
-          # targets), so the facade call site (collect_errors) passes `permit_method_call: true`. A
+          # targets), so the facade call site (Executor, via .errors_for) passes `permit_method_call:
+          # true`. A
           # SHAPE MEMBER read (ShapeValidator): its source is a caller-supplied element, so it honors
           # the member's own `method_call:` opt-in — the same gate as a subfield (PRO-2907). The
           # permission is carried explicitly by each call site (NOT inferred from @action presence):
@@ -44,18 +48,11 @@ module Axn
         end
       end
 
-      # Returns the ActiveModel::Errors for one (field, validations) pair against a source (empty if
-      # valid). This is THE facade call site (top-level inbound + outbound): its source is the
-      # framework's context/result facade, whose generated reader is safe, so it permits method
-      # dispatch unconditionally. (A subfield reaches read_attribute_for_validation via the reader/
-      # resolve_value branches, never the dispatch-gated else, so the flag is a no-op for it here.)
-      def self.collect_errors(field:, validations:, source:, action: nil, reader: nil, config: nil)
-        errors_for(validator_class_for(field:, validations:), source:, validations:, action:, reader:, config:, permit_method_call: true)
-      end
-
-      # Builds the one-off validator class for a (field, validations) pair. Callers that validate
-      # the same contract repeatedly (e.g. ShapeValidator over array elements) can build this once
-      # and reuse it across sources via .errors_for, avoiding per-call class compilation.
+      # Builds the one-off validator class for a (field, validations) pair. Every caller that validates
+      # the same contract repeatedly builds this ONCE and reuses it across sources via .errors_for:
+      # Contract::ValidatorClassCache for a top-level field/subfield (keyed on the FieldConfig's
+      # identity), ShapeValidator for a shape member (keyed on the member's field name, scoped to one
+      # compiled parent class).
       def self.validator_class_for(field:, validations:)
         Class.new(self) do
           def self.name = "Axn::Validation::Fields::OneOff"
@@ -71,7 +68,7 @@ module Axn
 
       # Runs a validator class against a source and returns its ActiveModel::Errors (empty if valid).
       # `permit_method_call:` governs the dispatch gate in the else branch of
-      # read_attribute_for_validation: the facade call site (collect_errors) passes `true`; a shape
+      # read_attribute_for_validation: the facade call site (Executor) passes `true`; a shape
       # member passes its own `method_call:` opt-in (PRO-2907). It is deliberately independent of
       # `action:` so the two can be threaded separately.
       #

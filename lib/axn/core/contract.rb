@@ -7,6 +7,7 @@ require "active_support/core_ext/module/delegation"
 require "active_support/core_ext/object/blank"
 
 require "axn/core/contract/redaction"
+require "axn/core/contract/validator_class_cache"
 require "axn/core/contract/shape_declaration"
 require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
@@ -365,6 +366,7 @@ module Axn
         # and in the same lookup position as when it lived in this file.
         include ShapeDeclaration
         include Redaction
+        include ValidatorClassCache
 
         # rubocop:disable Metrics/ParameterLists
         def expects(

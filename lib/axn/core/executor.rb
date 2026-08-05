@@ -1053,8 +1053,9 @@ module Axn
         return _validate_inbound! if direction == :inbound
 
         failures = @action_class.send(:external_field_configs).filter_map do |config|
-          errors = Axn::Validation::Fields.collect_errors(field: config.field, validations: config.validations,
-                                                          source: @action.result, action: @action)
+          validator_class = @action_class._cached_validator_class_for(config:, effective_validations: config.validations, coerce: false)
+          errors = Axn::Validation::Fields.errors_for(validator_class, source: @action.result, validations: config.validations, action: @action,
+                                                                       permit_method_call: true)
           ContractFailure.new(config:, path: nil, errors:, stranded_at: nil) if errors.any?
         end
         raise OutboundValidationError, _aggregate_errors(failures, []) if failures.any?
@@ -1132,13 +1133,16 @@ module Axn
         coerce_input_types = _coerce_input_types?
 
         _inbound_configs.filter_map do |config|
-          errors = Axn::Validation::Fields.collect_errors(
-            field: config.field,
-            validations: coerce_input_types ? _with_effective_coerce(config.validations) : config.validations,
+          effective_validations = coerce_input_types ? _with_effective_coerce(config.validations) : config.validations
+          validator_class = @action_class._cached_validator_class_for(config:, effective_validations:, coerce: coerce_input_types)
+          errors = Axn::Validation::Fields.errors_for(
+            validator_class,
             source: config.subfield? ? _resolved_parent_value(config) : @action.internal_context,
+            validations: effective_validations,
             action: @action,
             reader: config.subfield? ? config.reader_as : nil,
             config: config.subfield? ? config : nil,
+            permit_method_call: true,
           )
           next if errors.empty?
 
