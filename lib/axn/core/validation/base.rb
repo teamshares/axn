@@ -150,7 +150,10 @@ module Axn
       # declaration-time nil-skip push-down, the emptiness axis's deferral test, and schema reflection's
       # floor emission. (Not to be confused with a DECLARATION-level `on:`, which is axn's subfield parent
       # and never reaches a validator entry.)
-      def self.entry_context_scoped?(entry_opts) = entry_opts.is_a?(Hash) && entry_opts.key?(:on)
+      def self.entry_context_scoped?(entry_opts)
+        bag = Axn::Internal::ShapeGraph.hash_or_nil(entry_opts)
+        !nil.equal?(bag) && Axn::Internal::ShapeGraph.carries_key?(bag, :on)
+      end
 
       # Whether an `acceptance:` ENTRY would let a nil through. ActiveModel's AcceptanceValidator skips a nil
       # outright unless the entry disables that (`allow_nil: false`), and even then accepts a value that is a
