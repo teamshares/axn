@@ -326,7 +326,7 @@ RSpec.describe "Axn class-level schema reflection" do
   # call, so an entry that carries none of its own still runs tolerant. A raw shape member is where that
   # spelling survives to be judged — a field declaration pushes the tolerance down into each entry before it
   # is ever read — so each row here holds the runtime, the member's `optional?` and the emitted property to
-  # one answer.
+  # one answer. `on:` is not among them: a member cannot carry one at all (see `_raise_member_context_option!`).
   describe "a declaration-wide tolerance on a raw shape member" do
     def shaped(member_validations)
       member = Axn::Core::Contract::ShapeConfig.new(field: :name, validations: member_validations)
@@ -347,12 +347,6 @@ RSpec.describe "Axn class-level schema reflection" do
       "an entry-level allow_nil: false over a hash-level true" =>
         [{ type: { klass: String, allow_nil: false }, allow_nil: true }, false],
       "no tolerance at all" => [{ type: String }, false],
-      # A declaration-wide `on:` is merged into every validator, and axn validates with no context — so no
-      # spelling of it can match and nothing in the declaration runs at all.
-      "a hash-level on: naming a context" => [{ type: String, on: :publish }, true],
-      "a hash-level on: nil" => [{ type: String, on: nil }, true],
-      "a hash-level on: false" => [{ type: String, on: false }, true],
-      "a hash-level on: []" => [{ type: String, on: [] }, true],
     }.each do |label, (member_validations, tolerant)|
       it "reads #{label} the way the runtime treats a nil member" do
         klass = shaped(member_validations)

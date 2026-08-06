@@ -949,6 +949,14 @@ module Axn
         # `_build_shape_member` rejects them explicitly with the reader-less reason instead.
         SHAPE_MEMBER_READER_OPTIONS = %i[as prefix].freeze
 
+        # `on:` on a member has neither of its two meanings available: axn has no ActiveModel validation
+        # contexts (a bag-level one reaches `validates` verbatim on the raw route and silences every validator
+        # in the bag on every call), and a member has no subfield parent for it to name either. Refused with
+        # that reason rather than as an unrecognized key — `:on` IS a recognized option, which is why it stays
+        # in KNOWN_MEMBER_VALIDATION_KEYS — and separately from the reader options, because an author who
+        # wrote `on:` has a different problem from one who wrote `as:`.
+        SHAPE_MEMBER_CONTEXT_OPTIONS = %i[on].freeze
+
         # The keys a shape member's VALIDATIONS bag may hold — derived from the two sets that already decide
         # it, never listed again beside them. `KNOWN_VALIDATION_KEYS` is the field path's own recognized set
         # (what `_partition_field_options` holds a field's bag to), and a member's bag is the same kind of
@@ -972,7 +980,9 @@ module Axn
         # Order mirrors `_build_shape_member`'s: an option a member may never carry is named for what it is,
         # and only what is left over is an unrecognized key. That is the split worth keeping — an author who
         # wrote `default:` has a different problem from one who wrote `tpye:`, and the first has a message
-        # already, explaining WHY a reader-less member cannot carry it.
+        # already, explaining WHY a reader-less member cannot carry it. A recognized key that a member still
+        # cannot carry (`on:`) is excluded from the short circuit below, or it would be skipped before it
+        # could be classified.
         #
         # Nothing a caller's key defines decides the verdict. A key that is not a Symbol is unknown by
         # construction (String keys were canonicalized on the way in), tested with `case`/`when` rather than
@@ -984,16 +994,19 @@ module Axn
         # bag was written in — and so an ordinary member (every key recognized) allocates nothing here beyond
         # the Set lookups themselves.
         def _check_member_option_keys!(name, validations)
-          unsupported = reader_opts = unknown = nil
+          unsupported = reader_opts = context_opts = unknown = nil
           validations.each_key do |key|
             case key
-            when ::Symbol then next if KNOWN_MEMBER_VALIDATION_KEYS.include?(key)
+            when ::Symbol
+              next if KNOWN_MEMBER_VALIDATION_KEYS.include?(key) && SHAPE_MEMBER_CONTEXT_OPTIONS.exclude?(key)
             end
 
             if SHAPE_MEMBER_UNSUPPORTED_OPTIONS.include?(key)
               (unsupported ||= []) << key
             elsif SHAPE_MEMBER_READER_OPTIONS.include?(key)
               (reader_opts ||= []) << key
+            elsif SHAPE_MEMBER_CONTEXT_OPTIONS.include?(key)
+              (context_opts ||= []) << key
             else
               (unknown ||= []) << key
             end
@@ -1001,6 +1014,7 @@ module Axn
 
           _raise_member_unsupported_options!(name, unsupported) if unsupported
           _raise_member_reader_options!(name, reader_opts) if reader_opts
+          _raise_member_context_option!(name, context_opts) if context_opts
           return if unknown.nil?
 
           raise ArgumentError,
@@ -1030,6 +1044,17 @@ module Axn
                 "shape member `#{_shape_member_label(name)}` does not support #{reader_opts.map { |k| "#{k}:" }.join('/')} " \
                 "(they rename a field's generated reader, but a shape member is reader-less; " \
                 "use them on a top-level `expects` field or an `on:` subfield)."
+        end
+
+        def _raise_member_context_option!(name, context_opts)
+          return if context_opts.empty?
+
+          raise ArgumentError,
+                "shape member `#{_shape_member_label(name)}` does not support " \
+                "#{context_opts.map { |k| "#{k}:" }.join('/')} — it names an ActiveModel validation context, and " \
+                "axn validates with no context, so every validator in the member's bag would be skipped on " \
+                "every call. A member has no subfield parent for it to name either. Gate the checks with " \
+                "`if:`/`unless:`, which axn does support."
         end
 
         # `coerce:` is field-only: it resolves a coerced value onto a reader, which a member has not got (see
@@ -1068,6 +1093,9 @@ module Axn
         def _build_shape_member(name, opts, subblock, outbound: false)
           _raise_member_unsupported_options!(name, opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS)
           _raise_member_reader_options!(name, opts.keys & SHAPE_MEMBER_READER_OPTIONS)
+          # Ahead of `_parse_field_configs` below, whose `on:` parameter would otherwise absorb the key as a
+          # subfield parent — which `ShapeConfig` then drops, leaving the option silently gone.
+          _raise_member_context_option!(name, opts.keys & SHAPE_MEMBER_CONTEXT_OPTIONS)
 
           # `user_facing:` reclassifies an INBOUND violation into the user-facing failure bucket. An
           # outbound (`exposes`) failure means the action produced bad output — always a dev bug, never

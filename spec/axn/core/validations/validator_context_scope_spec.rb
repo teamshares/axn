@@ -239,4 +239,62 @@ RSpec.describe "an `on:` that names a validation context" do
       expect(klass.call(v: "a")).not_to be_ok
     end
   end
+
+  # A member's bag reaches `validates` as-is on the raw route, so a bag-level `on:` silences every validator in
+  # it; on the block route the same key is absorbed as the subfield-parent kwarg and then dropped. One reason
+  # covers both, and it is not the reader-option or unknown-key reason.
+  describe "at the top of a shape member's bag" do
+    it "is refused on a raw shape: member" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { presence: true, on: :create })
+
+      expect do
+        Class.new do
+          include Axn
+          expects :h, type: Hash, shape: { members: [member], container: Hash }
+          def call = nil
+        end
+      end.to raise_error(ArgumentError, /shape member `x` does not support on:.*validation context.*no subfield parent/m)
+    end
+
+    it "is refused on a block-form member" do
+      expect do
+        Class.new do
+          include Axn
+          expects(:h, type: Hash) { field :x, presence: true, on: :create }
+          def call = nil
+        end
+      end.to raise_error(ArgumentError, /shape member `x` does not support on:/)
+    end
+
+    it "keeps reporting an unknown key as unknown rather than as a context option" do
+      expect do
+        Class.new do
+          include Axn
+          expects(:h, type: Hash) { field :x, tpye: String }
+          def call = nil
+        end
+      end.to raise_error(ArgumentError, /Unknown key\(s\) :tpye/)
+    end
+
+    it "keeps reporting a reader option with the reader-less reason" do
+      expect do
+        Class.new do
+          include Axn
+          expects(:h, type: Hash) { field :x, type: String, as: :y }
+          def call = nil
+        end
+      end.to raise_error(ArgumentError, /does not support as:.*reader-less/m)
+    end
+
+    it "still accepts the tolerance a member's bag may legitimately carry" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: String, allow_nil: true })
+      klass = Class.new do
+        include Axn
+        expects :h, type: Hash, shape: { members: [member], container: Hash }
+        def call = nil
+      end
+
+      expect(klass.call(h: { x: nil })).to be_ok
+    end
+  end
 end
