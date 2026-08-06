@@ -151,6 +151,33 @@ RSpec.describe "an `on:` that names a validation context" do
         klass.expects :v, type: { klass: String, on: :create }, length: { minimum: 2, on: :create }
       end.to raise_error(ArgumentError, /type:.*length:|length:.*type:/)
     end
+
+    it "is refused on a raw shape: member, which bypasses expects' option handling" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: String, on: :create } })
+
+      expect do
+        Class.new do
+          include Axn
+          expects :h, type: Hash, shape: { members: [member], container: Hash }
+          def call = nil
+        end
+      end.to raise_error(ArgumentError, /shape member `x`.*`on:` inside type:|`on:` inside type:.*shape member `x`/m)
+    end
+
+    it "is refused on an object-backed member, which only the declaration walk sees" do
+      member = Class.new do
+        def field = :x
+        def validations = { type: { klass: String, on: :create } }
+      end.new
+
+      expect do
+        Class.new do
+          include Axn
+          expects :h, type: Hash, shape: { members: [member], container: Hash }
+          def call = nil
+        end
+      end.to raise_error(ArgumentError, /`on:` inside type:/)
+    end
   end
 
   # Over-rejection is the failure mode when a guard is tightened, so these pin what must keep being ACCEPTED.
