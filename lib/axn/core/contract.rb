@@ -1416,10 +1416,15 @@ module Axn
         # What it inherits is what has to match for the comparison to mean anything, since both sides of a
         # comparison must live in the same space:
         #   * `type:` (which carries the parsed `coerce:` flag — `_expand_coerce_sugar!` folds the option into
-        #     the type bag, so there is no separate key left to copy) keeps the emitted schema and the runtime
+        #     the type bag, so there is no separate key left to copy — and whatever tolerance the base's own
+        #     `optional:`/`allow_blank:`/`allow_nil:` pushed into it) keeps the emitted schema and the runtime
         #     agreeing about what the companion may be, and keeps a coerced pair comparable: a form post of
         #     `count: "5", count_confirmation: "5"` against `coerce: Integer` compares 5 to "5" and reports a
-        #     mismatch the caller cannot act on unless the companion coerces too.
+        #     mismatch the caller cannot act on unless the companion coerces too. The inherited tolerance is
+        #     inert on the companion — an `optional:` base yields a `type:` bag carrying `allow_blank: true`
+        #     even though the companion's own `presence: true` (below) already rejects a blank value first —
+        #     but it still has to travel with `type:`, since the two live in one bag and copying one without
+        #     the other isn't an option.
         #   * `preprocess:` for the same reason — a `->(s){ s.strip }` on the base alone compares "a" to " a ".
         #   * `sensitive:` because the failure mode is a LEAK: a confirmed secret whose companion logs in the
         #     clear is the whole password beside the redacted one.
@@ -1730,18 +1735,25 @@ module Axn
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 
-        # Whether a validator entry takes NO tolerance from a declaration-level `optional:`/`allow_blank:`/
-        # `allow_nil:`. Exactly one does. Every other validator judges the field's OWN value, so a tolerance
-        # stands it down: there is nothing to check when the value the author called optional is absent or
-        # empty. `confirmation:`'s subject is not the field's value but the RELATIONSHIP between the field
-        # and its companion, and a SUPPLIED companion is compared against the base whatever the base holds —
-        # `password: ""` (or nil) beside `password_confirmation: "x"` is a mismatch the caller must see, not
-        # a blank to wave through.
+        # Whether a validator entry takes NO tolerance from the declaration-level `optional:`/`allow_blank:`/
+        # `allow_nil:` push-down (`_reconcile_emptiness_axis!`'s tolerant branch, below). Exactly one does.
+        # Every other validator judges the field's OWN value, so a tolerance stands it down: there is nothing
+        # to check when the value the author called optional is absent or empty. `confirmation:`'s subject is
+        # not the field's value but the RELATIONSHIP between the field and its companion, and a SUPPLIED
+        # companion is compared against the base whatever the base holds — `password: ""` (or nil) beside
+        # `password_confirmation: "x"` is a mismatch the caller must see, not a blank to wave through.
         #
         # This is narrower than it looks: ActiveModel's ConfirmationValidator already returns without
         # comparing when the COMPANION is nil (measured against activemodel 7.2.2.2: `unless (confirmed =
         # record.public_send("#{attribute}_confirmation")).nil?`), so a tolerance would only ever reach the
         # case of a supplied, contradicting companion — never the "nothing to confirm" case its name suggests.
+        #
+        # This is the ONLY tolerance push-down `confirmation:` is exempt from. The separate nil-skip push-down
+        # (`_apply_nil_skip_to_non_type_validators!`, below) does not check this predicate and so does relax a
+        # `confirmation:` entry on a field whose `type:` rejects nil — `expects :password, type: String,
+        # confirmation: true` stores `confirmation: { allow_nil: true }`. Harmless: a nil base has already
+        # failed its own type check by the time the comparison would run, so the relaxed entry never gets
+        # asked to wave through a real mismatch.
         def _tolerance_exempt_validator?(key) = key == :confirmation
 
         # A blank gate is canonicalized away at declaration, EXACTLY tracking the set of condition
