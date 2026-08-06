@@ -49,16 +49,25 @@ class Dispatch
 end
 ```
 
-Definitionally it is exactly the documented idiom, in one line:
+Definitionally it is the documented idiom, in one line:
 
 ```ruby
 def forward!(target)
   result = target.is_a?(Class) ? target.call(**inputs) : target
-  expose(result)
+  _expose_from_result(result, require_overlap: false)
   _propagate_sub_result_outcome!(result)
   result
 end
 ```
+
+The one place it diverges from a literal `expose(result)` is `require_overlap: false`, and that divergence is required rather than cosmetic. `expose(result)` raises `NoMatchingExposures` when a successful source shares no exposures with the caller, on the reasoning that you asked to forward and nothing forwarded. That reasoning holds for a direct call, where forwarding is the entire point. It does not hold for a delegation helper, where forwarding is a secondary effect of "run this action" — and two ordinary `call!` migrations have no overlap at all:
+
+```
+def call = SendEmail.call!            → ok      forward! SendEmail  → NoMatchingExposures
+child exposes :event, parent doesn't  → ok      forward! Child      → NoMatchingExposures
+```
+
+A side-effect-only sub-action and a child whose exposures the parent declines to re-declare are both legitimate, common shapes. Raising on them would break the drop-in claim for an entire class of callers, in exchange for catching a wiring mistake the caller's own tests surface immediately.
 
 Terminal semantics were considered and rejected. Terminal plus success-message propagation would make the parent a pure passthrough, at which point the caller may as well invoke the inner action directly — a wrapper earns its keep with what it does *around* the delegation, and terminal deletes the "after" half of that. Non-terminal also keeps `forward!` a drop-in for the `call!` it replaces, and `done!` already covers "stop here". The bang is earned by the failure branch alone, exactly as `call!`'s is.
 
@@ -98,7 +107,7 @@ The same merge loop — `exposed_data[field] = source_result.public_send(field)`
 | --- | --- | --- |
 | `_expose_from_result` (`contract.rb:2128-2140`) | child's declared ∩ parent's declared outbound | raises `NoMatchingExposures` |
 | step orchestrator (`step.rb:151-153`) | child's declared (no filter — chain accumulation) | n/a |
-| `forward!` (new) | delegates to `expose(result)` | delegates to `expose(result)` |
+| `forward!` (new) | child's declared ∩ parent's declared outbound | forwards nothing, never raises |
 
 The differing field set is a real semantic difference, not duplication: step's unfiltered merge is what lets a step's output reach a *later* step even when the parent does not declare it, and filtering there would break chaining. So the shared piece is not "the merge" but the write loop underneath it, which takes its field list from the caller:
 
