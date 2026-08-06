@@ -65,7 +65,6 @@ RSpec.describe "Axn class-level schema reflection" do
       "type: Object" => { type: Object, presence: false },
       "type: NilClass" => { type: NilClass, presence: false },
       "a union with a NilClass member" => { type: [Array, NilClass], presence: false },
-      "a context-scoped presence: over a nil-admitting type" => { type: Object, presence: { on: :publish } },
       # ActiveModel's confirmation check compares nothing when the confirmation accessor is nil, so it
       # cannot reject a nil (or anything else) on its own.
       "a confirmation check with nothing else rejecting nil" => { presence: false, confirmation: true },
@@ -686,35 +685,15 @@ RSpec.describe "Axn class-level schema reflection" do
       end
     end
 
-    # An entry scoped to a validation context never runs: axn validates with `valid?` and no context. Its
-    # floor is not a constraint the contract ever applies, so advertising one would reject a value every
-    # call accepts. This is not the gate policy below it — a gate MAY be open, and is counted as if it were.
-    describe "an entry scoped to a validation context, which never runs" do
-      def action_for(**opts)
-        klass = Class.new do
-          include Axn
-          def call = nil
-        end
-        klass.expects :v, **opts
-        klass
-      end
-
-      it "emits no floor for a context-scoped presence:, whose empty value the runtime accepts" do
-        expect(action_for(type: Array, presence: { on: :publish }).call(v: [])).to be_ok
-        expect(schema_for(type: Array, presence: { on: :publish })).to eq(type: "array")
-      end
-
-      it "emits no floor for a context-scoped length:, whose empty value the runtime accepts" do
-        opts = { type: Array, presence: false, length: { minimum: 3, on: :publish } }
-        expect(action_for(**opts).call(v: [])).to be_ok
-        expect(schema_for(**opts)).to eq(type: "array")
-      end
-
-      it "still emits the floor of a GATED presence:, which a call may run" do
+    # A gated entry MAY be open on a given call, so its floor is emitted as if the gate were open —
+    # static-maximal, which can leave the input schema stricter than a closed-gate runtime but never looser,
+    # and is the policy for every gated constraint here.
+    describe "an entry a gate may skip" do
+      it "emits the floor of a gated presence:, which a call may run" do
         expect(schema_for(type: Array, presence: { if: :flag })).to eq(type: "array", minItems: 1)
       end
 
-      it "still emits the floor of a GATED length:, which a call may run" do
+      it "emits the floor of a gated length:, which a call may run" do
         expect(schema_for(type: Array, presence: false, length: { minimum: 3, if: :flag })).to eq(type: "array", minItems: 3)
       end
     end
@@ -866,8 +845,8 @@ RSpec.describe "Axn class-level schema reflection" do
           expect(schema_for(**opts)).to eq(type: %w[string null])
         end
 
-        it "emits no floor when the only other check is one no call runs" do
-          opts = { type: String, presence: { on: :publish }, length: { minimum: 3, allow_blank: true } }
+        it "emits no floor when the only other check is one that is switched off" do
+          opts = { type: String, presence: false, length: { minimum: 3, allow_blank: true } }
           expect(action_for(**opts).call(v: "")).to be_ok
           expect(schema_for(**opts)).to eq(type: "string")
         end

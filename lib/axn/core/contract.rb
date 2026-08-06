@@ -1559,6 +1559,35 @@ module Axn
           raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
         end
 
+        # `on:` inside a validator's own option bag is ActiveModel's validation CONTEXT option, and axn has no
+        # validation contexts: `Validation::Fields` calls `valid?` with no context, while `validate` installs a
+        # gate of `!(Array(options[:on]) & Array(validation_context)).empty?` whenever `options.key?(:on)` — an
+        # intersection that is empty on every call. So the entry runs on no call and whatever it declared is
+        # unenforced, which is the strongest form of a silently ignored option: the author wrote a check, the
+        # class defines cleanly, and every value passes.
+        #
+        # Only real validator ENTRIES are scanned. A BAG-level `on:` is a different declaration needing a
+        # different fix — a shape member has no validation context and no subfield parent either, and neither
+        # has an exposure — so it is reported where it arrives (`_check_member_option_keys!` /
+        # `_build_shape_member` for a member, `exposes` for an exposure) and is out of this check's remit.
+        #
+        # Every offender is named at once: an author who wrote two of them has one declaration to fix, not two
+        # rounds of the same error.
+        def _reject_validator_context_scope!(validations, where:)
+          offenders = Axn::Validation::Base.validator_entries(validations).filter_map do |key, entry|
+            "#{key}:" if Axn::Validation::Base.entry_context_scoped?(entry)
+          end
+          return if offenders.empty?
+
+          runs = offenders.size == 1 ? "that check runs" : "those checks run"
+          raise ArgumentError,
+                "`on:` inside #{offenders.join(' / ')} on #{where} names an ActiveModel validation context, and " \
+                "axn validates with no context — so #{runs} on no call and the declaration is left unenforced. " \
+                "Axn has no validation contexts: drop `on:`, or gate the check with `if:/unless:`, which axn " \
+                "does support. (A DECLARATION-level `on:` is axn's subfield parent — `expects :zip, on: :address` " \
+                "— and is unaffected.)"
+        end
+
         # Pseudo-types (Symbol type names) whose values can be empty. `:params` is Hash-backed; `:boolean`
         # and `:uuid` have no empty state.
         EMPTIABLE_PSEUDO_TYPES = %i[params].freeze
@@ -1668,6 +1697,18 @@ module Axn
           _validate_coercion!(validations[:type]) if validations[:type].is_a?(Hash) && validations[:type].key?(:coerce)
 
           _canonicalize_validator_options!(validations, fields)
+
+          # Ahead of every consumer of this bag — `_validate_allow_empty!`, `_reconcile_emptiness_axis!`, the
+          # tolerance push-down, `_apply_nil_skip_to_non_type_validators!` — so none of them ever judges an entry
+          # that cannot run. Ahead of the push-down specifically so the message quotes the author's own spelling
+          # rather than one carrying merged tolerance keys, and ahead of `_derive_raw_shape_container!` because
+          # that rebuilds a raw `shape:` node and drops the very key being reported.
+          #
+          # After `ShapeGraph.detach_option_containers!` (`:1651`), which is what makes the verdict the caller's
+          # to state and not to decide: every Hash-valued entry is axn's own plain Hash by now. `:shape` is the
+          # one entry that seam skips, which is why the predicate classifies and reads its key without
+          # dispatching to the bag.
+          _reject_validator_context_scope!(validations, where: fields.map(&:to_s).inspect)
 
           _derive_raw_shape_container!(validations)
 
