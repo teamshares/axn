@@ -78,7 +78,7 @@ module Axn
       # has nowhere else to live; `ShapeValidator` reads it back off the record it is handed, the same way it
       # reads the threaded action.
       def self.errors_for(validator_class, source:, validations:, action: nil, reader: nil, config: nil, permit_method_call: false,
-                          shape_ancestry: nil)
+                          shape_ancestry: nil, confirmation: nil)
         validator = validator_class.new(source)
 
         # Set the action context for model field resolution + symbol-argument delegation
@@ -88,6 +88,12 @@ module Axn
         validator.instance_variable_set(:@config, config)
         validator.instance_variable_set(:@permit_method_call, permit_method_call)
         validator.instance_variable_set(:@shape_ancestry, shape_ancestry)
+
+        # ActiveModel's ConfirmationValidator#setup! defines a real `attr_reader :<attr>_confirmation` on
+        # this one-off class, and compares only when that reader answers non-nil. The reader reads an ivar,
+        # so supplying the companion's resolved value here is the whole of the wiring — the caller resolves
+        # it, because only the caller knows which config the companion is.
+        validator.instance_variable_set(:"@#{confirmation.first}_confirmation", confirmation.last) if confirmation
 
         validator.valid?
         validator.errors

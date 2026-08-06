@@ -408,6 +408,22 @@ module Axn
       #     (a lone id declared on a route other than the model's).
       # Empty when no `<field>_id` is declared (the caller's raw token carries no transform) or when the
       # config isn't in either subfield index (an ambient config falls back to the ambient-scoped tree).
+      # The declared `<field>_confirmation` config on the SAME route as `config`, or nil. A confirmation
+      # pair is one route's contract: unlike `sibling_id_configs`, which falls through to a defaulted or
+      # sole route because an id may legitimately be declared beside a different model, a confirmation
+      # compares against the companion declared beside THIS field and nothing else.
+      def self.sibling_confirmation_config(action, config)
+        key = :"#{config.field}_confirmation"
+        candidates =
+          if config.on.nil?
+            action.class.internal_field_configs.select { |c| c.field == key }
+          else
+            action.class.send(:subfield_configs).select { |c| c.field == key }
+          end
+
+        candidates.find { |c| c.on.to_s == config.on.to_s }
+      end
+
       def self.sibling_id_configs(action, config)
         path = action.class._resolved_subfields.index[config] || action.class._ambient_subfield_tree.index[config]
         return [] if path.nil?
