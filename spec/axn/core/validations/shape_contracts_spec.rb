@@ -699,6 +699,15 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           .to raise_error(ArgumentError, /shape member `m` does not support model:.*type: Klass/m)
       end
 
+      # `confirmation:` needs a sibling to compare against and a per-member requiredness gate that can name
+      # it — neither of which a reader-less member can express, since a member's `if:`/`unless:` resolves
+      # against the action rather than the element — so it is refused on the raw route exactly as the block
+      # form refuses it, rather than expanded into a validator that raises NoMethodError on every call.
+      it "rejects `confirmation:` at declaration, as the block form does" do
+        expect { declared_with({ confirmation: true }) }
+          .to raise_error(ArgumentError, /shape member `m` does not support confirmation:.*on: :<parent>/m)
+      end
+
       # Expanding a shorthand is only half of what canonicalizing a bag is for: the compatibility guards that
       # read the canonical bag live in the same seam, so a member is held to exactly what a field is held to.
       # `of:` beside a non-Array `type:` is the case with no runtime signal at all — `OfValidator` returns
