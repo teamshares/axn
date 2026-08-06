@@ -297,4 +297,36 @@ RSpec.describe "an `on:` that names a validation context" do
       expect(klass.call(h: { x: nil })).to be_ok
     end
   end
+
+  describe "at the top of an exposes declaration" do
+    it "is refused, naming both meanings it cannot have" do
+      expect do
+        Class.new do
+          include Axn
+          exposes :v, presence: true, on: :create
+          def call = expose(v: "x")
+        end
+      end.to raise_error(ArgumentError, /exposes does not support `on:` on \["v"\].*no subfield parent.*no ActiveModel validation contexts/m)
+    end
+
+    it "is refused whatever the value, since nothing reads it either way" do
+      expect do
+        Class.new do
+          include Axn
+          exposes :v, presence: true, on: nil
+          def call = expose(v: "x")
+        end
+      end.to raise_error(ArgumentError, /exposes does not support `on:`/)
+    end
+
+    it "leaves an ordinary exposes untouched" do
+      klass = Class.new do
+        include Axn
+        exposes :v, type: String
+        def call = expose(v: "x")
+      end
+
+      expect(klass.call).to be_ok
+    end
+  end
 end

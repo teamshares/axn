@@ -507,6 +507,19 @@ module Axn
 
           validations, metadata = _partition_field_options(fields, **)
 
+          # `exposes` takes no `on:` parameter, so the key arrives in the validations bag and would then be
+          # absorbed by `_parse_field_configs`' subfield-parent parameter — stored as `config.on` on an outbound
+          # config, where nothing reads it. Neither meaning is available: an exposure has no subfield parent
+          # (see `_reject_dotted_field_name!` above, which refuses a dotted name for the same reason), and axn
+          # has no ActiveModel validation contexts. Rejected on the key's presence, whatever the value, matching
+          # how `exposes` refuses `user_facing:`.
+          if validations.key?(:on)
+            raise ArgumentError,
+                  "exposes does not support `on:` on #{fields.map(&:to_s).inspect} — an exposure has no subfield " \
+                  "parent to reach into, and axn has no ActiveModel validation contexts. Drop `on:`; to gate the " \
+                  "outbound checks, use `if:`/`unless:`."
+          end
+
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
           # Ahead of the `user_facing:` walk below so a member carrying both an unusable name and a rejected
