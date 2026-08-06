@@ -354,10 +354,7 @@ RSpec.describe Axn::Tools::Registry do
       register_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
-    # Both failing siblings are isolated by the SAME single load, and `require` runs a file at most once
-    # per process — so the StandardError case and the LoadError case have to be asserted together here
-    # rather than as two examples (the second would find the fixture already loaded and have nothing to do).
-    it "loads the good tool despite siblings raising StandardError and LoadError, warning about both" do
+    it "loads the good tool despite a sibling file raising at load time, warning about the bad one" do
       warnings = []
       allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
@@ -366,6 +363,16 @@ RSpec.describe Axn::Tools::Registry do
       expect(Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")).to be(true)
       expect(tools).to include(RegistryFixturesMixed::GoodMixedTool)
       expect(warnings).to include(a_string_matching(/bad_mixed_tool\.rb.*boom/))
+    end
+
+    it "loads the good tool despite a sibling file raising LoadError at load time, warning about it too" do
+      warnings = []
+      allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+      tools = Axn::Tools.for(:mcp)
+
+      expect(Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")).to be(true)
+      expect(tools).to include(RegistryFixturesMixed::GoodMixedTool)
       expect(warnings).to include(a_string_matching(/load_error_mixed_tool\.rb.*LoadError/))
     end
   end
