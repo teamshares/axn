@@ -340,8 +340,6 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "requires .rb files under a configured tool dir and exposes them as tools" do
-      skip "fixture already loaded" if Object.const_defined?("RegistryFixtures::LazyRegistryTool")
-
       tools = Axn::Tools.for(:mcp)
       expect(Object.const_defined?("RegistryFixtures::LazyRegistryTool")).to be(true)
       expect(tools).to include(RegistryFixtures::LazyRegistryTool)
@@ -356,9 +354,10 @@ RSpec.describe Axn::Tools::Registry do
       register_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
-    it "loads the good tool despite a sibling file raising at load time, warning about the bad one" do
-      skip "fixture already loaded" if Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")
-
+    # Both failing siblings are isolated by the SAME single load, and `require` runs a file at most once
+    # per process — so the StandardError case and the LoadError case have to be asserted together here
+    # rather than as two examples (the second would find the fixture already loaded and have nothing to do).
+    it "loads the good tool despite siblings raising StandardError and LoadError, warning about both" do
       warnings = []
       allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
@@ -367,18 +366,6 @@ RSpec.describe Axn::Tools::Registry do
       expect(Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")).to be(true)
       expect(tools).to include(RegistryFixturesMixed::GoodMixedTool)
       expect(warnings).to include(a_string_matching(/bad_mixed_tool\.rb.*boom/))
-    end
-
-    it "loads the good tool despite a sibling file raising LoadError at load time, warning about it too" do
-      skip "fixture already loaded" if Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")
-
-      warnings = []
-      allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
-
-      tools = Axn::Tools.for(:mcp)
-
-      expect(Object.const_defined?("RegistryFixturesMixed::GoodMixedTool")).to be(true)
-      expect(tools).to include(RegistryFixturesMixed::GoodMixedTool)
       expect(warnings).to include(a_string_matching(/load_error_mixed_tool\.rb.*LoadError/))
     end
   end
@@ -451,8 +438,6 @@ RSpec.describe Axn::Tools::Registry do
     it "loads a valid sibling despite a SyntaxError file, warning about the bad one and not raising" do
       require "tmpdir"
 
-      skip "fixture already loaded" if Object.const_defined?("SyntaxIsoFixture::Ok")
-
       dir = Dir.mktmpdir("axn_syntax_iso")
       begin
         File.write(File.join(dir, "ok_tool.rb"), <<~RUBY)
@@ -492,8 +477,6 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "exposes the good tool but rolls back the class registered by the failing file" do
-      skip "fixture already loaded" if Object.const_defined?("GoodFailedFixture::Ok")
-
       warnings = []
       allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
@@ -519,8 +502,6 @@ RSpec.describe Axn::Tools::Registry do
     end
 
     it "keeps a valid tool required by the failing file, rolling back only the failing file's own class" do
-      skip "fixture already loaded" if Object.const_defined?("NestedDep::Good")
-
       warnings = []
       allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
 
