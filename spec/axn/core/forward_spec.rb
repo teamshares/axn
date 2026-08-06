@@ -128,6 +128,67 @@ RSpec.describe "forward!" do
     expect(via_forward.call.error).to eq("inner exploded: child failed")
   end
 
+  it "matches call!'s error when a child with a declared error base raises" do
+    inner = build_axn do
+      error "inner exploded"
+      def call = raise("kaboom")
+    end
+    i = inner
+
+    via_bang = build_axn { define_method(:call) { i.call! } }
+    via_forward = build_axn { define_method(:call) { forward! i } }
+
+    expect(via_forward.call.error).to eq(via_bang.call.error)
+    expect(via_forward.call.error).to eq("inner exploded")
+  end
+
+  it "matches call!'s aggregated error when both the child and the parent declare a base" do
+    inner = build_axn do
+      error "inner exploded"
+      def call = raise("kaboom")
+    end
+    i = inner
+
+    via_bang = build_axn do
+      error "Outer failed"
+      define_method(:call) { i.call! }
+    end
+    via_forward = build_axn do
+      error "Outer failed"
+      define_method(:call) { forward! i }
+    end
+
+    expect(via_forward.call.error).to eq(via_bang.call.error)
+    expect(via_forward.call.error).to eq("Outer failed: inner exploded")
+  end
+
+  it "matches call!'s error and exception identity for a fails_on-classified child" do
+    not_found = Class.new(StandardError)
+    inner = build_axn do
+      fails_on not_found
+      define_method(:call) { raise(not_found, "no such record") }
+    end
+    i = inner
+
+    via_bang = build_axn do
+      error "Outer failed"
+      error "Record not found", if: not_found
+      define_method(:call) { i.call! }
+    end
+    via_forward = build_axn do
+      error "Outer failed"
+      error "Record not found", if: not_found
+      define_method(:call) { forward! i }
+    end
+
+    expect(via_forward.call.error).to eq(via_bang.call.error)
+    expect(via_forward.call.error).to eq("Outer failed: Record not found")
+
+    # The exception identity is what keeps the parent's own `if: not_found` handler matching.
+    expect(via_forward.call.exception).to be_a(not_found)
+    expect(via_forward.call.exception.class).to eq(via_bang.call.exception.class)
+  end
+
   it "does not overwrite a value the parent already exposed with a never-set child field" do
     partial = build_axn do
       exposes :a, :b, optional: true

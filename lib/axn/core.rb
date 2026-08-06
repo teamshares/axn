@@ -42,22 +42,7 @@ module Axn
       end
 
       def call!(**)
-        result = call(**)
-        return result if result.ok?
-
-        # Carry this result's presentation for an ancestor to prefix onto (header aggregation). Scoped
-        # to `call!` — transparent bubbling — on purpose: a child run via plain `.call` must NOT leave a
-        # carried presentation, or an explicit `.call` + re-raise (e.g. `step`'s bug path) would leak it
-        # into the parent. Two gates: (1) only when an Axn ancestor is still on the stack to consume it
-        # — at the OUTERMOST `call!`, `call` above has already unwound NestingTracking (and run its
-        # reset), so a write here would have no consumer and no later reset (a thread-local leak that
-        # also pins the Failure's __originating_action/context); (2) only when a base/reason was actually
-        # declared, so a baseless fallback contributes nothing.
-        if Core::NestingTracking._current_axn_stack.any? && result.send(:_error_from_declared_source?)
-          Axn::Internal::CarriedPresentation.set(result.exception, result.error)
-        end
-
-        raise result.exception
+        Axn::Internal::TransparentBubbling.bubble!(call(**))
       end
     end
 
@@ -120,11 +105,12 @@ module Axn
     # run.
     #
     # Non-terminal: on success it returns the sub-action's result and execution continues, exactly as
-    # call! does. The bang marks the failure branch, which settles this action. Exposure absorption
-    # tolerates an empty intersection (`require_overlap: false`) rather than raising, so a
-    # side-effect-only child, or a child whose exposures this action declines to re-declare, still
-    # forwards cleanly — forwarding here is a side effect of running the sub-action, not the point of
-    # the call the way a direct `expose(result)` is.
+    # call! does. The bang marks the failure branch, which settles this action — through call!'s own
+    # tail, so the outcome, the error string and the exception object are the ones the `call!` this
+    # replaces would have produced. Exposure absorption tolerates an empty intersection
+    # (`require_overlap: false`) rather than raising, so a side-effect-only child, or a child whose
+    # exposures this action declines to re-declare, still forwards cleanly — forwarding here is a side
+    # effect of running the sub-action, not the point of the call the way a direct `expose(result)` is.
     #
     # A Class is invoked with this action's resolved `inputs` — declared inbound fields only, not the
     # step chain's fuller passthrough. Pass a Result instead to control the arguments yourself.
@@ -134,18 +120,24 @@ module Axn
       raise ArgumentError, "forward!: expected an Axn class or an Axn::Result (got #{result.class})" unless Internal::Identity.kind?(result, Axn::Result)
 
       _expose_from_result(result, require_overlap: false)
-      _propagate_sub_result_outcome!(result)
 
-      result
+      Internal::TransparentBubbling.bubble!(result)
     end
 
     private
 
-    # Settle this action according to a sub-action's outcome. Propagates the outcome *category*, not a
-    # flattened failure: a deliberate fail! (or a fails_on-classified exception) settles this action as
-    # a failure with the resolved message; an unclassified exception (a bug) re-raises the original
-    # object so this action settles as an exception too. The global report already fired at the
-    # sub-action and is deduped per exception object, so re-raising never double-reports.
+    # Settle this action according to a step's outcome — the step orchestrator's helper, and only its.
+    # Propagates the outcome *category*, not a flattened failure: a deliberate fail! (or a
+    # fails_on-classified exception) settles this action as a failure with the resolved message,
+    # prefixed by the step's own `error_prefix` (deliberate aggregation — the parent's error names
+    # which step failed); an unclassified exception (a bug) re-raises the original object so this
+    # action settles as an exception too. The global report already fired at the step and is deduped
+    # per exception object, so re-raising never double-reports.
+    #
+    # Transparent bubbling — `call!` and `forward!` — uses Internal::TransparentBubbling instead, which
+    # re-raises on every non-ok outcome and records a CarriedPresentation. Neither belongs here:
+    # aggregation is the opposite of transparent, and a carried presentation on this plain-`.call`
+    # path would leak into the parent (see TransparentBubbling).
     def _propagate_sub_result_outcome!(result, error_prefix: nil)
       return if result.ok?
 
