@@ -334,6 +334,24 @@ RSpec.describe "confirmation:" do
         expect(schema[:required]).to include("password_confirmation")
         expect(schema[:allOf]).to be_nil
       end
+
+      # The companion's own `presence: true` carries no tolerance of its own (it is not relaxed to mirror
+      # the base's `optional:`/`allow_empty:`), so the emitted size floor (minLength/minItems) stands on
+      # the companion property even where the base admits a blank value and the runtime gate never runs
+      # the presence check for a blank-matching pair (`password: "", password_confirmation: ""` calls
+      # cleanly — the gate closes because the base has nothing to confirm). This is the same direction,
+      # via the same mechanism, as an ordinary gated field's own floor (the `if:`-gated base above emits
+      # `minLength: 1` on `password` despite `if: :admin`): the reflection layer counts a gated check as
+      # though it always ran, which can only make the schema STRICTER than the runtime it's read from,
+      # never looser — so a schema-following caller is refused the blank-matching pair the runtime would
+      # accept, accepted here as the documented cost of staying on the strict side of that line.
+      it "keeps the companion's own size floor though a blank-admitting base never enforces it at runtime" do
+        password_schema = build_axn { expects :password, type: String, optional: true, confirmation: true }.input_schema
+        expect(password_schema[:properties][:password_confirmation]).to include(minLength: 1)
+
+        tags_schema = build_axn { expects :tags, type: Array, allow_empty: true, confirmation: true }.input_schema
+        expect(tags_schema[:properties][:tags_confirmation]).to include(minItems: 1)
+      end
     end
 
     it "holds its generated reader to the same collision bar as a declared one" do
@@ -353,6 +371,32 @@ RSpec.describe "confirmation:" do
           expects :password_confirmation, type: String, optional: true
         end
       end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /password_confirmation/)
+    end
+
+    describe "the emitted input schema" do
+      it "advertises the companion, conditionally required on the base field" do
+        klass = build_axn { expects :password, type: String, confirmation: true }
+        schema = klass.input_schema
+
+        expect(schema[:properties]).to have_key(:password_confirmation)
+        expect(schema[:required]).to contain_exactly("password")
+        expect(schema[:allOf]).to eq(
+          [{ if: { required: ["password"], properties: { password: { not: { enum: [false, nil] } } } },
+             then: { required: ["password_confirmation"] } }],
+        )
+      end
+
+      it "resolves requiredness independently of declaration order" do
+        a = build_axn do
+          expects :password, type: String, confirmation: true
+          expects :other, type: String, optional: true
+        end
+        b = build_axn do
+          expects :other, type: String, optional: true
+          expects :password, type: String, confirmation: true
+        end
+        expect(a.input_schema[:allOf]).to eq(b.input_schema[:allOf])
+      end
     end
 
     it "works on a subfield" do
