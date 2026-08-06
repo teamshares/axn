@@ -357,6 +357,31 @@ RSpec.describe "confirmation:" do
       end
     end
 
+    # An `on:` on the ENTRY is ActiveModel's validation CONTEXT, not a gate: inbound validation runs
+    # `valid?` with no context, so the comparison fires on no call at all. A companion required for a check
+    # nothing performs would reject input nothing then compares, so the entry produces no companion — as
+    # inert as the confirmation it would have served.
+    describe "a confirmation: entry scoped to a validation context" do
+      it "generates no companion at all" do
+        klass = build_axn { expects :password, type: String, optional: true, confirmation: { on: :create } }
+
+        expect(klass.internal_field_configs.map(&:field)).to contain_exactly(:password)
+        expect(klass.call(password: "s3cret")).to be_ok
+        expect(klass.call(password: "s3cret", password_confirmation: "nope")).to be_ok
+        expect(klass.input_schema[:properties]).not_to have_key(:password_confirmation)
+      end
+
+      it "generates none on the subfield route either" do
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :password, on: :payload, type: String, optional: true, confirmation: { on: :create }
+        end
+
+        expect(klass.subfield_configs.map(&:field)).to contain_exactly(:password)
+        expect(klass.call(payload: { password: "s3cret" })).to be_ok
+      end
+    end
+
     describe "the emitted schema" do
       it "states the requirement exactly for an ungated base" do
         schema = build_axn { expects :password, type: String, confirmation: true }.input_schema
@@ -466,6 +491,36 @@ RSpec.describe "confirmation:" do
         expect(klass.call(payload: { password: "s3cret", password_confirmation: "s3cret" })).to be_ok
         expect(klass.call(payload: { password: "s3cret", password_confirmation: "nope" })).not_to be_ok
         expect(klass.call(payload: { password: "s3cret" })).not_to be_ok
+      end
+
+      # A deferred companion is still eligible as a subfield's `on:` PARENT. Resolving that parent by
+      # dispatching the name reads the author's method, so the child would be validated — and read — against
+      # a value the companion's own contract never saw, accepting an invalid wire value.
+      it "resolves a subfield whose on: parent is a deferred companion against the wire value" do
+        klass = build_axn do
+          def pw_confirmation = { code: 1 }
+          expects :password, as: :pw, type: Hash, confirmation: true
+          expects :code, on: :pw_confirmation, type: Integer
+          exposes :seen
+          def call = expose(seen: code)
+        end
+
+        expect(klass.call(password: { code: "bad" }, password_confirmation: { code: "bad" })).not_to be_ok
+        expect(klass.call(password: { code: 7 }, password_confirmation: { code: 7 }).seen).to eq(7)
+      end
+
+      it "resolves through a deferred subfield companion the same way" do
+        klass = build_axn do
+          def pw_confirmation = { code: 1 }
+          expects :payload, type: Hash
+          expects :password, on: :payload, as: :pw, type: Hash, confirmation: true
+          expects :code, on: :pw_confirmation, type: Integer
+          exposes :seen
+          def call = expose(seen: code)
+        end
+
+        expect(klass.call(payload: { password: { code: "bad" }, password_confirmation: { code: "bad" } })).not_to be_ok
+        expect(klass.call(payload: { password: { code: 7 }, password_confirmation: { code: 7 } }).seen).to eq(7)
       end
     end
 

@@ -45,7 +45,7 @@ module Axn
         reader_index = deepest_reader_index(path)
         return _resolve_parent_by_recipe(action, config.on, permit_method_call: config.method_call) if reader_index.nil?
 
-        value = action.public_send(_deepest_reader_name(config, path, reader_index))
+        value = _read_deepest_reader(action, config, path, reader_index)
         (reader_index...path.parent_index).each do |i|
           # Every hop below the deepest reader is an IMPLICIT intermediate (a declared node bears a
           # reader, so it would be the reader public_sent above — never dig-crossed here). So the
@@ -84,6 +84,22 @@ module Axn
         return config.on.to_s.split(".").first.to_sym if reader_index == anchor_index
 
         _reader_config(path.ancestors[reader_index].first).reader_as
+      end
+
+      # The parent value at the deepest reader-bearing ancestor. Its reader answers — except when that
+      # ancestor's config does not OWN the name (Contract#_reader_deferred?: an inferred confirmation
+      # companion whose reader yielded to a method the author wrote). Dispatching then reads that method's
+      # answer instead of the declared input, so the child would be validated against a value its parent's
+      # own contract never saw. A reader-less config is resolved directly instead — `resolve_value`, the
+      # same seam inbound validation takes for one — so both halves of a deferred pair and everything read
+      # off them agree on the wire value.
+      def self._read_deepest_reader(action, config, path, reader_index)
+        reader = _deepest_reader_name(config, path, reader_index)
+        deferred = path.ancestors[reader_index].first.configs.find do |c|
+          c.reader_as == reader && action.class.send(:_reader_deferred?, c)
+        end
+
+        deferred ? resolve_value(action, deferred) : action.public_send(reader)
       end
 
       # Fallback for configs outside the tree (ambient): read the `on:` root via its reader, dig the
@@ -457,7 +473,7 @@ module Axn
       # deliberately absent and stay public: `Core::Executor` calls `_memoized_raw_extract` and
       # `_declared_id_token` on this module by name, and `ClassMethods`' `<field>_id` companion reader
       # calls `_declared_id_token` the same way.
-      private_class_method :_reader_config, :_deepest_reader_name, :_resolve_parent_by_recipe,
+      private_class_method :_reader_config, :_deepest_reader_name, :_read_deepest_reader, :_resolve_parent_by_recipe,
                            :_resolve_in_progress_set, :_transform_in_progress_set, :_raw_extract_memo,
                            :_raw_reads?, :_reader_memo_ref, :_mark_provisional_reader,
                            :_drop_provisional_reader_memos, :_apply_read_path_transforms,

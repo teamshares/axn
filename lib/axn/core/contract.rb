@@ -1491,11 +1491,13 @@ module Axn
         #
         # A companion the author already declared — in this same batch or on the class already, on the same
         # route — is authoritative and suppresses the implicit one entirely, rather than colliding with it.
+        # A CONTEXT-SCOPED `confirmation:` entry gets no companion at all (see below).
         def _confirmation_companion_configs(configs, existing:)
           claimed = (configs + existing).map { |c| _declaration_slot(c) }
 
           configs.filter_map do |config|
             next unless config.validations[:confirmation]
+            next if _confirmation_never_runs?(config.validations)
 
             companion = :"#{config.field}_confirmation"
             next if claimed.include?([companion, config.on.to_s])
@@ -1514,6 +1516,17 @@ module Axn
               **_confirmation_companion_gates(config),
             ).first.with(confirmation_for: config.field)
           end
+        end
+
+        # Whether the `confirmation:` entry is scoped to an ActiveModel validation CONTEXT
+        # (Validation::Base.entry_context_scoped?, asked of the options the entry will RUN under): inbound
+        # validation calls `valid?` with no context, so such an entry runs on no call at all and the
+        # comparison can never fire. The companion exists only to feed that comparison — generating one would
+        # demand input for a check nothing performs, which is strictly more than the confirmation itself
+        # asks. So none is generated, and the requirement is exactly as inert as the comparison it serves.
+        def _confirmation_never_runs?(validations)
+          entry = Axn::Validation::Base.effective_entry_options(validations[:confirmation], _shared_validation_options(validations))
+          Axn::Validation::Base.entry_context_scoped?(entry)
         end
 
         # The gate keys the companion declares: the gates the COMPARISON runs under composed with the rule
@@ -1691,6 +1704,18 @@ module Axn
           instance_method(name).owner.is_a?(InferredReaders)
         end
 
+        # Whether the method answering to a config's reader name belongs to something OTHER than the config:
+        # an INFERRED reader that yielded (a confirmation companion deferring to a method the author wrote or
+        # to an explicit declaration's reader). Such a config has no reader of its own, so dispatching the
+        # name answers with the shadowing method's value rather than the declared input — every consumer must
+        # resolve the config directly instead. THE single definition of that question, shared by inbound
+        # validation (_validation_reader_for) and canonical parent resolution
+        # (ContractForSubfields.resolve_parent), so no consumer can read a deferred companion through the
+        # method shadowing it while another reads its wire value.
+        def _reader_deferred?(config)
+          !config.confirmation_for.nil? && !_inferred_reader?(config.reader_as)
+        end
+
         # The reader inbound validation may read a config's value through, or nil when it must resolve the
         # config directly. A subfield's reader IS its value (memoized, model-resolving, default-applying),
         # so validation reads it — but only when it is the reader axn generated FOR THIS CONFIG. A DEFERRED
@@ -1700,7 +1725,7 @@ module Axn
         # values. A top-level field never reads through a reader at all (its source is the context facade).
         def _validation_reader_for(config)
           return nil unless config.subfield?
-          return nil if config.confirmation_for && !_inferred_reader?(config.reader_as)
+          return nil if _reader_deferred?(config)
 
           config.reader_as
         end
