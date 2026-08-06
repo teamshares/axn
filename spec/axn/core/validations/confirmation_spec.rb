@@ -198,8 +198,13 @@ RSpec.describe "confirmation:" do
           it_behaves_like "a blank-admitting base", field: :password, blank: "", present: "s3cret", other: "nope"
 
           it "reports a companion supplied against an absent base as the mismatch it is" do
-            expect(klass.call(password_confirmation: "nope")).not_to be_ok
-            expect(klass.call(password: nil, password_confirmation: "nope")).not_to be_ok
+            result = klass.call(password_confirmation: "nope")
+            expect(result).not_to be_ok
+            expect(result.exception.message).to match(/confirmation doesn't match/)
+
+            result = klass.call(password: nil, password_confirmation: "nope")
+            expect(result).not_to be_ok
+            expect(result.exception.message).to match(/confirmation doesn't match/)
           end
 
           it "asks nothing of a caller who supplies neither half" do
@@ -242,8 +247,13 @@ RSpec.describe "confirmation:" do
         end
 
         it "still compares a companion supplied against a nil base" do
-          expect(klass.call(flag: nil, flag_confirmation: true)).not_to be_ok
-          expect(klass.call(flag_confirmation: false)).not_to be_ok
+          result = klass.call(flag: nil, flag_confirmation: true)
+          expect(result).not_to be_ok
+          expect(result.exception.message).to match(/confirmation doesn't match/)
+
+          result = klass.call(flag_confirmation: false)
+          expect(result).not_to be_ok
+          expect(result.exception.message).to match(/confirmation doesn't match/)
         end
       end
 

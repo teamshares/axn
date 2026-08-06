@@ -86,7 +86,8 @@ module Axn
       # which ActiveModel skips), `absence` (nil is always "absent"), `acceptance` unless explicitly
       # `allow_nil: false` (ActiveModel's acceptance is allow_nil by default), a Hash allowing nil/blank,
       # `confirmation` (ActiveModel compares only when the `<attr>_confirmation` accessor is non-nil, so the
-      # check adds no error of its own on a nil), a maximum-only `length:` (the one check ActiveModel compares
+      # check adds no error of its own on a nil — the companion's OWN requiredness is a separate question,
+      # carried by the gate on the companion config), a maximum-only `length:` (the one check ActiveModel compares
       # a nil against, and a nil's measured size of 0 clears any maximum — see length_admits_nil?), a
       # `format:` whose literal pattern admits the empty string a nil is tested as (see format_admits_nil?),
       # a `type:` at least one of whose declared klasses nil is an instance of (TypeValidator then reports no

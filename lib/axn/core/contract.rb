@@ -1734,17 +1734,14 @@ module Axn
         # `allow_nil:`. Exactly one does. Every other validator judges the field's OWN value, so a tolerance
         # stands it down: there is nothing to check when the value the author called optional is absent or
         # empty. `confirmation:`'s subject is not the field's value but the RELATIONSHIP between the field
-        # and its companion, and a SUPPLIED companion can contradict the base whatever the base holds —
+        # and its companion, and a SUPPLIED companion is compared against the base whatever the base holds —
         # `password: ""` (or nil) beside `password_confirmation: "x"` is a mismatch the caller must see, not
-        # a blank to wave through. Tolerated, it accepted a NON-matching pair while a matching one had
-        # nothing to distinguish it: the unenforced-confirmation defect in a narrower spelling.
+        # a blank to wave through.
         #
-        # Nor does the tolerance buy the "nothing to confirm" skip it looks like it buys: ActiveModel's
-        # ConfirmationValidator already returns without comparing when the COMPANION is nil (measured against
-        # activemodel 7.2.2.2: `unless (confirmed = record.public_send("#{attribute}_confirmation")).nil?`),
-        # which is that case exactly. All the pushed tolerance could still reach is the contradicting call —
-        # and it reached it asymmetrically, since `optional:` pushes allow_blank while `allow_nil:` pushes
-        # allow_nil, so two near-synonymous spellings answered the same input two ways.
+        # This is narrower than it looks: ActiveModel's ConfirmationValidator already returns without
+        # comparing when the COMPANION is nil (measured against activemodel 7.2.2.2: `unless (confirmed =
+        # record.public_send("#{attribute}_confirmation")).nil?`), so a tolerance would only ever reach the
+        # case of a supplied, contradicting companion — never the "nothing to confirm" case its name suggests.
         def _tolerance_exempt_validator?(key) = key == :confirmation
 
         # A blank gate is canonicalized away at declaration, EXACTLY tracking the set of condition
