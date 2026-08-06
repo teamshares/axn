@@ -192,6 +192,51 @@ RSpec.describe "expects ..., user_facing:" do
       expect(result.error).to eq("Note can't be blank")
       expect(events).to eq([:on_failure])
     end
+
+    # The literal `user_facing: "…"` branch is listed by hand precisely so a String subclass carrying a
+    # `to_ary` never reaches `Kernel#Array`. A HANDLER returning the same object went through it, and
+    # `Kernel#Array` prefers `to_ary` — so the text was expanded into whatever that method answered and
+    # dropped, leaving the field's validation message where the override should have been. Contained, but a
+    # String is one part however it arrived.
+    it "surfaces a handler's String return whose class also defines to_ary" do
+      sneaky = Class.new(String) do
+        def to_ary = []
+      end.new("Please add a note")
+
+      action = build_axn do
+        expects :note, user_facing: ->(_e) { sneaky }
+        def call = nil
+      end
+
+      result = action.call
+
+      expect(result.outcome.failure?).to be(true)
+      expect(result.error).to eq("Please add a note")
+    end
+
+    # A handler that resolves to nothing falls back to the field's own message, and that message is Latin-1
+    # when the declared name is — so this pins that both routes to it reach the caller as the same UTF-8 text.
+    #
+    # It does NOT pin `_rendered_parts` specifically, and that is worth saying rather than implying: the join
+    # in `_composed_user_facing_error` renders every part again, so whether the fallback hands back a rendered
+    # or a raw Array is not observable here. That fix is a single-exit-shape cleanup, not a behaviour change
+    # (verified by inverse mutation — reverting it changes nothing any caller can see).
+    it "reaches the field's own message as the same UTF-8 text whether or not a handler resolved" do
+      latin1_name = "n\xF4te".dup.force_encoding("ISO-8859-1").to_sym
+
+      resolved = build_axn do
+        expects latin1_name, user_facing: ->(_e) {}
+        def call = nil
+      end.call.error
+
+      declared = build_axn do
+        expects latin1_name, user_facing: true
+        def call = nil
+      end.call.error
+
+      expect(resolved.encoding).to eq(Encoding::UTF_8)
+      expect(resolved).to eq(declared)
+    end
   end
 
   describe "non-presence validations are equally user-facing" do
@@ -514,6 +559,49 @@ RSpec.describe "expects ..., user_facing:" do
         field: :payload, reader_as: :payload,
         validations: { type: { klass: Hash }, shape: { members: [member], container: Hash } }
       )
+    end
+
+    # Reading whether a member carries `user_facing:`/`method_call:` reads a CALLER's object here — this is the
+    # path with no walk behind it — and it happens while the failure is being CLASSIFIED, which decides whether
+    # the failure is reported at all. So the reader is asked for the VALUE (a bound `public_send`, absent told
+    # from nil by the name the NoMethodError reports) rather than asked whether it has one.
+    #
+    # Deliberately an availability read, not a method-table ownership probe: `member.field` and
+    # `member.validations` are dispatched unconditionally a few lines away, so a member answering through
+    # `method_missing` already works, and an ownership probe reports such a method absent BY DESIGN — it would
+    # silently stop honouring this member's `user_facing:` while its other readers kept working.
+    it "honours a member whose readers answer through method_missing" do
+      require "ostruct"
+      member = OpenStruct.new(field: :status, validations: { presence: true }, user_facing: true) # rubocop:disable Style/OpenStructUse
+
+      result = assigned(shaped_config(member)).call(payload: { "status" => "" })
+
+      expect(result.outcome).to be_failure
+      expect(Axn::ValidationError.user_facing?(result.exception)).to be(true)
+    end
+
+    # Raises rather than lies, so the example fails if the question is asked at all. Outside StandardError AND
+    # outside SWALLOWABLE_BEYOND_STANDARD_ERROR, so a dispatch escapes `.call` instead of degrading.
+    it "does not ask the member whether it carries the setting" do
+      unswallowable = Class.new(Exception) # rubocop:disable Lint/InheritException
+      member = Struct.new(:field, :validations, :user_facing) do
+        define_method(:respond_to?) { |*| raise(unswallowable, "respond_to? must not decide this") }
+      end.new(:status, { presence: true }, true)
+
+      result = nil
+      expect { result = assigned(shaped_config(member)).call(payload: { "status" => "" }) }.not_to raise_error
+      expect(result.outcome).to be_failure
+      expect(Axn::ValidationError.user_facing?(result.exception)).to be(true)
+    end
+
+    # A member with no such reader at all is the absent case: not opted in, so the failure stays DEV-facing and
+    # settles as a reported `exception` outcome. The full contrast with the two above.
+    it "treats a member with no user_facing reader as not opted in" do
+      result = assigned(shaped_config(duck_member(field: :status, validations: { presence: true })))
+               .call(payload: { "status" => "" })
+
+      expect(result.outcome).to be_exception
+      expect(Axn::ValidationError.user_facing?(result.exception)).to be(false)
     end
 
     # The FIELD half, closed where every stored field config passes: a FieldConfig cannot be CONSTRUCTED with a

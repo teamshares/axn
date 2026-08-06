@@ -1444,6 +1444,62 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(described_class.build_output(plain.external_field_configs)[:properties][:cfg][:type]).to eq("object")
     end
 
+    # The visibility rule is per-METHOD, and these two cases are why. Both describe a NON-PUBLIC override; they
+    # reach opposite verdicts because the two serializers are reached differently — verified by serializing each
+    # in both environments (with and without ActiveSupport's json core_ext), which change the mechanism but not
+    # the verdict.
+    %i[protected private].each do |visibility|
+      # `as_json` is reached by DISPATCH — `projection_for` gates on `respond_to?` — so a non-public override
+      # cannot be called at all: the value falls through to the public built-in `to_h` and what is emitted IS
+      # keyed by the declared members. Blocking here would drop `type: object` from a schema the serializer
+      # honours, which is an over-rejection rather than a missed one.
+      it "still advertises object OUTPUT when an as_json override is #{visibility} (it cannot be dispatched)" do
+        hidden = Struct.new(:name) do
+          def as_json(*) = "scalar"
+          send(visibility, :as_json)
+        end
+        klass = Class.new do
+          include Axn
+          exposes(:cfg, type: hidden) { field :name, type: String }
+          def call = nil
+        end
+
+        # The runtime fact the schema has to agree with: still member-keyed.
+        serialized = Axn::Internal::Reflection::Values.serialize_value(hidden.new("x"), path: "cfg")
+        expect(serialized).to eq({ "name" => "x" })
+
+        expect(described_class.build_output(klass.external_field_configs)[:properties][:cfg][:type]).to eq("object")
+      end
+
+      # `to_h` is the FALLBACK, and an override at any visibility SHADOWS `Struct#to_h`, so the built-in is gone
+      # regardless: without the core_ext the value degrades to `to_s`, and with it `Struct#as_json` is
+      # `to_h.as_json` — an implicit-receiver call, which reaches a non-public override — so the override's own
+      # keys are emitted. Neither is keyed by the declared members, so advertising an object is the mismatch
+      # `serializable_shape?` exists to prevent.
+      #
+      # Both visibilities, because the two obvious readers each miss one: `method_defined?` sees protected but
+      # not private, `public_method_defined?` neither.
+      it "does not advertise object OUTPUT for a Struct whose to_h override is #{visibility}" do
+        hidden = Struct.new(:name) do
+          def to_h = { custom: true }
+          send(visibility, :to_h)
+        end
+        klass = Class.new do
+          include Axn
+          exposes(:cfg, type: hidden) { field :name, type: String }
+          def call = nil
+        end
+
+        # Stated so it holds in both environments: whatever is emitted, it is not an object carrying the
+        # declared member.
+        serialized = Axn::Internal::Reflection::Values.serialize_value(hidden.new("x"), path: "cfg")
+        expect(serialized.is_a?(Hash) && serialized.key?("name")).to be(false)
+
+        out = described_class.build_output(klass.external_field_configs)[:properties][:cfg]
+        expect(out).not_to have_key(:type)
+      end
+    end
+
     it "detects a custom as_json provided by an INCLUDED MODULE (not just directly defined)" do
       json_mod = Module.new { def as_json(*) = "scalar" }
       mod_data = Data.define(:name) { include json_mod }

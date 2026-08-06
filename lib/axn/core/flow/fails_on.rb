@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/identity"
+
 module Axn
   module Core
     module Flow
@@ -41,13 +43,20 @@ module Axn
             # Wire the message through the existing `error` DSL when provided. Uses an OR proc
             # (not `if: classes`) because `if:` with an array matches via `all?` (AND). standalone:
             # is forwarded verbatim (nil = the DSL's conditional default: an attached reason).
-            error(message, if: ->(exception:) { classes.any? { |klass| exception.is_a?(klass) } }, standalone:, &block) if message || block
+            if message || block
+              error(message, if: ->(exception:) { classes.any? { |klass| Axn::Internal::Identity.kind?(exception, klass) } },
+                             standalone:, &block)
+            end
 
             true
           end
 
+          # Undispatched ancestry: this decides whether an exception is RECLASSIFIED as a failure — no
+          # global report, `on_failure` instead of `on_exception` — so an instance answering it is an
+          # instance deciding whether its own bug gets reported. Read from `_settle_exception!`, where a
+          # raising `is_a?` would take down the settlement it is classifying.
           def _fails_on?(exception)
-            _fails_on_matchers.any? { |klass| exception.is_a?(klass) }
+            _fails_on_matchers.any? { |klass| Axn::Internal::Identity.kind?(exception, klass) }
           end
 
           private

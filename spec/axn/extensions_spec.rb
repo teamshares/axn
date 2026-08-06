@@ -55,6 +55,31 @@ RSpec.describe Axn::Extensions do
     it "is false for a foreign exception" do
       expect(described_class.owned_failure?(ArgumentError.new("boom"))).to be(false)
     end
+
+    # What this predicate authorizes is stamping a CLIENT-FACING presentation onto the exception, so an
+    # instance answering in the true direction is how a technical cause reaches a caller. Same shape as
+    # `.swallowable?` above: the object's opinion is not the question.
+    it "answers from the class hierarchy, not from the instance" do
+      liar = Class.new(StandardError) do
+        def is_a?(klass) = klass == Axn::Failure ? true : super
+        def kind_of?(klass) = is_a?(klass)
+      end.new("not actually a failure")
+
+      expect(described_class.owned_failure?(liar)).to be(false)
+    end
+
+    # The raising case is the one with teeth, because this is read from `_resolve_and_stamp_presentation`,
+    # called BARE inside `_settle_exception!` — after the exception is recorded, before any callback is
+    # dispatched. Outside StandardError so it would escape every rescue between here and `.call`.
+    it "does not let the exception's own is_a? replace the answer" do
+      hostile = Class.new(StandardError) do
+        def is_a?(_klass) = raise(NotImplementedError, "is_a? should not decide this")
+        def kind_of?(klass) = is_a?(klass)
+      end.new("hostile")
+
+      expect { described_class.owned_failure?(hostile) }.not_to raise_error
+      expect(described_class.owned_failure?(hostile)).to be(false)
+    end
   end
 
   describe ".best_effort" do

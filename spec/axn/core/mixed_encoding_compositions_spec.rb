@@ -180,6 +180,38 @@ RSpec.describe "mixed-encoding message compositions" do
       Axn.config.logger = previous_logger
       Axn.config.on_exception = nil
     end
+
+    # Choosing WHICH detail to log compares `result.error` against the default message, and `result.error` is
+    # the caller's own object whenever a declared `error` handler returned one — so the comparison dispatched
+    # that object's `==`. A dispatch hazard rather than an encoding one, but it lands in the same place: this
+    # handler runs inside `best_effort`, so it costs the log line AND the configured on_exception callback,
+    # which is an error reporter silently ceasing to be called.
+    it "picks the detail without dispatching the resolved error's own ==" do
+      boom = Class.new(StandardError)
+      detail = Object.new
+      def detail.==(_other) = raise(NotImplementedError, "== must not decide which detail is logged")
+      def detail.to_s = "a reason object"
+
+      klass = build_axn do
+        error(standalone: true) { detail }
+        define_method(:call) { raise boom }
+      end
+
+      io = StringIO.new
+      reported = []
+      previous_logger = Axn.config.logger
+      Axn.config.logger = Logger.new(io, level: :info)
+      Axn.config.on_exception = ->(e, action:, context:) { reported << e.class } # rubocop:disable Lint/UnusedBlockArgument
+
+      expect { klass.call }.not_to raise_error
+
+      expect(io.string).to include("a reason object")
+      expect(io.string).not_to include("IGNORING EXCEPTION")
+      expect(reported).to eq([boom])
+    ensure
+      Axn.config.logger = previous_logger
+      Axn.config.on_exception = nil
+    end
   end
 
   describe "a composed user-facing validation message" do

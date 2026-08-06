@@ -4,7 +4,9 @@
 # needed at RUNTIME (not load time), so relying on that order means a NameError on first use for
 # any load path that does not go through it.
 require "axn/internal/cycle_guard"
+require "axn/internal/identity"
 require "axn/internal/reflection/property_names"
+require "axn/internal/rendering"
 require "axn/extensions"
 require "axn/core/tagging"
 
@@ -161,6 +163,17 @@ module Axn
           is_params = defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
           return CycleGuard.converted_or_placeholder { data.to_unsafe_h } if is_params
           return "<#{data.class.name}##{data.to_param.presence || 'unpersisted'}>" if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
+
+          # A RELATION is named rather than inspected, for the same reason `facade_inspector` names one:
+          # `Relation#inspect` runs the query. The difference is what it costs here — that inspector only runs
+          # when something asks for one, while this runs on EVERY logged call, so an action exposing a
+          # relation issued a SELECT per call purely to build its log line.
+          #
+          # Named through `Rendering.class_name` (i.e. `Module#to_s`), because ActiveRecord overrides
+          # `Class#name` on the generated relation class to answer `"ActiveRecord::Relation"` — so
+          # `data.class.name`, the spelling the AR::Base branch above uses, would lose the model.
+          is_relation = defined?(ActiveRecord::Relation) && Axn::Internal::Identity.kind?(data, ActiveRecord::Relation)
+          return Axn::Internal::Rendering.class_name(data) if is_relation
 
           data.inspect
         end

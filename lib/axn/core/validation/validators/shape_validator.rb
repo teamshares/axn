@@ -179,7 +179,9 @@ module Axn
       # ASSIGNED onto a class, which is the caller's own object and may implement only the documented duck-typed
       # contract (`#field` + `#validations`). Such a member is treated as not opted in — the safe default, no
       # dispatch — rather than raising.
-      def member_method_call?(member) = member.respond_to?(:method_call) && member.method_call
+      # Same availability read as `member_user_facing` below, for the same reason — a truthiness test, so the
+      # absent and nil cases are one answer and `read` gives it directly.
+      def member_method_call?(member) = !!Axn::Internal::ShapeGraph.read(member, :method_call)
 
       # A member's `user_facing:` opt-in, honored when present. Duck-typed like `method_call:` — a member axn
       # did not construct may not implement `#user_facing`, and defaults to not opted in (dev-facing). Falsy
@@ -201,10 +203,21 @@ module Axn
       # handler result and surfaces as `"123"`) and decides CLASSIFICATION — a truthy non-rule makes the failure
       # settle as a plain user-facing failure, so the contract bug is never reported at all. A dev-facing
       # `ArgumentError` naming the fix is the honest outcome.
+      # Availability comes from `ShapeGraph.fetch`, not from asking the member. A member is caller-supplied
+      # (see above: a config ASSIGNED onto a class carries unwalked member objects), and `respond_to?` is the
+      # member's own code deciding whether axn reads the setting that classifies the failure — one that raised
+      # replaced the classification with its own exception.
+      #
+      # Deliberately an availability read rather than an ownership probe. `member.field` and
+      # `member.validations` are dispatched unconditionally a few lines away, so a member that answers through
+      # `method_missing` (an OpenStruct, a proxy) already works here — and a method-table probe, which reports
+      # such a method absent by design, would silently stop honouring its `user_facing:` while its other
+      # readers kept working. `fetch` reads through a bound `public_send` and tells absent from nil by the
+      # NAME the NoMethodError reports, so the dispatch goes without the behaviour going with it.
       def member_user_facing(member)
-        return false unless member.respond_to?(:user_facing)
+        value = Axn::Internal::ShapeGraph.fetch(member, :user_facing)
+        return false if Axn::Internal::ShapeGraph.missing?(value)
 
-        value = member.user_facing
         Axn::Core::Contract.validate_user_facing!(value) if value
         value
       end

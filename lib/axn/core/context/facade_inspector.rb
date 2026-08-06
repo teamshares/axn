@@ -126,13 +126,28 @@ module Axn
         value = action.class._mask_unfilterable_shape_value(field, value, action)
 
         # Initially based on https://github.com/rails/rails/blob/800976975253be2912d09a80757ee70a2bb1e984/activerecord/lib/active_record/attribute_methods.rb#L527
-        inspected_value = if value.is_a?(String) && value.length > 50
+        #
+        # Undispatched (`Module#===`) throughout, on the same terms as `day_only?` below: which arm of this
+        # chain a value takes decides whether its records get LOADED, and the value is the caller's.
+        inspected_value = if Axn::Internal::Identity.kind?(value, String) && value.length > 50
                             "#{value[0, 50]}...".inspect
-                          elsif value.is_a?(Date) || value.is_a?(Time)
+                          elsif Axn::Internal::Identity.kind?(value, Date) || Axn::Internal::Identity.kind?(value, Time)
                             %("#{timestamp_rendering(value)}")
-                          elsif defined?(::ActiveRecord::Relation) && value.instance_of?(::ActiveRecord::Relation)
-                            # Avoid hydrating full AR relation (i.e. avoid loading records just to report an error)
-                            "#{value.name}::ActiveRecord_Relation"
+                          elsif defined?(::ActiveRecord::Relation) && Axn::Internal::Identity.kind?(value, ::ActiveRecord::Relation)
+                            # Avoid hydrating the relation — i.e. avoid loading records just to report an error.
+                            #
+                            # `kind?`, not `instance_of?`: a real relation's class is the model's own
+                            # `User::ActiveRecord_Relation`, so `instance_of?(::ActiveRecord::Relation)` is false
+                            # for every relation an app can produce and only a bare `.allocate` satisfies it. The
+                            # branch never fired, and a relation fell through to `inspect` below — hydrating
+                            # exactly the records this exists to avoid loading.
+                            #
+                            # Named through the shared renderer rather than composed from `value.name`, which is
+                            # a third dispatch and answers `"User"`. Note `Identity.class_of(value).name` is NOT
+                            # the same string: ActiveRecord overrides `Class#name` on the generated relation
+                            # class to return `"ActiveRecord::Relation"`, and only `Module#to_s` — what
+                            # `class_name` reads — answers `"User::ActiveRecord_Relation"`.
+                            Axn::Internal::Rendering.class_name(value)
                           else
                             # `Internal::Identity.describe`, not a bare `inspect`: this is a caller's value and
                             # `inspect` is its own code, so the call is made (its rendering is what makes this

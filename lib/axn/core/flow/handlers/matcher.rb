@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/core/flow/handlers/invoker"
+require "axn/internal/identity"
 
 module Axn
   module Core
@@ -52,7 +53,7 @@ module Axn
             else
               begin
                 klass = Object.const_get(@rule.to_s)
-                klass && exception.is_a?(klass)
+                klass && Axn::Internal::Identity.kind?(exception, klass)
               rescue NameError
                 action.warn("Ignoring apparently-invalid matcher #{@rule.inspect} -- neither action method nor constant found")
                 false
@@ -62,11 +63,15 @@ module Axn
 
           def apply_string(exception:)
             klass = Object.const_get(@rule.to_s)
-            klass && exception.is_a?(klass)
+            klass && Axn::Internal::Identity.kind?(exception, klass)
           end
 
+          # Undispatched ancestry, here and in the Symbol/String forms above: which declared `error`/
+          # `success` handler matches decides the message a caller sees and whether a reason attaches, and
+          # matching runs while the failure is being settled. An exception answering for itself picks its
+          # own handler; one that raises replaces the settlement with its own exception.
           def apply_exception_class(exception:)
-            exception.is_a?(@rule)
+            Axn::Internal::Identity.kind?(exception, @rule)
           end
 
           def handle_invalid(action:)

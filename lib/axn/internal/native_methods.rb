@@ -176,6 +176,33 @@ module Axn
       # would be exactly the replaced-verdict failure the bound read exists to prevent.
       def self.public_instance_method?(mod, name) = MODULE_PUBLIC_METHOD_DEFINED.bind_call(mod, name)
 
+      # The UnboundMethod a MODULE declares for `name` at ANY visibility, or nil when it declares none — the
+      # module-level twin of `method_owner`, for a caller that needs the method itself (its `owner`, its
+      # `source_location`) rather than just its owner.
+      #
+      # One lookup with one absence policy, on the same terms as `method_owner`: nil rather than a raise, so a
+      # caller compares against what it expects and an absent name simply fails that comparison.
+      #
+      # Any visibility, deliberately, and the distinction is not academic. A caller here is asking whether the
+      # module DECLARES something of its own — which is what decides whether an inherited implementation still
+      # governs — and a non-public definition SHADOWS the inherited one just as completely as a public one
+      # does: a `protected`/`private` `to_h` on a Struct makes `value.to_h` unreachable, so neither the
+      # override nor `Struct#to_h` serializes it and the value degrades to `to_s`. A public-only reader calls
+      # that "no override" and a `method_defined?` reader misses the private case, so both judge such a class
+      # as provably member-keyed while its runtime rendering is a String.
+      #
+      # A caller asking the DIFFERENT question — "would a consumer be able to dispatch this?" — wants
+      # `public_instance_method?` above, which is the right reader for a segment that has to be readable.
+      #
+      # Same precondition as that one, for the same reason: the caller must have established that `mod` IS a
+      # Module undispatched, since binding this to anything else is a TypeError — exactly the replaced-verdict
+      # failure a bound read exists to prevent.
+      def self.declared_instance_method(mod, name)
+        MODULE_INSTANCE_METHOD.bind_call(mod, name)
+      rescue ::NameError
+        nil
+      end
+
       # Which class or module OWNS the method a value would dispatch for `name` — resolved out of the value's
       # method table, so the answer comes from the table rather than from the value. nil when the value has no
       # such method at all.
