@@ -117,12 +117,20 @@ end
 
 ### Fix 1: the nil-clobber
 
-Keying on `declared_fields` merges a field the child *declared* but never *set*, writing `nil` over a value the parent already holds. Both existing call sites do this:
+Keying on `declared_fields` merges a field the child *declared* but never *set*, writing `nil` over a value the parent already holds:
 
 ```
 expose(result) : parent exposes b="PARENT-OWN", child declares-but-never-sets b  →  b=nil
-step           : same, via a later step's unset optional exposure
 ```
+
+All three call sites share the loop, but only two can reach the bug. In a `steps` chain the orchestrator splats accumulated `exposed_data` into every step, so a later step *receives* the key it declares-but-never-sets, and its own outbound auto-copy puts that value back on its result — the merge writes the same value rather than a nil:
+
+```
+second step alone, given shared: "FROM-FIRST"  →  __exposed_keys__ == [:other, :shared]
+second step alone, given nothing               →  __exposed_keys__ == [:other]
+```
+
+Only the second shape clobbers, and the chain cannot produce it for a key the parent already holds. So for `steps` this change is deduplication, not a bugfix, and the changelog says so.
 
 The two are observably distinguishable, and the nil-vs-absent axis survives the fix:
 
