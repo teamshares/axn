@@ -2,11 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+* `forward!` delegates to a sub-action and propagates both its exposures and its outcome, collapsing the documented facade idiom (`r = Child.call(**inputs); expose(r); fail! unless r.ok?`) to one line. Pass a class to invoke it with `**inputs`, or a result you built yourself. Non-terminal: on success it returns the sub-action's result and execution continues. It is also the only way to get exposure forwarding from the `call!` shape, where the raise leaves `#call` before any `expose` can run (see PRO-2941).
+
 ### Fixed
 
 * [BUGFIX] An exposed `ActiveRecord::Relation` is now named (`User::ActiveRecord_Relation`) rather than having its records loaded, in both `result.inspect` and the automatic log line. The guard that was meant to prevent this tested `instance_of?(ActiveRecord::Relation)`, which is false for every relation an app can produce — a real one's class is the model's own `User::ActiveRecord_Relation` — so it never fired, and the log line had no such branch at all. An action exposing a relation therefore issued a `SELECT` per call purely to build its log output. Both now read the relation's class without querying (see PRO-3035).
 * [BUGFIX] A `join:` Proc now receives the base and reason as Strings, which is what `->(base, reason)` was always documented to hand you — `reason.upcase` works. Previously it received whatever a declared `error` handler returned or a caller passed `fail!`, so interpolating it inside the Proc dispatched that object's `to_s` (see PRO-3035).
 * [BUGFIX] A `user_facing:` handler returning a String whose class also defines `to_ary` now surfaces its text instead of being dropped in favour of the field's own validation message.
+* [BUGFIX] `expose(result)` no longer writes `nil` over a value the absorbing action had already exposed under the same name. The merge keyed on the source's *declared* exposures, so a field the source declared but never set forwarded as `nil` and erased the existing value. Only optional exposures could reach this, since a required unset exposure already fails outbound validation (see PRO-2941).
+* [BUGFIX] `expose(result)` no longer raises `NoMatchingExposures` when the source result failed and shares no exposures with this action. The raise replaced the source's own error message with a contract violation and downgraded a clean failure to an exception. It still raises when the source succeeded, where an empty intersection is a wiring mistake and nothing is lost by saying so (see PRO-2941).
 
 ## 0.1.0-alpha.5.1
 
