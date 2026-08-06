@@ -386,6 +386,45 @@ RSpec.describe "confirmation:" do
     end
   end
 
+  describe "the companion on the sensitive and tool surfaces" do
+    it "redacts the companion when the base field is sensitive" do
+      klass = build_axn { expects :password, type: String, sensitive: true, confirmation: true }
+      companion = klass.internal_field_configs.find { |c| c.field == :password_confirmation }
+
+      expect(companion.sensitive).to be(true)
+    end
+
+    # Mirrors spec/axn/core/dynamic_sensitive_spec.rb's assertion style: the field-name filter
+    # (`sensitive_fields`) and both output paths it feeds (`inputs_for_logging`, and `inspect` via the
+    # internal context facade) rather than the config flag alone, since the masking surface differs by
+    # output path and a config-only assertion can pass while a real path still leaks.
+    it "masks the companion's value on every redaction output path, not just its declared config" do
+      klass = build_axn { expects :password, type: String, sensitive: true, confirmation: true }
+
+      expect(klass.sensitive_fields).to include(:password, :password_confirmation)
+
+      instance = klass.send(:new, password: "s3cret", password_confirmation: "s3cret")
+      expect(instance.send(:inputs_for_logging)[:password_confirmation]).to eq("[FILTERED]")
+
+      result = klass.call(password: "s3cret", password_confirmation: "s3cret")
+      expect(result.__action__.internal_context.inspect).to include("password_confirmation: [FILTERED]")
+    end
+
+    # `reject_undeclared_inputs` is a per-call gate only the tool Invoker sets in production
+    # (lib/axn/tools/invoker.rb), so exercising it means setting it the way
+    # spec/axn/core/tool_invocation_gates_spec.rb does rather than calling the action plainly — a plain
+    # call never reaches the gate at all and would pass whether or not the companion were exempt.
+    it "accepts the companion under reject_undeclared_inputs, matching a tool call that sends exactly the declared pair" do
+      klass = build_axn { expects :password, type: String, confirmation: true }
+
+      result = Axn::Internal::CurrentCallOptions.with(reject_undeclared_inputs: true, user_facing_input_errors: true) do
+        klass.call(password: "s3cret", password_confirmation: "s3cret")
+      end
+
+      expect(result).to be_ok
+    end
+  end
+
   describe "positions where it cannot be honored" do
     it "refuses confirmation: on exposes" do
       expect do
