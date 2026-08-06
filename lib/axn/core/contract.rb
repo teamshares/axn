@@ -906,6 +906,7 @@ module Axn
           elapsed_time
           finalized?
           __action__
+          __exposed_keys__
           standalone
           inputs
           ambient_context

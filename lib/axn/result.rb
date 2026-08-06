@@ -108,6 +108,13 @@ module Axn
     # reserved public field — see reserved_attribute_names_spec — so it stays public.
     def __action__ = @action
 
+    # Internal accessor for the fields this action actually exposed, as opposed to the ones it merely
+    # declared. `declared_fields` is the static contract and includes a field the action never set,
+    # whose reader reads nil; absorbing one result's values into another action keys on this instead,
+    # so a never-set field does not write nil over a value the target already holds. A reserved public
+    # field, like __action__ — see reserved_attribute_names_spec.
+    def __exposed_keys__ = @context.exposed_data.keys
+
     # Enable pattern matching support for Ruby 3+
     def deconstruct_keys(keys)
       attrs = {
