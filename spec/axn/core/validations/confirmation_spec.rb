@@ -35,4 +35,22 @@ RSpec.describe "confirmation:" do
       expect(klass.call(password: "s3cret", password_confirmation: "  s3cret  ")).to be_ok
     end
   end
+
+  describe "positions where it cannot be honored" do
+    it "refuses confirmation: on exposes" do
+      expect do
+        build_axn { exposes :token, type: String, confirmation: true }
+      end.to raise_error(ArgumentError, /does not support confirmation:/)
+    end
+
+    it "refuses confirmation: on a shape member" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :password, type: String, confirmation: true
+          end
+        end
+      end.to raise_error(ArgumentError, /shape member `password` does not support confirmation:/)
+    end
+  end
 end

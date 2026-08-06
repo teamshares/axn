@@ -405,6 +405,9 @@ module Axn
           _symbolize_option_bags!(copy)
           Internal::ShapeGraph.detach_option_containers!(copy)
           _raise_member_model_unsupported!(name) if copy.key?(:model)
+          # Truthy, not key presence: `confirmation: false` is the same disabled-validator no-op it is on a
+          # field (see Validation::Base.nil_tolerant_validation?), so it is left alone rather than refused.
+          _raise_member_confirmation_unsupported!(name) if copy[:confirmation]
           _canonicalize_validator_options!(copy, [key])
           # A raw member never reaches `_parse_field_validations`, so this is where its entries are held to the
           # rule a field's are. The member's own BAG-level `on:` is refused earlier, by
@@ -441,6 +444,28 @@ module Axn
                 "shape member `#{label}` does not support model: — a model field resolves a record from an id " \
                 "and exposes a `#{Internal::FieldConfig.model_id_key(label)}` reader, but a shape member is " \
                 "reader-less and validates the element in place (use `type: Klass` for a plain instance check)."
+        end
+
+        # A confirmation pair's requiredness rule cannot be written for a shape member: the companion has to be
+        # required only when the member itself is present, but a member's `if:`/`unless:` condition resolves
+        # against the ACTION rather than the element (`ShapeValidator#validate_members_of` threads the action
+        # down deliberately, so a member condition is action-scoped exactly like a top-level field's — never
+        # element-scoped). A gate aimed at a sibling member therefore has nothing to call: the action has no
+        # reader for it, so the gate raises NoMethodError on every call rather than skipping cleanly. Without a
+        # gate the companion is either required when the member is absent (nothing supplied it) or never
+        # enforced (the exact defect this option exists to fix) — neither is a shape-only variant worth
+        # honoring, so the option is refused at declaration instead.
+        #
+        # Raised for a member declared BOTH ways, mirroring `_raise_member_model_unsupported!`: the block form
+        # checks the option it was handed (`_build_shape_member`), and the declaration walk checks a raw
+        # member's bag (`_symbol_keyed_member_validations`).
+        def _raise_member_confirmation_unsupported!(name)
+          label = _shape_member_label(name)
+          raise ArgumentError,
+                "shape member `#{label}` does not support confirmation: — the companion is required only when " \
+                "the member is present, and a member's `if:` condition resolves against the action rather than " \
+                "the element, so it cannot refer to a sibling member. Declare the pair as subfields " \
+                "(`expects :#{label}, on: :<parent>`) to get the confirmation contract."
         end
 
         # Metadata is one level of grammar (`description:` and whatever an extension registered), read as
@@ -529,6 +554,7 @@ module Axn
         private :_spend_paths!, :_raise_too_many_member_paths!, :_symbol_keyed_member_validations,
                 :_symbol_keyed_member_metadata, :_snapshot_member_attributes!,
                 :_member_owner_label, :_describe_shape_member, :_raise_member_model_unsupported!,
+                :_raise_member_confirmation_unsupported!,
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
                 :_check_and_copy_shape_members!, :_raise_cyclic_shape!, :_raise_shape_too_deep!,
                 :_raise_duplicate_member!, :_raise_nameless_member!,

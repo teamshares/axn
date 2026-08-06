@@ -526,6 +526,21 @@ module Axn
                   "outbound checks, use `if:`/`unless:`."
           end
 
+          # A confirmation pair is an inbound form contract: the caller supplies both halves (the field and
+          # its `<field>_confirmation`) and they are compared. An exposure has neither — it is a RESULT
+          # property, set by the action's own code rather than read from caller input — so its companion
+          # would be an exposed property the action never sets, resolving nil on every call. ActiveModel's
+          # confirmation validator adds no error when the companion is nil (see
+          # Validation::Base.nil_tolerant_validation?), so the option would decorate the field while never
+          # once comparing anything — the exact defect this option exists to fix. Truthy, not key presence:
+          # `confirmation: false` is the same disabled-validator no-op it is everywhere else.
+          if validations[:confirmation]
+            raise ArgumentError,
+                  "`exposes` does not support confirmation: — a confirmation compares a caller-supplied value " \
+                  "against a caller-supplied companion, and an exposure has neither. Declare the pair with " \
+                  "`expects` if the confirmation is an input."
+          end
+
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
           # Ahead of the `user_facing:` walk below so a member carrying both an unusable name and a rejected
@@ -1130,6 +1145,9 @@ module Axn
           end
 
           _raise_member_model_unsupported!(name) if opts.key?(:model)
+          # Truthy, not key presence: `confirmation: false` is the same disabled-validator no-op it is on a
+          # field, so it is left alone rather than refused (see _raise_member_confirmation_unsupported!).
+          _raise_member_confirmation_unsupported!(name) if opts[:confirmation]
 
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
