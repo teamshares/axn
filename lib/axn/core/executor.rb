@@ -1538,9 +1538,16 @@ module Axn
           # internal_context, so the RESOLVED inbound value (coerce/preprocess/default applied on the
           # read path) is forwarded. A pure-`exposes` field has no inbound reader, but the caller may
           # still have supplied its wire key directly, so it copies the raw provided_data value.
+          # Both branches copy only when there is something to copy. A key written here is
+          # indistinguishable from one the action exposed itself, and `Result#__exposed_keys__` — which
+          # decides what an absorbing action overwrites — reads exactly these keys. Writing a nil for an
+          # absent optional input would therefore let a child that merely DECLARED the field erase a
+          # value its caller already held. A nil resolved here also reads back as nil through the
+          # field's reader whether or not the key exists, so omitting it costs a caller nothing.
           unless @context.exposed_data.key?(field)
             if @action_class.send(:internal_field_configs).any? { |c| c.field == field }
-              @context.exposed_data[field] = @action.internal_context.public_send(field)
+              inbound_value = @action.internal_context.public_send(field)
+              @context.exposed_data[field] = inbound_value unless inbound_value.nil?
             elsif @context.provided_data.key?(field)
               @context.exposed_data[field] = @context.provided_data[field]
             end

@@ -71,6 +71,24 @@ RSpec.describe "expose(result) forwarding" do
     expect(r.exception).to be_a(Axn::ContractViolation::NoMatchingExposures)
   end
 
+  it "does not clobber with an auto-copied nil when the source never received the input" do
+    absent = build_axn do
+      expects :b, optional: true
+      exposes :b, optional: true
+      def call = nil
+    end
+    a = absent
+    parent = build_axn do
+      exposes :b, optional: true
+      define_method(:call) do
+        expose(b: "PARENT-OWN")
+        expose(a.call)
+      end
+    end
+
+    expect(parent.call.b).to eq("PARENT-OWN")
+  end
+
   it "still exposes a Result as a value via the two-positional form" do
     c = child
     parent = build_axn do

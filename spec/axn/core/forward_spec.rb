@@ -249,6 +249,46 @@ RSpec.describe "forward!" do
     expect(parent.call(x: 3)).to be_ok
   end
 
+  it "does not clobber with an auto-copied nil when the child never received the input" do
+    # A child declaring a field as both expects and exposes gets it auto-copied onto its result. When
+    # the caller supplied nothing, there is no value to copy, so the field must not reach the parent.
+    absent = build_axn do
+      expects :a, optional: true
+      expects :b, optional: true
+      exposes :a, optional: true
+      exposes :b, optional: true
+      def call = expose(a: "CHILD-A")
+    end
+    c = absent
+    parent = build_axn do
+      exposes :a, :b, optional: true
+      define_method(:call) do
+        expose(b: "PARENT-OWN")
+        forward! c
+      end
+    end
+
+    result = parent.call
+    expect(result.a).to eq("CHILD-A")
+    expect(result.b).to eq("PARENT-OWN")
+  end
+
+  it "still forwards an auto-copied value the child actually received" do
+    present = build_axn do
+      expects :b, optional: true
+      exposes :b, optional: true
+      def call = nil
+    end
+    c = present
+    parent = build_axn do
+      expects :b, optional: true
+      exposes :b, optional: true
+      define_method(:call) { forward! c }
+    end
+
+    expect(parent.call(b: "FROM-CALLER").b).to eq("FROM-CALLER")
+  end
+
   it "raises ArgumentError for a class that does not include Axn" do
     parent = build_axn do
       exposes :event, optional: true

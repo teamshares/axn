@@ -175,6 +175,8 @@ child exposes :a, :b (both REQUIRED), sets only :a, then fail!
 
 The reachable set is therefore every field a source declares and does not value, on any failing source, plus optional ones on a successful source.
 
+One case needed a fix at the source rather than in the merge. A field declared as both `expects` and `exposes` is auto-copied onto the result at settlement, and that copy ran unconditionally — so a caller who supplied nothing still got the key written with a `nil`. Nothing downstream could tell that apart from a deliberate `expose(b: nil)`, which means no merge-side rule could be both correct and honest. The auto-copy now writes only when there is a value to copy, which is invisible through the field's own reader (an absent key reads `nil` anyway) and restores the distinction the merge depends on.
+
 The loop iterates the **caller's field list** and skips un-set entries, rather than iterating `__exposed_keys__` directly. That ordering is load-bearing: step's unfiltered merge puts keys into a parent's `exposed_data` that the parent does not declare and has no reader for, so iterating the exposed keys of such a result one level up would `public_send` a name that does not exist. Iterating the field list preserves today's propagation boundary exactly, minus the nils.
 
 ### Fix 2: `NoMatchingExposures` no longer eats a failure
