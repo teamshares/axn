@@ -136,9 +136,10 @@ module Axn
               passthrough = @__context.provided_data.except(*self.class._declared_fields(:inbound))
               step_result = axn.call(**passthrough, **inputs, **@__context.exposed_data)
 
-              # Propagate before absorbing, so a failing step merges nothing: a step's exposures
-              # reaching a parent that failed at a LATER step would assemble a result across step
-              # boundaries that no step ever produced.
+              # Propagate before absorbing, so the FAILING step's own partial exposures never land on
+              # the parent: they are values that step began and did not finish producing. An earlier
+              # step's exposures do reach a parent that fails later — that is the chain accumulating,
+              # and each of those values came from a step that ran to completion.
               _propagate_sub_result_outcome!(step_result, error_prefix:)
 
               # Unfiltered by design — a step's output must reach later steps even when this parent

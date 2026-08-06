@@ -4,7 +4,7 @@
 
 ### Added
 
-* `forward!` delegates to a sub-action and propagates both its exposures and its outcome, collapsing the documented facade idiom (`r = Child.call(**inputs); expose(r); fail! unless r.ok?`) to one line. Pass a class to invoke it with `**inputs`, or a result you built yourself. Non-terminal: on success it returns the sub-action's result and execution continues. It is also the only way to get exposure forwarding from the `call!` shape, where the raise leaves `#call` before any `expose` can run (see PRO-2941).
+* `forward!` delegates to a sub-action and propagates both its exposures and its outcome, collapsing the documented facade idiom (`r = Child.call(**inputs); expose(r); raise r.exception unless r.ok?`) to one line. Pass a class to invoke it with `**inputs`, or a result you built yourself. Non-terminal: on success it returns the sub-action's result and execution continues. On any non-ok outcome it settles this action exactly as the `call!` it replaces would — same error string, and `result.exception` is the sub-action's own exception object, so conditional `error ..., if: SomeError` handlers still match. It is also the only way to get exposure forwarding from the `call!` shape, where the raise leaves `#call` before any `expose` can run (see PRO-2941).
 
 ### Fixed
 

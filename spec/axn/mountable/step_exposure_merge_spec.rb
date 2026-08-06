@@ -1,6 +1,11 @@
 # frozen_string_literal: true
 
 RSpec.describe "step exposure merging" do
+  # A guardrail, not a regression test: a step chain splats accumulated exposures into every step, so
+  # `second` receives :shared and its outbound auto-copy puts it back on its own result — meaning the
+  # merge never saw a never-set field here even before it learned to skip them. This pins behavior
+  # that must not regress; the never-set skip itself is proven by the `expose(result)`/`forward!`
+  # examples, which can reach the clobbering shape.
   it "does not let a later step's never-set optional exposure erase an earlier step's value" do
     first = build_axn do
       exposes :shared, optional: true

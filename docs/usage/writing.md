@@ -111,9 +111,9 @@ end
 ```
 
 - `inputs` is the resolved declared-inbound fields (defaults and preprocessing applied, and `model:` fields resolved to their record — even when supplied by `<field>_id`) as a Hash; fields whose resolved value is `nil` are omitted so a nested action still applies its own absent/default handling. Splat it, and use plain Hash methods to inject or drop fields: `Child.call(**inputs.except(:role), role: ROLE)`.
-- `expose(result)` forwards the intersection of the child's declared exposures and this action's own `exposes`, and works even when the child failed (so an errors-bearing record the child exposed is still forwarded for form display). It raises `Axn::ContractViolation::NoMatchingExposures` if there is nothing in common to forward.
+- `expose(result)` forwards the intersection of the child's declared exposures and this action's own `exposes`, and works even when the child failed (so an errors-bearing record the child exposed is still forwarded for form display). It raises `Axn::ContractViolation::NoMatchingExposures` if there is nothing in common to forward **and the child succeeded** — an empty intersection there is a wiring mistake. When the child failed it forwards nothing instead of raising, so the child's own error survives rather than being replaced by a contract violation.
 
-When the facade does nothing but delegate, `forward!` collapses the three lines into one — it calls the action with `inputs`, forwards the exposures, and propagates the outcome:
+When the facade does nothing but delegate, `forward!` collapses that to one line — it calls the action with `inputs`, forwards the exposures, and propagates the outcome the way `call!` does:
 
 ```ruby
 class RegisterCustomer
