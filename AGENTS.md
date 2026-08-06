@@ -126,9 +126,11 @@ Reuse the hierarchy in `lib/axn/exceptions.rb`; don't invent ad-hoc classes. Eve
 explains the problem **and** the fix (see `UnknownExposure`). New messages meet that bar.
 
 Before touching anything on the failure-settlement or error-reporting path — `_settle_exception!`,
-`best_effort`, a message resolver, `Internal::Rendering`/`Internal::Text`, any serialization or
-reflection error path, or a `rescue` on the result path — read
-`internal-docs/agent-notes/error-paths.md` first. The rules it backs:
+any `Axn::Extensions` method (not just `best_effort`), a message resolver,
+`Internal::Rendering`/`Internal::Text`/`Internal::NativeMethods`, `Internal::ShapeGraph`'s
+option-container copy, the contract's declaration walk, any serialization or reflection error
+path, or a `rescue` on the result path — read `internal-docs/agent-notes/error-paths.md` first.
+The rules it backs:
 
 - `Axn::Extensions.best_effort` guards a side channel and swallows `StandardError` plus
   `SWALLOWABLE_BEYOND_STANDARD_ERROR`. Pass `standard_errors_only: true` only when no side effect is
