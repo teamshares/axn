@@ -364,13 +364,106 @@ RSpec.describe "confirmation:" do
       end
     end
 
-    it "holds its generated reader to the same collision bar as a declared one" do
-      expect do
-        build_axn do
+    # The companion's reader is INFERRED, so a clash with it is never the explicit-vs-explicit conflict
+    # the collision guards raise on: the name goes to whoever declared it (or wrote the method), and the
+    # companion yields it — in either declaration order. The companion's own CONFIG is untouched by that:
+    # a reader-less companion is enforced against the wire value, so the pair is still compared and still
+    # required.
+    describe "its generated reader, when something else already holds the name" do
+      it "yields the name to a reader an unrelated as: claimed first" do
+        klass = build_axn do
           expects :other, as: :password_confirmation, type: String, optional: true
           expects :password, type: String, confirmation: true
         end
-      end.to raise_error(ArgumentError, /Reader name collision: password_confirmation/)
+
+        expect(klass.call(other: "unrelated", password: "s3cret", password_confirmation: "nope")).not_to be_ok
+        expect(klass.call(other: "unrelated", password: "s3cret", password_confirmation: "s3cret")).to be_ok
+      end
+
+      it "yields the name to an unrelated as: declared after it" do
+        klass = build_axn do
+          expects :password, type: String, confirmation: true
+          expects :other, as: :password_confirmation, type: String, optional: true
+        end
+
+        klass.class_eval do
+          exposes :seen
+          def call = expose(seen: password_confirmation)
+        end
+
+        expect(klass.call(other: "unrelated", password: "s3cret", password_confirmation: "s3cret").seen).to eq("unrelated")
+        expect(klass.call(other: "unrelated", password: "s3cret", password_confirmation: "nope")).not_to be_ok
+      end
+
+      it "yields the name to a method the author wrote" do
+        klass = build_axn do
+          def pw_confirmation = "USER METHOD"
+          expects :password, as: :pw, type: String, confirmation: true
+          exposes :seen
+          def call = expose(seen: pw_confirmation)
+        end
+
+        expect(klass.call(password: "s3cret", password_confirmation: "s3cret").seen).to eq("USER METHOD")
+        expect(klass.call(password: "s3cret", password_confirmation: "nope")).not_to be_ok
+      end
+
+      # A subfield's reader normally IS its value, so validation reads it — but a deferred companion's
+      # name is the author's method, not the config's reader, and validating that method's answer would
+      # let it stand in for the input the pair is supposed to require.
+      it "validates a subfield companion against the wire value, not the method it deferred to" do
+        klass = build_axn do
+          def pw_confirmation = "USER METHOD"
+          expects :payload, type: Hash
+          expects :password, on: :payload, as: :pw, type: String, confirmation: true
+        end
+
+        expect(klass.call(payload: { password: "s3cret", password_confirmation: "s3cret" })).to be_ok
+        expect(klass.call(payload: { password: "s3cret", password_confirmation: "nope" })).not_to be_ok
+        expect(klass.call(payload: { password: "s3cret" })).not_to be_ok
+      end
+    end
+
+    describe "when an explicit declaration supersedes it" do
+      it "withdraws the reader it generated rather than leaving it resolving through the dropped config" do
+        klass = build_axn do
+          expects :password, as: :pw, type: String, confirmation: true
+          expects :password_confirmation, as: :confirmed, type: String, preprocess: ->(s) { s&.upcase }
+        end
+
+        expect(klass.instance_methods).to include(:confirmed)
+        expect(klass.instance_methods).not_to include(:pw_confirmation)
+      end
+
+      it "withdraws a subfield companion's reader the same way" do
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :password, on: :payload, as: :pw, type: String, confirmation: true
+          expects :password_confirmation, on: :payload, as: :confirmed, type: String, preprocess: ->(s) { s&.upcase }
+        end
+
+        expect(klass.instance_methods).to include(:confirmed)
+        expect(klass.instance_methods).not_to include(:pw_confirmation)
+      end
+
+      it "leaves a same-named method the author wrote standing" do
+        klass = build_axn do
+          def pw_confirmation = "USER METHOD"
+          expects :password, as: :pw, type: String, confirmation: true
+          expects :password_confirmation, as: :confirmed, type: String
+          exposes :seen
+          def call = expose(seen: pw_confirmation)
+        end
+
+        expect(klass.call(password: "s3cret", password_confirmation: "s3cret").seen).to eq("USER METHOD")
+      end
+
+      it "withdraws an inherited companion's reader on the subclass alone" do
+        parent = build_axn { expects :password, as: :pw, type: String, confirmation: true }
+        child = Class.new(parent) { expects :password_confirmation, as: :confirmed, type: String }
+
+        expect(child.instance_methods).not_to include(:pw_confirmation)
+        expect(parent.instance_methods).to include(:pw_confirmation)
+      end
     end
 
     it "still reports a genuinely duplicated explicit declaration" do

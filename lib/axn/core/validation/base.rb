@@ -262,6 +262,12 @@ module Axn
       # deferral test and by schema reflection's requiredness-relaxation reasoning.
       def self.entry_self_gated?(entry_opts) = entry_effective_gate_keys(entry_opts, {}).any?
 
+      # Whether the DECLARATION carries a gate — a non-blank `if:`/`unless:` among its shared options,
+      # which opens and closes every entry on the declaration TOGETHER (it decides whether an account of a
+      # value is given, never whose). The other tier of the same question the two predicates above ask of
+      # an entry, resolved through the same per-key model so "gated" means one thing on both tiers.
+      def self.declaration_gated?(declaration_options) = entry_effective_gate_keys(declaration_options, {}).any?
+
       # Whether a single validator ENTRY's options MENTION a per-validator gate key at all — blank or not
       # (contrast entry_self_gated?, which requires a NON-blank value). A blank nested gate is not inert:
       # per AM's measured per-key merge, a blank nested same-key value OVERRIDES and drops the shared

@@ -555,8 +555,8 @@ module Axn
 
           (declared + _confirmation_companion_configs(declared, existing: subfield_configs)).tap do |configs|
             # An explicit declaration of a name an earlier `confirmation:` generated implicitly REPLACES that
-            # companion — including the reader it already generated, which the explicit config redefines, so
-            # the reader-name check is told not to read it as a collision.
+            # companion, including the reader it already generated — withdrawn below unless the replacement
+            # reclaims the name.
             retained, superseded = _partition_superseded_confirmation_companions(subfield_configs, configs)
 
             _reject_duplicate_fields!(retained, configs)
@@ -567,7 +567,7 @@ module Axn
             # Validate reader-name uniqueness up front (no side effects), so this error — like the checks
             # above (the dotted-name model: and model-batch-id rejections in _parse_subfield_configs) —
             # leaves the class untouched.
-            _validate_subfield_reader_names!(configs, superseded_readers: superseded.map(&:reader_as))
+            _validate_subfield_reader_names!(configs)
 
             # Contradiction-only contracts raise BEFORE any class mutation (PRO-2889): the candidate
             # tree includes the prospective configs, so a new required descendant that kills an
@@ -585,6 +585,8 @@ module Axn
             # Copy-on-write + freeze: `<<` would mutate the superclass's contract, and
             # identity-keyed caching relies on replacement.
             self.subfield_configs = (retained + configs).freeze
+            # Before the new readers, so a name the replacement reclaims is redefined rather than dropped.
+            superseded.each { |c| _withdraw_inferred_reader!(c.reader_as) }
             _define_subfield_readers!(configs)
           end
         end
@@ -637,19 +639,22 @@ module Axn
 
         # Reader-name uniqueness across the prospective batch and everything already defined — a pure
         # pre-check (no methods defined) run before any reader is generated, so a duplicate raises before
-        # the class is mutated. Every declared subfield gets a reader (canonical `on:` resolution
+        # the class is mutated. Every EXPLICITLY declared subfield gets a reader (canonical `on:` resolution
         # public_sends the deepest reader-bearing ancestor, so a silently-skipped reader would resolve the
-        # wrong value), so a collision is always a declaration error — resolved by renaming, never by
-        # suppression.
+        # wrong value), so a collision between two of them is a declaration error — resolved by renaming,
+        # never by suppression.
         #
-        # `superseded_readers` names the readers of implicit confirmation companions this very batch
-        # REPLACES with the author's own declaration: the method exists only because axn generated it for the
-        # config being dropped, so redefining it is the replacement itself, not a collision.
-        def _validate_subfield_reader_names!(configs, superseded_readers: [])
+        # An IMPLICIT confirmation companion is on neither side of that bar. Its own reader is inferred, so
+        # it defers to whatever holds the name instead of raising (`_define_subfield_readers!`); and a name
+        # only an inferred reader holds is free for an explicit declaration to take, which is what makes the
+        # author's own `<field>_confirmation` line replace the companion axn generated for them.
+        def _validate_subfield_reader_names!(configs)
           seen = []
           configs.each do |config|
+            next if config.confirmation_for
+
             reader = config.reader_as
-            if (method_defined?(reader) && !superseded_readers.include?(reader)) || seen.include?(reader)
+            if (method_defined?(reader) && !_inferred_reader?(reader)) || seen.include?(reader)
               raise ArgumentError,
                     "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined) — " \
                     "rename this subfield's reader, e.g. `expects :#{config.field}, on: #{config.on.inspect}, " \
@@ -663,19 +668,29 @@ module Axn
         # Generate the readers for an already-validated, already-committed batch of subfield configs.
         # Called only after every declaration check has passed, so it performs side effects without raising.
         #
-        # Two passes: all EXPLICIT primary readers first, then all auto-generated COMPANIONS (boolean `?`
-        # predicates, model `<field>_id` readers). A companion defers — with a debug breadcrumb, via
-        # `_reader_name_available?` — to any explicit reader of the same name; deferring the whole companion
-        # pass until every primary exists makes that yielding order-independent, matching top-level `expects`.
-        # Interleaving the two (a companion generated before a later same-named primary) would let the
-        # primary silently clobber the companion.
+        # Two passes: every EXPLICIT declaration's primary reader first, then everything INFERRED (an
+        # implicit confirmation companion's own reader, the boolean `?` predicates, the model `<field>_id`
+        # readers). An inferred reader defers — with a debug breadcrumb, via `_reader_name_available?` — to
+        # any explicit reader of the same name; deferring the whole inferred pass until every primary exists
+        # makes that yielding order-independent, matching top-level `expects`. Interleaving the two (an
+        # inferred reader generated before a later same-named primary) would let the primary silently
+        # clobber it.
         def _define_subfield_readers!(configs)
-          # The two passes must NOT be combined: every primary reader has to exist before any companion is
-          # generated, so a companion defers to an explicit same-named reader regardless of order (see above).
-          # rubocop:disable Style/CombinableLoops
-          configs.each { |c| _define_subfield_reader(c) }
-          configs.each { |c| _define_subfield_companion_readers(c) }
-          # rubocop:enable Style/CombinableLoops
+          explicit, inferred = configs.partition { |c| c.confirmation_for.nil? }
+          explicit.each { |c| _define_subfield_reader(c) }
+
+          # An inferred companion yields WHOLE — its own reader and the predicate riding on it — to a
+          # same-named method already present, so a deferred companion never leaves half a reader behind.
+          # The config still stands and is validated, redacted and reflected exactly as it would be with a
+          # reader of its own — validation resolves a reader-less config directly (_validation_reader_for).
+          generated = inferred.filter_map do |config|
+            next unless _reader_name_available?(config.reader_as, kind: "confirmation companion")
+
+            _define_subfield_reader(config)
+            config
+          end
+
+          (explicit + generated).each { |c| _define_subfield_companion_readers(c) }
         end
 
         # `reader` is the accessor's name (may be aliased via as:/prefix:); the wire key it extracts
@@ -689,7 +704,7 @@ module Axn
           if config.validations.key?(:model)
             _define_subfield_model_reader(config)
           else
-            Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
+            Axn::Internal::Memoization.define_memoized_reader_method(_reader_target_for(config), reader) do
               Axn::Core::ContractForSubfields.resolve_value(self, config)
             end
           end
@@ -699,7 +714,7 @@ module Axn
         # `<field>_id` reader. Defined in a second pass (see _define_subfield_readers!) so each yields to
         # any explicit same-named reader regardless of declaration order.
         def _define_subfield_companion_readers(config)
-          _define_boolean_predicate_reader(config.reader_as) if config.boolean?
+          _define_boolean_predicate_reader(config.reader_as, target: _reader_target_for(config)) if config.boolean?
           return unless config.validations.key?(:model)
 
           _define_subfield_model_id_reader(config, _subfield_model_options(config))

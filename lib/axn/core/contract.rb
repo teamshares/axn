@@ -41,6 +41,14 @@ module Axn
       # condition on the wire value while runtime evaluates the user method — the looser direction).
       GENERATED_READER_SOURCE_PATH = __FILE__
 
+      # Holds the readers axn INFERS from another declaration — today the `<field>_confirmation`
+      # companion a `confirmation:` field declares. A `Module` subclass rather than a bare module so a
+      # reader's OWNER answers "did axn infer this?" as a fact of the method table, with no parallel
+      # record to keep in step: an inferred reader may be withdrawn when the declaration behind it is
+      # superseded, and nothing else may. Included below the class, so a same-named method the AUTHOR
+      # wrote — or one an EXPLICIT declaration generated over the top — wins dispatch outright.
+      InferredReaders = Class.new(Module)
+
       # Optionality is shared by FieldConfig and ShapeConfig: a field is optional exactly when its
       # validators accept nil. Keyed on the validators rather than on the presence of a `presence: true`
       # entry, so a field that rejects nil by type alone (`allow_empty: true`, `presence: false`) reads as
@@ -479,16 +487,14 @@ module Axn
           companions = _confirmation_companion_configs(declared, existing: internal_field_configs)
 
           (declared + companions).tap do |configs|
-            # A companion's reader is generated exactly like a declared field's — `define_method`, no
-            # deferral — so it clears the same collision bar, or it would silently clobber the reader an
-            # unrelated `as:` already claimed under a different wire key. Checked here rather than beside the
-            # batch's own readers above only because the companion doesn't exist until the configs are parsed.
-            # (The subfield route's own check covers its companions already: they are part of `configs`.)
-            _validate_reader_names!(companions.to_h { |c| [c.field, c.reader_as] })
-
+            # A companion's reader clears no collision bar of its own: it is INFERRED, so it defers to
+            # whatever already holds the name (`_define_field_readers!`) rather than raising or clobbering.
+            # No reserved name ends in `_confirmation`, so the reserved-name half of that bar can't bind on
+            # a companion either.
+            #
             # An explicit declaration of a name an earlier `confirmation:` generated implicitly REPLACES that
             # companion (the author's own line is authoritative) rather than colliding with it.
-            retained, = _partition_superseded_confirmation_companions(internal_field_configs, configs)
+            retained, superseded = _partition_superseded_confirmation_companions(internal_field_configs, configs)
 
             _reject_duplicate_fields!(retained, configs)
             # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
@@ -500,6 +506,8 @@ module Axn
             # carrying an orphaned config or generated reader. Copy-on-write + freeze: `<<` would
             # mutate the superclass's contract, and identity-keyed caching relies on replacement.
             self.internal_field_configs = (retained + configs).freeze
+            # Before the new readers, so a name the replacement reclaims is redefined rather than dropped.
+            superseded.each { |c| _withdraw_inferred_reader!(c.reader_as) }
             _define_field_readers!(configs)
           end
         end
@@ -923,9 +931,11 @@ module Axn
           # `bar` reader. Intra-call duplicates (distinct fields → same reader) are caught too.
           # Only configs that actually generated a reader can be collided with. A dotted-key subfield
           # defines no method, so its name stays free; consult the method table rather than every
-          # config so those readerless declarations don't manufacture phantom collisions.
+          # config so those readerless declarations don't manufacture phantom collisions. A name held by
+          # an INFERRED reader is free too: it is not a declaration, so the explicit one takes the name
+          # and the inferred reader yields (_inferred_reader?).
           existing = (internal_field_configs + subfield_configs)
-                     .select { |c| method_defined?(c.reader_as) }
+                     .select { |c| method_defined?(c.reader_as) && !_inferred_reader?(c.reader_as) }
                      .to_h { |c| [c.reader_as, c.field] }
           collisions = reader_names.filter_map { |field, reader| reader if existing.key?(reader) && existing[reader] != field }
           collisions |= reader_names.values.tally.select { |_, count| count > 1 }.keys
@@ -1599,17 +1609,29 @@ module Axn
         end
 
         # Generate the readers for an already-validated, already-committed batch of top-level inbound
-        # configs. Two passes, matching _define_subfield_readers!: all explicit primary readers first,
-        # then the auto-generated companions (boolean `?` predicates, model `<field>_id` readers), so a
-        # companion defers to an explicit same-named reader regardless of declaration order.
+        # configs. Two passes, matching _define_subfield_readers!: every EXPLICIT declaration's primary
+        # reader first, then everything INFERRED (an implicit confirmation companion's own reader, the
+        # boolean `?` predicates, the model `<field>_id` readers), so an inferred reader defers to an
+        # explicit same-named one regardless of declaration order.
         def _define_field_readers!(configs)
-          # rubocop:disable Style/CombinableLoops
-          configs.each { |c| _define_field_reader(c.reader_as, c.field) }
-          configs.each do |c|
-            _define_boolean_predicate_reader(c.reader_as) if c.boolean?
+          explicit, inferred = configs.partition { |c| c.confirmation_for.nil? }
+          explicit.each { |c| _define_field_reader(c.reader_as, c.field) }
+
+          # An inferred companion yields WHOLE — its own reader and the predicate riding on it — to a
+          # same-named method already present, so a deferred companion never leaves half a reader behind.
+          # The config still stands and is validated, redacted and reflected exactly as it would be with a
+          # reader of its own — validation resolves a reader-less config directly (_validation_reader_for).
+          generated = inferred.filter_map do |config|
+            next unless _reader_name_available?(config.reader_as, kind: "confirmation companion")
+
+            _define_field_reader(config.reader_as, config.field, target: _inferred_reader_module)
+            config
+          end
+
+          (explicit + generated).each do |c|
+            _define_boolean_predicate_reader(c.reader_as, target: _reader_target_for(c)) if c.boolean?
             _define_model_id_reader(c.reader_as, c.field, c.validations[:model]) if c.validations.key?(:model)
           end
-          # rubocop:enable Style/CombinableLoops
         end
 
         # An auto-generated companion reader (boolean predicate, model `<field>_id`) defers to any
@@ -1621,6 +1643,57 @@ module Axn
 
           Axn.config.logger.debug { "[Axn] #{self.name || 'Action'}: skipping auto-generated #{kind} reader `#{name}` (already defined)" }
           false
+        end
+
+        # Where a config's readers are defined: an implicit confirmation companion's into the inferred
+        # module (withdrawable, and outranked by anything the author wrote), everything else onto the
+        # class itself.
+        def _reader_target_for(config) = config.confirmation_for ? _inferred_reader_module : self
+
+        # The module this class's inferred readers live in, created — and included, so it sits directly
+        # below the class — the first time one is generated. Per class, never inherited: a subclass's own
+        # inferred readers land in its own module while a superclass's stay in the superclass's, so
+        # withdrawing one never reaches across that boundary.
+        def _inferred_reader_module
+          @_inferred_reader_module ||= InferredReaders.new.tap { |mod| include mod }
+        end
+
+        # Whether the method currently answering to `name` is one axn INFERRED rather than one an explicit
+        # declaration generated or the author wrote. An inferred reader is not a declaration, so a clash
+        # with one is never the explicit-vs-explicit conflict the collision guards raise on: the explicit
+        # name wins and the inferred reader yields.
+        def _inferred_reader?(name)
+          return false unless method_defined?(name) || private_method_defined?(name)
+
+          instance_method(name).owner.is_a?(InferredReaders)
+        end
+
+        # The reader inbound validation may read a config's value through, or nil when it must resolve the
+        # config directly. A subfield's reader IS its value (memoized, model-resolving, default-applying),
+        # so validation reads it — but only when it is the reader axn generated FOR THIS CONFIG. A DEFERRED
+        # inferred companion is the exception: that name belongs to a method the author wrote, so reading it
+        # would validate that method's answer instead of the declared input, and the comparison — which
+        # resolves the config directly — would then judge the two halves of one pair by two different
+        # values. A top-level field never reads through a reader at all (its source is the context facade).
+        def _validation_reader_for(config)
+          return nil unless config.subfield?
+          return nil if config.confirmation_for && !_inferred_reader?(config.reader_as)
+
+          config.reader_as
+        end
+
+        # Withdraws the reader an implicit companion generated, once the author's own declaration has
+        # superseded the config behind it — otherwise the memoized method survives its config and answers
+        # with rules the explicit declaration replaced. Only a method an inferred module OWNS is touched,
+        # so a method the author wrote (one the companion deferred to) or an explicit declaration's reader
+        # is left standing. An owning module further up the ancestry belongs to a SUPERCLASS whose own
+        # companion still stands there, so the name is undefined on this class alone rather than removed
+        # from that module.
+        def _withdraw_inferred_reader!(name)
+          return unless _inferred_reader?(name)
+
+          owner = instance_method(name).owner
+          owner.equal?(@_inferred_reader_module) ? owner.remove_method(name) : undef_method(name)
         end
 
         # `model:` fields get a `<reader>_id` reader meaning "the primary key of the resolved
@@ -1663,22 +1736,27 @@ module Axn
           end
         end
 
-        def _define_field_reader(reader, source = reader)
+        # `target` is the module the method lands in — the class itself for a declared field, the inferred
+        # module for a reader axn derived from another declaration. The block is written here either way,
+        # so a generated reader still reports GENERATED_READER_SOURCE_PATH.
+        def _define_field_reader(reader, source = reader, target: self)
           # Allow local access to explicitly-expected fields on the action instance.
           # NOTE: exposes fields are intentionally excluded — access those via result.field instead.
           # `reader` is the method name (may be aliased via as:/prefix:); `source` is the wire key
           # the value actually lives under in the inbound context.
-          define_method(reader) { internal_context.public_send(source) }
+          target.define_method(reader) { internal_context.public_send(source) }
         end
 
-        def _define_boolean_predicate_reader(field)
+        # Aliased in the same module as the reader it points at (an alias can only name a method its own
+        # module holds), so a predicate riding on an inferred reader is withdrawn with it.
+        def _define_boolean_predicate_reader(field, target: self)
           field_name = field.to_s
           return if field_name.end_with?("?")
 
           predicate_name = "#{field_name}?"
           return unless _reader_name_available?(predicate_name, kind: "boolean predicate")
 
-          alias_method predicate_name, field
+          target.alias_method predicate_name, field
         end
 
         # `coerce: <Type>` → `type: { klass: <Type>, coerce: true }`. The sugar value carries the
@@ -2084,9 +2162,9 @@ module Axn
         #   * a declared klass nil is an instance of (`type: [Array, NilClass]`, `type: Object`) — the nil
         #     is no type defect at all, so whatever else rejects it is the authoritative report. Asked
         #     through TypeValidator's own matcher so the two can't disagree about one declaration;
-        #   * a nested if:/unless: gate key on ANY validator entry — desynchronizing that entry's
-        #     enforcement from the type check's, so some other validator can run on a call where the
-        #     type check does not, and its nil rejection is then the only account of the nil to give.
+        #   * a nested if:/unless: gate key that can desynchronize the type check from its siblings, so
+        #     some other validator runs on a call where the type check does not and its nil rejection is
+        #     then the only account of the nil to give (see below for which nested keys can do that).
         def _type_rejects_nil?(validations)
           raw = validations[:type]
           return false unless raw.is_a?(Hash) && raw[:klass]
@@ -2096,17 +2174,29 @@ module Axn
           type = Axn::Validation::Base.effective_entry_options(raw, _shared_validation_options(validations))
           return false if type[:allow_nil] || type[:allow_blank]
 
-          # A NESTED gate key on ANY entry — blank or not — can desynchronize the type check from its
-          # siblings under ActiveModel's per-key merge, in either direction: a non-blank one ties an entry
-          # to a different condition than the rest, while a blank same-key one DROPS the shared gate for
-          # that entry alone. Either way some other validator can run on a call where the type check does
-          # not, which makes that validator's nil rejection the only account of a nil and so not one to
-          # relax. A DECLARATION-level gate does neither: it opens and closes every validator on the
-          # declaration together, presence included, so it decides whether an account is given, never
-          # whose. Key PRESENCE is the test rather than effective gatedness, for the blank case — the same
+          # Relaxing the siblings is safe exactly when the type check runs on every call any sibling runs
+          # on — which two questions decide, because a NESTED gate key is what desynchronizes one entry
+          # from another under ActiveModel's per-key merge:
+          #
+          #   * a nested key on the TYPE entry itself — blank or not — unties the type check from the rest
+          #     (a non-blank one ties it to a different condition; a blank same-key one drops the
+          #     declaration's gate for it alone), so it can be closed on a call a sibling runs on;
+          #   * otherwise the type entry carries the declaration's gates verbatim. With NO declaration-level
+          #     gate it is unconditional, so it runs whenever anything does and a sibling's own gate can
+          #     only narrow that sibling — safe however the siblings are gated. With one, a sibling that
+          #     MENTIONS a gate key no longer inherits that declaration gate verbatim and can run on a call
+          #     the type check is closed on, making that sibling's nil rejection the only account of a nil
+          #     and so not one to relax.
+          #
+          # Key PRESENCE is the test rather than effective gatedness, for the blank case — the same
           # question `Axn::Validation::Base.entry_mentions_gate_key?` asks for the same reason, and the
           # single definition this reuses rather than re-testing independently.
-          return false if Axn::Validation::Base.validator_entries(validations).any? { |_key, opt| Axn::Validation::Base.entry_mentions_gate_key?(opt) }
+          return false if Axn::Validation::Base.entry_mentions_gate_key?(raw)
+
+          if Axn::Validation::Base.declaration_gated?(_shared_validation_options(validations))
+            siblings = Axn::Validation::Base.validator_entries(validations).except(:type)
+            return false if siblings.any? { |_key, opt| Axn::Validation::Base.entry_mentions_gate_key?(opt) }
+          end
 
           !Axn::Validation::Base.type_admits_nil?(type)
         end

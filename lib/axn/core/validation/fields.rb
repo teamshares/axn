@@ -24,8 +24,10 @@ module Axn
         # validation sees exactly what user code sees. The reader's memo can't be stale here: the
         # executor clears every subfield reader memo at the inbound-pipeline boundary
         # (_clear_pre_pipeline_memos!), so a value cached by an early pre-settlement read is discarded
-        # and this read resolves against the settled wire values. A dotted-name subfield has no reader
-        # and resolves through the same shared helper. Top-level fields keep reading their source facade.
+        # and this read resolves against the settled wire values. A dotted-name subfield has no reader, and
+        # a deferred inferred companion's name belongs to a method the author wrote rather than to the
+        # config (Contract#_validation_reader_for supplies no reader for either), so both resolve through
+        # the same shared helper. Top-level fields keep reading their source facade.
         if @action && @reader && @action.respond_to?(@reader)
           @action.public_send(@reader)
         elsif @action && @config&.subfield?

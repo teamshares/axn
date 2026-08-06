@@ -1161,7 +1161,7 @@ module Axn
             source: config.subfield? ? _resolved_parent_value(config) : @action.internal_context,
             validations: effective_validations,
             action: @action,
-            reader: config.subfield? ? config.reader_as : nil,
+            reader: @action_class.send(:_validation_reader_for, config),
             config: config.subfield? ? config : nil,
             permit_method_call: true,
             confirmation:,
