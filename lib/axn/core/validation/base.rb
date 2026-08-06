@@ -48,7 +48,7 @@ module Axn
       # ONE entry's options as `validates` will hand them to the validator: the declaration-wide shared options
       # with the entry's own merged over them, which is literally what AM builds
       # (`defaults.merge(_parse_validates_options(options))`, activemodel 7.2.2.2). Every per-entry judgment reads
-      # THIS rather than the entry alone, because a shared `allow_nil:`/`allow_blank:`/`on:`/`strict:` governs how
+      # THIS rather than the entry alone, because a shared `allow_nil:`/`allow_blank:`/`strict:` governs how
       # the entry runs just as an entry's own does — and an entry's own value overrides the shared one per key,
       # which the merge order gives for free.
       #
@@ -118,8 +118,8 @@ module Axn
       def self.nil_tolerant_validation?(key, opt, declaration_options)
         return true unless opt # a disabled validator (falsy `opt` — `false`/`nil`); ActiveModel skips it
 
-        # Judged on the options `validates` will actually hand the validator, so a declaration-wide tolerance or
-        # context counts exactly as an entry's own does.
+        # Judged on the options `validates` will actually hand the validator, so a declaration-wide tolerance
+        # counts exactly as an entry's own does.
         opts = effective_entry_options(opt, declaration_options)
         return true if opts[:allow_nil] || opts[:allow_blank]
         return true if key == :absence

@@ -1865,7 +1865,7 @@ module Axn
           raw = validations[:type]
           return false unless raw.is_a?(Hash) && raw[:klass]
 
-          # The options the type check will run under, the declaration's included — a shared tolerance or context
+          # The options the type check will run under, the declaration's included — a shared tolerance
           # governs it exactly as one inside the bag does.
           type = Axn::Validation::Base.effective_entry_options(raw, _shared_validation_options(validations))
           return false if type[:allow_nil] || type[:allow_blank]

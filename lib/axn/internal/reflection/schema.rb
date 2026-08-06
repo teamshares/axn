@@ -1798,7 +1798,7 @@ module Axn
         def validator_entry_options(entry) = Axn::Validation::Base.validator_entry_options(entry)
 
         # An entry's options as `validates` will hand them over — the declaration-wide shared options with the
-        # entry's own merged on top, so a shared tolerance or context is judged here exactly as at runtime.
+        # entry's own merged on top, so a shared tolerance is judged here exactly as at runtime.
         def effective_entry_options(entry, declaration_options) = Axn::Validation::Base.effective_entry_options(entry, declaration_options)
 
         def nil_allowed?(config)
