@@ -158,6 +158,89 @@ RSpec.describe "confirmation:" do
       expect(auto.input_schema).to eq(hand.input_schema)
     end
 
+    # A base that admits a blank value can hold one that is blank yet TRUTHY (`""`, `[]`, `{}`), where
+    # "the base is truthy" and "the base has something to confirm" stop being the same question. Demanding a
+    # (non-blank) companion there would be unsatisfiable — no non-blank value matches a blank base — so the
+    # companion is not demanded, while a supplied one is still compared.
+    describe "a base that admits a blank value" do
+      shared_examples "a blank-admitting base" do |field:, blank:, present:, other:|
+        it "does not demand a companion for a blank base" do
+          expect(klass.call(field => blank)).to be_ok
+        end
+
+        it "accepts a companion that matches the blank base" do
+          expect(klass.call(field => blank, :"#{field}_confirmation" => blank)).to be_ok
+        end
+
+        it "still rejects a companion that contradicts the blank base" do
+          result = klass.call(field => blank, :"#{field}_confirmation" => other)
+          expect(result).not_to be_ok
+          expect(result.exception.message).to match(/confirmation doesn't match/)
+        end
+
+        it "still demands a companion once the base is present" do
+          expect(klass.call(field => present)).not_to be_ok
+          expect(klass.call(field => present, :"#{field}_confirmation" => present)).to be_ok
+        end
+      end
+
+      context "with optional:" do
+        let(:klass) { build_axn { expects :password, type: String, optional: true, confirmation: true } }
+
+        it_behaves_like "a blank-admitting base", field: :password, blank: "", present: "s3cret", other: "nope"
+
+        it "reports a confirmation supplied for an omitted base as the mismatch it is" do
+          expect(klass.call(password_confirmation: "nope")).not_to be_ok
+        end
+
+        it "asks nothing of a caller who supplies neither half" do
+          expect(klass.call).to be_ok
+        end
+      end
+
+      context "with an untyped optional: base" do
+        let(:klass) { build_axn { expects :password, optional: true, confirmation: true } }
+
+        it_behaves_like "a blank-admitting base", field: :password, blank: "", present: "s3cret", other: "nope"
+      end
+
+      context "with allow_empty:" do
+        let(:klass) { build_axn { expects :tags, type: Array, allow_empty: true, confirmation: true } }
+
+        it_behaves_like "a blank-admitting base", field: :tags, blank: [], present: %w[a], other: %w[b]
+      end
+
+      context "with an explicit presence: false" do
+        let(:klass) { build_axn { expects :password, type: String, presence: false, confirmation: true } }
+
+        it_behaves_like "a blank-admitting base", field: :password, blank: "", present: "s3cret", other: "nope"
+      end
+
+      # `type: :boolean`/`:params` carry no presence check of their own (their validation logic stands in for
+      # it), so they land in the same bucket — and their companions must still be enforced.
+      context "with a :boolean base" do
+        let(:klass) { build_axn { expects :flag, type: :boolean, allow_nil: true, confirmation: true } }
+
+        it "demands a companion once the base is true" do
+          expect(klass.call(flag: true)).not_to be_ok
+          expect(klass.call(flag: true, flag_confirmation: true)).to be_ok
+        end
+
+        it "demands nothing for the falsey base a confirmation cannot be asked about" do
+          expect(klass.call(flag: false)).to be_ok
+        end
+      end
+
+      context "with a :params base" do
+        let(:klass) { build_axn { expects :payload, type: :params, confirmation: true } }
+
+        it "demands a companion once the base is present" do
+          expect(klass.call(payload: { a: 1 })).not_to be_ok
+          expect(klass.call(payload: { a: 1 }, payload_confirmation: { a: 1 })).to be_ok
+        end
+      end
+    end
+
     describe "a base carrying its own gate" do
       let(:gated) do
         build_axn do
@@ -215,9 +298,9 @@ RSpec.describe "confirmation:" do
         )
       end
 
-      # A composed gate is not a single Symbol, so `conditional_requiredness_clause` falls back — and the
-      # fallback must be the STRICTER direction (an unconditional requirement the runtime may waive), never a
-      # dropped one the runtime would enforce.
+      # Neither a composed gate nor a presence-asking callable is a single Symbol, so
+      # `conditional_requiredness_clause` falls back — and the fallback must be the STRICTER direction (an
+      # unconditional requirement the runtime may waive), never a dropped one the runtime would enforce.
       it "falls back to an unconditional requirement for a gated base" do
         schema = build_axn do
           expects :admin, type: [TrueClass, FalseClass], optional: true
@@ -227,6 +310,13 @@ RSpec.describe "confirmation:" do
         expect(schema[:required]).to include("password_confirmation")
         expect(schema[:allOf].flat_map { |clause| clause.dig(:then, :required).to_a })
           .not_to include("password_confirmation")
+      end
+
+      it "falls back the same way for a base that admits a blank value" do
+        schema = build_axn { expects :password, type: String, optional: true, confirmation: true }.input_schema
+
+        expect(schema[:required]).to include("password_confirmation")
+        expect(schema[:allOf]).to be_nil
       end
     end
 

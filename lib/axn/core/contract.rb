@@ -1433,31 +1433,44 @@ module Axn
         # excluded rather than inherited. Nor does `metadata:` — a description written for the base field is
         # not a description of its companion.
         #
-        # REQUIREDNESS is the companion's own, never a side effect of the inherited `type:`. Deriving it from
-        # the copied type would leave the confirmation unenforced on precisely the declarations that carry no
-        # nil-rejecting type — an untyped base, `allow_nil:`, `optional:` — which is the defect this option
-        # exists to fix, in a spelling the emitted schema would agree with. So the companion is built through
-        # `_parse_field_configs`, the same builder every declared field goes through, with no tolerance flag:
-        # the default `presence:` lands on it, and the whole parse (validator canonicalization, the emptiness
-        # axis, the nil-skip pass) reaches the identical verdict it would for the equivalent hand-written
-        # line. That equivalence is the point and is pinned by spec — the companion IS
-        # `expects :<field>_confirmation, type: <base type>, if: <base reader>`, down to its reported message.
+        # REQUIREDNESS is the companion's OWN `presence:`, declared here rather than left to whatever the
+        # inherited `type:` happens to reject. Deriving it from the type — even indirectly, by letting the
+        # builder's default presence stand down as it does for `type: :boolean`/`:params` — leaves the
+        # confirmation unenforced on precisely the declarations that carry no nil-rejecting type (an untyped
+        # base, `allow_nil:`, `optional:`, `:boolean`/`:params`), which is the defect this option exists to
+        # fix, in a spelling the emitted schema agrees with. Stated explicitly, the property holds for every
+        # base type by construction, with no per-type list to keep in step. It can never reject a MATCHING
+        # companion: the gate below is open only when the base value is present, and a companion equal to a
+        # present value is present too.
         #
-        # GATED so that "required" means "required once there is something to confirm": the base's own reader,
-        # named as a SYMBOL rather than a Proc, because only a Symbol naming a declared field's
-        # framework-generated reader lets requiredness be emitted exactly
-        # (Internal::Reflection::Schema.conditional_requiredness_clause) — a Proc degrades the emitted schema
-        # to unconditionally-required while the runtime stays conditional.
+        # Everything else about the build is the shared one — `_parse_field_configs`, the builder every
+        # declared field goes through — so the companion carries the same canonicalized validators, emptiness
+        # axis and nil-skip verdict a hand-written `expects :<field>_confirmation, type: <base type>,
+        # if: <base reader>` does, down to its reported message (pinned by spec).
+        #
+        # GATED so that "required" means "required once there is something to confirm" — the question the
+        # gate has to answer is whether the base HAS a value to confirm:
+        #   * a base whose own contract rejects blank (the ordinary `presence:`-carrying declaration) can only
+        #     hold values for which Ruby truthiness and presence are the same answer, so it is gated on the
+        #     base's reader as a SYMBOL — the one spelling that emits an EXACT conditional requirement
+        #     (Internal::Reflection::Schema.conditional_requiredness_clause);
+        #   * a base that ADMITS a blank value (`optional:`/`allow_blank:`/`allow_nil:`, `allow_empty: true`,
+        #     an explicit `presence: false`, or a `:boolean`/`:params` type whose own logic stands in for the
+        #     presence check) can hold a blank-but-TRUTHY one — `""`, `[]`, `{}` — where the two answers
+        #     diverge, and a truthiness gate would demand a non-blank companion for a value no non-blank
+        #     companion can match: an unsatisfiable contract. Those are gated on the base's PRESENCE through a
+        #     callable, which costs the exact clause (see below) and is worth it.
         #
         # A base carrying its OWN `if:`/`unless:` COMPOSES with that gate rather than overriding or refusing
-        # it. A closed gate suppresses the base's validators but does not blank the base's VALUE, so `if:
-        # <base reader>` alone stays open and would enforce a companion for a contract the author gated off —
-        # rejecting input while the comparison it serves never runs. An `if:` therefore becomes the Array
-        # `[<base gates…>, <base reader>]` (ActiveModel ANDs an Array of conditions) and an `unless:` rides
-        # along as its own key, so the companion runs on exactly the calls the base's own validators do, and
-        # only then. The cost is paid in the schema, not the runtime: a non-Symbol rule (or both gate keys at
-        # once) makes `conditional_requiredness_clause` fall back to UNCONDITIONAL `required` — stricter than
-        # the runtime, which is the direction that layer already treats as safe.
+        # it. A closed gate suppresses the base's validators but does not blank the base's VALUE, so the
+        # base-reader gate alone stays open and would enforce a companion for a contract the author gated off
+        # — rejecting input while the comparison it serves never runs. An `if:` therefore becomes the Array
+        # `[<base gates…>, <rule>]` (ActiveModel ANDs an Array of conditions) and an `unless:` rides along as
+        # its own key, so the companion runs on exactly the calls the base's own validators do, and only then.
+        #
+        # Both departures from the bare Symbol are paid for in the schema, not the runtime: a non-Symbol rule
+        # (or both gate keys at once) makes `conditional_requiredness_clause` fall back to UNCONDITIONAL
+        # `required` — stricter than the runtime, which is the direction that layer already treats as safe.
         #
         # A companion the author already declared — in this same batch or on the class already, on the same
         # route — is authoritative and suppresses the implicit one entirely, rather than colliding with it.
@@ -1479,19 +1492,45 @@ module Axn
               reader_names: { companion => reader },
               user_facing: config.user_facing,
               method_call: config.method_call,
+              presence: true,
               **config.validations.slice(:type),
               **_confirmation_companion_gates(config),
             ).first.with(confirmation_for: config.field)
           end
         end
 
-        # The gate keys the companion declares: the base's own `if:`/`unless:` composed with the base reader
+        # The gate keys the companion declares: the base's own `if:`/`unless:` composed with the rule below
         # (see above). `Array()` flattens a base gate the author wrote as a list into one condition list, so
-        # ActiveModel sees a list of conditions rather than a list containing a list.
+        # ActiveModel sees a list of conditions rather than a list containing a list — and the lone rule is
+        # left UNWRAPPED so the ordinary case stays the bare Symbol the exact-clause emitter requires.
         def _confirmation_companion_gates(config)
           gates = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
-          gates[:if] = gates.key?(:if) ? Array(gates[:if]) + [config.reader_as] : config.reader_as
+          rule = _confirmation_companion_gate_rule(config)
+          gates[:if] = gates.key?(:if) ? Array(gates[:if]) + [rule] : rule
           gates
+        end
+
+        # "The base has a value to confirm", in the strongest spelling this declaration allows: the base's
+        # reader as a Symbol where truthiness answers it, else a callable asking presence directly. The
+        # callable reads through the validator record, whose `method_missing` delegates to the action — the
+        # same route a Symbol condition takes — so both spellings resolve the one settled value.
+        def _confirmation_companion_gate_rule(config)
+          return config.reader_as if _confirmation_base_rejects_blank?(config)
+
+          reader = config.reader_as
+          ->(record) { record.public_send(reader).present? }
+        end
+
+        # Whether the BASE's own contract guarantees a non-blank value on the calls its validators run — i.e.
+        # whether truthiness of the base reader and "the base has something to confirm" are one question.
+        # Decided by the same pair `_reconcile_emptiness_axis!` uses to decide whether a presence check can
+        # carry the emptiness axis in place of the flag's own, so the two cannot drift about what a presence
+        # entry promises. Asked with `tolerant: false` because the parsed bag no longer carries the
+        # declaration flags and a tolerant declaration cannot carry a truthy `presence:` at all (the
+        # combination is rejected at declaration), so there is no tolerance tier left to consult.
+        def _confirmation_base_rejects_blank?(config)
+          _presence_emptiness_answer(config.validations, tolerant: false) == :rejected &&
+            _entry_guaranteed_to_run?(config.validations[:presence], _shared_validation_options(config.validations))
         end
 
         # Splits already-stored configs into the ones a new batch leaves alone and the IMPLICIT confirmation
@@ -1689,6 +1728,24 @@ module Axn
           raise ArgumentError,
                 "coerce: needs at least one coercible type (#{Axn::Internal::Coercion::SUPPORTED.join(', ')}); " \
                 "got #{klasses.map(&:inspect).join(', ')}."
+        end
+
+        # The tolerance ONE validator entry takes from a declaration-level `optional:`/`allow_blank:`/
+        # `allow_nil:`. Every validator but one judges the field's OWN value, so both halves apply: there is
+        # nothing to check when the value the author called optional is absent or empty.
+        #
+        # `confirmation:` takes only the NIL half. Its subject is not the field's value but the RELATIONSHIP
+        # between the field and its companion, and a blank-but-supplied value still has a companion that can
+        # contradict it: with the blank half pushed in, `password: ""` beside `password_confirmation: "x"`
+        # was ACCEPTED — a non-matching pair passing while a matching one had nothing to distinguish it,
+        # which is the unenforced-confirmation defect in a narrower spelling. A nil base is different in
+        # kind: there is no value to confirm at all, which is exactly what the pushed `allow_nil` says, so on
+        # that call the comparison stands down with the rest of the contract — and the companion's own gate
+        # is closed there too, so requiredness and comparison agree about it.
+        def _pushed_down_tolerance(key, allow_blank:, allow_nil:)
+          return { allow_nil: } if key == :confirmation
+
+          { allow_blank:, allow_nil: }
         end
 
         # A blank gate is canonicalized away at declaration, EXACTLY tracking the set of condition
@@ -1945,17 +2002,21 @@ module Axn
             shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
             shared_options = validations.slice(*shared_option_keys)
             shared_option_keys.each { |key| validations.delete(key) }
-            validations.transform_values! do |v|
+            # A snapshot of the keys: the loop reassigns entries as it goes, and the tolerance a given entry
+            # takes depends on WHICH validator it is (see below), so this can't be a `transform_values!`.
+            validations.keys.each do |key|
+              v = validations[key]
               # A falsy validator value (`presence: false`, or a `nil`/`false` on any validator) is
               # disabled — `validates` skips it (`next unless options`), so there is nothing to push
               # tolerance into; pass it through unchanged (mirrors AM's own falsy-skip).
-              next v unless v
+              next unless v
 
               # Any other value is normalized exactly as `validates` would (scalar → options hash),
               # then the tolerance rides on top — so `numericality: true`, `inclusion: [..]`/`1..5`,
               # `format: /re/`, etc. combine transparently with optional:/allow_blank:/allow_nil:,
               # matching how they behave without a tolerance flag (PRO-2915).
-              { allow_blank:, allow_nil: }.merge(Axn::Validation::Base.normalize_validator_options(v))
+              validations[key] = _pushed_down_tolerance(key, allow_blank:, allow_nil:)
+                                 .merge(Axn::Validation::Base.normalize_validator_options(v))
             end
             validations.merge!(shared_options)
           else
