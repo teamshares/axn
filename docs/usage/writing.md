@@ -111,7 +111,29 @@ end
 ```
 
 - `inputs` is the resolved declared-inbound fields (defaults and preprocessing applied, and `model:` fields resolved to their record — even when supplied by `<field>_id`) as a Hash; fields whose resolved value is `nil` are omitted so a nested action still applies its own absent/default handling. Splat it, and use plain Hash methods to inject or drop fields: `Child.call(**inputs.except(:role), role: ROLE)`.
-- `expose(result)` forwards the intersection of the child's declared exposures and this action's own `exposes`, and works even when the child failed (so an errors-bearing record the child exposed is still forwarded for form display). It raises `Axn::ContractViolation::NoMatchingExposures` if there is nothing in common to forward.
+- `expose(result)` forwards the intersection of the child's declared exposures and this action's own `exposes`, and works even when the child failed (so an errors-bearing record the child exposed is still forwarded for form display). It raises `Axn::ContractViolation::NoMatchingExposures` if there is nothing in common to forward **and the child succeeded** — an empty intersection there is a wiring mistake. When the child failed it forwards nothing instead of raising, so the child's own error survives rather than being replaced by a contract violation.
+
+When the facade does nothing but delegate, `forward!` collapses that to one line — it calls the action with `inputs`, forwards the exposures, and propagates the outcome the way `call!` does:
+
+```ruby
+class RegisterCustomer
+  include Axn
+
+  expects :email, :name, :plan, optional: true
+  exposes :user, :subscription, optional: true
+  error "Unable to register customer"
+
+  def call
+    forward! Accounts::SignUp # [!code focus]
+  end
+end
+```
+
+- `forward!` is **non-terminal**: on success it returns the sub-action's result and the rest of `#call` still runs, so you can keep working with what it produced.
+- Pass a class to have it invoked with `**inputs`, or pass a result you built yourself when you need different arguments: `forward! Accounts::SignUp.call(**inputs.except(:plan), plan: DEFAULT)`.
+- On failure the sub-action's error becomes this action's error (with your declared `error` base applied, exactly as a bare `call!` would), and its exposures are still forwarded — so an errors-bearing record survives for form display. If the sub-action raised rather than failing, the original exception is re-raised.
+- The sub-action does not have to expose anything you declare. Unlike a direct `expose(result)` — which raises `NoMatchingExposures` when a successful result shares no fields with you, on the assumption you meant to forward something — `forward!` is happy to forward nothing, so delegating to a side-effect-only action works.
+- Exposures forwarded on a failed result are **not** validated against your `exposes` contract. The outbound contract is a promise about successful results: when `ok?` is false, treat exposures as best-effort.
 
 ### Convenient failure with context
 
