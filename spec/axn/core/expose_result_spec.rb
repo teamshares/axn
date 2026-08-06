@@ -89,4 +89,66 @@ RSpec.describe "expose(result) forwarding" do
 
     expect { parent.call! }.to raise_error(ArgumentError)
   end
+
+  it "does not overwrite a value this action already exposed with a never-set child field" do
+    partial = build_axn do
+      exposes :a, :b, optional: true
+      def call
+        expose a: "CHILD-A"
+        fail! "boom"
+      end
+    end
+    p = partial
+    parent = build_axn do
+      exposes :a, :b, optional: true
+      define_method(:call) do
+        expose(b: "PARENT-OWN")
+        expose(p.call)
+      end
+    end
+
+    result = parent.call
+    expect(result.a).to eq("CHILD-A")
+    expect(result.b).to eq("PARENT-OWN")
+  end
+
+  it "forwards a child's explicit nil over a value this action already exposed" do
+    explicit_nil = build_axn do
+      exposes :b, optional: true
+      def call = expose(b: nil)
+    end
+    e = explicit_nil
+    parent = build_axn do
+      exposes :b, optional: true
+      define_method(:call) do
+        expose(b: "PARENT-OWN")
+        expose(e.call)
+      end
+    end
+
+    expect(parent.call.b).to be_nil
+  end
+
+  it "does not raise on an empty intersection when the source result failed" do
+    no_overlap = build_axn do
+      exposes :zzz, optional: true
+      def call
+        expose zzz: 1
+        fail! "real error"
+      end
+    end
+    n = no_overlap
+    parent = build_axn do
+      exposes :event, optional: true
+      define_method(:call) do
+        r = n.call
+        expose(r)
+        fail!(r.error) unless r.ok?
+      end
+    end
+
+    result = parent.call
+    expect(result.outcome).to be_failure
+    expect(result.error).to eq("real error")
+  end
 end

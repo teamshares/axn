@@ -2123,20 +2123,43 @@ module Axn
         end
 
         # Forward the intersection of a nested result's declared exposures and this action's own
-        # declared exposures. Reads declared fields (static contract) so it is safe on a failed
-        # result — it forwards whatever the child managed to expose (nil for the rest) and never
-        # inspects ok?/error or calls fail!. An empty intersection is always a wiring mistake.
+        # declared exposures. Safe on a failed source: it forwards whatever the source managed to
+        # expose and never inspects error or calls fail!.
+        #
+        # An empty intersection is a wiring mistake worth raising over when the source SUCCEEDED —
+        # nothing is lost by saying so, and the next successful call surfaces it either way. On a
+        # failed source the raise would replace the source's own error with a contract violation and
+        # downgrade a clean failure to an exception, which is strictly less information than
+        # forwarding nothing.
         def _expose_from_result(source_result)
           forwardable = source_result.declared_fields & self.class._declared_fields(:outbound)
 
-          if forwardable.empty?
+          if forwardable.empty? && source_result.ok?
             raise Axn::ContractViolation::NoMatchingExposures.new(
               declared: self.class._declared_fields(:outbound),
               exposed: source_result.declared_fields,
             )
           end
 
-          forwardable.each do |field|
+          _absorb_result_exposures!(source_result, fields: forwardable)
+        end
+
+        # Write a source result's values onto this action's exposed_data, skipping any field the
+        # source declared but never actually set: writing those would put nil over a value this action
+        # had already exposed under the same name. An explicitly exposed nil IS set, so it still
+        # forwards.
+        #
+        # Iterates the caller's `fields` rather than the source's own exposed keys, and the two are not
+        # interchangeable. The step orchestrator merges a child's fields into a parent that may not
+        # declare them, so a step-chain parent's exposed_data accumulates keys it has no reader for;
+        # reading those back off such a result one level up would raise NoMethodError. Every entry in
+        # `fields` is a declared field of the source, so `public_send` always resolves.
+        def _absorb_result_exposures!(source_result, fields:)
+          exposed = source_result.__exposed_keys__
+
+          fields.each do |field|
+            next unless exposed.include?(field)
+
             @__context.exposed_data[field] = source_result.public_send(field)
           end
         end
