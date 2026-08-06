@@ -136,21 +136,14 @@ module Axn
               passthrough = @__context.provided_data.except(*self.class._declared_fields(:inbound))
               step_result = axn.call(**passthrough, **inputs, **@__context.exposed_data)
 
-              unless step_result.ok?
-                # Propagate the step's outcome *category*, not a flattened failure: a deliberate fail!
-                # (or a fails_on-classified exception) settles the parent as a failure with the
-                # resolved message; an unclassified exception (a bug) re-raises the original object so
-                # the parent settles as an exception too. The global report already fired at the step
-                # and is deduped per exception object, so re-raising never double-reports.
-                raise step_result.exception if step_result.outcome.exception?
+              # Propagate before absorbing, so a failing step merges nothing: a step's exposures
+              # reaching a parent that failed at a LATER step would assemble a result across step
+              # boundaries that no step ever produced.
+              _propagate_sub_result_outcome!(step_result, error_prefix:)
 
-                fail!("#{error_prefix}#{step_result.error}")
-              end
-
-              # Extract exposed fields from step result and update exposed_data
-              step_result.declared_fields.each do |field|
-                @__context.exposed_data[field] = step_result.public_send(field)
-              end
+              # Unfiltered by design — a step's output must reach later steps even when this parent
+              # does not declare it, which is what makes the chain a chain.
+              _absorb_result_exposures!(step_result, fields: step_result.declared_fields)
             end
           end
         end

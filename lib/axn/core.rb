@@ -116,6 +116,19 @@ module Axn
 
     private
 
+    # Settle this action according to a sub-action's outcome. Propagates the outcome *category*, not a
+    # flattened failure: a deliberate fail! (or a fails_on-classified exception) settles this action as
+    # a failure with the resolved message; an unclassified exception (a bug) re-raises the original
+    # object so this action settles as an exception too. The global report already fired at the
+    # sub-action and is deduped per exception object, so re-raising never double-reports.
+    def _propagate_sub_result_outcome!(result, error_prefix: nil)
+      return if result.ok?
+
+      raise result.exception if result.outcome.exception?
+
+      fail!("#{error_prefix}#{result.error}")
+    end
+
     def initialize(**)
       @__context = Axn::Core::Context.new(**)
     end
