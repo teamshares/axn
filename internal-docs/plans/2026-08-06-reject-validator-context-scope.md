@@ -1139,6 +1139,10 @@ require "axn/testing/spec_helpers"
 # is what this spec exists to catch: route the new bag through a seam, or restore the tolerance the predicates
 # used to carry.
 #
+# A bag can also be RE-DERIVED from an existing config rather than constructed: `Data#with` builds a new
+# config carrying a different bag without going through either seam. That dimension is pinned too, so both
+# ways a stored bag comes to exist are covered.
+#
 # What a bypass costs, so the next reader knows what the pin protects. It is not schema drift:
 #
 #   * `_type_rejects_nil?` reading an inert type entry as authoritative hands `allow_nil: true` to EVERY other
@@ -1163,13 +1167,28 @@ RSpec.describe "constructors of a stored validations bag" do
   # `Axn::Internal::FieldConfig` is the field-NAME convention helper, a different thing that happens to share
   # the base name, so it is excluded by lookbehind rather than counted.
   CONSTRUCTOR_PATTERN = /(?<!Internal::)(?:Field|Shape)Config(?:\.new\b|\[)/
+
+  # Deriving one config from another carries a bag too, and `Data#with` reaches neither seam: it runs the
+  # class's own `initialize`, which validates `sensitive:`/`user_facing:` and nothing about validator entries.
+  # The constructor scan cannot see such a site, because the class name is absent from it — the receiver is a
+  # variable (`config.with(...)`) — so the bag-REPLACING form is pinned by its own keyword instead.
+  #
+  # The one pinned site is sound by construction rather than by inspection: `effective_validations` only
+  # `reject`s entries, so it returns a subset of a bag a seam already cleared, and a subset cannot introduce a
+  # key. That is the property a new site needs — a derivation that can only REMOVE keys is safe; one that
+  # MERGES anything into the bag needs a seam.
+  EXPECTED_BAG_DERIVATIONS = {
+    "lib/axn/internal/reflection/schema.rb" => 1,
+  }.freeze
+
+  DERIVATION_PATTERN = /\.with\(\s*validations:/
   # rubocop:enable Lint/ConstantDefinitionInBlock
 
   def self.lib_root = File.expand_path("../../lib", __dir__)
 
-  let(:found) do
+  def scan_for(pattern)
     Dir.glob("#{self.class.lib_root}/**/*.rb").each_with_object({}) do |path, counts|
-      hits = File.read(path).scan(CONSTRUCTOR_PATTERN).size
+      hits = File.read(path).scan(pattern).size
       next if hits.zero?
 
       counts["lib#{path.delete_prefix(self.class.lib_root)}"] = hits
@@ -1177,7 +1196,11 @@ RSpec.describe "constructors of a stored validations bag" do
   end
 
   it "constructs a stored bag in exactly the pinned places" do
-    expect(found).to eq(EXPECTED_CONSTRUCTORS)
+    expect(scan_for(CONSTRUCTOR_PATTERN)).to eq(EXPECTED_CONSTRUCTORS)
+  end
+
+  it "re-derives a stored bag in exactly the pinned places" do
+    expect(scan_for(DERIVATION_PATTERN)).to eq(EXPECTED_BAG_DERIVATIONS)
   end
 
   it "reads every one of them out of a guarded seam" do
@@ -1207,7 +1230,7 @@ end
 - [ ] **Step 2: Run it and verify it passes**
 
 Run: `bundle exec rspec spec/axn/stored_validations_policy_spec.rb`
-Expected: 2 examples, 0 failures.
+Expected: 3 examples, 0 failures.
 
 - [ ] **Step 3: Verify the pin actually bites**
 
