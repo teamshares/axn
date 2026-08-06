@@ -31,9 +31,11 @@ RSpec.describe "constructors of a stored validations bag" do
     "lib/axn/core/ambient_context.rb" => 1,
   }.freeze
 
+  # Both spellings of construction are counted: these configs are `Data.define`d, so `Klass[...]` builds one
+  # exactly as `.new` does, and a pin that saw only `.new` would leave the other spelling a silent hole.
   # `Axn::Internal::FieldConfig` is the field-NAME convention helper, a different thing that happens to share
   # the base name, so it is excluded by lookbehind rather than counted.
-  CONSTRUCTOR_PATTERN = /(?<!Internal::)(?:Field|Shape)Config\.new\b/
+  CONSTRUCTOR_PATTERN = /(?<!Internal::)(?:Field|Shape)Config(?:\.new\b|\[)/
   # rubocop:enable Lint/ConstantDefinitionInBlock
 
   def self.lib_root = File.expand_path("../../lib", __dir__)
