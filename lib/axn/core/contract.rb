@@ -2095,10 +2095,9 @@ module Axn
           # relax. A DECLARATION-level gate does neither: it opens and closes every validator on the
           # declaration together, presence included, so it decides whether an account is given, never
           # whose. Key PRESENCE is the test rather than effective gatedness, for the blank case — the same
-          # question `Internal::Reflection::Schema.entry_mentions_gate_key?` asks for the same reason.
-          gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
-          mentions_gate = ->(opt) { opt.is_a?(Hash) && gate_keys.any? { |key| opt.key?(key) } }
-          return false if Axn::Validation::Base.validator_entries(validations).any? { |_key, opt| mentions_gate.call(opt) }
+          # question `Axn::Validation::Base.entry_mentions_gate_key?` asks for the same reason, and the
+          # single definition this reuses rather than re-testing independently.
+          return false if Axn::Validation::Base.validator_entries(validations).any? { |_key, opt| Axn::Validation::Base.entry_mentions_gate_key?(opt) }
 
           !Axn::Validation::Base.type_admits_nil?(type)
         end

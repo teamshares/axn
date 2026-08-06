@@ -1733,12 +1733,10 @@ module Axn
         # for the declaration-level requiredness clause: per AM's measured per-key merge
         # (fields.rb#validator_gate_open?), a blank nested same-key value OVERRIDES and drops the shared
         # (declaration) gate for that key before AM ignores it — un-gating the entry. So an entry that
-        # mentions ANY gate key no longer inherits the declaration gate verbatim.
-        def entry_mentions_gate_key?(opt)
-          return false unless opt.is_a?(Hash)
-
-          Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| opt.key?(k) }
-        end
+        # mentions ANY gate key no longer inherits the declaration gate verbatim. Owned by Validation::Base
+        # so this reasoning and the declaration-time nil-skip push-down (contract.rb `_type_rejects_nil?`)
+        # judge one entry the same way.
+        def entry_mentions_gate_key?(opt) = Axn::Validation::Base.entry_mentions_gate_key?(opt)
 
         # Which gate keys EFFECTIVELY gate a single validator entry, given the declaration-level gates
         # (`decl_gates` = the sliced :if/:unless off the whole declaration, already blank-canonicalized).
