@@ -392,6 +392,24 @@ module Axn
         nil
       end
 
+      # The declared `<field>_confirmation` config on the SAME route as `config`, or nil — the companion the
+      # author declared, or the one `confirmation:` declared implicitly for them (Contract
+      # #_confirmation_companion_configs), which are the same kind of config by then. A confirmation
+      # pair is one route's contract: unlike `sibling_id_configs`, which falls through to a defaulted or
+      # sole route because an id may legitimately be declared beside a different model, a confirmation
+      # compares against the companion declared beside THIS field and nothing else.
+      def self.sibling_confirmation_config(action, config)
+        key = :"#{config.field}_confirmation"
+        candidates =
+          if config.on.nil?
+            action.class.internal_field_configs.select { |c| c.field == key }
+          else
+            action.class.send(:subfield_configs).select { |c| c.field == key }
+          end
+
+        candidates.find { |c| c.on.to_s == config.on.to_s }
+      end
+
       # The declared sibling `<field>_id` configs for a `model:` field, in the priority order _declared_id_token
       # reads them (for both the record lookup and the consistency check), so the two can never disagree about
       # which route's transformed id a present record/lookup sees. All routes of a merged id node read the SAME
@@ -408,22 +426,6 @@ module Axn
       #     (a lone id declared on a route other than the model's).
       # Empty when no `<field>_id` is declared (the caller's raw token carries no transform) or when the
       # config isn't in either subfield index (an ambient config falls back to the ambient-scoped tree).
-      # The declared `<field>_confirmation` config on the SAME route as `config`, or nil. A confirmation
-      # pair is one route's contract: unlike `sibling_id_configs`, which falls through to a defaulted or
-      # sole route because an id may legitimately be declared beside a different model, a confirmation
-      # compares against the companion declared beside THIS field and nothing else.
-      def self.sibling_confirmation_config(action, config)
-        key = :"#{config.field}_confirmation"
-        candidates =
-          if config.on.nil?
-            action.class.internal_field_configs.select { |c| c.field == key }
-          else
-            action.class.send(:subfield_configs).select { |c| c.field == key }
-          end
-
-        candidates.find { |c| c.on.to_s == config.on.to_s }
-      end
-
       def self.sibling_id_configs(action, config)
         path = action.class._resolved_subfields.index[config] || action.class._ambient_subfield_tree.index[config]
         return [] if path.nil?
@@ -544,9 +546,20 @@ module Axn
           # `provided_data` is involved. `user_facing:` stays rejected (above): an ambient value is
           # framework-supplied, so there is no caller to face regardless of resolution mechanism.
 
-          _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, allow_empty:, optional:, preprocess:, sensitive:, default:,
-                                           metadata:, reader_names:, user_facing:, method_call:, **validations).tap do |configs|
-            _reject_duplicate_fields!(subfield_configs, configs)
+          # A `confirmation:` subfield declares its `<field>_confirmation` companion on the SAME `on:` route
+          # (a confirmation pair is one route's contract), before any check runs — so from here on the
+          # companion is an ordinary member of the batch, judged and committed with the rest, exactly as on
+          # the top-level route.
+          declared = _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, allow_empty:, optional:, preprocess:, sensitive:, default:,
+                                                      metadata:, reader_names:, user_facing:, method_call:, **validations)
+
+          (declared + _confirmation_companion_configs(declared, existing: subfield_configs)).tap do |configs|
+            # An explicit declaration of a name an earlier `confirmation:` generated implicitly REPLACES that
+            # companion — including the reader it already generated, which the explicit config redefines, so
+            # the reader-name check is told not to read it as a collision.
+            retained, superseded = _partition_superseded_confirmation_companions(subfield_configs, configs)
+
+            _reject_duplicate_fields!(retained, configs)
             # The resolved half of the same identity rule: two supported spellings of one route (a dotted
             # `on:` and a subfield reader or its `as:` alias) resolve to one parent while differing as
             # written, so leaf names that collapse onto one property need the tree to be seen at all.
@@ -554,16 +567,16 @@ module Axn
             # Validate reader-name uniqueness up front (no side effects), so this error — like the checks
             # above (the dotted-name model: and model-batch-id rejections in _parse_subfield_configs) —
             # leaves the class untouched.
-            _validate_subfield_reader_names!(configs)
+            _validate_subfield_reader_names!(configs, superseded_readers: superseded.map(&:reader_as))
 
             # Contradiction-only contracts raise BEFORE any class mutation (PRO-2889): the candidate
             # tree includes the prospective configs, so a new required descendant that kills an
             # already-declared tolerance is caught at the declaration that completes it. The shared tree
             # drops ambient configs, so the ambient subtree is checked separately on its own scoped tree
             # (PRO-2909) — same candidate set, same checks.
-            Axn::Core::Contract::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
-            _check_ambient_subfield_contradictions!(subfield_configs + configs)
-            _check_ambient_shape_placement!(subfield_configs + configs)
+            Axn::Core::Contract::SubfieldContradictions.check!(internal_field_configs, retained + configs)
+            _check_ambient_subfield_contradictions!(retained + configs)
+            _check_ambient_shape_placement!(retained + configs)
 
             # Every declaration check has passed; NOW mutate the class. Deferring both the config commit
             # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
@@ -571,7 +584,7 @@ module Axn
             # config or generated reader, so a corrected retry starts clean.
             # Copy-on-write + freeze: `<<` would mutate the superclass's contract, and
             # identity-keyed caching relies on replacement.
-            self.subfield_configs = (subfield_configs + configs).freeze
+            self.subfield_configs = (retained + configs).freeze
             _define_subfield_readers!(configs)
           end
         end
@@ -628,11 +641,15 @@ module Axn
         # public_sends the deepest reader-bearing ancestor, so a silently-skipped reader would resolve the
         # wrong value), so a collision is always a declaration error — resolved by renaming, never by
         # suppression.
-        def _validate_subfield_reader_names!(configs)
+        #
+        # `superseded_readers` names the readers of implicit confirmation companions this very batch
+        # REPLACES with the author's own declaration: the method exists only because axn generated it for the
+        # config being dropped, so redefining it is the replacement itself, not a collision.
+        def _validate_subfield_reader_names!(configs, superseded_readers: [])
           seen = []
           configs.each do |config|
             reader = config.reader_as
-            if method_defined?(reader) || seen.include?(reader)
+            if (method_defined?(reader) && !superseded_readers.include?(reader)) || seen.include?(reader)
               raise ArgumentError,
                     "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined) — " \
                     "rename this subfield's reader, e.g. `expects :#{config.field}, on: #{config.on.inspect}, " \

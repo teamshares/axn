@@ -268,9 +268,18 @@ module Axn
       # `method_call:` opts a subfield into the sharp path — resolving a segment by INVOKING it as a
       # method (Array methods, PORO readers, Data behavioral methods) rather than reading declared
       # data; it is threaded to the resolver as `permit_method_call:` (PRO-2898).
-      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing, :on, :method_call) do
+      #
+      # `confirmation_for` names the field whose `confirmation:` DECLARED this config implicitly (nil on
+      # every config an author wrote). It is the one thing that cannot be recovered from the config's
+      # contents: an author who declares `<field>_confirmation` themselves must WIN over the implicit
+      # companion whichever order the two lines are written in, and that means the later explicit
+      # declaration replaces the stored companion instead of tripping the duplicate-field guard — while a
+      # second EXPLICIT declaration of the same name stays the duplicate it has always been. Only
+      # provenance separates those two, so it is recorded rather than re-derived.
+      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing, :on, :method_call,
+                                :confirmation_for) do
         def initialize(field:, validations:, reader_as:, default: nil, preprocess: nil, sensitive: false, metadata: {}, user_facing: false, on: nil,
-                       method_call: false)
+                       method_call: false, confirmation_for: nil)
           # THE choke point for a declared field's `sensitive:` and `user_facing:`, whichever DSL built it
           # (`expects`, `exposes`, an `on:` subfield, an ambient subfield, `Axn::Factory`): every stored
           # FieldConfig is built here, from kwargs, and nothing hands axn one it made itself. That is what makes
@@ -462,9 +471,26 @@ module Axn
                                                reader_names:, user_facing:, method_call:, **validations)
           end
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                        reader_names:, user_facing:, **validations).tap do |configs|
-            _reject_duplicate_fields!(internal_field_configs, configs)
+          # A `confirmation:` field declares its `<field>_confirmation` companion here, before any check
+          # runs, so the companion is an ordinary member of the batch from that point on: it is judged by
+          # the duplicate guard, committed with the rest, and gets its reader from the same pass.
+          declared = _parse_field_configs(*fields, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess:, sensitive:, metadata:,
+                                                   reader_names:, user_facing:, **validations)
+          companions = _confirmation_companion_configs(declared, existing: internal_field_configs)
+
+          (declared + companions).tap do |configs|
+            # A companion's reader is generated exactly like a declared field's — `define_method`, no
+            # deferral — so it clears the same collision bar, or it would silently clobber the reader an
+            # unrelated `as:` already claimed under a different wire key. Checked here rather than beside the
+            # batch's own readers above only because the companion doesn't exist until the configs are parsed.
+            # (The subfield route's own check covers its companions already: they are part of `configs`.)
+            _validate_reader_names!(companions.to_h { |c| [c.field, c.reader_as] })
+
+            # An explicit declaration of a name an earlier `confirmation:` generated implicitly REPLACES that
+            # companion (the author's own line is authoritative) rather than colliding with it.
+            retained, = _partition_superseded_confirmation_companions(internal_field_configs, configs)
+
+            _reject_duplicate_fields!(retained, configs)
             # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
             # a same-named subfield reader), so the resolved check runs here too rather than only where
             # subfields are declared.
@@ -473,7 +499,7 @@ module Axn
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
             # carrying an orphaned config or generated reader. Copy-on-write + freeze: `<<` would
             # mutate the superclass's contract, and identity-keyed caching relies on replacement.
-            self.internal_field_configs = (internal_field_configs + configs).freeze
+            self.internal_field_configs = (retained + configs).freeze
             _define_field_readers!(configs)
           end
         end
@@ -1378,6 +1404,83 @@ module Axn
                             reader_as: reader, user_facing:, method_call:)
           end
         end
+
+        # The companion `FieldConfig`s a batch's `confirmation:` fields declare implicitly — the same
+        # treatment a `model:` field's `<field>_id` gets, and for the same reason: the option names a SECOND
+        # wire key, so the contract has to carry it or nothing downstream (redaction, the undeclared-input
+        # gate, the emitted schema) can see it. The reader name is derived from the base's READER and the
+        # wire key from the base's FIELD — the same split `_define_model_id_reader_from` makes — so an
+        # `as:`-aliased `expects :password, as: :pw, confirmation: true` keeps `password_confirmation` on the
+        # wire while user code reads `pw_confirmation`.
+        #
+        # What it inherits is what has to match for the comparison to mean anything, since both sides of a
+        # comparison must live in the same space:
+        #   * `type:` (which carries the parsed `coerce:` flag — `_expand_coerce_sugar!` folds the option into
+        #     the type bag, so there is no separate key left to copy) keeps the emitted schema and the runtime
+        #     agreeing about what the companion may be, and keeps a coerced pair comparable: a form post of
+        #     `count: "5", count_confirmation: "5"` against `coerce: Integer` compares 5 to "5" and reports a
+        #     mismatch the caller cannot act on unless the companion coerces too.
+        #   * `preprocess:` for the same reason — a `->(s){ s.strip }` on the base alone compares "a" to " a ".
+        #   * `sensitive:` because the failure mode is a LEAK: a confirmed secret whose companion logs in the
+        #     clear is the whole password beside the redacted one.
+        #   * `method_call:` as an ENABLER, not a requirement: it is never consulted on a Hash/Data/Parameters
+        #     source (FieldResolvers::Extract reads those by key before reaching the gated dispatch branch),
+        #     and on an object source the base field's own read already required it. Same reasoning as the
+        #     undeclared `<field>_id` resolved off a possibly-object parent with `permit_method_call:
+        #     config.method_call`.
+        #   * `user_facing:` because a companion violation is the same caller-input defect the base's is.
+        # `default:` must NOT carry: a defaulted companion would silently satisfy its own comparison, so it is
+        # excluded rather than inherited. Nor does `metadata:` — a description written for the base field is
+        # not a description of its companion.
+        #
+        # Gated on the base field's own reader, and as a SYMBOL rather than a Proc, because only a Symbol
+        # naming a declared field's framework-generated reader lets requiredness be emitted exactly
+        # (Internal::Reflection::Schema.conditional_requiredness_clause); a Proc degrades the emitted schema to
+        # unconditionally-required while the runtime stays conditional. The gate is what makes the companion
+        # required exactly when there is something to confirm.
+        #
+        # A companion the author already declared — in this same batch or on the class already, on the same
+        # route — is authoritative and suppresses the implicit one entirely, rather than colliding with it.
+        def _confirmation_companion_configs(configs, existing:)
+          claimed = (configs + existing).map { |c| _declaration_slot(c) }
+
+          configs.filter_map do |config|
+            next unless config.validations[:confirmation]
+
+            companion = :"#{config.field}_confirmation"
+            next if claimed.include?([companion, config.on.to_s])
+
+            FieldConfig.new(
+              field: companion,
+              validations: config.validations.slice(:type).merge(if: config.reader_as),
+              on: config.on,
+              preprocess: config.preprocess,
+              sensitive: config.sensitive,
+              reader_as: :"#{config.reader_as}_confirmation",
+              user_facing: config.user_facing,
+              method_call: config.method_call,
+              confirmation_for: config.field,
+            )
+          end
+        end
+
+        # Splits already-stored configs into the ones a new batch leaves alone and the IMPLICIT confirmation
+        # companions it redeclares explicitly — which the author's own declaration replaces (see
+        # FieldConfig#confirmation_for). Returns `[retained, superseded]`; both declaration routes commit
+        # `retained + configs` and run their duplicate/collision checks against `retained`, so the author's
+        # line lands as though the implicit companion had never been generated.
+        #
+        # A slot is (wire key, route): a confirmation pair is one route's contract, so a same-named subfield
+        # on a DIFFERENT `on:` parent is a different field and is never superseded by this one.
+        def _partition_superseded_confirmation_companions(existing, configs)
+          redeclared = configs.map { |c| _declaration_slot(c) }
+          existing.partition { |c| c.confirmation_for.nil? || !redeclared.include?(_declaration_slot(c)) }
+        end
+
+        # The (wire key, route) pair that identifies WHICH declared field a config is. `on:` is compared as
+        # text because one route has two supported spellings (a Symbol and a dotted String), exactly as
+        # `ContractForSubfields.sibling_confirmation_config` compares it.
+        def _declaration_slot(config) = [config.field, config.on.to_s]
 
         # `coerce:`/`preprocess:` transform a scalar WIRE value, but a `model:` field resolves a record
         # from an id/record — its value is the record, not a scalar to coerce, and the class check `model:`
