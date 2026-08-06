@@ -184,17 +184,24 @@ RSpec.describe "confirmation:" do
         end
       end
 
-      context "with optional:" do
-        let(:klass) { build_axn { expects :password, type: String, optional: true, confirmation: true } }
+      # The three tolerance spellings are near-synonyms that push DIFFERENT halves (`optional:` pushes
+      # allow_blank, `allow_nil:` pushes allow_nil), so any tolerance reaching the confirmation entry made
+      # them answer the same input differently. None reaches it — a supplied companion is compared whatever
+      # the base holds — so all three behave identically here.
+      %i[optional allow_nil allow_blank].each do |tolerance|
+        context "with #{tolerance}:" do
+          let(:klass) { build_axn { expects :password, type: String, tolerance => true, confirmation: true } }
 
-        it_behaves_like "a blank-admitting base", field: :password, blank: "", present: "s3cret", other: "nope"
+          it_behaves_like "a blank-admitting base", field: :password, blank: "", present: "s3cret", other: "nope"
 
-        it "reports a confirmation supplied for an omitted base as the mismatch it is" do
-          expect(klass.call(password_confirmation: "nope")).not_to be_ok
-        end
+          it "reports a companion supplied against an absent base as the mismatch it is" do
+            expect(klass.call(password_confirmation: "nope")).not_to be_ok
+            expect(klass.call(password: nil, password_confirmation: "nope")).not_to be_ok
+          end
 
-        it "asks nothing of a caller who supplies neither half" do
-          expect(klass.call).to be_ok
+          it "asks nothing of a caller who supplies neither half" do
+            expect(klass.call).to be_ok
+          end
         end
       end
 
@@ -228,6 +235,12 @@ RSpec.describe "confirmation:" do
 
         it "demands nothing for the falsey base a confirmation cannot be asked about" do
           expect(klass.call(flag: false)).to be_ok
+          expect(klass.call(flag: nil)).to be_ok
+        end
+
+        it "still compares a companion supplied against a nil base" do
+          expect(klass.call(flag: nil, flag_confirmation: true)).not_to be_ok
+          expect(klass.call(flag_confirmation: false)).not_to be_ok
         end
       end
 

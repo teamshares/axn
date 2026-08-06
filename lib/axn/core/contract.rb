@@ -1730,23 +1730,22 @@ module Axn
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 
-        # The tolerance ONE validator entry takes from a declaration-level `optional:`/`allow_blank:`/
-        # `allow_nil:`. Every validator but one judges the field's OWN value, so both halves apply: there is
-        # nothing to check when the value the author called optional is absent or empty.
+        # Whether a validator entry takes NO tolerance from a declaration-level `optional:`/`allow_blank:`/
+        # `allow_nil:`. Exactly one does. Every other validator judges the field's OWN value, so a tolerance
+        # stands it down: there is nothing to check when the value the author called optional is absent or
+        # empty. `confirmation:`'s subject is not the field's value but the RELATIONSHIP between the field
+        # and its companion, and a SUPPLIED companion can contradict the base whatever the base holds —
+        # `password: ""` (or nil) beside `password_confirmation: "x"` is a mismatch the caller must see, not
+        # a blank to wave through. Tolerated, it accepted a NON-matching pair while a matching one had
+        # nothing to distinguish it: the unenforced-confirmation defect in a narrower spelling.
         #
-        # `confirmation:` takes only the NIL half. Its subject is not the field's value but the RELATIONSHIP
-        # between the field and its companion, and a blank-but-supplied value still has a companion that can
-        # contradict it: with the blank half pushed in, `password: ""` beside `password_confirmation: "x"`
-        # was ACCEPTED — a non-matching pair passing while a matching one had nothing to distinguish it,
-        # which is the unenforced-confirmation defect in a narrower spelling. A nil base is different in
-        # kind: there is no value to confirm at all, which is exactly what the pushed `allow_nil` says, so on
-        # that call the comparison stands down with the rest of the contract — and the companion's own gate
-        # is closed there too, so requiredness and comparison agree about it.
-        def _pushed_down_tolerance(key, allow_blank:, allow_nil:)
-          return { allow_nil: } if key == :confirmation
-
-          { allow_blank:, allow_nil: }
-        end
+        # Nor does the tolerance buy the "nothing to confirm" skip it looks like it buys: ActiveModel's
+        # ConfirmationValidator already returns without comparing when the COMPANION is nil (measured against
+        # activemodel 7.2.2.2: `unless (confirmed = record.public_send("#{attribute}_confirmation")).nil?`),
+        # which is that case exactly. All the pushed tolerance could still reach is the contradicting call —
+        # and it reached it asymmetrically, since `optional:` pushes allow_blank while `allow_nil:` pushes
+        # allow_nil, so two near-synonymous spellings answered the same input two ways.
+        def _tolerance_exempt_validator?(key) = key == :confirmation
 
         # A blank gate is canonicalized away at declaration, EXACTLY tracking the set of condition
         # values ActiveModel ignores. AM resolves if:/unless: through
@@ -2002,21 +2001,21 @@ module Axn
             shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
             shared_options = validations.slice(*shared_option_keys)
             shared_option_keys.each { |key| validations.delete(key) }
-            # A snapshot of the keys: the loop reassigns entries as it goes, and the tolerance a given entry
-            # takes depends on WHICH validator it is (see below), so this can't be a `transform_values!`.
+            # A snapshot of the keys: the loop reassigns entries as it goes, and WHICH validator an entry is
+            # decides whether it takes the tolerance at all, so this can't be a `transform_values!`.
             validations.keys.each do |key|
               v = validations[key]
               # A falsy validator value (`presence: false`, or a `nil`/`false` on any validator) is
               # disabled — `validates` skips it (`next unless options`), so there is nothing to push
               # tolerance into; pass it through unchanged (mirrors AM's own falsy-skip).
               next unless v
+              next if _tolerance_exempt_validator?(key)
 
               # Any other value is normalized exactly as `validates` would (scalar → options hash),
               # then the tolerance rides on top — so `numericality: true`, `inclusion: [..]`/`1..5`,
               # `format: /re/`, etc. combine transparently with optional:/allow_blank:/allow_nil:,
               # matching how they behave without a tolerance flag (PRO-2915).
-              validations[key] = _pushed_down_tolerance(key, allow_blank:, allow_nil:)
-                                 .merge(Axn::Validation::Base.normalize_validator_options(v))
+              validations[key] = { allow_blank:, allow_nil: }.merge(Axn::Validation::Base.normalize_validator_options(v))
             end
             validations.merge!(shared_options)
           else
