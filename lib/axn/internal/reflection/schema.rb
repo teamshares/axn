@@ -862,16 +862,15 @@ module Axn
           empty_default?(value) && config.validations.key?(Axn::Internal::FieldConfig::NON_EMPTINESS_KEY)
         end
 
-        # Whether an active `presence:` check here rejects every blank value: one is declared, it is not
-        # blank-tolerant, and it is not context-scoped (an entry that runs on no call rejects nothing). THE
-        # single definition, read by the blank-default judgment and by the size-floor emission. A truthy
-        # non-Hash entry carries no tolerance, so it rejects blank.
+        # Whether an active `presence:` check here rejects every blank value: one is declared and it is not
+        # blank-tolerant. THE single definition, read by the blank-default judgment and by the size-floor
+        # emission. A truthy non-Hash entry carries no tolerance, so it rejects blank.
         def presence_rejects_blank?(validations)
           presence = validations[:presence]
           return false unless presence
 
           opts = effective_entry_options(presence, validations.slice(*Axn::Validation::Base.shared_validation_option_keys))
-          !opts[:allow_blank] && !entry_context_scoped?(opts)
+          !opts[:allow_blank]
         end
 
         # Whether an empty value is rejected by something OTHER than the author's own `length:` — either
@@ -1330,9 +1329,7 @@ module Axn
         # check rejects every empty value, 3 or more is all the contract admits and the floor is exact. Truthiness
         # decides the tolerance, not key presence: a nil-tolerance injects an explicit `allow_blank: false`.
         #
-        # A context-scoped entry contributes no floor either, for the stronger reason that it runs on NO call
-        # (Validation::Base.entry_context_scoped?), so its floor is a constraint the contract never applies.
-        # That is not the gate treatment: a GATED entry may be open on a given call, and is counted as if it
+        # A GATED entry may be open on a given call, and is counted as if it
         # were — static-maximal, which can leave the input schema stricter than a closed-gate runtime but never
         # looser, and is the policy for every gated constraint here.
         #
@@ -1346,7 +1343,7 @@ module Axn
           rejects_empty = empty_value_rejected?(validations)
 
           length = effective_entry_options(validations[:length], shared_validation_options(config))
-          if !entry_context_scoped?(length) && (rejects_empty || !length[:allow_blank])
+          if rejects_empty || !length[:allow_blank]
             declared = Axn::Validation::Base.declared_length_floor(length)
             return declared if Axn::Validation::Base.emittable_length_floor?(declared)
           end
@@ -1798,7 +1795,6 @@ module Axn
 
         def nil_tolerant_validation?(key, opt, declaration_options) = Axn::Validation::Base.nil_tolerant_validation?(key, opt, declaration_options)
         def set_includes_nil?(opt) = Axn::Validation::Base.set_includes_nil?(opt)
-        def entry_context_scoped?(opt) = Axn::Validation::Base.entry_context_scoped?(opt)
         def validator_entry_options(entry) = Axn::Validation::Base.validator_entry_options(entry)
 
         # An entry's options as `validates` will hand them over — the declaration-wide shared options with the

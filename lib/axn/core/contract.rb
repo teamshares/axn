@@ -1851,7 +1851,7 @@ module Axn
         end
 
         # Whether this field's declared type rules out nil on EVERY call, all by itself — the only
-        # condition under which the type error is the field's complete account of a nil. Four ways it
+        # condition under which the type error is the field's complete account of a nil. Three ways it
         # isn't:
         #   * nil-tolerance pushed into the type bag — TypeValidator then skips nil outright;
         #   * a declared klass nil is an instance of (`type: [Array, NilClass]`, `type: Object`) — the nil
@@ -1860,9 +1860,7 @@ module Axn
         #   * an effective if:/unless: gate on the type entry — a closed gate skips the type check, and
         #     then the OTHER validators' nil rejections are the only thing standing between the field and
         #     an accepted nil. Judged structurally (no condition is ever evaluated) by the same per-key
-        #     merge model schema reflection uses;
-        #   * an `on:` inside the type BAG — ActiveModel's validation-context option, which makes the entry
-        #     permanently inert and so its nil verdict vacuous (Validation::Base.entry_context_scoped?).
+        #     merge model schema reflection uses.
         def _type_rejects_nil?(validations)
           raw = validations[:type]
           return false unless raw.is_a?(Hash) && raw[:klass]
@@ -1871,7 +1869,6 @@ module Axn
           # governs it exactly as one inside the bag does.
           type = Axn::Validation::Base.effective_entry_options(raw, _shared_validation_options(validations))
           return false if type[:allow_nil] || type[:allow_blank]
-          return false if Axn::Validation::Base.entry_context_scoped?(type)
 
           decl_gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
           return false if Axn::Validation::Base.entry_effective_gate_keys(type, decl_gates).any?
@@ -1916,7 +1913,7 @@ module Axn
         #
         # Standing the flag's own check down in favor of one of them settles the axis only if that spelling
         # is GUARANTEED TO RUN, so every deferral asks that too (`_entry_guaranteed_to_run?`) — an entry a
-        # closed gate or a validation context can skip enforces nothing on the call where it is skipped.
+        # closed gate can skip enforces nothing on the call where it is skipped.
         #
         # The asymmetry between the polarities is real, not an oversight: `allow_empty: false` is a
         # promise that must be ENFORCED, so any other spelling that would defeat it has to be resolved
@@ -1941,13 +1938,12 @@ module Axn
           # contradiction — defer to it, so long as it is guaranteed to run. Under a nil-tolerance it needs
           # the axis's own tolerance keys, or the pushed blank-tolerance would stand it down on exactly the
           # value it is being trusted to reject.
-          if length_answer == :rejected && _entry_guaranteed_to_run?(validations[:length], _shared_validation_options(validations))
+          if length_answer == :rejected && _entry_guaranteed_to_run?(validations[:length])
             validations[:length] = EMPTINESS_AXIS_TOLERANCE.merge(authored_length) if tolerant
             return
           end
 
-          return if presence_answer == :rejected &&
-                    _entry_guaranteed_to_run?(validations[:presence], _shared_validation_options(validations))
+          return if presence_answer == :rejected && _entry_guaranteed_to_run?(validations[:presence])
 
           # A `length:` that explicitly ADMITS an empty value is settled before asking what would enforce the
           # axis: the inferred presence check would honor the flag, but the declaration would still answer the
@@ -1981,34 +1977,20 @@ module Axn
                              .merge(authored_length.slice(:message))
         end
 
-        # Whether a validator ENTRY runs on every call, and so can be trusted with the emptiness axis in
-        # place of the flag's own check. Two things inside an entry withdraw that guarantee, both judged
-        # structurally — no condition is ever evaluated:
+        # Whether a validator ENTRY runs on every call, and so can be trusted with the emptiness axis in place
+        # of the flag's own check. What withdraws that guarantee is a gate of its OWN — a closed condition skips
+        # that one validator, leaving nothing to reject the empty value while the rest of the contract still
+        # applies. Judged structurally; no condition is ever evaluated.
         #
-        #   * a gate of its OWN (Validation::Base.entry_self_gated?) — a closed condition skips that one
-        #     validator, leaving nothing to reject the empty value while the rest of the contract still
-        #     applies. A DECLARATION-level gate is deliberately not one: it skips EVERY validator in the
-        #     declaration, the emptiness check included, so relative to the check that would replace this
-        #     entry there is nothing to withdraw.
-        #   * an `on:` — ActiveModel's validation-context option, which makes the entry permanently inert
-        #     (Validation::Base.entry_context_scoped?): it runs on no call at all. Asked of the options the entry
-        #     will RUN under, since a declaration-wide `on:` scopes every validator in the call — the opposite
-        #     tier treatment from the gate above, and for the opposite reason: a shared context silences this
-        #     entry AND the check that would replace it, but it silences them on every call rather than some.
-        def _entry_guaranteed_to_run?(entry, declaration_options)
-          own = entry.is_a?(Hash) ? entry : {}
-          effective = Axn::Validation::Base.effective_entry_options(entry, declaration_options)
-          return false if Axn::Validation::Base.entry_context_scoped?(effective)
-
-          !Axn::Validation::Base.entry_self_gated?(own)
-        end
+        # A DECLARATION-level gate is deliberately not one: it skips EVERY validator in the declaration, the
+        # emptiness check included, so relative to the check that would replace this entry there is nothing to
+        # withdraw.
+        def _entry_guaranteed_to_run?(entry) = !Axn::Validation::Base.entry_self_gated?(entry)
 
         # What an explicit `presence:` says about emptiness: `presence` is `!blank?`, so a live one rejects
         # every empty value, while a disabled (`presence: false`) or blank-tolerant one admits it. Nothing
         # is read out of it under a nil-tolerance — there the pushed tolerance means the check can never
-        # fire, however it is spelled (a truthy one is already rejected outright) — nor out of a
-        # context-scoped entry, which runs on no call at all: an entry that never runs answers NOTHING, so it
-        # can neither carry the axis nor contradict the flag, in either polarity. The AUTOMATIC presence
+        # fire, however it is spelled (a truthy one is already rejected outright). The AUTOMATIC presence
         # check is deliberately not an answer here either: it is inferred rather than authored, and
         # `allow_empty:` governs whether it is installed at all, so it can never contradict the flag.
         def _presence_emptiness_answer(validations, tolerant:)
@@ -2017,8 +1999,6 @@ module Axn
           return :permitted unless validations[:presence]
 
           entry = Axn::Validation::Base.effective_entry_options(validations[:presence], _shared_validation_options(validations))
-          return nil if Axn::Validation::Base.entry_context_scoped?(entry)
-
           entry[:allow_blank] ? :permitted : :rejected
         end
 
@@ -2027,17 +2007,15 @@ module Axn
         # or carries its own blank-tolerance (which stands the whole entry aside for an empty value),
         # `:unverifiable` for a floor ActiveModel resolves per call, and nil when the entry answers nothing.
         #
-        # Three shapes answer nothing. An entry that says nothing about the floor at all (a `maximum:` of 1 or
-        # more, an unrecognized shape, a disabled entry); a CONTEXT-SCOPED entry, which runs on no call, so
-        # its floor is neither a promise to lean on nor a contradiction to raise over; and a floor that
-        # forbids the empty value yet is not one a schema floor can carry (`emittable_length_floor?`) — the
-        # flag then installs its own check, which IS carryable, while the author's floor goes on rejecting
-        # whatever it rejects. Both the floor and the test of what counts are the definitions schema
-        # reflection emits from, so the two layers honor exactly the same set of floors.
+        # Two shapes answer nothing. An entry that says nothing about the floor at all (a `maximum:` of 1 or
+        # more, an unrecognized shape, a disabled entry); and a floor that forbids the empty value yet is not
+        # one a schema floor can carry (`emittable_length_floor?`) — the flag then installs its own check,
+        # which IS carryable, while the author's floor goes on rejecting whatever it rejects. Both the floor
+        # and the test of what counts are the definitions schema reflection emits from, so the two layers
+        # honor exactly the same set of floors.
         def _length_emptiness_answer(validations)
           opts = _effective_length_options(validations)
           return nil if opts.empty?
-          return nil if Axn::Validation::Base.entry_context_scoped?(opts)
           return :permitted if opts[:allow_blank]
 
           floor = Axn::Validation::Base.declared_length_floor(opts)
