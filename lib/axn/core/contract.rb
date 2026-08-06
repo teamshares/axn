@@ -2126,15 +2126,18 @@ module Axn
         # declared exposures. Safe on a failed source: it forwards whatever the source managed to
         # expose and never inspects error or calls fail!.
         #
-        # An empty intersection is a wiring mistake worth raising over when the source SUCCEEDED —
-        # nothing is lost by saying so, and the next successful call surfaces it either way. On a
-        # failed source the raise would replace the source's own error with a contract violation and
-        # downgrade a clean failure to an exception, which is strictly less information than
-        # forwarding nothing.
-        def _expose_from_result(source_result)
+        # An empty intersection is a wiring mistake worth raising over when BOTH the source SUCCEEDED
+        # and the caller wants that check (`require_overlap: true`, the default for a direct
+        # `expose(result)`, where forwarding is the entire point of the call). On a failed source the
+        # raise would replace the source's own error with a contract violation and downgrade a clean
+        # failure to an exception, which is strictly less information than forwarding nothing. A
+        # caller for whom forwarding is a secondary effect of running the sub-action (`forward!`)
+        # passes `require_overlap: false` so a side-effect-only or under-declared child forwards
+        # cleanly instead of raising.
+        def _expose_from_result(source_result, require_overlap: true)
           forwardable = source_result.declared_fields & self.class._declared_fields(:outbound)
 
-          if forwardable.empty? && source_result.ok?
+          if forwardable.empty? && source_result.ok? && require_overlap
             raise Axn::ContractViolation::NoMatchingExposures.new(
               declared: self.class._declared_fields(:outbound),
               exposed: source_result.declared_fields,

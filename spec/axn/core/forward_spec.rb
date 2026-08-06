@@ -37,7 +37,9 @@ RSpec.describe "forward!" do
     end
 
     # A step chain would pass :sneaky through as undeclared passthrough; forward! deliberately does not.
-    expect(parent.call(x: 1, sneaky: "LEAKED").saw).to be_nil
+    result = parent.call(x: 1, sneaky: "LEAKED")
+    expect(result).to be_ok
+    expect(result.saw).to be_nil
   end
 
   it "returns the child result and keeps executing on success" do
@@ -159,7 +161,31 @@ RSpec.describe "forward!" do
       define_method(:call) { forward! s }
     end
 
-    expect(parent.call.outcome).to be_exception
+    result = parent.call
+    expect(result.outcome).to be_exception
+    expect(result.exception).to be_a(Axn::OutboundValidationError)
+    expect(result.exception.message).to eq("N is not a Integer")
+  end
+
+  it "forwards cleanly from a side-effect-only child with no declared exposures" do
+    side_effecting = build_axn { def call = nil }
+    child_action = side_effecting
+    parent = build_axn do
+      exposes :event, optional: true
+      define_method(:call) { forward! child_action }
+    end
+
+    expect(parent.call).to be_ok
+  end
+
+  it "forwards cleanly when the child exposes a field the parent does not declare" do
+    c = child
+    parent = build_axn do
+      expects :x, optional: true # deliberately declares NO exposures at all
+      define_method(:call) { forward! c }
+    end
+
+    expect(parent.call(x: 3)).to be_ok
   end
 
   it "raises ArgumentError for a class that does not include Axn" do

@@ -115,11 +115,16 @@ module Axn
     end
 
     # Delegate to a sub-action, propagating both its exposures and its outcome. Sugar for the facade
-    # idiom (`r = Child.call(**inputs); expose(r); fail! unless r.ok?`), and the only way to get that
-    # behaviour from the `call!` shape, where the raise leaves #call before any expose can run.
+    # idiom (`r = Child.call(**inputs); expose(r); raise r.exception unless r.ok?`), and the only way
+    # to get that behaviour from the `call!` shape, where the raise leaves #call before any expose can
+    # run.
     #
     # Non-terminal: on success it returns the sub-action's result and execution continues, exactly as
-    # call! does. The bang marks the failure branch, which settles this action.
+    # call! does. The bang marks the failure branch, which settles this action. Exposure absorption
+    # tolerates an empty intersection (`require_overlap: false`) rather than raising, so a
+    # side-effect-only child, or a child whose exposures this action declines to re-declare, still
+    # forwards cleanly — forwarding here is a side effect of running the sub-action, not the point of
+    # the call the way a direct `expose(result)` is.
     #
     # A Class is invoked with this action's resolved `inputs` — declared inbound fields only, not the
     # step chain's fuller passthrough. Pass a Result instead to control the arguments yourself.
@@ -128,7 +133,7 @@ module Axn
 
       raise ArgumentError, "forward!: expected an Axn class or an Axn::Result (got #{result.class})" unless Internal::Identity.kind?(result, Axn::Result)
 
-      expose(result)
+      _expose_from_result(result, require_overlap: false)
       _propagate_sub_result_outcome!(result)
 
       result
