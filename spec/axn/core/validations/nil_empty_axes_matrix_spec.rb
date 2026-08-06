@@ -633,7 +633,7 @@ RSpec.describe "nil and empty axes" do
         expect(action.call(v: [1])).to be_ok
       end
 
-      # A NON-inert entry still answers, in both polarities, so a real contradiction still raises.
+      # An entry that can run answers in both polarities, so a real contradiction still raises.
       it "still raises for the same conflicts when the entry can run" do
         expect { build(type: Array, optional: true, allow_empty: false, length: { minimum: 0 }) }
           .to raise_error(ArgumentError, /length:.*allow_empty: false/m)

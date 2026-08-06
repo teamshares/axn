@@ -1329,9 +1329,9 @@ module Axn
         # check rejects every empty value, 3 or more is all the contract admits and the floor is exact. Truthiness
         # decides the tolerance, not key presence: a nil-tolerance injects an explicit `allow_blank: false`.
         #
-        # A GATED entry may be open on a given call, and is counted as if it
-        # were — static-maximal, which can leave the input schema stricter than a closed-gate runtime but never
-        # looser, and is the policy for every gated constraint here.
+        # A GATED entry may be open on a given call, and is counted as if it were — static-maximal, which can
+        # leave the input schema stricter than a closed-gate runtime but never looser, and is the policy for
+        # every gated constraint here.
         #
         # Only `length:` is consulted, never a `size:`: `size` is absent from KNOWN_VALIDATION_KEYS, so a
         # declaration carrying it raises "Unknown key(s) :size" and can never reach reflection.

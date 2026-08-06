@@ -136,9 +136,9 @@ module Axn
 
       # Whether a validator ENTRY is scoped to an ActiveModel validation CONTEXT — an `on:` among its options,
       # which makes it permanently inert: `Fields.errors_for` calls `valid?` with no context, so the entry runs
-      # on no call at all. THE definition behind the declaration guards that refuse one
-      # (`_reject_validator_context_scope!`), and its only consumer: a context-scoped entry cannot be declared,
-      # so no judgment downstream ever meets one.
+      # on no call at all. THE definition behind the declaration guard that refuses one
+      # (`_reject_validator_context_scope!`) — its only consumer: a context-scoped entry cannot be declared, so no
+      # judgment downstream ever meets one.
       #
       # Only the key's presence is asked: `validate` installs the context gate on `options.key?(:on)` whatever
       # the value, so `on: nil`/`false`/`[]` name a context no call is in exactly as `on: :publish` does —

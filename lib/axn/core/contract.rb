@@ -1065,8 +1065,9 @@ module Axn
           raise ArgumentError,
                 "shape member `#{_shape_member_label(name)}` does not support " \
                 "#{context_opts.map { |k| "#{k}:" }.join('/')} — it names an ActiveModel validation context, and " \
-                "axn validates with no context, so every validator in the member's bag would be skipped on " \
-                "every call. A member has no subfield parent for it to name either. Gate the checks with " \
+                "axn validates with no context, so on a raw `shape:` member every validator in the bag would be " \
+                "skipped on every call, while on a block-form member the option is discarded outright. A member " \
+                "has no subfield parent for it to name either. Drop `on:`, or gate the checks with " \
                 "`if:`/`unless:`, which axn does support."
         end
 

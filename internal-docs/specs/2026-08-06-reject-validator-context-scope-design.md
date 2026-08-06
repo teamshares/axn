@@ -50,11 +50,11 @@ The raiser scans `Base.validator_entries(validations)` — validator entries onl
 
 Every validator is covered, axn's own included: `type:`, `of:`, `validate:`, `model:` and `shape:` are all validator entries rather than shared options, and none of the five reads `:on` for anything of its own — verified, so C1 rejects nothing legitimate.
 
-`shape:` is the one case worth calling out. A raw `shape: { members:, container:, on: X }` is a validator entry carrying `:on`, so C1 catches it — but its behavior today is the C3 kind rather than the C1 kind: the walk rebuilds the node and the key is silently *dropped*, so the ShapeValidator still runs. Rejecting it is still right (the author wrote something that does nothing), and the position matters: C1 sits at `:1669`, ahead of `_derive_raw_shape_container!` at `:1671`, so the key is still there to be seen.
+`shape:` is the one case worth calling out. A raw `shape: { members:, container:, on: X }` is a validator entry carrying `:on`, so C1 catches it — and its behavior is the C1 kind: the stored node KEEPS the key — `snapshot_node` copies every entry — so the ShapeValidator itself goes inert and a member's own type check stops firing (`h: { x: 5 }` passes where the same declaration without `on:` fails). Rejecting it is still right (the author wrote something that does nothing), and the position matters: C1 sits at `:1669`, ahead of `_derive_raw_shape_container!` at `:1671`, so the key is still there to be seen.
 
 Message, naming the field, the validator, the reason and the fix:
 
-> `on:` inside `type:` on `["v"]` names an ActiveModel validation context, and axn validates with no context — so that check runs on no call and the field is left unvalidated. Axn has no validation contexts: drop `on:`, or gate the check with `if:`/`unless:`, which axn does support.
+> `on:` inside `type:` on `["v"]` names an ActiveModel validation context, and axn validates with no context — so that check runs on no call and the declaration is left unenforced. Axn has no validation contexts: drop `on:`, or gate the check with `if:`/`unless:`, which axn does support.
 
 A block-form member's label comes out as `["x"]` rather than `shape member \`payload.x\``, because it reaches this via `_parse_field_configs`. That is the existing behavior of every guard on that path (`_validate_allow_empty!` included) and is left alone rather than given a new label-threading mechanism.
 

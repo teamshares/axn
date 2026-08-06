@@ -181,8 +181,10 @@ RSpec.describe "an `on:` that names a validation context" do
   end
 
   # Over-rejection is the failure mode when a guard is tightened, so these pin what must keep being ACCEPTED.
-  # Audit them by INVERSE mutation: make the guard over-eager (drop the `validator_entries` filter, or test
-  # any gate key rather than `:on`) and confirm one of these fails.
+  # Audit them by INVERSE mutation: make the guard test any gate key rather than `:on` alone, and confirm one
+  # of these fails. Dropping its `validator_entries` filter is NOT a live mutation — no route leaves a
+  # bag-level `:on` in a bag this guard reads (on a field it is `expects`' own kwarg; on a member it is
+  # refused earlier), so the filter is a statement of remit rather than a load-bearing test.
   describe "what stays legal" do
     it "accepts a declaration-level on: — the subfield parent" do
       klass = Class.new do

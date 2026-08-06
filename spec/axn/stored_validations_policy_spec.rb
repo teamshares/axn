@@ -23,7 +23,13 @@ require "axn/testing/spec_helpers"
 #   * `_reconcile_emptiness_axis!` defers `allow_empty: false` to a floor that never runs, so the flag is
 #     silently unenforced.
 #
-# Both are runtime holes. Failing here, at the commit that would cause one, is the point.
+# Those are both runtime holes. Failing here, at the commit that would cause one, is the point.
+#
+# Assigning configs directly (`internal_field_configs=`, a public writer several call sites already document as
+# bypassing the declaration walk) sidesteps both pins by design, and costs nothing: the two consequences above
+# live on the DECLARATION path, so a config that never went through it never reaches them. An assigned bag
+# carrying an `:on` leaves runtime behaviour untouched and moves only the emitted schema, in the stricter
+# direction — the same static-maximal treatment a closed `if:` gate already gets.
 #
 # Both pins are text scans, so they catch the spellings they are written against and not the idea. A
 # derivation assembled at runtime (`config.with(**overrides)`) leaves no literal keyword to match and is
@@ -61,7 +67,7 @@ RSpec.describe "constructors of a stored validations bag" do
     "lib/axn/internal/reflection/schema.rb" => 1,
   }.freeze
 
-  DERIVATION_PATTERN = /\.with\([^)]*\bvalidations:/
+  DERIVATION_PATTERN = /\.with\((?:[^()]|\([^()]*\))*\bvalidations:/
   # rubocop:enable Lint/ConstantDefinitionInBlock
 
   def self.lib_root = File.expand_path("../../lib", __dir__)
