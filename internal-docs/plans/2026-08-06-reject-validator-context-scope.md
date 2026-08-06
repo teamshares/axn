@@ -1151,6 +1151,12 @@ require "axn/testing/spec_helpers"
 #     silently unenforced.
 #
 # Both are runtime holes. Failing here, at the commit that would cause one, is the point.
+#
+# Both pins are text scans, so they catch the spellings they are written against and not the idea. A
+# derivation assembled at runtime (`config.with(**overrides)`) leaves no literal keyword to match and is
+# invisible here. So a green run is not proof that the claim above holds — it is only the absence of the
+# reachable ways to break it. Treat a change in this area as needing the argument made again, not as
+# cleared by this file passing.
 RSpec.describe "constructors of a stored validations bag" do
   # rubocop:disable Lint/ConstantDefinitionInBlock
   EXPECTED_CONSTRUCTORS = {
@@ -1175,13 +1181,14 @@ RSpec.describe "constructors of a stored validations bag" do
   #
   # The one pinned site is sound by construction rather than by inspection: `effective_validations` only
   # `reject`s entries, so it returns a subset of a bag a seam already cleared, and a subset cannot introduce a
-  # key. That is the property a new site needs — a derivation that can only REMOVE keys is safe; one that
-  # MERGES anything into the bag needs a seam.
+  # key. That is the property a new site needs: every retained entry must be an unmodified entry from an
+  # already-cleared bag. Dropping entries preserves it; rewriting a retained entry's VALUE does not, even
+  # though it adds no key — that needs a seam.
   EXPECTED_BAG_DERIVATIONS = {
     "lib/axn/internal/reflection/schema.rb" => 1,
   }.freeze
 
-  DERIVATION_PATTERN = /\.with\(\s*validations:/
+  DERIVATION_PATTERN = /\.with\([^)]*\bvalidations:/
   # rubocop:enable Lint/ConstantDefinitionInBlock
 
   def self.lib_root = File.expand_path("../../lib", __dir__)
