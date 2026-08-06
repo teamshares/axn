@@ -114,6 +114,26 @@ module Axn
       raise Axn::Internal::EarlyCompletion.new(message, standalone:)
     end
 
+    # Delegate to a sub-action, propagating both its exposures and its outcome. Sugar for the facade
+    # idiom (`r = Child.call(**inputs); expose(r); fail! unless r.ok?`), and the only way to get that
+    # behaviour from the `call!` shape, where the raise leaves #call before any expose can run.
+    #
+    # Non-terminal: on success it returns the sub-action's result and execution continues, exactly as
+    # call! does. The bang marks the failure branch, which settles this action.
+    #
+    # A Class is invoked with this action's resolved `inputs` — declared inbound fields only, not the
+    # step chain's fuller passthrough. Pass a Result instead to control the arguments yourself.
+    def forward!(target)
+      result = target.is_a?(Class) ? _forward_to_class(target) : target
+
+      raise ArgumentError, "forward!: expected an Axn class or an Axn::Result (got #{result.class})" unless Internal::Identity.kind?(result, Axn::Result)
+
+      expose(result)
+      _propagate_sub_result_outcome!(result)
+
+      result
+    end
+
     private
 
     # Settle this action according to a sub-action's outcome. Propagates the outcome *category*, not a
@@ -127,6 +147,15 @@ module Axn
       raise result.exception if result.outcome.exception?
 
       fail!("#{error_prefix}#{result.error}")
+    end
+
+    # Mirrors the `steps` DSL's membership check, one phase later: `step` can validate at declaration
+    # because its target is fixed, while forward!'s target is chosen at run time — which is the point
+    # of the affordance.
+    def _forward_to_class(klass)
+      raise ArgumentError, "forward!: #{klass} must include Axn" unless klass.included_modules.include?(::Axn) || klass < ::Axn
+
+      klass.call(**inputs)
     end
 
     def initialize(**)
