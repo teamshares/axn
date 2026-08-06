@@ -57,4 +57,28 @@ RSpec.describe "Axn::Result#__exposed_keys__" do
 
     expect(action.call.__exposed_keys__).to eq([])
   end
+
+  it "includes a field an outbound default: supplied, which the result genuinely carries" do
+    action = build_axn do
+      exposes :a, optional: true
+      exposes :b, default: "DEFAULT"
+      def call = expose(a: "SET")
+    end
+
+    result = action.call
+    expect(result.b).to eq("DEFAULT")
+    expect(result.__exposed_keys__).to contain_exactly(:a, :b)
+  end
+
+  it "includes a field an expects+exposes auto-copy supplied, which the result genuinely carries" do
+    action = build_axn do
+      expects :u
+      exposes :u
+      def call = nil
+    end
+
+    result = action.call(u: "FROM-INPUT")
+    expect(result.u).to eq("FROM-INPUT")
+    expect(result.__exposed_keys__).to eq([:u])
+  end
 end

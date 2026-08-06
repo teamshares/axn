@@ -108,11 +108,14 @@ module Axn
     # reserved public field — see reserved_attribute_names_spec — so it stays public.
     def __action__ = @action
 
-    # Internal accessor for the fields this action actually exposed, as opposed to the ones it merely
-    # declared. `declared_fields` is the static contract and includes a field the action never set,
-    # whose reader reads nil; absorbing one result's values into another action keys on this instead,
-    # so a never-set field does not write nil over a value the target already holds. A reserved public
-    # field, like __action__ — see reserved_attribute_names_spec.
+    # Internal accessor for the keys this result genuinely carries a value for, as opposed to the
+    # ones it merely declared. `declared_fields` is the static contract and includes a key with no
+    # value anywhere, whose reader reads nil; this instead reports a key as present the moment the
+    # body exposes it directly, an outbound `default:` supplies it, or a matching `expects`+`exposes`
+    # auto-copies it — all three mean the result reads a real value for that key. Absorbing one
+    # result's values into another action keys on this, so a field the result never actually
+    # populated does not write nil over a value the target already holds. A reserved public field,
+    # like __action__ — see reserved_attribute_names_spec.
     def __exposed_keys__ = @context.exposed_data.keys
 
     # Enable pattern matching support for Ruby 3+
