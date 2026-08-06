@@ -191,7 +191,7 @@ Append to `spec/axn/core/validations/validator_context_scope_spec.rb`, inside th
           expects :v, type: { klass: String, on: :create }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /`on:` inside type: on \["v"\].*validation context.*no context.*if:\/unless:/m)
+      end.to raise_error(ArgumentError, /`on:` inside type: on \["v"\].*validation context.*no context.*if:.*unless:/m)
     end
 
     it "is refused on an exposes" do
