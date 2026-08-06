@@ -1583,7 +1583,7 @@ module Axn
           raise ArgumentError,
                 "`on:` inside #{offenders.join(' / ')} on #{where} names an ActiveModel validation context, and " \
                 "axn validates with no context — so #{runs} on no call and the declaration is left unenforced. " \
-                "Axn has no validation contexts: drop `on:`, or gate the check with `if:/unless:`, which axn " \
+                "Axn has no validation contexts: drop `on:`, or gate the check with `if:`/`unless:`, which axn " \
                 "does support. (A DECLARATION-level `on:` is axn's subfield parent — `expects :zip, on: :address` " \
                 "— and is unaffected.)"
         end

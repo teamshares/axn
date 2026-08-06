@@ -53,7 +53,7 @@ RSpec.describe "an `on:` that names a validation context" do
           expects :v, type: { klass: String, on: :create }
           def call = nil
         end
-      end.to raise_error(ArgumentError, %r{`on:` inside type: on \["v"\].*validation context.*no context.*if:/unless:}m)
+      end.to raise_error(ArgumentError, /`on:` inside type: on \["v"\].*validation context.*no context.*if:.*unless:/m)
     end
 
     it "is refused on an exposes" do
