@@ -1433,11 +1433,31 @@ module Axn
         # excluded rather than inherited. Nor does `metadata:` — a description written for the base field is
         # not a description of its companion.
         #
-        # Gated on the base field's own reader, and as a SYMBOL rather than a Proc, because only a Symbol
-        # naming a declared field's framework-generated reader lets requiredness be emitted exactly
-        # (Internal::Reflection::Schema.conditional_requiredness_clause); a Proc degrades the emitted schema to
-        # unconditionally-required while the runtime stays conditional. The gate is what makes the companion
-        # required exactly when there is something to confirm.
+        # REQUIREDNESS is the companion's own, never a side effect of the inherited `type:`. Deriving it from
+        # the copied type would leave the confirmation unenforced on precisely the declarations that carry no
+        # nil-rejecting type — an untyped base, `allow_nil:`, `optional:` — which is the defect this option
+        # exists to fix, in a spelling the emitted schema would agree with. So the companion is built through
+        # `_parse_field_configs`, the same builder every declared field goes through, with no tolerance flag:
+        # the default `presence:` lands on it, and the whole parse (validator canonicalization, the emptiness
+        # axis, the nil-skip pass) reaches the identical verdict it would for the equivalent hand-written
+        # line. That equivalence is the point and is pinned by spec — the companion IS
+        # `expects :<field>_confirmation, type: <base type>, if: <base reader>`, down to its reported message.
+        #
+        # GATED so that "required" means "required once there is something to confirm": the base's own reader,
+        # named as a SYMBOL rather than a Proc, because only a Symbol naming a declared field's
+        # framework-generated reader lets requiredness be emitted exactly
+        # (Internal::Reflection::Schema.conditional_requiredness_clause) — a Proc degrades the emitted schema
+        # to unconditionally-required while the runtime stays conditional.
+        #
+        # A base carrying its OWN `if:`/`unless:` COMPOSES with that gate rather than overriding or refusing
+        # it. A closed gate suppresses the base's validators but does not blank the base's VALUE, so `if:
+        # <base reader>` alone stays open and would enforce a companion for a contract the author gated off —
+        # rejecting input while the comparison it serves never runs. An `if:` therefore becomes the Array
+        # `[<base gates…>, <base reader>]` (ActiveModel ANDs an Array of conditions) and an `unless:` rides
+        # along as its own key, so the companion runs on exactly the calls the base's own validators do, and
+        # only then. The cost is paid in the schema, not the runtime: a non-Symbol rule (or both gate keys at
+        # once) makes `conditional_requiredness_clause` fall back to UNCONDITIONAL `required` — stricter than
+        # the runtime, which is the direction that layer already treats as safe.
         #
         # A companion the author already declared — in this same batch or on the class already, on the same
         # route — is authoritative and suppresses the implicit one entirely, rather than colliding with it.
@@ -1450,18 +1470,28 @@ module Axn
             companion = :"#{config.field}_confirmation"
             next if claimed.include?([companion, config.on.to_s])
 
-            FieldConfig.new(
-              field: companion,
-              validations: config.validations.slice(:type).merge(if: config.reader_as),
+            reader = :"#{config.reader_as}_confirmation"
+            _parse_field_configs(
+              companion,
               on: config.on,
               preprocess: config.preprocess,
               sensitive: config.sensitive,
-              reader_as: :"#{config.reader_as}_confirmation",
+              reader_names: { companion => reader },
               user_facing: config.user_facing,
               method_call: config.method_call,
-              confirmation_for: config.field,
-            )
+              **config.validations.slice(:type),
+              **_confirmation_companion_gates(config),
+            ).first.with(confirmation_for: config.field)
           end
+        end
+
+        # The gate keys the companion declares: the base's own `if:`/`unless:` composed with the base reader
+        # (see above). `Array()` flattens a base gate the author wrote as a list into one condition list, so
+        # ActiveModel sees a list of conditions rather than a list containing a list.
+        def _confirmation_companion_gates(config)
+          gates = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+          gates[:if] = gates.key?(:if) ? Array(gates[:if]) + [config.reader_as] : config.reader_as
+          gates
         end
 
         # Splits already-stored configs into the ones a new batch leaves alone and the IMPLICIT confirmation
