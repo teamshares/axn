@@ -273,6 +273,26 @@ RSpec.describe "forward!" do
     expect(result.b).to eq("PARENT-OWN")
   end
 
+  it "forwards an auto-copied nil the caller explicitly supplied" do
+    # Presence, not value: the caller supplying `b: nil` means something different from supplying
+    # nothing, and only the former should overwrite what the absorbing action already holds.
+    explicit = build_axn do
+      expects :b, allow_nil: true, optional: true
+      exposes :b, allow_nil: true, optional: true
+      def call = nil
+    end
+    e = explicit
+    parent = build_axn do
+      exposes :b, allow_nil: true, optional: true
+      define_method(:call) do
+        expose(b: "PARENT-OWN")
+        forward! e.call(b: nil)
+      end
+    end
+
+    expect(parent.call.b).to be_nil
+  end
+
   it "still forwards an auto-copied value the child actually received" do
     present = build_axn do
       expects :b, optional: true

@@ -887,7 +887,7 @@ module Axn
         end
 
         RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
-          fail! ok?
+          fail! forward! ok?
           inspect default_error
           each_pair
           default_success

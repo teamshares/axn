@@ -1538,16 +1538,19 @@ module Axn
           # internal_context, so the RESOLVED inbound value (coerce/preprocess/default applied on the
           # read path) is forwarded. A pure-`exposes` field has no inbound reader, but the caller may
           # still have supplied its wire key directly, so it copies the raw provided_data value.
-          # Both branches copy only when there is something to copy. A key written here is
-          # indistinguishable from one the action exposed itself, and `Result#__exposed_keys__` — which
-          # decides what an absorbing action overwrites — reads exactly these keys. Writing a nil for an
-          # absent optional input would therefore let a child that merely DECLARED the field erase a
-          # value its caller already held. A nil resolved here also reads back as nil through the
-          # field's reader whether or not the key exists, so omitting it costs a caller nothing.
+          # Both branches key on PRESENCE, not on the value. A key written here is indistinguishable
+          # from one the action exposed itself, and `Result#__exposed_keys__` — which decides what an
+          # absorbing action overwrites — reads exactly these keys. Writing one for an input the caller
+          # never supplied would let a child that merely DECLARED the field erase a value its caller
+          # already held; refusing to write one the caller DID supply as nil would lose an explicit nil
+          # the caller meant to forward. So the inbound branch writes whenever the field resolves to a
+          # value or the caller supplied its key, and skips only when neither is true. An omitted key
+          # still reads back as nil through the field's own reader, so skipping costs a caller nothing.
           unless @context.exposed_data.key?(field)
             if @action_class.send(:internal_field_configs).any? { |c| c.field == field }
               inbound_value = @action.internal_context.public_send(field)
-              @context.exposed_data[field] = inbound_value unless inbound_value.nil?
+              inbound_present = !inbound_value.nil? || @context.provided_data.key?(field)
+              @context.exposed_data[field] = inbound_value if inbound_present
             elsif @context.provided_data.key?(field)
               @context.exposed_data[field] = @context.provided_data[field]
             end

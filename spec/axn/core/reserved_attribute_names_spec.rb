@@ -23,7 +23,7 @@ RSpec.describe Axn do
     end
 
     context "with other reserved expectation field names" do
-      %w[default_success action_name inputs].each do |field_name|
+      %w[default_success action_name inputs forward!].each do |field_name|
         context "with #{field_name}" do
           let(:action) do
             build_axn do
