@@ -86,8 +86,21 @@ A class that does not include `Axn` raises `ArgumentError`. Step makes the same 
 | child outcome | parent |
 | --- | --- |
 | ok | absorb, return the child result, keep executing |
-| failure (`fail!` or a `fails_on` classification) | absorb, then `fail!(child.error)` with **no** prefix |
-| exception | absorb, then `raise child.exception` |
+| any non-ok | absorb, then re-raise exactly as `call!` does |
+
+The second row is deliberately `call!`'s own tail rather than a re-derivation, and the distinction is not cosmetic. Synthesizing a fresh `fail!(child.error)` instead loses two things `call!` preserves, and both were observed:
+
+```
+child declares error "inner exploded" and RAISES
+  call!    → "inner exploded"                       fail!-synthesis → "Something went wrong"
+child is fails_on-classified (raises NotFound)
+  call!    → error "…: Record not found", exception NotFound
+  fail!-synthesis → error "…: Something went wrong", exception Axn::Failure
+```
+
+The first loses the child's declared presentation, because `call!` records it via `CarriedPresentation` before re-raising and a synthesized failure never does. The second loses the exception's identity, so the parent's own `error ..., if: NotFound` no longer matches and a caller reading `result.exception` gets an `Axn::Failure` instead of the real error. A plain `fail!`ing child is unaffected, which is why only the shapes above expose it.
+
+So `forward!` shares `call!`'s tail. The step orchestrator deliberately does **not**: its `fail!("#{error_prefix}#{error}")` is aggregation, not transparent bubbling, which is the same reason `CarriedPresentation` is scoped away from step's re-raise path today.
 
 The no-prefix choice is what makes the migration honest. `call!` and `step` produce identical aggregated errors; the only difference is step's `error_prefix`, which defaults to the step name:
 
@@ -209,7 +222,7 @@ Scrubbing the violating value was also rejected. Classifying is the framework's 
 
 `forward!` is also not added to `RESERVED_FIELD_NAMES_FOR_EXPECTATIONS`. That list guards field *names*, and nobody writes `expects :forward!`; the real risk is a bare `def forward!`, which the list does not cover. The list's own inconsistencies (`fail!` present but `done!` absent; `result` reserved for exposures but not expectations) are recorded in PRO-3062 rather than patched here. The one addition made here is `__exposed_keys__`, which this design introduces as a reserved public field alongside `__action__`.
 
-**`steps` failure-exposure propagation.** A step exposing `status: :done` followed by a later failing step would surface `status: :done` on a failed parent — temporal conflation across step boundaries, which no filtered-to-declared trick makes honest. `forward!` is clean precisely because it propagates one action's own result faithfully.
+**`steps` failure-exposure propagation.** Note first that an earlier step's exposures *already* reach a parent that fails at a later step — step one exposing `a` followed by a failing step two settles the parent `ok=false, a="FROM-STEP-1"`. That is existing behavior and this branch does not change it. What stays out of scope is merging the **failing step's own** partial exposures, which is what the propagate-before-absorb ordering prevents. Adding it would put values on the parent that the step itself never finished producing, and there is no filtered-to-declared trick that makes that honest. `forward!` is clean precisely because it propagates one action's own result faithfully, start to finish.
 
 **PRO-3060** — an `error` handler interpolating `e.message` duplicates the reason. Surfaced while probing this area; unrelated to `forward!`, which is byte-identical to `call!` on the error path either way.
 
