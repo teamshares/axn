@@ -36,6 +36,33 @@ RSpec.describe "a conditionally-required field's message for a nil" do
     expect(result.exception.message).to eq("Name can't be blank")
   end
 
+  # AM merges the two gate tiers PER KEY, so a sibling naming a key the declaration does NOT carry keeps
+  # the shared gate and merely adds a condition — it can only run on a subset of the calls the type check
+  # runs on, leaving no nil for it alone to account for.
+  it "reports the type error alone when a sibling's nested gate names a key the declaration does not carry" do
+    klass = build_axn do
+      expects :enabled, type: String, optional: true
+      expects :skip, type: String, optional: true
+      expects :name, type: String, presence: { unless: :skip }, if: :enabled
+    end
+    result = klass.call(enabled: "y")
+    expect(result).not_to be_ok
+    expect(result.exception.message).to eq("Name is not a String")
+  end
+
+  # The same-key counterpart: the sibling's own `if:` REPLACES the shared one, so it runs on a call the
+  # type check is closed on and its nil rejection is the only account there.
+  it "keeps the sibling's account when its nested gate replaces the declaration gate by name" do
+    klass = build_axn do
+      expects :enabled, type: String, optional: true
+      expects :other, type: String, optional: true
+      expects :name, type: String, presence: { if: :other }, if: :enabled
+    end
+    result = klass.call(enabled: "y", other: "z")
+    expect(result).not_to be_ok
+    expect(result.exception.message).to eq("Name is not a String and Name can't be blank")
+  end
+
   it "still lets a sibling reject the nil when the gate is on the TYPE ENTRY alone" do
     klass = build_axn do
       expects :flag, type: String, optional: true

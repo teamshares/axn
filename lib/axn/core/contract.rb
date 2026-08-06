@@ -1476,12 +1476,14 @@ module Axn
         #     companion can match: an unsatisfiable contract. Those are gated on the base's PRESENCE through a
         #     callable, which costs the exact clause (see below) and is worth it.
         #
-        # A base carrying its OWN `if:`/`unless:` COMPOSES with that gate rather than overriding or refusing
-        # it. A closed gate suppresses the base's validators but does not blank the base's VALUE, so the
-        # base-reader gate alone stays open and would enforce a companion for a contract the author gated off
-        # — rejecting input while the comparison it serves never runs. An `if:` therefore becomes the Array
-        # `[<base gates…>, <rule>]` (ActiveModel ANDs an Array of conditions) and an `unless:` rides along as
-        # its own key, so the companion runs on exactly the calls the base's own validators do, and only then.
+        # A gate the COMPARISON answers to COMPOSES with that rule rather than overriding or refusing it — an
+        # `if:` on the declaration, one on the `confirmation:` entry itself, or the two together, resolved as
+        # ActiveModel resolves them (`_confirmation_entry_gates`). A closed gate suppresses the comparison but
+        # does not blank the base's VALUE, so the base-reader rule alone stays open and would enforce a
+        # companion for a comparison that never runs — rejecting input nothing then checks. An `if:` therefore
+        # becomes the Array `[<comparison gates…>, <rule>]` (ActiveModel ANDs an Array of conditions) and an
+        # `unless:` rides along as its own key, so the companion is required on exactly the calls the
+        # comparison runs on, and only then.
         #
         # Both departures from the bare Symbol are paid for in the schema, not the runtime: a non-Symbol rule
         # (or both gate keys at once) makes `conditional_requiredness_clause` fall back to UNCONDITIONAL
@@ -1514,15 +1516,36 @@ module Axn
           end
         end
 
-        # The gate keys the companion declares: the base's own `if:`/`unless:` composed with the rule below
-        # (see above). `Array()` flattens a base gate the author wrote as a list into one condition list, so
-        # ActiveModel sees a list of conditions rather than a list containing a list — and the lone rule is
-        # left UNWRAPPED so the ordinary case stays the bare Symbol the exact-clause emitter requires.
+        # The gate keys the companion declares: the gates the COMPARISON runs under composed with the rule
+        # below (see above). `Array()` flattens a base gate the author wrote as a list into one condition
+        # list, so ActiveModel sees a list of conditions rather than a list containing a list — and the lone
+        # rule is left UNWRAPPED so the ordinary case stays the bare Symbol the exact-clause emitter requires.
         def _confirmation_companion_gates(config)
-          gates = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+          gates = _confirmation_entry_gates(config.validations)
           rule = _confirmation_companion_gate_rule(config)
           gates[:if] = gates.key?(:if) ? Array(gates[:if]) + [rule] : rule
           gates
+        end
+
+        # The gates the `confirmation:` ENTRY actually runs under — the tier pair resolved exactly as
+        # ActiveModel resolves it, so the companion's requirement is open on precisely the calls the
+        # comparison is. Both tiers matter and neither alone is the answer: a declaration-level gate opens
+        # and closes every validator on the line together, while the entry's own `if:`/`unless:` OVERRIDES
+        # the declaration's per key — including overriding it with a blank value, which un-gates the
+        # comparison for that key. `entry_effective_option` carries that precedence and
+        # `entry_effective_gate_keys` drops whatever AM would ignore as blank, so a gate the comparison does
+        # not answer to never reaches the companion, and one it does can never be lost.
+        #
+        # Without this the companion would demand input for a comparison that never runs (a disabled
+        # confirmation rejecting an omitted companion) or accept an omission the comparison would have
+        # judged — either way, requiring something other than what the validator acts on.
+        def _confirmation_entry_gates(validations)
+          entry = Axn::Validation::Base.validator_entry_options(validations[:confirmation])
+          declaration = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+
+          Axn::Validation::Base.entry_effective_gate_keys(entry, declaration).to_h do |key|
+            [key, Axn::Validation::Base.entry_effective_option(entry, declaration, key)]
+          end
         end
 
         # "The base has a value to confirm", in the strongest spelling this declaration allows: the base's
@@ -1684,12 +1707,20 @@ module Axn
 
         # Withdraws the reader an implicit companion generated, once the author's own declaration has
         # superseded the config behind it — otherwise the memoized method survives its config and answers
-        # with rules the explicit declaration replaced. Only a method an inferred module OWNS is touched,
-        # so a method the author wrote (one the companion deferred to) or an explicit declaration's reader
-        # is left standing. An owning module further up the ancestry belongs to a SUPERCLASS whose own
-        # companion still stands there, so the name is undefined on this class alone rather than removed
-        # from that module.
+        # with rules the explicit declaration replaced. The boolean `?` predicate goes with it: an alias is
+        # an independent COPY of the body, so a predicate left behind keeps resolving through the superseded
+        # config on its own, applying the base's rules under a name the explicit declaration now owns.
         def _withdraw_inferred_reader!(name)
+          [name, :"#{name}?"].each { |method_name| _withdraw_inferred_method!(method_name) }
+        end
+
+        # Only a method an inferred module OWNS is touched, so a method the author wrote (one the companion
+        # deferred to) or an explicit declaration's reader is left standing — the same ownership rule that
+        # governs whether a reader is generated in the first place, asked per method name so a predicate that
+        # deferred while its primary reader did not (or the reverse) is judged on its own. An owning module
+        # further up the ancestry belongs to a SUPERCLASS whose own companion still stands there, so the name
+        # is undefined on this class alone rather than removed from that module.
+        def _withdraw_inferred_method!(name)
           return unless _inferred_reader?(name)
 
           owner = instance_method(name).owner
@@ -2181,21 +2212,24 @@ module Axn
           #   * a nested key on the TYPE entry itself — blank or not — unties the type check from the rest
           #     (a non-blank one ties it to a different condition; a blank same-key one drops the
           #     declaration's gate for it alone), so it can be closed on a call a sibling runs on;
-          #   * otherwise the type entry carries the declaration's gates verbatim. With NO declaration-level
-          #     gate it is unconditional, so it runs whenever anything does and a sibling's own gate can
-          #     only narrow that sibling — safe however the siblings are gated. With one, a sibling that
-          #     MENTIONS a gate key no longer inherits that declaration gate verbatim and can run on a call
-          #     the type check is closed on, making that sibling's nil rejection the only account of a nil
-          #     and so not one to relax.
+          #   * otherwise the type entry carries the declaration's gates verbatim, and only a sibling that
+          #     mentions one of those SHARED keys can outlive it. AM merges the two tiers per key, so a
+          #     sibling naming a key the declaration does not carry keeps every shared condition and merely
+          #     adds one — a strict narrowing, which can never run where the type check does not. Naming a
+          #     shared key instead REPLACES that condition (with a different one, or with a blank that
+          #     un-gates the sibling outright), so the sibling can run on a call the type check is closed on,
+          #     making its nil rejection the only account of a nil and so not one to relax. With no
+          #     declaration-level gate there are no shared keys and every sibling is a narrowing.
           #
           # Key PRESENCE is the test rather than effective gatedness, for the blank case — the same
           # question `Axn::Validation::Base.entry_mentions_gate_key?` asks for the same reason, and the
           # single definition this reuses rather than re-testing independently.
           return false if Axn::Validation::Base.entry_mentions_gate_key?(raw)
 
-          if Axn::Validation::Base.declaration_gated?(_shared_validation_options(validations))
+          declaration_gate_keys = Axn::Validation::Base.declaration_gate_keys(_shared_validation_options(validations))
+          if declaration_gate_keys.any?
             siblings = Axn::Validation::Base.validator_entries(validations).except(:type)
-            return false if siblings.any? { |_key, opt| Axn::Validation::Base.entry_mentions_gate_key?(opt) }
+            return false if siblings.any? { |_key, opt| Axn::Validation::Base.entry_mentions_gate_key?(opt, keys: declaration_gate_keys) }
           end
 
           !Axn::Validation::Base.type_admits_nil?(type)

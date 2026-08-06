@@ -297,6 +297,52 @@ RSpec.describe "confirmation:" do
         expect(klass.call(skip: false, password: "s3cret", password_confirmation: "s3cret")).to be_ok
       end
 
+      # A gate on the `confirmation:` ENTRY gates the comparison itself, so the companion it requires has to
+      # answer to it too — otherwise a disabled confirmation still rejects an omitted companion nothing
+      # would have compared.
+      it "composes a gate carried by the confirmation: entry itself" do
+        klass = build_axn do
+          expects :want, type: [TrueClass, FalseClass], optional: true
+          expects :password, type: String, confirmation: { if: :want }
+        end
+        companion = klass.internal_field_configs.find { |c| c.field == :password_confirmation }
+
+        expect(companion.validations[:if]).to eq(%i[want password])
+        expect(klass.call(want: false, password: "s3cret")).to be_ok
+        expect(klass.call(want: false, password: "s3cret", password_confirmation: "nope")).to be_ok
+        expect(klass.call(want: true, password: "s3cret")).not_to be_ok
+        expect(klass.call(want: true, password: "s3cret", password_confirmation: "nope")).not_to be_ok
+        expect(klass.call(want: true, password: "s3cret", password_confirmation: "s3cret")).to be_ok
+      end
+
+      it "composes an unless: on the confirmation: entry the same way" do
+        klass = build_axn do
+          expects :skip, type: [TrueClass, FalseClass], optional: true
+          expects :password, type: String, confirmation: { unless: :skip }
+        end
+        companion = klass.internal_field_configs.find { |c| c.field == :password_confirmation }
+
+        expect(companion.validations[:unless]).to eq(:skip)
+        expect(klass.call(skip: true, password: "s3cret")).to be_ok
+        expect(klass.call(skip: false, password: "s3cret")).not_to be_ok
+        expect(klass.call(skip: false, password: "s3cret", password_confirmation: "s3cret")).to be_ok
+      end
+
+      # ActiveModel merges the two tiers per key, so an entry-level value REPLACES the declaration's for
+      # that key — including a blank one, which un-gates the comparison. The companion follows: it is
+      # required wherever the comparison runs, and here that is everywhere.
+      it "follows an entry-level gate that overrides the declaration's" do
+        klass = build_axn do
+          expects :admin, type: [TrueClass, FalseClass], optional: true
+          expects :password, type: String, confirmation: { if: nil }, if: :admin
+        end
+        companion = klass.internal_field_configs.find { |c| c.field == :password_confirmation }
+
+        expect(companion.validations[:if]).to eq(:password)
+        expect(klass.call(password: "s3cret")).not_to be_ok
+        expect(klass.call(password: "s3cret", password_confirmation: "s3cret")).to be_ok
+      end
+
       it "ANDs a base gate the author wrote as a list, rather than nesting it" do
         klass = build_axn do
           expects :a, type: [TrueClass, FalseClass], optional: true
@@ -455,6 +501,43 @@ RSpec.describe "confirmation:" do
         end
 
         expect(klass.call(password: "s3cret", password_confirmation: "s3cret").seen).to eq("USER METHOD")
+      end
+
+      # The `?` predicate is an ALIAS — an independent copy of the reader's body — so withdrawing the
+      # primary reader alone leaves the predicate resolving through the config the explicit declaration
+      # dropped, answering under a name that declaration now owns.
+      it "withdraws the boolean predicate riding on that reader too" do
+        klass = build_axn do
+          expects :flag, as: :fl, type: :boolean, confirmation: true
+          expects :flag_confirmation, as: :confirmed, type: :boolean
+        end
+
+        expect(klass.instance_methods).to include(:confirmed, :confirmed?)
+        expect(klass.instance_methods).not_to include(:fl_confirmation, :fl_confirmation?)
+      end
+
+      it "withdraws a subfield companion's predicate the same way" do
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :flag, on: :payload, as: :fl, type: :boolean, confirmation: true
+          expects :flag_confirmation, on: :payload, as: :confirmed, type: :boolean
+        end
+
+        expect(klass.instance_methods).to include(:confirmed, :confirmed?)
+        expect(klass.instance_methods).not_to include(:fl_confirmation, :fl_confirmation?)
+      end
+
+      it "leaves a same-named predicate the author wrote standing" do
+        klass = build_axn do
+          def fl_confirmation? = "USER PREDICATE"
+          expects :flag, as: :fl, type: :boolean, confirmation: true
+          expects :flag_confirmation, as: :confirmed, type: :boolean
+          exposes :seen
+          def call = expose(seen: fl_confirmation?)
+        end
+
+        expect(klass.instance_methods).not_to include(:fl_confirmation)
+        expect(klass.call(flag: true, flag_confirmation: true).seen).to eq("USER PREDICATE")
       end
 
       it "withdraws an inherited companion's reader on the subclass alone" do
