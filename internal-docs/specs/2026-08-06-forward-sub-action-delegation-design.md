@@ -150,7 +150,17 @@ child declares exposes :a, :b — sets only :a, then fails
   explicit nil     = [:a, :b]     # expose(b: nil) is still recorded
 ```
 
-Skipping never-set fields is the entire fix. Blast radius is narrow: a required-but-unset exposure already dies in outbound validation before any merge, so only optional exposures can reach the clobbering path.
+Skipping never-set fields is the entire fix.
+
+Requiredness does not bound the blast radius, though an earlier draft of this document claimed it did. The reasoning was that a required-but-unset exposure dies in outbound validation before any merge — true only of a *successful* source. A failing source skips outbound validation entirely, which is the conditional-contract invariant stated below, so a required field left unset by a failing child reaches the merge and clobbers exactly like an optional one:
+
+```
+child exposes :a, :b (both REQUIRED), sets only :a, then fail!
+  outcome == "failure"      ← outbound validation never fired
+  __exposed_keys__ == [:a]  ← :b reaches the merge unset
+```
+
+The reachable set is therefore every field a source declares and does not value, on any failing source, plus optional ones on a successful source.
 
 The loop iterates the **caller's field list** and skips un-set entries, rather than iterating `__exposed_keys__` directly. That ordering is load-bearing: step's unfiltered merge puts keys into a parent's `exposed_data` that the parent does not declare and has no reader for, so iterating the exposed keys of such a result one level up would `public_send` a name that does not exist. Iterating the field list preserves today's propagation boundary exactly, minus the nils.
 
