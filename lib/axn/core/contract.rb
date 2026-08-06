@@ -1565,11 +1565,31 @@ module Axn
         # reader as a Symbol where truthiness answers it, else a callable asking presence directly. The
         # callable reads through the validator record, whose `method_missing` delegates to the action — the
         # same route a Symbol condition takes — so both spellings resolve the one settled value.
+        #
+        # Truthiness answers it only where the two can't diverge. It admits a blank-but-truthy base (`""`,
+        # `[]`) that presence would refuse, so the Symbol needs BOTH a base whose own contract rejects those
+        # and a comparison that does not excuse them: an `allow_blank:` on the `confirmation:` entry has
+        # ActiveModel skip `validate_each` outright for a blank base, and the requirement feeding a
+        # comparison must not outlive it. Then the callable, which is exactly the values the comparison is
+        # reached with.
         def _confirmation_companion_gate_rule(config)
-          return config.reader_as if _confirmation_base_rejects_blank?(config)
+          return config.reader_as if _confirmation_base_rejects_blank?(config) && !_confirmation_entry_admits_blank?(config.validations)
 
           reader = config.reader_as
           ->(record) { record.public_send(reader).present? }
+        end
+
+        # Whether the COMPARISON itself stands down on a blank base — a truthy `allow_blank:` among the
+        # options the `confirmation:` entry runs under. Resolved across both tiers through
+        # `entry_effective_option`, the same per-key precedence `_confirmation_entry_gates` reads the gates
+        # with, so an entry's own value overrides a declaration-wide one exactly as ActiveModel merges them
+        # — including overriding it with `false`. Truthiness is AM's own test for the flag.
+        #
+        # `allow_nil:` needs no counterpart: the only value it excuses is a nil base, which the rule above
+        # already closes on in either spelling.
+        def _confirmation_entry_admits_blank?(validations)
+          entry = Axn::Validation::Base.validator_entry_options(validations[:confirmation])
+          !!Axn::Validation::Base.entry_effective_option(entry, _shared_validation_options(validations), :allow_blank)
         end
 
         # Whether the BASE's own contract guarantees a non-blank value on the calls its validators run — i.e.

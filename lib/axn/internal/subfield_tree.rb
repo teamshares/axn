@@ -48,7 +48,12 @@ module Axn
       module_function
 
       def build(field_configs, subfield_configs)
-        roots = field_configs.to_h { |c| [c.reader_as, Node.new(configs: [c], children: {})] }
+        roots = {}
+        field_configs.each do |config|
+          next if yields_reader_name?(config, roots.key?(config.reader_as))
+
+          roots[config.reader_as] = Node.new(configs: [config], children: {})
+        end
         # config => ResolvedPath, identity-keyed: distinct declarations are distinct entries even if
         # they compare equal as Data values.
         index = {}.compare_by_identity
@@ -78,8 +83,10 @@ module Axn
           index[config] = ResolvedPath.new(node: leaf, wire_path: [hops.first.first.config.field, *hops.map(&:last)],
                                            ancestors: hops, parent_index: anchor_hops.size + on_rest.size)
 
-          # Every declared config bears a reader, so any subfield can anchor a later `on:`.
-          by_reader[config.reader_as.to_sym] = { node: leaf, hops: }
+          # Every declared config bears a reader, so any subfield can anchor a later `on:` — except an
+          # inferred companion that yields the name to a declaration (see yields_reader_name?).
+          reader = config.reader_as.to_sym
+          by_reader[reader] = { node: leaf, hops: } unless yields_reader_name?(config, by_reader.key?(reader))
           # Shallow (single hop off a top-level root) configs are always representable; only deeper
           # paths are candidates for dropping.
           deep_paths << [config, hops] if hops.size > 1
@@ -87,6 +94,20 @@ module Axn
 
         ResolutionResult.new(roots:, deep_paths:, index:)
       end
+
+      # Whether `config` leaves an already-claimed reader name (`taken`) to the config holding it. `on:`
+      # names a READER, so the node registered under a name must be the config whose reader ANSWERS to it.
+      # Only one pairing can put two configs on one name: an INFERRED confirmation companion beside a
+      # declaration of the same name (two declarations collide at declaration time instead). Such a
+      # companion's own reader defers to the declaration's — the declaration's is generated first and the
+      # companion's is then skipped (Contract#_define_field_readers!) — so the declaration owns the name and
+      # is the anchor for it. Registering the companion instead would resolve `on: :<name>` through a config
+      # whose reader nothing dispatches to, and which of the two landed under the name would come down to
+      # declaration order. Structural rather than a method-table lookup (Contract#_reader_deferred?, the same
+      # rule asked of a LIVE class): the tree is built during declaration, before the batch's readers exist,
+      # and is cached against the config arrays alone, so it must answer identically on both sides of reader
+      # generation.
+      def yields_reader_name?(config, taken) = taken && !config.confirmation_for.nil?
 
       # Walk (creating implicit intermediates as needed) from `anchor` down `segments`, attach the
       # config at the leaf, and return [leaf, hops].

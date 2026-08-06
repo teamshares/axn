@@ -86,18 +86,23 @@ module Axn
         _reader_config(path.ancestors[reader_index].first).reader_as
       end
 
-      # The parent value at the deepest reader-bearing ancestor. Its reader answers — except when that
-      # ancestor's config does not OWN the name (Contract#_reader_deferred?: an inferred confirmation
-      # companion whose reader yielded to a method the author wrote). Dispatching then reads that method's
-      # answer instead of the declared input, so the child would be validated against a value its parent's
-      # own contract never saw. A reader-less config is resolved directly instead — `resolve_value`, the
-      # same seam inbound validation takes for one — so both halves of a deferred pair and everything read
-      # off them agree on the wire value.
+      # The parent value at the deepest reader-bearing ancestor. Its reader answers — except when NO config
+      # bearing that name owns it (Contract#_reader_deferred?: an inferred confirmation companion whose
+      # reader yielded to a method the author wrote). Dispatching then reads that method's answer instead of
+      # the declared input, so the child would be validated against a value its parent's own contract never
+      # saw. A reader-less config is resolved directly instead — `resolve_value`, the same seam inbound
+      # validation takes for one — so both halves of a deferred pair and everything read off them agree on
+      # the wire value.
+      #
+      # Asked of EVERY config bearing the name, because one node can hold a companion beside a declaration
+      # of the same name (two spellings of one route reaching the same wire leaf). The companion is the one
+      # that yielded, so the declaration's reader is what the name dispatches to and what the child must
+      # read — the node-level half of the rule SubfieldTree.yields_reader_name? applies to anchor
+      # registration.
       def self._read_deepest_reader(action, config, path, reader_index)
         reader = _deepest_reader_name(config, path, reader_index)
-        deferred = path.ancestors[reader_index].first.configs.find do |c|
-          c.reader_as == reader && action.class.send(:_reader_deferred?, c)
-        end
+        bearers = path.ancestors[reader_index].first.configs.select { |c| c.reader_as == reader }
+        deferred = bearers.first if bearers.any? && bearers.all? { |c| action.class.send(:_reader_deferred?, c) }
 
         deferred ? resolve_value(action, deferred) : action.public_send(reader)
       end

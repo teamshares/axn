@@ -267,6 +267,44 @@ RSpec.describe "confirmation:" do
       end
     end
 
+    # ActiveModel skips a validator outright for a value its `allow_blank:` excuses, so a `confirmation:`
+    # entry carrying one is not asked about a blank base at all — and neither is the companion feeding it,
+    # even where the base's own contract refuses that blank value on its own account.
+    describe "a confirmation: entry that excuses a blank base" do
+      let(:klass) { build_axn { expects :password, type: String, confirmation: { allow_blank: true } } }
+
+      it "asks nothing of the companion for a blank base the comparison skips" do
+        result = klass.call(password: "")
+        expect(result).not_to be_ok
+        expect(result.exception.message).to eq("Password can't be blank")
+      end
+
+      it "still requires and compares the companion for a base the comparison acts on" do
+        expect(klass.call(password: "s3cret")).not_to be_ok
+        expect(klass.call(password: "s3cret", password_confirmation: "nope")).not_to be_ok
+        expect(klass.call(password: "s3cret", password_confirmation: "s3cret")).to be_ok
+      end
+
+      # The cost of asking presence rather than truthiness: the requirement is a callable, which
+      # `conditional_requiredness_clause` cannot state as an `if`/`then` pair, so the schema demands the
+      # companion unconditionally — stricter than the runtime, the direction this layer already accepts.
+      it "advertises the companion as unconditionally required" do
+        expect(klass.input_schema[:required]).to include("password_confirmation")
+        expect(klass.input_schema[:allOf]).to be_nil
+      end
+
+      # An `allow_nil:` excuses only a nil base, which the requirement's own rule already closes on in
+      # either spelling — so it costs the exact clause nothing.
+      it "keeps the exact requirement for an entry that excuses only a nil base" do
+        nil_tolerant = build_axn { expects :password, type: String, confirmation: { allow_nil: true } }
+        companion = nil_tolerant.internal_field_configs.find { |c| c.field == :password_confirmation }
+
+        expect(companion.validations[:if]).to eq(:password)
+        expect(nil_tolerant.input_schema[:allOf].flat_map { |clause| clause.dig(:then, :required).to_a })
+          .to include("password_confirmation")
+      end
+    end
+
     describe "a base carrying its own gate" do
       let(:gated) do
         build_axn do
@@ -521,6 +559,67 @@ RSpec.describe "confirmation:" do
 
         expect(klass.call(payload: { password: { code: "bad" }, password_confirmation: { code: "bad" } })).not_to be_ok
         expect(klass.call(payload: { password: { code: 7 }, password_confirmation: { code: 7 } }).seen).to eq(7)
+      end
+
+      # `on:` names a READER, and here the name belongs to the DECLARATION the companion yielded it to — so
+      # the child reads that declaration's value. Anchoring on the yielding companion instead would validate
+      # and read the child against a field the caller reached by a different name entirely, and which of
+      # the two answered would come down to declaration order.
+      it "anchors a subfield on the declaration holding the name, not the companion that yielded it" do
+        klass = build_axn do
+          expects :other, type: Hash, as: :pw_confirmation
+          expects :password, as: :pw, type: Hash, confirmation: true
+          expects :code, on: :pw_confirmation, type: Integer
+          exposes :seen
+          def call = expose(seen: code)
+        end
+
+        expect(klass.call(other: { code: 1 }, password: { code: "x" }, password_confirmation: { code: "x" }).seen).to eq(1)
+        expect(klass.call(other: { code: "bad" }, password: { code: 1 }, password_confirmation: { code: 1 })).not_to be_ok
+      end
+
+      it "anchors there in the other declaration order too" do
+        klass = build_axn do
+          expects :password, as: :pw, type: Hash, confirmation: true
+          expects :other, type: Hash, as: :pw_confirmation
+          expects :code, on: :pw_confirmation, type: Integer
+          exposes :seen
+          def call = expose(seen: code)
+        end
+
+        expect(klass.call(other: { code: 1 }, password: { code: "x" }, password_confirmation: { code: "x" }).seen).to eq(1)
+        expect(klass.call(other: { code: "bad" }, password: { code: 1 }, password_confirmation: { code: 1 })).not_to be_ok
+      end
+
+      it "anchors on the declaration on the subfield route the same way" do
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :other, on: :payload, type: Hash, as: :pw_confirmation
+          expects :password, on: :payload, as: :pw, type: Hash, confirmation: true
+          expects :code, on: :pw_confirmation, type: Integer
+          exposes :seen
+          def call = expose(seen: code)
+        end
+
+        expect(klass.call(payload: { other: { code: 1 }, password: { code: "x" }, password_confirmation: { code: "x" } }).seen).to eq(1)
+        expect(klass.call(payload: { other: { code: "bad" }, password: { code: 1 }, password_confirmation: { code: 1 } })).not_to be_ok
+      end
+
+      # Two spellings of one route (`on: :bar` and `on: "foo.bar"`) reach the same wire leaf, so the
+      # companion and the author's own same-named declaration land on ONE node. The declaration still owns
+      # the reader, so the child reads through its transform rather than the companion's.
+      it "anchors on the declaration when both share a node through two spellings of one route" do
+        klass = build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :password, on: :bar, type: Hash, confirmation: true, preprocess: ->(h) { h.merge(src: "companion") }
+          expects :password_confirmation, on: "foo.bar", type: Hash, preprocess: ->(h) { h.merge(src: "declaration") }
+          expects :src, on: :password_confirmation, type: String
+          exposes :seen
+          def call = expose(seen: src)
+        end
+
+        expect(klass.call(foo: { bar: { password: { a: 1 }, password_confirmation: { a: 1 } } }).seen).to eq("declaration")
       end
     end
 
