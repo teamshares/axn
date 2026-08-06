@@ -2075,10 +2075,9 @@ module Axn
         #   * a declared klass nil is an instance of (`type: [Array, NilClass]`, `type: Object`) — the nil
         #     is no type defect at all, so whatever else rejects it is the authoritative report. Asked
         #     through TypeValidator's own matcher so the two can't disagree about one declaration;
-        #   * an effective if:/unless: gate on the type entry — a closed gate skips the type check, and
-        #     then the OTHER validators' nil rejections are the only thing standing between the field and
-        #     an accepted nil. Judged structurally (no condition is ever evaluated) by the same per-key
-        #     merge model schema reflection uses.
+        #   * a nested if:/unless: gate key on ANY validator entry — desynchronizing that entry's
+        #     enforcement from the type check's, so some other validator can run on a call where the
+        #     type check does not, and its nil rejection is then the only account of the nil to give.
         def _type_rejects_nil?(validations)
           raw = validations[:type]
           return false unless raw.is_a?(Hash) && raw[:klass]
@@ -2088,8 +2087,18 @@ module Axn
           type = Axn::Validation::Base.effective_entry_options(raw, _shared_validation_options(validations))
           return false if type[:allow_nil] || type[:allow_blank]
 
-          decl_gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
-          return false if Axn::Validation::Base.entry_effective_gate_keys(type, decl_gates).any?
+          # A NESTED gate key on ANY entry — blank or not — can desynchronize the type check from its
+          # siblings under ActiveModel's per-key merge, in either direction: a non-blank one ties an entry
+          # to a different condition than the rest, while a blank same-key one DROPS the shared gate for
+          # that entry alone. Either way some other validator can run on a call where the type check does
+          # not, which makes that validator's nil rejection the only account of a nil and so not one to
+          # relax. A DECLARATION-level gate does neither: it opens and closes every validator on the
+          # declaration together, presence included, so it decides whether an account is given, never
+          # whose. Key PRESENCE is the test rather than effective gatedness, for the blank case — the same
+          # question `Internal::Reflection::Schema.entry_mentions_gate_key?` asks for the same reason.
+          gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
+          mentions_gate = ->(opt) { opt.is_a?(Hash) && gate_keys.any? { |key| opt.key?(key) } }
+          return false if Axn::Validation::Base.validator_entries(validations).any? { |_key, opt| mentions_gate.call(opt) }
 
           !Axn::Validation::Base.type_admits_nil?(type)
         end

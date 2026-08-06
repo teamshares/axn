@@ -100,10 +100,13 @@ RSpec.describe "confirmation:" do
       expect(klass.internal_field_configs.count { |c| c.field == :password_confirmation }).to eq(1)
     end
 
+    # The companion's own presence: true picks up allow_nil: true (the gate is on the DECLARATION, not
+    # the type entry, so the type check remains the account of the nil) — its inherited type: still
+    # rejects the nil, so an omitted companion still fails, with one clause rather than two.
     it "requires the companion once there is something to confirm" do
       result = action.call(password: "s3cret")
       expect(result).not_to be_ok
-      expect(result.exception.message).to include("Password confirmation")
+      expect(result.exception.message).to eq("Password confirmation is not a String")
     end
 
     it "does not require the companion when the base field is absent" do
