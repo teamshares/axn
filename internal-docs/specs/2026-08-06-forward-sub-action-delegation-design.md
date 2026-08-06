@@ -2,20 +2,35 @@
 
 Ticket: https://linear.app/teamshares/issue/PRO-2941
 
-The "outer axn thinly delegates to a runtime-chosen inner axn" pattern loses the inner's exposures on the failure branch. `def call = Inner.call!(...)` gives the parent the child's aggregated error but not its values, so a controller reading `@result.event` on the error branch gets `nil`. `forward!` is an opt-in-by-existence instance helper that closes that gap.
+`forward!` is a one-line instance helper for the "outer axn thinly delegates to a runtime-chosen inner axn" pattern. It collapses a documented three-line idiom, extends it to the `call!` shape that cannot use that idiom, and — because building it means touching the merge loop three separate places already implement — fixes a silent nil-clobber and a failure-swallowing raise that all three share.
 
 Every behavioural claim below was verified by probe against this branch rather than inferred from the code.
+
+## What is actually missing
+
+The ticket frames this as "wrappers lose the child's exposures on the failure branch." That is true only for the `call!` shape. `docs/usage/writing.md:93-114` documents the facade pattern, and `expose(result)` already forwards a failed child's values:
+
+```ruby
+r = Child.call
+expose(r)                  # forwards (child's declared exposures ∩ this action's exposes)
+fail! unless r.ok?
+# => ok?=false, event="E"  — the child's exposure survives its own failure, today
+```
+
+So the gap is narrower than the ticket states. What is missing is (a) sugar — PRO-2940 lists this exact three-line snippet under "Some pattern to DRY up delegation" — and (b) the `call!` shape, where the raise leaves `def call` before any `expose` can run, which is why those wrappers cannot collapse to a bare `call!`.
+
+That narrower framing is the honest one, and it is what makes the design small: `forward!` is not new merge machinery, it is `expose(result)` plus outcome propagation.
 
 ## The linchpin holds
 
 The design assumed a failed child result still carries the values it exposed before failing, and that the declared-exposure readers are callable on it. Both hold, on the `fail!` branch and on the exception branch:
 
 ```
-child exposes :event, sets it, then fail!  →  result.event == "made-it",   outcome "failure"
+child exposes :event, sets it, then fail!  →  result.event == "made-it",    outcome "failure"
 child exposes :event, sets it, then raise  →  result.event == "before-boom", outcome "exception"
 ```
 
-Nothing clears `exposed_data` on the way out, and `Result`'s generated readers work regardless of outcome. No "let exposures survive their own failure" change is needed.
+Nothing clears `exposed_data` on the way out, and `Result`'s generated readers work regardless of outcome.
 
 ## Surface
 
@@ -34,6 +49,17 @@ class Dispatch
 end
 ```
 
+Definitionally it is exactly the documented idiom, in one line:
+
+```ruby
+def forward!(target)
+  result = target.is_a?(Class) ? target.call(**inputs) : target
+  expose(result)
+  _propagate_sub_result_outcome!(result)
+  result
+end
+```
+
 Terminal semantics were considered and rejected. Terminal plus success-message propagation would make the parent a pure passthrough, at which point the caller may as well invoke the inner action directly — a wrapper earns its keep with what it does *around* the delegation, and terminal deletes the "after" half of that. Non-terminal also keeps `forward!` a drop-in for the `call!` it replaces, and `done!` already covers "stop here". The bang is earned by the failure branch alone, exactly as `call!`'s is.
 
 The parent does **not** inherit the child's success message; it keeps its own. Only the error path propagates.
@@ -46,34 +72,13 @@ The class form passes `**inputs` only — the parent's declared, resolved inputs
 
 A class that does not include `Axn` raises `ArgumentError`. Step makes the same check at declaration time; `forward!` can only make it at runtime, because the target is runtime-chosen — that is the whole point of the affordance.
 
-## Merge rule
-
-Merge the child's **actually-exposed** keys — the keys present in its `exposed_data` — not its `declared_fields`.
-
-The distinction is load-bearing and the two are observably different on a child that declares a field it never sets:
-
-```
-child declares exposes :a, :b — sets only :a, then fails
-  declared_fields  = [:a, :b]
-  exposed_data     = {a: "SET"}
-  explicit nil     = {a: "SET", b: nil}    # expose(b: nil) is still recorded
-```
-
-Merging `declared_fields` writes `b => nil` and destroys a value the parent set for `b` before calling `forward!`. Merging `exposed_data` does not, while still propagating an explicit `expose(b: nil)` — the nil-vs-absent axis survives.
-
-The merge writes straight into the parent's `@__context.exposed_data`. It cannot go through `expose`, which rejects undeclared keys and would fail the action whenever the child exposes something the parent does not declare.
-
-Filtering to the parent's own `exposes` needs no code. The `Result` layer already does it: a step child exposing `event` and `extra` under a parent declaring only `event` yields `#<Axn::Result [OK] event: "E">`, with no `extra` reader. Over-merging into `exposed_data` is invisible at the result boundary.
-
-The merge runs on **both** branches.
-
 ## Outcome propagation
 
 | child outcome | parent |
 | --- | --- |
-| ok | merge, return the child result, keep executing |
-| failure (`fail!` or a `fails_on` classification) | merge, then `fail!(child.error)` with **no** prefix |
-| exception | merge, then `raise child.exception` |
+| ok | absorb, return the child result, keep executing |
+| failure (`fail!` or a `fails_on` classification) | absorb, then `fail!(child.error)` with **no** prefix |
+| exception | absorb, then `raise child.exception` |
 
 The no-prefix choice is what makes the migration honest. `call!` and `step` produce identical aggregated errors; the only difference is step's `error_prefix`, which defaults to the step name:
 
@@ -85,17 +90,65 @@ step wrap   : "inner: inner exploded: child failed"
 
 With an empty prefix, swapping `def call = Inner.call!` for `forward! Inner` changes the exposures and nothing else. No `error_prefix:` option is offered — call!-parity is the point, and a user who wants a prefix already has `error`.
 
-## One shared merger, and the step fix folded in
+## Three call sites, one write loop
 
-Both `forward!` and the step orchestrator get their merge-and-settle from a single helper, parameterized only by `error_prefix` (step passes its step name, `forward!` passes none). Duplicating it was rejected under mirror-layers-reuse-source; a shared merger with a behaviour flag was rejected as the same duplication wearing a parameter.
+The same merge loop — `exposed_data[field] = source_result.public_send(field)` over `declared_fields` — is implemented three times:
 
-That requires changing step, because step merges `declared_fields` today (`lib/axn/mountable/mounting_strategies/step.rb:151-153`) and therefore carries the same nil-clobber: a later step with an unset **optional** exposure silently nils out an earlier step's value for that key. It reads as the same bug, not an intentional difference, so it is fixed rather than preserved behind a flag — close the full class in one pass.
+| call site | fields merged | on an empty intersection |
+| --- | --- | --- |
+| `_expose_from_result` (`contract.rb:2128-2140`) | child's declared ∩ parent's declared outbound | raises `NoMatchingExposures` |
+| step orchestrator (`step.rb:151-153`) | child's declared (no filter — chain accumulation) | n/a |
+| `forward!` (new) | delegates to `expose(result)` | delegates to `expose(result)` |
 
-Blast radius is narrow. A required-but-unset exposure already dies in outbound validation before any merge, so only optional exposures (`allow_blank: true` and friends) can reach the clobbering path.
+The differing field set is a real semantic difference, not duplication: step's unfiltered merge is what lets a step's output reach a *later* step even when the parent does not declare it, and filtering there would break chaining. So the shared piece is not "the merge" but the write loop underneath it, which takes its field list from the caller:
 
-The helper needs a Result reader for the actually-exposed keys. `_context_data_source` is private today; this adds a small internal accessor rather than reaching through `send`.
+```ruby
+def _absorb_result_exposures!(source_result, fields:)
+  exposed = source_result.__exposed_keys__
+  fields.each do |field|
+    next unless exposed.include?(field)
 
-Home is `lib/axn/internal/`, not the mountable tree — `forward!` is core, and core cannot depend on mountable.
+    @__context.exposed_data[field] = source_result.public_send(field)
+  end
+end
+```
+
+`forward!` needs no field list of its own; it calls `expose(result)`, which computes the filtered set. That keeps `forward!` and the documented `expose(result)` idiom semantically identical by construction rather than by matching implementations.
+
+### Fix 1: the nil-clobber
+
+Keying on `declared_fields` merges a field the child *declared* but never *set*, writing `nil` over a value the parent already holds. Both existing call sites do this:
+
+```
+expose(result) : parent exposes b="PARENT-OWN", child declares-but-never-sets b  →  b=nil
+step           : same, via a later step's unset optional exposure
+```
+
+The two are observably distinguishable, and the nil-vs-absent axis survives the fix:
+
+```
+child declares exposes :a, :b — sets only :a, then fails
+  declared_fields  = [:a, :b]
+  __exposed_keys__ = [:a]
+  explicit nil     = [:a, :b]     # expose(b: nil) is still recorded
+```
+
+Skipping never-set fields is the entire fix. Blast radius is narrow: a required-but-unset exposure already dies in outbound validation before any merge, so only optional exposures can reach the clobbering path.
+
+The loop iterates the **caller's field list** and skips un-set entries, rather than iterating `__exposed_keys__` directly. That ordering is load-bearing: step's unfiltered merge puts keys into a parent's `exposed_data` that the parent does not declare and has no reader for, so iterating the exposed keys of such a result one level up would `public_send` a name that does not exist. Iterating the field list preserves today's propagation boundary exactly, minus the nils.
+
+### Fix 2: `NoMatchingExposures` no longer eats a failure
+
+`_expose_from_result` raises when the intersection is empty. On a failing child that converts a clean failure into an exception and discards the child's message entirely:
+
+```
+child fails with "real error", no exposures in common
+  →  outcome=exception, error="Something went wrong"
+```
+
+The raise is right on the success branch — an empty intersection there is a wiring mistake and nothing is being destroyed by saying so. It is wrong on the failure branch, where it replaces information the caller needs with strictly less. So the raise is gated on `source_result.ok?`.
+
+A wiring mistake is still caught: the first time that child succeeds, the raise fires. Warning on the failure branch instead was considered and rejected — it would fire on every failed call of a correctly-wired action whose child simply shares no exposures, which is legal.
 
 ## The outbound contract is conditional, and that is correct
 
@@ -108,26 +161,28 @@ bad type exposed + success   ok?=false  outcome=exception  n="junk"
 bad type exposed + fail!     ok?=false  outcome=failure    n="junk"
 ```
 
-So the guarantee is conditional: **`ok? == true` means the outbound contract held; `ok? == false` promises nothing about exposures.** That is deliberate, not incidental — `executor.rb:869-875` applies outbound *defaults* on the failure branch specifically so "the caller (and an `on_error` handler) [can] read sensible exposures off a failed result."
+So the guarantee is conditional: **`ok? == true` means the outbound contract held; `ok? == false` promises nothing about exposures.** That is deliberate — `executor.rb:869-875` applies outbound *defaults* on the failure branch specifically so "the caller (and an `on_error` handler) [can] read sensible exposures off a failed result."
 
-`forward!` sits correctly inside that invariant. Simulating the merge against a parent whose declared type the child's value violates:
+`forward!` sits correctly inside that invariant:
 
 ```
 SUCCESS branch : ok?=false outcome=exception   ← the parent's own outbound validation catches it
 FAILURE branch : ok?=false outcome=failure     ← passes through; the parent is already failing
 ```
 
-`forward!` therefore cannot launder a contract violation into an `ok?` result, and on the failure branch it propagates the child's real value — which is exactly what the motivating case wants, since the controller reads `@result.event` on the error branch to re-render.
+`forward!` therefore cannot launder a contract violation into an `ok?` result, and on the failure branch it propagates the child's real value — which is what the motivating case wants, since the controller reads `@result.event` on the error branch to re-render.
 
 Validating on the failure branch was considered and rejected. Running the outbound contract there would fail nearly every failed action on presence, because a required exposure is legitimately unset when you fail early. Avoiding that needs presence-exempt partial validation, and then a violation has nowhere to go: an already-failed action cannot fail twice, so the options are to warn, to replace the user's real error with a validation error, or to raise — each worse than passing the value through.
 
+Scrubbing the violating value was also rejected. Classifying is the framework's job; hiding the value the author was told was invalid would conceal reality for no gain.
+
 ## Deliberately out of scope
 
-**Instance-method shadowing** (PRO-3062). Axn injects ~19 unprefixed public instance methods and its internals dispatch back through several of them, so a user `def result` breaks the framework rather than merely costing a helper. `forward!` ships like its siblings — no instance-side `MethodShadowing` deferral seeded here. Applying deferral to exactly one method creates a one-off asymmetry the eventual sweep would have to reconcile, and it fails silently: a user whose superclass defines `forward!` would get no `forward!` and no explanation. A uniformly-absent policy is easier to fix than a half-applied one.
+**Instance-method shadowing** (PRO-3062). Axn injects ~19 unprefixed public instance methods and its internals dispatch back through several of them, so a user `def result` breaks the framework rather than merely costing a helper. `forward!` ships like its siblings — no instance-side `MethodShadowing` deferral seeded here. Applying deferral to exactly one method creates a one-off asymmetry the eventual sweep would have to reconcile, and it fails silently: a user whose superclass defines `forward!` would get no `forward!` and no explanation.
 
-`forward!` is also not added to `RESERVED_FIELD_NAMES_FOR_EXPECTATIONS`. That list guards field *names*, and nobody writes `expects :forward!`; the real risk is a bare `def forward!`, which the list does not cover. The list's own inconsistencies (`fail!` present but `done!` absent; `result` reserved for exposures but not expectations) are recorded in PRO-3062 rather than patched here.
+`forward!` is also not added to `RESERVED_FIELD_NAMES_FOR_EXPECTATIONS`. That list guards field *names*, and nobody writes `expects :forward!`; the real risk is a bare `def forward!`, which the list does not cover. The list's own inconsistencies (`fail!` present but `done!` absent; `result` reserved for exposures but not expectations) are recorded in PRO-3062 rather than patched here. The one addition made here is `__exposed_keys__`, which this design introduces as a reserved public field alongside `__action__`.
 
-**`steps` failure-exposure propagation.** A step exposing `status: :done` followed by a later failing step would surface `status: :done` on a failed parent — temporal conflation across step boundaries, which no filtered-to-declared trick makes honest. `forward!` is clean precisely because it propagates one action's own result faithfully. Shipping it commits us to nothing here.
+**`steps` failure-exposure propagation.** A step exposing `status: :done` followed by a later failing step would surface `status: :done` on a failed parent — temporal conflation across step boundaries, which no filtered-to-declared trick makes honest. `forward!` is clean precisely because it propagates one action's own result faithfully.
 
 **PRO-3060** — an `error` handler interpolating `e.message` duplicates the reason. Surfaced while probing this area; unrelated to `forward!`, which is byte-identical to `call!` on the error path either way.
 
@@ -137,7 +192,11 @@ Linchpin, both unwind types: a child that exposes then `fail!`s, and one that ex
 
 Filtering: a child field the parent does not declare never appears on the parent's result.
 
-Nil-clobber: a parent that exposes `b`, then forwards to a child declaring but never setting `b`, keeps its own value. Its converse: an explicit `expose(b: nil)` in the child does propagate.
+Nil-clobber, all three call sites: a parent that exposes `b`, then absorbs a child declaring but never setting `b`, keeps its own value — via `expose(result)`, via `forward!`, and via a later step. Its converse: an explicit `expose(b: nil)` in the child does propagate.
+
+`NoMatchingExposures`: still raised when the source result is ok and nothing overlaps; **not** raised when the source failed, where the child's error and outcome survive intact.
+
+Nested-step safety: a step-parent whose `exposed_data` holds a foreign key (no reader) can itself be absorbed one level up without `NoMethodError`.
 
 Contract: a child value violating the parent's declared type flips a **successful** parent to `exception` (the anti-laundering assertion), and passes through unchanged on the failure branch.
 
@@ -145,14 +204,13 @@ Error parity: `forward! Inner` and `Inner.call!` produce the same `result.error`
 
 Signatures: the class form invokes with `**inputs`; the result form forwards a caller-built result unchanged; a non-Axn class raises `ArgumentError`.
 
-Step regression: an earlier step's value survives a later step whose optional exposure goes unset.
-
 Non-Rails safe; specs in `spec/`, with `spec_rails/` coverage only if a Rails-specific path is touched.
 
 ## Acceptance
 
-- `forward! Klass` runs `Klass.call(**inputs)` and merges its actually-exposed keys, filtered to the parent's `exposes` by the result layer, on success.
+- `forward! Klass` runs `Klass.call(**inputs)`, absorbs its exposures via `expose(result)`, and returns the child result on success.
 - On child failure the parent settles as a failure carrying the child's error — byte-identical to today's `call!` — or re-raises on an exception outcome, and in both cases surfaces the child's exposures the parent also declares.
 - `forward! Klass.call(custom:)` forwards a caller-built result with identical behaviour.
-- Merge and outcome-category logic live in one helper shared with the step orchestrator; step's nil-clobber is fixed by that sharing.
+- One write loop backs `expose(result)`, the step orchestrator, and `forward!`; the nil-clobber is gone from all three.
+- `NoMatchingExposures` no longer converts a child's failure into an exception.
 - The conditional outbound-contract invariant is documented where users writing `forward!` will meet it.
