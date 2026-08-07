@@ -227,10 +227,13 @@ surfaced via `call!`, and this is **bucket-independent** — it applies whether 
 `fail!`, a `fails_on`-classified exception, or an unexpected exception. What differs by bucket is the
 *exception object*, not the message: `fail!` re-raises as `Axn::Failure`, while a `fails_on`-matched
 or unhandled exception bubbles as the **original** exception. Either way the child's message is woven
-in (`"Onboarding failed: Charge failed: card declined"`). For an *unexpected* exception there is no
-authored leaf, so only the declared base headers chain (`"Onboarding failed: Charge failed"`) — the
-raw exception message never enters `result.error` (it stays the technical `#message` on
-`result.exception`), and a level declaring no base contributes nothing. Reach for non-bang `call` +
+in (`"Onboarding failed: Charge failed: card declined"`). An *unexpected* exception still picks up a
+leaf if a conditional `error "…", if: SomeError` matches it — reason matching is independent of
+`fails_on` — giving `"Onboarding failed: Charge failed: retry later"` while the outcome stays
+`exception`. Only with **no matching reason** is there no leaf, and then just the declared base
+headers chain (`"Onboarding failed: Charge failed"`). Either way the raw exception message never
+enters `result.error` (it stays the technical `#message` on `result.exception`), and a level
+declaring no base contributes nothing. Reach for non-bang `call` +
 `fail!("context: #{child.error}")` when you want to author a *different* message than this automatic
 aggregation, or to add per-call context — not to carry the child's message through.
 
@@ -262,9 +265,12 @@ sensitive values in `sensitive:` fields. Detail:
   `sensitive: -> { !include_pii }`, reading other fields by name — a lambda declaring a parameter
   raises), and it resolves lazily, only when something actually redacts. By then `default:`s are
   applied, so it reads another field's *defaulted* value. `preprocess:` is the opposite: it runs
-  *before* defaults, seeing `nil` for an omitted field. Only a **non-nil** result bypasses the
-  `default:` — return `nil` and the default still applies, so an intentional nil does not survive
-  (`false` does, matching `default:`'s missing-or-nil rule).
+  *before* defaults, seeing `nil` for an omitted top-level field. Only a **non-nil** result bypasses
+  the `default:` — return `nil` and the default still applies, so an intentional nil does not survive
+  (`false` does, matching `default:`'s missing-or-nil rule). On a **subfield** the preprocessor runs
+  only when its parent is present: `parent: {}` still invokes it with `nil`, but an absent or `nil`
+  parent skips it entirely and the reader stays `nil` — so don't rely on a nested `preprocess:` to
+  manufacture a value when the parent itself is missing.
 
 ## Strategies (DRYed configuration via `use`)
 
