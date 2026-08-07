@@ -167,10 +167,11 @@ expects :zip, on: "address.billing"      # dotted path; reader: zip
 
 Subfields support all the normal options and `default:`; `readers: false` skips reader creation;
 `as:`/`prefix:` rename. `default:`/`preprocess:`/`sensitive:` work on a *nested parent* too (whether
-reached by dotted path or by pointing `on:` at another subfield) — they all resolve on the **read
-path**, so the parent is never mutated and intermediates are never materialized; on an ambient parent
-(`on: :ambient_context`) only `user_facing:` is unsupported. Subfield hashes accept string **or**
-symbol keys (indifferent). Source:
+reached by dotted path or by pointing `on:` at another subfield). `default:`/`preprocess:` resolve on
+the **read path**, when the subfield is read; `sensitive:` is not part of that read — it resolves
+only when something requests redaction (see Gotchas). Either way the parent is never mutated and
+intermediates are never materialized; on an ambient parent (`on: :ambient_context`) only
+`user_facing:` is unsupported. Subfield hashes accept string **or** symbol keys (indifferent). Source:
 `lib/axn/core/field_resolvers/extract.rb`. Reference:
 <https://teamshares.github.io/axn/reference/class>.
 
