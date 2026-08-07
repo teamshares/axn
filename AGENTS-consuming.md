@@ -228,7 +228,12 @@ surfaced via `call!`, and this is **bucket-independent** — it applies whether 
 `fail!`, a `fails_on`-classified exception, or an unexpected exception. What differs by bucket is the
 *exception object*, not the message: `fail!` re-raises as `Axn::Failure`, while a `fails_on`-matched
 or unhandled exception bubbles as the **original** exception. Either way the child's message is woven
-in (`"Onboarding failed: Charge failed: card declined"`). An *unexpected* exception still picks up a
+in (`"Onboarding failed: Charge failed: card declined"`) — **unless the parent itself declares a
+matching conditional reason**, which *replaces* the child's presentation rather than prefixing it
+(`error "Record not found", if: NotFoundErr` on the parent yields `"Onboarding failed: Record not
+found"`, and `standalone: true` drops the parent's base too, leaving `"Record not found"`). So a
+parent that authors its own reason for an exception class opts out of carrying the child's context.
+An *unexpected* exception still picks up a
 leaf if a conditional `error "…", if: SomeError` matches it — reason matching is independent of
 `fails_on` — giving `"Onboarding failed: Charge failed: retry later"` while the outcome stays
 `exception`. Only with **no matching reason** is there no leaf, and then just the declared base
@@ -269,9 +274,10 @@ sensitive values in `sensitive:` fields. Detail:
   *before* defaults, seeing `nil` for an omitted top-level field. Only a **non-nil** result bypasses
   the `default:` — return `nil` and the default still applies, so an intentional nil does not survive
   (`false` does, matching `default:`'s missing-or-nil rule). On a **subfield** the preprocessor runs
-  only when its parent is present: `parent: {}` still invokes it with `nil`, but an absent or `nil`
-  parent skips it entirely and the reader stays `nil` — so don't rely on a nested `preprocess:` to
-  manufacture a value when the parent itself is missing.
+  only when the leaf's immediate parent is present: `parent: {}` still invokes it with `nil`, but an
+  absent or `nil` parent skips it entirely. The subfield's own `default:` still resolves in that case
+  — the reader returns the default, and is `nil` only when there is none. So don't rely on a nested
+  `preprocess:` to manufacture a value when the parent is missing; declare a `default:` for that.
 
 ## Strategies (DRYed configuration via `use`)
 
