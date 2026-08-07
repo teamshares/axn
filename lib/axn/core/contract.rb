@@ -13,6 +13,7 @@ require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
 require "axn/internal/coercion"
 require "axn/internal/shape_graph"
+require "axn/internal/subfield_tree"
 require "axn/internal/cycle_guard"
 require "axn/result"
 require "axn/core/context/internal"
@@ -40,6 +41,14 @@ module Axn
       # `expects`) reports a different source and is rejected (declarative-emission would otherwise
       # condition on the wire value while runtime evaluates the user method — the looser direction).
       GENERATED_READER_SOURCE_PATH = __FILE__
+
+      # Holds the readers axn INFERS from another declaration — today the `<field>_confirmation`
+      # companion a `confirmation:` field declares. A `Module` subclass rather than a bare module so a
+      # reader's OWNER answers "did axn infer this?" as a fact of the method table, with no parallel
+      # record to keep in step: an inferred reader may be withdrawn when the declaration behind it is
+      # superseded, and nothing else may. Included below the class, so a same-named method the AUTHOR
+      # wrote — or one an EXPLICIT declaration generated over the top — wins dispatch outright.
+      InferredReaders = Class.new(Module)
 
       # Optionality is shared by FieldConfig and ShapeConfig: a field is optional exactly when its
       # validators accept nil. Keyed on the validators rather than on the presence of a `presence: true`
@@ -268,9 +277,18 @@ module Axn
       # `method_call:` opts a subfield into the sharp path — resolving a segment by INVOKING it as a
       # method (Array methods, PORO readers, Data behavioral methods) rather than reading declared
       # data; it is threaded to the resolver as `permit_method_call:` (PRO-2898).
-      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing, :on, :method_call) do
+      #
+      # `confirmation_for` names the field whose `confirmation:` DECLARED this config implicitly (nil on
+      # every config an author wrote). It is the one thing that cannot be recovered from the config's
+      # contents: an author who declares `<field>_confirmation` themselves must WIN over the implicit
+      # companion whichever order the two lines are written in, and that means the later explicit
+      # declaration replaces the stored companion instead of tripping the duplicate-field guard — while a
+      # second EXPLICIT declaration of the same name stays the duplicate it has always been. Only
+      # provenance separates those two, so it is recorded rather than re-derived.
+      FieldConfig = Data.define(:field, :validations, :default, :preprocess, :sensitive, :metadata, :reader_as, :user_facing, :on, :method_call,
+                                :confirmation_for) do
         def initialize(field:, validations:, reader_as:, default: nil, preprocess: nil, sensitive: false, metadata: {}, user_facing: false, on: nil,
-                       method_call: false)
+                       method_call: false, confirmation_for: nil)
           # THE choke point for a declared field's `sensitive:` and `user_facing:`, whichever DSL built it
           # (`expects`, `exposes`, an `on:` subfield, an ambient subfield, `Axn::Factory`): every stored
           # FieldConfig is built here, from kwargs, and nothing hands axn one it made itself. That is what makes
@@ -462,9 +480,24 @@ module Axn
                                                reader_names:, user_facing:, method_call:, **validations)
           end
 
-          _parse_field_configs(*fields, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                        reader_names:, user_facing:, **validations).tap do |configs|
-            _reject_duplicate_fields!(internal_field_configs, configs)
+          # A `confirmation:` field declares its `<field>_confirmation` companion here, before any check
+          # runs, so the companion is an ordinary member of the batch from that point on: it is judged by
+          # the duplicate guard, committed with the rest, and gets its reader from the same pass.
+          declared = _parse_field_configs(*fields, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess:, sensitive:, metadata:,
+                                                   reader_names:, user_facing:, **validations)
+          companions = _confirmation_companion_configs(declared, existing: internal_field_configs)
+
+          (declared + companions).tap do |configs|
+            # A companion's reader clears no collision bar of its own: it is INFERRED, so it defers to
+            # whatever already holds the name (`_define_field_readers!`) rather than raising or clobbering.
+            # No reserved name ends in `_confirmation`, so the reserved-name half of that bar can't bind on
+            # a companion either.
+            #
+            # An explicit declaration of a name an earlier `confirmation:` generated implicitly REPLACES that
+            # companion (the author's own line is authoritative) rather than colliding with it.
+            retained, superseded = _partition_superseded_confirmation_companions(internal_field_configs, configs)
+
+            _reject_duplicate_fields!(retained, configs)
             # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
             # a same-named subfield reader), so the resolved check runs here too rather than only where
             # subfields are declared.
@@ -473,7 +506,9 @@ module Axn
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
             # carrying an orphaned config or generated reader. Copy-on-write + freeze: `<<` would
             # mutate the superclass's contract, and identity-keyed caching relies on replacement.
-            self.internal_field_configs = (internal_field_configs + configs).freeze
+            self.internal_field_configs = (retained + configs).freeze
+            # Before the new readers, so a name the replacement reclaims is redefined rather than dropped.
+            superseded.each { |c| _withdraw_inferred_reader!(c.reader_as) }
             _define_field_readers!(configs)
           end
         end
@@ -524,6 +559,21 @@ module Axn
                   "exposes does not support `on:` on #{fields.map(&:to_s).inspect} — an exposure has no subfield " \
                   "parent to reach into, and axn has no ActiveModel validation contexts. Drop `on:`; to gate the " \
                   "outbound checks, use `if:`/`unless:`."
+          end
+
+          # A confirmation pair is an inbound form contract: the caller supplies both halves (the field and
+          # its `<field>_confirmation`) and they are compared. An exposure has neither — it is a RESULT
+          # property, set by the action's own code rather than read from caller input — so its companion
+          # would be an exposed property the action never sets, resolving nil on every call. ActiveModel's
+          # confirmation validator adds no error when the companion is nil (see
+          # Validation::Base.nil_tolerant_validation?), so the option would decorate the field while never
+          # once comparing anything — the exact defect this option exists to fix. Truthy, not key presence:
+          # `confirmation: false` is the same disabled-validator no-op it is everywhere else.
+          if validations[:confirmation]
+            raise ArgumentError,
+                  "`exposes` does not support confirmation: — a confirmation compares a caller-supplied value " \
+                  "against a caller-supplied companion, and an exposure has neither. Declare the pair with " \
+                  "`expects` if the confirmation is an input."
           end
 
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
@@ -866,6 +916,13 @@ module Axn
                 "out of a nested structure; a field's own name is always a single wire key."
         end
 
+        # Which config answers to each reader name already declared on this class, across both tiers —
+        # THE index of that question (Internal::SubfieldTree.reader_owners), asked here of the committed
+        # configs. Two configs can share a name only when an inferred confirmation companion yields it to
+        # a declaration, and the index resolves that to the declaration whichever order the two were
+        # written in.
+        def _reader_owners = Axn::Internal::SubfieldTree.reader_owners(internal_field_configs, subfield_configs)
+
         # Renamed readers must clear the same reserved-name bar as wire keys (identity readers are
         # already reserved-checked against their wire key in `expects`), and no two declarations may
         # resolve to the same reader name.
@@ -880,12 +937,17 @@ module Axn
           # aliases) catches alias-vs-plain clashes in either declaration order — e.g.
           # `expects :bar, as: :foo` then `expects :foo`, which would otherwise silently clobber the
           # `bar` reader. Intra-call duplicates (distinct fields → same reader) are caught too.
-          # Only configs that actually generated a reader can be collided with. A dotted-key subfield
+          # The wire key behind each name is the OWNER's (_reader_owners), so a name a companion merely
+          # spells cannot stand in for the declaration that holds it — which is what makes a same-wire-key
+          # redeclaration report the clearer DuplicateFieldError in either declaration order.
+          # Only names an actually-generated reader answers to can be collided with. A dotted-key subfield
           # defines no method, so its name stays free; consult the method table rather than every
-          # config so those readerless declarations don't manufacture phantom collisions.
-          existing = (internal_field_configs + subfield_configs)
-                     .select { |c| method_defined?(c.reader_as) }
-                     .to_h { |c| [c.reader_as, c.field] }
+          # config so those readerless declarations don't manufacture phantom collisions. A name held by
+          # an INFERRED reader is free too: it is not a declaration, so the explicit one takes the name
+          # and the inferred reader yields (_inferred_reader?).
+          existing = _reader_owners
+                     .select { |reader, _config| method_defined?(reader) && !_inferred_reader?(reader) }
+                     .transform_values(&:field)
           collisions = reader_names.filter_map { |field, reader| reader if existing.key?(reader) && existing[reader] != field }
           collisions |= reader_names.values.tally.select { |_, count| count > 1 }.keys
           raise ArgumentError, "Reader name collision: #{collisions.uniq.join(', ')}" if collisions.any?
@@ -1130,6 +1192,9 @@ module Axn
           end
 
           _raise_member_model_unsupported!(name) if opts.key?(:model)
+          # Truthy, not key presence: `confirmation: false` is the same disabled-validator no-op it is on a
+          # field, so it is left alone rather than refused (see _raise_member_confirmation_unsupported!).
+          _raise_member_confirmation_unsupported!(name) if opts[:confirmation]
 
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
@@ -1361,6 +1426,201 @@ module Axn
           end
         end
 
+        # The companion `FieldConfig`s a batch's `confirmation:` fields declare implicitly — the same
+        # treatment a `model:` field's `<field>_id` gets, and for the same reason: the option names a SECOND
+        # wire key, so the contract has to carry it or nothing downstream (redaction, the undeclared-input
+        # gate, the emitted schema) can see it. The reader name is derived from the base's READER and the
+        # wire key from the base's FIELD — the same split `_define_model_id_reader_from` makes — so an
+        # `as:`-aliased `expects :password, as: :pw, confirmation: true` keeps `password_confirmation` on the
+        # wire while user code reads `pw_confirmation`.
+        #
+        # What it inherits is what has to match for the comparison to mean anything, since both sides of a
+        # comparison must live in the same space:
+        #   * `type:` (which carries the parsed `coerce:` flag — `_expand_coerce_sugar!` folds the option into
+        #     the type bag, so there is no separate key left to copy — and whatever tolerance the base's own
+        #     `optional:`/`allow_blank:`/`allow_nil:` pushed into it) keeps the emitted schema and the runtime
+        #     agreeing about what the companion may be, and keeps a coerced pair comparable: a form post of
+        #     `count: "5", count_confirmation: "5"` against `coerce: Integer` compares 5 to "5" and reports a
+        #     mismatch the caller cannot act on unless the companion coerces too. The inherited tolerance is
+        #     inert on the companion — an `optional:` base yields a `type:` bag carrying `allow_blank: true`
+        #     even though the companion's own `presence: true` (below) already rejects a blank value first —
+        #     but it still has to travel with `type:`, since the two live in one bag and copying one without
+        #     the other isn't an option.
+        #   * `preprocess:` for the same reason — a `->(s){ s.strip }` on the base alone compares "a" to " a ".
+        #   * `sensitive:` because the failure mode is a LEAK: a confirmed secret whose companion logs in the
+        #     clear is the whole password beside the redacted one.
+        #   * `method_call:` as an ENABLER, not a requirement: it is never consulted on a Hash/Data/Parameters
+        #     source (FieldResolvers::Extract reads those by key before reaching the gated dispatch branch),
+        #     and on an object source the base field's own read already required it. Same reasoning as the
+        #     undeclared `<field>_id` resolved off a possibly-object parent with `permit_method_call:
+        #     config.method_call`.
+        #   * `user_facing:` because a companion violation is the same caller-input defect the base's is.
+        # `default:` must NOT carry: a defaulted companion would silently satisfy its own comparison, so it is
+        # excluded rather than inherited. Nor does `metadata:` — a description written for the base field is
+        # not a description of its companion.
+        #
+        # REQUIREDNESS is the companion's OWN `presence:`, declared here rather than left to whatever the
+        # inherited `type:` happens to reject. Deriving it from the type — even indirectly, by letting the
+        # builder's default presence stand down as it does for `type: :boolean`/`:params` — leaves the
+        # confirmation unenforced on precisely the declarations that carry no nil-rejecting type (an untyped
+        # base, `allow_nil:`, `optional:`, `:boolean`/`:params`), which is the defect this option exists to
+        # fix, in a spelling the emitted schema agrees with. Stated explicitly, the property holds for every
+        # base type by construction, with no per-type list to keep in step. It can never reject a MATCHING
+        # companion: the gate below is open only when the base value is present, and a companion equal to a
+        # present value is present too.
+        #
+        # Everything else about the build is the shared one — `_parse_field_configs`, the builder every
+        # declared field goes through — so the companion carries the same canonicalized validators, emptiness
+        # axis and nil-skip verdict a hand-written `expects :<field>_confirmation, type: <base type>,
+        # if: <base reader>` does, down to its reported message (pinned by spec).
+        #
+        # GATED so that "required" means "required once there is something to confirm" — the question the
+        # gate has to answer is whether the base HAS a value to confirm:
+        #   * a base whose own contract rejects blank (the ordinary `presence:`-carrying declaration) can only
+        #     hold values for which Ruby truthiness and presence are the same answer, so it is gated on the
+        #     base's reader as a SYMBOL — the one spelling that emits an EXACT conditional requirement
+        #     (Internal::Reflection::Schema.conditional_requiredness_clause);
+        #   * a base that ADMITS a blank value (`optional:`/`allow_blank:`/`allow_nil:`, `allow_empty: true`,
+        #     an explicit `presence: false`, or a `:boolean`/`:params` type whose own logic stands in for the
+        #     presence check) can hold a blank-but-TRUTHY one — `""`, `[]`, `{}` — where the two answers
+        #     diverge, and a truthiness gate would demand a non-blank companion for a value no non-blank
+        #     companion can match: an unsatisfiable contract. Those are gated on the base's PRESENCE through a
+        #     callable, which costs the exact clause (see below) and is worth it.
+        #
+        # A gate the COMPARISON answers to COMPOSES with that rule rather than overriding or refusing it — an
+        # `if:` on the declaration, one on the `confirmation:` entry itself, or the two together, resolved as
+        # ActiveModel resolves them (`_confirmation_entry_gates`). A closed gate suppresses the comparison but
+        # does not blank the base's VALUE, so the base-reader rule alone stays open and would enforce a
+        # companion for a comparison that never runs — rejecting input nothing then checks. An `if:` therefore
+        # becomes the Array `[<comparison gates…>, <rule>]` (ActiveModel ANDs an Array of conditions) and an
+        # `unless:` rides along as its own key, so the companion is required on exactly the calls the
+        # comparison runs on, and only then.
+        #
+        # Both departures from the bare Symbol are paid for in the schema, not the runtime: a non-Symbol rule
+        # (or both gate keys at once) makes `conditional_requiredness_clause` fall back to UNCONDITIONAL
+        # `required` — stricter than the runtime, which is the direction that layer already treats as safe.
+        #
+        # A companion the author already declared — in this same batch or on the class already, on the same
+        # route — is authoritative and suppresses the implicit one entirely, rather than colliding with it.
+        # A CONTEXT-SCOPED `confirmation:` entry gets no companion at all (see below).
+        def _confirmation_companion_configs(configs, existing:)
+          claimed = (configs + existing).map { |c| _declaration_slot(c) }
+
+          configs.filter_map do |config|
+            next unless config.validations[:confirmation]
+
+            companion = :"#{config.field}_confirmation"
+            next if claimed.include?([companion, config.on.to_s])
+
+            reader = :"#{config.reader_as}_confirmation"
+            _parse_field_configs(
+              companion,
+              on: config.on,
+              preprocess: config.preprocess,
+              sensitive: config.sensitive,
+              reader_names: { companion => reader },
+              user_facing: config.user_facing,
+              method_call: config.method_call,
+              presence: true,
+              **config.validations.slice(:type),
+              **_confirmation_companion_gates(config),
+            ).first.with(confirmation_for: config.field)
+          end
+        end
+
+        # The gate keys the companion declares: the gates the COMPARISON runs under composed with the rule
+        # below (see above). `Array()` flattens a base gate the author wrote as a list into one condition
+        # list, so ActiveModel sees a list of conditions rather than a list containing a list — and the lone
+        # rule is left UNWRAPPED so the ordinary case stays the bare Symbol the exact-clause emitter requires.
+        def _confirmation_companion_gates(config)
+          gates = _confirmation_entry_gates(config.validations)
+          rule = _confirmation_companion_gate_rule(config)
+          gates[:if] = gates.key?(:if) ? Array(gates[:if]) + [rule] : rule
+          gates
+        end
+
+        # The gates the `confirmation:` ENTRY actually runs under — the tier pair resolved exactly as
+        # ActiveModel resolves it, so the companion's requirement is open on precisely the calls the
+        # comparison is. Both tiers matter and neither alone is the answer: a declaration-level gate opens
+        # and closes every validator on the line together, while the entry's own `if:`/`unless:` OVERRIDES
+        # the declaration's per key — including overriding it with a blank value, which un-gates the
+        # comparison for that key. `entry_effective_option` carries that precedence and
+        # `entry_effective_gate_keys` drops whatever AM would ignore as blank, so a gate the comparison does
+        # not answer to never reaches the companion, and one it does can never be lost.
+        #
+        # Without this the companion would demand input for a comparison that never runs (a disabled
+        # confirmation rejecting an omitted companion) or accept an omission the comparison would have
+        # judged — either way, requiring something other than what the validator acts on.
+        def _confirmation_entry_gates(validations)
+          entry = Axn::Validation::Base.validator_entry_options(validations[:confirmation])
+          declaration = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+
+          Axn::Validation::Base.entry_effective_gate_keys(entry, declaration).to_h do |key|
+            [key, Axn::Validation::Base.entry_effective_option(entry, declaration, key)]
+          end
+        end
+
+        # "The base has a value to confirm", in the strongest spelling this declaration allows: the base's
+        # reader as a Symbol where truthiness answers it, else a callable asking presence directly. The
+        # callable reads through the validator record, whose `method_missing` delegates to the action — the
+        # same route a Symbol condition takes — so both spellings resolve the one settled value.
+        #
+        # Truthiness answers it only where the two can't diverge. It admits a blank-but-truthy base (`""`,
+        # `[]`) that presence would refuse, so the Symbol needs BOTH a base whose own contract rejects those
+        # and a comparison that does not excuse them: an `allow_blank:` on the `confirmation:` entry has
+        # ActiveModel skip `validate_each` outright for a blank base, and the requirement feeding a
+        # comparison must not outlive it. Then the callable, which is exactly the values the comparison is
+        # reached with.
+        def _confirmation_companion_gate_rule(config)
+          return config.reader_as if _confirmation_base_rejects_blank?(config) && !_confirmation_entry_admits_blank?(config.validations)
+
+          reader = config.reader_as
+          ->(record) { record.public_send(reader).present? }
+        end
+
+        # Whether the COMPARISON itself stands down on a blank base — a truthy `allow_blank:` among the
+        # options the `confirmation:` entry runs under. Resolved across both tiers through
+        # `entry_effective_option`, the same per-key precedence `_confirmation_entry_gates` reads the gates
+        # with, so an entry's own value overrides a declaration-wide one exactly as ActiveModel merges them
+        # — including overriding it with `false`. Truthiness is AM's own test for the flag.
+        #
+        # `allow_nil:` needs no counterpart: the only value it excuses is a nil base, which the rule above
+        # already closes on in either spelling.
+        def _confirmation_entry_admits_blank?(validations)
+          entry = Axn::Validation::Base.validator_entry_options(validations[:confirmation])
+          !!Axn::Validation::Base.entry_effective_option(entry, _shared_validation_options(validations), :allow_blank)
+        end
+
+        # Whether the BASE's own contract guarantees a non-blank value on the calls its validators run — i.e.
+        # whether truthiness of the base reader and "the base has something to confirm" are one question.
+        # Decided by the same pair `_reconcile_emptiness_axis!` uses to decide whether a presence check can
+        # carry the emptiness axis in place of the flag's own, so the two cannot drift about what a presence
+        # entry promises. Asked with `tolerant: false` because the parsed bag no longer carries the
+        # declaration flags and a tolerant declaration cannot carry a truthy `presence:` at all (the
+        # combination is rejected at declaration), so there is no tolerance tier left to consult.
+        def _confirmation_base_rejects_blank?(config)
+          _presence_emptiness_answer(config.validations, tolerant: false) == :rejected &&
+            _entry_guaranteed_to_run?(config.validations[:presence])
+        end
+
+        # Splits already-stored configs into the ones a new batch leaves alone and the IMPLICIT confirmation
+        # companions it redeclares explicitly — which the author's own declaration replaces (see
+        # FieldConfig#confirmation_for). Returns `[retained, superseded]`; both declaration routes commit
+        # `retained + configs` and run their duplicate/collision checks against `retained`, so the author's
+        # line lands as though the implicit companion had never been generated.
+        #
+        # A slot is (wire key, route): a confirmation pair is one route's contract, so a same-named subfield
+        # on a DIFFERENT `on:` parent is a different field and is never superseded by this one.
+        def _partition_superseded_confirmation_companions(existing, configs)
+          redeclared = configs.map { |c| _declaration_slot(c) }
+          existing.partition { |c| c.confirmation_for.nil? || !redeclared.include?(_declaration_slot(c)) }
+        end
+
+        # The (wire key, route) pair that identifies WHICH declared field a config is. `on:` is compared as
+        # text because one route has two supported spellings (a Symbol and a dotted String), exactly as
+        # `ContractForSubfields.sibling_confirmation_config` compares it.
+        def _declaration_slot(config) = [config.field, config.on.to_s]
+
         # `coerce:`/`preprocess:` transform a scalar WIRE value, but a `model:` field resolves a record
         # from an id/record — its value is the record, not a scalar to coerce, and the class check `model:`
         # already performs is not what `coerce:` does. So neither ever had a coherent meaning on a model
@@ -1404,17 +1664,29 @@ module Axn
         end
 
         # Generate the readers for an already-validated, already-committed batch of top-level inbound
-        # configs. Two passes, matching _define_subfield_readers!: all explicit primary readers first,
-        # then the auto-generated companions (boolean `?` predicates, model `<field>_id` readers), so a
-        # companion defers to an explicit same-named reader regardless of declaration order.
+        # configs. Two passes, matching _define_subfield_readers!: every EXPLICIT declaration's primary
+        # reader first, then everything INFERRED (an implicit confirmation companion's own reader, the
+        # boolean `?` predicates, the model `<field>_id` readers), so an inferred reader defers to an
+        # explicit same-named one regardless of declaration order.
         def _define_field_readers!(configs)
-          # rubocop:disable Style/CombinableLoops
-          configs.each { |c| _define_field_reader(c.reader_as, c.field) }
-          configs.each do |c|
-            _define_boolean_predicate_reader(c.reader_as) if c.boolean?
+          explicit, inferred = configs.partition { |c| c.confirmation_for.nil? }
+          explicit.each { |c| _define_field_reader(c.reader_as, c.field) }
+
+          # An inferred companion yields WHOLE — its own reader and the predicate riding on it — to a
+          # same-named method already present, so a deferred companion never leaves half a reader behind.
+          # The config still stands and is validated, redacted and reflected exactly as it would be with a
+          # reader of its own — validation resolves a reader-less config directly (_validation_reader_for).
+          generated = inferred.filter_map do |config|
+            next unless _reader_name_available?(config.reader_as, kind: "confirmation companion")
+
+            _define_field_reader(config.reader_as, config.field, target: _inferred_reader_module)
+            config
+          end
+
+          (explicit + generated).each do |c|
+            _define_boolean_predicate_reader(c.reader_as, target: _reader_target_for(c)) if c.boolean?
             _define_model_id_reader(c.reader_as, c.field, c.validations[:model]) if c.validations.key?(:model)
           end
-          # rubocop:enable Style/CombinableLoops
         end
 
         # An auto-generated companion reader (boolean predicate, model `<field>_id`) defers to any
@@ -1426,6 +1698,77 @@ module Axn
 
           Axn.config.logger.debug { "[Axn] #{self.name || 'Action'}: skipping auto-generated #{kind} reader `#{name}` (already defined)" }
           false
+        end
+
+        # Where a config's readers are defined: an implicit confirmation companion's into the inferred
+        # module (withdrawable, and outranked by anything the author wrote), everything else onto the
+        # class itself.
+        def _reader_target_for(config) = config.confirmation_for ? _inferred_reader_module : self
+
+        # The module this class's inferred readers live in, created — and included, so it sits directly
+        # below the class — the first time one is generated. Per class, never inherited: a subclass's own
+        # inferred readers land in its own module while a superclass's stay in the superclass's, so
+        # withdrawing one never reaches across that boundary.
+        def _inferred_reader_module
+          @_inferred_reader_module ||= InferredReaders.new.tap { |mod| include mod }
+        end
+
+        # Whether the method currently answering to `name` is one axn INFERRED rather than one an explicit
+        # declaration generated or the author wrote. An inferred reader is not a declaration, so a clash
+        # with one is never the explicit-vs-explicit conflict the collision guards raise on: the explicit
+        # name wins and the inferred reader yields.
+        def _inferred_reader?(name)
+          return false unless method_defined?(name) || private_method_defined?(name)
+
+          instance_method(name).owner.is_a?(InferredReaders)
+        end
+
+        # Whether the method answering to a config's reader name belongs to something OTHER than the config:
+        # an INFERRED reader that yielded (a confirmation companion deferring to a method the author wrote or
+        # to an explicit declaration's reader). Such a config has no reader of its own, so dispatching the
+        # name answers with the shadowing method's value rather than the declared input — every consumer must
+        # resolve the config directly instead. THE single definition of that question, shared by inbound
+        # validation (_validation_reader_for) and canonical parent resolution
+        # (ContractForSubfields.resolve_parent), so no consumer can read a deferred companion through the
+        # method shadowing it while another reads its wire value.
+        def _reader_deferred?(config)
+          !config.confirmation_for.nil? && !_inferred_reader?(config.reader_as)
+        end
+
+        # The reader inbound validation may read a config's value through, or nil when it must resolve the
+        # config directly. A subfield's reader IS its value (memoized, model-resolving, default-applying),
+        # so validation reads it — but only when it is the reader axn generated FOR THIS CONFIG. A DEFERRED
+        # inferred companion is the exception: that name belongs to a method the author wrote, so reading it
+        # would validate that method's answer instead of the declared input, and the comparison — which
+        # resolves the config directly — would then judge the two halves of one pair by two different
+        # values. A top-level field never reads through a reader at all (its source is the context facade).
+        def _validation_reader_for(config)
+          return nil unless config.subfield?
+          return nil if _reader_deferred?(config)
+
+          config.reader_as
+        end
+
+        # Withdraws the reader an implicit companion generated, once the author's own declaration has
+        # superseded the config behind it — otherwise the memoized method survives its config and answers
+        # with rules the explicit declaration replaced. The boolean `?` predicate goes with it: an alias is
+        # an independent COPY of the body, so a predicate left behind keeps resolving through the superseded
+        # config on its own, applying the base's rules under a name the explicit declaration now owns.
+        def _withdraw_inferred_reader!(name)
+          [name, :"#{name}?"].each { |method_name| _withdraw_inferred_method!(method_name) }
+        end
+
+        # Only a method an inferred module OWNS is touched, so a method the author wrote (one the companion
+        # deferred to) or an explicit declaration's reader is left standing — the same ownership rule that
+        # governs whether a reader is generated in the first place, asked per method name so a predicate that
+        # deferred while its primary reader did not (or the reverse) is judged on its own. An owning module
+        # further up the ancestry belongs to a SUPERCLASS whose own companion still stands there, so the name
+        # is undefined on this class alone rather than removed from that module.
+        def _withdraw_inferred_method!(name)
+          return unless _inferred_reader?(name)
+
+          owner = instance_method(name).owner
+          owner.equal?(@_inferred_reader_module) ? owner.remove_method(name) : undef_method(name)
         end
 
         # `model:` fields get a `<reader>_id` reader meaning "the primary key of the resolved
@@ -1468,22 +1811,27 @@ module Axn
           end
         end
 
-        def _define_field_reader(reader, source = reader)
+        # `target` is the module the method lands in — the class itself for a declared field, the inferred
+        # module for a reader axn derived from another declaration. The block is written here either way,
+        # so a generated reader still reports GENERATED_READER_SOURCE_PATH.
+        def _define_field_reader(reader, source = reader, target: self)
           # Allow local access to explicitly-expected fields on the action instance.
           # NOTE: exposes fields are intentionally excluded — access those via result.field instead.
           # `reader` is the method name (may be aliased via as:/prefix:); `source` is the wire key
           # the value actually lives under in the inbound context.
-          define_method(reader) { internal_context.public_send(source) }
+          target.define_method(reader) { internal_context.public_send(source) }
         end
 
-        def _define_boolean_predicate_reader(field)
+        # Aliased in the same module as the reader it points at (an alias can only name a method its own
+        # module holds), so a predicate riding on an inferred reader is withdrawn with it.
+        def _define_boolean_predicate_reader(field, target: self)
           field_name = field.to_s
           return if field_name.end_with?("?")
 
           predicate_name = "#{field_name}?"
           return unless _reader_name_available?(predicate_name, kind: "boolean predicate")
 
-          alias_method predicate_name, field
+          target.alias_method predicate_name, field
         end
 
         # `coerce: <Type>` → `type: { klass: <Type>, coerce: true }`. The sugar value carries the
@@ -1539,6 +1887,27 @@ module Axn
                 "coerce: needs at least one coercible type (#{Axn::Internal::Coercion::SUPPORTED.join(', ')}); " \
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
+
+        # Whether a validator entry takes NO tolerance from the declaration-level `optional:`/`allow_blank:`/
+        # `allow_nil:` push-down (`_reconcile_emptiness_axis!`'s tolerant branch, below). Exactly one does.
+        # Every other validator judges the field's OWN value, so a tolerance stands it down: there is nothing
+        # to check when the value the author called optional is absent or empty. `confirmation:`'s subject is
+        # not the field's value but the RELATIONSHIP between the field and its companion, and a SUPPLIED
+        # companion is compared against the base whatever the base holds — `password: ""` (or nil) beside
+        # `password_confirmation: "x"` is a mismatch the caller must see, not a blank to wave through.
+        #
+        # This is narrower than it looks: ActiveModel's ConfirmationValidator already returns without
+        # comparing when the COMPANION is nil (measured against activemodel 7.2.2.2: `unless (confirmed =
+        # record.public_send("#{attribute}_confirmation")).nil?`), so a tolerance would only ever reach the
+        # case of a supplied, contradicting companion — never the "nothing to confirm" case its name suggests.
+        #
+        # This is the ONLY tolerance push-down `confirmation:` is exempt from. The separate nil-skip push-down
+        # (`_apply_nil_skip_to_non_type_validators!`, below) does not check this predicate and so does relax a
+        # `confirmation:` entry on a field whose `type:` rejects nil — `expects :password, type: String,
+        # confirmation: true` stores `confirmation: { allow_nil: true }`. Harmless: a nil base has already
+        # failed its own type check by the time the comparison would run, so the relaxed entry never gets
+        # asked to wave through a real mismatch.
+        def _tolerance_exempt_validator?(key) = key == :confirmation
 
         # A blank gate is canonicalized away at declaration, EXACTLY tracking the set of condition
         # values ActiveModel ignores. AM resolves if:/unless: through
@@ -1794,17 +2163,21 @@ module Axn
             shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
             shared_options = validations.slice(*shared_option_keys)
             shared_option_keys.each { |key| validations.delete(key) }
-            validations.transform_values! do |v|
+            # A snapshot of the keys: the loop reassigns entries as it goes, and WHICH validator an entry is
+            # decides whether it takes the tolerance at all, so this can't be a `transform_values!`.
+            validations.keys.each do |key|
+              v = validations[key]
               # A falsy validator value (`presence: false`, or a `nil`/`false` on any validator) is
               # disabled — `validates` skips it (`next unless options`), so there is nothing to push
               # tolerance into; pass it through unchanged (mirrors AM's own falsy-skip).
-              next v unless v
+              next unless v
+              next if _tolerance_exempt_validator?(key)
 
               # Any other value is normalized exactly as `validates` would (scalar → options hash),
               # then the tolerance rides on top — so `numericality: true`, `inclusion: [..]`/`1..5`,
               # `format: /re/`, etc. combine transparently with optional:/allow_blank:/allow_nil:,
               # matching how they behave without a tolerance flag (PRO-2915).
-              { allow_blank:, allow_nil: }.merge(Axn::Validation::Base.normalize_validator_options(v))
+              validations[key] = { allow_blank:, allow_nil: }.merge(Axn::Validation::Base.normalize_validator_options(v))
             end
             validations.merge!(shared_options)
           else
@@ -1864,10 +2237,10 @@ module Axn
         #   * a declared klass nil is an instance of (`type: [Array, NilClass]`, `type: Object`) — the nil
         #     is no type defect at all, so whatever else rejects it is the authoritative report. Asked
         #     through TypeValidator's own matcher so the two can't disagree about one declaration;
-        #   * an effective if:/unless: gate on the type entry — a closed gate skips the type check, and
-        #     then the OTHER validators' nil rejections are the only thing standing between the field and
-        #     an accepted nil. Judged structurally (no condition is ever evaluated) by the same per-key
-        #     merge model schema reflection uses.
+        #   * an if:/unless: gate that desynchronizes the type check from its siblings — one the type entry
+        #     carries itself, or a declaration-level one a sibling overrides — so some other validator runs
+        #     on a call where the type check does not and its nil rejection is then the only account of the
+        #     nil to give (see below for exactly which gates can do that).
         def _type_rejects_nil?(validations)
           raw = validations[:type]
           return false unless raw.is_a?(Hash) && raw[:klass]
@@ -1877,8 +2250,38 @@ module Axn
           type = Axn::Validation::Base.effective_entry_options(raw, _shared_validation_options(validations))
           return false if type[:allow_nil] || type[:allow_blank]
 
-          decl_gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
-          return false if Axn::Validation::Base.entry_effective_gate_keys(type, decl_gates).any?
+          # Relaxing the siblings is safe exactly when the type check runs on every call any sibling runs
+          # on — which the CONDITIONS the type check runs under decide, resolved as ActiveModel merges the
+          # two gate tiers (per key: an entry's own value overrides the declaration's, a blank one drops
+          # the declaration's for that entry and is then ignored):
+          #
+          #   * a NON-BLANK gate the type entry carries itself ties the type check to a condition no
+          #     sibling shares, so a sibling can run on a call it is closed on. Nothing else need be
+          #     asked — the type check stands apart from the whole declaration;
+          #   * otherwise the type check runs under the declaration's gates, minus any key the type entry
+          #     blanks out. Only a sibling that mentions one of those SURVIVING keys can outlive it: a
+          #     sibling naming a key they do not share keeps every shared condition and merely adds one —
+          #     a strict narrowing, which can never run where the type check does not — while naming a
+          #     shared key REPLACES that condition (with a different one, or with a blank that un-gates the
+          #     sibling outright), making the sibling's nil rejection the only account of a nil on some
+          #     call and so not one to relax;
+          #   * with no surviving key the type check is unconditional — it runs on every call, so every
+          #     sibling is covered whatever its own gate. That is the case a blank gate key on the type
+          #     entry reaches when the declaration carries no gate for it to drop (AM ignores the blank,
+          #     leaving the type check exactly as unconditional as a bare `type:`), and the reason
+          #     mentioning a key is not on its own a reason to stand down.
+          #
+          # Key PRESENCE is the test for the SIBLINGS — a blank same-key value there is not inert, it
+          # un-gates that sibling — while the type entry's own gates are asked by effective value, since a
+          # blank one gates nothing. Both come from the single definitions in `Axn::Validation::Base`
+          # rather than a re-test here.
+          return false if Axn::Validation::Base.entry_self_gated?(raw)
+
+          gate_keys = Axn::Validation::Base.entry_effective_gate_keys(raw, _shared_validation_options(validations))
+          if gate_keys.any?
+            siblings = Axn::Validation::Base.validator_entries(validations).except(:type)
+            return false if siblings.any? { |_key, opt| Axn::Validation::Base.entry_mentions_gate_key?(opt, keys: gate_keys) }
+          end
 
           !Axn::Validation::Base.type_admits_nil?(type)
         end

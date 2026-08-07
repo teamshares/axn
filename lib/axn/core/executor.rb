@@ -1155,20 +1155,34 @@ module Axn
         _inbound_configs.filter_map do |config|
           effective_validations = coerce_input_types ? _with_effective_coerce(config.validations) : config.validations
           validator_class = @action_class._cached_validator_class_for(config:, effective_validations:, coerce: coerce_input_types)
+          confirmation = _confirmation_pair_for(config)
           errors = Axn::Validation::Fields.errors_for(
             validator_class,
             source: config.subfield? ? _resolved_parent_value(config) : @action.internal_context,
             validations: effective_validations,
             action: @action,
-            reader: config.subfield? ? config.reader_as : nil,
+            reader: @action_class.send(:_validation_reader_for, config),
             config: config.subfield? ? config : nil,
             permit_method_call: true,
+            confirmation:,
           )
           next if errors.empty?
 
           path = _resolved_path_for(config)
           ContractFailure.new(config:, path:, errors:, stranded_at: path && _stranded_ancestor_path(path, config))
         end
+      end
+
+      # The `[field, value]` pair a `confirmation:` field's validator compares against — the sibling
+      # `<field>_confirmation`'s RESOLVED value, so the comparison sees the same coerce:/preprocess:
+      # result the sibling's own reader and validation see, rather than the raw wire value.
+      def _confirmation_pair_for(config)
+        return nil unless config.validations[:confirmation]
+
+        sibling = Axn::Core::ContractForSubfields.sibling_confirmation_config(@action, config)
+        return nil unless sibling
+
+        [config.field, Axn::Core::ContractForSubfields.resolve_value(@action, sibling)]
       end
 
       # The dotted wire path of the first nil INTERMEDIATE ancestor along a failing subfield's chain

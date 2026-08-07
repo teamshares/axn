@@ -86,7 +86,8 @@ module Axn
       # which ActiveModel skips), `absence` (nil is always "absent"), `acceptance` unless explicitly
       # `allow_nil: false` (ActiveModel's acceptance is allow_nil by default), a Hash allowing nil/blank,
       # `confirmation` (ActiveModel compares only when the `<attr>_confirmation` accessor is non-nil, so the
-      # check adds no error of its own on a nil), a maximum-only `length:` (the one check ActiveModel compares
+      # check adds no error of its own on a nil — the companion's OWN requiredness is a separate question,
+      # carried by the gate on the companion config), a maximum-only `length:` (the one check ActiveModel compares
       # a nil against, and a nil's measured size of 0 clears any maximum — see length_admits_nil?), a
       # `format:` whose literal pattern admits the empty string a nil is tested as (see format_admits_nil?),
       # a `type:` at least one of whose declared klasses nil is an instance of (TypeValidator then reports no
@@ -258,8 +259,32 @@ module Axn
       # at declaration the way declaration-level ones are.
       #
       # THE single definition of "can this one entry be skipped on its own", shared by the emptiness axis's
-      # deferral test and by schema reflection's requiredness-relaxation reasoning.
+      # deferral test, schema reflection's requiredness-relaxation reasoning, and the nil-skip push-down's
+      # test for a type check that stands apart from the rest of its declaration.
       def self.entry_self_gated?(entry_opts) = entry_effective_gate_keys(entry_opts, {}).any?
+
+      # Whether a single validator ENTRY's options MENTION a per-validator gate key at all — blank or not
+      # (contrast entry_self_gated?, which requires a NON-blank value). A blank nested gate is not inert:
+      # per AM's measured per-key merge, a blank nested same-key value OVERRIDES and drops the shared
+      # (declaration) gate for that key before AM ignores it — un-gating the entry. So an entry that
+      # mentions a gate key no longer inherits the declaration's value FOR THAT KEY, in either direction (a
+      # non-blank nested value ties it to a different condition; a blank one un-gates it outright) — which
+      # is why key PRESENCE, not effective gatedness, is the right test wherever a declaration-level gate's
+      # reach into one entry is being asked rather than that entry's own runtime skippability.
+      #
+      # `keys:` narrows WHICH gate keys count, because the merge is per key: an entry mentioning a key the
+      # declaration does not carry adds a condition of its own on top of the shared ones and so can only
+      # narrow itself, while mentioning a key the declaration DOES carry replaces that shared condition and
+      # can widen the entry past its siblings. A caller comparing one entry's reach against another's asks
+      # only about the shared keys; a caller asking whether an entry stands apart from the declaration at all
+      # takes the default.
+      #
+      # THE single definition, shared by schema reflection's declaration-gate-clause fallback and by the
+      # declaration-time nil-skip push-down (contract.rb `_type_rejects_nil?`), so both judge the same
+      # declaration the same way.
+      def self.entry_mentions_gate_key?(opt, keys: Axn::Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+        opt.is_a?(Hash) && keys.any? { |key| opt.key?(key) }
+      end
 
       # The size checks a `length:` entry actually runs, resolved the way ActiveModel's LengthValidator
       # resolves its own options (activemodel 7.2.2.2): `in:`/`within:` expand into `minimum:`/`maximum:` (a

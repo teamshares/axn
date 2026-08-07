@@ -45,7 +45,7 @@ module Axn
         reader_index = deepest_reader_index(path)
         return _resolve_parent_by_recipe(action, config.on, permit_method_call: config.method_call) if reader_index.nil?
 
-        value = action.public_send(_deepest_reader_name(config, path, reader_index))
+        value = _read_deepest_reader(action, config, path, reader_index)
         (reader_index...path.parent_index).each do |i|
           # Every hop below the deepest reader is an IMPLICIT intermediate (a declared node bears a
           # reader, so it would be the reader public_sent above — never dig-crossed here). So the
@@ -84,6 +84,27 @@ module Axn
         return config.on.to_s.split(".").first.to_sym if reader_index == anchor_index
 
         _reader_config(path.ancestors[reader_index].first).reader_as
+      end
+
+      # The parent value at the deepest reader-bearing ancestor. Its reader answers — except when NO config
+      # bearing that name owns it (Contract#_reader_deferred?: an inferred confirmation companion whose
+      # reader yielded to a method the author wrote). Dispatching then reads that method's answer instead of
+      # the declared input, so the child would be validated against a value its parent's own contract never
+      # saw. A reader-less config is resolved directly instead — `resolve_value`, the same seam inbound
+      # validation takes for one — so both halves of a deferred pair and everything read off them agree on
+      # the wire value.
+      #
+      # Asked of EVERY config bearing the name, because one node can hold a companion beside a declaration
+      # of the same name (two spellings of one route reaching the same wire leaf). The companion is the one
+      # that yielded, so the declaration's reader is what the name dispatches to and what the child must
+      # read — the node-level half of the rule SubfieldTree.yields_reader_name? applies to anchor
+      # registration.
+      def self._read_deepest_reader(action, config, path, reader_index)
+        reader = _deepest_reader_name(config, path, reader_index)
+        bearers = path.ancestors[reader_index].first.configs.select { |c| c.reader_as == reader }
+        deferred = bearers.first if bearers.any? && bearers.all? { |c| action.class.send(:_reader_deferred?, c) }
+
+        deferred ? resolve_value(action, deferred) : action.public_send(reader)
       end
 
       # Fallback for configs outside the tree (ambient): read the `on:` root via its reader, dig the
@@ -392,6 +413,24 @@ module Axn
         nil
       end
 
+      # The declared `<field>_confirmation` config on the SAME route as `config`, or nil — the companion the
+      # author declared, or the one `confirmation:` declared implicitly for them (Contract
+      # #_confirmation_companion_configs), which are the same kind of config by then. A confirmation
+      # pair is one route's contract: unlike `sibling_id_configs`, which falls through to a defaulted or
+      # sole route because an id may legitimately be declared beside a different model, a confirmation
+      # compares against the companion declared beside THIS field and nothing else.
+      def self.sibling_confirmation_config(action, config)
+        key = :"#{config.field}_confirmation"
+        candidates =
+          if config.on.nil?
+            action.class.internal_field_configs.select { |c| c.field == key }
+          else
+            action.class.send(:subfield_configs).select { |c| c.field == key }
+          end
+
+        candidates.find { |c| c.on.to_s == config.on.to_s }
+      end
+
       # The declared sibling `<field>_id` configs for a `model:` field, in the priority order _declared_id_token
       # reads them (for both the record lookup and the consistency check), so the two can never disagree about
       # which route's transformed id a present record/lookup sees. All routes of a merged id node read the SAME
@@ -439,7 +478,7 @@ module Axn
       # deliberately absent and stay public: `Core::Executor` calls `_memoized_raw_extract` and
       # `_declared_id_token` on this module by name, and `ClassMethods`' `<field>_id` companion reader
       # calls `_declared_id_token` the same way.
-      private_class_method :_reader_config, :_deepest_reader_name, :_resolve_parent_by_recipe,
+      private_class_method :_reader_config, :_deepest_reader_name, :_read_deepest_reader, :_resolve_parent_by_recipe,
                            :_resolve_in_progress_set, :_transform_in_progress_set, :_raw_extract_memo,
                            :_raw_reads?, :_reader_memo_ref, :_mark_provisional_reader,
                            :_drop_provisional_reader_memos, :_apply_read_path_transforms,
@@ -498,7 +537,7 @@ module Axn
           # name a reader — i.e. the alias when the parent was declared with `as:`/`prefix:`, not the
           # underlying wire key (which has no reader of its own once renamed).
           root = on.to_s.split(".").first.to_sym
-          unless root == Axn::Core::AmbientContext::PARENT || (internal_field_configs + subfield_configs).map(&:reader_as).include?(root)
+          unless root == Axn::Core::AmbientContext::PARENT || _reader_owners.key?(root)
             # The missing SEGMENT is named through `Symbol#inspect`, which supplies its own colon — so the
             # template carries none. `inspect` also escapes bytes with no UTF-8 rendering to ASCII and cannot
             # be overridden (Symbol takes neither a subclass nor a singleton), which is what lets one form
@@ -528,9 +567,20 @@ module Axn
           # `provided_data` is involved. `user_facing:` stays rejected (above): an ambient value is
           # framework-supplied, so there is no caller to face regardless of resolution mechanism.
 
-          _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, allow_empty:, optional:, preprocess:, sensitive:, default:,
-                                           metadata:, reader_names:, user_facing:, method_call:, **validations).tap do |configs|
-            _reject_duplicate_fields!(subfield_configs, configs)
+          # A `confirmation:` subfield declares its `<field>_confirmation` companion on the SAME `on:` route
+          # (a confirmation pair is one route's contract), before any check runs — so from here on the
+          # companion is an ordinary member of the batch, judged and committed with the rest, exactly as on
+          # the top-level route.
+          declared = _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, allow_empty:, optional:, preprocess:, sensitive:, default:,
+                                                      metadata:, reader_names:, user_facing:, method_call:, **validations)
+
+          (declared + _confirmation_companion_configs(declared, existing: subfield_configs)).tap do |configs|
+            # An explicit declaration of a name an earlier `confirmation:` generated implicitly REPLACES that
+            # companion, including the reader it already generated — withdrawn below unless the replacement
+            # reclaims the name.
+            retained, superseded = _partition_superseded_confirmation_companions(subfield_configs, configs)
+
+            _reject_duplicate_fields!(retained, configs)
             # The resolved half of the same identity rule: two supported spellings of one route (a dotted
             # `on:` and a subfield reader or its `as:` alias) resolve to one parent while differing as
             # written, so leaf names that collapse onto one property need the tree to be seen at all.
@@ -545,9 +595,9 @@ module Axn
             # already-declared tolerance is caught at the declaration that completes it. The shared tree
             # drops ambient configs, so the ambient subtree is checked separately on its own scoped tree
             # (PRO-2909) — same candidate set, same checks.
-            Axn::Core::Contract::SubfieldContradictions.check!(internal_field_configs, subfield_configs + configs)
-            _check_ambient_subfield_contradictions!(subfield_configs + configs)
-            _check_ambient_shape_placement!(subfield_configs + configs)
+            Axn::Core::Contract::SubfieldContradictions.check!(internal_field_configs, retained + configs)
+            _check_ambient_subfield_contradictions!(retained + configs)
+            _check_ambient_shape_placement!(retained + configs)
 
             # Every declaration check has passed; NOW mutate the class. Deferring both the config commit
             # AND reader generation to here (after all checks) means a rescued declaration error — a Rails
@@ -555,7 +605,9 @@ module Axn
             # config or generated reader, so a corrected retry starts clean.
             # Copy-on-write + freeze: `<<` would mutate the superclass's contract, and
             # identity-keyed caching relies on replacement.
-            self.subfield_configs = (subfield_configs + configs).freeze
+            self.subfield_configs = (retained + configs).freeze
+            # Before the new readers, so a name the replacement reclaims is redefined rather than dropped.
+            superseded.each { |c| _withdraw_inferred_reader!(c.reader_as) }
             _define_subfield_readers!(configs)
           end
         end
@@ -568,8 +620,11 @@ module Axn
         def _schema_name_label(name) = Axn::Internal::Reflection::PropertyNames.renderable_label(name)
 
         # True when on:'s chain ultimately roots at :ambient_context — directly (`on: :ambient_context`),
-        # via a dotted path, or by pointing at another subfield that itself roots at ambient.
+        # via a dotted path, or by pointing at another subfield that itself roots at ambient. Each hop
+        # follows the config that OWNS the segment's reader (_reader_owners), the same resolution `on:`
+        # itself takes; a top-level owner ends the walk, since only a subfield carries an `on:` to follow.
         def _on_roots_at_ambient?(on)
+          owners = _reader_owners
           seen = []
           segment = on.to_s.split(".").first.to_sym
           loop do
@@ -577,8 +632,8 @@ module Axn
             return false if seen.include?(segment)
 
             seen << segment
-            parent = subfield_configs.find { |c| c.reader_as == segment }
-            return false unless parent
+            parent = owners[segment]
+            return false unless parent&.subfield?
 
             segment = parent.on.to_s.split(".").first.to_sym
           end
@@ -608,15 +663,22 @@ module Axn
 
         # Reader-name uniqueness across the prospective batch and everything already defined — a pure
         # pre-check (no methods defined) run before any reader is generated, so a duplicate raises before
-        # the class is mutated. Every declared subfield gets a reader (canonical `on:` resolution
+        # the class is mutated. Every EXPLICITLY declared subfield gets a reader (canonical `on:` resolution
         # public_sends the deepest reader-bearing ancestor, so a silently-skipped reader would resolve the
-        # wrong value), so a collision is always a declaration error — resolved by renaming, never by
-        # suppression.
+        # wrong value), so a collision between two of them is a declaration error — resolved by renaming,
+        # never by suppression.
+        #
+        # An IMPLICIT confirmation companion is on neither side of that bar. Its own reader is inferred, so
+        # it defers to whatever holds the name instead of raising (`_define_subfield_readers!`); and a name
+        # only an inferred reader holds is free for an explicit declaration to take, which is what makes the
+        # author's own `<field>_confirmation` line replace the companion axn generated for them.
         def _validate_subfield_reader_names!(configs)
           seen = []
           configs.each do |config|
+            next if config.confirmation_for
+
             reader = config.reader_as
-            if method_defined?(reader) || seen.include?(reader)
+            if (method_defined?(reader) && !_inferred_reader?(reader)) || seen.include?(reader)
               raise ArgumentError,
                     "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined) — " \
                     "rename this subfield's reader, e.g. `expects :#{config.field}, on: #{config.on.inspect}, " \
@@ -630,19 +692,29 @@ module Axn
         # Generate the readers for an already-validated, already-committed batch of subfield configs.
         # Called only after every declaration check has passed, so it performs side effects without raising.
         #
-        # Two passes: all EXPLICIT primary readers first, then all auto-generated COMPANIONS (boolean `?`
-        # predicates, model `<field>_id` readers). A companion defers — with a debug breadcrumb, via
-        # `_reader_name_available?` — to any explicit reader of the same name; deferring the whole companion
-        # pass until every primary exists makes that yielding order-independent, matching top-level `expects`.
-        # Interleaving the two (a companion generated before a later same-named primary) would let the
-        # primary silently clobber the companion.
+        # Two passes: every EXPLICIT declaration's primary reader first, then everything INFERRED (an
+        # implicit confirmation companion's own reader, the boolean `?` predicates, the model `<field>_id`
+        # readers). An inferred reader defers — with a debug breadcrumb, via `_reader_name_available?` — to
+        # any explicit reader of the same name; deferring the whole inferred pass until every primary exists
+        # makes that yielding order-independent, matching top-level `expects`. Interleaving the two (an
+        # inferred reader generated before a later same-named primary) would let the primary silently
+        # clobber it.
         def _define_subfield_readers!(configs)
-          # The two passes must NOT be combined: every primary reader has to exist before any companion is
-          # generated, so a companion defers to an explicit same-named reader regardless of order (see above).
-          # rubocop:disable Style/CombinableLoops
-          configs.each { |c| _define_subfield_reader(c) }
-          configs.each { |c| _define_subfield_companion_readers(c) }
-          # rubocop:enable Style/CombinableLoops
+          explicit, inferred = configs.partition { |c| c.confirmation_for.nil? }
+          explicit.each { |c| _define_subfield_reader(c) }
+
+          # An inferred companion yields WHOLE — its own reader and the predicate riding on it — to a
+          # same-named method already present, so a deferred companion never leaves half a reader behind.
+          # The config still stands and is validated, redacted and reflected exactly as it would be with a
+          # reader of its own — validation resolves a reader-less config directly (_validation_reader_for).
+          generated = inferred.filter_map do |config|
+            next unless _reader_name_available?(config.reader_as, kind: "confirmation companion")
+
+            _define_subfield_reader(config)
+            config
+          end
+
+          (explicit + generated).each { |c| _define_subfield_companion_readers(c) }
         end
 
         # `reader` is the accessor's name (may be aliased via as:/prefix:); the wire key it extracts
@@ -656,7 +728,7 @@ module Axn
           if config.validations.key?(:model)
             _define_subfield_model_reader(config)
           else
-            Axn::Internal::Memoization.define_memoized_reader_method(self, reader) do
+            Axn::Internal::Memoization.define_memoized_reader_method(_reader_target_for(config), reader) do
               Axn::Core::ContractForSubfields.resolve_value(self, config)
             end
           end
@@ -666,7 +738,7 @@ module Axn
         # `<field>_id` reader. Defined in a second pass (see _define_subfield_readers!) so each yields to
         # any explicit same-named reader regardless of declaration order.
         def _define_subfield_companion_readers(config)
-          _define_boolean_predicate_reader(config.reader_as) if config.boolean?
+          _define_boolean_predicate_reader(config.reader_as, target: _reader_target_for(config)) if config.boolean?
           return unless config.validations.key?(:model)
 
           _define_subfield_model_id_reader(config, _subfield_model_options(config))

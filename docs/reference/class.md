@@ -20,7 +20,7 @@ Both `expects` and `exposes` support the same core options:
 | `allow_empty` | `expects :ids, type: Array, allow_empty: true` | Speaks to **emptiness only**, leaving nullability to the options above: `true` accepts an empty value while the field stays required and non-nil; `false` rejects an empty one (pair it with `optional:` for "may be omitted, but not empty"). Requires a `type:` whose values can be empty, and accepts only `true`/`false`/`nil`. See [the four requiredness contracts](#requiredness-is-two-questions)
 | `if` / `unless` | `expects :coupon, type: String, if: :promo_enabled?` | Conditionally validate: gates **every** check in this declaration (including the implicit presence check) on an action method (Symbol) or Proc. See [Conditional validation](#conditional-validation-if-unless)
 | `type` | `expects :foo, type: String` | Custom type validation -- fail unless `name.is_a?(String)`
-| anything else | `expects :foo, inclusion: { in: [:apple, :peach] }` | Any other arguments will be processed [as ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html) (i.e. as if passed to `validates :foo, <...>` on an ActiveRecord model)
+| anything else | `expects :foo, inclusion: { in: [:apple, :peach] }` | Any other arguments will be processed [as ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html) (i.e. as if passed to `validates :foo, <...>` on an ActiveRecord model) — with one exception, `confirmation:`, which axn extends past ActiveModel's own behavior (see below)
 
 ### Dynamic `sensitive` fields
 
@@ -132,6 +132,9 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     It never triggers an extra lookup: for the default `:find` finder a supplied id *is* the pk and is returned as-is; otherwise it reads the (memoized) record's `.id`, reusing the same resolution `user` already does. So it's meaningful even with a custom finder — where the `user_id` *key* holds a finder-specific token, `user_id` still returns the resolved record's actual primary key. The reader is alias-aware (`as: :raw_user` → `raw_user_id`) and silently defers (with a debug-level log) to any same-named method you've already declared. (Composite primary keys are not supported by the singular `<field>_id` convention.)
 
     **Record / id consistency.** For the default `:find` finder, passing **both** a record and a `<field>_id` that disagree (`user: <rec id=5>, user_id: 9`) raises `InboundValidationError` rather than silently preferring one — contradictory input is a developer error. Passing just one, or both in agreement, is fine. The check is skipped for custom finders, where the `<field>_id` value is a lookup token, not a primary key, so a record-vs-id comparison would be meaningless.
+
+* `confirmation: true` - declares a companion input, `<field>_confirmation`, and fails unless it matches the field's actual value
+  * Note this departs from ActiveModel, which lets an omitted confirmation pass. See [Confirmation pairs](#confirmation) for the details.
 
 #### Describing the shape of structured fields (block syntax) {#shape-blocks}
 
@@ -248,6 +251,30 @@ expects :v, type: { klass: String, on: :create }
 Use `if:`/`unless:` to gate a check instead. The same rejection covers a shape member's own `on:`, and `on:` on an `exposes`.
 
 Note that this is only about `on:` **inside a validator's options.** A declaration-level `on:` on `expects` is a completely different option — it is axn's [subfield parent](#nested-subfield-expectations) (`expects :zip, on: :address`) — and is unaffected.
+#### Confirmation pairs (`confirmation:`) {#confirmation}
+
+`confirmation: true` declares a **companion input** alongside the field and fails unless the two match — the password/password-confirmation pattern, as one line.
+
+```ruby
+expects :password, type: String, sensitive: true, confirmation: true
+# also accepts `password_confirmation`; you do not declare it yourself
+```
+
+**What the companion inherits.** `type:`, `coerce:`, `preprocess:`, `method_call:`, `user_facing:` and `sensitive:` all carry over, so redaction and caller-facing errors treat `password_confirmation` exactly as they treat `password`. `default:` deliberately does not: a defaulted companion would produce and then match its own value, quietly passing a confirmation nobody supplied. Neither do `shape:`, `of:` or `inclusion:` — the companion is checked for equality against the base, and a value equal to one that already satisfies those constraints satisfies them too.
+
+**When it is required.** Exactly when the base field is present. Send `password` without its confirmation and the call fails; send neither and it passes, because there is nothing to confirm. A companion you *do* supply is always compared, whatever the base holds — a blank or `nil` base is still a value a mismatched companion contradicts. Anything that stops the comparison from running also stops the requirement: an `if:`/`unless:` on the declaration or on the entry itself (`confirmation: { if: :admin }`), and an `allow_blank:` on the entry for a blank base.
+
+**A base with a `default:` is always present**, so its companion is always required — and since `default:` is not inherited, the schema never shows the default's value. The only passing call supplies a confirmation equal to whatever that default happens to be.
+
+**The companion's reader.** You get `password_confirmation`, or `<base reader>_confirmation` when the base is aliased (`as: :pw` reads as `pw_confirmation`). That reader is inferred rather than declared, so it defers: if you wrote a method of that name, or another declaration's `as:` claims it, yours stands and the companion goes without one. Validation, redaction and reflection are unaffected — a companion without a reader is enforced against the wire value directly, so a method you wrote can never stand in for the input the pair requires. A reader name belongs to whichever declaration answers to it, so everything that names a reader follows that declaration rather than the companion that yielded — an `on:` parent, and a Symbol `if:`/`unless:` gate, in the emitted schema as at run time. That holds wherever the two sit relative to each other: which declaration owns a name is settled across the whole contract, not at the point each line is read.
+
+**Declaring the companion yourself** overrides the implicit one, so `expects :password_confirmation, type: String, optional: true` alongside the base gives it whatever contract you want. The implicit version only fills in when you have not.
+
+**Not supported** on `exposes` (there is no caller input to confirm an output against) or on a shape block's `field` (a member has no reader for a companion to attach to). Both raise at declaration.
+
+::: warning This departs from ActiveModel on purpose
+ActiveModel skips the comparison whenever the confirmation accessor reads `nil`, so an omitted `password_confirmation` silently passes there. That default fits ActiveModel's situation rather than axn's: its confirmation attribute is a virtual accessor on a persistent record, reading `nil` on every save that does not touch the field — failing on `nil` would break `user.update(name: "x")` until someone re-typed the password, which is why [the Rails guides](https://guides.rubyonrails.org/active_record_validations.html#confirmation) tell you to add a `presence` check by hand. An axn call carries no such history: one inbound message, validated once. So the presence check is built in rather than left as a footnote.
+:::
 
 ### Details specific to `.exposes`
 
