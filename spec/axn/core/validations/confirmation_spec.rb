@@ -654,6 +654,78 @@ RSpec.describe "confirmation:" do
         expect(schema[:properties][:password_confirmation]).to eq({ type: "string", minLength: 1 })
         expect(schema[:properties][:other][:properties]).to eq({ code: { type: "integer" } })
       end
+
+      # Three questions, one rule: a reader NAME belongs to the config that answers to it. Each is
+      # asked in both declaration orders, so a fix that only re-orients one side still fails the pair.
+      %i[companion_first declaration_first].each do |order|
+        # A Symbol gate names a READER, so the clause a gated sibling emits must key on the wire key of
+        # whoever answers to it. Keying on the companion's instead conditions the sibling on a value the
+        # runtime gate never reads.
+        it "conditions a Symbol gate on the declaration holding the name (#{order})" do
+          klass = build_axn do
+            if order == :companion_first
+              expects :password, as: :pw, type: String, confirmation: true
+              expects :other, as: :pw_confirmation, type: String, optional: true
+            else
+              expects :other, as: :pw_confirmation, type: String, optional: true
+              expects :password, as: :pw, type: String, confirmation: true
+            end
+            expects :thing, type: String, if: :pw_confirmation
+          end
+
+          expect(klass.input_schema[:allOf]).to include(
+            { if: { required: ["other"], properties: { other: { not: { enum: [false, nil] } } } },
+              then: { required: ["thing"] } },
+          )
+          # The runtime the clause mirrors: the gate reads `other`, so a supplied pair alone leaves it shut.
+          expect(klass.call(password: "s3cret", password_confirmation: "s3cret")).to be_ok
+          expect(klass.call(other: "x", password: "s3cret", password_confirmation: "s3cret")).not_to be_ok
+        end
+
+        # One reader name is one namespace across both tiers, so a SUBFIELD declaration can take the name
+        # a top-level companion generated — and `on:` that name then belongs to the subfield.
+        it "anchors on a subfield declaration that holds a top-level companion's name (#{order})" do
+          klass = build_axn do
+            if order == :companion_first
+              expects :password, type: Hash, confirmation: true
+              expects :payload, type: Hash
+              expects :password_confirmation, on: :payload, type: Hash
+            else
+              expects :payload, type: Hash
+              expects :password_confirmation, on: :payload, type: Hash
+              expects :password, type: Hash, confirmation: true
+            end
+            expects :code, on: :password_confirmation, type: Integer
+            exposes :seen
+            def call = expose(seen: code)
+          end
+
+          nested = klass.input_schema[:properties][:payload][:properties][:password_confirmation]
+          expect(nested[:properties]).to eq({ code: { type: "integer" } })
+          expect(klass.input_schema[:properties][:password_confirmation][:properties]).to be_nil
+
+          result = klass.call(password: { a: 1 }, password_confirmation: { a: 1 }, payload: { password_confirmation: { code: 7 } })
+          expect(result.seen).to eq(7)
+        end
+
+        # The collision bar asks whether a name is already claimed under a DIFFERENT wire key, so the wire
+        # key it compares has to be the owner's. Crediting the companion with a name it only spells turns a
+        # plain redeclaration into a reader-name collision on one side of the pair and not the other.
+        it "reports a redeclared name-holder as the duplicate field it is (#{order})" do
+          expect do
+            build_axn do
+              if order == :companion_first
+                expects :password, as: :pw, type: String, confirmation: true
+                expects :other, as: :pw_confirmation, type: String
+              else
+                expects :other, as: :pw_confirmation, type: String
+                expects :password, as: :pw, type: String, confirmation: true
+              end
+              expects :other, as: :pw_confirmation, type: Integer
+            end
+          end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /other/)
+        end
+      end
     end
 
     describe "when an explicit declaration supersedes it" do

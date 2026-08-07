@@ -8,9 +8,10 @@ module Axn
     #
     # `on:` names a READER (`reader_as` — the `as:`/`prefix:` alias when present); schema properties
     # are keyed by wire key (`field`). This builder is the single place that translation happens: the
-    # root `on:` segment is looked up among top-level readers first, then subfield readers (a subfield
-    # anchor attaches the config beneath that subfield's own resolved node). Remaining dotted `on:`
-    # segments become IMPLICIT nodes — intermediate keys with no declaration of their own.
+    # root `on:` segment resolves through the reader-owner index (reader_owners) to the config that
+    # answers to that name, whichever tier declared it, and the config attaches beneath that config's own
+    # resolved node. Remaining dotted `on:` segments become IMPLICIT nodes — intermediate keys with no
+    # declaration of their own.
     #
     # Side-effect-free: inspects declared configs only; never runs user code.
     module SubfieldTree
@@ -42,62 +43,97 @@ module Axn
       end
 
       # The finished build: per-root node trees, the deep `[config, hops]` pairs whose representability is
-      # the reflection layer's to judge, and the per-config ResolvedPath index. (Named to be unmistakable
-      # next to the public Axn::Result.)
-      ResolutionResult = Data.define(:roots, :deep_paths, :index)
+      # the reflection layer's to judge, the per-config ResolvedPath index, and the reader-owner index.
+      # (Named to be unmistakable next to the public Axn::Result.)
+      ResolutionResult = Data.define(:roots, :deep_paths, :index, :reader_owners)
 
       module_function
 
       def build(field_configs, subfield_configs)
         roots = {}
+        # reader name => the config whose generated reader ANSWERS to it (see reader_owners).
+        owners = {}
         # config => ResolvedPath, identity-keyed: distinct declarations are distinct entries even if
         # they compare equal as Data values.
         index = {}.compare_by_identity
         field_configs.each do |config|
           node = Node.new(configs: [config], children: {})
-          # `roots` is the by-READER anchor map, so only the config whose reader answers to a name belongs
-          # under it. A config that yields the name still has a position of its own — this node — and it is
-          # the one the index records: a consumer resolving THIS config (the property it emits, the
-          # nil-tolerance asked of it) must see its own children, none of which the yielded name's
-          # declaration can supply, since a subfield `on:` that name anchors on the owner instead.
-          roots[config.reader_as] = node unless yields_reader_name?(config, roots.key?(config.reader_as))
+          # `roots` is the TOP-LEVEL node forest — what the annotation and contradiction walks iterate — so a
+          # config that yields its name to another TOP-LEVEL one is absent (that name's forest entry is the
+          # owner's). It still has a position of its own — this node — and it is the one the index records: a
+          # consumer resolving THIS config (the property it emits, the nil-tolerance asked of it) must see its
+          # own children, none of which the yielded name's declaration can supply, since a subfield `on:` that
+          # name anchors on the owner instead. A name a SUBFIELD later takes over keeps its node here: the
+          # forest is every top-level node, and `on:` resolution reads the owner index rather than this map.
+          roots[config.reader_as.to_sym] = node if claim_reader!(owners, config)
           index[config] = ResolvedPath.new(node:, wire_path: [config.field], ancestors: [], parent_index: 0)
         end
-        by_reader = {} # subfield reader_as => {node:, hops:} — anchor targets for a subfield-of-a-subfield
         deep_paths = [] # [config, hops] judged only once the tree is COMPLETE (an ancestor's type may be declared after the deep config)
 
         Array(subfield_configs).each do |config|
+          # Claimed before this config's own anchor is resolved, so the finished map covers every config
+          # handed in — including one whose anchor is missing (below) — and therefore equals
+          # `reader_owners(field_configs, subfield_configs)` exactly. A config can never anchor on itself
+          # (that would be a reader-name collision at declaration), so claiming first moves no anchor.
+          claim_reader!(owners, config)
+
           root_key, *on_rest = config.on.to_s.split(".").map(&:to_sym)
-          anchor_hops = []
-          anchor = roots[root_key]
-          if anchor.nil? && (entry = by_reader[root_key])
-            anchor_hops = entry[:hops]
-            anchor = entry[:node]
-          end
+          # `on:` names a READER, so the anchor is the config that OWNS the name and the position is that
+          # config's own — the two questions the owner index and the ResolvedPath index answer, asked once
+          # each rather than re-derived per tier.
+          anchor = index[owners[root_key]]
           # Only a bare `on: :ambient_context` with no declared ambient field lands here — deliberately
           # excluded from the schema (EXCLUDED_FROM_INPUT_SCHEMA), so it is neither attached nor dropped.
           next if anchor.nil?
 
           segments = on_rest + config.field.to_s.split(".").map(&:to_sym)
-          leaf, hops = attach_config!(config, anchor, anchor_hops, segments)
+          leaf, hops = attach_config!(config, anchor.node, anchor.ancestors, segments)
 
           # The chain always starts at a top-level root (an anchored subfield's hops were themselves
           # rooted there), so the first hop's node carries the root's wire key. The `on:` target sits
           # after the anchor chain plus any dotted-`on:` segments (the config's own field segments
           # descend BELOW it).
           index[config] = ResolvedPath.new(node: leaf, wire_path: [hops.first.first.config.field, *hops.map(&:last)],
-                                           ancestors: hops, parent_index: anchor_hops.size + on_rest.size)
+                                           ancestors: hops, parent_index: anchor.ancestors.size + on_rest.size)
 
-          # Every declared config bears a reader, so any subfield can anchor a later `on:` — except an
-          # inferred companion that yields the name to a declaration (see yields_reader_name?).
-          reader = config.reader_as.to_sym
-          by_reader[reader] = { node: leaf, hops: } unless yields_reader_name?(config, by_reader.key?(reader))
           # Shallow (single hop off a top-level root) configs are always representable; only deeper
           # paths are candidates for dropping.
           deep_paths << [config, hops] if hops.size > 1
         end
 
-        ResolutionResult.new(roots:, deep_paths:, index:)
+        ResolutionResult.new(roots:, deep_paths:, index:, reader_owners: owners)
+      end
+
+      # THE index of "which config answers to this reader NAME" — reader name (Symbol) => that config.
+      # A reader name is one namespace across both tiers (Contract#_validate_reader_names! enforces
+      # uniqueness over top-level and subfield configs together), so one map covers both: `on:` anchors,
+      # Symbol gate references in schema reflection, ambient rooting and the collision check all ask the
+      # same question and must get the same answer.
+      #
+      # Distinct from "which node/method belongs to THIS config" — that is identity, answered by the
+      # ResolvedPath index (a config that yields its name still holds a node) and, against a live class,
+      # by Contract#_reader_deferred?. Conflating the two is what lets a name claimed by one declaration
+      # and yielded by another resolve to whichever config happens to be found first.
+      #
+      # Declaration order cannot change the result: the only pairing that puts two configs on one name is
+      # an inferred confirmation companion beside a declaration of that name, and the companion always
+      # yields (yields_reader_name?) — so the declaration wins whichever side of it the companion sits on.
+      def reader_owners(field_configs, subfield_configs)
+        owners = {}
+        Array(field_configs).each { |config| claim_reader!(owners, config) }
+        Array(subfield_configs).each { |config| claim_reader!(owners, config) }
+        owners
+      end
+
+      # Records `config` as the owner of its reader name unless it yields that name to the config already
+      # holding it; answers whether it claimed the name. The one place the rule is applied, so the map the
+      # tree builds as it walks and the map `reader_owners` folds are the same map.
+      def claim_reader!(owners, config)
+        name = config.reader_as.to_sym
+        return false if yields_reader_name?(config, owners.key?(name))
+
+        owners[name] = config
+        true
       end
 
       # Whether `config` leaves an already-claimed reader name (`taken`) to the config holding it. `on:`

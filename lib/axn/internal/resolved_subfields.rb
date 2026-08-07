@@ -34,6 +34,7 @@ module Axn
           path.ancestors.freeze
         end
         tree.index.freeze
+        tree.reader_owners.freeze
       end
 
       def self._freeze_node!(node)

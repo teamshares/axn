@@ -537,7 +537,7 @@ module Axn
           # name a reader — i.e. the alias when the parent was declared with `as:`/`prefix:`, not the
           # underlying wire key (which has no reader of its own once renamed).
           root = on.to_s.split(".").first.to_sym
-          unless root == Axn::Core::AmbientContext::PARENT || (internal_field_configs + subfield_configs).map(&:reader_as).include?(root)
+          unless root == Axn::Core::AmbientContext::PARENT || _reader_owners.key?(root)
             # The missing SEGMENT is named through `Symbol#inspect`, which supplies its own colon — so the
             # template carries none. `inspect` also escapes bytes with no UTF-8 rendering to ASCII and cannot
             # be overridden (Symbol takes neither a subclass nor a singleton), which is what lets one form
@@ -620,8 +620,11 @@ module Axn
         def _schema_name_label(name) = Axn::Internal::Reflection::PropertyNames.renderable_label(name)
 
         # True when on:'s chain ultimately roots at :ambient_context — directly (`on: :ambient_context`),
-        # via a dotted path, or by pointing at another subfield that itself roots at ambient.
+        # via a dotted path, or by pointing at another subfield that itself roots at ambient. Each hop
+        # follows the config that OWNS the segment's reader (_reader_owners), the same resolution `on:`
+        # itself takes; a top-level owner ends the walk, since only a subfield carries an `on:` to follow.
         def _on_roots_at_ambient?(on)
+          owners = _reader_owners
           seen = []
           segment = on.to_s.split(".").first.to_sym
           loop do
@@ -629,8 +632,8 @@ module Axn
             return false if seen.include?(segment)
 
             seen << segment
-            parent = subfield_configs.find { |c| c.reader_as == segment }
-            return false unless parent
+            parent = owners[segment]
+            return false unless parent&.subfield?
 
             segment = parent.on.to_s.split(".").first.to_sym
           end

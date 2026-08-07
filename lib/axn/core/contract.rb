@@ -13,6 +13,7 @@ require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
 require "axn/internal/coercion"
 require "axn/internal/shape_graph"
+require "axn/internal/subfield_tree"
 require "axn/internal/cycle_guard"
 require "axn/result"
 require "axn/core/context/internal"
@@ -915,6 +916,13 @@ module Axn
                 "out of a nested structure; a field's own name is always a single wire key."
         end
 
+        # Which config answers to each reader name already declared on this class, across both tiers —
+        # THE index of that question (Internal::SubfieldTree.reader_owners), asked here of the committed
+        # configs. Two configs can share a name only when an inferred confirmation companion yields it to
+        # a declaration, and the index resolves that to the declaration whichever order the two were
+        # written in.
+        def _reader_owners = Axn::Internal::SubfieldTree.reader_owners(internal_field_configs, subfield_configs)
+
         # Renamed readers must clear the same reserved-name bar as wire keys (identity readers are
         # already reserved-checked against their wire key in `expects`), and no two declarations may
         # resolve to the same reader name.
@@ -929,14 +937,17 @@ module Axn
           # aliases) catches alias-vs-plain clashes in either declaration order — e.g.
           # `expects :bar, as: :foo` then `expects :foo`, which would otherwise silently clobber the
           # `bar` reader. Intra-call duplicates (distinct fields → same reader) are caught too.
-          # Only configs that actually generated a reader can be collided with. A dotted-key subfield
+          # The wire key behind each name is the OWNER's (_reader_owners), so a name a companion merely
+          # spells cannot stand in for the declaration that holds it — which is what makes a same-wire-key
+          # redeclaration report the clearer DuplicateFieldError in either declaration order.
+          # Only names an actually-generated reader answers to can be collided with. A dotted-key subfield
           # defines no method, so its name stays free; consult the method table rather than every
           # config so those readerless declarations don't manufacture phantom collisions. A name held by
           # an INFERRED reader is free too: it is not a declaration, so the explicit one takes the name
           # and the inferred reader yields (_inferred_reader?).
-          existing = (internal_field_configs + subfield_configs)
-                     .select { |c| method_defined?(c.reader_as) && !_inferred_reader?(c.reader_as) }
-                     .to_h { |c| [c.reader_as, c.field] }
+          existing = _reader_owners
+                     .select { |reader, _config| method_defined?(reader) && !_inferred_reader?(reader) }
+                     .transform_values(&:field)
           collisions = reader_names.filter_map { |field, reader| reader if existing.key?(reader) && existing[reader] != field }
           collisions |= reader_names.values.tally.select { |_, count| count > 1 }.keys
           raise ArgumentError, "Reader name collision: #{collisions.uniq.join(', ')}" if collisions.any?

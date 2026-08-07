@@ -174,7 +174,7 @@ module Axn
 
               properties[config.field] = prop.compact
               unless field_optional?(config, node.children, ann)
-                clause = conditional_requiredness_clause(config, field_configs, node, klass)
+                clause = conditional_requiredness_clause(config, tree, node, klass)
                 clause ? conditionals << clause : required << required_key(config.field)
               end
             end
@@ -670,7 +670,7 @@ module Axn
         #     entry from it (AM's measured per-key merge): a blank same-key override un-gates the entry
         #     (unconditionally required — clause looser than runtime), and a non-blank nested gate ties it
         #     to a different condition (also inexact). Nil-TOLERANT nested-gated entries are harmless.
-        def conditional_requiredness_clause(config, field_configs, node, klass)
+        def conditional_requiredness_clause(config, tree, node, klass)
           return nil if config.validations[:model] || node.children.any?
 
           gates = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
@@ -691,7 +691,7 @@ module Axn
           rule = gates.values.first
           return nil unless rule.is_a?(Symbol)
 
-          ref = condition_reference(rule, field_configs)
+          ref = condition_reference(rule, tree)
           return nil unless ref
           return nil if ref.validations[:model] || !ref.default.nil? || ref.preprocess
           return nil if EXCLUDED_FROM_INPUT_SCHEMA.include?(ref.field)
@@ -718,14 +718,25 @@ module Axn
         # The declared top-level inbound field a Symbol condition reads: an exact reader-name match,
         # or — for a `?`-suffixed Symbol — the boolean field whose generated predicate alias it names.
         # The condition reads the READER; the emitted schema keys by the field's WIRE key.
-        def condition_reference(rule, field_configs)
-          name = rule.to_s
-          exact = field_configs.find { |c| c.reader_as.to_s == name }
+        def condition_reference(rule, tree)
+          exact = top_level_reader_owner(tree, rule)
           return exact if exact
+
+          name = rule.to_s
           return nil unless name.end_with?("?")
 
-          base = name.delete_suffix("?")
-          field_configs.find { |c| c.reader_as.to_s == base && c.boolean? }
+          base = top_level_reader_owner(tree, name.delete_suffix("?"))
+          base if base&.boolean?
+        end
+
+        # The top-level config whose reader ANSWERS to `name`, via the tree's reader-owner index rather
+        # than a scan for a config that merely spells the name: a name can be claimed by one declaration
+        # while an inferred confirmation companion yields it (SubfieldTree.reader_owners), and the runtime
+        # gate dispatches to the method — so the clause must key on the owner's wire key. A subfield owner
+        # is no reference at all: its wire key is a nested property, and the clause names top-level ones.
+        def top_level_reader_owner(tree, name)
+          owner = tree.reader_owners[name.to_sym]
+          owner unless owner.nil? || owner.subfield?
         end
 
         # Whether inbound coercion could flip the Ruby truthiness of the referenced field between its
