@@ -513,7 +513,13 @@ module Axn
           # (see `_reject_dotted_field_name!` above, which refuses a dotted name for the same reason), and axn
           # has no ActiveModel validation contexts. Rejected on the key's presence, whatever the value, matching
           # how `exposes` refuses `user_facing:`.
-          if validations.key?(:on)
+          #
+          # BOTH partitions are asked, because `_partition_field_options` routes a key by whether an extension
+          # registered it as field metadata — so a gem calling `register_field_metadata_key(:on)` would otherwise
+          # move the key out of `validations` and take this declaration past the guard, leaving what `on:` means
+          # here dependent on which extensions happen to be loaded. A core DSL option's meaning is not an
+          # extension's to reassign; the registration is refused its collision at the point it would matter.
+          if validations.key?(:on) || metadata.key?(:on)
             raise ArgumentError,
                   "exposes does not support `on:` on #{fields.map(&:to_s).inspect} — an exposure has no subfield " \
                   "parent to reach into, and axn has no ActiveModel validation contexts. Drop `on:`; to gate the " \

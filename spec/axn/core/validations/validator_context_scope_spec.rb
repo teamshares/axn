@@ -330,5 +330,23 @@ RSpec.describe "an `on:` that names a validation context" do
 
       expect(klass.call).to be_ok
     end
+
+    # `_partition_field_options` routes a key by whether an extension registered it as field metadata, so a gem
+    # claiming `:on` moves it out of the validations bag. The guard reads both partitions rather than only that
+    # one, or what `on:` means on an exposure would depend on which extensions happen to be loaded — and the
+    # spelling would go on being silently accepted in exactly the apps that redefined it.
+    it "is refused even where an extension has registered :on as field metadata" do
+      Axn::Extensions.config.register_field_metadata_key(:on)
+
+      expect do
+        Class.new do
+          include Axn
+          exposes :v, presence: true, on: :create
+          def call = expose(v: "x")
+        end
+      end.to raise_error(ArgumentError, /exposes does not support `on:`/)
+    ensure
+      Axn::Extensions.config.registered_field_metadata_keys.delete(:on)
+    end
   end
 end
