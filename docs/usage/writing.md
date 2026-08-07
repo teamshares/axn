@@ -185,7 +185,8 @@ end
 
 **Hook execution:**
 - `done!` **skips** any `after` hooks (or `call` method if called from a `before` hook)
-- `around` hooks **will complete** normally, allowing transactions and tracing to finish properly
+- `around` hooks **do not resume** after the wrapped chain: because `done!` unwinds via an exception, statements following `chain.call` are skipped (exactly as they are for `fail!` or an unhandled raise). Teardown that must always run — timing, tracing, releasing a lock — belongs in an `ensure` inside the `around` hook, which does run
+- The [`use :transaction` strategy](/strategies/transaction) still commits on `done!`, because it explicitly rescues the early-completion signal around the transaction block rather than relying on the hook resuming
 - If you want code that executes on both normal AND early success, use an `on_success` callback instead of an `after` hook
 
 **Transaction handling:**
@@ -349,7 +350,9 @@ error "Onboarding failed", join: ->(base, reason) { "#{base} (#{reason})" }
 
 The Proc receives `(base, reason)` — this level's base header and the already-resolved segment below it — and returns the combined string. It runs per-segment, so each level controls its own join. If the Proc raises or returns a non-String, the framework falls back to the default `": "` join. `success`/`done!` use the same mechanism.
 
-This composition is **bucket-independent**: it applies whether the inner action failed via `fail!`, a `fails_on`-classified exception, or an *unexpected* exception (a bug). For an unexpected exception there is no authored leaf, so only the declared base headers chain (`"Onboarding failed: Charge failed"`) — the raw exception message never enters `result.error` (it stays the technical `#message` on `result.exception`), and a level that declares no base contributes nothing (no `"…: Something went wrong"` noise).
+A parent that declares its **own matching conditional reason** opts out of this aggregation: the matched reason *replaces* the child's carried presentation instead of prefixing it. Given a child resolving to `"Charge failed: card declined"`, a parent declaring `error "Record not found", if: NotFoundErr` settles as `"Onboarding failed: Record not found"` — the child's message is gone, and `standalone: true` drops the parent's base as well, leaving `"Record not found"`. Authoring a reason for an exception class is therefore how a parent takes over the message for it.
+
+This composition is **bucket-independent**: it applies whether the inner action failed via `fail!`, a `fails_on`-classified exception, or an *unexpected* exception (a bug). An unexpected exception still contributes an authored leaf when a conditional `error "…", if: SomeError` matches it — reason matching runs independently of `fails_on`, so `error "retry later", if: RuntimeError` yields `"Onboarding failed: Charge failed: retry later"` even though the outcome stays `exception`. Only when **no** declared reason matches is there no leaf, and then just the declared base headers chain (`"Onboarding failed: Charge failed"`). In every case the raw exception message stays out of `result.error` **by default** — it remains the technical `#message` on `result.exception` — unless you opt a class in explicitly with `error(if: SomeError, &:message)` or `fails_on SomeError, &:message` (see [Prefixing failure reasons](#prefixing-failure-reasons)), in which case it becomes the matched reason and aggregates like any other. And a level that declares no base contributes nothing (no `"…: Something went wrong"` noise).
 :::
 
 ::: tip Composing nested actions: `call!` vs explicit `.call` + `fail!`
@@ -631,7 +634,20 @@ In addition to `#call`, there are a few additional pieces to be aware of:
 
 `before`, `after`, and `around` hooks are supported. They can receive a block directly, or the symbol name of a local method.
 
-Note execution is halted whenever `fail!` is called, `done!` is called, or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `result.ok?` be false even though `call` completed successfully). The `done!` method specifically skips `after` hooks and any remaining `call` method execution, but allows `around` hooks to complete normally.
+Note execution is halted whenever `fail!` is called, `done!` is called, or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `result.ok?` be false even though `call` completed successfully). The `done!` method specifically skips `after` hooks and any remaining `call` method execution.
+
+All three halts — `fail!`, `done!`, and a raise — unwind through `around` hooks as exceptions, so **statements after `chain.call` do not run**. Anything that must happen once the hook has been entered (timing, tracing, releasing a resource) goes in an `ensure` within the `around` hook:
+
+```ruby
+around do |chain|
+  start = Time.current
+  chain.call
+ensure
+  log("Took #{Time.current - start}s")  # runs on success, done!, fail!, and raise
+end
+```
+
+Note the limit of that guarantee: `ensure` covers every halt raised **after the hook chain is entered**, which is what the four outcomes above have in common. An outcome settled *earlier* — a failed inbound `expects` validation, or an **inbound** `preprocess:`/`default:` callable that raises — never reaches the hooks at all, so neither the `around` body nor its `ensure` runs. The `exposes` side is bounded too, in the other direction: outbound resolution (an `exposes` `default:`, outbound validation) runs *after* the hook body has already returned, so the hooks complete **normally** and never observe a raise from it — `chain.call` returned cleanly, and any `ensure` fired on the success path. An `around` hook that rescues in order to record failures will therefore miss every outbound-resolution error; use `on_exception` to catch those. Don't rely on an `around` hook to observe every call; for that, use `on_success`/`on_failure`/`on_exception` callbacks, which fire on the settled result.
 
 #### Around hooks
 
@@ -657,10 +673,13 @@ class Foo
   def with_timing(chain)
     start = Time.current
     chain.call
+  ensure
     log("Took #{Time.current - start}s")
   end
 end
 ```
+
+Note the `ensure` in `with_timing` versus the plain trailing statement in the inline hook above it: `"outer around end"` logs only when the action runs to completion, while the timing line logs on every outcome that reaches the hooks. Reach for `ensure` whenever the hook owns something that must be released or recorded.
 
 #### Before/After example
 

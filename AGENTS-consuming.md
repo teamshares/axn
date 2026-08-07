@@ -98,8 +98,20 @@ If you declare `exposes :x` you must `expose x: …` on every success path — *
 `done!`, so a required exposure that's unset makes the action fail with `OutboundValidationError`.
 
 Hooks: `before`, `after`, `around` (block or symbol method). A `fail!`/raise in a hook fails the
-action. `done!` skips `after` hooks but lets `around` finish. Callbacks (`on_success`, `on_error`,
-`on_failure`, `on_exception`) run *after* `call` and do **not** flip `ok?`.
+action. `done!` skips `after` hooks — and because it unwinds via an exception, statements *after*
+`chain.call` in an `around` hook are skipped too (`fail!` and an unhandled raise unwind the same
+way). Put such teardown in an `ensure` inside the `around`, or use `use :transaction`, which rescues
+the signal so the transaction still commits. Note the `around` hook (and its `ensure`) covers only
+halts raised **after the hook chain is entered** — an inbound `expects` failure, or an *inbound*
+`preprocess:`/`default:` callable that raises, settles before the hooks run, so neither fires. The
+`exposes` side is bounded too: outbound resolution (an `exposes` `default:`, outbound validation)
+runs *after* the hook body returns, so the hooks complete **normally** and never observe a raise from
+it — an `around` that rescues to record failures misses them. Use the callbacks for per-call
+observability that must not miss either end. Callbacks
+(`on_success`, `on_error`, `on_failure`, `on_exception`) fire once the action **settles** — which is
+not the same as "after `call`": they fire even when `call` never ran, as on an inbound validation
+failure. That is what makes them the seam that sees every call. `on_error` is a superset, co-firing
+with whichever of `on_failure`/`on_exception` applies. A raise in a callback does **not** flip `ok?`.
 <https://teamshares.github.io/axn/usage/writing>.
 
 ## Using a result
@@ -162,8 +174,12 @@ expects :zip, on: "address.billing"      # dotted path; reader: zip
 ```
 
 Subfields support all the normal options and `default:`; `readers: false` skips reader creation;
-`as:`/`prefix:` rename. `default:`/`preprocess:`/`sensitive:` are **not** allowed on a *nested
-parent*. Subfield hashes accept string **or** symbol keys (indifferent). Source:
+`as:`/`prefix:` rename. `default:`/`preprocess:`/`sensitive:` work on a *nested parent* too (whether
+reached by dotted path or by pointing `on:` at another subfield). `default:`/`preprocess:` resolve on
+the **read path**, when the subfield is read; `sensitive:` is not part of that read — it resolves
+only when something requests redaction (see Gotchas). Either way the parent is never mutated and
+intermediates are never materialized; on an ambient parent (`on: :ambient_context`) only
+`user_facing:` is unsupported. Subfield hashes accept string **or** symbol keys (indifferent). Source:
 `lib/axn/core/field_resolvers/extract.rb`. Reference:
 <https://teamshares.github.io/axn/reference/class>.
 
@@ -215,12 +231,28 @@ error "email already taken", if: ArgumentError   # reason → "Couldn't sync use
 fail! "missing field"                            # reason → "Couldn't sync user: missing field"
 ```
 
-Composing actions: a base `error` on the parent auto-prefixes a child failure surfaced via `call!`
-**only when the child failed via `fail!`** (re-raised as `Axn::Failure`). A child `fails_on`-matched
-exception — or any raised exception — bubbles as the *original* exception, so the parent settles as a
-failure but `result.error` shows just the parent headline; the child's message is **not** woven in.
-To carry the child's message (e.g. a `RecordInvalid`/model-strategy child), or to add per-call
-context, use non-bang `call` + `fail!("context: #{child.error}")`.
+Composing actions: a base `error` on the parent auto-prefixes the child's **resolved `result.error`**
+surfaced via `call!`, and this is **bucket-independent** — it applies whether the child failed via
+`fail!`, a `fails_on`-classified exception, or an unexpected exception. What differs by bucket is the
+*exception object*, not the message: `fail!` re-raises as `Axn::Failure`, while a `fails_on`-matched
+or unhandled exception bubbles as the **original** exception. Either way the child's message is woven
+in (`"Onboarding failed: Charge failed: card declined"`) — **unless the parent itself declares a
+matching conditional reason**, which *replaces* the child's presentation rather than prefixing it
+(`error "Record not found", if: NotFoundErr` on the parent yields `"Onboarding failed: Record not
+found"`, and `standalone: true` drops the parent's base too, leaving `"Record not found"`). So a
+parent that authors its own reason for an exception class opts out of carrying the child's context.
+An *unexpected* exception still picks up a
+leaf if a conditional `error "…", if: SomeError` matches it — reason matching is independent of
+`fails_on` — giving `"Onboarding failed: Charge failed: retry later"` while the outcome stays
+`exception`. Only with **no matching reason** is there no leaf, and then just the declared base
+headers chain (`"Onboarding failed: Charge failed"`). The raw exception message never enters
+`result.error` **by default** — it stays the technical `#message` on `result.exception` — but you can
+opt a class in explicitly with `error(if: SomeError, &:message)` or `fails_on SomeError, &:message`,
+and once opted in it aggregates like any other reason (`"Onboarding failed: Charge failed: <raw
+message>"`). Only do that where the message is genuinely user-facing. A level declaring no base
+contributes nothing. Reach for non-bang `call` +
+`fail!("context: #{child.error}")` when you want to author a *different* message than this automatic
+aggregation, or to add per-call context — not to carry the child's message through.
 
 ⚠️ **Message bodies are NOT redacted** and propagate outward to every ancestor's `result.error`,
 logs, and error trackers. Never interpolate secrets/PII into `error`/`success`/`fail!` text — put
@@ -246,8 +278,17 @@ sensitive values in `sensitive:` fields. Detail:
   unchanged (not wrapped). `fails_on` reclassification is sticky across `call!` boundaries.
 - **Hooks vs callbacks.** A raise/`fail!` in a `before`/`after`/`around` hook flips `ok?` to false; a
   raise in a callback (`on_success` etc.) is reported but does **not** change `ok?`.
-- **`sensitive:` proc timing.** For `expects`, the `sensitive:` callable runs *before* defaults are
-  applied — guard against `nil` if it depends on another field.
+- **Callable-option timing.** A `sensitive:` Proc is `instance_exec`'d with **no arguments** (write
+  `sensitive: -> { !include_pii }`, reading other fields by name — a lambda declaring a parameter
+  raises), and it resolves lazily, only when something actually redacts. By then `default:`s are
+  applied, so it reads another field's *defaulted* value. `preprocess:` is the opposite: it runs
+  *before* defaults, seeing `nil` for an omitted top-level field. Only a **non-nil** result bypasses
+  the `default:` — return `nil` and the default still applies, so an intentional nil does not survive
+  (`false` does, matching `default:`'s missing-or-nil rule). On a **subfield** the preprocessor runs
+  only when the leaf's immediate parent is present: `parent: {}` still invokes it with `nil`, but an
+  absent or `nil` parent skips it entirely. The subfield's own `default:` still resolves in that case
+  — the reader returns the default, and is `nil` only when there is none. So don't rely on a nested
+  `preprocess:` to manufacture a value when the parent is missing; declare a `default:` for that.
 
 ## Strategies (DRYed configuration via `use`)
 
@@ -279,4 +320,4 @@ Source entry points (resolve with `bundle show axn`):
 - `lib/axn/core/validation/validators/` — `type`, `of`, `model`, `validate`, `shape` validators.
 - `lib/axn/core/flow/` — `messages.rb`, `fails_on.rb`, `handlers/` (failure/message/callback resolution).
 - `lib/axn/result.rb`, `lib/axn/core/context/facade.rb` — the `Result` surface.
-- `lib/axn/strategies/` — `model.rb`, `form.rb`, `transaction.rb`.
+- `lib/axn/strategies/` — `form.rb`, `transaction.rb`; `lib/axn/extras/strategies/client.rb` (`use :client`).
