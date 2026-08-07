@@ -295,7 +295,7 @@ module Axn
       end
 
       def self._field_option_kwarg_names(method_name)
-        ClassMethods.instance_method(method_name).parameters.filter_map { |type, name| name if type == :key }
+        ClassMethods.instance_method(method_name).parameters.filter_map { |type, name| name if %i[key keyreq].include?(type) }
       end
       private_class_method :_field_option_kwarg_names
 

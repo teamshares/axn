@@ -61,12 +61,14 @@ RSpec.describe Axn::Extensions::Config do
     end
 
     # One name per source the set unions, so a source silently dropping out of the derivation fails
-    # here rather than reopening the hole it covered. `:method_call` is the canary for the signature
-    # reflection specifically — it is an `expects` kwarg and appears in none of the three constants.
+    # here rather than reopening the hole it covered. `:preprocess` is the canary for the signature
+    # reflection specifically — it is an `expects` kwarg contributed by no other source (unlike
+    # `:method_call`, which the reflection also reports but which `SHAPE_MEMBER_FIELD_OPTIONS` already
+    # contributes on its own, making it a vacuous canary for this source).
     it "draws from every source it is derived from" do
       expect(reserved).to include(:presence)    # KNOWN_VALIDATION_KEYS
       expect(reserved).to include(:allow_blank) # ActiveModel's shared validation options
-      expect(reserved).to include(:method_call) # an `expects` kwarg, present in no constant
+      expect(reserved).to include(:preprocess)  # an `expects` kwarg, contributed by no other source
       expect(reserved).to include(:user_facing) # SHAPE_MEMBER_FIELD_OPTIONS
     end
 
