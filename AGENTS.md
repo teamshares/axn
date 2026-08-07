@@ -4,7 +4,7 @@ Guidance for agents working in **Axn**. Read before writing code.
 
 This file governs axn-core itself. Two siblings cover adjacent work: read `AGENTS-consuming.md`
 before building or maintaining a gem that depends on axn; read `AGENTS-tool-adapters.md` before
-touching a tool adapter (`Axn::Tools`, `tool_paths`, `Invoker`/`owns_failure_exception`).
+touching a tool adapter (`Axn::Tools`, `tool_roots`, `Invoker`/`Axn::Extensions.owned_failure?`).
 
 ## The bar
 

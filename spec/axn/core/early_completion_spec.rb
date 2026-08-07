@@ -163,6 +163,47 @@ RSpec.describe Axn do
       end
     end
 
+    context "when an around hook wraps a call that ends via done!" do
+      # done! unwinds via an exception, so an around hook does NOT resume after chain.call --
+      # only an `ensure` runs. Documented in docs/usage/writing.md and AGENTS-consuming.md;
+      # pinned here because the docs previously claimed around hooks "complete normally".
+      it "skips statements after chain.call but still runs an ensure" do
+        trace = []
+        action = build_axn do
+          around do |chain|
+            trace << :before_chain
+            chain.call
+            trace << :after_chain
+          ensure
+            trace << :ensure
+          end
+
+          define_method(:call) do
+            trace << :call
+            done!("early")
+          end
+        end
+
+        expect(action.call).to be_ok
+        expect(trace).to eq(%i[before_chain call ensure])
+      end
+
+      it "resumes after chain.call on a normal completion" do
+        trace = []
+        action = build_axn do
+          around do |chain|
+            chain.call
+            trace << :after_chain
+          end
+
+          def call = nil
+        end
+
+        expect(action.call).to be_ok
+        expect(trace).to eq([:after_chain])
+      end
+    end
+
     context "when done! is called in an after hook" do
       let(:action) do
         build_axn do

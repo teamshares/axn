@@ -185,7 +185,8 @@ end
 
 **Hook execution:**
 - `done!` **skips** any `after` hooks (or `call` method if called from a `before` hook)
-- `around` hooks **will complete** normally, allowing transactions and tracing to finish properly
+- `around` hooks **do not resume** after the wrapped chain: because `done!` unwinds via an exception, statements following `chain.call` are skipped (exactly as they are for `fail!` or an unhandled raise). Teardown that must always run — timing, tracing, releasing a lock — belongs in an `ensure` inside the `around` hook, which does run
+- The [`use :transaction` strategy](/strategies/transaction) still commits on `done!`, because it explicitly rescues the early-completion signal around the transaction block rather than relying on the hook resuming
 - If you want code that executes on both normal AND early success, use an `on_success` callback instead of an `after` hook
 
 **Transaction handling:**
@@ -631,7 +632,18 @@ In addition to `#call`, there are a few additional pieces to be aware of:
 
 `before`, `after`, and `around` hooks are supported. They can receive a block directly, or the symbol name of a local method.
 
-Note execution is halted whenever `fail!` is called, `done!` is called, or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `result.ok?` be false even though `call` completed successfully). The `done!` method specifically skips `after` hooks and any remaining `call` method execution, but allows `around` hooks to complete normally.
+Note execution is halted whenever `fail!` is called, `done!` is called, or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `result.ok?` be false even though `call` completed successfully). The `done!` method specifically skips `after` hooks and any remaining `call` method execution.
+
+All three halts — `fail!`, `done!`, and a raise — unwind through `around` hooks as exceptions, so **statements after `chain.call` do not run**. Anything that must happen regardless of outcome (timing, tracing, releasing a resource) goes in an `ensure` within the `around` hook:
+
+```ruby
+around do |chain|
+  start = Time.current
+  chain.call
+ensure
+  log("Took #{Time.current - start}s")  # runs on success, done!, fail!, and raise
+end
+```
 
 #### Around hooks
 
@@ -657,10 +669,13 @@ class Foo
   def with_timing(chain)
     start = Time.current
     chain.call
+  ensure
     log("Took #{Time.current - start}s")
   end
 end
 ```
+
+Note the `ensure` in `with_timing` versus the plain trailing statement in the inline hook above it: `"outer around end"` logs only when the action runs to completion, while the timing line logs on every outcome. Reach for `ensure` whenever the hook owns something that must be released or recorded.
 
 #### Before/After example
 
