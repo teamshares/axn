@@ -528,39 +528,7 @@ Two of these replace an existing example. First, **invert** `spec/axn/core/valid
         expect(result.cid).to eq(42)
       end
 
-      it "prefers the model's OWN route over the canonically-named one" do
-        # Both selectors can match at once; the own route is authoritative, exactly as it is for a present
-        # token, so the transform declared beside the model is the one the finder consumes.
-        finder = Class.new do
-          attr_reader :id
-
-          def initialize(id) = @id = id
-          def self.find(id) = new(id)
-        end
-        stub_const("OwnRouteCo", finder)
-        action = build_axn do
-          expects :payload, type: Hash
-          expects :thing, on: :payload, allow_blank: true
-          expects :company_id, on: "payload.thing", optional: true, default: 42
-          expects :company_id, on: :thing, optional: true, default: 7, as: :t_company_id
-          expects :company, on: :thing, model: { klass: OwnRouteCo, finder: :find }, allow_nil: true
-          exposes :cid, allow_nil: true
-          def call = expose(cid: company&.id)
-        end
-
-        result = action.call(payload: { thing: {} })
-
-        expect(result).to be_ok
-        expect(result.cid).to eq(7)
-      end
-```
-
-Note the third example declares two defaults on one merged node, which PRO-2901's check still rejects at this point in the plan — it starts passing in Task 4. Mark it pending for this task only:
-
-```ruby
-      it "prefers the model's OWN route over the canonically-named one", skip: "unskipped in Task 4 (PRO-2901 check still rejects two defaults)" do
-```
-
+The own-route-beats-name-owner case needs two `default:` declarations on one merged node to be observable, which PRO-2901's check still rejects at this point in the plan — so that example belongs to Task 4, which deletes that check. Do not add it here, and do not add it skipped.
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `bundle exec rspec spec/axn/core/validations/on_subfields_spec.rb -e "aliased route on another spelling"`
@@ -764,7 +732,36 @@ In `spec/axn/core/validations/on_subfields_spec.rb:2819`, the example expecting 
 
 Note that fixture's original comment claimed `untyped, so an opaque parent refuses the write-back`; the write-back it referred to was deleted in PRO-2903/2908, so the replacement above drops it rather than carrying it forward.
 
-Finally, remove the `skip:` from Task 3's `"prefers the model's OWN route over the canonically-named one"` example.
+Finally, add the example Task 3 deferred to here, because it needs two defaults on one merged node to be observable. Put it beside Task 3's other token-route examples in `spec/axn/core/validations/on_subfields_spec.rb`:
+
+```ruby
+      it "prefers the model's OWN route over the canonically-named one" do
+        # Both selectors can match at once; the own route is authoritative, exactly as it is for a present
+        # token, so the transform declared beside the model is the one the finder consumes.
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("OwnRouteCo", finder)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload, allow_blank: true
+          expects :company_id, on: "payload.thing", optional: true, default: 42
+          expects :company_id, on: :thing, optional: true, default: 7, as: :t_company_id
+          expects :company, on: :thing, model: { klass: OwnRouteCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(payload: { thing: {} })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(7)
+      end
+```
+
 
 - [ ] **Step 2: Run them to verify they fail**
 
