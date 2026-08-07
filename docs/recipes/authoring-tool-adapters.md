@@ -204,6 +204,8 @@ annotations(**resolved) if resolved
 
 `semantic_hints` are advisory (core's `:read_only`/`:idempotent`/`:destructive` don't enforce anything); adapters interpret them (MCP annotations, a REST verb, RubyLLM gating).
 
+The sibling registry `Axn::Extensions.config.register_field_metadata_key(*keys)` adds keys an author may pass on an `expects`/`exposes`/shape-member declaration, which arrive on the field's `metadata`. It refuses any name the core field DSL owns — the validation keys, ActiveModel's shared options, and the field options like `optional:`/`as:`/`sensitive:` — because a registered key is routed out of a declaration's validations, so claiming one would change what that option means for every action in the process. Namespace yours to your gem (`:mcp_title`, `:openapi_example`) and the collision can't arise.
+
 ## Invocation & result mapping
 
 **Call the class with `axn_class.call(**kwargs)`.** It returns an [`Axn::Result`](/reference/axn-result) and **never raises for a business failure** (`call!` raises; `call` doesn't). The *sanctioned* tool call path is [`Axn::Tools::Invoker`](/reference/tool-invoker) — prefer it over a bare `.call`, because it applies the tool contract (always-on coercion of wire args, optional user-facing input-error surfacing, undeclared-key rejection, the ambient-context guard) that a trusted in-process `.call` deliberately doesn't. Read that page; it's the runtime half of this one.
