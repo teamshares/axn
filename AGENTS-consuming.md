@@ -262,7 +262,9 @@ sensitive values in `sensitive:` fields. Detail:
   `sensitive: -> { !include_pii }`, reading other fields by name — a lambda declaring a parameter
   raises), and it resolves lazily, only when something actually redacts. By then `default:`s are
   applied, so it reads another field's *defaulted* value. `preprocess:` is the opposite: it runs
-  *before* defaults, seeing `nil` for an omitted field, and its return value wins over the `default:`.
+  *before* defaults, seeing `nil` for an omitted field. Only a **non-nil** result bypasses the
+  `default:` — return `nil` and the default still applies, so an intentional nil does not survive
+  (`false` does, matching `default:`'s missing-or-nil rule).
 
 ## Strategies (DRYed configuration via `use`)
 
