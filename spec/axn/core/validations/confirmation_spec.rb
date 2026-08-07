@@ -726,6 +726,67 @@ RSpec.describe "confirmation:" do
           end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /other/)
         end
       end
+
+      # Which config owns a name is settled over the WHOLE contract, so a subfield that takes a companion's
+      # name is the anchor for `on:` that name even where it is declared after the config anchoring on it.
+      # Resolving each anchor as the declarations arrive reads the companion in one order and the subfield
+      # in the other, putting one contract on two different wire paths — and the emitted schema and the
+      # runtime read move together, so neither side reveals the other is wrong.
+      %i[anchor_first claimant_first].each do |order|
+        it "anchors on the subfield holding the name wherever that subfield is declared (#{order})" do
+          klass = build_axn do
+            expects :password, as: :pw, type: Hash, confirmation: true
+            expects :payload, type: Hash
+            if order == :anchor_first
+              expects :code, on: :pw_confirmation, type: Integer
+              expects :nested, on: :payload, as: :pw_confirmation, type: Hash
+            else
+              expects :nested, on: :payload, as: :pw_confirmation, type: Hash
+              expects :code, on: :pw_confirmation, type: Integer
+            end
+            exposes :seen
+            def call = expose(seen: code)
+          end
+
+          schema = klass.input_schema
+          expect(schema[:properties][:payload][:properties][:nested][:properties]).to eq({ code: { type: "integer" } })
+          expect(schema[:properties][:password_confirmation][:properties]).to be_nil
+
+          # And the runtime reads the value from the path the schema advertises.
+          result = klass.call(password: { code: 1 }, password_confirmation: { code: 1 }, payload: { nested: { code: 7 } })
+          expect(result.seen).to eq(7)
+        end
+      end
+
+      # A yielded name is the only thing that lets an `on:` chain loop at all: an `on:` root must be declared
+      # to pass the missing-reader check, so without a name changing hands every chain ends at a top-level
+      # field. A loop names no value to read from, in either direction and at either end.
+      %i[forwards backwards].each do |order|
+        it "rejects an on: chain that loops back through a name a companion yielded (#{order})" do
+          expect do
+            build_axn do
+              expects :alpha, as: :a, type: Hash, confirmation: true
+              expects :beta, as: :b, type: Hash, confirmation: true
+              if order == :forwards
+                expects :x, on: :a_confirmation, as: :b_confirmation, type: Hash
+                expects :y, on: :b_confirmation, as: :a_confirmation, type: Hash
+              else
+                expects :y, on: :b_confirmation, as: :a_confirmation, type: Hash
+                expects :x, on: :a_confirmation, as: :b_confirmation, type: Hash
+              end
+            end
+          end.to raise_error(ArgumentError, /circular on: chain.*:x.*:y|circular on: chain.*:y.*:x/m)
+        end
+      end
+
+      it "rejects a subfield declared on the very name it takes over" do
+        expect do
+          build_axn do
+            expects :alpha, as: :a, type: Hash, confirmation: true
+            expects :x, on: :a_confirmation, as: :a_confirmation, type: Hash
+          end
+        end.to raise_error(ArgumentError, /circular on: chain/)
+      end
     end
 
     describe "when an explicit declaration supersedes it" do

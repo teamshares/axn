@@ -9,9 +9,9 @@ module Axn
     # `on:` names a READER (`reader_as` — the `as:`/`prefix:` alias when present); schema properties
     # are keyed by wire key (`field`). This builder is the single place that translation happens: the
     # root `on:` segment resolves through the reader-owner index (reader_owners) to the config that
-    # answers to that name, whichever tier declared it, and the config attaches beneath that config's own
-    # resolved node. Remaining dotted `on:` segments become IMPLICIT nodes — intermediate keys with no
-    # declaration of their own.
+    # answers to that name — whichever tier declared it, and wherever in the file — and the config
+    # attaches beneath that config's own resolved node. Remaining dotted `on:` segments become IMPLICIT
+    # nodes — intermediate keys with no declaration of their own.
     #
     # Side-effect-free: inspects declared configs only; never runs user code.
     module SubfieldTree
@@ -63,28 +63,55 @@ module Axn
           # owner's). It still has a position of its own — this node — and it is the one the index records: a
           # consumer resolving THIS config (the property it emits, the nil-tolerance asked of it) must see its
           # own children, none of which the yielded name's declaration can supply, since a subfield `on:` that
-          # name anchors on the owner instead. A name a SUBFIELD later takes over keeps its node here: the
-          # forest is every top-level node, and `on:` resolution reads the owner index rather than this map.
+          # name anchors on the owner instead. A name a SUBFIELD takes over keeps its node here: the forest
+          # is every top-level node, and `on:` resolution reads the owner index rather than this map.
           roots[config.reader_as.to_sym] = node if claim_reader!(owners, config)
           index[config] = ResolvedPath.new(node:, wire_path: [config.field], ancestors: [], parent_index: 0)
         end
+
+        subfields = Array(subfield_configs)
+        # Every name is claimed before ANY anchor is resolved, so an anchor reads the same FINISHED map
+        # declaration-time consumers get from `reader_owners` — which this is, claim for claim, in the same
+        # order over the same configs. Resolving each anchor as the walk reaches it would instead anchor on
+        # whoever holds the name at that point in the file, so a name an inferred companion holds until a
+        # later declaration takes it over would put one contract on a different wire path in each order.
+        subfields.each { |config| claim_reader!(owners, config) }
+
         deep_paths = [] # [config, hops] judged only once the tree is COMPLETE (an ancestor's type may be declared after the deep config)
+        # Attaching under an anchor needs the anchor's own position, so an anchor that is itself a subfield
+        # is attached first — on demand, since the config that owns a name may be declared after the config
+        # anchoring on it. `chain` is the anchor chain currently being resolved, reused across the walk.
+        chain = []
+        subfields.each { |config| attach_subfield!(config, owners:, index:, deep_paths:, chain:) }
 
-        Array(subfield_configs).each do |config|
-          # Claimed before this config's own anchor is resolved, so the finished map covers every config
-          # handed in — including one whose anchor is missing (below) — and therefore equals
-          # `reader_owners(field_configs, subfield_configs)` exactly. A config can never anchor on itself
-          # (that would be a reader-name collision at declaration), so claiming first moves no anchor.
-          claim_reader!(owners, config)
+        ResolutionResult.new(roots:, deep_paths:, index:, reader_owners: owners)
+      end
 
+      # Resolves one subfield's anchor and attaches it beneath the anchor's node, attaching an anchor whose
+      # own position isn't resolved yet first. Records the result in `index`, which is also the
+      # already-placed check: a config reached twice (as its own anchor's anchor, or as two configs' anchor)
+      # is placed once.
+      def attach_subfield!(config, owners:, index:, deep_paths:, chain:)
+        return if index.key?(config)
+
+        # Re-entered while its own anchor is still resolving: the `on:` chain leads back here, so no config on
+        # it names a wire path to read from. Identity, not `==`: two declarations can compare equal as Data
+        # values without being the same declaration.
+        raise_circular_anchor!(chain, config) if chain.any? { |c| c.equal?(config) }
+
+        chain.push(config)
+        begin
           root_key, *on_rest = config.on.to_s.split(".").map(&:to_sym)
           # `on:` names a READER, so the anchor is the config that OWNS the name and the position is that
           # config's own — the two questions the owner index and the ResolvedPath index answer, asked once
           # each rather than re-derived per tier.
-          anchor = index[owners[root_key]]
+          owner = owners[root_key]
+          attach_subfield!(owner, owners:, index:, deep_paths:, chain:) if owner&.subfield?
+          anchor = index[owner]
           # Only a bare `on: :ambient_context` with no declared ambient field lands here — deliberately
           # excluded from the schema (EXCLUDED_FROM_INPUT_SCHEMA), so it is neither attached nor dropped.
-          next if anchor.nil?
+          # Anything anchored ON such a config inherits the exclusion the same way.
+          return if anchor.nil?
 
           segments = on_rest + config.field.to_s.split(".").map(&:to_sym)
           leaf, hops = attach_config!(config, anchor.node, anchor.ancestors, segments)
@@ -99,9 +126,25 @@ module Axn
           # Shallow (single hop off a top-level root) configs are always representable; only deeper
           # paths are candidates for dropping.
           deep_paths << [config, hops] if hops.size > 1
+        ensure
+          chain.pop
         end
+      end
 
-        ResolutionResult.new(roots:, deep_paths:, index:, reader_owners: owners)
+      # A loop of `on:` anchors, reported at the declaration that closes it (the tree is built by the
+      # declaration-time contradiction check). Building one takes a name an inferred confirmation companion
+      # holds and a later subfield declaration takes over: without a name changing hands, an `on:` root must
+      # already be declared to pass the missing-reader check and can never be re-pointed, so every chain ends
+      # at a top-level field. Rejected rather than left out of the tree, because a config with no resolved
+      # position falls back to resolving `on:` by reader dispatch at runtime — which around a loop is each
+      # member calling the next until the stack runs out.
+      def raise_circular_anchor!(chain, config)
+        loop_start = chain.index { |c| c.equal?(config) }
+        route = chain[loop_start..].map { |c| "#{c.field.inspect} (on: #{c.on.inspect})" }.join(" -> ")
+        raise ArgumentError,
+              "circular on: chain: #{route} -> #{config.field.inspect}. Each of these is declared on a reader the " \
+              "next one owns, so the chain never reaches a top-level field and none of them names a value to read " \
+              "from. Anchor one of them on a field declared outside the loop."
       end
 
       # THE index of "which config answers to this reader NAME" — reader name (Symbol) => that config.
