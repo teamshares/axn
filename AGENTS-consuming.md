@@ -103,9 +103,11 @@ action. `done!` skips `after` hooks — and because it unwinds via an exception,
 way). Put such teardown in an `ensure` inside the `around`, or use `use :transaction`, which rescues
 the signal so the transaction still commits. Note the `around` hook (and its `ensure`) covers only
 halts raised **after the hook chain is entered** — an inbound `expects` failure, or an *inbound*
-`preprocess:`/`default:` callable that raises, settles before the hooks run, so neither fires (an
-`exposes` `default:` resolves outbound, *after* the hook body returns, so it is visible to them). Use
-the callbacks for per-call observability that must not miss those. Callbacks
+`preprocess:`/`default:` callable that raises, settles before the hooks run, so neither fires. The
+`exposes` side is bounded too: outbound resolution (an `exposes` `default:`, outbound validation)
+runs *after* the hook body returns, so the hooks complete **normally** and never observe a raise from
+it — an `around` that rescues to record failures misses them. Use the callbacks for per-call
+observability that must not miss either end. Callbacks
 (`on_success`, `on_error`, `on_failure`, `on_exception`) run *after* `call` and do **not** flip
 `ok?`.
 <https://teamshares.github.io/axn/usage/writing>.
