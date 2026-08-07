@@ -237,9 +237,12 @@ An *unexpected* exception still picks up a
 leaf if a conditional `error "…", if: SomeError` matches it — reason matching is independent of
 `fails_on` — giving `"Onboarding failed: Charge failed: retry later"` while the outcome stays
 `exception`. Only with **no matching reason** is there no leaf, and then just the declared base
-headers chain (`"Onboarding failed: Charge failed"`). Either way the raw exception message never
-enters `result.error` (it stays the technical `#message` on `result.exception`), and a level
-declaring no base contributes nothing. Reach for non-bang `call` +
+headers chain (`"Onboarding failed: Charge failed"`). The raw exception message never enters
+`result.error` **by default** — it stays the technical `#message` on `result.exception` — but you can
+opt a class in explicitly with `error(if: SomeError, &:message)` or `fails_on SomeError, &:message`,
+and once opted in it aggregates like any other reason (`"Onboarding failed: Charge failed: <raw
+message>"`). Only do that where the message is genuinely user-facing. A level declaring no base
+contributes nothing. Reach for non-bang `call` +
 `fail!("context: #{child.error}")` when you want to author a *different* message than this automatic
 aggregation, or to add per-call context — not to carry the child's message through.
 
