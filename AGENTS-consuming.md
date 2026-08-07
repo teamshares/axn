@@ -100,8 +100,11 @@ If you declare `exposes :x` you must `expose x: …` on every success path — *
 Hooks: `before`, `after`, `around` (block or symbol method). A `fail!`/raise in a hook fails the
 action. `done!` skips `after` hooks — and because it unwinds via an exception, statements *after*
 `chain.call` in an `around` hook are skipped too (`fail!` and an unhandled raise unwind the same
-way). Put teardown that must always run in an `ensure` inside the `around`, or use
-`use :transaction`, which rescues the signal so the transaction still commits. Callbacks
+way). Put such teardown in an `ensure` inside the `around`, or use `use :transaction`, which rescues
+the signal so the transaction still commits. Note the `around` hook (and its `ensure`) covers only
+halts raised **after the hook chain is entered** — an inbound `expects` failure, or a
+`preprocess:`/`default:` callable that raises, settles before the hooks run, so neither fires. Use
+the callbacks for per-call observability that must not miss those. Callbacks
 (`on_success`, `on_error`, `on_failure`, `on_exception`) run *after* `call` and do **not** flip
 `ok?`.
 <https://teamshares.github.io/axn/usage/writing>.

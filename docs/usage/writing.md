@@ -636,7 +636,7 @@ In addition to `#call`, there are a few additional pieces to be aware of:
 
 Note execution is halted whenever `fail!` is called, `done!` is called, or an exception is raised (so a `before` block failure won't execute `call` or `after`, while an `after` block failure will make `result.ok?` be false even though `call` completed successfully). The `done!` method specifically skips `after` hooks and any remaining `call` method execution.
 
-All three halts — `fail!`, `done!`, and a raise — unwind through `around` hooks as exceptions, so **statements after `chain.call` do not run**. Anything that must happen regardless of outcome (timing, tracing, releasing a resource) goes in an `ensure` within the `around` hook:
+All three halts — `fail!`, `done!`, and a raise — unwind through `around` hooks as exceptions, so **statements after `chain.call` do not run**. Anything that must happen once the hook has been entered (timing, tracing, releasing a resource) goes in an `ensure` within the `around` hook:
 
 ```ruby
 around do |chain|
@@ -646,6 +646,8 @@ ensure
   log("Took #{Time.current - start}s")  # runs on success, done!, fail!, and raise
 end
 ```
+
+Note the limit of that guarantee: `ensure` covers every halt raised **after the hook chain is entered**, which is what the four outcomes above have in common. An outcome settled *earlier* — a failed inbound `expects` validation, or a `preprocess:`/`default:` callable that raises — never reaches the hooks at all, so neither the `around` body nor its `ensure` runs. Don't rely on an `around` hook to observe every call; for that, use `on_success`/`on_failure`/`on_exception` callbacks, which fire on the settled result.
 
 #### Around hooks
 
@@ -677,7 +679,7 @@ class Foo
 end
 ```
 
-Note the `ensure` in `with_timing` versus the plain trailing statement in the inline hook above it: `"outer around end"` logs only when the action runs to completion, while the timing line logs on every outcome. Reach for `ensure` whenever the hook owns something that must be released or recorded.
+Note the `ensure` in `with_timing` versus the plain trailing statement in the inline hook above it: `"outer around end"` logs only when the action runs to completion, while the timing line logs on every outcome that reaches the hooks. Reach for `ensure` whenever the hook owns something that must be released or recorded.
 
 #### Before/After example
 
