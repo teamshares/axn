@@ -704,9 +704,9 @@ RSpec.describe Axn::Internal::Reflection::Values do
     end
 
     it "renders a value whose #to_s is served by method_missing instead of rejecting it" do
-      # `method(:to_s)` can't resolve an undef'd #to_s that no respond_to_missing? advertises, so the
-      # predicate has no owner to compare. The value renders through method_missing fine, and reject_opaque
-      # must not invent a failure for it.
+      # An undef'd #to_s served by method_missing is declared by no method table, so the predicate has no owner to
+      # compare and reports "not the inherited default". The value renders through method_missing fine, and
+      # reject_opaque must not invent a failure for it.
       dynamic = opaque_object
       dynamic.singleton_class.class_eval do
         undef_method :to_s
