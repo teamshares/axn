@@ -222,7 +222,7 @@ RSpec.describe Axn::Internal::SubfieldTree do
         expects :bar, on: :foo, type: Hash
         expects :baz, on: "foo.bar", type: Hash
         expects :baz, on: :bar, as: :bar_baz, type: Hash, shape: { members: [x_member], container: Hash }
-        expects :y, on: "bar.baz.x"
+        expects :y, on: "baz.x"
       end
       tree = tree_for(klass)
 

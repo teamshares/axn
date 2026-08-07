@@ -63,7 +63,12 @@ module Axn
           ambient = candidate_subfields.select { |c| _on_roots_at_ambient?(c.on) }
           return if ambient.empty?
 
-          Axn::Core::Contract::SubfieldContradictions.check!([_synthetic_ambient_root], ambient)
+          # `crossings: false`: an ambient config never enters the shared tree, so `resolve_parent`
+          # resolves it by recipe — the `on:` root through its reader (which names exactly one config) and
+          # every tail segment as a raw dig (which reads no reader at all). No route is ever picked here,
+          # so a crossing reference cannot be ambiguous, and checking it would reject a contract that
+          # resolves deterministically.
+          Axn::Core::Contract::SubfieldContradictions.check!([_synthetic_ambient_root], ambient, crossings: false)
         end
 
         # A `shape:` on an ambient subfield validates the COPIED ambient value: a shape-carrying node

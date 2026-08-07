@@ -619,4 +619,132 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.not_to raise_error
     end
   end
+
+  describe "an ambiguous crossing (PRO-3068)" do
+    # A dotted tail addresses the wire NODE; where two routes merged onto it, the reference names neither,
+    # and `configs.first` settles it by declaration order.
+    it "rejects a dotted on: whose tail crosses a node with two reader names" do
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: "foo.bar", as: :b1, type: Hash, preprocess: ->(h) { h.merge(src: "one") }
+          expects :baz, on: :bar, as: :b2, type: Hash, preprocess: ->(h) { h.merge(src: "two") }
+          expects :src, on: "foo.bar.baz", optional: true
+        end
+      end.to raise_error(ArgumentError, /reads through wire path "foo\.bar\.baz".*:b1 and :b2/m)
+    end
+
+    it "rejects it in the other declaration order too" do
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: :bar, as: :b2, type: Hash, preprocess: ->(h) { h.merge(src: "two") }
+          expects :baz, on: "foo.bar", as: :b1, type: Hash, preprocess: ->(h) { h.merge(src: "one") }
+          expects :src, on: "foo.bar.baz", optional: true
+        end
+      end.to raise_error(ArgumentError, /reads through wire path "foo\.bar\.baz"/)
+    end
+
+    it "rejects when the crossing is declared BEFORE the second route completes the merge" do
+      # check! re-scans the whole candidate tree, so the later declaration that creates the ambiguity is
+      # caught even though the crossing reference was legal when it was written.
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: "foo.bar", as: :b1, type: Hash
+          expects :src, on: "foo.bar.baz", optional: true
+          expects :baz, on: :bar, as: :b2, type: Hash
+        end
+      end.to raise_error(ArgumentError, /reads through wire path "foo\.bar\.baz"/)
+    end
+
+    it "rejects even when no route carries a transform" do
+      # The defect is the ambiguous REFERENCE, not an observed divergence: routes that agree today diverge
+      # the moment one gains a preprocess:, and two Procs could never be compared anyway.
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: "foo.bar", as: :b1, type: Hash
+          expects :baz, on: :bar, as: :b2, type: Hash
+          expects :src, on: "foo.bar.baz", optional: true
+        end
+      end.to raise_error(ArgumentError, /reads through wire path "foo\.bar\.baz"/)
+    end
+
+    it "accepts a descendant that anchors on the route it means" do
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: "foo.bar", as: :b1, type: Hash, preprocess: ->(h) { h.merge(src: "one") }
+          expects :baz, on: :bar, as: :b2, type: Hash, preprocess: ->(h) { h.merge(src: "two") }
+          expects :src, on: :b2, optional: true
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a dotted on: rooted at the route's own reader" do
+      # `on: "b2.deeper"` names route 2 at the root; the tail below it is implicit, so nothing is unnamed.
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: "foo.bar", as: :b1, type: Hash
+          expects :baz, on: :bar, as: :b2, type: Hash
+          expects :src, on: "b2.deeper", optional: true
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a tail over an implicit intermediate" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :count, on: "payload.meta", type: Integer, optional: true
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a tail over a declared single-route node" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash
+          expects :count, on: "payload.meta", type: Integer, optional: true
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a crossing of a node whose routes share ONE reader name" do
+      # A confirmation companion beside the author's own same-named declaration is two configs on one node,
+      # but both answer to :password_confirmation — dispatch resolves by the reader-owner rule
+      # (SubfieldTree.yields_reader_name?), which is order-independent, so nothing is ambiguous.
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :password, on: :bar, type: Hash, confirmation: true
+          expects :password_confirmation, on: "foo.bar", type: Hash
+          expects :src, on: "foo.bar.password_confirmation", optional: true
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts an ambient crossing, which resolves by recipe rather than through a route" do
+      # An ambient config never enters the shared tree, so resolve_parent reads the `on:` root through its
+      # reader and digs every tail segment raw — no route's reader is ever picked.
+      expect do
+        build_axn do
+          expects :meta, on: :ambient_context, type: Hash
+          expects :thing, on: "ambient_context.meta", as: :a1, type: Hash, optional: true
+          expects :thing, on: :meta, as: :a2, type: Hash, optional: true
+          expects :leaf, on: "ambient_context.meta.thing", optional: true
+        end
+      end.not_to raise_error
+    end
+  end
 end

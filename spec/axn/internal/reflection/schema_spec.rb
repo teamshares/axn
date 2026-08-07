@@ -4019,7 +4019,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # as: disambiguates the two routes' shared :baz reader (wire key stays :baz, so they still merge)
           expects :baz, on: "foo.bar", type: Hash, as: :baz_route1                                 # baz config #1 (no shape)
           expects :baz, on: :bar, type: Hash, shape: { members: [x_member], container: Hash }      # baz config #2 (non-nestable member x)
-          expects :y, on: "bar.baz.x"                                                              # implicit x under baz + grandchild y
+          expects :y, on: "baz_route1.x" # implicit x under baz + grandchild y
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
