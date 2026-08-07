@@ -102,8 +102,9 @@ action. `done!` skips `after` hooks — and because it unwinds via an exception,
 `chain.call` in an `around` hook are skipped too (`fail!` and an unhandled raise unwind the same
 way). Put such teardown in an `ensure` inside the `around`, or use `use :transaction`, which rescues
 the signal so the transaction still commits. Note the `around` hook (and its `ensure`) covers only
-halts raised **after the hook chain is entered** — an inbound `expects` failure, or a
-`preprocess:`/`default:` callable that raises, settles before the hooks run, so neither fires. Use
+halts raised **after the hook chain is entered** — an inbound `expects` failure, or an *inbound*
+`preprocess:`/`default:` callable that raises, settles before the hooks run, so neither fires (an
+`exposes` `default:` resolves outbound, *after* the hook body returns, so it is visible to them). Use
 the callbacks for per-call observability that must not miss those. Callbacks
 (`on_success`, `on_error`, `on_failure`, `on_exception`) run *after* `call` and do **not** flip
 `ok?`.

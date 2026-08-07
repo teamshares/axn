@@ -647,7 +647,7 @@ ensure
 end
 ```
 
-Note the limit of that guarantee: `ensure` covers every halt raised **after the hook chain is entered**, which is what the four outcomes above have in common. An outcome settled *earlier* — a failed inbound `expects` validation, or a `preprocess:`/`default:` callable that raises — never reaches the hooks at all, so neither the `around` body nor its `ensure` runs. Don't rely on an `around` hook to observe every call; for that, use `on_success`/`on_failure`/`on_exception` callbacks, which fire on the settled result.
+Note the limit of that guarantee: `ensure` covers every halt raised **after the hook chain is entered**, which is what the four outcomes above have in common. An outcome settled *earlier* — a failed inbound `expects` validation, or an **inbound** `preprocess:`/`default:` callable that raises — never reaches the hooks at all, so neither the `around` body nor its `ensure` runs. (An `exposes` `default:` is the other way round: it resolves on the way *out*, after the hook body has returned, so a raise there is visible to the hooks and to `ensure`.) Don't rely on an `around` hook to observe every call; for that, use `on_success`/`on_failure`/`on_exception` callbacks, which fire on the settled result.
 
 #### Around hooks
 
