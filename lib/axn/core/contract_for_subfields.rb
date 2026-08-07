@@ -66,6 +66,30 @@ module Axn
         (0..path.parent_index).select { |i| _reader_config(path.ancestors[i].first) }.max
       end
 
+      # The chain index of the config's `on:` ANCHOR — the node the `on:` ROOT names. Each dotted segment
+      # below that root is one more hop, so the anchor sits that many hops above the `on:` TARGET.
+      def self.anchor_index(config, path)
+        path.parent_index - (config.on.to_s.split(".").size - 1)
+      end
+
+      # The node this config resolves its parent THROUGH without naming it — its deepest reader-bearing
+      # ancestor, when that ancestor is not the `on:` anchor. Only a dotted tail can put a reader-bearing
+      # node between the anchor and the `on:` target: the anchor's own node always bears a reader, and no
+      # ancestor above it can exceed its index. So nil means the config NAMED the reader it reads through
+      # (`on: :b2`, `on: "b2.deeper"`) and that node's config order cannot affect it. Nil too for a
+      # top-level config (no ancestors to walk) and for the recipe fallback (no reader-bearing ancestor).
+      #
+      # Shared with the ambiguous-crossing declaration check (SubfieldContradictions) so the runtime's
+      # answer and the check's are the same answer, as `deepest_reader_index` already is.
+      def self.crossed_node(config, path)
+        return nil if path.ancestors.empty?
+
+        reader_index = deepest_reader_index(path)
+        return nil if reader_index.nil? || reader_index == anchor_index(config, path)
+
+        path.ancestors[reader_index].first
+      end
+
       # The node's reader-bearing config, if any. Every declared config generates a reader, so this is
       # the node's first config; an implicit node has no configs and returns nil.
       def self._reader_config(node)
@@ -80,8 +104,7 @@ module Axn
       # single-config in practice, so its own node reader is used. `anchor_index` is the on: root node's
       # chain index (parent_index minus the dotted-`on:` segments below the anchor).
       def self._deepest_reader_name(config, path, reader_index)
-        anchor_index = path.parent_index - (config.on.to_s.split(".").size - 1)
-        return config.on.to_s.split(".").first.to_sym if reader_index == anchor_index
+        return config.on.to_s.split(".").first.to_sym if reader_index == anchor_index(config, path)
 
         _reader_config(path.ancestors[reader_index].first).reader_as
       end
