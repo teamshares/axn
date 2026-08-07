@@ -33,3 +33,6 @@ Gemfile.lock
 
 # Local Claude Code agent state (worktrees, session files)
 .claude/
+
+# Lavish review artifacts (local scratch)
+.lavish/
