@@ -19,7 +19,7 @@ Called with a string, it immediately halts execution and sets `result.error` to 
 
 ## `#done!`
 
-Called with an optional string, it immediately halts execution and sets `result.success` to the provided string (or default success message if none provided). Can also accept keyword arguments that will be exposed before halting execution. Skips `after` hooks and remaining `call` method execution, but allows `around` hooks to complete normally.
+Called with an optional string, it immediately halts execution and sets `result.success` to the provided string (or default success message if none provided). Can also accept keyword arguments that will be exposed before halting execution. Skips `after` hooks and remaining `call` method execution. It also unwinds through any `around` hook as an exception, so statements following `chain.call` there are skipped as well — put teardown that must run on early completion in an `ensure` inside the hook (see [hook execution](/usage/writing#important-behavior-notes)).
 
 * First argument (optional) is a string success message
 * Additional keyword arguments are exposed as data before halting
