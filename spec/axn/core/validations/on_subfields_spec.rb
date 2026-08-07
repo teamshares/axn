@@ -643,6 +643,64 @@ RSpec.describe Axn do
           end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /x/)
         end
       end
+
+      # A reader name is one namespace across both tiers. The top-level collision bar exempts a name
+      # already claimed under the SAME wire key (that shape is a duplicate field, reported on its own), so
+      # a top-level declaration of a subfield's wire key goes through and its reader — defined onto the
+      # class — overwrites the subfield's. `on:` names a READER, so the anchor for that name is the
+      # top-level declaration, and the path the schema advertises is the one the runtime validates.
+      context "when a top-level declaration takes a subfield's reader name" do
+        let(:action) do
+          build_axn do
+            expects :payload, type: Hash
+            expects :foo, on: :payload, type: Hash
+            expects :foo, type: Hash
+            expects :bar, on: :foo, type: Integer
+            exposes :seen
+            def call = expose(seen: bar)
+          end
+        end
+
+        it "nests the descendant under the top-level declaration, not the subfield" do
+          schema = action.input_schema
+
+          expect(schema[:properties][:foo][:properties]).to eq({ bar: { type: "integer" } })
+          expect(schema[:properties][:payload][:properties][:foo][:properties]).to be_nil
+        end
+
+        it "validates and reads the descendant at the path the schema advertises" do
+          expect(action.call(payload: { foo: {} }, foo: { bar: 7 }).seen).to eq(7)
+          expect(action.call(payload: { foo: {} }, foo: { bar: "nope" })).not_to be_ok
+        end
+
+        it "resolves an aliased name the same way" do
+          action = build_axn do
+            expects :payload, type: Hash
+            expects :qux, on: :payload, as: :foo, type: Hash
+            expects :qux, as: :foo, type: Hash
+            expects :bar, on: :foo, type: Integer
+            exposes :seen
+            def call = expose(seen: bar)
+          end
+
+          expect(action.input_schema[:properties][:qux][:properties]).to eq({ bar: { type: "integer" } })
+          expect(action.input_schema[:properties][:payload][:properties][:qux][:properties]).to be_nil
+          expect(action.call(payload: { qux: {} }, qux: { bar: 7 }).seen).to eq(7)
+          expect(action.call(payload: { qux: {} }, qux: { bar: "nope" })).not_to be_ok
+        end
+
+        # The other declaration order never reaches the tree: a subfield may not take a name an explicit
+        # reader already holds, so the top-level declaration is always the later of the two.
+        it "rejects the reverse declaration order at the subfield" do
+          expect do
+            build_axn do
+              expects :payload, type: Hash
+              expects :foo, type: Hash
+              expects :foo, on: :payload, type: Hash
+            end
+          end.to raise_error(ArgumentError, /duplicate sub-keys \(i\.e\. `foo` is already defined\)/)
+        end
+      end
     end
 
     context "with a nested (dotted) on: path" do

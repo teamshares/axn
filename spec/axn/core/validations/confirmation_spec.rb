@@ -727,6 +727,31 @@ RSpec.describe "confirmation:" do
         end
       end
 
+      # Two companions can land on one name when a top-level declaration takes a subfield's wire key (the
+      # same-wire-key exemption) and both carry `confirmation:`. Both readers are inferred, so they target
+      # the same module and the FIRST generated keeps the name — the subfield's, since the pair only
+      # survives with the subfield declared first. `on:` that name follows it, so the descendant is
+      # reflected and validated on the subfield route.
+      it "anchors on the subfield companion when two companions share a name" do
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :pw, on: :payload, type: Hash, confirmation: true
+          expects :pw, type: Hash, confirmation: true
+          expects :code, on: :pw_confirmation, type: Integer
+          exposes :seen
+          def call = expose(seen: code)
+        end
+
+        schema = klass.input_schema
+        expect(schema[:properties][:payload][:properties][:pw_confirmation][:properties]).to eq({ code: { type: "integer" } })
+        expect(schema[:properties][:pw_confirmation][:properties]).to be_nil
+
+        pair = { pw: { code: 7 }, pw_confirmation: { code: 7 } }
+        expect(klass.call(**pair, payload: { pw: { code: 1 }, pw_confirmation: { code: 7 } }).seen).to eq(7)
+        expect(klass.call(pw: { code: "bad" }, pw_confirmation: { code: "bad" },
+                          payload: { pw: { code: 1 }, pw_confirmation: { code: "bad" } })).not_to be_ok
+      end
+
       # Which config owns a name is settled over the WHOLE contract, so a subfield that takes a companion's
       # name is the anchor for `on:` that name even where it is declared after the config anchoring on it.
       # Resolving each anchor as the declarations arrive reads the companion in one order and the subfield

@@ -63,8 +63,9 @@ module Axn
           # owner's). It still has a position of its own — this node — and it is the one the index records: a
           # consumer resolving THIS config (the property it emits, the nil-tolerance asked of it) must see its
           # own children, none of which the yielded name's declaration can supply, since a subfield `on:` that
-          # name anchors on the owner instead. A name a SUBFIELD takes over keeps its node here: the forest
-          # is every top-level node, and `on:` resolution reads the owner index rather than this map.
+          # name anchors on the owner instead. A name a SUBFIELD takes over (only a top-level COMPANION's,
+          # whose inferred reader a subfield's outranks) keeps its node here: the forest is every top-level
+          # node, and `on:` resolution reads the owner index rather than this map.
           roots[config.reader_as.to_sym] = node if claim_reader!(owners, config)
           index[config] = ResolvedPath.new(node:, wire_path: [config.field], ancestors: [], parent_index: 0)
         end
@@ -158,9 +159,9 @@ module Axn
       # by Contract#_reader_deferred?. Conflating the two is what lets a name claimed by one declaration
       # and yielded by another resolve to whichever config happens to be found first.
       #
-      # Declaration order cannot change the result: the only pairing that puts two configs on one name is
-      # an inferred confirmation companion beside a declaration of that name, and the companion always
-      # yields (yields_reader_name?) — so the declaration wins whichever side of it the companion sits on.
+      # Declaration order cannot change the result: each pairing that puts two configs on one name has a
+      # fixed loser (yields_reader_name?), so the winner is the same whichever side of it the other sits on.
+      # Top-level configs are folded before subfields so both tiers are present before any name is settled.
       def reader_owners(field_configs, subfield_configs)
         owners = {}
         Array(field_configs).each { |config| claim_reader!(owners, config) }
@@ -173,25 +174,52 @@ module Axn
       # tree builds as it walks and the map `reader_owners` folds are the same map.
       def claim_reader!(owners, config)
         name = config.reader_as.to_sym
-        return false if yields_reader_name?(config, owners.key?(name))
+        return false if yields_reader_name?(config, owners[name])
 
         owners[name] = config
         true
       end
 
-      # Whether `config` leaves an already-claimed reader name (`taken`) to the config holding it. `on:`
-      # names a READER, so the node registered under a name must be the config whose reader ANSWERS to it.
-      # Only one pairing can put two configs on one name: an INFERRED confirmation companion beside a
-      # declaration of the same name (two declarations collide at declaration time instead). Such a
-      # companion's own reader defers to the declaration's — the declaration's is generated first and the
-      # companion's is then skipped (Contract#_define_field_readers!) — so the declaration owns the name and
-      # is the anchor for it. Registering the companion instead would resolve `on: :<name>` through a config
-      # whose reader nothing dispatches to, and which of the two landed under the name would come down to
-      # declaration order. Structural rather than a method-table lookup (Contract#_reader_deferred?, the same
-      # rule asked of a LIVE class): the tree is built during declaration, before the batch's readers exist,
-      # and is cached against the config arrays alone, so it must answer identically on both sides of reader
-      # generation.
-      def yields_reader_name?(config, taken) = taken && !config.confirmation_for.nil?
+      # Whether `config` leaves its reader name to `holder`, the config already registered under it. `on:`
+      # names a READER, so the config registered under a name must be the one whose reader ANSWERS to it —
+      # which is what `reader_rank` orders. A config OUTRANKED by the holder yields; an equal rank claims,
+      # so the later of two same-rank declarations wins exactly as its reader does.
+      #
+      # Registering the loser instead would resolve `on: :<name>` through a config whose reader nothing
+      # dispatches to, putting the reflected wire path somewhere the runtime never validates. Structural
+      # rather than a method-table lookup (Contract#_reader_deferred?, the same rule asked of a LIVE class):
+      # the tree is built during declaration, before the batch's readers exist, and is cached against the
+      # config arrays alone, so it must answer identically on both sides of reader generation.
+      def yields_reader_name?(config, holder)
+        return false if holder.nil?
+
+        reader_rank(config) < reader_rank(holder)
+      end
+
+      # How strongly a config holds its reader name, highest wins. Only four pairings can put two configs on
+      # one name at all — anything else collides at declaration time — and each adjacent step of this ladder
+      # is one of them:
+      #
+      # * An EXPLICIT top-level declaration outranks an EXPLICIT subfield of the same name and the same wire
+      #   key, which the top-level collision check exempts as a same-wire-key clash
+      #   (Contract#_validate_reader_names!). The top-level one is necessarily the later of the two — a
+      #   subfield may never take a name an explicit reader already holds
+      #   (ContractForSubfields#_validate_subfield_reader_names!) — and it defines its reader onto the class,
+      #   overwriting the subfield's.
+      # * An EXPLICIT declaration of either tier outranks an inferred confirmation COMPANION: a companion's
+      #   reader lands in a module the class outranks, and is skipped outright when the name is already
+      #   taken (Contract#_define_field_readers!).
+      # * A subfield COMPANION outranks a top-level one. Both readers land in the same inferred module, so
+      #   the FIRST generated keeps the name and the second is skipped — and the subfield's is always first,
+      #   since a surviving pair needs the subfield's primary reader declared before the top-level primary
+      #   whose companion shares the name.
+      #
+      # Two configs of equal rank on one name are only ever two top-level declarations of the same wire key.
+      def reader_rank(config)
+        return config.subfield? ? 1 : 0 if config.confirmation_for
+
+        config.subfield? ? 2 : 3
+      end
 
       # Walk (creating implicit intermediates as needed) from `anchor` down `segments`, attach the
       # config at the leaf, and return [leaf, hops].
