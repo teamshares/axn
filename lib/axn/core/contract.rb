@@ -1497,7 +1497,6 @@ module Axn
 
           configs.filter_map do |config|
             next unless config.validations[:confirmation]
-            next if _confirmation_never_runs?(config.validations)
 
             companion = :"#{config.field}_confirmation"
             next if claimed.include?([companion, config.on.to_s])
@@ -1516,17 +1515,6 @@ module Axn
               **_confirmation_companion_gates(config),
             ).first.with(confirmation_for: config.field)
           end
-        end
-
-        # Whether the `confirmation:` entry is scoped to an ActiveModel validation CONTEXT
-        # (Validation::Base.entry_context_scoped?, asked of the options the entry will RUN under): inbound
-        # validation calls `valid?` with no context, so such an entry runs on no call at all and the
-        # comparison can never fire. The companion exists only to feed that comparison — generating one would
-        # demand input for a check nothing performs, which is strictly more than the confirmation itself
-        # asks. So none is generated, and the requirement is exactly as inert as the comparison it serves.
-        def _confirmation_never_runs?(validations)
-          entry = Axn::Validation::Base.effective_entry_options(validations[:confirmation], _shared_validation_options(validations))
-          Axn::Validation::Base.entry_context_scoped?(entry)
         end
 
         # The gate keys the companion declares: the gates the COMPARISON runs under composed with the rule
@@ -1601,7 +1589,7 @@ module Axn
         # combination is rejected at declaration), so there is no tolerance tier left to consult.
         def _confirmation_base_rejects_blank?(config)
           _presence_emptiness_answer(config.validations, tolerant: false) == :rejected &&
-            _entry_guaranteed_to_run?(config.validations[:presence], _shared_validation_options(config.validations))
+            _entry_guaranteed_to_run?(config.validations[:presence])
         end
 
         # Splits already-stored configs into the ones a new batch leaves alone and the IMPLICIT confirmation

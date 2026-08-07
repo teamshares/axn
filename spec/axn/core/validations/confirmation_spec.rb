@@ -395,28 +395,25 @@ RSpec.describe "confirmation:" do
       end
     end
 
-    # An `on:` on the ENTRY is ActiveModel's validation CONTEXT, not a gate: inbound validation runs
-    # `valid?` with no context, so the comparison fires on no call at all. A companion required for a check
-    # nothing performs would reject input nothing then compares, so the entry produces no companion — as
-    # inert as the confirmation it would have served.
-    describe "a confirmation: entry scoped to a validation context" do
-      it "generates no companion at all" do
-        klass = build_axn { expects :password, type: String, optional: true, confirmation: { on: :create } }
-
-        expect(klass.internal_field_configs.map(&:field)).to contain_exactly(:password)
-        expect(klass.call(password: "s3cret")).to be_ok
-        expect(klass.call(password: "s3cret", password_confirmation: "nope")).to be_ok
-        expect(klass.input_schema[:properties]).not_to have_key(:password_confirmation)
+    # An `on:` on the ENTRY names an ActiveModel validation CONTEXT, and axn validates with no context, so
+    # such a check runs on no call at all. That is refused at declaration for every validator, `confirmation:`
+    # included, which is why the companion builder never has to reason about a comparison that cannot fire.
+    # Pinned here because the two rules meet: without the refusal, the entry would declare a companion whose
+    # presence is enforced while the comparison it serves never runs.
+    describe "a confirmation: entry naming a validation context" do
+      it "is refused at declaration rather than declaring a companion for a check that never runs" do
+        expect do
+          build_axn { expects :password, type: String, optional: true, confirmation: { on: :create } }
+        end.to raise_error(ArgumentError, /names an ActiveModel validation context/)
       end
 
-      it "generates none on the subfield route either" do
-        klass = build_axn do
-          expects :payload, type: Hash
-          expects :password, on: :payload, type: String, optional: true, confirmation: { on: :create }
-        end
-
-        expect(klass.subfield_configs.map(&:field)).to contain_exactly(:password)
-        expect(klass.call(payload: { password: "s3cret" })).to be_ok
+      it "is refused on the subfield route the same way" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :password, on: :payload, type: String, optional: true, confirmation: { on: :create }
+          end
+        end.to raise_error(ArgumentError, /names an ActiveModel validation context/)
       end
     end
 
