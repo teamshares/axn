@@ -2270,9 +2270,11 @@ RSpec.describe Axn do
         expect(result.cid).to be_nil        # the model agrees with the own route, not the other route's 42
       end
 
-      it "still rescues an ABSENT merged id via a different route's credited default" do
-        # Same merged shape, but the id is OMITTED entirely: now the credited default route (42) legitimately
-        # rescues (the PRO-2889 omitted-id rescue), because the own route's nil is absence, not a nilled value.
+      it "does NOT rescue an absent id through an aliased route on another spelling" do
+        # Both id routes are `as:`-renamed, so neither is the model's own route (`on: :thing`) nor owns the
+        # canonical `company_id` reader the model's generated companion answers to. Nothing points either at
+        # this model, and post-PRO-2903 a `default:` is a fact about its OWN reader — nothing is written to
+        # the wire — so the lookup falls back to the caller's raw token, which is absent.
         finder = Class.new do
           attr_reader :id
 
@@ -2293,7 +2295,33 @@ RSpec.describe Axn do
         result = action.call(payload: { thing: {} }) # id omitted entirely (parent present, id absent)
 
         expect(result).to be_ok
-        expect(result.cid).to eq(42) # the credited default route rescues the absent id
+        expect(result.cid).to be_nil
+      end
+
+      it "rescues an absent id through the route that OWNS the canonical <field>_id reader" do
+        # Same shape, except the off-route default keeps the `company_id` name — so it IS the reader the
+        # model's generated companion would have answered to, and borrowing it is the documented contract
+        # rather than a hidden coupling.
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("NamedAbsentCo", finder)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload, allow_blank: true
+          expects :company_id, on: "payload.thing", optional: true, default: 42
+          expects :company, on: :thing, model: { klass: NamedAbsentCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(payload: { thing: {} })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(42)
       end
     end
 

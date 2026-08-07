@@ -72,8 +72,9 @@ RSpec.describe "standalone require completeness" do
   #     a message being built, which the composing layer's own load has already made possible.
   #   - reflection reaching UP for something only a declared axn class has: `Validation::Base` supplies the
   #     validator entries a schema is derived from, `Core::Contract` records the file its generated readers are
-  #     defined in, and `Internal::AsyncSerialization` renders an unserializable async argument. Reflecting over a
-  #     class means the class exists, which means the library is loaded.
+  #     defined in, `Core::ContractForSubfields` owns the one id-token route precedence the declaration-time
+  #     rescue credit must agree with, and `Internal::AsyncSerialization` renders an unserializable async
+  #     argument. Reflecting over a class means the class exists, which means the library is loaded.
   #
   # This list may only SHRINK. Anything not on it is a missing require, and the last example fails if an entry
   # stops being unresolved, so a closed gap cannot linger here as a stale allowance.
@@ -82,6 +83,7 @@ RSpec.describe "standalone require completeness" do
       ["axn/exceptions.rb", "Axn::Internal::AsyncSerialization"],
       ["axn/internal/shape_graph.rb", "Axn::Internal::Reflection::PropertyNames"],
       ["axn/internal/reflection/schema.rb", "Axn::Core::Contract::GENERATED_READER_SOURCE_PATH"],
+      ["axn/internal/reflection/schema.rb", "Axn::Core::ContractForSubfields"],
       ["axn/internal/reflection/schema.rb", "Axn::Validation::Base"],
     ]
   end

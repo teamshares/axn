@@ -417,8 +417,8 @@ module Axn
       #     wins, and a present value it resolves to nil (its preprocess maps it to nil, no own default) is
       #     genuinely nil for this model, so we STOP rather than re-reading through another route;
       #   * an ABSENT raw id reads ONLY defaulted routes (Schema.usable_id_token_default?) — the PRO-2889
-      #     omitted-id rescue — and skips the rest: a non-defaulted route would resolve nil anyway AND running
-      #     its reader on the absent value would fire an unguarded `preprocess:` on nil (e.g. `nil.strip`).
+      #     omitted-id rescue — and skips a route that would resolve nil anyway AND would fire an unguarded
+      #     `preprocess:` on the absent value (e.g. `nil.strip`).
       # Returns nil when no eligible route yields a token. Callers separate the "no declared `<field>_id` at
       # all" case via sibling_id_configs.empty? (there the caller's raw token is used).
       def self._declared_id_token(action, configs)
@@ -439,9 +439,9 @@ module Axn
       # The declared `<field>_confirmation` config on the SAME route as `config`, or nil — the companion the
       # author declared, or the one `confirmation:` declared implicitly for them (Contract
       # #_confirmation_companion_configs), which are the same kind of config by then. A confirmation
-      # pair is one route's contract: unlike `sibling_id_configs`, which falls through to a defaulted or
-      # sole route because an id may legitimately be declared beside a different model, a confirmation
-      # compares against the companion declared beside THIS field and nothing else.
+      # pair is one route's contract: unlike `sibling_id_configs`, which also accepts the route owning the
+      # canonical `<field>_id` reader because an id may legitimately be declared beside a different model, a
+      # confirmation compares against the companion declared beside THIS field and nothing else.
       def self.sibling_confirmation_config(action, config)
         key = :"#{config.field}_confirmation"
         candidates =
@@ -454,22 +454,28 @@ module Axn
         candidates.find { |c| c.on.to_s == config.on.to_s }
       end
 
-      # The declared sibling `<field>_id` configs for a `model:` field, in the priority order _declared_id_token
-      # reads them (for both the record lookup and the consistency check), so the two can never disagree about
-      # which route's transformed id a present record/lookup sees. All routes of a merged id node read the SAME
-      # wire key, differing only in their coerce:/preprocess:/default:, so route choice is purely "which
-      # transform interprets that one wire value":
-      #   * the id declared beside THIS model on the SAME `on:` route is AUTHORITATIVE — its transform is this
-      #     model field's canonical id (the reader user code reads for it). A present token it maps to nil is
-      #     genuinely nil for this model (_declared_id_token stops there), never re-read through an alternate route.
-      #   * the ONLY fall-through (an ABSENT id) is to a route whose default the declaration credits as a usable
-      #     token (Schema.usable_id_token_default? — sibling_id_rescued?'s predicate): the omitted-id rescue,
-      #     even when the default lives on a different route than the model. PRO-2901 forbids two defaults on one
-      #     node, so this is the node's one default.
-      #   * with neither an own-route nor a defaulted route, the sole/first declared route supplies the token
-      #     (a lone id declared on a route other than the model's).
-      # Empty when no `<field>_id` is declared (the caller's raw token carries no transform) or when the
-      # config isn't in either subfield index (an ambient config falls back to the ambient-scoped tree).
+      # The routes that may supply a `model:` field's `<field>_id` lookup token, in the order
+      # `_declared_id_token` reads them. All routes of a merged id node read the SAME wire key, differing
+      # only in their coerce:/preprocess:/default:, so route choice is purely "which transform interprets
+      # that one wire value" — and both selectors below pick BY NAME, so declaration order never decides it.
+      #
+      #   * the id declared on the model's OWN route is AUTHORITATIVE: its transform is this model field's
+      #     canonical id, the reader user code reads for it. A present token it maps to nil is genuinely nil
+      #     for this model (_declared_id_token stops there), never re-read through another route. At depth 0
+      #     every config carries `on: nil`, so a top-level `<field>_id` is always this case.
+      #   * otherwise the route that OWNS the canonical `<field>_id` reader — `model_id_key(reader_as)`, the
+      #     name the model's own generated companion answers to. Reader names are unique, so this selects at
+      #     most one config: the model borrows a reader the author declared under exactly that name, which is
+      #     what makes PRO-2910's "the token agrees with the `<field>_id` reader" a promise rather than a
+      #     coupling.
+      #
+      # An `as:`-renamed route on some other spelling is neither, and supplies nothing. Nothing points it at
+      # this model, and a `default:` on it is a fact about ITS reader — nothing is ever written to the wire —
+      # so crediting it would mean this model resolving through another route's reader.
+      #
+      # Empty when no eligible `<field>_id` is declared (the caller's raw token off the parent carries no
+      # transform) or when the config isn't in either subfield index (an ambient config falls back to the
+      # ambient-scoped tree).
       def self.sibling_id_configs(action, config)
         path = action.class._resolved_subfields.index[config] || action.class._ambient_subfield_tree.index[config]
         return [] if path.nil?
@@ -484,14 +490,17 @@ module Axn
             path.parent_node.children[id_key.to_sym]&.configs || []
           end
 
-        own_route = candidates.find { |c| c.on.to_s == config.on.to_s }
-        default_route = candidates.find { |c| Axn::Internal::Reflection::Schema.usable_id_token_default?(c) }
-        # An own route or a credited default route is authoritative; the raw declaration-order fallback is
-        # ONLY for the case where neither exists (a single undefaulted id on a non-model route), so a nil
-        # own-route resolution never spills over into re-reading the shared wire value through another route.
-        return [own_route, default_route].compact.uniq if own_route || default_route
+        id_token_routes(config, candidates)
+      end
 
-        [candidates.first].compact
+      # The token-route precedence itself, over an already-gathered candidate list — shared with the
+      # declaration-time rescue credit (Reflection::Schema.sibling_id_rescued?) so the schema layer cannot
+      # credit a rescue through a route the lookup will not read.
+      def self.id_token_routes(config, candidates)
+        own_route = candidates.find { |c| c.on.to_s == config.on.to_s }
+        named_route = candidates.find { |c| c.reader_as == Axn::Internal::FieldConfig.model_id_key(config.reader_as) }
+
+        [own_route, named_route].compact.uniq
       end
 
       # The read-path internals of the four public entry points above (`resolve_parent`, `resolve_value`,
