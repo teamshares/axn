@@ -26,6 +26,9 @@ module Axn
         tree.roots.freeze
         tree.deep_paths.freeze
         tree.index.each_value do |path|
+          # A top-level config that yields its reader name holds a node of its own, off the roots map
+          # (SubfieldTree.build) — the index is the only route to it, so freezing walks from here too.
+          _freeze_node!(path.node)
           path.wire_path.freeze
           path.ancestors.each(&:freeze)
           path.ancestors.freeze

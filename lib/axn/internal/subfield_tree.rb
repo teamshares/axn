@@ -32,7 +32,8 @@ module Axn
       # declared type. `parent_index` is the chain index of the `on:` TARGET node (the value the
       # config's own `field` is extracted from), which canonical parent resolution resolves through the
       # deepest reader-bearing ancestor. A top-level config is the depth-0 case: wire_path is just
-      # [field], ancestors are empty, parent_index 0.
+      # [field], ancestors are empty, parent_index 0, and `node` is its own root node — the one the
+      # `roots` map holds under its reader name unless it yields that name (see build).
       ResolvedPath = Data.define(:node, :wire_path, :ancestors, :parent_index) do
         # The `on:`-target Node (the config's immediate parent in contract terms). A field name is a
         # single wire key, so the leaf sits DIRECTLY under this node — it is also the leaf's wire parent,
@@ -49,15 +50,19 @@ module Axn
 
       def build(field_configs, subfield_configs)
         roots = {}
-        field_configs.each do |config|
-          next if yields_reader_name?(config, roots.key?(config.reader_as))
-
-          roots[config.reader_as] = Node.new(configs: [config], children: {})
-        end
         # config => ResolvedPath, identity-keyed: distinct declarations are distinct entries even if
         # they compare equal as Data values.
         index = {}.compare_by_identity
-        field_configs.each { |c| index[c] = ResolvedPath.new(node: roots[c.reader_as], wire_path: [c.field], ancestors: [], parent_index: 0) }
+        field_configs.each do |config|
+          node = Node.new(configs: [config], children: {})
+          # `roots` is the by-READER anchor map, so only the config whose reader answers to a name belongs
+          # under it. A config that yields the name still has a position of its own — this node — and it is
+          # the one the index records: a consumer resolving THIS config (the property it emits, the
+          # nil-tolerance asked of it) must see its own children, none of which the yielded name's
+          # declaration can supply, since a subfield `on:` that name anchors on the owner instead.
+          roots[config.reader_as] = node unless yields_reader_name?(config, roots.key?(config.reader_as))
+          index[config] = ResolvedPath.new(node:, wire_path: [config.field], ancestors: [], parent_index: 0)
+        end
         by_reader = {} # subfield reader_as => {node:, hops:} — anchor targets for a subfield-of-a-subfield
         deep_paths = [] # [config, hops] judged only once the tree is COMPLETE (an ancestor's type may be declared after the deep config)
 

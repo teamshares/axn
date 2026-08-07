@@ -157,7 +157,11 @@ module Axn
           field_configs.each do |config|
             next if EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
 
-            node = tree.roots[config.reader_as]
+            # The config's OWN node, through the index rather than by reader name: a name can be claimed
+            # by one declaration while another config yields it (SubfieldTree.build), and a config must
+            # reflect its own contract — the children nested under it, the requiredness derived from them
+            # — not the ones belonging to whoever holds the name.
+            node = tree.index[config].node
             if config.validations[:model]
               # Emit the generated `<field>_id` property (don't clobber an explicitly-declared one).
               # Its requiredness/nullability is decided in the post-pass below so it can account for an
@@ -179,7 +183,7 @@ module Axn
           # Second pass (after all properties exist, so it's independent of declaration order): decide each
           # generated model `<field>_id`'s requiredness/nullability from the model field + its explicit sibling.
           field_configs.select { |config| config.validations[:model] }.each do |config|
-            children = tree.roots[config.reader_as].children
+            children = tree.index[config].node.children
             apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
           end
 

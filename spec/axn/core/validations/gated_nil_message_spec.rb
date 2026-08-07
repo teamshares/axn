@@ -72,4 +72,44 @@ RSpec.describe "a conditionally-required field's message for a nil" do
     expect(result).not_to be_ok
     expect(result.exception.message).to include("Name can't be blank")
   end
+
+  # ActiveModel ignores a blank condition, so a blank gate key on the type entry with no declaration gate
+  # to override gates nothing: the type check is as unconditional as a bare `type:` and runs on every call
+  # any sibling runs on. Mentioning a key is only a hazard when it can DROP a gate the type check would
+  # otherwise ride.
+  it "reports the type error alone for a blank gate key the type entry carries on its own" do
+    klass = build_axn do
+      expects :name, type: { klass: String, if: nil }
+    end
+    result = klass.call
+    expect(result).not_to be_ok
+    expect(result.exception.message).to eq("Name is not a String")
+  end
+
+  # The blank same-key override on the TYPE entry: it drops the declaration's gate for the type check
+  # alone, leaving it unconditional while its siblings stay gated — still a superset of every call they
+  # run on, so the type error remains the complete account.
+  it "reports the type error alone when a blank gate key on the type entry drops the declaration gate" do
+    klass = build_axn do
+      expects :flag, type: :boolean
+      expects :name, type: { klass: String, if: nil }, if: :flag
+    end
+    result = klass.call(flag: true)
+    expect(result).not_to be_ok
+    expect(result.exception.message).to eq("Name is not a String")
+    # The type check runs even with the declaration gate closed, and still reports alone.
+    expect(klass.call(flag: false).exception.message).to eq("Name is not a String")
+  end
+
+  # A blank key the DECLARATION does not carry drops nothing, so the type check keeps riding the
+  # declaration's other gate — and a sibling replacing that gate can still outlive it.
+  it "keeps the sibling's account when a blank key on the type entry leaves the declaration gate standing" do
+    klass = build_axn do
+      expects :flag, type: :boolean
+      expects :name, type: { klass: String, unless: nil }, if: :flag, presence: { if: :flag }
+    end
+    result = klass.call(flag: true)
+    expect(result).not_to be_ok
+    expect(result.exception.message).to eq("Name is not a String and Name can't be blank")
+  end
 end

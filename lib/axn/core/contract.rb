@@ -2226,9 +2226,10 @@ module Axn
         #   * a declared klass nil is an instance of (`type: [Array, NilClass]`, `type: Object`) — the nil
         #     is no type defect at all, so whatever else rejects it is the authoritative report. Asked
         #     through TypeValidator's own matcher so the two can't disagree about one declaration;
-        #   * a nested if:/unless: gate key that can desynchronize the type check from its siblings, so
-        #     some other validator runs on a call where the type check does not and its nil rejection is
-        #     then the only account of the nil to give (see below for which nested keys can do that).
+        #   * an if:/unless: gate that desynchronizes the type check from its siblings — one the type entry
+        #     carries itself, or a declaration-level one a sibling overrides — so some other validator runs
+        #     on a call where the type check does not and its nil rejection is then the only account of the
+        #     nil to give (see below for exactly which gates can do that).
         def _type_rejects_nil?(validations)
           raw = validations[:type]
           return false unless raw.is_a?(Hash) && raw[:klass]
@@ -2239,30 +2240,36 @@ module Axn
           return false if type[:allow_nil] || type[:allow_blank]
 
           # Relaxing the siblings is safe exactly when the type check runs on every call any sibling runs
-          # on — which two questions decide, because a NESTED gate key is what desynchronizes one entry
-          # from another under ActiveModel's per-key merge:
+          # on — which the CONDITIONS the type check runs under decide, resolved as ActiveModel merges the
+          # two gate tiers (per key: an entry's own value overrides the declaration's, a blank one drops
+          # the declaration's for that entry and is then ignored):
           #
-          #   * a nested key on the TYPE entry itself — blank or not — unties the type check from the rest
-          #     (a non-blank one ties it to a different condition; a blank same-key one drops the
-          #     declaration's gate for it alone), so it can be closed on a call a sibling runs on;
-          #   * otherwise the type entry carries the declaration's gates verbatim, and only a sibling that
-          #     mentions one of those SHARED keys can outlive it. AM merges the two tiers per key, so a
-          #     sibling naming a key the declaration does not carry keeps every shared condition and merely
-          #     adds one — a strict narrowing, which can never run where the type check does not. Naming a
-          #     shared key instead REPLACES that condition (with a different one, or with a blank that
-          #     un-gates the sibling outright), so the sibling can run on a call the type check is closed on,
-          #     making its nil rejection the only account of a nil and so not one to relax. With no
-          #     declaration-level gate there are no shared keys and every sibling is a narrowing.
+          #   * a NON-BLANK gate the type entry carries itself ties the type check to a condition no
+          #     sibling shares, so a sibling can run on a call it is closed on. Nothing else need be
+          #     asked — the type check stands apart from the whole declaration;
+          #   * otherwise the type check runs under the declaration's gates, minus any key the type entry
+          #     blanks out. Only a sibling that mentions one of those SURVIVING keys can outlive it: a
+          #     sibling naming a key they do not share keeps every shared condition and merely adds one —
+          #     a strict narrowing, which can never run where the type check does not — while naming a
+          #     shared key REPLACES that condition (with a different one, or with a blank that un-gates the
+          #     sibling outright), making the sibling's nil rejection the only account of a nil on some
+          #     call and so not one to relax;
+          #   * with no surviving key the type check is unconditional — it runs on every call, so every
+          #     sibling is covered whatever its own gate. That is the case a blank gate key on the type
+          #     entry reaches when the declaration carries no gate for it to drop (AM ignores the blank,
+          #     leaving the type check exactly as unconditional as a bare `type:`), and the reason
+          #     mentioning a key is not on its own a reason to stand down.
           #
-          # Key PRESENCE is the test rather than effective gatedness, for the blank case — the same
-          # question `Axn::Validation::Base.entry_mentions_gate_key?` asks for the same reason, and the
-          # single definition this reuses rather than re-testing independently.
-          return false if Axn::Validation::Base.entry_mentions_gate_key?(raw)
+          # Key PRESENCE is the test for the SIBLINGS — a blank same-key value there is not inert, it
+          # un-gates that sibling — while the type entry's own gates are asked by effective value, since a
+          # blank one gates nothing. Both come from the single definitions in `Axn::Validation::Base`
+          # rather than a re-test here.
+          return false if Axn::Validation::Base.entry_self_gated?(raw)
 
-          declaration_gate_keys = Axn::Validation::Base.declaration_gate_keys(_shared_validation_options(validations))
-          if declaration_gate_keys.any?
+          gate_keys = Axn::Validation::Base.entry_effective_gate_keys(raw, _shared_validation_options(validations))
+          if gate_keys.any?
             siblings = Axn::Validation::Base.validator_entries(validations).except(:type)
-            return false if siblings.any? { |_key, opt| Axn::Validation::Base.entry_mentions_gate_key?(opt, keys: declaration_gate_keys) }
+            return false if siblings.any? { |_key, opt| Axn::Validation::Base.entry_mentions_gate_key?(opt, keys: gate_keys) }
           end
 
           !Axn::Validation::Base.type_admits_nil?(type)

@@ -259,16 +259,9 @@ module Axn
       # at declaration the way declaration-level ones are.
       #
       # THE single definition of "can this one entry be skipped on its own", shared by the emptiness axis's
-      # deferral test and by schema reflection's requiredness-relaxation reasoning.
+      # deferral test, schema reflection's requiredness-relaxation reasoning, and the nil-skip push-down's
+      # test for a type check that stands apart from the rest of its declaration.
       def self.entry_self_gated?(entry_opts) = entry_effective_gate_keys(entry_opts, {}).any?
-
-      # WHICH gate keys the DECLARATION carries — the non-blank `if:`/`unless:` among its shared options,
-      # which open and close every entry on the declaration TOGETHER (they decide whether an account of a
-      # value is given, never whose). The other tier of the same question the two predicates above ask of
-      # an entry, resolved through the same per-key model so "gated" means one thing on both tiers. The keys
-      # rather than a yes/no, because AM merges the tiers PER KEY: whether one entry can outlive another
-      # turns on which of these keys that entry overrides, and an empty result answers "un-gated" too.
-      def self.declaration_gate_keys(declaration_options) = entry_effective_gate_keys(declaration_options, {})
 
       # Whether a single validator ENTRY's options MENTION a per-validator gate key at all — blank or not
       # (contrast entry_self_gated?, which requires a NON-blank value). A blank nested gate is not inert:

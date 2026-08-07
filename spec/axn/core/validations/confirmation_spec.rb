@@ -618,6 +618,42 @@ RSpec.describe "confirmation:" do
 
         expect(klass.call(foo: { bar: { password: { a: 1 }, password_confirmation: { a: 1 } } }).seen).to eq("declaration")
       end
+
+      # A companion that yields the name still reflects its OWN contract. The subfields declared `on:` that
+      # name belong to the declaration holding it (above), so the companion has none — emitting the
+      # name-holder's nesting under it would advertise an object property for a String no caller could
+      # supply a matching pair for.
+      it "emits its own contract in the schema, not that of the declaration holding the name" do
+        klass = build_axn do
+          expects :other, type: Hash, as: :pw_confirmation
+          expects :password, as: :pw, type: String, confirmation: true
+          expects :code, on: :pw_confirmation, type: Integer
+        end
+
+        schema = klass.input_schema
+        expect(schema[:properties][:password_confirmation]).to eq({ type: "string", minLength: 1 })
+        expect(schema[:properties][:other]).to eq({ type: "object", minProperties: 1,
+                                                    properties: { code: { type: "integer" } }, required: ["code"] })
+        # Having no subfields of its own, the companion's requirement states its gate exactly rather than
+        # falling back to an unconditional one.
+        expect(schema[:required]).to contain_exactly("other", "password")
+        expect(schema[:allOf]).to eq([{ if: { required: ["password"], properties: { password: { not: { enum: [false, nil] } } } },
+                                        then: { required: ["password_confirmation"] } }])
+        # And the schema a client generates from it is satisfiable: that pair validates.
+        expect(klass.call(other: { code: 1 }, password: "s3cret", password_confirmation: "s3cret")).to be_ok
+      end
+
+      it "emits its own contract in the other declaration order too" do
+        klass = build_axn do
+          expects :password, as: :pw, type: String, confirmation: true
+          expects :other, type: Hash, as: :pw_confirmation
+          expects :code, on: :pw_confirmation, type: Integer
+        end
+
+        schema = klass.input_schema
+        expect(schema[:properties][:password_confirmation]).to eq({ type: "string", minLength: 1 })
+        expect(schema[:properties][:other][:properties]).to eq({ code: { type: "integer" } })
+      end
     end
 
     describe "when an explicit declaration supersedes it" do

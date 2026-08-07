@@ -132,7 +132,9 @@ module Axn
             next if Axn::Internal::Reflection::Schema::EXCLUDED_FROM_INPUT_SCHEMA.include?(config.field)
             next unless Axn::Internal::Reflection::Schema.nil_accepted?(config)
 
-            node = tree.roots[config.reader_as]
+            # The config's own node (see Schema.build_input): a config that yields its reader name is
+            # judged on the subtree IT declares, not on the one hanging off the name's owner.
+            node = tree.index[config].node
             omittable = if config.validations[:model]
                           model_omittable?(config, node, field_configs, ann)
                         else
