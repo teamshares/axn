@@ -38,13 +38,12 @@ module Axn
     # (see `_check_and_copy_shape_members!`). Reading once while converting twice is the same defect wearing
     # a disguise — it split the duplicate check from the property the member was stored under.
     module ShapeGraph
-      # `#method` is itself overridable, so the lookup below goes through Object's implementation: an
-      # object whose own `#method` raises would otherwise replace a declaration verdict with its
+      # `#public_send` is itself overridable, so the dispatch below goes through Object's implementation: an
+      # object whose own `#public_send` raises would otherwise replace a declaration verdict with its
       # exception — and escape every rescue when that exception is outside StandardError.
-      OBJECT_METHOD = ::Object.instance_method(:method)
       OBJECT_PUBLIC_SEND = ::Object.instance_method(:public_send)
 
-      private_constant :OBJECT_METHOD, :OBJECT_PUBLIC_SEND
+      private_constant :OBJECT_PUBLIC_SEND
 
       # `value` when it is genuinely a Hash, else nil. `case`/`when` consults the real class through
       # `Module#===` (a C-level check), while `is_a?` is overridable — and a Hash subclass answering
@@ -434,15 +433,18 @@ module Axn
       # The value of `name` on `object`, or NOT_DEFINED when nothing answers to it.
       #
       # Two lookups, because the standard of correctness is agreement with what reflection reads. The
-      # first is `Object#method`, which finds a DEFINED method whatever `respond_to?` claims — so an
-      # object defining a reader cannot opt out of a guard by denying it. The second is the plain
-      # dispatch reflection itself makes, reached only when nothing defines the name: `Object#method`
-      # falls back to `respond_to_missing?`, so a member served entirely by `method_missing` WITHOUT a
-      # matching `respond_to_missing?` looks absent to the first lookup while `member.field` answers
+      # first reads the object's own METHOD TABLE (`NativeMethods.declared_method`), which finds a
+      # DEFINED method whatever `respond_to?` claims — so an object defining a reader cannot opt out of
+      # a guard by denying it, and nothing the object wrote runs to answer. The second is the plain
+      # dispatch reflection itself makes, reached whenever the table declares nothing: a member served
+      # by `method_missing` is absent to a table lookup BY DESIGN, while `member.field` answers
       # reflection perfectly well — and a guard that skipped it would leave reflection emitting a name
-      # nothing checked. Both are bound rather than dispatched (`#method`, `#public_send` and
-      # `#respond_to?` are all overridable), so an object whose own version raises cannot replace a
-      # declaration verdict with its exception.
+      # nothing checked. Both are undispatched at the point of asking (`#public_send` and `#respond_to?`
+      # are overridable, and `#method` is a question put to the VALUE, which consults its
+      # `respond_to_missing?` for any absent name), so an object whose own version raises cannot replace
+      # a declaration verdict with its exception — the reason the table lookup is the first of the two
+      # rather than `Object#method`, whose `respond_to_missing?` dispatch runs on exactly the absent
+      # branch this method exists to reach.
       #
       # Only "nothing answered to THIS name" counts as absence — a NoMethodError naming something else
       # is a bug inside the reader and propagates. So an object that genuinely defines nothing is still
@@ -453,17 +455,10 @@ module Axn
       # question — it reads the name through `NameError`'s own implementation and makes axn's Symbol the
       # receiver of `equal?`, so neither a subclass overriding `name` nor a returned object's `==` can answer
       # in its place. The full reasoning lives there.
-      # The Method the real method table defines for `name`, or nil when nothing does. Asked without dispatching
-      # `respond_to?`, which an object can override to deny a method it has.
-      def self.bound_method(object, name)
-        OBJECT_METHOD.bind_call(object, name)
-      rescue ::NameError
-        nil
-      end
 
       def self.fetch(object, name)
-        defined_method = bound_method(object, name)
-        return defined_method.call if defined_method
+        declared = Axn::Internal::NativeMethods.declared_method(object, name)
+        return declared.bind_call(object) if declared
 
         begin
           OBJECT_PUBLIC_SEND.bind_call(object, name)

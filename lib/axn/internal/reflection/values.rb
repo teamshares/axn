@@ -87,14 +87,6 @@ module Axn
                                         "re-encode the key's bytes, or key the Hash by a UTF-8 String or Symbol."
         private_constant :UNRENDERABLE_KEY_BYTES_REASON
 
-        # `#method` is itself overridable, so the owner lookups below go through Object's implementation. A value
-        # whose own `#method` raises would otherwise replace a serialization decision with its exception — and
-        # escape the adapter when that exception is outside StandardError. `respond_to?` is deliberately NOT
-        # treated this way: "do you claim to respond to this?" is genuinely the value's own answer to give, and
-        # overriding it is a supported idiom that a method_missing-backed proxy depends on.
-        UNBOUND_METHOD = ::Object.instance_method(:method)
-        private_constant :UNBOUND_METHOD
-
         UNRENDERABLE_FIELD_BYTES_REASON = "an exposed field's name becomes a JSON property name, and this one " \
                                           "holds bytes that have no UTF-8 rendering, and JSON is a UTF-8 " \
                                           "format — `JSON.generate` refuses such a property name outright. " \
@@ -352,8 +344,8 @@ module Axn
         # no check here can see the value go missing. Pass one therefore dispatches nothing but the source's
         # `each` — the one method walking a container inherently requires — and leaves each triple's wire-key
         # slot empty; pass two walks the module's OWN list, with the source no longer under iteration, and fills
-        # that slot in. The opaque-key check belongs to pass two for the same reason (`Object#method` can reach
-        # a `respond_to_missing?`). The slot is why the two passes cost one list rather than two.
+        # that slot in. The opaque-key check belongs to pass two for the same reason — it reaches a key's own `to_s`
+        # for any key that is neither String nor Symbol. The slot is why the two passes cost one list rather than two.
         #
         # The capture is a LIST rather than a Hash keyed by the caller's keys: a Hash would re-run each key's
         # `hash`/`eql?` and merge two entries the source holds separately — two mutable keys mutated to agree
@@ -460,9 +452,16 @@ module Axn
           )
         end
 
-        # The module that actually defines `name` on `value`, asked without dispatching the value's own
-        # `#method`. Raises NameError when nothing defines it, exactly as `#method` would.
-        def owner_of(value, name) = UNBOUND_METHOD.bind_call(value, name).owner
+        # The module that actually defines `name` on `value`, read out of the value's method table rather than
+        # asked of the value — so a `#method` of its own cannot replace a serialization decision with its
+        # exception, and nor can a `respond_to_missing?`, which Ruby consults for any name a VALUE lacks. nil when
+        # nothing defines it, and every caller here compares the owner against a specific module, so absent and
+        # "the value's own class" take the same branch.
+        #
+        # `respond_to?` is deliberately NOT treated this way: "do you claim to respond to this?" is genuinely the
+        # value's own answer to give, and overriding it is a supported idiom that a method_missing-backed proxy
+        # depends on. Only the OWNER question is answered from the table.
+        def owner_of(value, name) = Axn::Internal::NativeMethods.method_owner(value, name)
 
         # The canonical UTF-8 property name `key` renders as, or nil when its bytes have no UTF-8 rendering.
         # Separate from the raise so a field name and a Hash key can share one canonicalization while each
@@ -595,7 +594,7 @@ module Axn
         # opaqueness verdict differs.
         def projection_for(value)
           if value.respond_to?(:as_json)
-            generic = owner_of(value, :as_json) == ::Object
+            generic = ::Object.equal?(owner_of(value, :as_json))
             return :own_as_json unless generic
             return value.respond_to?(:to_hash) ? :delegated_as_json : :generic_as_json unless value.respond_to?(:to_h)
           end
@@ -608,13 +607,12 @@ module Axn
         # what lets a real `def to_s = "$#{cents / 100.0}"` through. Reached only from the `to_s`
         # fallback and from a Hash key, so the earlier branches have already routed away everything
         # that stringifies meaningfully.
+        # A `#to_s` that was undef'd and is served by `method_missing` has no owner in the table, so it reports
+        # absent — which is not one of the default owners, and so falls through to normal rendering. That is the
+        # right answer rather than a third defect: such a `#to_s` is emphatically not the inherited default, and
+        # the value renders through it fine.
         def default_to_s?(value)
           DEFAULT_TO_S_OWNERS.include?(owner_of(value, :to_s))
-        rescue NameError
-          # `method(:to_s)` can't resolve a #to_s that was undef'd and is served by method_missing without a
-          # matching respond_to_missing?. That #to_s is emphatically not the inherited default, and the value
-          # renders through it fine, so fall through to normal rendering rather than inventing a third defect.
-          false
         end
 
         # Every rendering decision `serialize_value` routes through is core's own. Kept private so a

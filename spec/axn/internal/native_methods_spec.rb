@@ -126,6 +126,89 @@ RSpec.describe Axn::Internal::NativeMethods do
     end
   end
 
+  # The value-level twin of `declared_instance_method`, and the ONE lookup `method_owner` reads — so the matrix
+  # above is this method's matrix too, and the last example here is what keeps the two from drifting. What it adds
+  # is the method ITSELF, for a caller that has to CALL what the table declares rather than only name its owner.
+  describe ".declared_method" do
+    # An UnboundMethod resolved from the value's own method table binds back to that value and dispatches exactly
+    # what Ruby would have. The singleton, extended and prepended rows are the ones a lookup against the CLASS
+    # would get wrong, which is why the resolution goes through the singleton class.
+    {
+      "a plain instance" => [-> { Class.new { def zap = :from_class }.new }, :from_class],
+      "a subclass that OVERRIDES the method" => [-> { Class.new(Class.new { def zap = :inherited }) { def zap = :own }.new }, :own],
+      "a singleton method" => [-> { Object.new.tap { |o| o.define_singleton_method(:zap) { :from_singleton } } }, :from_singleton],
+      "a module EXTENDED onto the object" => [-> { Object.new.tap { |o| o.extend(Module.new { def zap = :from_extend }) } }, :from_extend],
+      "a module PREPENDED to the class" => [
+        -> { Class.new { def zap = :from_class }.tap { |k| k.prepend(Module.new { def zap = :from_prepend }) }.new }, :from_prepend
+      ],
+      "a private method" => [-> { Class.new { private def zap = :from_private }.new }, :from_private],
+      "a BasicObject" => [-> { Class.new(BasicObject) { def zap = :from_basic }.new }, :from_basic],
+    }.each do |label, (build, expected)|
+      it "resolves #{label} to a method that binds back to the value" do
+        value = build.call
+
+        expect(described_class.declared_method(value, :zap).bind_call(value)).to eq(expected)
+      end
+    end
+
+    # The singleton-class refusal the class fallback exists for: the method still has to be callable.
+    it "resolves a name an immediate answers, which refuses a singleton class" do
+      expect(described_class.declared_method(7, :to_s).bind_call(7)).to eq("7")
+    end
+
+    it "answers nil for a name nothing defines" do
+      expect(described_class.declared_method(Object.new, :nope_not_here)).to be_nil
+    end
+
+    it "answers nil for an undef'd name rather than the implementation it shadows" do
+      expect(described_class.declared_method(Class.new(String) { undef_method :to_s }.new("x"), :to_s)).to be_nil
+    end
+
+    # ABSENT by design, on the same terms as `method_owner`: `method_missing` is the object's own code, never a
+    # definition the table holds. A caller that must still READ such a member falls back to a dispatch of its own
+    # — which is what `ShapeGraph.fetch` does, and why reporting absent here costs it nothing.
+    it "answers nil for a name served only by method_missing" do
+      value = Class.new do
+        def respond_to_missing?(name, _include_private = false) = name == :zap
+        def method_missing(name, *args) = name == :zap ? "zapped" : super
+      end.new
+
+      expect(described_class.declared_method(value, :zap)).to be_nil
+    end
+
+    context "the promise: the lookup runs none of the object's code" do
+      it "does not consult respond_to_missing? for an ABSENT name" do
+        value = Class.new { include RespondToMissingProbe }.new
+
+        expect(described_class.declared_method(value, :nope_not_here)).to be_nil
+        expect(RespondToMissingProbe.calls).to be_empty
+      end
+
+      it "does not consult respond_to_missing? for a PRESENT name" do
+        value = Class.new(String) { include RespondToMissingProbe }.new("x")
+
+        expect(described_class.declared_method(value, :to_s).bind_call(value)).to eq("x")
+        expect(RespondToMissingProbe.calls).to be_empty
+      end
+
+      # A hook that RAISES is what turns the dispatch from a wasted call into a replaced verdict, and
+      # `NotImplementedError` is outside StandardError, so no rescue in this lookup's callers contains it.
+      it "answers rather than propagating an exception raised by respond_to_missing?" do
+        value = Class.new { def respond_to_missing?(*) = raise(NotImplementedError, "hook fired") }.new
+
+        expect(described_class.declared_method(value, :nope_not_here)).to be_nil
+      end
+    end
+
+    # The consolidation itself. `method_owner` is this lookup's owner, so the two cannot drift into separate reads
+    # with separate absence policies — which is the defect that produced three of them once already.
+    it "is the lookup `method_owner` reports the owner of" do
+      [String.new("x"), 7, nil, Object.new, Class.new(String) { undef_method :to_s }.new("x")].each do |value|
+        expect(described_class.method_owner(value, :to_s)).to equal(described_class.declared_method(value, :to_s)&.owner)
+      end
+    end
+  end
+
   # Each predicate below reads that one owner lookup. The pairs assert that the ANSWER is what it has to be for
   # an ordinary object, and that reaching it consulted the object about nothing.
   describe "the predicates that read an owner" do

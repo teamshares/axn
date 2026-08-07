@@ -566,10 +566,11 @@ RSpec.describe "expects ..., user_facing:" do
     # the failure is reported at all. So the reader is asked for the VALUE (a bound `public_send`, absent told
     # from nil by the name the NoMethodError reports) rather than asked whether it has one.
     #
-    # Deliberately an availability read, not a method-table ownership probe: `member.field` and
-    # `member.validations` are dispatched unconditionally a few lines away, so a member answering through
-    # `method_missing` already works, and an ownership probe reports such a method absent BY DESIGN — it would
-    # silently stop honouring this member's `user_facing:` while its other readers kept working.
+    # Deliberately an AVAILABILITY read overall, even though its first lookup is a method-table one: `member.field`
+    # and `member.validations` are dispatched unconditionally a few lines away, so a member answering through
+    # `method_missing` already works, and a table lookup reports such a method absent BY DESIGN. Were the table
+    # lookup the whole read, it would silently stop honouring this member's `user_facing:` while its other readers
+    # kept working — which is why absence there falls through to a dispatch rather than settling the question.
     it "honours a member whose readers answer through method_missing" do
       require "ostruct"
       member = OpenStruct.new(field: :status, validations: { presence: true }, user_facing: true) # rubocop:disable Style/OpenStructUse
@@ -590,6 +591,47 @@ RSpec.describe "expects ..., user_facing:" do
 
       result = nil
       expect { result = assigned(shaped_config(member)).call(payload: { "status" => "" }) }.not_to raise_error
+      expect(result.outcome).to be_failure
+      expect(Axn::ValidationError.user_facing?(result.exception)).to be(true)
+    end
+
+    # `respond_to?` is not the only hook a lookup can reach. Ruby consults `respond_to_missing?` whenever a name
+    # asked of a VALUE is ABSENT, and absence is the branch this read exists to reach — it is how "carries no
+    # `user_facing:`" is told from "carries nil". So a member defining that hook had the classifier running its
+    # code, and this one raises outside StandardError, so it escapes `.call` in place of the settled failure.
+    it "does not consult the member's respond_to_missing? about a setting it does not carry" do
+      unswallowable = Class.new(Exception) # rubocop:disable Lint/InheritException
+      member = Struct.new(:field, :validations) do
+        define_method(:respond_to_missing?) { |*| raise(unswallowable, "respond_to_missing? must not decide this") }
+      end.new(:status, { presence: true })
+
+      result = nil
+      expect { result = assigned(shaped_config(member)).call(payload: { "status" => "" }) }.not_to raise_error
+      expect(result.outcome).to be_exception
+      expect(Axn::ValidationError.user_facing?(result.exception)).to be(false)
+    end
+
+    # The `method_missing` half without OpenStruct's real singleton accessors: nothing is in the method table, so
+    # the first lookup reports absent and the dispatch fallback is what reads the setting. Distinct from the
+    # OpenStruct example above, which the table lookup finds directly (`new_ostruct_member!` defines accessors) —
+    # and from the schema fixtures elsewhere, which omit `respond_to_missing?`. Whether the hook is present must
+    # not change the answer, because nothing on this path asks it.
+    it "honours a member whose readers answer through method_missing behind a respond_to_missing?" do
+      member = Class.new do
+        def respond_to_missing?(reader, _include_private = false) = %i[field validations user_facing].include?(reader)
+
+        def method_missing(reader, *_args)
+          case reader
+          when :field then :status
+          when :validations then { presence: true }
+          when :user_facing then true
+          else super
+          end
+        end
+      end.new
+
+      result = assigned(shaped_config(member)).call(payload: { "status" => "" })
+
       expect(result.outcome).to be_failure
       expect(Axn::ValidationError.user_facing?(result.exception)).to be(true)
     end

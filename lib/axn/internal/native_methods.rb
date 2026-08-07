@@ -203,14 +203,10 @@ module Axn
         nil
       end
 
-      # Which class or module OWNS the method a value would dispatch for `name` — resolved out of the value's
-      # method table, so the answer comes from the table rather than from the value. nil when the value has no
-      # such method at all.
-      #
-      # This is what decides whether CALLING that method runs Ruby's own code or the caller's, which a walk needs
-      # before it may run one at all: a container subclass that INHERITS `empty?` answers with the built-in's
-      # implementation, while one that overrides it — or carries a singleton, which sits ahead of its class — is
-      # arbitrary code that a verdict must not enter.
+      # The UnboundMethod the value's METHOD TABLE declares for `name`, at any visibility, or nil when it declares
+      # none. The value-level twin of `declared_instance_method`, and the one lookup every question in this module
+      # about a VALUE's methods resolves through: `method_owner` reads its owner, and a caller that must CALL what
+      # the table declares (`ShapeGraph.fetch`) binds it back to the value.
       #
       # Resolved through the value's SINGLETON CLASS, on the same terms and for the same reason as
       # `own_array_methods`: that one module's ancestry is the whole of what the value would dispatch — its
@@ -224,24 +220,39 @@ module Axn
       #
       # Asking the singleton class rather than the value is the whole point: `Object#method` is a question put to
       # the VALUE, and Ruby consults the value's `respond_to_missing?` whenever the name is ABSENT — so on a
-      # value that defines that hook, an ownership lookup ran the caller's code, and one that raised outside
-      # `NameError` left through the predicate as the verdict. Absence is not a corner here (`facade_inspector`
-      # asks for a `to_fs` that exists in no process without ActiveSupport's conversions), and the exception path is the one
-      # place a predicate must not become the failure: an exception that removes its own `#exception` while
-      # answering is asked about a method that is by then gone.
+      # value that defines that hook, the lookup ran the caller's code, and one that raised outside `NameError`
+      # left through it as the verdict. Absence is not a corner (`facade_inspector` asks for a `to_fs` that exists
+      # in no process without ActiveSupport's conversions, and `ShapeGraph` asks every shape member for the
+      # optional attributes a minimal member simply does not carry), and the exception path is the one place a
+      # predicate must not become the failure: an exception that removes its own `#exception` while answering is
+      # asked about a method that is by then gone.
+      #
+      # A `method_missing`-backed method is therefore reported ABSENT, where `Object#method` reports the class that
+      # would dispatch it. For an ownership question that is the wanted answer (see `method_owner`); for a caller
+      # that needs the VALUE, absence here is precisely what routes it to a dispatch of its own.
       #
       # The cost of asking the complete question is that reading the singleton class materializes an empty one,
       # exactly as in `own_array_methods`, and nothing observes the difference.
-      #
-      # A `method_missing`-backed method is reported ABSENT here, where `Object#method` reports the class that
-      # would dispatch it. That is the answer this module's question wants: `method_missing` is by definition
-      # the caller's own code, so it is never Ruby's own implementation that answers, and every caller compares
-      # the owner against a specific built-in — so nil and "the value's own class" take the identical branch.
-      def self.method_owner(value, name)
-        MODULE_INSTANCE_METHOD.bind_call(method_table(value), name).owner
+      def self.declared_method(value, name)
+        MODULE_INSTANCE_METHOD.bind_call(method_table(value), name)
       rescue ::NameError
         nil
       end
+
+      # Which class or module OWNS the method a value would dispatch for `name`, or nil when the value has no such
+      # method at all — the owner of `declared_method`'s result, so the lookup and this reader carry ONE absence
+      # policy between them rather than resolving the method table twice. `UnboundMethod#owner` is Ruby's own on an
+      # object Ruby constructed, so reading it dispatches nothing the caller wrote.
+      #
+      # This is what decides whether CALLING that method runs Ruby's own code or the caller's, which a walk needs
+      # before it may run one at all: a container subclass that INHERITS `empty?` answers with the built-in's
+      # implementation, while one that overrides it — or carries a singleton, which sits ahead of its class — is
+      # arbitrary code that a verdict must not enter.
+      #
+      # A `method_missing`-backed method reports nil rather than the class that would dispatch it, and every
+      # caller compares the owner against a specific built-in — so nil and "the value's own class" take the
+      # identical branch.
+      def self.method_owner(value, name) = declared_method(value, name)&.owner
 
       # The module whose ancestry holds everything `value` would dispatch.
       #

@@ -2233,15 +2233,14 @@ RSpec.describe "declaration-time property name collisions" do
         end
       end
 
-      # A member served entirely by `method_missing` with NO `respond_to_missing?`. `Object#method` falls
-      # back to `respond_to_missing?`, so the member looks reader-less to a method-table lookup — while the
-      # schema's plain `member.field` dispatch reaches `method_missing` and emits the name.
+      # A member served entirely by `method_missing`, which a method-table lookup reports ABSENT by design —
+      # `method_missing` is the object's own code, never a definition the table holds. So the member looks
+      # reader-less to the first of the two lookups behind `ShapeGraph.fetch`, while its dispatch fallback (and
+      # the schema's own plain `member.field`) reaches `method_missing` and emits the name.
       def ghost_member_class
         Class.new do
           def initialize(name) = @name = name
 
-          # The absent respond_to_missing? IS the fixture: it is what makes a method-table lookup miss a
-          # reader the schema's plain dispatch finds.
           def method_missing(reader, *_args) # rubocop:disable Style/MissingRespondToMissing
             case reader
             when :field then @name
@@ -2249,6 +2248,27 @@ RSpec.describe "declaration-time property name collisions" do
             end
           end
         end
+      end
+
+      # A member whose `respond_to_missing?` raises, carrying only the two readers a minimal member needs. Ruby
+      # consults that hook whenever a name looked up on a VALUE is ABSENT, and the walk asks every member for the
+      # OPTIONAL attributes too (`user_facing:`, `sensitive:`, `method_call:`, `description:`, `metadata:`) —
+      # absence is the ordinary case for those, not a corner. So a lookup put to the member runs its code before
+      # answering, and this hook raises outside StandardError, so it escapes `expects` in place of any verdict.
+      #
+      # Deliberately NOT a ShapeConfig subclass: that defines every reader the walk asks for, so no name would be
+      # absent and the hook would never be reached at all.
+      def raising_lookup_member_class
+        unswallowable = Class.new(Exception) # rubocop:disable Lint/InheritException
+        Struct.new(:field, :validations) do
+          define_method(:respond_to_missing?) { |*| raise(unswallowable, "respond_to_missing? must not decide this") }
+        end
+      end
+
+      it "reads a member whose respond_to_missing? raises, without consulting it" do
+        members = [raising_lookup_member_class.new(:status, { presence: true })]
+
+        expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }.not_to raise_error
       end
 
       it "checks a shape Hash that denies being a Hash" do
@@ -2394,8 +2414,8 @@ RSpec.describe "declaration-time property name collisions" do
 
       it "still rejects a user_facing: member whose readers exist only through method_missing" do
         member = Class.new do
-          # The absent respond_to_missing? IS the fixture: it is what makes a method-table lookup miss a
-          # reader the schema's plain dispatch finds.
+          # Served entirely by `method_missing`, which a method-table lookup reports absent — so the dispatch
+          # fallback is what reads these readers, exactly as the schema's own dispatch does.
           def method_missing(reader, *_args) # rubocop:disable Style/MissingRespondToMissing
             case reader
             when :field then :status
@@ -2599,7 +2619,8 @@ RSpec.describe "declaration-time property name collisions" do
         members = [Class.new do
           def initialize(error_class) = @error_class = error_class
 
-          # No respond_to_missing?, so the fallback dispatch is the path reached.
+          # Every reader is `method_missing`-backed, which the method table declares nothing for, so the dispatch
+          # fallback is the path reached.
           def method_missing(_reader, *_args) = raise(@error_class, "boom") # rubocop:disable Style/MissingRespondToMissing
         end.new(evil_error)]
 
@@ -3251,8 +3272,9 @@ RSpec.describe "declaration-time property name collisions" do
         ghost = Class.new do
           def initialize(error_class) = @error_class = error_class
 
-          # No respond_to_missing?, so the dispatch fallback is the path reached, and the raised error stores
-          # the missing name exactly as an implicit NoMethodError would.
+          # Every reader is `method_missing`-backed, which the method table declares nothing for, so the dispatch
+          # fallback is the path reached — and the raised error stores the missing name exactly as an implicit
+          # NoMethodError would.
           def method_missing(reader, *_args) = raise(@error_class.new("boom", reader)) # rubocop:disable Style/MissingRespondToMissing
         end
         members = [ghost.new(raising_name),
