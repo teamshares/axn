@@ -51,6 +51,37 @@ RSpec.describe Axn::Extensions::Config do
       expect(config.registered_field_metadata_keys.count(:duplicate)).to eq(1)
     end
   end
+
+  describe "the reserved core DSL option names" do
+    let(:reserved) { Axn::Core::Contract.reserved_field_option_names }
+
+    it "is a frozen Set" do
+      expect(reserved).to be_a(Set)
+      expect(reserved).to be_frozen
+    end
+
+    # One name per source the set unions, so a source silently dropping out of the derivation fails
+    # here rather than reopening the hole it covered. `:method_call` is the canary for the signature
+    # reflection specifically — it is an `expects` kwarg and appears in none of the three constants.
+    it "draws from every source it is derived from" do
+      expect(reserved).to include(:presence)    # KNOWN_VALIDATION_KEYS
+      expect(reserved).to include(:allow_blank) # ActiveModel's shared validation options
+      expect(reserved).to include(:method_call) # an `expects` kwarg, present in no constant
+      expect(reserved).to include(:user_facing) # SHAPE_MEMBER_FIELD_OPTIONS
+    end
+
+    # The keys Ruby binds as kwargs before `**` collects them cannot be misrouted today, but the set is
+    # scoped to what the DSL OWNS rather than to what is currently reachable: registering one is silently
+    # inert for the extension, and a kwarg that later moves into the splat would otherwise reopen the hole.
+    it "covers the kwargs that are bound before the splat, not only the misroutable keys" do
+      expect(reserved).to include(:optional, :default, :sensitive, :as, :prefix)
+    end
+
+    it "does not reserve :description, the metadata key axn registers itself" do
+      expect(reserved).not_to include(:description)
+      expect(Axn::Extensions.config.registered_field_metadata_keys).to include(:description)
+    end
+  end
 end
 
 RSpec.describe "Axn::Extensions::Config semantic hints" do

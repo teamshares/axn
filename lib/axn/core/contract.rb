@@ -268,6 +268,37 @@ module Axn
         value.to_sym
       end
 
+      # The option names the core field DSL owns. `_partition_field_options` routes a declaration's keys by
+      # the field-metadata registry (`metadata = options.slice(*metadata_keys)`), so a gem registering one of
+      # these would move the key out of the validations bag and change what it MEANS — leaving the DSL's
+      # behaviour a function of which extensions happened to initialize. `register_field_metadata_key` refuses
+      # the collision against this set, at the point the mistake is made rather than at each declaration that
+      # trips over it.
+      #
+      # Every name is READ from the place that defines it, never copied beside it, so the set cannot drift
+      # from the DSL it reserves — and drift here is precisely the defect, a core option becoming claimable
+      # again with nothing to notice. That is why the kwarg names come from the signatures themselves: an
+      # option added to `expects` tomorrow is reserved the moment it is added.
+      #
+      # Scoped to what the DSL OWNS, not to what a registration can currently misroute. A kwarg Ruby binds
+      # before `**` collects it (`optional:`, `default:`) cannot be rerouted today, but registering one is
+      # silently inert for the extension — it asks for a metadata key no declaration ever routes to — and a
+      # kwarg that later moves into the splat would otherwise be unreserved.
+      def self.reserved_field_option_names
+        @reserved_field_option_names ||= (
+          ClassMethods::KNOWN_VALIDATION_KEYS |
+            Axn::Validation::Base.shared_validation_option_keys |
+            _field_option_kwarg_names(:expects) |
+            _field_option_kwarg_names(:exposes) |
+            ClassMethods::SHAPE_MEMBER_FIELD_OPTIONS
+        ).freeze
+      end
+
+      def self._field_option_kwarg_names(method_name)
+        ClassMethods.instance_method(method_name).parameters.filter_map { |type, name| name if type == :key }
+      end
+      private_class_method :_field_option_kwarg_names
+
       # The one config type for every declared inbound/outbound field, top-level or subfield — a
       # top-level field is just the depth-0 case (`on: nil`). `reader_as` is the name of the
       # generated accessor method; it defaults to `field` (the wire key), but `expects ..., as:`/
