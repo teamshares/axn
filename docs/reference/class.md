@@ -237,6 +237,18 @@ Rules and caveats:
 `input_schema` never executes conditions. It reflects every conditional field **as if every gate were open** — `if:` treated as true, `unless:` treated as false, every declared validator counted — so the schema may be *stricter* than the runtime (it can tell a caller a field is required when a closed gate would have accepted omission), but never looser. One narrow, documented exception: a gated required subfield whose condition does not reference its own parent's presence — omitting the parent while the condition is true passes the schema but fails at runtime with a normal validation error (the canonical `if: -> { parent.present? }` pattern is exact). Two refinements: a Symbol condition referencing a declared sibling field (like `if: :promo_enabled?` above) is emitted *exactly*, as a JSON Schema `allOf`/`if`/`then` conditional instead of an unconditional requirement; and a gated required subfield keeps its nested `required` without forcing its ancestors, so the parent's own declared optionality is honored. On `output_schema`, a gated exposed field is left untyped (a closed gate skips every validator, so the action can expose whatever it assigned — no type is assertable).
 :::
 
+Axn has **no validation contexts.** ActiveModel lets a model gate a validator on a context (`record.valid?(:create)` against `validates … on: :create`), but axn validates with no context at all, so a validator carrying `on:` would never run on any call. Rather than accept a check that silently enforces nothing, axn refuses the declaration:
+
+```ruby
+expects :v, type: { klass: String, on: :create }
+# => ArgumentError: `on:` inside type: on ["v"] names an ActiveModel validation context, and axn validates
+#    with no context — so that check runs on no call and the declaration is left unenforced.
+```
+
+Use `if:`/`unless:` to gate a check instead. The same rejection covers a shape member's own `on:`, and `on:` on an `exposes`.
+
+Note that this is only about `on:` **inside a validator's options.** A declaration-level `on:` on `expects` is a completely different option — it is axn's [subfield parent](#nested-subfield-expectations) (`expects :zip, on: :address`) — and is unaffected.
+
 ### Details specific to `.exposes`
 
 For fields you declare via `exposes`, you'll need [a corresponding `expose` call](/reference/instance#expose) — unless the field is also declared via `expects`, in which case axn auto-copies it from the input into the result on all outcome paths (success, `fail!`, and exception). See [Re-exposing an expected field](/usage/writing#re-exposing-an-expected-field-auto-copy).

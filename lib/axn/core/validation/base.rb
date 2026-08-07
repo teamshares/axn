@@ -48,7 +48,7 @@ module Axn
       # ONE entry's options as `validates` will hand them to the validator: the declaration-wide shared options
       # with the entry's own merged over them, which is literally what AM builds
       # (`defaults.merge(_parse_validates_options(options))`, activemodel 7.2.2.2). Every per-entry judgment reads
-      # THIS rather than the entry alone, because a shared `allow_nil:`/`allow_blank:`/`on:`/`strict:` governs how
+      # THIS rather than the entry alone, because a shared `allow_nil:`/`allow_blank:`/`strict:` governs how
       # the entry runs just as an entry's own does — and an entry's own value overrides the shared one per key,
       # which the merge order gives for free.
       #
@@ -83,17 +83,16 @@ module Axn
       # allow_nil: doesn't count if another (presence, type, …) still rejects nil.
       #
       # An entry is nil-tolerant if it's a disabled validator (falsy `opt` — `false` or `nil`, both of
-      # which ActiveModel skips), one scoped to a validation context (it never runs, so it rejects
-      # nothing), `absence` (nil is always
-      # "absent"), `acceptance` unless explicitly `allow_nil: false` (ActiveModel's acceptance is allow_nil
-      # by default), a Hash allowing nil/blank, `confirmation` (ActiveModel compares only when the
-      # `<attr>_confirmation` accessor is non-nil, so the check adds no error of its own on a nil), a
-      # maximum-only `length:` (the one check ActiveModel compares a nil against, and a nil's measured size of
-      # 0 clears any maximum — see length_admits_nil?), a `format:` whose literal pattern admits the empty
-      # string a nil is tested as (see format_admits_nil?), a `type:` at least one of whose declared klasses nil
-      # is an instance of (TypeValidator then reports no defect, so the nil is no type violation at all), an
-      # `exclusion` set not containing nil, or an `inclusion` set that explicitly contains nil. Any other
-      # active validator — including a bare `true` (e.g. `numericality: true`) — rejects nil.
+      # which ActiveModel skips), `absence` (nil is always "absent"), `acceptance` unless explicitly
+      # `allow_nil: false` (ActiveModel's acceptance is allow_nil by default), a Hash allowing nil/blank,
+      # `confirmation` (ActiveModel compares only when the `<attr>_confirmation` accessor is non-nil, so the
+      # check adds no error of its own on a nil), a maximum-only `length:` (the one check ActiveModel compares
+      # a nil against, and a nil's measured size of 0 clears any maximum — see length_admits_nil?), a
+      # `format:` whose literal pattern admits the empty string a nil is tested as (see format_admits_nil?),
+      # a `type:` at least one of whose declared klasses nil is an instance of (TypeValidator then reports no
+      # defect, so the nil is no type violation at all), an `exclusion` set not containing nil, or an
+      # `inclusion` set that explicitly contains nil. Any other active validator — including a bare `true`
+      # (e.g. `numericality: true`) — rejects nil.
       #
       # This is the question requiredness and nullability both turn on, asked identically by schema
       # reflection and by a field config's own `optional?` so the two can never disagree about the same
@@ -103,8 +102,7 @@ module Axn
         # allow_blank:/allow_nil:) ride in the validations hash but aren't validators, so a restored
         # `strict: true` under a tolerance flag must not read as a nil-rejecting validator and wrongly
         # mark the field required. The judgment is static-maximal: gated validators are counted as if
-        # their gates were open (a condition can only relax enforcement at runtime, never tighten it) — a
-        # context-scoped entry is different in kind, running on no call at all, and counts for nothing.
+        # their gates were open (a condition can only relax enforcement at runtime, never tighten it).
         v = validator_entries(validations)
         return true if v.empty?
 
@@ -120,10 +118,9 @@ module Axn
       def self.nil_tolerant_validation?(key, opt, declaration_options)
         return true unless opt # a disabled validator (falsy `opt` — `false`/`nil`); ActiveModel skips it
 
-        # Judged on the options `validates` will actually hand the validator, so a declaration-wide tolerance or
-        # context counts exactly as an entry's own does.
+        # Judged on the options `validates` will actually hand the validator, so a declaration-wide tolerance
+        # counts exactly as an entry's own does.
         opts = effective_entry_options(opt, declaration_options)
-        return true if entry_context_scoped?(opts)
         return true if opts[:allow_nil] || opts[:allow_blank]
         return true if key == :absence
         return true if key == :acceptance && acceptance_admits_nil?(opts)
@@ -137,20 +134,28 @@ module Axn
         false
       end
 
-      # Whether a validator ENTRY is scoped to an ActiveModel validation CONTEXT — an `on:` among the options it
-      # will run under, its own or the declaration's (`effective_entry_options`) — which makes it permanently
-      # inert: `Fields.errors_for` calls `valid?` with no context, so the entry runs on no call at all and
-      # whatever it would have rejected is vacuous. Only the key's presence is asked, at either tier: `validate`
-      # installs the context gate on `options.key?(:on)` whatever the value, so `on: nil`/`false`/`[]` name a
-      # context no call is in exactly as `on: :publish` does.
+      # Whether a validator ENTRY is scoped to an ActiveModel validation CONTEXT — an `on:` among its options,
+      # which makes it permanently inert: `Fields.errors_for` calls `valid?` with no context, so the entry runs
+      # on no call at all. THE definition behind the declaration guard that refuses one
+      # (`_reject_validator_context_scope!`) — its only consumer: a context-scoped entry cannot be declared, so no
+      # judgment downstream ever meets one.
       #
-      # Distinct from an if:/unless: GATE, which a given call MAY run: reflection counts a gated entry as if
-      # its gate were open (static-maximal — stricter than a closed-gate runtime, and safe), while a
-      # context-scoped entry has no call on which it applies. THE single definition, shared by the
-      # declaration-time nil-skip push-down, the emptiness axis's deferral test, and schema reflection's
-      # floor emission. (Not to be confused with a DECLARATION-level `on:`, which is axn's subfield parent
-      # and never reaches a validator entry.)
-      def self.entry_context_scoped?(entry_opts) = entry_opts.is_a?(Hash) && entry_opts.key?(:on)
+      # Only the key's presence is asked: `validate` installs the context gate on `options.key?(:on)` whatever
+      # the value, so `on: nil`/`false`/`[]` name a context no call is in exactly as `on: :publish` does —
+      # `Array(nil)` is `[]`, and intersecting an empty Array with anything is empty.
+      #
+      # Neither the classification nor the key read dispatches to the bag, because this decides a declaration
+      # and a guard a caller can invert is not a guard: `hash_or_nil` classifies with `case`/`when` (which does
+      # not call the object's `is_a?`) and `carries_key?` binds `Hash#key?`. That matches how ActiveModel reads
+      # the same bag — `_parse_validates_options` cases on `Hash`, and `key?` is asked of the plain Hash its
+      # `merge` builds — so the two cannot disagree about one entry.
+      #
+      # Distinct from an if:/unless: GATE, which a given call MAY run, and which stays fully supported.
+      # (Not to be confused with a DECLARATION-level `on:`, which is axn's subfield parent.)
+      def self.entry_context_scoped?(entry_opts)
+        bag = Axn::Internal::ShapeGraph.hash_or_nil(entry_opts)
+        !nil.equal?(bag) && Axn::Internal::ShapeGraph.carries_key?(bag, :on)
+      end
 
       # Whether an `acceptance:` ENTRY would let a nil through. ActiveModel's AcceptanceValidator skips a nil
       # outright unless the entry disables that (`allow_nil: false`), and even then accepts a value that is a

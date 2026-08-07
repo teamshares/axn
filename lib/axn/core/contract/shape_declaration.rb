@@ -406,6 +406,10 @@ module Axn
           Internal::ShapeGraph.detach_option_containers!(copy)
           _raise_member_model_unsupported!(name) if copy.key?(:model)
           _canonicalize_validator_options!(copy, [key])
+          # A raw member never reaches `_parse_field_validations`, so this is where its entries are held to the
+          # rule a field's are. The member's own BAG-level `on:` is refused earlier, by
+          # `_check_member_option_keys!` above, with the reason particular to a member.
+          _reject_validator_context_scope!(copy, where: "shape member `#{_shape_member_label(name)}`")
           # Last, where the block form checks it too (after the same canonicalization), so a declaration failing
           # both is reported by the same one on either route. A raw member's `coerce:` used to reach ActiveModel
           # as a validator (`Unknown validator: 'CoerceValidator'` on every call) while `type: { coerce: true }`

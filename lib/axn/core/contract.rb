@@ -507,6 +507,25 @@ module Axn
 
           validations, metadata = _partition_field_options(fields, **)
 
+          # `exposes` takes no `on:` parameter, so the key arrives in the validations bag and would then be
+          # absorbed by `_parse_field_configs`' subfield-parent parameter — stored as `config.on` on an outbound
+          # config, where nothing reads it. Neither meaning is available: an exposure has no subfield parent
+          # (see `_reject_dotted_field_name!` above, which refuses a dotted name for the same reason), and axn
+          # has no ActiveModel validation contexts. Rejected on the key's presence, whatever the value, matching
+          # how `exposes` refuses `user_facing:`.
+          #
+          # BOTH partitions are asked, because `_partition_field_options` routes a key by whether an extension
+          # registered it as field metadata — so a gem calling `register_field_metadata_key(:on)` would otherwise
+          # move the key out of `validations` and take this declaration past the guard, leaving what `on:` means
+          # here dependent on which extensions happen to be loaded. A core DSL option's meaning is not an
+          # extension's to reassign; the registration is refused its collision at the point it would matter.
+          if validations.key?(:on) || metadata.key?(:on)
+            raise ArgumentError,
+                  "exposes does not support `on:` on #{fields.map(&:to_s).inspect} — an exposure has no subfield " \
+                  "parent to reach into, and axn has no ActiveModel validation contexts. Drop `on:`; to gate the " \
+                  "outbound checks, use `if:`/`unless:`."
+          end
+
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
           # Ahead of the `user_facing:` walk below so a member carrying both an unusable name and a rejected
@@ -949,6 +968,14 @@ module Axn
         # `_build_shape_member` rejects them explicitly with the reader-less reason instead.
         SHAPE_MEMBER_READER_OPTIONS = %i[as prefix].freeze
 
+        # `on:` on a member has neither of its two meanings available: axn has no ActiveModel validation
+        # contexts (a bag-level one reaches `validates` verbatim on the raw route and silences every validator
+        # in the bag on every call), and a member has no subfield parent for it to name either. Refused with
+        # that reason rather than as an unrecognized key — `:on` IS a recognized option, which is why it stays
+        # in KNOWN_MEMBER_VALIDATION_KEYS — and separately from the reader options, because an author who
+        # wrote `on:` has a different problem from one who wrote `as:`.
+        SHAPE_MEMBER_CONTEXT_OPTIONS = %i[on].freeze
+
         # The keys a shape member's VALIDATIONS bag may hold — derived from the two sets that already decide
         # it, never listed again beside them. `KNOWN_VALIDATION_KEYS` is the field path's own recognized set
         # (what `_partition_field_options` holds a field's bag to), and a member's bag is the same kind of
@@ -972,7 +999,9 @@ module Axn
         # Order mirrors `_build_shape_member`'s: an option a member may never carry is named for what it is,
         # and only what is left over is an unrecognized key. That is the split worth keeping — an author who
         # wrote `default:` has a different problem from one who wrote `tpye:`, and the first has a message
-        # already, explaining WHY a reader-less member cannot carry it.
+        # already, explaining WHY a reader-less member cannot carry it. A recognized key that a member still
+        # cannot carry (`on:`) is excluded from the short circuit below, or it would be skipped before it
+        # could be classified.
         #
         # Nothing a caller's key defines decides the verdict. A key that is not a Symbol is unknown by
         # construction (String keys were canonicalized on the way in), tested with `case`/`when` rather than
@@ -984,16 +1013,19 @@ module Axn
         # bag was written in — and so an ordinary member (every key recognized) allocates nothing here beyond
         # the Set lookups themselves.
         def _check_member_option_keys!(name, validations)
-          unsupported = reader_opts = unknown = nil
+          unsupported = reader_opts = context_opts = unknown = nil
           validations.each_key do |key|
             case key
-            when ::Symbol then next if KNOWN_MEMBER_VALIDATION_KEYS.include?(key)
+            when ::Symbol
+              next if KNOWN_MEMBER_VALIDATION_KEYS.include?(key) && SHAPE_MEMBER_CONTEXT_OPTIONS.exclude?(key)
             end
 
             if SHAPE_MEMBER_UNSUPPORTED_OPTIONS.include?(key)
               (unsupported ||= []) << key
             elsif SHAPE_MEMBER_READER_OPTIONS.include?(key)
               (reader_opts ||= []) << key
+            elsif SHAPE_MEMBER_CONTEXT_OPTIONS.include?(key)
+              (context_opts ||= []) << key
             else
               (unknown ||= []) << key
             end
@@ -1001,6 +1033,7 @@ module Axn
 
           _raise_member_unsupported_options!(name, unsupported) if unsupported
           _raise_member_reader_options!(name, reader_opts) if reader_opts
+          _raise_member_context_option!(name, context_opts) if context_opts
           return if unknown.nil?
 
           raise ArgumentError,
@@ -1030,6 +1063,18 @@ module Axn
                 "shape member `#{_shape_member_label(name)}` does not support #{reader_opts.map { |k| "#{k}:" }.join('/')} " \
                 "(they rename a field's generated reader, but a shape member is reader-less; " \
                 "use them on a top-level `expects` field or an `on:` subfield)."
+        end
+
+        def _raise_member_context_option!(name, context_opts)
+          return if context_opts.empty?
+
+          raise ArgumentError,
+                "shape member `#{_shape_member_label(name)}` does not support " \
+                "#{context_opts.map { |k| "#{k}:" }.join('/')} — it names an ActiveModel validation context, and " \
+                "axn validates with no context, so on a raw `shape:` member every validator in the bag would be " \
+                "skipped on every call, while on a block-form member the option is discarded outright. A member " \
+                "has no subfield parent for it to name either. Drop `on:`, or gate the checks with " \
+                "`if:`/`unless:`, which axn does support."
         end
 
         # `coerce:` is field-only: it resolves a coerced value onto a reader, which a member has not got (see
@@ -1068,6 +1113,9 @@ module Axn
         def _build_shape_member(name, opts, subblock, outbound: false)
           _raise_member_unsupported_options!(name, opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS)
           _raise_member_reader_options!(name, opts.keys & SHAPE_MEMBER_READER_OPTIONS)
+          # Ahead of `_parse_field_configs` below, whose `on:` parameter would otherwise absorb the key as a
+          # subfield parent — which `ShapeConfig` then drops, leaving the option silently gone.
+          _raise_member_context_option!(name, opts.keys & SHAPE_MEMBER_CONTEXT_OPTIONS)
 
           # `user_facing:` reclassifies an INBOUND violation into the user-facing failure bucket. An
           # outbound (`exposes`) failure means the action produced bad output — always a dev bug, never
@@ -1559,6 +1607,35 @@ module Axn
           raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
         end
 
+        # `on:` inside a validator's own option bag is ActiveModel's validation CONTEXT option, and axn has no
+        # validation contexts: `Validation::Fields` calls `valid?` with no context, while `validate` installs a
+        # gate of `!(Array(options[:on]) & Array(validation_context)).empty?` whenever `options.key?(:on)` — an
+        # intersection that is empty on every call. So the entry runs on no call and whatever it declared is
+        # unenforced, which is the strongest form of a silently ignored option: the author wrote a check, the
+        # class defines cleanly, and every value passes.
+        #
+        # Only real validator ENTRIES are scanned. A BAG-level `on:` is a different declaration needing a
+        # different fix — a shape member has no validation context and no subfield parent either, and neither
+        # has an exposure — so it is reported where it arrives (`_check_member_option_keys!` /
+        # `_build_shape_member` for a member, `exposes` for an exposure) and is out of this check's remit.
+        #
+        # Every offender is named at once: an author who wrote two of them has one declaration to fix, not two
+        # rounds of the same error.
+        def _reject_validator_context_scope!(validations, where:)
+          offenders = Axn::Validation::Base.validator_entries(validations).filter_map do |key, entry|
+            "#{key}:" if Axn::Validation::Base.entry_context_scoped?(entry)
+          end
+          return if offenders.empty?
+
+          runs = offenders.size == 1 ? "that check runs" : "those checks run"
+          raise ArgumentError,
+                "`on:` inside #{offenders.join(' / ')} on #{where} names an ActiveModel validation context, and " \
+                "axn validates with no context — so #{runs} on no call and the declaration is left unenforced. " \
+                "Axn has no validation contexts: drop `on:`, or gate the check with `if:`/`unless:`, which axn " \
+                "does support. (A DECLARATION-level `on:` is axn's subfield parent — `expects :zip, on: :address` " \
+                "— and is unaffected.)"
+        end
+
         # Pseudo-types (Symbol type names) whose values can be empty. `:params` is Hash-backed; `:boolean`
         # and `:uuid` have no empty state.
         EMPTIABLE_PSEUDO_TYPES = %i[params].freeze
@@ -1669,6 +1746,18 @@ module Axn
 
           _canonicalize_validator_options!(validations, fields)
 
+          # Ahead of every consumer of this bag — `_validate_allow_empty!`, `_reconcile_emptiness_axis!`, the
+          # tolerance push-down, `_apply_nil_skip_to_non_type_validators!` — so none of them ever judges an entry
+          # that cannot run. Ahead of the push-down specifically so the message quotes the author's own spelling
+          # rather than one carrying merged tolerance keys, and ahead of `_derive_raw_shape_container!` because
+          # that rebuilds a raw `shape:` node and drops the very key being reported.
+          #
+          # After `ShapeGraph.detach_option_containers!` (`:1651`), which is what makes the verdict the caller's
+          # to state and not to decide: every Hash-valued entry is axn's own plain Hash by now. `:shape` is the
+          # one entry that seam skips, which is why the predicate classifies and reads its key without
+          # dispatching to the bag.
+          _reject_validator_context_scope!(validations, where: fields.map(&:to_s).inspect)
+
           _derive_raw_shape_container!(validations)
 
           _validate_allow_empty_value!(fields, allow_empty)
@@ -1769,7 +1858,7 @@ module Axn
         end
 
         # Whether this field's declared type rules out nil on EVERY call, all by itself — the only
-        # condition under which the type error is the field's complete account of a nil. Four ways it
+        # condition under which the type error is the field's complete account of a nil. Three ways it
         # isn't:
         #   * nil-tolerance pushed into the type bag — TypeValidator then skips nil outright;
         #   * a declared klass nil is an instance of (`type: [Array, NilClass]`, `type: Object`) — the nil
@@ -1778,18 +1867,15 @@ module Axn
         #   * an effective if:/unless: gate on the type entry — a closed gate skips the type check, and
         #     then the OTHER validators' nil rejections are the only thing standing between the field and
         #     an accepted nil. Judged structurally (no condition is ever evaluated) by the same per-key
-        #     merge model schema reflection uses;
-        #   * an `on:` inside the type BAG — ActiveModel's validation-context option, which makes the entry
-        #     permanently inert and so its nil verdict vacuous (Validation::Base.entry_context_scoped?).
+        #     merge model schema reflection uses.
         def _type_rejects_nil?(validations)
           raw = validations[:type]
           return false unless raw.is_a?(Hash) && raw[:klass]
 
-          # The options the type check will run under, the declaration's included — a shared tolerance or context
+          # The options the type check will run under, the declaration's included — a shared tolerance
           # governs it exactly as one inside the bag does.
           type = Axn::Validation::Base.effective_entry_options(raw, _shared_validation_options(validations))
           return false if type[:allow_nil] || type[:allow_blank]
-          return false if Axn::Validation::Base.entry_context_scoped?(type)
 
           decl_gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
           return false if Axn::Validation::Base.entry_effective_gate_keys(type, decl_gates).any?
@@ -1834,7 +1920,7 @@ module Axn
         #
         # Standing the flag's own check down in favor of one of them settles the axis only if that spelling
         # is GUARANTEED TO RUN, so every deferral asks that too (`_entry_guaranteed_to_run?`) — an entry a
-        # closed gate or a validation context can skip enforces nothing on the call where it is skipped.
+        # closed gate can skip enforces nothing on the call where it is skipped.
         #
         # The asymmetry between the polarities is real, not an oversight: `allow_empty: false` is a
         # promise that must be ENFORCED, so any other spelling that would defeat it has to be resolved
@@ -1859,13 +1945,12 @@ module Axn
           # contradiction — defer to it, so long as it is guaranteed to run. Under a nil-tolerance it needs
           # the axis's own tolerance keys, or the pushed blank-tolerance would stand it down on exactly the
           # value it is being trusted to reject.
-          if length_answer == :rejected && _entry_guaranteed_to_run?(validations[:length], _shared_validation_options(validations))
+          if length_answer == :rejected && _entry_guaranteed_to_run?(validations[:length])
             validations[:length] = EMPTINESS_AXIS_TOLERANCE.merge(authored_length) if tolerant
             return
           end
 
-          return if presence_answer == :rejected &&
-                    _entry_guaranteed_to_run?(validations[:presence], _shared_validation_options(validations))
+          return if presence_answer == :rejected && _entry_guaranteed_to_run?(validations[:presence])
 
           # A `length:` that explicitly ADMITS an empty value is settled before asking what would enforce the
           # axis: the inferred presence check would honor the flag, but the declaration would still answer the
@@ -1899,34 +1984,20 @@ module Axn
                              .merge(authored_length.slice(:message))
         end
 
-        # Whether a validator ENTRY runs on every call, and so can be trusted with the emptiness axis in
-        # place of the flag's own check. Two things inside an entry withdraw that guarantee, both judged
-        # structurally — no condition is ever evaluated:
+        # Whether a validator ENTRY runs on every call, and so can be trusted with the emptiness axis in place
+        # of the flag's own check. What withdraws that guarantee is a gate of its OWN — a closed condition skips
+        # that one validator, leaving nothing to reject the empty value while the rest of the contract still
+        # applies. Judged structurally; no condition is ever evaluated.
         #
-        #   * a gate of its OWN (Validation::Base.entry_self_gated?) — a closed condition skips that one
-        #     validator, leaving nothing to reject the empty value while the rest of the contract still
-        #     applies. A DECLARATION-level gate is deliberately not one: it skips EVERY validator in the
-        #     declaration, the emptiness check included, so relative to the check that would replace this
-        #     entry there is nothing to withdraw.
-        #   * an `on:` — ActiveModel's validation-context option, which makes the entry permanently inert
-        #     (Validation::Base.entry_context_scoped?): it runs on no call at all. Asked of the options the entry
-        #     will RUN under, since a declaration-wide `on:` scopes every validator in the call — the opposite
-        #     tier treatment from the gate above, and for the opposite reason: a shared context silences this
-        #     entry AND the check that would replace it, but it silences them on every call rather than some.
-        def _entry_guaranteed_to_run?(entry, declaration_options)
-          own = entry.is_a?(Hash) ? entry : {}
-          effective = Axn::Validation::Base.effective_entry_options(entry, declaration_options)
-          return false if Axn::Validation::Base.entry_context_scoped?(effective)
-
-          !Axn::Validation::Base.entry_self_gated?(own)
-        end
+        # A DECLARATION-level gate is deliberately not one: it skips EVERY validator in the declaration, the
+        # emptiness check included, so relative to the check that would replace this entry there is nothing to
+        # withdraw.
+        def _entry_guaranteed_to_run?(entry) = !Axn::Validation::Base.entry_self_gated?(entry)
 
         # What an explicit `presence:` says about emptiness: `presence` is `!blank?`, so a live one rejects
         # every empty value, while a disabled (`presence: false`) or blank-tolerant one admits it. Nothing
         # is read out of it under a nil-tolerance — there the pushed tolerance means the check can never
-        # fire, however it is spelled (a truthy one is already rejected outright) — nor out of a
-        # context-scoped entry, which runs on no call at all: an entry that never runs answers NOTHING, so it
-        # can neither carry the axis nor contradict the flag, in either polarity. The AUTOMATIC presence
+        # fire, however it is spelled (a truthy one is already rejected outright). The AUTOMATIC presence
         # check is deliberately not an answer here either: it is inferred rather than authored, and
         # `allow_empty:` governs whether it is installed at all, so it can never contradict the flag.
         def _presence_emptiness_answer(validations, tolerant:)
@@ -1935,8 +2006,6 @@ module Axn
           return :permitted unless validations[:presence]
 
           entry = Axn::Validation::Base.effective_entry_options(validations[:presence], _shared_validation_options(validations))
-          return nil if Axn::Validation::Base.entry_context_scoped?(entry)
-
           entry[:allow_blank] ? :permitted : :rejected
         end
 
@@ -1945,17 +2014,15 @@ module Axn
         # or carries its own blank-tolerance (which stands the whole entry aside for an empty value),
         # `:unverifiable` for a floor ActiveModel resolves per call, and nil when the entry answers nothing.
         #
-        # Three shapes answer nothing. An entry that says nothing about the floor at all (a `maximum:` of 1 or
-        # more, an unrecognized shape, a disabled entry); a CONTEXT-SCOPED entry, which runs on no call, so
-        # its floor is neither a promise to lean on nor a contradiction to raise over; and a floor that
-        # forbids the empty value yet is not one a schema floor can carry (`emittable_length_floor?`) — the
-        # flag then installs its own check, which IS carryable, while the author's floor goes on rejecting
-        # whatever it rejects. Both the floor and the test of what counts are the definitions schema
-        # reflection emits from, so the two layers honor exactly the same set of floors.
+        # Two shapes answer nothing. An entry that says nothing about the floor at all (a `maximum:` of 1 or
+        # more, an unrecognized shape, a disabled entry); and a floor that forbids the empty value yet is not
+        # one a schema floor can carry (`emittable_length_floor?`) — the flag then installs its own check,
+        # which IS carryable, while the author's floor goes on rejecting whatever it rejects. Both the floor
+        # and the test of what counts are the definitions schema reflection emits from, so the two layers
+        # honor exactly the same set of floors.
         def _length_emptiness_answer(validations)
           opts = _effective_length_options(validations)
           return nil if opts.empty?
-          return nil if Axn::Validation::Base.entry_context_scoped?(opts)
           return :permitted if opts[:allow_blank]
 
           floor = Axn::Validation::Base.declared_length_floor(opts)

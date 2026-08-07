@@ -61,10 +61,11 @@ module Axn
       # members LIST — an arbitrary object whose `each` axn has no choice but to run (see `capture`) — a Hash's
       # own traversal is reachable without asking the subclass anything.
       HASH_EACH = ::Hash.instance_method(:each)
+      HASH_KEY_P = ::Hash.instance_method(:key?)
       KERNEL_DUP = ::Kernel.instance_method(:dup)
       HASH_DEFAULT = ::Hash.instance_method(:default)
       HASH_DEFAULT_PROC = ::Hash.instance_method(:default_proc)
-      private_constant :HASH_EACH, :KERNEL_DUP, :HASH_DEFAULT, :HASH_DEFAULT_PROC
+      private_constant :HASH_EACH, :HASH_KEY_P, :KERNEL_DUP, :HASH_DEFAULT, :HASH_DEFAULT_PROC
 
       # Every entry of a caller Hash — THE seam for reading one, so no layer ever asks a Hash subclass to
       # traverse itself.
@@ -72,6 +73,11 @@ module Axn
         HASH_EACH.bind_call(hash, &)
         nil
       end
+
+      # Whether a caller Hash carries a key — BOUND, for the same reason the traversal above is: a guard whose
+      # verdict a subclass can change by defining `key?` is not a guard. Read where the answer decides a
+      # declaration, alongside `hash_or_nil` for the classification.
+      def self.carries_key?(hash, key) = HASH_KEY_P.bind_call(hash, key)
 
       # Whether a caller Hash answers a key it has no ENTRY for — `Hash.new(x)` or a `default_proc`. What every
       # copy above cannot carry: a copy is entry-wise, so the value such a Hash would have answered with is not

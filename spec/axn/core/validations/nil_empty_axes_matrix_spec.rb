@@ -609,9 +609,8 @@ RSpec.describe "nil and empty axes" do
     end
 
     # Deferring the axis to another spelling only settles it if that spelling is guaranteed to run.
-    # An entry carrying its OWN if:/unless: is skipped whenever its condition says so, and one scoped to a
-    # validation context never runs at all — so `allow_empty: false` keeps its own check alongside either,
-    # rather than trusting a promise that can go quiet.
+    # An entry carrying its OWN if:/unless: is skipped whenever its condition says so — so `allow_empty: false`
+    # keeps its own check alongside one, rather than trusting a promise that can go quiet.
     describe "a deferral target that is not guaranteed to run" do
       it "keeps enforcing allow_empty: false alongside a length: floor whose own gate is closed" do
         action = build(type: Array, optional: true, allow_empty: false, length: { minimum: 2, if: -> { false } })
@@ -628,46 +627,13 @@ RSpec.describe "nil and empty axes" do
         expect(action.call(v: [1, 2])).to be_ok
       end
 
-      it "keeps enforcing allow_empty: false alongside a length: floor scoped to a validation context" do
-        action = build(type: Array, optional: true, allow_empty: false, length: { minimum: 2, on: :create })
-        expect(action.call(v: nil)).to be_ok
-        expect(action.call(v: []).exception.message).to include("can't be empty")
-      end
-
       it "keeps enforcing allow_empty: false alongside a presence: whose own gate is closed" do
         action = build(type: Array, presence: { if: -> { false } }, allow_empty: false)
         expect(action.call(v: []).exception.message).to include("can't be empty")
         expect(action.call(v: [1])).to be_ok
       end
 
-      it "keeps enforcing allow_empty: false alongside a presence: scoped to a validation context" do
-        action = build(type: Array, presence: { on: :create }, allow_empty: false)
-        expect(action.call(v: []).exception.message).to include("can't be empty")
-        expect(action.call(v: [1])).to be_ok
-      end
-
-      # An inert entry supplies NO emptiness answer — not a permissive one either, so it cannot conflict
-      # with the flag. The declaration is coherent and the flag simply carries the axis on its own.
-      it "reads no answer at all out of a context-scoped length: that would otherwise admit an empty value" do
-        action = build(type: Array, optional: true, allow_empty: false, length: { minimum: 0, on: :create })
-        expect(action.call(v: nil)).to be_ok
-        expect(action.call(v: []).exception.message).to include("can't be empty")
-        expect(action.call(v: [1])).to be_ok
-      end
-
-      it "reads no answer at all out of a context-scoped presence: alongside allow_empty: true" do
-        action = build(type: Array, presence: { on: :create }, allow_empty: true)
-        expect(action.call(v: [])).to be_ok
-        expect(action.call(v: nil)).not_to be_ok
-      end
-
-      it "reads no answer at all out of a context-scoped, per-call length: minimum" do
-        action = build(type: Array, optional: true, allow_empty: false, length: { minimum: :cap, on: :create })
-        expect(action.call(v: nil)).to be_ok
-        expect(action.call(v: []).exception.message).to include("can't be empty")
-      end
-
-      # A NON-inert entry still answers, in both polarities, so a real contradiction still raises.
+      # An entry that can run answers in both polarities, so a real contradiction still raises.
       it "still raises for the same conflicts when the entry can run" do
         expect { build(type: Array, optional: true, allow_empty: false, length: { minimum: 0 }) }
           .to raise_error(ArgumentError, /length:.*allow_empty: false/m)
@@ -950,19 +916,6 @@ RSpec.describe "nil and empty axes" do
       overridden = build(type: String, strict: true, presence: { strict: false }).call(v: nil)
       expect(overridden.exception).to be_a(Axn::InboundValidationError)
       expect(overridden.exception.message).to eq("V is not a String")
-    end
-
-    it "leaves the other validators' nil rejections in force when the type entry is scoped to a context" do
-      # An `on:` INSIDE the type bag is ActiveModel's validation-context option, and axn validates with no
-      # context — so that type check never runs on any call and its nil verdict is vacuous. The presence
-      # check is the only thing rejecting a nil, and must keep doing so. (A declaration-level `on:` is
-      # axn's subfield parent, something else entirely — covered by the subfield specs.)
-      action = build(type: { klass: String, on: :create })
-
-      result = action.call(v: nil)
-      expect(result).not_to be_ok
-      expect(result.exception.message).to eq("V can't be blank")
-      expect(action.call(v: "x")).to be_ok
     end
 
     it "leaves the other validators' nil rejections in force when the type check is gated" do
