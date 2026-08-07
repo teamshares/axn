@@ -331,12 +331,13 @@ RSpec.describe "an `on:` that names a validation context" do
       expect(klass.call).to be_ok
     end
 
-    # `_partition_field_options` routes a key by whether an extension registered it as field metadata, so a gem
-    # claiming `:on` moves it out of the validations bag. The guard reads both partitions rather than only that
-    # one, or what `on:` means on an exposure would depend on which extensions happen to be loaded — and the
-    # spelling would go on being silently accepted in exactly the apps that redefined it.
-    it "is refused even where an extension has registered :on as field metadata" do
-      Axn::Extensions.config.register_field_metadata_key(:on)
+    # Two checks stand between a gem and this spelling; this example covers the inner one. Registering `:on`
+    # as field metadata is refused outright (Extensions::Config#register_field_metadata_key), so the registry
+    # is planted directly here to reach the guard behind it. `_partition_field_options` routes a key by that
+    # registry, so a claimed `:on` arrives in the metadata bag rather than the validations one — the guard
+    # reads both, because what `on:` means on an exposure is not a loaded extension's to decide.
+    it "is refused even where :on has been planted in the field-metadata registry" do
+      Axn::Extensions.config.registered_field_metadata_keys.add(:on)
 
       expect do
         Class.new do
@@ -347,6 +348,12 @@ RSpec.describe "an `on:` that names a validation context" do
       end.to raise_error(ArgumentError, /exposes does not support `on:`/)
     ensure
       Axn::Extensions.config.registered_field_metadata_keys.delete(:on)
+    end
+
+    it "cannot be reached that way in the first place — registering :on is refused" do
+      expect { Axn::Extensions.config.register_field_metadata_key(:on) }
+        .to raise_error(ArgumentError, /Cannot register :on as field metadata/)
+      expect(Axn::Extensions.config.registered_field_metadata_keys).not_to include(:on)
     end
   end
 end

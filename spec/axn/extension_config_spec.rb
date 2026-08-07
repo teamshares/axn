@@ -51,6 +51,90 @@ RSpec.describe Axn::Extensions::Config do
       expect(config.registered_field_metadata_keys.count(:duplicate)).to eq(1)
     end
   end
+
+  describe "the reserved core DSL option names" do
+    let(:reserved) { Axn::Core::Contract.reserved_field_option_names }
+
+    it "is a frozen Set" do
+      expect(reserved).to be_a(Set)
+      expect(reserved).to be_frozen
+    end
+
+    # One name per source the set unions, so a source silently dropping out of the derivation fails
+    # here rather than reopening the hole it covered. `:preprocess` is the canary for the signature
+    # reflection specifically — it is an `expects` kwarg contributed by no other source (unlike
+    # `:method_call`, which the reflection also reports but which `SHAPE_MEMBER_FIELD_OPTIONS` already
+    # contributes on its own, making it a vacuous canary for this source).
+    it "draws from every source it is derived from" do
+      expect(reserved).to include(:presence)    # KNOWN_VALIDATION_KEYS
+      expect(reserved).to include(:allow_blank) # ActiveModel's shared validation options
+      expect(reserved).to include(:preprocess)  # an `expects` kwarg, contributed by no other source
+      expect(reserved).to include(:user_facing) # SHAPE_MEMBER_FIELD_OPTIONS
+    end
+
+    # The keys Ruby binds as kwargs before `**` collects them cannot be misrouted today, but the set is
+    # scoped to what the DSL OWNS rather than to what is currently reachable: registering one is silently
+    # inert for the extension, and a kwarg that later moves into the splat would otherwise reopen the hole.
+    it "covers the kwargs that are bound before the splat, not only the misroutable keys" do
+      expect(reserved).to include(:optional, :default, :sensitive, :as, :prefix)
+    end
+
+    it "does not reserve :description, the metadata key axn registers itself" do
+      expect(reserved).not_to include(:description)
+      expect(Axn::Extensions.config.registered_field_metadata_keys).to include(:description)
+    end
+  end
+
+  describe "#register_field_metadata_key refusing a core DSL option name" do
+    let(:config) { Axn::Extensions::Config.new }
+
+    it "refuses every reserved name" do
+      reserved = Axn::Core::Contract.reserved_field_option_names
+      expect(reserved).not_to be_empty # or the loop below asserts nothing at all
+
+      reserved.each do |name|
+        expect { Axn::Extensions::Config.new.register_field_metadata_key(name) }
+          .to raise_error(ArgumentError, /is a core field DSL option/), "expected #{name.inspect} to be refused"
+      end
+    end
+
+    it "refuses :on, the collision that motivated the reservation" do
+      expect { config.register_field_metadata_key(:on) }
+        .to raise_error(ArgumentError, /Cannot register :on as field metadata/)
+    end
+
+    it "refuses the String spelling exactly as the Symbol" do
+      expect { config.register_field_metadata_key("type") }
+        .to raise_error(ArgumentError, /Cannot register :type as field metadata/)
+    end
+
+    it "names every colliding key in one raise, and only the colliding ones" do
+      expect { config.register_field_metadata_key(:type, :mcp_title, :presence) }
+        .to raise_error(ArgumentError, /Cannot register :type, :presence as field metadata/)
+    end
+
+    it "names a colliding key once however many times it was passed" do
+      expect { config.register_field_metadata_key(:type, :type) }
+        .to raise_error(ArgumentError, /Cannot register :type as field metadata/)
+    end
+
+    it "says how to fix it" do
+      expect { config.register_field_metadata_key(:type) }
+        .to raise_error(ArgumentError, /namespaced to your gem/)
+    end
+
+    # Validate-then-mutate: a call naming one good key and one reserved one registers NEITHER, so a
+    # rescued registration leaves no half-applied bag behind.
+    it "registers nothing when any key in the call is reserved" do
+      expect { config.register_field_metadata_key(:mcp_title, :type) }.to raise_error(ArgumentError)
+      expect(config.registered_field_metadata_keys).not_to include(:mcp_title)
+    end
+
+    it "still registers a name the core DSL does not own" do
+      config.register_field_metadata_key(:mcp_title, :openapi_example)
+      expect(config.registered_field_metadata_keys).to include(:mcp_title, :openapi_example)
+    end
+  end
 end
 
 RSpec.describe "Axn::Extensions::Config semantic hints" do
