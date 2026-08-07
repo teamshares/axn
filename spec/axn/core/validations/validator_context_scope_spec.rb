@@ -349,5 +349,11 @@ RSpec.describe "an `on:` that names a validation context" do
     ensure
       Axn::Extensions.config.registered_field_metadata_keys.delete(:on)
     end
+
+    it "cannot be reached that way in the first place — registering :on is refused" do
+      expect { Axn::Extensions.config.register_field_metadata_key(:on) }
+        .to raise_error(ArgumentError, /Cannot register :on as field metadata/)
+      expect(Axn::Extensions.config.registered_field_metadata_keys).not_to include(:on)
+    end
   end
 end
