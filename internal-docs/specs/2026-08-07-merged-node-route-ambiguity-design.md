@@ -122,9 +122,11 @@ The accurate diagnosis is that the model has no reader of its own for the id, so
 
 ### 7. Reflection narrows in lockstep
 
-`sibling_id_rescued?` (`reflection/schema.rb:551`) and `SubfieldContradictions#model_omittable?` both ask `configs.any? { usable_id_token_default? }` today. Both must ask it of the own-route/name-owner config instead, or the schema will credit a rescue the runtime no longer performs. `credit_sibling_id_defaults!` reads through `sibling_id_rescued?` and follows for free.
+`sibling_id_rescued?` (`reflection/schema.rb:549`) asks `sibling.configs.any? { usable_id_token_default? }` today, and must ask it of the own-route/name-owner config instead, or the schema will credit a rescue the runtime no longer performs. `credit_sibling_id_defaults!` reads through `sibling_id_rescued?` and follows for free. The selection rule therefore has to be a shared function rather than a second copy of the precedence.
 
-This is also what keeps the behaviour change from landing silently: an action whose omitted record used to resolve via an aliased off-route default now resolves nil, and at the same moment its generated `<field>_id` stops being credited as rescued and starts reflecting as required.
+`SubfieldContradictions#model_omittable?` needs NO change, which is worth recording so the audit does not go looking: it runs only over top-level configs (`check_dead_nil_tolerance!`'s `field_configs.each`), and at depth 0 every config carries `on: nil`, so the `<field>_id` it finds by wire key is always the own route. Its lookup and the new precedence agree by construction at that depth.
+
+Both consumers of that credit are declaration-time, not emission: `credit_sibling_id_defaults!` runs only in satisfiability mode (`annotate_node!` gates it on the flag, `schema.rb:467`), and `check_dead_nil_tolerance!` reads `sibling_id_rescued?` directly. The emitted schema therefore does not move at all — and the signal is louder than if it had. A nil-tolerant `model:` whose subtree requires presence, standing today only because an aliased off-route default was credited with rescuing it, becomes a dead-tolerance rejection at declaration rather than a silent nil at run time. Contracts that relied on the rescue get told so, with `raise_dead_tolerance!`'s existing remedies.
 
 ### 8. PRO-2901's blanket two-default rejection is deleted
 
@@ -140,7 +142,7 @@ Under decision 5 the only unexpressible contract is "look this model up through 
 
 `lib/axn/core/contract_for_subfields.rb` — extract the crossing seam out of `_deepest_reader_name`; replace `default_route` in `sibling_id_configs` and drop its `candidates.first` fallback; rewrite the route-precedence comment.
 
-`lib/axn/core/contract/subfield_contradictions.rb` — add the crossing check to `check!`, ordered after `check_unanswerable_segments!` (an unreachable path moots any ambiguity on it) and before `check_dead_nil_tolerance!`; delete the conflicting-defaults check and its two helpers; narrow `model_omittable?`.
+`lib/axn/core/contract/subfield_contradictions.rb` — add the crossing check to `check!`, ordered after `check_unanswerable_segments!` (an unreachable path moots any ambiguity on it) and before `check_dead_nil_tolerance!`; delete the conflicting-defaults check and its two helpers.
 
 `lib/axn/internal/reflection/schema.rb` — narrow `sibling_id_rescued?`.
 
