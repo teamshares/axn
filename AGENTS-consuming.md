@@ -108,8 +108,10 @@ halts raised **after the hook chain is entered** — an inbound `expects` failur
 runs *after* the hook body returns, so the hooks complete **normally** and never observe a raise from
 it — an `around` that rescues to record failures misses them. Use the callbacks for per-call
 observability that must not miss either end. Callbacks
-(`on_success`, `on_error`, `on_failure`, `on_exception`) run *after* `call` and do **not** flip
-`ok?`.
+(`on_success`, `on_error`, `on_failure`, `on_exception`) fire once the action **settles** — which is
+not the same as "after `call`": they fire even when `call` never ran, as on an inbound validation
+failure. That is what makes them the seam that sees every call. `on_error` is a superset, co-firing
+with whichever of `on_failure`/`on_exception` applies. A raise in a callback does **not** flip `ok?`.
 <https://teamshares.github.io/axn/usage/writing>.
 
 ## Using a result
