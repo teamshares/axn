@@ -150,7 +150,15 @@ module Axn
       # (`_snapshot_member_attributes!`). `ShapeConfig`'s constructor checks it too, for the block form.
       def self.validate_sensitive!(sensitive)
         case sensitive
-        when true, false, nil, ::Symbol, ::Proc then return
+        when true, false, nil, ::Symbol then return
+        when ::Proc
+          return unless _sensitive_proc_requires_argument?(sensitive)
+
+          raise ArgumentError,
+                "sensitive: Proc is instance_exec'd against the action instance with no arguments — it reads " \
+                "other fields by name, the value is never passed to it — so it cannot declare a required " \
+                "parameter (positional or keyword). Use `sensitive: -> { !include_pii }`, reading the field " \
+                "it depends on by name, rather than `sensitive: ->(v) { ... }`."
         end
 
         raise ArgumentError,
@@ -159,6 +167,26 @@ module Axn
               "a truthy one would silently leave the value logged in the clear rather than raise. Use " \
               "`sensitive: true` to always redact, or a Symbol/Proc predicate to decide per call."
       end
+
+      # Read through Proc's OWN `#parameters` (`bind_call`, never dispatched) rather than the declared
+      # object's: this guard exists to reject a Proc that lies about being callable with zero arguments, so
+      # letting the Proc itself answer "how many arguments do I take" would let a singleton `parameters`
+      # override falsify that answer and sail a required-argument Proc straight past the check it exists to
+      # enforce — the same failure mode `case`/`when` above avoids for the class test itself.
+      PROC_PARAMETERS = ::Proc.instance_method(:parameters)
+      private_constant :PROC_PARAMETERS
+
+      # Whether `proc` cannot be `instance_exec`'d with zero arguments — the one thing the resolver actually
+      # does with it (`Redaction#_resolve_sensitive_value`). Read from `#parameters` rather than `#arity`:
+      # arity goes negative (looks safe) the moment ANY optional/rest param joins a required one, e.g.
+      # `->(a, k: nil) { true }` is arity -2 despite `a` still being required, and a non-lambda proc with a
+      # required keyword (`proc { |k:| true }`) still raises on zero args despite `lambda?` being false — two
+      # shapes `lambda? && arity.positive?` alone would wave through. `:req`/`:keyreq` are exactly Ruby's own
+      # names for "would raise ArgumentError if not supplied", for a lambda or a proc alike.
+      def self._sensitive_proc_requires_argument?(proc)
+        PROC_PARAMETERS.bind_call(proc).any? { |(type, _name)| %i[req keyreq].include?(type) }
+      end
+      private_class_method :_sensitive_proc_requires_argument?
 
       # A shape member's name has to serve as TWO things: the JSON property it renders as (via `to_s`, which
       # the declaration guard canonicalizes) and the schema property key (via `to_sym`, which

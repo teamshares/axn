@@ -462,4 +462,232 @@ RSpec.describe "Dynamic sensitive fields" do
         .to eq({ secret: "SECRET" })
     end
   end
+
+  # PRO-3072: a `sensitive:` Proc is `instance_exec`'d with NO arguments (it reads other fields by name,
+  # the value is never handed to it) — so a Proc declaring a required parameter can never be called
+  # successfully, and used to make `#inspect` raise on every resolution instead of failing at declaration.
+  describe "sensitive: Proc arity" do
+    let(:arity_error) { /sensitive: Proc is instance_exec'd against the action instance with no arguments/ }
+
+    it "rejects a lambda with a required positional parameter" do
+      expect { build_axn { expects :a, sensitive: ->(v) { v }, optional: true } }.to raise_error(ArgumentError, arity_error)
+      expect { build_axn { expects :a, sensitive: ->(x, y) { x && y }, optional: true } }.to raise_error(ArgumentError, arity_error)
+    end
+
+    it "rejects a lambda with a required keyword parameter" do
+      expect { build_axn { expects :a, sensitive: ->(k:) { k }, optional: true } }.to raise_error(ArgumentError, arity_error)
+    end
+
+    it "rejects a lambda mixing a required positional with an optional keyword" do
+      # `arity` alone goes negative here (looks variadic-safe) despite `a` still being required —
+      # this is the shape a plain `lambda? && arity.positive?` check would wave through.
+      expect { build_axn { expects :a, sensitive: ->(x, k: nil) { x || k }, optional: true } }.to raise_error(ArgumentError, arity_error)
+    end
+
+    it "rejects a non-lambda proc with a required keyword" do
+      # Non-lambda procs pad missing POSITIONAL args with nil, but still raise on a missing required
+      # keyword — `lambda?` alone is not the right test.
+      expect { build_axn { expects :a, sensitive: proc { |k:| k }, optional: true } }.to raise_error(ArgumentError, arity_error)
+    end
+
+    it "accepts every Proc shape callable with zero arguments" do
+      callable_with_zero_args = [
+        -> { true },
+        ->(v = nil) { v.nil? },
+        ->(*a) { a.empty? },
+        ->(k: nil) { k.nil? },
+        proc { |v| v.nil? }, # rubocop:disable Style/SymbolProc -- `&:nil?` changes arity/behavior on zero args
+      ]
+      callable_with_zero_args.each do |value|
+        expect { build_axn { expects :a, sensitive: value, optional: true } }.not_to raise_error
+      end
+    end
+
+    it "rejects a required-parameter Proc on a shape member too" do
+      expect { build_axn { expects(:p, type: Hash, optional: true) { field :m, sensitive: ->(v) { v } } } }
+        .to raise_error(ArgumentError, arity_error)
+    end
+  end
+
+  # PRO-3072: the declaration guard cannot see everything — a Symbol naming a method that does not exist
+  # yet, or one that takes a required argument, is still discovered only at resolution time. That path
+  # must fail CLOSED (redact, warn) rather than raise, since it runs on `inspect`/logging/exception
+  # reporting, which must never raise over a caller's `sensitive:` declaration.
+  describe "sensitive: runtime resolution failures fail closed" do
+    let(:warnings) { [] }
+
+    def stub_warnings(action, warnings)
+      allow_any_instance_of(action).to receive(:warn) { |_, msg| warnings << msg }
+    end
+
+    it "redacts and warns, rather than raising, when the named method takes a required argument" do
+      action = build_axn do
+        expects :ssn, sensitive: :broken_check
+        exposes :other_field
+        def call = expose(other_field: "visible")
+
+        private
+
+        def broken_check(_unexpected_arg) = true
+      end
+      stub_warnings(action, warnings)
+
+      result = nil
+      expect { result = action.call(ssn: "123-45-6789") }.not_to raise_error
+      expect { result.inspect }.not_to raise_error
+      expect(result.inspect).to include("other_field: \"visible\"")
+      expect(warnings).to include(a_string_matching(/sensitive: :ssn \(:broken_check\) raised ArgumentError/))
+    end
+
+    it "redacts and warns, rather than raising, when the named method does not exist" do
+      action = build_axn do
+        expects :ssn, sensitive: :nonexistent_method
+        def call = nil
+      end
+      stub_warnings(action, warnings)
+
+      instance = action.send(:new, ssn: "123-45-6789")
+      expect { instance.send(:inputs_for_logging) }.not_to raise_error
+      expect(instance.send(:inputs_for_logging)[:ssn]).to eq("[FILTERED]")
+      expect(warnings).to include(a_string_matching(/sensitive: :ssn \(:nonexistent_method\) raised NoMethodError/))
+    end
+
+    it "only redacts the field whose callable failed, leaving the rest of the payload intact" do
+      action = build_axn do
+        expects :ssn, sensitive: :broken_check
+        expects :name
+
+        def call = nil
+
+        private
+
+        def broken_check(_unexpected_arg) = true
+      end
+      stub_warnings(action, warnings)
+
+      instance = action.send(:new, ssn: "123-45-6789", name: "Ada")
+      inputs = instance.send(:inputs_for_logging)
+
+      expect(inputs[:ssn]).to eq("[FILTERED]")
+      expect(inputs[:name]).to eq("Ada")
+    end
+
+    it "fails closed (redacts) rather than open when resolution raises" do
+      action = build_axn do
+        expects :ssn, sensitive: :broken_check
+        def call = nil
+
+        private
+
+        # Would be non-sensitive if it could ever run — but it can't, so this exercises the fail-closed default.
+        def broken_check(_unexpected_arg) = false
+      end
+      stub_warnings(action, warnings)
+
+      instance = action.send(:new, ssn: "123-45-6789")
+      expect(instance.send(:inputs_for_logging)[:ssn]).to eq("[FILTERED]")
+    end
+
+    # The warning is a diagnostic ABOUT the fail-closed decision, not part of it: a broken warn target
+    # (a custom logger raising — closed IO, a timed-out network sink) must not undo `true` having already
+    # been earned. Without the inner rescue, this raises straight through `inputs_for_logging`, defeating
+    # the very guarantee this whole path exists to provide.
+    it "still redacts when the warning itself raises (a broken logger must not undo fail-closed)" do
+      action = build_axn do
+        expects :ssn, sensitive: :broken_check
+        def call = nil
+
+        private
+
+        def broken_check(_unexpected_arg) = true
+      end
+      allow_any_instance_of(action).to receive(:warn).and_raise(IOError, "closed stream")
+
+      instance = action.send(:new, ssn: "123-45-6789")
+      result = nil
+      expect { result = instance.send(:inputs_for_logging) }.not_to raise_error
+      expect(result[:ssn]).to eq("[FILTERED]")
+    end
+
+    # A `sensitive:` predicate exists to keep some value out of logs — so a predicate that raises with
+    # that value embedded in its own exception message must not have the warning re-print it. Only the
+    # exception's CLASS and source location are rendered, never its `#message`.
+    it "never renders the raised exception's own message, which may itself embed the value being protected" do
+      action = build_axn do
+        expects :ssn
+        exposes :secret, sensitive: ->(*) { raise "leaked value: 123-45-6789" }
+        def call = expose(secret: "hidden")
+      end
+      stub_warnings(action, warnings)
+
+      result = action.call(ssn: "irrelevant")
+      expect(result.inspect).not_to include("123-45-6789")
+      expect(warnings.join).not_to include("123-45-6789")
+      expect(warnings).to include(a_string_matching(/sensitive: :secret \(.+\) raised RuntimeError at /))
+    end
+
+    # A Proc CAN carry a singleton `inspect` (a Symbol cannot — `define_singleton_method` on one raises
+    # TypeError), and this predicate is the one already known to misbehave, having just raised. Naming it
+    # must not dispatch to it: an author's own weaponized `inspect` could otherwise smuggle a captured
+    # secret into the warning under cover of "describing the rule that failed".
+    it "never dispatches to the failed predicate's own #inspect when naming it in the warning" do
+      hostile = ->(*) { raise "boom" }
+      hostile.define_singleton_method(:inspect) { "leaked: 123-45-6789" }
+
+      action = build_axn do
+        expects :ssn
+        exposes :secret, sensitive: hostile
+        def call = expose(secret: "hidden")
+      end
+      stub_warnings(action, warnings)
+
+      result = action.call(ssn: "irrelevant")
+      expect(result.inspect).not_to include("123-45-6789")
+      expect(warnings.join).not_to include("123-45-6789")
+      expect(warnings).to include(a_string_matching(/sensitive: :secret \(#<Proc.*\) raised RuntimeError at /))
+    end
+  end
+
+  # PRO-3072 (Codex follow-up): the declaration-time arity guard reads a caller-supplied Proc's own
+  # `#parameters` to decide whether it can be called with zero arguments — so a Proc lying about its own
+  # metadata could sail a genuinely required-argument predicate straight past the guard it exists to enforce.
+  describe "sensitive: Proc arity guard resists a lying #parameters" do
+    it "still rejects a required-argument lambda whose #parameters claims to take none" do
+      lying = ->(v) { v }
+      lying.define_singleton_method(:parameters) { [] }
+
+      expect { build_axn { expects :a, sensitive: lying, optional: true } }
+        .to raise_error(ArgumentError, /sensitive: Proc is instance_exec'd against the action instance with no arguments/)
+    end
+  end
+
+  # PRO-3072 (Codex follow-up, round 2): a Symbol cannot carry a per-instance singleton method, but
+  # `Symbol#inspect` itself can still be overridden PROCESS-WIDE (reopening the class, or `prepend`). The
+  # warning must survive that too, which is exactly why `PropertyNames` binds the native implementation at
+  # load time rather than dispatching — a rebind captured before this spec ever runs.
+  describe "sensitive: warning survives a process-wide Symbol#inspect override" do
+    it "never renders a hijacked Symbol#inspect's fake output in the warning" do
+      original_inspect = Symbol.instance_method(:inspect)
+      Symbol.define_method(:inspect) { "leaked: 123-45-6789" }
+
+      action = build_axn do
+        expects :ssn, sensitive: :broken_check
+        def call = nil
+
+        private
+
+        def broken_check(_unexpected_arg) = true
+      end
+      warnings = []
+      allow_any_instance_of(action).to receive(:warn) { |_, msg| warnings << msg }
+
+      instance = action.send(:new, ssn: "123-45-6789")
+      result = instance.send(:inputs_for_logging)
+
+      expect(result[:ssn]).to eq("[FILTERED]")
+      expect(warnings.join).not_to include("leaked: 123-45-6789")
+    ensure
+      Symbol.define_method(:inspect, original_inspect)
+    end
+  end
 end
