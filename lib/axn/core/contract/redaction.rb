@@ -3,6 +3,7 @@
 require "active_support/parameter_filter"
 require "axn/extensions"
 require "axn/internal/cycle_guard"
+require "axn/internal/reflection/property_names"
 require "axn/internal/rendering"
 require "axn/internal/shape_graph"
 
@@ -244,13 +245,18 @@ module Axn
         # fail-closed diagnostic into exactly the disclosure `sensitive:` exists to prevent — no rendering
         # guard can tell safe prose from an accidental echo of the value it was written to protect.
         #
-        # `sensitive` is described through `_describe_sensitive_rule` rather than a bare `.inspect`: it is a
-        # Proc or Symbol declared by this action's own author, but a Proc CAN carry a singleton `inspect`
-        # (a Symbol cannot — `define_singleton_method` on one raises TypeError), and this predicate is the
-        # one already known to behave unexpectedly, having just raised. Naming it without dispatching to it
-        # is the same discipline `Contract.validate_sensitive!` uses to name an out-of-grammar value by class.
+        # `sensitive` is described through `_describe_sensitive_rule`, and `field` through
+        # `PropertyNames.inspect_field_name`, rather than a bare `.inspect` on either: both are declared by
+        # this action's own author, but neither's `#inspect` is safe to dispatch. A Proc can carry a
+        # singleton `inspect`; a Symbol cannot (`define_singleton_method` on one raises `TypeError`), but
+        # `Symbol#inspect` itself can still be redefined process-wide (reopening the class, `prepend`) —
+        # `PropertyNames` binds the native implementation for exactly that reason. `sensitive` is also the
+        # predicate already known to behave unexpectedly, having just raised. Naming either without
+        # dispatching to it is the same discipline `Contract.validate_sensitive!` uses to name an
+        # out-of-grammar value by class.
         def _warn_sensitive_resolution_failure(action_instance, field, sensitive, error)
-          action_instance.warn("sensitive: #{field.nil? ? '' : "#{field.inspect} "}(#{_describe_sensitive_rule(sensitive)}) raised " \
+          field_label = field.nil? ? "" : "#{Axn::Internal::Reflection::PropertyNames.inspect_field_name(field)} "
+          action_instance.warn("sensitive: #{field_label}(#{_describe_sensitive_rule(sensitive)}) raised " \
                                "#{Axn::Internal::Rendering.class_name(error)} at #{Axn::Internal::Rendering.exception_source_location(error)} " \
                                "— redacting (fail closed)")
         rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
@@ -258,17 +264,20 @@ module Axn
         end
 
         # `sensitive` here is always a Symbol or a Proc — the only two grammar members
-        # `_resolve_sensitive_value` can raise from. A Symbol's own `#inspect` is safe to call directly (no
-        # singleton is possible on one); a Proc's is read through Proc's OWN implementation, `bind_call`,
-        # never dispatched, since a Proc singleton-`inspect` could otherwise be used to smuggle arbitrary
-        # text — including a captured secret — into this warning under the guise of "naming the rule".
+        # `_resolve_sensitive_value` can raise from. A Proc's `#inspect` is read through Proc's OWN
+        # implementation, `bind_call`, never dispatched, since a Proc singleton-`inspect` could otherwise be
+        # used to smuggle arbitrary text — including a captured secret — into this warning under the guise
+        # of "naming the rule". A Symbol goes through `PropertyNames.inspect_field_name`, the same bound
+        # native `Symbol#inspect` every OTHER declared name in the gem is rendered through, since a
+        # PROCESS-WIDE override of `Symbol#inspect` (unlike a per-instance singleton) is not blocked by
+        # Symbol being unable to carry its own singleton methods.
         PROC_INSPECT = ::Proc.instance_method(:inspect)
         private_constant :PROC_INSPECT
 
         def _describe_sensitive_rule(sensitive)
           case sensitive
           when ::Proc then PROC_INSPECT.bind_call(sensitive)
-          when ::Symbol then sensitive.inspect
+          when ::Symbol then Axn::Internal::Reflection::PropertyNames.inspect_field_name(sensitive)
           else Axn::Internal::Rendering.class_name(sensitive)
           end
         end

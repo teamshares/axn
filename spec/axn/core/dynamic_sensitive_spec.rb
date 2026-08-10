@@ -660,4 +660,34 @@ RSpec.describe "Dynamic sensitive fields" do
         .to raise_error(ArgumentError, /sensitive: Proc is instance_exec'd against the action instance with no arguments/)
     end
   end
+
+  # PRO-3072 (Codex follow-up, round 2): a Symbol cannot carry a per-instance singleton method, but
+  # `Symbol#inspect` itself can still be overridden PROCESS-WIDE (reopening the class, or `prepend`). The
+  # warning must survive that too, which is exactly why `PropertyNames` binds the native implementation at
+  # load time rather than dispatching — a rebind captured before this spec ever runs.
+  describe "sensitive: warning survives a process-wide Symbol#inspect override" do
+    it "never renders a hijacked Symbol#inspect's fake output in the warning" do
+      original_inspect = Symbol.instance_method(:inspect)
+      Symbol.define_method(:inspect) { "leaked: 123-45-6789" }
+
+      action = build_axn do
+        expects :ssn, sensitive: :broken_check
+        def call = nil
+
+        private
+
+        def broken_check(_unexpected_arg) = true
+      end
+      warnings = []
+      allow_any_instance_of(action).to receive(:warn) { |_, msg| warnings << msg }
+
+      instance = action.send(:new, ssn: "123-45-6789")
+      result = instance.send(:inputs_for_logging)
+
+      expect(result[:ssn]).to eq("[FILTERED]")
+      expect(warnings.join).not_to include("leaked: 123-45-6789")
+    ensure
+      Symbol.define_method(:inspect, original_inspect)
+    end
+  end
 end
