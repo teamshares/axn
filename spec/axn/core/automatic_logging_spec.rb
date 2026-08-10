@@ -2,12 +2,24 @@
 
 RSpec.describe Axn::Core::AutomaticLogging do
   let(:log_messages) { [] }
+  let(:logger) do
+    instance_double(
+      Logger,
+      debug: nil, info: nil, warn: nil, error: nil, fatal: nil,
+      debug?: true, info?: true, warn?: true, error?: true, fatal?: true
+    )
+  end
 
-  # Capture whichever level(s) a given example exercises.
-  def capture(action, *levels)
+  before { allow(Axn.config).to receive(:logger).and_return(logger) }
+
+  # Capture whichever level(s) a given example exercises, via the real `Axn.config.logger` —
+  # stubbing the action class's own `error`/`success` convenience methods directly would mask a bug
+  # where CallLogger's dispatch resolves to the `error`/`success` DSL methods (declaring a custom
+  # message) instead of the logging convenience methods of the same name.
+  def capture(*levels)
     levels.each do |level|
-      allow(action).to receive(level) do |message, **options|
-        log_messages << { level:, message:, options: }
+      allow(logger).to receive(level) do |message|
+        log_messages << { level:, message: }
       end
     end
   end
@@ -18,7 +30,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
   describe "default (no auto_log declaration)" do
     let(:action) { build_axn }
 
-    before { capture(action, :info) }
+    before { capture(:info) }
 
     it "logs before and after at the configured level for a successful call" do
       action.call
@@ -37,7 +49,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
 
     it "logs failure outcomes" do
       action = build_axn { def call = fail!("nope") }
-      capture(action, :info)
+      capture(:info)
 
       action.call
 
@@ -46,7 +58,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
 
     it "logs exception outcomes" do
       action = build_axn { def call = raise("boom") }
-      capture(action, :info)
+      capture(:info)
 
       expect { action.call! }.to raise_error("boom")
 
@@ -57,7 +69,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
   describe "auto_log <level> (all outcomes)" do
     let(:action) { build_axn { auto_log :warn } }
 
-    before { capture(action, :warn) }
+    before { capture(:warn) }
 
     it "logs before and after at the given level" do
       action.call
@@ -72,7 +84,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
   describe "auto_log true / auto_log (no arg)" do
     it "behaves identically to the default for no-arg" do
       action = build_axn { auto_log }
-      capture(action, :info)
+      capture(:info)
 
       action.call
 
@@ -82,7 +94,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
 
     it "behaves identically to the default for true" do
       action = build_axn { auto_log true }
-      capture(action, :info)
+      capture(:info)
 
       action.call
 
@@ -120,7 +132,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
   describe "auto_log <level>, success: false (errors only)" do
     it "logs nothing on success (and no before line)" do
       action = build_axn { auto_log :warn, success: false }
-      capture(action, :warn)
+      capture(:warn)
 
       action.call
 
@@ -132,7 +144,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
         auto_log :warn, success: false
         def call = fail!("nope")
       end
-      capture(action, :warn)
+      capture(:warn)
 
       action.call
 
@@ -147,7 +159,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
         auto_log :warn, success: false
         def call = raise("boom")
       end
-      capture(action, :warn)
+      capture(:warn)
 
       expect { action.call! }.to raise_error("boom")
 
@@ -161,7 +173,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
   describe "auto_log exception: <level> (raised bugs only)" do
     it "logs nothing on success" do
       action = build_axn { auto_log exception: :error }
-      capture(action, :error)
+      capture(:error)
       action.call
       expect(log_messages).to be_empty
     end
@@ -171,7 +183,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
         auto_log exception: :error
         def call = fail!("nope")
       end
-      capture(action, :error)
+      capture(:error)
       action.call
       expect(log_messages).to be_empty
     end
@@ -181,7 +193,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
         auto_log exception: :error
         def call = raise("boom")
       end
-      capture(action, :error)
+      capture(:error)
 
       expect { action.call! }.to raise_error("boom")
 
@@ -195,7 +207,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
   describe "before-line tracks the success level" do
     it "emits the before line at the (quieter) success level, not a fixed floor" do
       action = build_axn { auto_log :debug }
-      capture(action, :debug)
+      capture(:debug)
 
       action.call
 
@@ -226,7 +238,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
         auto_log("exception" => :error)
         def call = raise("boom")
       end
-      capture(action, :error)
+      capture(:error)
 
       expect { action.call! }.to raise_error("boom")
 
@@ -245,7 +257,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
 
     it "uses the configured default level when none is declared" do
       action = build_axn
-      capture(action, :debug)
+      capture(:debug)
 
       action.call
 
@@ -258,7 +270,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
     let(:parent_action_class) { build_axn { auto_log :debug } }
 
     it "inherits the auto_log setting" do
-      capture(parent_action_class, :debug)
+      capture(:debug)
 
       parent_action_class.call
 
@@ -271,7 +283,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
         auto_log :warn
         def call; end
       end
-      capture(child_action, :warn)
+      capture(:warn)
 
       child_action.call
 
@@ -284,7 +296,7 @@ RSpec.describe Axn::Core::AutomaticLogging do
         auto_log :error, success: false
         def call = fail!("Parent error")
       end
-      capture(parent, :error)
+      capture(:error)
 
       parent.call
 

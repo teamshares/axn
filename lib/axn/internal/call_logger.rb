@@ -81,13 +81,16 @@ module Axn
           # named tags, so the suffix would be redundant there.
           named_tags = facets ? Axn::Core::Tagging.namespaced(tags: facets[:tags] || {}, dimensions: facets[:dimensions] || {}) : {}
 
+          # `log`, not `public_send(level, ...)`: `Core::Flow::Messages::ClassMethods` also defines
+          # a same-named `error` (and `success`) class method for declaring custom messages, and it
+          # wins method resolution over `Core::Logging`'s convenience methods of the same name.
           if named_tags.any? && semantic_logger?
             SemanticLogger.tagged(**named_tags) do
-              action_class.public_send(level, message, before:, after:, prefix:)
+              action_class.log(message, level:, before:, after:, prefix:)
             end
           else
             message += facet_suffix(facets) if named_tags.any?
-            action_class.public_send(level, message, before:, after:, prefix:)
+            action_class.log(message, level:, before:, after:, prefix:)
           end
         end
       end

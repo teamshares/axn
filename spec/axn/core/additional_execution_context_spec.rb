@@ -65,24 +65,15 @@ RSpec.describe "Additional execution context" do
         end
       end
 
-      allow(action).to receive(:info).and_call_original
+      allow(Axn.config.logger).to receive(:info).and_call_original
 
       action.call
 
       # Check that pre/post logs don't include the additional context
-      expect(action).to have_received(:info).with(
-        a_string_matching(/About to execute/),
-        anything,
-      )
-      expect(action).to have_received(:info).with(
-        a_string_matching(/Execution completed/),
-        anything,
-      )
+      expect(Axn.config.logger).to have_received(:info).with(a_string_matching(/About to execute/))
+      expect(Axn.config.logger).to have_received(:info).with(a_string_matching(/Execution completed/))
       # Verify the log messages don't contain the additional context
-      expect(action).not_to have_received(:info).with(
-        a_string_including("extra"),
-        anything,
-      )
+      expect(Axn.config.logger).not_to have_received(:info).with(a_string_including("extra"))
     end
 
     it "ignores reserved keys (inputs, outputs) from set_execution_context" do
@@ -218,15 +209,12 @@ RSpec.describe "Additional execution context" do
         end
       end
 
-      allow(action).to receive(:info).and_call_original
+      allow(Axn.config.logger).to receive(:info).and_call_original
 
       action.call
 
       # Verify logs don't include the hook context
-      expect(action).not_to have_received(:info).with(
-        a_string_including("current_record_id"),
-        anything,
-      )
+      expect(Axn.config.logger).not_to have_received(:info).with(a_string_including("current_record_id"))
     end
 
     it "ignores reserved keys (inputs, outputs) from hook" do
