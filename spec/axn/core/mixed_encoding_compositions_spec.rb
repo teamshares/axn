@@ -470,6 +470,26 @@ RSpec.describe "mixed-encoding message compositions" do
     end
   end
 
+  describe "the ambiguous-crossing declaration message (PRO-3068)" do
+    # A dotted `on:` cannot itself carry two encodings (it's one String), so getting a non-UTF-8 wire key into
+    # `wire_path[0]` needs an ALIASED top-level field: the wire key underneath (`latin1`) carries the foreign
+    # bytes while the dotted `on:` spells the reader's UTF-8 alias. A raw join of this contract's wire path
+    # raises Encoding::CompatibilityError before the intended ArgumentError is ever raised.
+    it "reports the declaration error rather than an encoding failure" do
+      latin1_wire_key = latin1_name
+
+      expect do
+        build_axn do
+          expects latin1_wire_key, as: :root, type: Hash
+          expects :naïve, on: :root, type: Hash
+          expects :leaf, on: :naïve, as: :r1
+          expects :leaf, on: :"root.naïve", as: :r2
+          expects :src, on: :"root.naïve.leaf"
+        end
+      end.to raise_error(ArgumentError, /reads through wire path "café\.naïve\.leaf"/)
+    end
+  end
+
   describe "the tool-loading warn lines" do
     before { Axn::Tools::Registry.reset_adapters! }
     after { Axn::Tools::Registry.reset_adapters! }

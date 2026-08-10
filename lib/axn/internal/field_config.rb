@@ -39,6 +39,40 @@ module Axn
         :"#{field}_id"
       end
 
+      # Which of `candidates` (the configs declaring a `model:` field's `<field>_id` wire key) may supply its
+      # lookup token, in the order the read path consumes them. THE precedence, shared by the runtime lookup
+      # (ContractForSubfields.sibling_id_configs, which gathers the candidates) and the declaration-time
+      # rescue credit (Reflection::Schema.sibling_id_rescued?), so the schema layer cannot credit a rescue
+      # through a route the lookup will not read. It lives here, beside the `_id` convention it keys off,
+      # because both layers reach it sideways: hosting it in Core would make reflection reference upward.
+      #
+      # All routes of a merged id node read the SAME wire key, differing only in their
+      # coerce:/preprocess:/default:, so route choice is purely "which transform interprets that one wire
+      # value" — and both selectors pick BY NAME, so declaration order never decides it:
+      #
+      #   * the id declared on the model's OWN route is AUTHORITATIVE: its transform is this model field's
+      #     canonical id, the reader user code reads for it. At depth 0 every config carries `on: nil`, so a
+      #     top-level `<field>_id` is always this case.
+      #   * otherwise the route that OWNS the canonical `<field>_id` reader — `model_id_key(reader_as)`, the
+      #     name the model's own generated companion answers to. Reader names are unique, so this selects at
+      #     most one config: the model borrows a reader the author declared under exactly that name, which is
+      #     what makes PRO-2910's "the token agrees with the `<field>_id` reader" a promise rather than a
+      #     coupling.
+      #
+      # An `as:`-renamed route on some other spelling is neither, and supplies nothing. Nothing points it at
+      # this model, and a `default:` on it is a fact about ITS reader — nothing is ever written to the wire —
+      # so crediting it would mean this model resolving through another route's reader.
+      #
+      # @param config the `model:` field's config (read for its `on:` route and its `reader_as`)
+      # @param candidates the configs declaring the `<field>_id` wire key
+      # @return the eligible routes, own route first — empty when none is eligible
+      def id_token_routes(config, candidates)
+        own_route = candidates.find { |c| c.on.to_s == config.on.to_s }
+        named_route = candidates.find { |c| c.reader_as == model_id_key(config.reader_as) }
+
+        [own_route, named_route].compact.uniq
+      end
+
       # Resolve a config's declared default against an action instance: a Proc is instance_exec'd (so
       # it sees readers/context), anything else returned as-is, with failures wrapped as
       # DefaultAssignmentError. Single source for the outbound-defaults write pass (Executor

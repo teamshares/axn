@@ -66,6 +66,46 @@ module Axn
         (0..path.parent_index).select { |i| _reader_config(path.ancestors[i].first) }.max
       end
 
+      # The chain index of the config's `on:` ANCHOR — the node the `on:` ROOT names. Each dotted segment
+      # below that root is one more hop, so the anchor sits that many hops above the `on:` TARGET.
+      def self.anchor_index(config, path)
+        path.parent_index - (config.on.to_s.split(".").size - 1)
+      end
+
+      # True when the reader-bearing ancestor at `reader_index` is NOT the config's `on:` anchor — the one
+      # comparison both `crossed_node` and `_deepest_reader_name` judge, kept to one seam so they can't drift
+      # on what counts as an unnamed crossing (a second derivation is the failure mode this repo has been
+      # bitten by before).
+      def self.crosses?(config, path, reader_index)
+        reader_index != anchor_index(config, path)
+      end
+
+      # The node this config resolves its parent THROUGH without naming it — its deepest reader-bearing
+      # ancestor, when that ancestor is not the `on:` anchor. Only a dotted tail can put a reader-bearing
+      # node between the anchor and the `on:` target: the anchor's own node always bears a reader, and no
+      # ancestor above it can exceed its index. So nil means the config NAMED the reader it reads through
+      # (`on: :b2`, `on: "b2.deeper"`) and that node's config order cannot affect it. Nil too for a
+      # top-level config (no ancestors to walk).
+      #
+      # `reader_index` defaults to a fresh `deepest_reader_index(path)` for a caller that hasn't already
+      # walked it; the ambiguous-crossing check has (it needs the same index to render the crossed path), so
+      # it passes its own rather than paying for a second walk per failure.
+      #
+      # The `reader_index.nil?` branch mirrors `resolve_parent`'s own recipe-fallback guard rather than
+      # covering a live case here: every indexed path's root ancestor is a `SubfieldTree.build` root, which
+      # always carries a config, so an indexed config's `deepest_reader_index` never actually comes back nil.
+      #
+      # Shared with the ambiguous-crossing declaration check (SubfieldContradictions) so the runtime's
+      # answer and the check's are the same answer, as `deepest_reader_index` already is.
+      def self.crossed_node(config, path, reader_index = nil)
+        return nil if path.ancestors.empty?
+
+        reader_index ||= deepest_reader_index(path)
+        return nil if reader_index.nil? || !crosses?(config, path, reader_index)
+
+        path.ancestors[reader_index].first
+      end
+
       # The node's reader-bearing config, if any. Every declared config generates a reader, so this is
       # the node's first config; an implicit node has no configs and returns nil.
       def self._reader_config(node)
@@ -80,8 +120,7 @@ module Axn
       # single-config in practice, so its own node reader is used. `anchor_index` is the on: root node's
       # chain index (parent_index minus the dotted-`on:` segments below the anchor).
       def self._deepest_reader_name(config, path, reader_index)
-        anchor_index = path.parent_index - (config.on.to_s.split(".").size - 1)
-        return config.on.to_s.split(".").first.to_sym if reader_index == anchor_index
+        return config.on.to_s.split(".").first.to_sym unless crosses?(config, path, reader_index)
 
         _reader_config(path.ancestors[reader_index].first).reader_as
       end
@@ -394,8 +433,8 @@ module Axn
       #     wins, and a present value it resolves to nil (its preprocess maps it to nil, no own default) is
       #     genuinely nil for this model, so we STOP rather than re-reading through another route;
       #   * an ABSENT raw id reads ONLY defaulted routes (Schema.usable_id_token_default?) — the PRO-2889
-      #     omitted-id rescue — and skips the rest: a non-defaulted route would resolve nil anyway AND running
-      #     its reader on the absent value would fire an unguarded `preprocess:` on nil (e.g. `nil.strip`).
+      #     omitted-id rescue — and skips a route that would resolve nil anyway AND would fire an unguarded
+      #     `preprocess:` on the absent value (e.g. `nil.strip`).
       # Returns nil when no eligible route yields a token. Callers separate the "no declared `<field>_id` at
       # all" case via sibling_id_configs.empty? (there the caller's raw token is used).
       def self._declared_id_token(action, configs)
@@ -416,9 +455,9 @@ module Axn
       # The declared `<field>_confirmation` config on the SAME route as `config`, or nil — the companion the
       # author declared, or the one `confirmation:` declared implicitly for them (Contract
       # #_confirmation_companion_configs), which are the same kind of config by then. A confirmation
-      # pair is one route's contract: unlike `sibling_id_configs`, which falls through to a defaulted or
-      # sole route because an id may legitimately be declared beside a different model, a confirmation
-      # compares against the companion declared beside THIS field and nothing else.
+      # pair is one route's contract: unlike `sibling_id_configs`, which also accepts the route owning the
+      # canonical `<field>_id` reader because an id may legitimately be declared beside a different model, a
+      # confirmation compares against the companion declared beside THIS field and nothing else.
       def self.sibling_confirmation_config(action, config)
         key = :"#{config.field}_confirmation"
         candidates =
@@ -431,22 +470,16 @@ module Axn
         candidates.find { |c| c.on.to_s == config.on.to_s }
       end
 
-      # The declared sibling `<field>_id` configs for a `model:` field, in the priority order _declared_id_token
-      # reads them (for both the record lookup and the consistency check), so the two can never disagree about
-      # which route's transformed id a present record/lookup sees. All routes of a merged id node read the SAME
-      # wire key, differing only in their coerce:/preprocess:/default:, so route choice is purely "which
-      # transform interprets that one wire value":
-      #   * the id declared beside THIS model on the SAME `on:` route is AUTHORITATIVE — its transform is this
-      #     model field's canonical id (the reader user code reads for it). A present token it maps to nil is
-      #     genuinely nil for this model (_declared_id_token stops there), never re-read through an alternate route.
-      #   * the ONLY fall-through (an ABSENT id) is to a route whose default the declaration credits as a usable
-      #     token (Schema.usable_id_token_default? — sibling_id_rescued?'s predicate): the omitted-id rescue,
-      #     even when the default lives on a different route than the model. PRO-2901 forbids two defaults on one
-      #     node, so this is the node's one default.
-      #   * with neither an own-route nor a defaulted route, the sole/first declared route supplies the token
-      #     (a lone id declared on a route other than the model's).
-      # Empty when no `<field>_id` is declared (the caller's raw token carries no transform) or when the
-      # config isn't in either subfield index (an ambient config falls back to the ambient-scoped tree).
+      # The declared sibling `<field>_id` routes that may supply a `model:` field's lookup token, in the order
+      # `_declared_id_token` reads them (for both the record lookup and the consistency check, so the two can
+      # never disagree about which route's transformed id a present record/lookup sees). This gathers the
+      # candidates declaring that wire key; which of them are ELIGIBLE is FieldConfig.id_token_routes, THE
+      # precedence, shared with the declaration-time rescue credit — a present token the chosen route maps to
+      # nil is genuinely nil for this model (_declared_id_token stops there), never re-read through another.
+      #
+      # Empty when no eligible `<field>_id` is declared (the caller's raw token off the parent carries no
+      # transform) or when the config isn't in either subfield index (an ambient config falls back to the
+      # ambient-scoped tree).
       def self.sibling_id_configs(action, config)
         path = action.class._resolved_subfields.index[config] || action.class._ambient_subfield_tree.index[config]
         return [] if path.nil?
@@ -461,14 +494,7 @@ module Axn
             path.parent_node.children[id_key.to_sym]&.configs || []
           end
 
-        own_route = candidates.find { |c| c.on.to_s == config.on.to_s }
-        default_route = candidates.find { |c| Axn::Internal::Reflection::Schema.usable_id_token_default?(c) }
-        # An own route or a credited default route is authoritative; the raw declaration-order fallback is
-        # ONLY for the case where neither exists (a single undefaulted id on a non-model route), so a nil
-        # own-route resolution never spills over into re-reading the shared wire value through another route.
-        return [own_route, default_route].compact.uniq if own_route || default_route
-
-        [candidates.first].compact
+        Axn::Internal::FieldConfig.id_token_routes(config, candidates)
       end
 
       # The read-path internals of the four public entry points above (`resolve_parent`, `resolve_value`,
@@ -478,7 +504,7 @@ module Axn
       # deliberately absent and stay public: `Core::Executor` calls `_memoized_raw_extract` and
       # `_declared_id_token` on this module by name, and `ClassMethods`' `<field>_id` companion reader
       # calls `_declared_id_token` the same way.
-      private_class_method :_reader_config, :_deepest_reader_name, :_read_deepest_reader, :_resolve_parent_by_recipe,
+      private_class_method :crosses?, :_reader_config, :_deepest_reader_name, :_read_deepest_reader, :_resolve_parent_by_recipe,
                            :_resolve_in_progress_set, :_transform_in_progress_set, :_raw_extract_memo,
                            :_raw_reads?, :_reader_memo_ref, :_mark_provisional_reader,
                            :_drop_provisional_reader_memos, :_apply_read_path_transforms,

@@ -470,111 +470,68 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
     end
   end
 
-  describe "conflicting defaults rejection (PRO-2901)" do
-    it "rejects two literal defaults on the same merged wire node" do
-      # The motivating case: `:count` (on "payload.meta") and `:count` (on :meta, aliased) merge onto the
-      # payload.meta.count wire node, each carrying a default. Only one inbound default can win the shared
-      # wire key; declaration order — not any principle — would pick it.
-      expect do
-        build_axn do
-          expects :payload, type: Hash
-          expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: "payload.meta", default: "", optional: true
-          expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
-        end
-      end.to raise_error(ArgumentError, /conflicting default:.*payload\.meta\.count/m)
+  describe "two defaults on one merged wire node are accepted, except a crossing descendant (PRO-3068)" do
+    # Two differently-defaulted readers over one wire slot is a coherent contract: each reader resolves its
+    # own default on its own read path, nothing is written to the wire, and `node_optional?`'s satisfiability
+    # credit gets MORE accurate (both routes rescue an omitted slot, not just one).
+    it "accepts two literal defaults on the same merged wire node, each reader resolving its own" do
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: Hash, optional: true
+        expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
+        expects :count, on: "payload.meta", default: "", optional: true
+        exposes :data
+        define_method(:call) { expose(:data, { meta_count:, count: }) }
+      end
+
+      result = klass.call(payload: { meta: {} })
+
+      expect(result).to be_ok
+      expect(result.data).to eq(meta_count: 42, count: "")
     end
 
-    # `on:` is canonicalized to a Symbol at declaration, so a dotted route reads `:"payload.meta"` here however
-    # it was spelled — the route is still named, and a Symbol's `inspect` is Ruby's own.
-    it "names both routes and their defaults in the message" do
-      expect do
-        build_axn do
-          expects :payload, type: Hash
-          expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: "payload.meta", default: "", optional: true
-          expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
-        end
-      end.to raise_error(ArgumentError, /:count.*on :"payload\.meta".*default: a String value.*:count.*on :meta.*default: 42/m)
+    it "resolves the same per-route defaults regardless of which route is declared first" do
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: Hash, optional: true
+        expects :count, on: "payload.meta", default: "", optional: true
+        expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
+        exposes :data
+        define_method(:call) { expose(:data, { meta_count:, count: }) }
+      end
+
+      result = klass.call(payload: { meta: {} })
+
+      expect(result).to be_ok
+      expect(result.data).to eq(meta_count: 42, count: "")
     end
 
-    it "rejects EQUAL literal defaults uniformly (agreement today drifts tomorrow)" do
+    it "accepts two Proc defaults on the same merged wire node" do
       expect do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: "payload.meta", default: 5, optional: true
-          expects :count, on: :meta, as: :meta_count, default: 5, optional: true
-        end
-      end.to raise_error(ArgumentError, /conflicting default:/)
-    end
-
-    it "rejects two Proc defaults (uncomparable)" do
-      expect do
-        build_axn do
-          expects :payload, type: Hash
-          expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: "payload.meta", default: -> { 1 }, optional: true
-          expects :count, on: :meta, as: :meta_count, default: -> { 2 }, optional: true
-        end
-      end.to raise_error(ArgumentError, /conflicting default:.*a callable/m)
-    end
-
-    it "names an object default generically without dispatching ANY method on it (side-effect-free)" do
-      # An arbitrary object default — even one that responds to :call or overrides #inspect/#respond_to? —
-      # must be named by kind without invoking it, so building the declaration error can never run user
-      # code (and never mask the conflict message). The stubs raise if any of those methods is dispatched.
-      hostile = Class.new do
-        def call = raise("must not be called during reflection")
-        def inspect = raise("must not be inspected during reflection")
-        def respond_to?(*) = raise("must not be queried during reflection")
-      end.new
-      expect do
-        build_axn do
-          expects :payload, type: Hash
-          expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: "payload.meta", default: hostile, optional: true
-          expects :count, on: :meta, as: :meta_count, default: 42, optional: true
-        end
-      end.to raise_error(ArgumentError, /conflicting default:.*a non-literal default/m)
-    end
-
-    it "renders a String default by kind, not its (possibly-singleton) #inspect" do
-      hostile_string = +"x"
-      def hostile_string.inspect = raise("must not be inspected during reflection")
-      expect do
-        build_axn do
-          expects :payload, type: Hash
-          expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: "payload.meta", default: hostile_string, optional: true
-          expects :count, on: :meta, as: :meta_count, default: 42, optional: true
-        end
-      end.to raise_error(ArgumentError, /conflicting default:.*a String value/m)
-    end
-
-    it "rejects a Proc default competing with a literal default" do
-      expect do
-        build_axn do
-          expects :payload, type: Hash
-          expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: "payload.meta", default: 5, optional: true
           expects :count, on: :meta, as: :meta_count, default: -> { 1 }, optional: true
+          expects :count, on: "payload.meta", default: -> { 2 }, optional: true
         end
-      end.to raise_error(ArgumentError, /conflicting default:/)
+      end.not_to raise_error
     end
 
-    it "rejects regardless of declaration order" do
+    # What still stands: a descendant reading DOWN through that node names neither route (PRO-3068).
+    it "rejects a descendant that crosses a doubly-defaulted merged node" do
       expect do
         build_axn do
           expects :payload, type: Hash
           expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
-          expects :count, on: "payload.meta", default: "", optional: true
+          expects :count, on: :meta, as: :meta_count, default: { a: 1 }, optional: true, type: Hash
+          expects :count, on: "payload.meta", default: { a: 2 }, optional: true, type: Hash
+          expects :a, on: "payload.meta.count", optional: true
         end
-      end.to raise_error(ArgumentError, /conflicting default:/)
+      end.to raise_error(ArgumentError, /reads through wire path "payload\.meta\.count"/)
     end
 
-    # Legal — a single default on a merged node has a principled winner (itself):
+    # Rounds out the boundary alongside the two-default and zero-default cases above/below: a merged node's
+    # default count (0, 1 or 2) is never itself a reason to reject, now that each route resolves its own.
     it "accepts a merged node where only one route carries a default" do
       expect do
         build_axn do
@@ -596,25 +553,131 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
         end
       end.not_to raise_error
     end
+  end
 
-    it "accepts defaults on DISTINCT wire keys (the suggested fix)" do
+  describe "an ambiguous crossing (PRO-3068)" do
+    # A dotted tail addresses the wire NODE; where two routes merged onto it, the reference names neither,
+    # and `configs.first` settles it by declaration order.
+    it "rejects a dotted on: whose tail crosses a node with two reader names" do
       expect do
         build_axn do
-          expects :payload, type: Hash
-          expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: :meta, default: 5, optional: true
-          expects :total, on: :meta, default: 42, optional: true
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: "foo.bar", as: :b1, type: Hash, preprocess: ->(h) { h.merge(src: "one") }
+          expects :baz, on: :bar, as: :b2, type: Hash, preprocess: ->(h) { h.merge(src: "two") }
+          expects :src, on: "foo.bar.baz", optional: true
+        end
+      end.to raise_error(ArgumentError, /reads through wire path "foo\.bar\.baz".*:b1 and :b2/m)
+    end
+
+    it "rejects it in the other declaration order too" do
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: :bar, as: :b2, type: Hash, preprocess: ->(h) { h.merge(src: "two") }
+          expects :baz, on: "foo.bar", as: :b1, type: Hash, preprocess: ->(h) { h.merge(src: "one") }
+          expects :src, on: "foo.bar.baz", optional: true
+        end
+      end.to raise_error(ArgumentError, /reads through wire path "foo\.bar\.baz"/)
+    end
+
+    it "rejects when the crossing is declared BEFORE the second route completes the merge" do
+      # check! re-scans the whole candidate tree, so the later declaration that creates the ambiguity is
+      # caught even though the crossing reference was legal when it was written.
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: "foo.bar", as: :b1, type: Hash
+          expects :src, on: "foo.bar.baz", optional: true
+          expects :baz, on: :bar, as: :b2, type: Hash
+        end
+      end.to raise_error(ArgumentError, /reads through wire path "foo\.bar\.baz"/)
+    end
+
+    it "rejects even when no route carries a transform" do
+      # The defect is the ambiguous REFERENCE, not an observed divergence: routes that agree today diverge
+      # the moment one gains a preprocess:, and two Procs could never be compared anyway.
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: "foo.bar", as: :b1, type: Hash
+          expects :baz, on: :bar, as: :b2, type: Hash
+          expects :src, on: "foo.bar.baz", optional: true
+        end
+      end.to raise_error(ArgumentError, /reads through wire path "foo\.bar\.baz"/)
+    end
+
+    it "accepts a descendant that anchors on the route it means" do
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: "foo.bar", as: :b1, type: Hash, preprocess: ->(h) { h.merge(src: "one") }
+          expects :baz, on: :bar, as: :b2, type: Hash, preprocess: ->(h) { h.merge(src: "two") }
+          expects :src, on: :b2, optional: true
         end
       end.not_to raise_error
     end
 
-    it "does not treat default: nil as a carried default" do
+    it "accepts a dotted on: rooted at the route's own reader" do
+      # `on: "b2.deeper"` names route 2 at the root; the tail below it is implicit, so nothing is unnamed.
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :baz, on: "foo.bar", as: :b1, type: Hash
+          expects :baz, on: :bar, as: :b2, type: Hash
+          expects :src, on: "b2.deeper", optional: true
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a tail over an implicit intermediate" do
       expect do
         build_axn do
           expects :payload, type: Hash
-          expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: "payload.meta", default: nil, optional: true
-          expects :count, on: :meta, as: :meta_count, default: 5, optional: true
+          expects :count, on: "payload.meta", type: Integer, optional: true
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a tail over a declared single-route node" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :meta, on: :payload, type: Hash
+          expects :count, on: "payload.meta", type: Integer, optional: true
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a crossing of a node whose routes share ONE reader name" do
+      # A confirmation companion beside the author's own same-named declaration is two configs on one node,
+      # but both answer to :password_confirmation — dispatch resolves by the reader-owner rule
+      # (SubfieldTree.yields_reader_name?), which is order-independent, so nothing is ambiguous.
+      expect do
+        build_axn do
+          expects :foo, type: Hash
+          expects :bar, on: :foo, type: Hash
+          expects :password, on: :bar, type: Hash, confirmation: true
+          expects :password_confirmation, on: "foo.bar", type: Hash
+          expects :src, on: "foo.bar.password_confirmation", optional: true
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts an ambient crossing, which resolves by recipe rather than through a route" do
+      # An ambient config never enters the shared tree, so resolve_parent reads the `on:` root through its
+      # reader and digs every tail segment raw — no route's reader is ever picked.
+      expect do
+        build_axn do
+          expects :meta, on: :ambient_context, type: Hash
+          expects :thing, on: "ambient_context.meta", as: :a1, type: Hash, optional: true
+          expects :thing, on: :meta, as: :a2, type: Hash, optional: true
+          expects :leaf, on: "ambient_context.meta.thing", optional: true
         end
       end.not_to raise_error
     end

@@ -6,75 +6,78 @@ require "axn/internal/reflection/schema"
 module Axn
   module Core
     module Contract
-      # Declaration-time rejection of contradiction-only subfield contracts (PRO-2889). Walks a
-      # CANDIDATE tree (prospective configs included; nothing committed) and raises ArgumentError on
-      # the first provable contradiction. Every judgment reuses the canonical derivation in
-      # satisfiability mode (unknowable-at-declaration counts as satisfiable) — never a parallel
-      # re-derivation, the failure mode that sank PRO-2877's pulled detectors. Side-effect-free:
+      # Declaration-time rejection of subfield contracts that cannot mean one thing: a contradiction-only
+      # contract, whose every judgment reuses the canonical derivation in satisfiability mode
+      # (unknowable-at-declaration counts as satisfiable — never a parallel re-derivation, the failure mode
+      # that sank PRO-2877's pulled detectors), and an ambiguous route reference, whose answer would
+      # otherwise be settled by declaration order. Walks a CANDIDATE tree (prospective configs included;
+      # nothing committed) and raises ArgumentError on the first one it can prove. Side-effect-free:
       # inspects declared configs only, never runs user code.
       module SubfieldContradictions
         module_function
 
-        # Both checks re-scan the WHOLE candidate tree (prospective configs included), never just the new
+        # All three checks re-scan the WHOLE candidate tree (prospective configs included), never just the new
         # batch: a NEW declaration can invalidate an OLD subfield regardless of order — a new required
         # descendant kills an old tolerance (dead-tolerance check), and a new type/shape declaration on a
         # parent kills an old subfield's answerability (e.g. `expects "bar.baz", on: :payload` accepted
         # while `bar` is unknown, then `expects :bar, ..., type: String` retro-strands `bar.baz`).
-        def check!(field_configs, subfield_configs)
+        def check!(field_configs, subfield_configs, crossings: true)
           tree = Axn::Internal::SubfieldTree.build(field_configs, subfield_configs)
-          check_unanswerable_segments!(tree) # first: an unreachable path moots any conflict on it
-          check_conflicting_defaults!(tree)  # before dead-tolerance: an explicit conflict is the plainer diagnosis
+          check_unanswerable_segments!(tree) # first: an unreachable path moots any ambiguity on it
+          check_ambiguous_crossings!(tree) if crossings
           check_dead_nil_tolerance!(tree, field_configs)
         end
 
-        # The EXPLICIT-CONFLICT check (PRO-2901): a wire node reached by two+ routes where more than one
-        # route carries a `default:`. PRO-2883 made merged wire nodes first-class — the same wire key can
-        # be declared via two routes (`expects "meta.count", on: :payload` and `expects :count, on: :meta,
-        # as: :meta_count`) — but only ONE inbound default can win the shared wire key, and the executor's
-        # declaration-order pass silently lets the first-declared default write while every later route
-        # sees the key present and skips. Two explicit defaults for one wire value have no principled
-        # winner (declaration order is not a principle), so — unlike the inferred families 1–3, which defer
-        # — this rejects at declaration per the AGENTS.md doctrine that an explicit conflict raises loudly.
-        # Rejected uniformly, even for equal literals: agreeing today drifts tomorrow, and two Proc defaults
-        # can't be compared at all. Subfield-tree-only by construction (a top-level field can't merge with
-        # itself — the duplicate-field guard prevents it; the top-level `<field>_id`/`model:` default
-        # interplay is covered by PRO-2889's usable_id_token_default? sites).
-        def check_conflicting_defaults!(tree)
-          each_explicit_node(tree.roots) do |_parent, _key, node|
-            defaulted = node.configs.select(&:applied_default?)
-            next if defaulted.size < 2
+        # The AMBIGUOUS-CROSSING check (PRO-3068): a config whose dotted `on:` tail resolves its parent
+        # THROUGH a wire node that answers to more than one reader name. A dotted tail addresses that node
+        # by WIRE KEY, and a wire key names a node rather than a route — so where two routes merged onto it
+        # the reference names neither, and `_deepest_reader_name` falls back to the node's first config.
+        # Swapping the two route declarations then changes the value every descendant reads (that route's
+        # `preprocess:`/`default:`/`model:` included) with nothing raised and the emitted schema identical
+        # either way.
+        #
+        # Rejected as an ambiguous REFERENCE, not on whether the routes currently differ: routes that agree
+        # today diverge the moment one gains a transform, and two Procs can never be compared. This is the
+        # same standard `_validate_subfield_reader_names!` applies to a duplicate reader, which raises even
+        # when either would have worked.
+        #
+        # Keyed on distinct reader NAMES rather than config count, because that is what dispatch consumes.
+        # Where every config at the node answers to one name, `public_send` resolves it through the
+        # reader-owner rule, whose order-independence SubfieldTree.yields_reader_name? documents — so an
+        # inferred `confirmation:` companion sharing a node with the author's own same-named declaration is
+        # unambiguous and stays legal.
+        def check_ambiguous_crossings!(tree)
+          tree.index.each do |config, path|
+            next unless config.subfield? # a top-level config reads no segment, so it crosses nothing
 
-            raise_conflicting_defaults!(defaulted, tree.index[defaulted.first].wire_path)
+            # Walked once and threaded through: crossed_node consumes it to find the node, and
+            # raise_ambiguous_crossing! (on the failing path) reuses it to render the crossed prefix,
+            # rather than each re-deriving it from path.
+            reader_index = Axn::Core::ContractForSubfields.deepest_reader_index(path)
+            node = Axn::Core::ContractForSubfields.crossed_node(config, path, reader_index)
+            next if node.nil?
+
+            readers = node.configs.map(&:reader_as).uniq
+            next if readers.size < 2
+
+            raise_ambiguous_crossing!(config, path, reader_index, readers)
           end
         end
 
-        def raise_conflicting_defaults!(configs, wire_path)
-          routes = configs.map { |c| "#{c.field.inspect} (on #{c.on.inspect}, default: #{describe_default(c)})" }.join(" and ")
+        def raise_ambiguous_crossing!(config, path, reader_index, readers)
+          # The crossed node sits at the deepest reader-bearing chain index, and wire_path is indexed to
+          # match (wire_path[i] is the wire key of ancestors[i]'s node), so its own path is that prefix.
+          # Rendered segment by segment: a declared name may hold bytes with no UTF-8 rendering, and
+          # joining one into this message raw would raise Encoding::CompatibilityError from the reporting.
+          crossed = path.wire_path[0..reader_index].map { |s| Axn::Internal::Reflection::PropertyNames.renderable_label(s) }.join(".")
           raise ArgumentError,
-                "conflicting default: declarations on wire path #{wire_path.join('.').inspect}: routes #{routes} both " \
-                "carry a default: for the same wire value, and only declaration order — not any principle — decides " \
-                "which one applies (the first-declared default writes the wire key; every later route then sees the " \
-                "key present and is silently skipped). Keep a single default:, or split the routes onto distinct wire keys."
-        end
-
-        # A default's description for the conflict message. Side-effect-free BY CONSTRUCTION: it dispatches
-        # NO method on the default object, so no user code — a custom or singleton #inspect/#respond_to?, etc.
-        # — can run (and mask the intended declaration error) while reflection builds it. Classification is by
-        # class match (`Klass === value`, a C-level kind-of check that never invokes the value's own methods —
-        # the same trust normalize_schema_literal places in type checks). Only IMMEDIATES render their value:
-        # Ruby forbids singleton methods on Integer/Float/Symbol/true/false, so their #inspect is provably the
-        # core one and safe; a String (singleton #inspect possible), a container (recurses #inspect into
-        # arbitrary elements), a Proc, and any other object are named by kind instead. Reached only for applied
-        # defaults, so the value is never nil.
-        def describe_default(config)
-          case config.default
-          when Proc then "a callable"
-          when Integer, Float, Symbol, TrueClass, FalseClass then config.default.inspect
-          when String then "a String value"
-          when Hash then "a Hash value"
-          when Array then "an Array value"
-          else "a non-literal default"
-          end
+                "subfield #{config.field.inspect} (on #{config.on.inspect}) reads through wire path " \
+                "#{crossed.inspect}, which two routes declared — they answer to " \
+                "#{readers.map(&:inspect).join(' and ')}, and a dotted path names the wire NODE rather than " \
+                "either route, so only declaration order decides which route's value is read (its " \
+                "`preprocess:`, `default:` and `model:` included). Declare that wire key once, split the " \
+                "routes onto distinct wire keys, or anchor this subfield on the route you mean " \
+                "(#{readers.map { |r| "`on: #{r.inspect}`" }.join(' or ')})."
         end
 
         # The UNANSWERABLE-SEGMENT check: a subfield whose resolution provably cannot traverse some

@@ -536,7 +536,8 @@ module Axn
         #     default or nil-accepting) — own-level only, because the model subtree is satisfied via the
         #     resolved record; it's the non-model route's OWN wire value the id can't supply (a pure-model
         #     node has no non-model route, so the empty set trivially satisfies this); AND
-        #   * a sibling `<key>_id` child carries a default usable as a lookup token (usable_id_token_default?
+        #   * a sibling `<key>_id` route that this model's lookup would read the token from
+        #     (FieldConfig.id_token_routes) carries a default usable as one (usable_id_token_default?
         #     rejects a blank literal — the model resolver blank-guards the id).
         # `parent` is the node whose children include both `node` (keyed by `key`) and the id sibling.
         def sibling_id_rescued?(parent, key, node)
@@ -546,7 +547,15 @@ module Axn
           return false unless non_model.all? { |c| usable_default?(c, subfield: true, satisfiability: true) || nil_accepted?(c) }
 
           sibling = parent.children[Internal::FieldConfig.model_id_key(key)]
-          !!sibling&.configs&.any? { |c| usable_id_token_default?(c) }
+          return false if sibling.nil?
+
+          # Credited only through the route the LOOKUP will actually read the token from, asked per model
+          # route on the node via the one precedence both layers share — otherwise this credits a rescue
+          # that never happens, and a nil-tolerant model whose subtree needs it would be accepted at
+          # declaration and resolve nil at run time.
+          node.configs.select { |c| c.validations[:model] }.any? do |model_config|
+            Internal::FieldConfig.id_token_routes(model_config, sibling.configs).any? { |c| usable_id_token_default?(c) }
+          end
         end
 
         # Whether a nil/absent parent leaves a required nested obligation unmet — so it can't validate and
