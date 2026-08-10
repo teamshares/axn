@@ -462,4 +462,130 @@ RSpec.describe "Dynamic sensitive fields" do
         .to eq({ secret: "SECRET" })
     end
   end
+
+  # PRO-3072: a `sensitive:` Proc is `instance_exec`'d with NO arguments (it reads other fields by name,
+  # the value is never handed to it) — so a Proc declaring a required parameter can never be called
+  # successfully, and used to make `#inspect` raise on every resolution instead of failing at declaration.
+  describe "sensitive: Proc arity" do
+    let(:arity_error) { /sensitive: Proc is instance_exec'd against the action instance with no arguments/ }
+
+    it "rejects a lambda with a required positional parameter" do
+      expect { build_axn { expects :a, sensitive: ->(v) { v }, optional: true } }.to raise_error(ArgumentError, arity_error)
+      expect { build_axn { expects :a, sensitive: ->(x, y) { x && y }, optional: true } }.to raise_error(ArgumentError, arity_error)
+    end
+
+    it "rejects a lambda with a required keyword parameter" do
+      expect { build_axn { expects :a, sensitive: ->(k:) { k }, optional: true } }.to raise_error(ArgumentError, arity_error)
+    end
+
+    it "rejects a lambda mixing a required positional with an optional keyword" do
+      # `arity` alone goes negative here (looks variadic-safe) despite `a` still being required —
+      # this is the shape a plain `lambda? && arity.positive?` check would wave through.
+      expect { build_axn { expects :a, sensitive: ->(x, k: nil) { x || k }, optional: true } }.to raise_error(ArgumentError, arity_error)
+    end
+
+    it "rejects a non-lambda proc with a required keyword" do
+      # Non-lambda procs pad missing POSITIONAL args with nil, but still raise on a missing required
+      # keyword — `lambda?` alone is not the right test.
+      expect { build_axn { expects :a, sensitive: proc { |k:| k }, optional: true } }.to raise_error(ArgumentError, arity_error)
+    end
+
+    it "accepts every Proc shape callable with zero arguments" do
+      callable_with_zero_args = [
+        -> { true },
+        ->(v = nil) { v.nil? },
+        ->(*a) { a.empty? },
+        ->(k: nil) { k.nil? },
+        proc { |v| v.nil? }, # rubocop:disable Style/SymbolProc -- `&:nil?` changes arity/behavior on zero args
+      ]
+      callable_with_zero_args.each do |value|
+        expect { build_axn { expects :a, sensitive: value, optional: true } }.not_to raise_error
+      end
+    end
+
+    it "rejects a required-parameter Proc on a shape member too" do
+      expect { build_axn { expects(:p, type: Hash, optional: true) { field :m, sensitive: ->(v) { v } } } }
+        .to raise_error(ArgumentError, arity_error)
+    end
+  end
+
+  # PRO-3072: the declaration guard cannot see everything — a Symbol naming a method that does not exist
+  # yet, or one that takes a required argument, is still discovered only at resolution time. That path
+  # must fail CLOSED (redact, warn) rather than raise, since it runs on `inspect`/logging/exception
+  # reporting, which must never raise over a caller's `sensitive:` declaration.
+  describe "sensitive: runtime resolution failures fail closed" do
+    let(:warnings) { [] }
+
+    def stub_warnings(action, warnings)
+      allow_any_instance_of(action).to receive(:warn) { |_, msg| warnings << msg }
+    end
+
+    it "redacts and warns, rather than raising, when the named method takes a required argument" do
+      action = build_axn do
+        expects :ssn, sensitive: :broken_check
+        exposes :other_field
+        def call = expose(other_field: "visible")
+
+        private
+
+        def broken_check(_unexpected_arg) = true
+      end
+      stub_warnings(action, warnings)
+
+      result = nil
+      expect { result = action.call(ssn: "123-45-6789") }.not_to raise_error
+      expect { result.inspect }.not_to raise_error
+      expect(result.inspect).to include("other_field: \"visible\"")
+      expect(warnings).to include(a_string_matching(/sensitive: :ssn \(:broken_check\) raised ArgumentError/))
+    end
+
+    it "redacts and warns, rather than raising, when the named method does not exist" do
+      action = build_axn do
+        expects :ssn, sensitive: :nonexistent_method
+        def call = nil
+      end
+      stub_warnings(action, warnings)
+
+      instance = action.send(:new, ssn: "123-45-6789")
+      expect { instance.send(:inputs_for_logging) }.not_to raise_error
+      expect(instance.send(:inputs_for_logging)[:ssn]).to eq("[FILTERED]")
+      expect(warnings).to include(a_string_matching(/sensitive: :ssn \(:nonexistent_method\) raised NoMethodError/))
+    end
+
+    it "only redacts the field whose callable failed, leaving the rest of the payload intact" do
+      action = build_axn do
+        expects :ssn, sensitive: :broken_check
+        expects :name
+
+        def call = nil
+
+        private
+
+        def broken_check(_unexpected_arg) = true
+      end
+      stub_warnings(action, warnings)
+
+      instance = action.send(:new, ssn: "123-45-6789", name: "Ada")
+      inputs = instance.send(:inputs_for_logging)
+
+      expect(inputs[:ssn]).to eq("[FILTERED]")
+      expect(inputs[:name]).to eq("Ada")
+    end
+
+    it "fails closed (redacts) rather than open when resolution raises" do
+      action = build_axn do
+        expects :ssn, sensitive: :broken_check
+        def call = nil
+
+        private
+
+        # Would be non-sensitive if it could ever run — but it can't, so this exercises the fail-closed default.
+        def broken_check(_unexpected_arg) = false
+      end
+      stub_warnings(action, warnings)
+
+      instance = action.send(:new, ssn: "123-45-6789")
+      expect(instance.send(:inputs_for_logging)[:ssn]).to eq("[FILTERED]")
+    end
+  end
 end

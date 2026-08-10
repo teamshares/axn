@@ -244,7 +244,7 @@ module Axn
       # wire keys, so a sensitive subfield matches whichever top-level value it ultimately lives under.
       def sensitive_subfield_on?(config, field)
         path = action.class._resolved_subfields.index[config]
-        path && path.wire_path.first == field && action.class._resolve_sensitive_value(config.sensitive, action)
+        path && path.wire_path.first == field && action.class._resolve_sensitive_value(config.sensitive, action, field: config.field)
       end
 
       # Names of sensitive shape members that render inside `field`'s displayed value (nested shapes

@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 require "active_support/parameter_filter"
+require "axn/extensions"
 require "axn/internal/cycle_guard"
+require "axn/internal/rendering"
 require "axn/internal/shape_graph"
 
 module Axn
@@ -162,7 +164,7 @@ module Axn
           return _static_sensitive_fields unless _has_dynamic_sensitive_fields?
 
           _sensitive_candidate_configs
-            .select { |config| _resolve_sensitive_value(_config_sensitive(config), action_instance) }
+            .select { |config| _resolve_sensitive_value(_config_sensitive(config), action_instance, field: config.field) }
             .flat_map { |c| _sensitive_field_keys(c) }
         end
 
@@ -197,7 +199,22 @@ module Axn
         # truthy one is the direction that cannot leak. This is the branch whose truthiness test used to
         # disagree with the instanceless path about `sensitive: "yes"`, and closing the value space is what
         # removed the disagreement rather than a second predicate guarding it.
-        def _resolve_sensitive_value(sensitive, action_instance)
+        #
+        # This runs on the presentation path — `inspect`, a log line, the exception context — which must never
+        # raise (the same rule `MessageResolver#apply_join_proc` follows for `join:`). The declaration guard
+        # (`Contract.validate_sensitive!`) rejects the common static case, a Proc that cannot take zero
+        # arguments, but two shapes still reach here: a Symbol naming a method that takes a required argument
+        # or does not exist yet (defined later, or answered only via `method_missing`), and a Proc that raises
+        # for a reason that has nothing to do with arity. Both are caught and FAIL CLOSED — redact and warn —
+        # never fail open: unlike `join:`'s cosmetic fallback, this one decides whether a secret is printed,
+        # and the accidental behavior it replaces was already fail-closed (an uncaught raise blocks the
+        # value from ever being displayed at all).
+        #
+        # `field` is passed by every caller that has one, purely to name the offending declaration in the
+        # warning — `sensitive`/`action_instance` alone decide the outcome. `sensitive.inspect` is safe to
+        # render directly (unlike the caller-supplied values `Rendering` guards elsewhere): it is the
+        # declaring author's own Symbol or Proc, not a value that reached axn from outside.
+        def _resolve_sensitive_value(sensitive, action_instance, field: nil)
           case sensitive
           when true, false
             sensitive
@@ -208,6 +225,11 @@ module Axn
           else
             !!sensitive
           end
+        rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
+          action_instance.warn("sensitive: #{field.nil? ? '' : "#{field.inspect} "}(#{sensitive.inspect}) raised " \
+                               "#{Axn::Internal::Rendering.class_name(e)}: #{Axn::Internal::Rendering.exception_message(e)} " \
+                               "— redacting (fail closed)")
+          true
         end
 
         def _build_instance_filter(action_instance)
@@ -391,7 +413,7 @@ module Axn
           sensitive = _config_sensitive(member)
           return sensitive == true if action_instance.nil?
 
-          _resolve_sensitive_value(sensitive, action_instance)
+          _resolve_sensitive_value(sensitive, action_instance, field: member.field)
         end
 
         # The shape a config or member carries, or nil when it carries none — read without dispatching
