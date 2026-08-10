@@ -527,8 +527,10 @@ Two of these replace an existing example. First, **invert** `spec/axn/core/valid
         expect(result).to be_ok
         expect(result.cid).to eq(42)
       end
+```
 
 The own-route-beats-name-owner case needs two `default:` declarations on one merged node to be observable, which PRO-2901's check still rejects at this point in the plan — so that example belongs to Task 4, which deletes that check. Do not add it here, and do not add it skipped.
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `bundle exec rspec spec/axn/core/validations/on_subfields_spec.rb -e "aliased route on another spelling"`
