@@ -34,8 +34,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
       expose(v: 1)
       raise exception_class, message
     end
-    allow(klass).to receive(:info) { |msg, **| log_lines << msg }
-    allow(klass).to receive(:warn)
+    allow(Axn.config.logger).to receive(:info) { |msg, **| log_lines << msg }
+    allow(Axn.config.logger).to receive(:warn)
     [klass, events]
   end
 
@@ -106,8 +106,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
         klass = build_axn { exposes :v }
         klass.define_method(:call) { expose(v: 1) }
         declare.call(klass)
-        allow(klass).to receive(:info)
-        allow(klass).to receive(:warn)
+        allow(Axn.config.logger).to receive(:info)
+        allow(Axn.config.logger).to receive(:warn)
 
         result = klass.call(thing: 1)
 
@@ -148,8 +148,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
         klass = build_axn { exposes :v }
         klass.on_error { raise SystemStackError }
         klass.define_method(:call) { raise "the real failure" }
-        allow(klass).to receive(:info)
-        allow(klass).to receive(:warn)
+        allow(Axn.config.logger).to receive(:info)
+        allow(Axn.config.logger).to receive(:warn)
 
         result = klass.call
 
@@ -162,8 +162,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
         klass = build_axn { exposes :v }
         klass.on_error { raise Interrupt }
         klass.define_method(:call) { raise "the real failure" }
-        allow(klass).to receive(:info)
-        allow(klass).to receive(:warn)
+        allow(Axn.config.logger).to receive(:info)
+        allow(Axn.config.logger).to receive(:warn)
 
         expect { klass.call }.to raise_error(Interrupt)
       end
@@ -177,8 +177,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
         klass = build_axn { exposes :v }
         klass.on_exception(if: ->(_e) { raise raised }) { nil }
         klass.define_method(:call) { raise "the real failure" }
-        allow(klass).to receive(:info)
-        allow(klass).to receive(:warn)
+        allow(Axn.config.logger).to receive(:info)
+        allow(Axn.config.logger).to receive(:warn)
         klass
       end
 
@@ -197,8 +197,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
         klass = build_axn { exposes :v }
         klass.on_success(if: -> { raise SystemStackError }) { nil }
         klass.define_method(:call) { expose(v: 1) }
-        allow(klass).to receive(:info)
-        allow(klass).to receive(:warn)
+        allow(Axn.config.logger).to receive(:info)
+        allow(Axn.config.logger).to receive(:warn)
 
         expect(klass.call).to be_ok
       end
@@ -214,8 +214,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
       def record.boom(_id) = raise(SystemStackError)
 
       klass = build_axn { expects :user, model: { klass: record, finder: :boom } }
-      allow(klass).to receive(:info)
-      allow(klass).to receive(:warn)
+      allow(Axn.config.logger).to receive(:info)
+      allow(Axn.config.logger).to receive(:warn)
 
       result = klass.call(user_id: 1)
 
@@ -226,8 +226,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
     it "still applies outbound defaults, so the returned result reads like any other failed one" do
       klass = build_axn { exposes :v, default: -> { 9 } }
       klass.define_method(:call) { raise SystemStackError }
-      allow(klass).to receive(:info)
-      allow(klass).to receive(:warn)
+      allow(Axn.config.logger).to receive(:info)
+      allow(Axn.config.logger).to receive(:warn)
 
       expect(klass.call.v).to eq(9)
     end
@@ -236,8 +236,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
     it "does not escape .call when a default: callable blows the stack while settling" do
       klass = build_axn { exposes :v, default: -> { raise SystemStackError } }
       klass.define_method(:call) { raise "ordinary failure" }
-      allow(klass).to receive(:info)
-      allow(klass).to receive(:warn)
+      allow(Axn.config.logger).to receive(:info)
+      allow(Axn.config.logger).to receive(:warn)
 
       expect(klass.call.outcome).to eq("exception")
     end
@@ -247,8 +247,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
         inner, = action_raising(SystemStackError)
         outer = build_axn { exposes :v }
         outer.define_method(:call) { inner.call! }
-        allow(outer).to receive(:info)
-        allow(outer).to receive(:warn)
+        allow(Axn.config.logger).to receive(:info)
+        allow(Axn.config.logger).to receive(:warn)
 
         result = outer.call
 
@@ -321,8 +321,8 @@ RSpec.describe "a run aborted by a non-StandardError" do
     it "leaves an enclosing Timeout.timeout able to convert its own signal" do
       action = build_axn { exposes :v }
       action.define_method(:call) { sleep 0.2 }
-      allow(action).to receive(:info)
-      allow(action).to receive(:warn)
+      allow(Axn.config.logger).to receive(:info)
+      allow(Axn.config.logger).to receive(:warn)
 
       expect { Timeout.timeout(0.02) { action.call } }.to raise_error(Timeout::Error)
       expect(reported).to be_empty

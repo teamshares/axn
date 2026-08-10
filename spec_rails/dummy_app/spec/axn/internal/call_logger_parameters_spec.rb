@@ -13,8 +13,8 @@ RSpec.describe "auto-log rendering of ActionController::Parameters" do
       exposes :v
     end
     action.define_method(:call) { expose(v: 1) }
-    allow(action).to receive(:info) { |message, **| log_messages << message }
-    allow(action).to receive(:warn)
+    allow(Axn.config.logger).to receive(:info) { |message| log_messages << message }
+    allow(Axn.config.logger).to receive(:warn)
     action
   end
 

@@ -23,8 +23,8 @@ RSpec.describe "self-referential values" do
   describe "the call logger" do
     let(:log_messages) { [] }
 
-    def capture(action)
-      allow(action).to receive(:info) { |message, **| log_messages << message }
+    def capture(_action)
+      allow(Axn.config.logger).to receive(:info) { |message| log_messages << message }
     end
 
     it "renders a cyclic exposure the way Ruby's own #inspect does" do
@@ -166,13 +166,13 @@ RSpec.describe "self-referential values" do
     end
 
     it "preserves an enclosing Timeout" do
-      allow(action).to receive(:info) { sleep 0.2 }
+      allow(Axn.config.logger).to receive(:info) { sleep 0.2 }
 
       expect { Timeout.timeout(0.02) { action.call } }.to raise_error(Timeout::Error)
     end
 
     it "preserves an Interrupt rather than reporting a completion that never happened" do
-      allow(action).to receive(:info).and_raise(Interrupt, "ctrl-c")
+      allow(Axn.config.logger).to receive(:info).and_raise(Interrupt, "ctrl-c")
 
       expect { action.call }.to raise_error(Interrupt, "ctrl-c")
     end
@@ -188,7 +188,7 @@ RSpec.describe "self-referential values" do
 
     it "does not log a completion line for a body that never ran" do
       logged = []
-      allow(action).to receive(:info) do |message, **|
+      allow(Axn.config.logger).to receive(:info) do |message|
         logged << message
         raise Interrupt, "ctrl-c" if message.include?("About to execute")
       end
