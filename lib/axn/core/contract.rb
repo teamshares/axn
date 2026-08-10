@@ -168,6 +168,14 @@ module Axn
               "`sensitive: true` to always redact, or a Symbol/Proc predicate to decide per call."
       end
 
+      # Read through Proc's OWN `#parameters` (`bind_call`, never dispatched) rather than the declared
+      # object's: this guard exists to reject a Proc that lies about being callable with zero arguments, so
+      # letting the Proc itself answer "how many arguments do I take" would let a singleton `parameters`
+      # override falsify that answer and sail a required-argument Proc straight past the check it exists to
+      # enforce — the same failure mode `case`/`when` above avoids for the class test itself.
+      PROC_PARAMETERS = ::Proc.instance_method(:parameters)
+      private_constant :PROC_PARAMETERS
+
       # Whether `proc` cannot be `instance_exec`'d with zero arguments — the one thing the resolver actually
       # does with it (`Redaction#_resolve_sensitive_value`). Read from `#parameters` rather than `#arity`:
       # arity goes negative (looks safe) the moment ANY optional/rest param joins a required one, e.g.
@@ -176,7 +184,7 @@ module Axn
       # shapes `lambda? && arity.positive?` alone would wave through. `:req`/`:keyreq` are exactly Ruby's own
       # names for "would raise ArgumentError if not supplied", for a lambda or a proc alike.
       def self._sensitive_proc_requires_argument?(proc)
-        proc.parameters.any? { |(type, _name)| %i[req keyreq].include?(type) }
+        PROC_PARAMETERS.bind_call(proc).any? { |(type, _name)| %i[req keyreq].include?(type) }
       end
       private_class_method :_sensitive_proc_requires_argument?
 

@@ -211,9 +211,7 @@ module Axn
         # value from ever being displayed at all).
         #
         # `field` is passed by every caller that has one, purely to name the offending declaration in the
-        # warning — `sensitive`/`action_instance` alone decide the outcome. `sensitive.inspect` is safe to
-        # render directly (unlike the caller-supplied values `Rendering` guards elsewhere): it is the
-        # declaring author's own Symbol or Proc, not a value that reached axn from outside.
+        # warning — `sensitive`/`action_instance` alone decide the outcome.
         def _resolve_sensitive_value(sensitive, action_instance, field: nil)
           case sensitive
           when true, false
@@ -245,12 +243,34 @@ module Axn
         # value interpolated into its message (`raise "invalid SSN #{ssn}"`) would otherwise turn the
         # fail-closed diagnostic into exactly the disclosure `sensitive:` exists to prevent — no rendering
         # guard can tell safe prose from an accidental echo of the value it was written to protect.
+        #
+        # `sensitive` is described through `_describe_sensitive_rule` rather than a bare `.inspect`: it is a
+        # Proc or Symbol declared by this action's own author, but a Proc CAN carry a singleton `inspect`
+        # (a Symbol cannot — `define_singleton_method` on one raises TypeError), and this predicate is the
+        # one already known to behave unexpectedly, having just raised. Naming it without dispatching to it
+        # is the same discipline `Contract.validate_sensitive!` uses to name an out-of-grammar value by class.
         def _warn_sensitive_resolution_failure(action_instance, field, sensitive, error)
-          action_instance.warn("sensitive: #{field.nil? ? '' : "#{field.inspect} "}(#{sensitive.inspect}) raised " \
+          action_instance.warn("sensitive: #{field.nil? ? '' : "#{field.inspect} "}(#{_describe_sensitive_rule(sensitive)}) raised " \
                                "#{Axn::Internal::Rendering.class_name(error)} at #{Axn::Internal::Rendering.exception_source_location(error)} " \
                                "— redacting (fail closed)")
         rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
           nil
+        end
+
+        # `sensitive` here is always a Symbol or a Proc — the only two grammar members
+        # `_resolve_sensitive_value` can raise from. A Symbol's own `#inspect` is safe to call directly (no
+        # singleton is possible on one); a Proc's is read through Proc's OWN implementation, `bind_call`,
+        # never dispatched, since a Proc singleton-`inspect` could otherwise be used to smuggle arbitrary
+        # text — including a captured secret — into this warning under the guise of "naming the rule".
+        PROC_INSPECT = ::Proc.instance_method(:inspect)
+        private_constant :PROC_INSPECT
+
+        def _describe_sensitive_rule(sensitive)
+          case sensitive
+          when ::Proc then PROC_INSPECT.bind_call(sensitive)
+          when ::Symbol then sensitive.inspect
+          else Axn::Internal::Rendering.class_name(sensitive)
+          end
         end
 
         def _build_instance_filter(action_instance)
@@ -582,7 +602,7 @@ module Axn
         # would say private while meaning public, which is less honest than the `_` prefix alone.
         private :_contract_redaction, :_sensitive_candidate_configs, :_flatten_sensitive_candidates,
                 :_static_sensitive_fields, :_resolve_sensitive_fields, :_config_sensitive, :_sensitive_field_keys,
-                :_warn_sensitive_resolution_failure,
+                :_warn_sensitive_resolution_failure, :_describe_sensitive_rule,
                 :_filter_tolerating_cycles, :_sensitive_shape_paths, :_derive_sensitive_shape_paths,
                 :_derive_sensitive_ambient_shape_paths, :_mask_value_at_path, :_mask_opaque_or_preserve,
                 :_present_key_variants, :_shape_has_sensitive_member?, :_member_sensitive?, :_member_shape,

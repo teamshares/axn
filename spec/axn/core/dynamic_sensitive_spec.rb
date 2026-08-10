@@ -625,5 +625,39 @@ RSpec.describe "Dynamic sensitive fields" do
       expect(warnings.join).not_to include("123-45-6789")
       expect(warnings).to include(a_string_matching(/sensitive: :secret \(.+\) raised RuntimeError at /))
     end
+
+    # A Proc CAN carry a singleton `inspect` (a Symbol cannot — `define_singleton_method` on one raises
+    # TypeError), and this predicate is the one already known to misbehave, having just raised. Naming it
+    # must not dispatch to it: an author's own weaponized `inspect` could otherwise smuggle a captured
+    # secret into the warning under cover of "describing the rule that failed".
+    it "never dispatches to the failed predicate's own #inspect when naming it in the warning" do
+      hostile = ->(*) { raise "boom" }
+      hostile.define_singleton_method(:inspect) { "leaked: 123-45-6789" }
+
+      action = build_axn do
+        expects :ssn
+        exposes :secret, sensitive: hostile
+        def call = expose(secret: "hidden")
+      end
+      stub_warnings(action, warnings)
+
+      result = action.call(ssn: "irrelevant")
+      expect(result.inspect).not_to include("123-45-6789")
+      expect(warnings.join).not_to include("123-45-6789")
+      expect(warnings).to include(a_string_matching(/sensitive: :secret \(#<Proc.*\) raised RuntimeError at /))
+    end
+  end
+
+  # PRO-3072 (Codex follow-up): the declaration-time arity guard reads a caller-supplied Proc's own
+  # `#parameters` to decide whether it can be called with zero arguments — so a Proc lying about its own
+  # metadata could sail a genuinely required-argument predicate straight past the guard it exists to enforce.
+  describe "sensitive: Proc arity guard resists a lying #parameters" do
+    it "still rejects a required-argument lambda whose #parameters claims to take none" do
+      lying = ->(v) { v }
+      lying.define_singleton_method(:parameters) { [] }
+
+      expect { build_axn { expects :a, sensitive: lying, optional: true } }
+        .to raise_error(ArgumentError, /sensitive: Proc is instance_exec'd against the action instance with no arguments/)
+    end
   end
 end
