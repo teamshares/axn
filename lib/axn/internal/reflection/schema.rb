@@ -537,7 +537,7 @@ module Axn
         #     resolved record; it's the non-model route's OWN wire value the id can't supply (a pure-model
         #     node has no non-model route, so the empty set trivially satisfies this); AND
         #   * a sibling `<key>_id` route that this model's lookup would read the token from
-        #     (ContractForSubfields.id_token_routes) carries a default usable as one (usable_id_token_default?
+        #     (FieldConfig.id_token_routes) carries a default usable as one (usable_id_token_default?
         #     rejects a blank literal — the model resolver blank-guards the id).
         # `parent` is the node whose children include both `node` (keyed by `key`) and the id sibling.
         def sibling_id_rescued?(parent, key, node)
@@ -554,7 +554,7 @@ module Axn
           # that never happens, and a nil-tolerant model whose subtree needs it would be accepted at
           # declaration and resolve nil at run time.
           node.configs.select { |c| c.validations[:model] }.any? do |model_config|
-            Axn::Core::ContractForSubfields.id_token_routes(model_config, sibling.configs).any? { |c| usable_id_token_default?(c) }
+            Internal::FieldConfig.id_token_routes(model_config, sibling.configs).any? { |c| usable_id_token_default?(c) }
           end
         end
 

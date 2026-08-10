@@ -2271,10 +2271,12 @@ RSpec.describe Axn do
       end
 
       it "does NOT rescue an absent id through an aliased route on another spelling" do
-        # Both id routes are `as:`-renamed, so neither is the model's own route (`on: :thing`) nor owns the
-        # canonical `company_id` reader the model's generated companion answers to. Nothing points either at
-        # this model, and post-PRO-2903 a `default:` is a fact about its OWN reader — nothing is written to
-        # the wire — so the lookup falls back to the caller's raw token, which is absent.
+        # The eligible route is the model's OWN one (`on: :thing`) — `as:` is irrelevant to that selector —
+        # and it carries no `default:`, so `_declared_id_token` skips it for an absent id rather than firing
+        # its preprocess on nil. The route that DOES carry a default is the dotted one, which is neither the
+        # own route nor the owner of the canonical `company_id` reader name, so it is not eligible to supply
+        # the token: post-PRO-2903 its `default:` is a fact about its OWN reader, never written to the wire.
+        # Nothing rescues the absent id, so the model resolves nil.
         finder = Class.new do
           attr_reader :id
 
@@ -2322,6 +2324,73 @@ RSpec.describe Axn do
 
         expect(result).to be_ok
         expect(result.cid).to eq(42)
+      end
+    end
+
+    context "an ineligible id route supplies nothing at all (PRO-3068)" do
+      # The complement of the two selectors: when NO declared route is eligible, the model is in the same
+      # position as one with no `<field>_id` declared anywhere. `sibling_id_configs` comes back empty and the
+      # lookup uses the caller's RAW token off the parent — which also withdraws the declaration-time rescue
+      # credit that route used to be granted.
+      let(:co_class) do
+        Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+      end
+
+      before { stub_const("IneligibleCo", co_class) }
+
+      it "looks the record up by the caller's RAW token, not the ineligible route's transform" do
+        # The sole `company_id` route is dotted AND `as:`-renamed, so it is neither the model's own route
+        # (`on: :thing`) nor the owner of the canonical `company_id` reader name. Its `preprocess:` therefore
+        # governs its OWN reader only: `pt_company_id` is 6, while the finder consumes the untransformed 5.
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload
+          expects :company_id, on: "payload.thing", as: :pt_company_id, preprocess: ->(v) { v.to_i + 1 }
+          expects :company, on: :thing, model: { klass: IneligibleCo, finder: :find }, allow_nil: true
+          exposes :cid, :route_reader, allow_nil: true
+          def call = expose(cid: company&.id, route_reader: pt_company_id)
+        end
+
+        result = action.call(payload: { thing: { company_id: 5 } })
+
+        expect(result).to be_ok
+        expect(result.route_reader).to eq(6) # the route's own reader applies its own transform
+        expect(result.cid).to eq(5)          # the lookup used the raw wire token instead
+      end
+
+      it "withdraws the declaration-time rescue credit, raising the dead-tolerance error" do
+        # `:thing` is nil-tolerant only because the defaulted `company_id` route was credited with rescuing an
+        # omitted `:thing` via the model lookup. That route is `as:`-renamed onto another spelling, so it is
+        # ineligible and the rescue never happens — the tolerance is dead and says so at declaration rather
+        # than resolving nil at run time.
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :thing, on: :payload, allow_blank: true
+            expects :company_id, on: "payload.thing", default: 42, as: :pt_company_id
+            expects :company, on: :thing, model: { klass: IneligibleCo, finder: :find }, allow_nil: true
+            expects :name, on: :company, method_call: true
+          end
+        end.to raise_error(ArgumentError, /:company is required and nothing rescues an omitted :thing/)
+      end
+
+      it "still credits the byte-identical shape whose id route owns the canonical reader name" do
+        # The control for the example above: dropping the `as:` is the only change, and it makes that route
+        # the canonical-reader owner — eligible, so the rescue is real and the tolerance is live.
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :thing, on: :payload, allow_blank: true
+            expects :company_id, on: "payload.thing", default: 42
+            expects :company, on: :thing, model: { klass: IneligibleCo, finder: :find }, allow_nil: true
+            expects :name, on: :company, method_call: true
+          end
+        end.not_to raise_error
       end
     end
 

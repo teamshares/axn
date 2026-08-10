@@ -454,24 +454,12 @@ module Axn
         candidates.find { |c| c.on.to_s == config.on.to_s }
       end
 
-      # The routes that may supply a `model:` field's `<field>_id` lookup token, in the order
-      # `_declared_id_token` reads them. All routes of a merged id node read the SAME wire key, differing
-      # only in their coerce:/preprocess:/default:, so route choice is purely "which transform interprets
-      # that one wire value" — and both selectors below pick BY NAME, so declaration order never decides it.
-      #
-      #   * the id declared on the model's OWN route is AUTHORITATIVE: its transform is this model field's
-      #     canonical id, the reader user code reads for it. A present token it maps to nil is genuinely nil
-      #     for this model (_declared_id_token stops there), never re-read through another route. At depth 0
-      #     every config carries `on: nil`, so a top-level `<field>_id` is always this case.
-      #   * otherwise the route that OWNS the canonical `<field>_id` reader — `model_id_key(reader_as)`, the
-      #     name the model's own generated companion answers to. Reader names are unique, so this selects at
-      #     most one config: the model borrows a reader the author declared under exactly that name, which is
-      #     what makes PRO-2910's "the token agrees with the `<field>_id` reader" a promise rather than a
-      #     coupling.
-      #
-      # An `as:`-renamed route on some other spelling is neither, and supplies nothing. Nothing points it at
-      # this model, and a `default:` on it is a fact about ITS reader — nothing is ever written to the wire —
-      # so crediting it would mean this model resolving through another route's reader.
+      # The declared sibling `<field>_id` routes that may supply a `model:` field's lookup token, in the order
+      # `_declared_id_token` reads them (for both the record lookup and the consistency check, so the two can
+      # never disagree about which route's transformed id a present record/lookup sees). This gathers the
+      # candidates declaring that wire key; which of them are ELIGIBLE is FieldConfig.id_token_routes, THE
+      # precedence, shared with the declaration-time rescue credit — a present token the chosen route maps to
+      # nil is genuinely nil for this model (_declared_id_token stops there), never re-read through another.
       #
       # Empty when no eligible `<field>_id` is declared (the caller's raw token off the parent carries no
       # transform) or when the config isn't in either subfield index (an ambient config falls back to the
@@ -490,17 +478,7 @@ module Axn
             path.parent_node.children[id_key.to_sym]&.configs || []
           end
 
-        id_token_routes(config, candidates)
-      end
-
-      # The token-route precedence itself, over an already-gathered candidate list — shared with the
-      # declaration-time rescue credit (Reflection::Schema.sibling_id_rescued?) so the schema layer cannot
-      # credit a rescue through a route the lookup will not read.
-      def self.id_token_routes(config, candidates)
-        own_route = candidates.find { |c| c.on.to_s == config.on.to_s }
-        named_route = candidates.find { |c| c.reader_as == Axn::Internal::FieldConfig.model_id_key(config.reader_as) }
-
-        [own_route, named_route].compact.uniq
+        Axn::Internal::FieldConfig.id_token_routes(config, candidates)
       end
 
       # The read-path internals of the four public entry points above (`resolve_parent`, `resolve_value`,
