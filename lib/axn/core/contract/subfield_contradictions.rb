@@ -16,7 +16,7 @@ module Axn
       module SubfieldContradictions
         module_function
 
-        # Both checks re-scan the WHOLE candidate tree (prospective configs included), never just the new
+        # All three checks re-scan the WHOLE candidate tree (prospective configs included), never just the new
         # batch: a NEW declaration can invalidate an OLD subfield regardless of order — a new required
         # descendant kills an old tolerance (dead-tolerance check), and a new type/shape declaration on a
         # parent kills an old subfield's answerability (e.g. `expects "bar.baz", on: :payload` accepted
@@ -50,23 +50,26 @@ module Axn
           tree.index.each do |config, path|
             next unless config.subfield? # a top-level config reads no segment, so it crosses nothing
 
-            node = Axn::Core::ContractForSubfields.crossed_node(config, path)
+            # Walked once and threaded through: crossed_node consumes it to find the node, and
+            # raise_ambiguous_crossing! (on the failing path) reuses it to render the crossed prefix,
+            # rather than each re-deriving it from path.
+            reader_index = Axn::Core::ContractForSubfields.deepest_reader_index(path)
+            node = Axn::Core::ContractForSubfields.crossed_node(config, path, reader_index)
             next if node.nil?
 
             readers = node.configs.map(&:reader_as).uniq
             next if readers.size < 2
 
-            raise_ambiguous_crossing!(config, path, readers)
+            raise_ambiguous_crossing!(config, path, reader_index, readers)
           end
         end
 
-        def raise_ambiguous_crossing!(config, path, readers)
+        def raise_ambiguous_crossing!(config, path, reader_index, readers)
           # The crossed node sits at the deepest reader-bearing chain index, and wire_path is indexed to
           # match (wire_path[i] is the wire key of ancestors[i]'s node), so its own path is that prefix.
           # Rendered segment by segment: a declared name may hold bytes with no UTF-8 rendering, and
           # joining one into this message raw would raise Encoding::CompatibilityError from the reporting.
-          depth = Axn::Core::ContractForSubfields.deepest_reader_index(path)
-          crossed = path.wire_path[0..depth].map { |s| Axn::Internal::Reflection::PropertyNames.renderable_label(s) }.join(".")
+          crossed = path.wire_path[0..reader_index].map { |s| Axn::Internal::Reflection::PropertyNames.renderable_label(s) }.join(".")
           raise ArgumentError,
                 "subfield #{config.field.inspect} (on #{config.on.inspect}) reads through wire path " \
                 "#{crossed.inspect}, which two routes declared — they answer to " \
@@ -74,7 +77,7 @@ module Axn
                 "either route, so only declaration order decides which route's value is read (its " \
                 "`preprocess:`, `default:` and `model:` included). Declare that wire key once, split the " \
                 "routes onto distinct wire keys, or anchor this subfield on the route you mean " \
-                "(`on: #{readers.first.inspect}`)."
+                "(#{readers.map { |r| "`on: #{r.inspect}`" }.join(' or ')})."
         end
 
         # The UNANSWERABLE-SEGMENT check: a subfield whose resolution provably cannot traverse some

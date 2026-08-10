@@ -474,15 +474,36 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
     # Two differently-defaulted readers over one wire slot is a coherent contract: each reader resolves its
     # own default on its own read path, nothing is written to the wire, and `node_optional?`'s satisfiability
     # credit gets MORE accurate (both routes rescue an omitted slot, not just one).
-    it "accepts two literal defaults on the same merged wire node" do
-      expect do
-        build_axn do
-          expects :payload, type: Hash
-          expects :meta, on: :payload, type: Hash, optional: true
-          expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
-          expects :count, on: "payload.meta", default: "", optional: true
-        end
-      end.not_to raise_error
+    it "accepts two literal defaults on the same merged wire node, each reader resolving its own" do
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: Hash, optional: true
+        expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
+        expects :count, on: "payload.meta", default: "", optional: true
+        exposes :data
+        define_method(:call) { expose(:data, { meta_count:, count: }) }
+      end
+
+      result = klass.call(payload: { meta: {} })
+
+      expect(result).to be_ok
+      expect(result.data).to eq(meta_count: 42, count: "")
+    end
+
+    it "resolves the same per-route defaults regardless of which route is declared first" do
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: Hash, optional: true
+        expects :count, on: "payload.meta", default: "", optional: true
+        expects :count, on: :meta, as: :meta_count, default: 42, optional: true, type: Integer
+        exposes :data
+        define_method(:call) { expose(:data, { meta_count:, count: }) }
+      end
+
+      result = klass.call(payload: { meta: {} })
+
+      expect(result).to be_ok
+      expect(result.data).to eq(meta_count: 42, count: "")
     end
 
     it "accepts two Proc defaults on the same merged wire node" do
@@ -509,7 +530,8 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.to raise_error(ArgumentError, /reads through wire path "payload\.meta\.count"/)
     end
 
-    # Legal — a single default on a merged node has a principled winner (itself):
+    # Rounds out the boundary alongside the two-default and zero-default cases above/below: a merged node's
+    # default count (0, 1 or 2) is never itself a reason to reject, now that each route resolves its own.
     it "accepts a merged node where only one route carries a default" do
       expect do
         build_axn do

@@ -72,20 +72,36 @@ module Axn
         path.parent_index - (config.on.to_s.split(".").size - 1)
       end
 
+      # True when the reader-bearing ancestor at `reader_index` is NOT the config's `on:` anchor — the one
+      # comparison both `crossed_node` and `_deepest_reader_name` judge, kept to one seam so they can't drift
+      # on what counts as an unnamed crossing (a second derivation is the failure mode this repo has been
+      # bitten by before).
+      def self.crosses?(config, path, reader_index)
+        reader_index != anchor_index(config, path)
+      end
+
       # The node this config resolves its parent THROUGH without naming it — its deepest reader-bearing
       # ancestor, when that ancestor is not the `on:` anchor. Only a dotted tail can put a reader-bearing
       # node between the anchor and the `on:` target: the anchor's own node always bears a reader, and no
       # ancestor above it can exceed its index. So nil means the config NAMED the reader it reads through
       # (`on: :b2`, `on: "b2.deeper"`) and that node's config order cannot affect it. Nil too for a
-      # top-level config (no ancestors to walk) and for the recipe fallback (no reader-bearing ancestor).
+      # top-level config (no ancestors to walk).
+      #
+      # `reader_index` defaults to a fresh `deepest_reader_index(path)` for a caller that hasn't already
+      # walked it; the ambiguous-crossing check has (it needs the same index to render the crossed path), so
+      # it passes its own rather than paying for a second walk per failure.
+      #
+      # The `reader_index.nil?` branch mirrors `resolve_parent`'s own recipe-fallback guard rather than
+      # covering a live case here: every indexed path's root ancestor is a `SubfieldTree.build` root, which
+      # always carries a config, so an indexed config's `deepest_reader_index` never actually comes back nil.
       #
       # Shared with the ambiguous-crossing declaration check (SubfieldContradictions) so the runtime's
       # answer and the check's are the same answer, as `deepest_reader_index` already is.
-      def self.crossed_node(config, path)
+      def self.crossed_node(config, path, reader_index = nil)
         return nil if path.ancestors.empty?
 
-        reader_index = deepest_reader_index(path)
-        return nil if reader_index.nil? || reader_index == anchor_index(config, path)
+        reader_index ||= deepest_reader_index(path)
+        return nil if reader_index.nil? || !crosses?(config, path, reader_index)
 
         path.ancestors[reader_index].first
       end
@@ -104,7 +120,7 @@ module Axn
       # single-config in practice, so its own node reader is used. `anchor_index` is the on: root node's
       # chain index (parent_index minus the dotted-`on:` segments below the anchor).
       def self._deepest_reader_name(config, path, reader_index)
-        return config.on.to_s.split(".").first.to_sym if reader_index == anchor_index(config, path)
+        return config.on.to_s.split(".").first.to_sym unless crosses?(config, path, reader_index)
 
         _reader_config(path.ancestors[reader_index].first).reader_as
       end
@@ -488,7 +504,7 @@ module Axn
       # deliberately absent and stay public: `Core::Executor` calls `_memoized_raw_extract` and
       # `_declared_id_token` on this module by name, and `ClassMethods`' `<field>_id` companion reader
       # calls `_declared_id_token` the same way.
-      private_class_method :_reader_config, :_deepest_reader_name, :_read_deepest_reader, :_resolve_parent_by_recipe,
+      private_class_method :crosses?, :_reader_config, :_deepest_reader_name, :_read_deepest_reader, :_resolve_parent_by_recipe,
                            :_resolve_in_progress_set, :_transform_in_progress_set, :_raw_extract_memo,
                            :_raw_reads?, :_reader_memo_ref, :_mark_provisional_reader,
                            :_drop_provisional_reader_memos, :_apply_read_path_transforms,

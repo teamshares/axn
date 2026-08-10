@@ -114,6 +114,8 @@ The final `[candidates.first]` fallback goes with it. A lone id route that owns 
 
 This is what PRO-2910 was reaching for through ordering rules. The generated `<field>_id` reader and the finder token stop merely agreeing and start sharing a source.
 
+The shared selector (`id_token_routes`) is hosted on `Internal::FieldConfig`, not on `ContractForSubfields` as first proposed here — it lives beside the `<field>_id` naming convention (`model_id_key`) it keys off, and `Internal::Reflection::Schema.sibling_id_rescued?` (decision 7) needs to call it without `Internal::Reflection` referencing `Core` upward. `ContractForSubfields.sibling_id_configs` calls it the same way `SubfieldContradictions` already reaches sideways for other shared answers.
+
 ### 6. Why the borrowed alias is worth removing
 
 The observable effect of `default: 7` on a route the author named `other_id` is a 7 appearing under the generated `company_id` reader and in the finder — which reads like the default was written into `provided_data`. It is not: the wire stays pristine, so serialization, async enqueue arguments, `_memoized_raw_extract` and raw-read facets all still see the slot absent, and a third route declaring `company_id` resolves its own value.
@@ -140,7 +142,9 @@ Under decision 5 the only unexpressible contract is "look this model up through 
 
 ## Surfaces to thread
 
-`lib/axn/core/contract_for_subfields.rb` — extract the crossing seam out of `_deepest_reader_name`; replace `default_route` in `sibling_id_configs` and drop its `candidates.first` fallback; rewrite the route-precedence comment.
+`lib/axn/core/contract_for_subfields.rb` — extract the crossing seam out of `_deepest_reader_name`; replace `default_route` in `sibling_id_configs` and drop its `candidates.first` fallback, calling the shared selector below instead of picking inline.
+
+`lib/axn/internal/field_config.rb` — host `id_token_routes`, the shared token-route precedence (decision 5), beside the `model_id_key`/`<field>_id` naming convention it keys off; both `ContractForSubfields.sibling_id_configs` and `Reflection::Schema.sibling_id_rescued?` (decision 7) call it from here rather than from `ContractForSubfields`, so reflection never references `Core` upward.
 
 `lib/axn/core/contract/subfield_contradictions.rb` — add the crossing check to `check!`, ordered after `check_unanswerable_segments!` (an unreachable path moots any ambiguity on it) and before `check_dead_nil_tolerance!`; delete the conflicting-defaults check and its two helpers.
 
