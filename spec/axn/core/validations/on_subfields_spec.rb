@@ -2923,7 +2923,7 @@ RSpec.describe Axn do
       end
     end
 
-    context "two defaults on one sibling-id wire node are rejected at declaration (PRO-2901)" do
+    context "two defaults on one sibling-id wire node resolve through the model's own route (PRO-3068)" do
       it "resolves a merged doubly-defaulted id through the model's own route" do
         # Two defaulted routes onto one `company_id` wire key, neither owning the canonical reader name. The
         # own route (`on: :thing`, beside the model) supplies the token by name, so nothing is order-decided.

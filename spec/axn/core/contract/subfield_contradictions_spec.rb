@@ -470,7 +470,7 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
     end
   end
 
-  describe "conflicting defaults rejection (PRO-2901)" do
+  describe "two defaults on one merged wire node are accepted, except a crossing descendant (PRO-3068)" do
     # Two differently-defaulted readers over one wire slot is a coherent contract: each reader resolves its
     # own default on its own read path, nothing is written to the wire, and `node_optional?`'s satisfiability
     # credit gets MORE accurate (both routes rescue an omitted slot, not just one).
