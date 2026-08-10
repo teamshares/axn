@@ -587,5 +587,26 @@ RSpec.describe "Dynamic sensitive fields" do
       instance = action.send(:new, ssn: "123-45-6789")
       expect(instance.send(:inputs_for_logging)[:ssn]).to eq("[FILTERED]")
     end
+
+    # The warning is a diagnostic ABOUT the fail-closed decision, not part of it: a broken warn target
+    # (a custom logger raising — closed IO, a timed-out network sink) must not undo `true` having already
+    # been earned. Without the inner rescue, this raises straight through `inputs_for_logging`, defeating
+    # the very guarantee this whole path exists to provide.
+    it "still redacts when the warning itself raises (a broken logger must not undo fail-closed)" do
+      action = build_axn do
+        expects :ssn, sensitive: :broken_check
+        def call = nil
+
+        private
+
+        def broken_check(_unexpected_arg) = true
+      end
+      allow_any_instance_of(action).to receive(:warn).and_raise(IOError, "closed stream")
+
+      instance = action.send(:new, ssn: "123-45-6789")
+      result = nil
+      expect { result = instance.send(:inputs_for_logging) }.not_to raise_error
+      expect(result[:ssn]).to eq("[FILTERED]")
+    end
   end
 end

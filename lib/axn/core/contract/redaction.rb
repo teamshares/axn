@@ -226,10 +226,25 @@ module Axn
             !!sensitive
           end
         rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-          action_instance.warn("sensitive: #{field.nil? ? '' : "#{field.inspect} "}(#{sensitive.inspect}) raised " \
-                               "#{Axn::Internal::Rendering.class_name(e)}: #{Axn::Internal::Rendering.exception_message(e)} " \
-                               "— redacting (fail closed)")
+          _warn_sensitive_resolution_failure(action_instance, field, sensitive, e)
           true
+        end
+
+        # The warning is a diagnostic ABOUT the fail-closed decision, not part of it — `true` above has
+        # already been earned by the time this runs, so a broken warn target cannot undo it. Guarded
+        # separately from the resolution rescue: the sensitive predicate raising is the ordinary case this
+        # whole method exists for, but the environment that made a predicate misbehave (a custom logger
+        # writing to a closed IO, a network sink timing out) is exactly the kind where the CONFIGURED
+        # LOGGER is also more likely to raise, and `action_instance.warn` ultimately dispatches to
+        # `Axn.config.logger`, which is caller-supplied. Swallowed on the same terms as everywhere else axn
+        # decides what it will ever absorb — silently, since a second diagnostic about the first one
+        # failing has nowhere honest left to go.
+        def _warn_sensitive_resolution_failure(action_instance, field, sensitive, error)
+          action_instance.warn("sensitive: #{field.nil? ? '' : "#{field.inspect} "}(#{sensitive.inspect}) raised " \
+                               "#{Axn::Internal::Rendering.class_name(error)}: #{Axn::Internal::Rendering.exception_message(error)} " \
+                               "— redacting (fail closed)")
+        rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
+          nil
         end
 
         def _build_instance_filter(action_instance)
@@ -561,6 +576,7 @@ module Axn
         # would say private while meaning public, which is less honest than the `_` prefix alone.
         private :_contract_redaction, :_sensitive_candidate_configs, :_flatten_sensitive_candidates,
                 :_static_sensitive_fields, :_resolve_sensitive_fields, :_config_sensitive, :_sensitive_field_keys,
+                :_warn_sensitive_resolution_failure,
                 :_filter_tolerating_cycles, :_sensitive_shape_paths, :_derive_sensitive_shape_paths,
                 :_derive_sensitive_ambient_shape_paths, :_mask_value_at_path, :_mask_opaque_or_preserve,
                 :_present_key_variants, :_shape_has_sensitive_member?, :_member_sensitive?, :_member_shape,
