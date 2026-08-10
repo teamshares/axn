@@ -2325,6 +2325,32 @@ RSpec.describe Axn do
         expect(result).to be_ok
         expect(result.cid).to eq(42)
       end
+
+      it "prefers the model's OWN route over the canonically-named one" do
+        # Both selectors can match at once; the own route is authoritative, exactly as it is for a present
+        # token, so the transform declared beside the model is the one the finder consumes.
+        finder = Class.new do
+          attr_reader :id
+
+          def initialize(id) = @id = id
+          def self.find(id) = new(id)
+        end
+        stub_const("OwnRouteCo", finder)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload, allow_blank: true
+          expects :company_id, on: "payload.thing", optional: true, default: 42
+          expects :company_id, on: :thing, optional: true, default: 7, as: :t_company_id
+          expects :company, on: :thing, model: { klass: OwnRouteCo, finder: :find }, allow_nil: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(payload: { thing: {} })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(7)
+      end
     end
 
     context "an ineligible id route supplies nothing at all (PRO-3068)" do
@@ -2898,13 +2924,9 @@ RSpec.describe Axn do
     end
 
     context "two defaults on one sibling-id wire node are rejected at declaration (PRO-2901)" do
-      it "rejects the blank-token + usable-token routes that shared the thing.company_id wire node" do
-        # Two routes land on the same payload.thing.company_id wire node via distinct `on:` (aliased so
-        # their readers don't collide with each other or the model's `company_id` companion): a
-        # blank-token route (default "") and a usable-token route (default 42). PRO-2889's read-side
-        # selection made the RUNTIME survive this by resolving the usable route — but two explicit
-        # defaults for one wire value have no principled winner, so PRO-2901 rejects the construction at
-        # declaration rather than papering over the write-order interaction. The error names both routes.
+      it "resolves a merged doubly-defaulted id through the model's own route" do
+        # Two defaulted routes onto one `company_id` wire key, neither owning the canonical reader name. The
+        # own route (`on: :thing`, beside the model) supplies the token by name, so nothing is order-decided.
         finder = Class.new do
           attr_reader :id
 
@@ -2913,18 +2935,21 @@ RSpec.describe Axn do
           def self.fetch(id) = new(id)
         end
         stub_const("SiblingCo", finder)
-        expect do
-          build_axn do
-            expects :payload, type: Hash
-            expects :thing, on: :payload # untyped, so an opaque parent refuses the write-back
-            expects :company_id, on: "payload.thing", optional: true, default: "", as: :pt_company_id
-            expects :company_id, on: :thing, type: Integer, default: 42, as: :thing_company_id
-            expects :company, on: :thing, model: { klass: SiblingCo, finder: :fetch }, allow_nil: true
-            expects :name, on: :company, type: String, method_call: true
-            exposes :cid, allow_nil: true
-            def call = expose(cid: company&.id)
-          end
-        end.to raise_error(ArgumentError, /conflicting default:.*payload\.thing\.company_id/m)
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :thing, on: :payload # untyped
+          expects :company_id, on: "payload.thing", optional: true, default: "", as: :pt_company_id
+          expects :company_id, on: :thing, type: Integer, default: 42, as: :thing_company_id
+          expects :company, on: :thing, model: { klass: SiblingCo, finder: :fetch }, allow_nil: true
+          expects :name, on: :company, type: String, method_call: true
+          exposes :cid, allow_nil: true
+          def call = expose(cid: company&.id)
+        end
+
+        result = action.call(payload: { thing: { other: 1 } })
+
+        expect(result).to be_ok
+        expect(result.cid).to eq(42)
       end
     end
 
