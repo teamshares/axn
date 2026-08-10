@@ -239,9 +239,15 @@ module Axn
         # `Axn.config.logger`, which is caller-supplied. Swallowed on the same terms as everywhere else axn
         # decides what it will ever absorb — silently, since a second diagnostic about the first one
         # failing has nowhere honest left to go.
+        #
+        # `error`'s own MESSAGE is deliberately never rendered here, only its class and source location: a
+        # `sensitive:` predicate exists to keep some value out of logs, so a predicate that raises with that
+        # value interpolated into its message (`raise "invalid SSN #{ssn}"`) would otherwise turn the
+        # fail-closed diagnostic into exactly the disclosure `sensitive:` exists to prevent — no rendering
+        # guard can tell safe prose from an accidental echo of the value it was written to protect.
         def _warn_sensitive_resolution_failure(action_instance, field, sensitive, error)
           action_instance.warn("sensitive: #{field.nil? ? '' : "#{field.inspect} "}(#{sensitive.inspect}) raised " \
-                               "#{Axn::Internal::Rendering.class_name(error)}: #{Axn::Internal::Rendering.exception_message(error)} " \
+                               "#{Axn::Internal::Rendering.class_name(error)} at #{Axn::Internal::Rendering.exception_source_location(error)} " \
                                "— redacting (fail closed)")
         rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
           nil

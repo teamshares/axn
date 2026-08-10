@@ -608,5 +608,22 @@ RSpec.describe "Dynamic sensitive fields" do
       expect { result = instance.send(:inputs_for_logging) }.not_to raise_error
       expect(result[:ssn]).to eq("[FILTERED]")
     end
+
+    # A `sensitive:` predicate exists to keep some value out of logs — so a predicate that raises with
+    # that value embedded in its own exception message must not have the warning re-print it. Only the
+    # exception's CLASS and source location are rendered, never its `#message`.
+    it "never renders the raised exception's own message, which may itself embed the value being protected" do
+      action = build_axn do
+        expects :ssn
+        exposes :secret, sensitive: ->(*) { raise "leaked value: 123-45-6789" }
+        def call = expose(secret: "hidden")
+      end
+      stub_warnings(action, warnings)
+
+      result = action.call(ssn: "irrelevant")
+      expect(result.inspect).not_to include("123-45-6789")
+      expect(warnings.join).not_to include("123-45-6789")
+      expect(warnings).to include(a_string_matching(/sensitive: :secret \(.+\) raised RuntimeError at /))
+    end
   end
 end
