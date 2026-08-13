@@ -2609,7 +2609,20 @@ module Axn
         # Framework-owned keys (RESERVED_EXECUTION_CONTEXT_KEYS) from extra context are stripped before merging.
         def execution_context
           explicit_context = @__additional_execution_context || {}
-          hook_context = respond_to?(:additional_execution_context, true) ? additional_execution_context : {}
+          # The hook is USER code, and it runs on the exception-report path — so it is subject to the
+          # same "must never itself raise" rule the ambient slice below is guarded for. Unguarded, a
+          # raising hook propagated out of here into `Internal::ExceptionContext.build` and aborted
+          # `trigger_on_exception` BEFORE `Axn.config.on_exception` was reached, so the real exception
+          # was reported nowhere (verified). Guarded through `best_effort` rather than the silent
+          # `_safe_execution_context_slice`: this one is the caller's own code, so its failure is worth a
+          # warning and an `on_ignored_exception` report of its own rather than degrading unremarked.
+          hook_context = if respond_to?(:additional_execution_context, true)
+                           Axn::Extensions.best_effort("resolving additional_execution_context", action: self) do
+                             additional_execution_context
+                           end || {}
+                         else
+                           {}
+                         end
           extra_context = explicit_context.merge(hook_context).except(*RESERVED_EXECUTION_CONTEXT_KEYS)
 
           ctx = {

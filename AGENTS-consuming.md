@@ -111,7 +111,9 @@ observability that must not miss either end. Callbacks
 (`on_success`, `on_error`, `on_failure`, `on_exception`) fire once the action **settles** — which is
 not the same as "after `call`": they fire even when `call` never ran, as on an inbound validation
 failure. That is what makes them the seam that sees every call. `on_error` is a superset, co-firing
-with whichever of `on_failure`/`on_exception` applies. A raise in a callback does **not** flip `ok?`.
+with whichever of `on_failure`/`on_exception` applies. A raise in a callback does **not** flip `ok?` —
+it is swallowed, logged, and reported to `Axn.config.on_ignored_exception` (which defaults to your
+`on_exception` handler) carrying `context[:axn_ignored]`.
 <https://teamshares.github.io/axn/usage/writing>.
 
 ## Using a result

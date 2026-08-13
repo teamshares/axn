@@ -123,7 +123,7 @@ RSpec.describe Axn do
     it "calls Axn::Extensions.best_effort when on_exception handler raises" do
       action.call
       expect(Axn::Extensions).to have_received(:best_effort).with(
-        a_string_including("executing callback"),
+        a_string_including("executing on_exception callback"),
         hash_including(action:),
       )
     end

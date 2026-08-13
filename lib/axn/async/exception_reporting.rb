@@ -58,8 +58,13 @@ module Axn
             # Create proxy action for the on_exception interface
             proxy_action = DiscardedJobAction.new(action_class, exception)
 
-            # Trigger on_exception
-            Axn.config.on_exception(exception, action: proxy_action, context:)
+            # Trigger on_exception. `report_ignored: false` is scoped to the invocation alone, for the
+            # same reason as the synchronous path (Executor#trigger_on_exception): what it swallows is
+            # the handler's own failure, which must not be reported back through that handler. Everything
+            # above prepares the report (context slicing, facet resolution) and stays reportable.
+            Axn::Extensions.best_effort("dispatching the global exception report", report_ignored: false) do
+              Axn.config.on_exception(exception, action: proxy_action, context:)
+            end
           end
         end
 

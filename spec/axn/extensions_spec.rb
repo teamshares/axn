@@ -89,6 +89,13 @@ RSpec.describe Axn::Extensions do
     before do
       allow(Axn).to receive_message_chain(:config, :logger).and_return(logger)
       allow(Axn).to receive_message_chain(:config, :best_effort_raises_in_dev).and_return(false)
+      # `Axn.config` here is a message-chain double, which answers ONLY the messages an example stubs.
+      # `_report_swallowed` consults `on_ignored_exception?` on every swallow, and an unstubbed message
+      # raises `RSpec::Mocks::MockExpectationError` — an `Exception`, not a `StandardError`, so it
+      # escapes the guard's rescue and fails the example with a mocking error rather than the behavior
+      # under test. Off here; the reporting path is covered in
+      # spec/axn/configuration/on_ignored_exception_spec.rb.
+      allow(Axn).to receive_message_chain(:config, :on_ignored_exception?).and_return(false)
       allow(logger).to receive(:warn)
       # No `backtrace` stub: the guard reads through a BOUND `Exception#backtrace`, which ignores an
       # `allow_any_instance_of` entirely — and worse, a stub that answers non-nil makes CRuby skip recording a

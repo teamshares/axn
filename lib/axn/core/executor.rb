@@ -959,11 +959,20 @@ module Axn
             tags: resolve_report_facets(resolved_input_tags, @action_class._tags),
             dimensions: resolve_report_facets(resolved_input_dimensions, @action_class._dimensions),
           )
-          Axn.config.on_exception(exception, action: @action, context:)
+          # `report_ignored: false` is scoped to the reporter INVOCATION and nothing else. What this
+          # inner guard swallows is a failure of the handler itself, and handing that back to
+          # `on_ignored_exception` — which defaults to the very handler that just raised — reports a
+          # failed report through the thing that failed. The warning log still names it.
+          #
+          # Deliberately NOT the whole block: everything above prepares the report, including user code
+          # (an `additional_execution_context` hook reached via `ExceptionContext.build`, a `tag`/
+          # `dimension` resolver). A failure there is an ordinary ignored exception and MUST still be
+          # reported — suppressing it hid the fact that the real exception never got reported at all.
+          # Per-action `:exception` callbacks are likewise guarded separately (Handlers::Invoker).
+          Axn::Extensions.best_effort("dispatching the global exception report", action: @action, report_ignored: false) do
+            Axn.config.on_exception(exception, action: @action, context:)
+          end
 
-          # Mark reported only AFTER the global report succeeds. If `build`/`on_exception` raises,
-          # best_effort swallows it and nothing is marked here — so an ancestor executor still attempts
-          # the report rather than seeing `reported?` and dropping the exception entirely.
           Internal::ExceptionClassification.mark_reported!(exception)
         end
       end

@@ -155,7 +155,14 @@ RSpec.describe "a run aborted by a non-StandardError" do
 
         expect(result.exception).to be_a(RuntimeError)
         expect(result.exception.message).to eq("the real failure")
-        expect(reported.map(&:first).map(&:class)).to eq([RuntimeError])
+
+        # Both surface, and the distinction between them travels in the context. The callback's own
+        # SystemStackError never reached the result — it is an IGNORED exception, reported (in the order
+        # it happened, ahead of the settle) only because on_ignored_exception routes to this same
+        # handler by default. The action's RuntimeError is the one that settled, so it carries no
+        # :axn_ignored key.
+        expect(reported.map(&:first).map(&:class)).to eq([SystemStackError, RuntimeError])
+        expect(reported.map { |(_e, ctx)| ctx[:axn_ignored]&.fetch(:while) }).to eq(["executing on_error callback", nil])
       end
 
       it "still propagates one axn never absorbs" do

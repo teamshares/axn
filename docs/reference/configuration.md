@@ -167,7 +167,8 @@ end
 ### Additional Notes
 
 - Sensitive fields (marked with `expects :foo, sensitive: true`) are automatically filtered to `"[FILTERED]"`
-- If your handler raises an exception, the failure will be swallowed and logged
+- If your handler raises an exception, the failure will be swallowed and logged (it is deliberately not re-reported — see [`on_ignored_exception`](#on-ignored-exception))
+- If your handler runs an Axn action of its own and that action settles as an exception, the nested report is logged and skipped rather than dispatched — otherwise the handler would invoke itself until the stack gave out
 - This handler is global across _all_ actions. You can also specify per-action handlers via [the class-level declaration](/reference/class#on-exception)
 - Complex objects are automatically formatted for error tracking systems
 
@@ -234,9 +235,77 @@ class ProcessPendingRecords
 end
 ```
 
+## `on_ignored_exception`
+
+Some exceptions never reach the result at all. An `on_success` callback that raises, an observability facet resolver, a custom `validate:` block, a tracer that fails to export — all of these run in a side channel that is guarded so it cannot break the action, and their failures are **ignored**: logged, then discarded.
+
+This is the difference between the two hooks, and it is worth being precise about:
+
+| | `on_exception` | `on_ignored_exception` |
+| --- | --- | --- |
+| Where it went | Became the result | Discarded |
+| `result.ok?` | `false` | usually `true` |
+| Who else can see it | The caller, via `result.exception` | Nobody |
+
+That last row is the reason this hook exists. When an `on_success` callback raises, the caller gets a successful result and a side effect silently did not happen — the welcome email wasn't sent, the audit row wasn't written. Nothing in the return value records it, so this report is the only evidence it occurred.
+
+**By default, ignored exceptions are reported through whatever you configured for [`on_exception`](#on-exception).** If your app already reports exceptions, you get these too, with no wiring:
+
+```ruby
+Axn.configure do |c|
+  c.on_exception = ->(e, action:, context:) { Honeybadger.notify(e, context:) }
+  # ignored exceptions now reach the same handler
+end
+```
+
+Assign a callable to send them somewhere else instead, or `false` to drop them (log-only, the pre-existing behavior):
+
+```ruby
+Axn.configure do |c|
+  c.on_ignored_exception = ->(e, action:, context:) { Honeybadger.notify(e, context:, tags: "axn-ignored") }
+  # ...or:
+  c.on_ignored_exception = false
+end
+```
+
+The handler receives the same `(exception, action:, context:)` shape as `on_exception` and is arity-filtered the same way, so a handler declared `->(e)` works fine. The exception is passed **unwrapped**, so your error tracker groups these by the class and backtrace of the code that actually raised.
+
+### Telling the two apart
+
+An ignored report carries a `context[:axn_ignored]` key that an `on_exception` report never has:
+
+```ruby
+{
+  axn_ignored: {
+    while: "executing on_success callback",  # what was being attempted
+    outcome: "success",                      # the surrounding action's outcome
+  },
+}
+```
+
+`outcome` is the severity signal. `"success"` means the caller got their result and a side effect vanished — the alarming case. `"failure"` or `"exception"` means this is collateral to a failure `on_exception` is already reporting separately, and is usually lower priority.
+
+`outcome` is **omitted** when the action had not settled yet (many guards fire mid-run, before there is an outcome to report) and when there is no action to ask. Branch on its presence rather than assuming it:
+
+```ruby
+Axn.configure do |c|
+  c.on_ignored_exception = lambda do |e, context:, **|
+    ignored = context[:axn_ignored]
+    severity = ignored[:outcome] == "success" ? :error : :warning
+    Honeybadger.notify(e, context:, severity:)
+  end
+end
+```
+
+**Important notes:**
+- A handler that raises cannot break the action — the failure is logged and swallowed, like every other side channel
+- A failing `on_exception` handler is **not** re-reported through this hook. Handing a failed report back to the handler that just failed is useless when it is persistently broken, and doubles the load on a provider that is merely degraded. The warning log still names it
+- A handler that runs an Axn action of its own (to enrich or route the report) will not re-enter itself, whether that action trips a side-channel guard or settles as an exception. This applies to `on_exception` too: axn never invokes a report handler from inside one. The nested exception is still logged locally; only the dispatch that would recurse is declined
+- Under [`best_effort_raises_in_dev`](#best-effort-raises-in-dev) the exception is raised rather than ignored, so nothing is reported — there is nothing being papered over
+
 ## `best_effort_raises_in_dev`
 
-By default, errors that occur in framework code (e.g., in logging hooks, exception handlers, validators, or other user-provided callbacks) are swallowed and logged to prevent them from interfering with the main action execution. In development, you can opt-in to have these errors raised instead of logged:
+By default, errors that occur in framework code (e.g., in logging hooks, exception handlers, validators, or other user-provided callbacks) are swallowed and logged to prevent them from interfering with the main action execution — and reported via [`on_ignored_exception`](#on-ignored-exception). In development, you can opt-in to have these errors raised instead of logged:
 
 ```ruby
 Axn.configure do |c|
@@ -799,6 +868,11 @@ Axn.configure do |c|
       context: context
     )
   end
+
+  # Exceptions swallowed in side channels (a raising on_success callback, a failing tracer, ...)
+  # route to on_exception above by default. Assign a callable to send them elsewhere, or
+  # false to drop them.
+  # c.on_ignored_exception = false
 
   # Observability
   # Tracing auto-detects OpenTelemetry when it's loaded; assign c.tracer to use a different
