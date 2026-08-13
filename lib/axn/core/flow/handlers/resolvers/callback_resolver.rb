@@ -17,9 +17,15 @@ module Axn
 
             private
 
-            # Executes a specific callback descriptor
+            # Executes a specific callback descriptor.
+            #
+            # The operation names the PHASE (`executing on_success callback`), not just "a callback".
+            # It is the whole description a reader gets — in the warning log and in the
+            # `on_ignored_exception` report — and an on_success callback that silently didn't run means
+            # something very different from an on_error one that didn't. `event_type` is the same symbol
+            # the `on_<event>` DSL registered under, so the two always agree.
             def execute_callback(descriptor)
-              Invoker.call(operation: "executing callback", action:, handler: descriptor.handler, exception:)
+              Invoker.call(operation: "executing on_#{event_type} callback", action:, handler: descriptor.handler, exception:)
             end
           end
         end

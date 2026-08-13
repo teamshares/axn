@@ -931,8 +931,13 @@ module Axn
         stamper.bind_call(exception, resolved)
       end
 
+      # `report_ignored: false`: this guard wraps the GLOBAL exception report, so what it swallows is a
+      # failure of the reporter itself. Handing that back to `on_ignored_exception` — which defaults to
+      # the very handler that just raised — reports a failed report through the thing that failed. The
+      # warning log still names it. Per-action `:exception` callbacks are guarded separately inside
+      # `_dispatch_callbacks` (Handlers::Invoker), so one of those raising IS still reported.
       def trigger_on_exception(exception)
-        Axn::Extensions.best_effort("executing on_exception hooks", action: @action) do
+        Axn::Extensions.best_effort("executing on_exception hooks", action: @action, report_ignored: false) do
           retry_context = Async::CurrentRetryContext.current if defined?(Async::CurrentRetryContext)
           if retry_context
             mode = @action_class.try(:_async_exception_reporting)

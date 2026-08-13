@@ -34,6 +34,10 @@ module Axn
     # Ruby's `fatal` needs no entry: it is unrescuable, so `rescue Exception` never sees it.
     SWALLOWABLE_BEYOND_STANDARD_ERROR = [SystemStackError, ScriptError].freeze
 
+    # Set while a user-supplied exception-report handler is on the stack — `Axn.config.on_exception`
+    # or `Axn.config.on_ignored_exception`, which default to the same callable. See `.reporting?`.
+    REPORTING_KEY = :_axn_reporting_exception
+
     class << self
       # Whether a guarded failure is re-raised rather than logged — the dev-loud mode. Exposed so
       # anything that has to reason about what best_effort will DO consults the same condition rather
@@ -88,6 +92,30 @@ module Axn
         @config ||= Config.new
       end
 
+      # Whether a user-supplied exception-report handler is already on the stack.
+      #
+      # The invariant it holds: axn never invokes a report handler from inside one. Two paths reach the
+      # same callable, and both can re-enter it. A handler that raises is swallowed by `best_effort` —
+      # which is exactly the condition that fires the IGNORED report, so a broken reporter would be
+      # handed its own failure. And a handler that runs an Axn action of its own (to enrich or route the
+      # report) can trip a guard inside that action, arriving here a second time from underneath itself.
+      #
+      # Reporting is a side channel, so declining the nested report costs a diagnostic about a reporter
+      # that is already demonstrably not working, while allowing it costs an unbounded stack of them.
+      def reporting? = ActiveSupport::IsolatedExecutionState[REPORTING_KEY] || false
+
+      # Runs a report handler with `.reporting?` true for its duration. Restores the previous value
+      # rather than clearing, so nesting cannot leave the flag stuck on (or off) for the fiber.
+      def while_reporting
+        was = reporting?
+        ActiveSupport::IsolatedExecutionState[REPORTING_KEY] = true
+        begin
+          yield
+        ensure
+          ActiveSupport::IsolatedExecutionState[REPORTING_KEY] = was
+        end
+      end
+
       # Runs the block, guarding a best-effort side effect (a hook, callback, observability
       # facet, or a reporter that itself throws). The exception is logged and swallowed (returning
       # nil) so it never breaks the main action flow — EXCEPT in development when
@@ -111,18 +139,25 @@ module Axn
       #
       # The flag is pinned to the StandardError class boundary, so its meaning cannot drift as the
       # allowlist above grows.
-      def best_effort(desc, action: nil, standard_errors_only: false)
+      #
+      # `report_ignored: false` warns as usual but does not hand the exception to
+      # `Axn.config.on_ignored_exception`. Reserved for a guard that is ITSELF wrapping the global
+      # exception report: reporting a failed report through the handler that just failed is either
+      # useless (a persistently broken handler) or an amplifier (a degraded provider gets two calls per
+      # exception instead of one), and the warning log carries the diagnostic either way. Everywhere
+      # else the report is the point — leave it on.
+      def best_effort(desc, action: nil, standard_errors_only: false, report_ignored: true)
         if standard_errors_only
           begin
             yield
           rescue StandardError => e
-            _warn_and_swallow(e, desc, action)
+            _warn_and_swallow(e, desc, action, report_ignored:)
           end
         else
           begin
             yield
           rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-            _warn_and_swallow(e, desc, action)
+            _warn_and_swallow(e, desc, action, report_ignored:)
           end
         end
       end
@@ -143,10 +178,10 @@ module Axn
       # exception already in flight. Two shapes reach it without a hostile author: an exception whose
       # `#message` raises, and an ordinary one whose STORED message holds bytes that cannot be joined to
       # axn's own prose.
-      def _warn_and_swallow(exception, desc, action)
+      def _warn_and_swallow(exception, desc, action, report_ignored: true)
         _reraise_for_dev(exception, desc) if raises_in_dev?
 
-        _report_swallowed(exception, desc, action)
+        _report_swallowed(exception, desc, action, report_ignored:)
 
         nil
       end
@@ -185,8 +220,64 @@ module Axn
       #
       # Narrow on the same terms as `best_effort` and `_emit_warning`: nothing here may absorb a class the
       # guard itself passes through (a signal, an `exit`, another library's control-flow signal).
-      def _report_swallowed(exception, desc, action)
+      #
+      # The warning is emitted BEFORE the report, so the local diagnostic survives a reporter that
+      # cannot be reached — the log line is the one part of this that never depends on the network.
+      def _report_swallowed(exception, desc, action, report_ignored: true)
         _emit_warning(action, _warning_message(exception, desc))
+        _notify_ignored(exception, desc, action) if report_ignored
+      rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
+        nil
+      end
+
+      # Hands the ignored exception to `Axn.config.on_ignored_exception`, which by default is whatever
+      # `on_exception` is configured with. Reached only from `_report_swallowed`, so its rescue is what
+      # keeps a failing reporter from becoming the exception that escapes the guard.
+      #
+      # The ORIGINAL exception is passed, never wrapped: a reporter groups by class and backtrace, and an
+      # axn-owned wrapper would collapse every ignored failure into a single bucket while hiding the class
+      # that actually raised. What distinguishes it from an exception that became the result travels in
+      # the context instead.
+      def _notify_ignored(exception, desc, action)
+        return if reporting?
+        return unless Axn.config.on_ignored_exception?
+
+        while_reporting do
+          Axn.config.on_ignored_exception(exception, action:, context: _ignored_context(desc, action))
+        end
+      end
+
+      # What separates this report from an ordinary `on_exception` one, under a single reserved key so a
+      # handler shared by both branches on one lookup.
+      def _ignored_context(desc, action)
+        details = { while: _describe(desc) }
+        outcome = _surrounding_outcome(action)
+        details[:outcome] = outcome if outcome
+
+        { axn_ignored: details }
+      end
+
+      # The outcome of the action the ignored exception happened ALONGSIDE — the severity discriminator.
+      # `success` means the caller got their result and a side effect silently did not happen; a failed
+      # one means this is collateral to a failure `on_exception` is already reporting on its own.
+      #
+      # Gated on `finalized?` because `outcome` reads `success` for an action that has not settled YET
+      # (`result.outcome` returns success whenever no exception is recorded), and many guards fire
+      # mid-run — a tracer, a metrics emitter, an observability facet resolver. Reporting `success`
+      # there would not be uncertain, it would be wrong, so the key is omitted instead. Verified: reading
+      # `outcome` is side-effect-free and does not itself finalize.
+      #
+      # Returns nil rather than raising for every shape that cannot answer: `action` is nil at several
+      # guards and an action CLASS at others (neither responds to `result`), and a degraded report naming
+      # the exception beats no report at all.
+      def _surrounding_outcome(action)
+        return nil unless action.respond_to?(:result)
+
+        result = action.result
+        return nil unless result.respond_to?(:finalized?) && result.finalized?
+        return nil unless result.respond_to?(:outcome)
+
+        Internal::Text.renderable(result.outcome.to_s)
       rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
         nil
       end

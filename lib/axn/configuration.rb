@@ -277,8 +277,68 @@ module Axn
       return unless @on_exception
 
       # Only pass the args and kwargs that the given block expects
-      Axn::Internal::Callable.call_with_desired_shape(@on_exception, args: [e], kwargs: { action:, context: })
+      Axn::Extensions.while_reporting do
+        Axn::Internal::Callable.call_with_desired_shape(@on_exception, args: [e], kwargs: { action:, context: })
+      end
     end
+
+    # Where an IGNORED exception goes — one raised inside a `best_effort` guard, which never reaches the
+    # result and so is invisible to every caller downstream. See `Axn::Extensions.best_effort`.
+    #
+    # Three states, and the default is the point of the setting. Left `nil`, it routes to whatever
+    # `on_exception` is configured with, so an app that already reports exceptions starts receiving these
+    # with no wiring at all — the two reports differ by `context[:axn_ignored]`, not by destination.
+    # Assign a callable to send them somewhere else, or `false` to drop them (back to log-only).
+    #
+    # Validated at ASSIGNMENT, on the same terms as `env=` and `tracer`: the read happens inside the
+    # guard of last resort, from an `ensure`, where raising over a bad value would replace the exception
+    # already in flight with one manufactured while working out how to report it.
+    def on_ignored_exception=(value)
+      # `nil`/`false` on the LEFT of `===`, so nothing the value defines decides this — `Object#===`
+      # delegates to the LITERAL's `==`, which is a C-level identity check for both.
+      case value
+      when nil, false then nil
+      else
+        raise ArgumentError, "on_ignored_exception must be callable, or nil (report via on_exception) / false (disable)" unless _callable_handler?(value)
+      end
+
+      @on_ignored_exception = value
+    end
+
+    # Whether an ignored exception has anywhere to go. Read before building the report context, so the
+    # common no-handler case costs one predicate rather than a context hash per swallowed exception.
+    def on_ignored_exception? = !_ignored_exception_handler.nil?
+
+    def on_ignored_exception(e, action: nil, context: {})
+      handler = _ignored_exception_handler
+      return unless handler
+
+      # No log line here: `Extensions._report_swallowed` has already emitted the "Ignoring exception"
+      # warning by the time this runs, and it names the same exception. The `on_exception` counterpart
+      # logs because nothing else on that path does.
+      Axn::Extensions.while_reporting do
+        Axn::Internal::Callable.call_with_desired_shape(handler, args: [e], kwargs: { action:, context: })
+      end
+    end
+
+    # nil (unset) means "route to on_exception"; false means disabled. Truthiness only — never the
+    # value's own `==`, which for a configured handler is caller-supplied code.
+    def _ignored_exception_handler
+      return @on_exception if @on_ignored_exception.nil?
+
+      @on_ignored_exception || nil
+    end
+    private :_ignored_exception_handler
+
+    # `respond_to?` is unreachable on a BasicObject-based proxy — the same wrapper case `tracer` accepts
+    # rather than rejects. A proxy that turns out not to be callable surfaces on the first ignored
+    # exception (logged, since the report runs inside `_report_swallowed`'s rescue) instead of at boot.
+    def _callable_handler?(value)
+      value.respond_to?(:call)
+    rescue ::NoMethodError
+      true
+    end
+    private :_callable_handler?
 
     # The log line's detail half, as a UTF-8 String this method owns. An EXCEPTION reads through the guarded
     # message reader (which is what makes an exception whose `#message` raises reportable at all); anything else
