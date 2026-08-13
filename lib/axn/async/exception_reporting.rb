@@ -19,9 +19,7 @@ module Axn
         # @param extra_context [Hash] additional context to merge (e.g., discarded: true, _job_metadata)
         # @param log_prefix [String] prefix for error logging (e.g., "Sidekiq death handler")
         def trigger_on_exception(exception:, action_class:, retry_context:, job_args:, extra_context: {}, log_prefix: "async")
-          # `report_ignored: false` for the same reason as the synchronous path (Executor#trigger_on_exception):
-          # this guard wraps the global exception report, so what it swallows is the reporter's own failure.
-          Axn::Extensions.best_effort("in #{log_prefix}", report_ignored: false) do
+          Axn::Extensions.best_effort("in #{log_prefix}") do
             # NOTE: deliberately NOT guarded by `_fails_on?`. This is the discard/death-handler path,
             # which only fires after a job exhausts retries or is discarded. A `fails_on` exception
             # settles as `outcome.failure?` and is never re-raised by the adapter (see the
@@ -60,8 +58,13 @@ module Axn
             # Create proxy action for the on_exception interface
             proxy_action = DiscardedJobAction.new(action_class, exception)
 
-            # Trigger on_exception
-            Axn.config.on_exception(exception, action: proxy_action, context:)
+            # Trigger on_exception. `report_ignored: false` is scoped to the invocation alone, for the
+            # same reason as the synchronous path (Executor#trigger_on_exception): what it swallows is
+            # the handler's own failure, which must not be reported back through that handler. Everything
+            # above prepares the report (context slicing, facet resolution) and stays reportable.
+            Axn::Extensions.best_effort("dispatching the global exception report", report_ignored: false) do
+              Axn.config.on_exception(exception, action: proxy_action, context:)
+            end
           end
         end
 

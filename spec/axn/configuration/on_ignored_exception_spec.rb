@@ -173,6 +173,29 @@ RSpec.describe "Axn.config.on_ignored_exception" do
       expect(calls).to eq(1)
     end
 
+    # The suppression above is scoped to the reporter INVOCATION, never to the preparation around it.
+    # `ExceptionContext.build` runs user code (an `additional_execution_context` hook), and a raise there
+    # aborts `trigger_on_exception` before `on_exception` is ever reached — so suppressing it hid the
+    # fact that the real exception was reported nowhere at all.
+    it "reports a failure while PREPARING the report, and still delivers the original" do
+      Axn.config.on_exception = reporter
+
+      build_axn do
+        def call = raise("the real bug")
+
+        private
+
+        def additional_execution_context = raise("boom in additional_execution_context")
+      end.call
+
+      expect(reports.size).to eq(2)
+
+      prep, original = reports
+      expect(prep[:context][:axn_ignored][:while]).to eq("resolving additional_execution_context")
+      expect(original[:exception].message).to eq("the real bug")
+      expect(original[:context]).not_to have_key(:axn_ignored)
+    end
+
     # ...but a per-action `on_exception do … end` callback is guarded separately (Handlers::Invoker), so
     # one of those raising is still surfaced rather than lost with it.
     it "still reports a per-action on_exception callback that raises" do
