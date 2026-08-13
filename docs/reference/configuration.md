@@ -168,6 +168,7 @@ end
 
 - Sensitive fields (marked with `expects :foo, sensitive: true`) are automatically filtered to `"[FILTERED]"`
 - If your handler raises an exception, the failure will be swallowed and logged (it is deliberately not re-reported — see [`on_ignored_exception`](#on-ignored-exception))
+- If your handler runs an Axn action of its own and that action settles as an exception, the nested report is logged and skipped rather than dispatched — otherwise the handler would invoke itself until the stack gave out
 - This handler is global across _all_ actions. You can also specify per-action handlers via [the class-level declaration](/reference/class#on-exception)
 - Complex objects are automatically formatted for error tracking systems
 
@@ -299,7 +300,7 @@ end
 **Important notes:**
 - A handler that raises cannot break the action — the failure is logged and swallowed, like every other side channel
 - A failing `on_exception` handler is **not** re-reported through this hook. Handing a failed report back to the handler that just failed is useless when it is persistently broken, and doubles the load on a provider that is merely degraded. The warning log still names it
-- A handler that runs an Axn action of its own will not re-enter itself if that action trips a guard
+- A handler that runs an Axn action of its own (to enrich or route the report) will not re-enter itself, whether that action trips a side-channel guard or settles as an exception. This applies to `on_exception` too: axn never invokes a report handler from inside one. The nested exception is still logged locally; only the dispatch that would recurse is declined
 - Under [`best_effort_raises_in_dev`](#best-effort-raises-in-dev) the exception is raised rather than ignored, so nothing is reported — there is nothing being papered over
 
 ## `best_effort_raises_in_dev`

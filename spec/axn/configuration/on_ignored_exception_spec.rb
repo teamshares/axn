@@ -210,6 +210,26 @@ RSpec.describe "Axn.config.on_ignored_exception" do
       expect(whiles).to include("executing on_exception callback")
     end
 
+    # The other half of the same invariant, on the ORDINARY report path: a handler whose enrichment axn
+    # settles as an exception re-enters `Axn.config.on_exception` from underneath itself, which dispatches
+    # the same handler, which runs the action again. Unbounded short of SystemStackError, and every level
+    # is a live call to the reporting backend — measured at 26 invocations before this guard, bounded only
+    # by the probe's own limit.
+    it "does not re-enter the handler when it runs an axn that raises" do
+      calls = []
+      enricher = build_axn { def call = raise("bug inside the reporter's own axn") }
+      Axn.config.on_exception = lambda { |e, **|
+        calls << e.message
+        raise "runaway" if calls.size > 10
+
+        enricher.call
+      }
+
+      build_axn { def call = raise("the real bug") }.call
+
+      expect(calls).to eq(["the real bug"])
+    end
+
     # The recursion the guard genuinely exists to stop: a handler that runs an Axn action of its own (to
     # enrich or route the report) arrives back at the seam from underneath itself, with the outer
     # handler still on the stack. Unguarded this has no bound.

@@ -276,6 +276,21 @@ module Axn
 
       return unless @on_exception
 
+      # A handler that runs an Axn action of its own (to enrich or route the report) re-enters here from
+      # underneath itself when that action settles as an exception: this method dispatches the same
+      # handler, which runs the action again, with no bound short of SystemStackError — and every level
+      # is a live call to the reporting backend, so the stack overflow arrives behind a report storm.
+      #
+      # Skipped AFTER the log line above, deliberately: the nested exception is real and stays visible
+      # locally, and only the dispatch that would recurse is declined. Same rule the ignored path already
+      # follows (`Extensions._notify_ignored`) — axn never invokes a report handler from inside one — and
+      # it lives here, at the single seam every caller of the global report goes through, rather than at
+      # each of them.
+      if Axn::Extensions.reporting?
+        action.log("Skipping nested exception report: a report handler is already on the stack.")
+        return
+      end
+
       # Only pass the args and kwargs that the given block expects
       Axn::Extensions.while_reporting do
         Axn::Internal::Callable.call_with_desired_shape(@on_exception, args: [e], kwargs: { action:, context: })
