@@ -2584,7 +2584,7 @@ module Axn
             # the declared field would read nil.
             key = key.to_sym
 
-            raise Axn::ContractViolation::UnknownExposure, key unless result.respond_to?(key)
+            raise Axn::ContractViolation::UnknownExposure, key unless Axn::Internal::ActionState.result(self).respond_to?(key)
 
             @__context.exposed_data[key] = value
           end

@@ -38,7 +38,7 @@ module Axn
   module Core
     module ClassMethods
       def call(**)
-        new(**).tap(&:_run).result
+        Axn::Internal::ActionState.result(new(**).tap(&:_run))
       end
 
       def call!(**)
