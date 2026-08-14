@@ -32,6 +32,10 @@ RSpec.describe Axn::Strategies do
       end
     end
 
+    # Registers `:custom` without deregistering it, which would leak into whichever example runs
+    # next under random ordering (mirrors the same cleanup in the "a registry" shared examples).
+    after { described_class.instance_variable_get(:@items)&.delete(:custom) }
+
     it "allows custom strategies to be used" do
       described_class.clear!
       described_class.register(:custom, custom_strategy)

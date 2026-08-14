@@ -5,15 +5,19 @@
 # parent as a FAILURE (on_failure); a step that raises an unclassified exception settles the parent
 # as an EXCEPTION (on_exception, never on_failure), with exactly one global report at the step.
 RSpec.describe "Step failure vs exception semantics" do
-  let(:original_handler) { Axn.config.instance_variable_get(:@on_exception) }
   let(:reports) { [] }
 
   before do
+    # Capture the real prior handler BEFORE overwriting it — a `let` here would memoize lazily on
+    # first reference, which wouldn't happen until `after` reads it, by which point this hook has
+    # already replaced it. That "restores" the handler this very hook just installed, leaking it
+    # into every example that runs afterward in the process.
+    @original_on_exception_handler = Axn.config.instance_variable_get(:@on_exception)
     captured = reports
     Axn.config.instance_variable_set(:@on_exception, ->(e, **) { captured << e })
   end
 
-  after { Axn.config.instance_variable_set(:@on_exception, original_handler) }
+  after { Axn.config.instance_variable_set(:@on_exception, @original_on_exception_handler) }
 
   describe "step calls fail! (deliberate failure)" do
     it "settles the parent as a failure, fires on_failure (not on_exception), and does not report" do

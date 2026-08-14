@@ -1,15 +1,20 @@
 # frozen_string_literal: true
 
 RSpec.describe "Global on_exception handler" do
-  let(:original_handler) { Axn.config.instance_variable_get(:@on_exception) }
   before do
+    # Capture the real prior handler BEFORE clearing it — a `let` here would memoize lazily on
+    # first reference, which (without this eager read) wouldn't happen until `after` reads it, by
+    # which point the example has already replaced it. That silently "restores" a handler an
+    # example itself just installed (e.g. a deliberately-raising one), leaking it into every
+    # example that runs afterward in the process.
+    @original_on_exception_handler = Axn.config.instance_variable_get(:@on_exception)
     # Clear any existing global handler
     Axn.config.instance_variable_set(:@on_exception, nil)
   end
 
   after do
     # Restore original handler
-    Axn.config.instance_variable_set(:@on_exception, original_handler)
+    Axn.config.instance_variable_set(:@on_exception, @original_on_exception_handler)
   end
 
   describe "basic functionality" do

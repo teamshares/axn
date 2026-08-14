@@ -4,14 +4,18 @@
 # (e.g. Honeybadger) must fire ONCE per exception, not once per executor it passes through.
 RSpec.describe "Nested exception reporting (report once)" do
   let(:reports) { [] }
-  let(:original) { Axn.config.instance_variable_get(:@on_exception) }
 
   before do
+    # Capture the real prior handler BEFORE overwriting it — a `let` here would memoize lazily on
+    # first reference, which wouldn't happen until `after` reads it, by which point the example has
+    # already replaced it. That "restores" a handler this very hook (or the example) just
+    # installed, leaking it into every example that runs afterward in the process.
+    @original_on_exception_handler = Axn.config.instance_variable_get(:@on_exception)
     sink = reports
     Axn.config.instance_variable_set(:@on_exception, ->(exception, action:, **) { sink << [exception, action.class] })
   end
 
-  after { Axn.config.instance_variable_set(:@on_exception, original) }
+  after { Axn.config.instance_variable_set(:@on_exception, @original_on_exception_handler) }
 
   it "reports a top-level unhandled exception once (baseline)" do
     stub_const("TopBug", build_axn { def call = raise("top boom") })

@@ -353,9 +353,13 @@ RSpec.describe "expects ..., method_call: true" do
   end
 
   describe "loud failure when the flag is omitted" do
-    let(:original_handler) { Axn.config.instance_variable_get(:@on_exception) }
+    # Capture the real prior handler BEFORE clearing it — a `let` here would memoize lazily on
+    # first reference, which wouldn't happen until `after` reads it, by which point some examples
+    # below have already replaced it. That "restores" a handler an example itself just installed,
+    # leaking it into every example that runs afterward in the process.
+    before { @original_on_exception_handler = Axn.config.instance_variable_get(:@on_exception) }
     before { Axn.config.instance_variable_set(:@on_exception, nil) }
-    after { Axn.config.instance_variable_set(:@on_exception, original_handler) }
+    after { Axn.config.instance_variable_set(:@on_exception, @original_on_exception_handler) }
 
     let(:action) do
       build_axn do

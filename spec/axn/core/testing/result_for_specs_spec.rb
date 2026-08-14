@@ -167,14 +167,18 @@ RSpec.describe "Action spec helpers" do
 
   describe "Axn::Result.ok and Axn::Result.error skip logging and error handlers" do
     let(:log_messages) { [] }
-    let(:original_handler) { Axn.config.instance_variable_get(:@on_exception) }
 
     before do
+      # Capture the real prior handler BEFORE clearing it — a `let` here would memoize lazily on
+      # first reference, which wouldn't happen until `after` reads it, by which point it may have
+      # already been replaced. That "restores" whatever is current at that point rather than the
+      # true original, leaking it into every example that runs afterward in the process.
+      @original_on_exception_handler = Axn.config.instance_variable_get(:@on_exception)
       Axn.config.instance_variable_set(:@on_exception, nil)
     end
 
     after do
-      Axn.config.instance_variable_set(:@on_exception, original_handler)
+      Axn.config.instance_variable_set(:@on_exception, @original_on_exception_handler)
     end
 
     describe "Axn::Result.ok" do
