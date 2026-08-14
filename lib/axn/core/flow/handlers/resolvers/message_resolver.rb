@@ -171,7 +171,7 @@ module Axn
             # itself, and rendering is idempotent either way.
             def apply_join_proc(proc, base, reason)
               unless join_accepts_base_and_reason?(proc)
-                action.warn("join: callable cannot accept (base, reason) (arity #{callable_arity(proc)}) — using default join")
+                _warn("join: callable cannot accept (base, reason) (arity #{callable_arity(proc)}) — using default join")
                 return joined(base, reason, DEFAULT_JOIN)
               end
 
@@ -194,7 +194,7 @@ module Axn
                        else
                          Axn::Internal::Rendering.class_name(result)
                        end
-              action.warn("join: callable returned #{detail} (expected a non-blank String) — using default join")
+              _warn("join: callable returned #{detail} (expected a non-blank String) — using default join")
               joined(base, reason, DEFAULT_JOIN)
             # Whatever the joiner raised, the fallback applies — this path "must never raise" (above), and
             # it is reached from `result.error` DURING settlement. A class slipping past here would abort
@@ -202,10 +202,14 @@ module Axn
             # on_exception and the global report, and would raise again on every later `result.error`
             # read. Only what axn absorbs is caught, so a signal still propagates.
             rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
-              action.warn("join: Proc raised #{Axn::Internal::Rendering.class_name(e)}: " \
-                          "#{Axn::Internal::Rendering.exception_message(e)} — using default join")
+              _warn("join: Proc raised #{Axn::Internal::Rendering.class_name(e)}: " \
+                    "#{Axn::Internal::Rendering.exception_message(e)} — using default join")
               joined(base, reason, DEFAULT_JOIN)
             end
+
+            # The three `join:` diagnostics share one emitter, so none of them can drift back onto a
+            # dispatched `action.warn` — which the action's author is free to have taken for a field.
+            def _warn(message) = Axn::Internal::ActionState.log(action, message, level: :warn)
 
             # A joiner accepts (base, reason) iff it takes exactly 2 positional args, or is variadic
             # with <= 2 required args. Matches how a lambda would accept the call (non-lambda Procs

@@ -516,8 +516,10 @@ RSpec.describe "Dynamic sensitive fields" do
   describe "sensitive: runtime resolution failures fail closed" do
     let(:warnings) { [] }
 
+    # Stubbed on the CLASS: internals reach the warning through a bound `log`, which lands on the
+    # action class, rather than dispatching the instance-level `warn` a user is free to take.
     def stub_warnings(action, warnings)
-      allow_any_instance_of(action).to receive(:warn) { |_, msg| warnings << msg }
+      allow(action).to receive(:log) { |msg, **| warnings << msg }
     end
 
     it "redacts and warns, rather than raising, when the named method takes a required argument" do

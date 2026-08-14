@@ -2552,13 +2552,17 @@ module Axn
         # the record lives only in the reader. Fields whose resolved value is nil are omitted, so a
         # nested action still applies its own absent/default handling for them.
         def inputs
+          context = Axn::Internal::ActionState.internal_context(self)
           self.class._declared_fields(:inbound).each_with_object({}) do |field, hash|
-            value = internal_context.public_send(field)
+            value = context.public_send(field)
             hash[field] = value unless value.nil?
           end
         end
 
-        delegate :default_error, :default_success, to: :internal_context
+        # Sugar reaching sugar is the same defect as an internal dispatching one: a user who takes
+        # `internal_context` would otherwise redirect these two at their own value.
+        def default_error = Axn::Internal::ActionState.internal_context(self).default_error
+        def default_success = Axn::Internal::ActionState.internal_context(self).default_success
 
         # Accepts:
         # - a single Axn::Result: forwards (result.declared_fields & own outbound declared fields)
@@ -2626,8 +2630,8 @@ module Axn
           extra_context = explicit_context.merge(hook_context).except(*RESERVED_EXECUTION_CONTEXT_KEYS)
 
           ctx = {
-            inputs: _safe_execution_context_slice { inputs_for_logging },
-            outputs: _safe_execution_context_slice { outputs_for_logging },
+            inputs: _safe_execution_context_slice { Axn::Internal::ActionState.inputs_for_logging(self) },
+            outputs: _safe_execution_context_slice { Axn::Internal::ActionState.outputs_for_logging(self) },
             **extra_context,
           }
 
@@ -2638,7 +2642,8 @@ module Axn
           # ambient_context here rather than propagate.
           ambient = _safe_execution_context_slice do
             ambient_filter = self.class._has_dynamic_sensitive_fields? ? self.class._build_instance_filter(self) : self.class.inspection_filter
-            masked = self.class._mask_unfilterable_shapes(ambient_context, self.class._sensitive_ambient_shape_paths(self), self)
+            masked = self.class._mask_unfilterable_shapes(Axn::Internal::ActionState.ambient_context(self),
+                                                          self.class._sensitive_ambient_shape_paths(self), self)
             self.class.send(:_filter_tolerating_cycles, ambient_filter, masked)
           end
           ctx[:ambient_context] = ambient if ambient.present?

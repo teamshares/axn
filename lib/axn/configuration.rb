@@ -240,8 +240,13 @@ module Axn
     def rails = @rails ||= RailsConfiguration.new
 
     def on_exception(e, action:, context: {})
-      if action.respond_to?(:result) && action.result.respond_to?(:error)
-        resolved_error = action.result.error
+      # `respond_to?(:result)` cannot answer this: a user who declares a field named `result` gets a
+      # reader of that name, so the probe says yes and hands back their input value. The funnel asks
+      # whether this IS an action instance and reads the real result off it, which also covers the
+      # shapes that legitimately have none (nil, an action class, a foreign object).
+      resolved_result = Axn::Internal::ActionState.result_or_nil(action)
+      if resolved_result
+        resolved_error = resolved_result.error
         # Compare with the default fallback message instead of calling default_error
         # to avoid triggering error message resolution multiple times
         # Each branch picks WHICH detail to report; none of them renders it. Rendering happens once, at the
@@ -272,7 +277,7 @@ module Axn
       # exception detail reads through the guarded message reader; anything else through the value renderer.
       msg = "Handled exception (#{Axn::Internal::Rendering.class_name(e)}): #{_rendered_detail(detail)}"
       msg = ("#" * 10) + " #{msg} " + ("#" * 10) unless Axn.config.env.production?
-      action.log(msg)
+      Axn::Internal::ActionState.log(action, msg)
 
       return unless @on_exception
 
@@ -287,7 +292,7 @@ module Axn
       # it lives here, at the single seam every caller of the global report goes through, rather than at
       # each of them.
       if Axn::Extensions.reporting?
-        action.log("Skipping nested exception report: a report handler is already on the stack.")
+        Axn::Internal::ActionState.log(action, "Skipping nested exception report: a report handler is already on the stack.")
         return
       end
 

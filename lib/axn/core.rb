@@ -90,12 +90,12 @@ module Axn
     end
 
     def fail!(message = nil, standalone: false, **exposures)
-      expose(**exposures) if exposures.any?
+      Axn::Internal::ActionState.expose(self, **exposures) if exposures.any?
       raise Axn::Failure.new(message, standalone:, action: self)
     end
 
     def done!(message = nil, standalone: false, **exposures)
-      expose(**exposures) if exposures.any?
+      Axn::Internal::ActionState.expose(self, **exposures) if exposures.any?
       raise Axn::Internal::EarlyCompletion.new(message, standalone:)
     end
 
@@ -119,7 +119,7 @@ module Axn
 
       raise ArgumentError, "forward!: expected an Axn class or an Axn::Result (got #{result.class})" unless Internal::Identity.kind?(result, Axn::Result)
 
-      _expose_from_result(result, require_overlap: false)
+      Internal::ActionState.expose_from_result(self, result, require_overlap: false)
 
       Internal::TransparentBubbling.bubble!(result)
     end
@@ -152,7 +152,7 @@ module Axn
     def _forward_to_class(klass)
       raise ArgumentError, "forward!: #{klass} must include Axn" unless klass.included_modules.include?(::Axn) || klass < ::Axn
 
-      klass.call(**inputs)
+      klass.call(**Internal::ActionState.inputs(self))
     end
 
     def initialize(**)

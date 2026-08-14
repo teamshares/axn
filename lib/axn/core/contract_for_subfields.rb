@@ -286,7 +286,7 @@ module Axn
         if config.subfield?
           [action, :"@_memoized_reader_#{config.reader_as}"]
         else
-          [action.internal_context, :"@_memoized_reader_#{config.field}"]
+          [Axn::Internal::ActionState.internal_context(action), :"@_memoized_reader_#{config.field}"]
         end
       end
 

@@ -31,7 +31,7 @@ module Axn
         #   }
         def build(action:, retry_context: nil, tags: {}, dimensions: {})
           # Get structured execution context (inputs, outputs, and extra keys at top level)
-          exec_ctx = action.execution_context
+          exec_ctx = ActionState.execution_context(action)
 
           # Start building the context with formatted execution context
           context = {
