@@ -169,13 +169,16 @@ RSpec.describe Axn::Extras::Strategies::Client do
       it "does not inject ErrorHandlerMiddleware when error_handler is nil" do
         instance = create_client_instance(test_action, error_handler: nil)
 
-        expect(middleware_klasses(instance.client)).not_to include(Axn::Extras::Strategies::Client::ErrorHandlerMiddleware)
+        # ErrorHandlerMiddleware is defined lazily (only once some example actually uses
+        # error_handler:), so referencing the constant directly here would raise NameError if this
+        # example runs before that one. Compare by name instead of by class.
+        expect(middleware_klasses(instance.client).map(&:name)).not_to include("Axn::Extras::Strategies::Client::ErrorHandlerMiddleware")
       end
 
       it "does not inject ErrorHandlerMiddleware when error_handler is not provided" do
         instance = create_client_instance(test_action)
 
-        expect(middleware_klasses(instance.client)).not_to include(Axn::Extras::Strategies::Client::ErrorHandlerMiddleware)
+        expect(middleware_klasses(instance.client).map(&:name)).not_to include("Axn::Extras::Strategies::Client::ErrorHandlerMiddleware")
       end
     end
 

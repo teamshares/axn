@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
 RSpec.shared_examples "a registry" do
+  # Several examples below register a `:custom` item without deregistering it, which would leak
+  # into whichever example runs next under random ordering (`.clear!` only restores built-ins, so
+  # a leaked `:custom` collides with any later `register(:custom, ...)` call, including the
+  # `.clear!` example's own). Drop the leaked key directly rather than via `.clear!`/`.built_in` —
+  # some examples set message expectations on those methods, and an extra call here would double-count.
+  after { described_class.instance_variable_get(:@items)&.delete(:custom) }
+
   describe ".built_in" do
     it "loads all files from the appropriate directory" do
       expect(described_class.built_in.keys).to include(*expected_built_in_keys)
@@ -98,6 +105,10 @@ RSpec.shared_examples "a registry" do
 
   describe ".clear!" do
     it "resets to built-in items only" do
+      # `clear!` first, like every other example above: some OTHER spec file elsewhere in the
+      # suite may have registered `:custom` (or another shared key) and not cleaned up after
+      # itself, and this example must not depend on running before that happens.
+      described_class.clear!
       described_class.register(:custom, Module.new)
       described_class.clear!
       expect(described_class.all.keys).to include(*expected_built_in_keys)

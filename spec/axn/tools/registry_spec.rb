@@ -339,6 +339,13 @@ RSpec.describe Axn::Tools::Registry do
       register_adapter_with_roots(:mcp, roots: [fixture_dir])
     end
 
+    # The fixture is loaded via a real `require` (not `stub_const`), so its constant outlives this
+    # example unless dropped here — otherwise it permanently pollutes every later example's view of
+    # `Axn::Tools.for(:mcp)` (order-dependent under random ordering).
+    after do
+      Object.send(:remove_const, :RegistryFixtures) if Object.const_defined?(:RegistryFixtures, false)
+    end
+
     it "requires .rb files under a configured tool dir and exposes them as tools" do
       tools = Axn::Tools.for(:mcp)
       expect(Object.const_defined?("RegistryFixtures::LazyRegistryTool")).to be(true)
@@ -352,6 +359,15 @@ RSpec.describe Axn::Tools::Registry do
 
     before do
       register_adapter_with_roots(:mcp, roots: [fixture_dir])
+    end
+
+    # Both examples below `require` the same real fixture file, and `require` is idempotent per
+    # process — a per-example (`after(:each)`) removal would delete the constant before the second
+    # example runs, and the file would never re-execute to redefine it. Clean up once, after both
+    # examples in this group have run, so the constant doesn't outlive the group and pollute later
+    # examples elsewhere in the file (order-dependent under random ordering).
+    after(:context) do
+      Object.send(:remove_const, :RegistryFixturesMixed) if Object.const_defined?(:RegistryFixturesMixed, false)
     end
 
     it "loads the good tool despite a sibling file raising at load time, warning about the bad one" do
@@ -472,6 +488,9 @@ RSpec.describe Axn::Tools::Registry do
         expect(warnings).to include(a_string_matching(/broken_tool\.rb.*SyntaxError/))
       ensure
         FileUtils.remove_entry(dir)
+        # The tmpdir is gone, but the file was `require`d for real, so its constant would otherwise
+        # outlive this example and pollute later examples' view of `Axn::Tools.for(:mcp)`.
+        Object.send(:remove_const, :SyntaxIsoFixture) if Object.const_defined?(:SyntaxIsoFixture, false)
       end
     end
   end
@@ -481,6 +500,12 @@ RSpec.describe Axn::Tools::Registry do
 
     before do
       register_adapter_with_roots(:mcp, roots: [fixture_dir])
+    end
+
+    # `GoodFailedFixture::Ok` is `require`d for real, so it outlives this example unless dropped
+    # here, polluting later examples' view of `Axn::Tools.for(:mcp)` under random ordering.
+    after do
+      Object.send(:remove_const, :GoodFailedFixture) if Object.const_defined?(:GoodFailedFixture, false)
     end
 
     it "exposes the good tool but rolls back the class registered by the failing file" do
@@ -506,6 +531,12 @@ RSpec.describe Axn::Tools::Registry do
 
     before do
       register_adapter_with_roots(:mcp, roots: [fixture_dir])
+    end
+
+    # `NestedDep::Good` is `require`d for real, so it outlives this example unless dropped here,
+    # polluting later examples' view of `Axn::Tools.for(:mcp)` under random ordering.
+    after do
+      Object.send(:remove_const, :NestedDep) if Object.const_defined?(:NestedDep, false)
     end
 
     it "keeps a valid tool required by the failing file, rolling back only the failing file's own class" do
