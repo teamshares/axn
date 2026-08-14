@@ -52,11 +52,24 @@ Neither declaration order involving a user `def` is documented as an idiom. `exp
 
 A new `Axn::Internal::ActionState` (`module_function`) is the single funnel: `result(action)`, `internal_context(action)`, `inputs(action)`, `expose(action, …)`, `log(action, …)`, `execution_context(action)`, `ambient_context(action)`.
 
-It reaches state through `@__context` and constructs the facades itself, so it dispatches nothing on the action — not even a dunder name. That is what makes it stronger than the alternative considered (dunder twins such as `__result`/`__log`, with the public names as aliases): twins are a smaller diff but still dispatch through instance names, satisfying the acceptance criterion by obscurity rather than by construction.
+Its mechanism is the one `Axn::Internal::Identity` already establishes for caller-supplied collaborators, turned on the action itself: hold the real implementation as an `UnboundMethod` and `bind_call` it, so the invocation names a specific method object rather than dispatching a name the receiver can intercept.
+
+```ruby
+RESULT = Axn::Core::Contract::InstanceMethods.instance_method(:result)
+def result(action) = RESULT.bind_call(action)
+```
+
+Verified: `bind_call` reaches the real implementation through both shadow forms — a user's `def result` and a generated `expects :result` reader — and preserves the `@__result` memoization, so it is the same object the sugar would have returned.
+
+That is what makes it stronger than the two alternatives considered. Dunder twins (`__result`, `__log`, public names aliased onto them) are a smaller diff but still dispatch through instance names, satisfying the acceptance criterion by obscurity rather than by construction. Reaching through `@__context` and rebuilding the facades inside the funnel avoids dispatch too, but duplicates `_build_context_facade`'s construction logic and would have to be kept in step with it forever; `bind_call` calls that very method instead.
+
+The executor's own `FAILURE_PRESENT_AS.bind_call` (`executor.rb:930`) is the same technique, adopted there for the same reason: "a bound call cannot be intercepted, so there is no availability question left to get wrong."
 
 Call sites that move: `executor.rb:363, 495, 504, 639, 758, 760, 771, 927, 1086` (`result`), `executor.rb:1170, 1441, 1574` (`internal_context`), `configuration.rb:243, 244, 275, 290`, `extensions.rb:276, 323`, `internal/exception_context.rb:34`, `contract_for_subfields.rb:289`, `flow/handlers/invoker.rb:55`, `flow/handlers/matcher.rb:58, 78`, `flow/handlers/resolvers/message_resolver.rb:174, 197, 205`, and the body of `_define_field_reader` (`contract.rb:1881`).
 
 `fail!`, `done!` and `forward!` route their `**exposures` through `ActionState.expose` rather than through the public `expose`, so shadowing `expose` costs the user their own convenience and nothing else.
+
+Two of those call sites use `action.respond_to?(:result)` as a *type probe* — `configuration.rb:243` and `extensions.rb:274`, both of which legitimately receive `nil` or an action **class** rather than an instance. Shadowing defeats that probe precisely: a user's `def result` answers `true` and then returns a String, which is why `extensions.rb` has to re-probe the answer (`result.respond_to?(:finalized?)`) before trusting it. Both become an honest question — is this an axn action instance? — answered through `Internal::Identity`, and the defensive re-probes go with them.
 
 **The one irreducible exception is `call`.** The executor must invoke the user's method (`executor.rb:232`). That is the sole name the framework cannot surrender, and the sole justification for a reserved entry on the expectations side.
 
