@@ -5,9 +5,9 @@ module Axn
     module Hooks
       def self.included(base)
         base.class_eval do
-          class_attribute :around_hooks, default: []
-          class_attribute :before_hooks, default: []
-          class_attribute :after_hooks, default: []
+          class_attribute :around_hooks, instance_accessor: false, default: []
+          class_attribute :before_hooks, instance_accessor: false, default: []
+          class_attribute :after_hooks, instance_accessor: false, default: []
 
           extend ClassMethods
         end

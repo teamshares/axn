@@ -62,7 +62,7 @@ module Axn
 
       def _msg_resolver(event_type, exception:)
         Axn::Core::Flow::Handlers::Resolvers::MessageResolver.new(
-          action._messages_registry,
+          action.class._messages_registry,
           event_type,
           action:,
           exception:,

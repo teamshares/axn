@@ -17,7 +17,7 @@ module Axn
       # provided_data never mutated). A field with no config (implicitly-allowed) keeps the raw source
       # read. Model fields resolve through the shared resolve_model_value (record + sibling-id + default).
       def _define_reader_for(field)
-        config = action.internal_field_configs.find { |c| c.field == field }
+        config = action.class.internal_field_configs.find { |c| c.field == field }
         return super if config.nil?
 
         if config.validations.key?(:model)

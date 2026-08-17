@@ -8,7 +8,7 @@ module Axn
       module Messages
         def self.included(base)
           base.class_eval do
-            class_attribute :_messages_registry, default: Axn::Core::Flow::Handlers::Registry.empty
+            class_attribute :_messages_registry, instance_accessor: false, default: Axn::Core::Flow::Handlers::Registry.empty
 
             extend ClassMethods
           end

@@ -87,6 +87,23 @@ RSpec.describe "shadowing an axn instance method" do
     expect(build_axn {}.public_method_defined?(:internal_context)).to be false
   end
 
+  it "injects no unprefixed class_attribute accessors onto the instance" do
+    leaked = build_axn {}.public_instance_methods.grep_v(/\A_/) &
+             %i[before_hooks after_hooks around_hooks internal_field_configs
+                external_field_configs subfield_configs]
+
+    expect(leaked).to be_empty
+  end
+
+  it "exposes a field named for a config accessor without breaking the Result" do
+    klass = build_axn do
+      exposes :out
+      def call = expose(out: 1)
+    end
+
+    expect(klass.call.out).to eq(1)
+  end
+
   describe "the sugar matrix" do
     # Every name `include Axn` puts on the instance. `expose` is handled on its own below, because an
     # action that has lost it cannot use it to produce the exposure the other examples check.

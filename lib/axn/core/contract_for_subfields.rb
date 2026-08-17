@@ -17,7 +17,7 @@ module Axn
       def self.included(base)
         base.class_eval do
           # Copy-on-write, frozen at every assignment (see Contract's stores).
-          class_attribute :subfield_configs, default: [].freeze
+          class_attribute :subfield_configs, instance_accessor: false, default: [].freeze
 
           extend ClassMethods
         end

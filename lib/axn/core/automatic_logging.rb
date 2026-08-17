@@ -14,6 +14,7 @@ module Axn
           # Defaults to every outcome at the configured level (logging on by default).
           default_level = Axn.config.log_level
           class_attribute :_auto_log_levels,
+                          instance_accessor: false,
                           default: OUTCOMES.each_with_object({}) { |outcome, h| h[outcome] = default_level }
         end
       end

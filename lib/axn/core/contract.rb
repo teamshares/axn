@@ -27,7 +27,7 @@ module Axn
           # never `<<` — which would now raise FrozenError rather than silently mutating the
           # superclass's contract), so the per-class resolved-subfield cache can key on array
           # identity and concurrent readers always see an immutable snapshot.
-          class_attribute :internal_field_configs, :external_field_configs, default: [].freeze
+          class_attribute :internal_field_configs, :external_field_configs, instance_accessor: false, default: [].freeze
 
           extend ClassMethods
           include InstanceMethods

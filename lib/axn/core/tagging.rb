@@ -23,8 +23,8 @@ module Axn
       def self.included(base)
         base.class_eval do
           extend ClassMethods
-          class_attribute :_tags, default: {}
-          class_attribute :_dimensions, default: {}
+          class_attribute :_tags, instance_accessor: false, default: {}
+          class_attribute :_dimensions, instance_accessor: false, default: {}
         end
       end
 
