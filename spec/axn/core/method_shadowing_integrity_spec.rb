@@ -6,9 +6,8 @@
 # `Internal::ActionState`, which binds a method object no shadow can intercept.
 #
 # A grep cannot prove this. `result.respond_to?(key)` is indistinguishable from a local named
-# `result`, and a self-send (`internal_context.public_send(field)` inside `inputs`) has no receiver to
-# match on at all. So the coverage here is behavioural: shadow each name, run an action, and check
-# that the paths the user did NOT take still work.
+# `result`, and a self-send has no receiver to match on at all. So the coverage here is behavioural:
+# shadow each name, run an action, and check that the paths the user did NOT take still work.
 RSpec.describe "shadowing an axn instance method" do
   # A swallowed internal error must fail an example here, not print a warning and pass. Every one of
   # these actions runs its exception-report and logging paths, and those live inside `best_effort` —
@@ -52,22 +51,56 @@ RSpec.describe "shadowing an axn instance method" do
     expect(outcome.out).to eq(42)
   end
 
+  # Every generated field reader resolves its value through the inbound facade, so taking that name used
+  # to cost the user EVERY other field's reader rather than one helper: `def internal_context` made a
+  # sibling reader read off the user's object, and `expects :internal_context` made the generated reader
+  # call itself (SystemStackError). Both shapes are in the matrix below; these two name the corruption
+  # directly, and pin that the facade is no longer part of the public surface a user has to work around.
+  it "does not poison every other field's reader when `internal_context` is declared" do
+    klass = build_axn do
+      expects :internal_context, :other
+      exposes :out
+      def call = expose(out: "#{internal_context}/#{other}")
+    end
+
+    result = klass.call(internal_context: "mine", other: "theirs")
+
+    expect(result).to be_ok
+    expect(result.out).to eq("mine/theirs")
+  end
+
+  it "does not poison every other field's reader when `internal_context` is shadowed by a def" do
+    klass = build_axn do
+      expects :given
+      exposes :out
+      def internal_context = "taken by the user"
+      def call = expose(out: given * 2)
+    end
+
+    result = klass.call(given: 21)
+
+    expect(result).to be_ok
+    expect(result.out).to eq(42)
+  end
+
+  it "no longer injects internal_context as public surface" do
+    expect(build_axn {}.public_method_defined?(:internal_context)).to be false
+  end
+
   describe "the sugar matrix" do
     # Every name `include Axn` puts on the instance. `expose` is handled on its own below, because an
     # action that has lost it cannot use it to produce the exposure the other examples check.
-    # `internal_context` is absent because every generated field reader still dispatches it, so taking
-    # it poisons the readers rather than costing one helper — the one name still to be freed.
     shadowable_by_def = %i[
       result inputs log debug info warn error fatal
       execution_context ambient_context default_error default_success
-      fail! done! forward!
+      fail! done! forward! internal_context
     ].freeze
 
     # The subset a field declaration can take TODAY. The rest are rejected outright by `expects`
     # (`inputs`, `ambient_context`, `default_error`, `default_success`), or are not legal field names
     # at all (the bang trio).
     shadowable_by_declaration = %i[
-      result expose log debug info warn error fatal execution_context
+      result expose log debug info warn error fatal execution_context internal_context
     ].freeze
 
     def shadowing(name, &declaration)
@@ -327,6 +360,31 @@ RSpec.describe "shadowing an axn instance method" do
 
       expect(klass.call(ssn: "123-45-6789")).to be_ok
       expect(logged).to include(a_string_matching(/sensitive: :ssn \(:broken_check\) raised ArgumentError/))
+    end
+
+    # `ambient_context` is axn's own reserved parent (`expects :ambient_context` is refused), so an
+    # ambient subfield must read the framework's value however the class is shaped. A dispatched read
+    # fed the user's object to the ambient filter, which reported the resulting absence as a bogus
+    # "can't be blank" on the subfield rather than an error naming the cause.
+    it "still resolves an ambient subfield when `ambient_context` is shadowed by a def" do
+      klass = shadowing(:ambient_context) do
+        expects :tenant, on: :ambient_context
+        exposes :out
+        def call = expose(out: tenant)
+      end
+
+      result = with_ambient_provider(-> { { tenant: "acme" } }) { klass.call }
+
+      expect(result).to be_ok
+      expect(result.out).to eq("acme")
+    end
+
+    def with_ambient_provider(provider)
+      previous = Axn.config.ambient_context_provider
+      Axn.config.ambient_context_provider = provider
+      yield
+    ensure
+      Axn.config.ambient_context_provider = previous
     end
 
     def with_global_reporter(reports)

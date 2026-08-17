@@ -518,7 +518,7 @@ RSpec.describe "top-level read-path resolution (PRO-2908)" do
       resolved = Axn::Core::ContractForSubfields.resolve_value(instance, other_config)
 
       expect(resolved).to eq("x")
-      facade = instance.internal_context
+      facade = inbound_facade(instance)
       expect(facade.instance_variable_defined?(:@_memoized_reader_widget)).to be(false)
     end
 
@@ -551,7 +551,7 @@ RSpec.describe "top-level read-path resolution (PRO-2908)" do
       resolved = Axn::Core::ContractForSubfields.resolve_value(instance, other_config)
 
       expect(resolved).to eq("x")
-      facade = instance.internal_context
+      facade = inbound_facade(instance)
       expect(facade.instance_variable_defined?(:@_memoized_reader_widget)).to be(false)
     end
   end

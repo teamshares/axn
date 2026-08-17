@@ -1134,7 +1134,7 @@ RSpec.describe Axn do
           end
 
           instance = action.send(:new, address: { billing: { ssn: "123-45-6789" } })
-          inspected = instance.internal_context.inspect
+          inspected = inbound_facade(instance).inspect
           expect(inspected).to include("[FILTERED]")
           expect(inspected).not_to include("123-45-6789")
         end

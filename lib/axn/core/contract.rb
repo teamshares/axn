@@ -1878,7 +1878,11 @@ module Axn
           # NOTE: exposes fields are intentionally excluded — access those via result.field instead.
           # `reader` is the method name (may be aliased via as:/prefix:); `source` is the wire key
           # the value actually lives under in the inbound context.
-          target.define_method(reader) { internal_context.public_send(source) }
+          #
+          # Bound rather than dispatched: this body runs on the USER's class, so a sibling declaration
+          # (`expects :internal_context`) or a `def` would otherwise redirect EVERY field's read at the
+          # user's own value — the shadow costing them every reader instead of the one helper.
+          target.define_method(reader) { Axn::Internal::ActionState.internal_context(self).public_send(source) }
         end
 
         # Aliased in the same module as the reader it points at (an alias can only name a method its own
@@ -2542,7 +2546,16 @@ module Axn
       RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs async ambient_context axn_stack tags dimensions].freeze
 
       module InstanceMethods
+        # The inbound facade every generated reader resolves through. Private, and reached by axn's own
+        # machinery only through `Internal::ActionState` (an UnboundMethod resolves and binds a private
+        # method fine): nothing dispatches the name, so it costs the user nothing and they are free to
+        # declare a field called `internal_context`.
+        #
+        # Privatized one method at a time rather than with a bare `private`, which would also withdraw the
+        # user-facing sugar (`inputs`, `expose`, `set_execution_context`, `execution_context`) below.
         def internal_context = @__internal_context ||= _build_context_facade(:inbound)
+        private :internal_context
+
         def result = @__result ||= _build_context_facade(:outbound)
 
         # Resolved declared-inbound fields as a Hash (defaults/preprocess applied, model: fields

@@ -115,7 +115,7 @@ RSpec.describe "Dynamic sensitive fields" do
 
       it "filters ssn in internal_context inspect" do
         result = action.call(ssn: "123-45-6789")
-        expect(result.__action__.internal_context.inspect).to include("ssn: [FILTERED]")
+        expect(inbound_facade(result.__action__).inspect).to include("ssn: [FILTERED]")
       end
     end
 

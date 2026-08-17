@@ -194,7 +194,9 @@ module Axn
         end
       end
 
-      # Instance reader used by ContractForSubfields.resolve_parent (public_send(:ambient_context)).
+      # Instance reader for the reserved ambient parent. Its callers bind it (Internal::ActionState),
+      # never dispatch it, so a user's `def ambient_context` costs them this reader and cannot redirect
+      # the ambient subfields axn resolves off it.
       #
       # A failing provider is memoized as an ERROR (not `{}`) and re-raised on every subsequent read.
       # This matters because automatic BEFORE-logging can be the FIRST read (a dynamic `sensitive:`

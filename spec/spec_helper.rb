@@ -41,6 +41,12 @@ RSpec.configure do |config|
   end
 end
 
+# The inbound context facade an action's field readers resolve through. It is a private implementation
+# detail on the action (nothing may dispatch its name, so a user is free to declare a field called
+# `internal_context`), so a spec that wants to assert on the facade itself — its `inspect` redaction,
+# its memo ivars — reaches it the same way axn's own machinery does.
+def inbound_facade(action) = Axn::Internal::ActionState.internal_context(action)
+
 def expect_best_effort_called(message_substring:, action: nil, times: 1)
   # The transitional swallow-based call sites always forward an `action:` kwarg to
   # `best_effort` — even `nil` — via its `action:` shorthand, so the trailing kwarg is
