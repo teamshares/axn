@@ -43,9 +43,12 @@ module Axn
             end
             memo expose_attr
 
+            # Through the funnel, not by name: this hook is the strategy's own machinery, and a user
+            # who takes either name would otherwise lose the exposure (and, worse, the validity gate
+            # that decides whether the action fails at all) rather than lose a helper.
             before do
-              expose expose_attr => public_send(expose_attr)
-              fail! unless public_send(expose_attr).valid?
+              ::Axn::Internal::ActionState.expose(self, expose_attr => public_send(expose_attr))
+              ::Axn::Internal::ActionState.fail!(self) unless public_send(expose_attr).valid?
             end
           end
         end

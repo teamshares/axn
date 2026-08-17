@@ -27,8 +27,9 @@ module Axn
       OUTPUTS_FOR_LOGGING = Axn::Core::Contract::InstanceMethods.instance_method(:outputs_for_logging)
       AMBIENT_CONTEXT = Axn::Core::AmbientContext.instance_method(:ambient_context)
       LOG = Axn::Core::Logging::InstanceMethods.instance_method(:log)
+      FAIL = Axn::Core.instance_method(:fail!)
       private_constant :RESULT, :INTERNAL_CONTEXT, :INPUTS, :EXPOSE, :EXPOSE_FROM_RESULT, :EXECUTION_CONTEXT,
-                       :INPUTS_FOR_LOGGING, :OUTPUTS_FOR_LOGGING, :AMBIENT_CONTEXT, :LOG
+                       :INPUTS_FOR_LOGGING, :OUTPUTS_FOR_LOGGING, :AMBIENT_CONTEXT, :LOG, :FAIL
 
       module_function
 
@@ -49,6 +50,12 @@ module Axn
       def outputs_for_logging(action) = OUTPUTS_FOR_LOGGING.bind_call(action)
 
       def ambient_context(action) = AMBIENT_CONTEXT.bind_call(action)
+
+      # Settling an action as a failure is CONTROL FLOW, not a convenience: a shadow intercepting it
+      # does not cost the user a helper, it makes the failure never happen and the action report the
+      # success it did not have. So the internals that settle an action — the step orchestrator's
+      # outcome propagation, the form strategy's validity gate — raise through this, never by name.
+      def fail!(action, *, **) = FAIL.bind_call(action, *, **)
 
       # Three shapes reach here and all three are legitimate: an action INSTANCE (bound, so a shadowed
       # `log` cannot intercept), an action CLASS at a guard that fires before the instance exists (its

@@ -2569,7 +2569,8 @@ module Axn
         # - two positional arguments (key, value)
         # - a hash of key/value pairs
         def expose(*args, **kwargs)
-          return _expose_from_result(args.first) if args.size == 1 && kwargs.empty? && args.first.is_a?(Axn::Result)
+          forwarding_a_result = args.size == 1 && kwargs.empty? && args.first.is_a?(Axn::Result)
+          return Axn::Internal::ActionState.expose_from_result(self, args.first) if forwarding_a_result
 
           if args.any?
             if args.size != 2

@@ -143,7 +143,7 @@ module Axn
 
       raise result.exception if result.outcome.exception?
 
-      fail!("#{error_prefix}#{result.error}")
+      Internal::ActionState.fail!(self, "#{error_prefix}#{result.error}")
     end
 
     # Mirrors the `steps` DSL's membership check, one phase later: `step` can validate at declaration

@@ -222,6 +222,96 @@ RSpec.describe "shadowing an axn instance method" do
       expect(result.out).to eq(42)
     end
 
+    # The step orchestrator settles the PARENT by failing it, so a shadowed `fail!` does not cost the
+    # user a helper — it makes the failure never happen, and a chain whose step failed reports success.
+    it "still settles the parent as a failure when a step fails and `fail!` is shadowed" do
+      klass = shadowing(:fail!) do
+        step(:inner) { fail! "inner boom" }
+      end
+
+      result = klass.call
+
+      expect(result).not_to be_ok
+      expect(result.error).to eq("inner: inner boom")
+    end
+
+    it "still settles the parent when `fail!` is shadowed and the step's own fail! is its user's" do
+      child = build_axn { def call = fail!("child boom") }
+      klass = shadowing(:fail!) { step :inner, child }
+
+      result = klass.call
+
+      expect(result).not_to be_ok
+      expect(result.error).to eq("inner: child boom")
+    end
+
+    # The form strategy's `before` hook is axn's own machinery: it exposes the built form and gates the
+    # action on its validity. A shadow taking either name would leave the exposure unwritten (an
+    # outbound contract violation) or the invalid form unreported.
+    describe "the form strategy's before hook" do
+      let(:form_class) do
+        Class.new(Axn::FormObject) do
+          attr_accessor :foo
+
+          validates :foo, presence: true
+        end
+      end
+
+      # A `#call` of its own, deliberately: the default `#call` would auto-expose the memoized form
+      # reader on its own and mask whether the hook's exposure landed.
+      it "still exposes the form when `expose` is shadowed by a def" do
+        klass = shadowing(:expose) { def call = nil }
+        klass.use(:form, type: form_class)
+
+        result = klass.call(params: { foo: "bar" })
+
+        expect(result).to be_ok
+        expect(result.form).to be_a(form_class)
+      end
+
+      it "still exposes the form when `expose` is taken by a field declaration" do
+        klass = build_axn { expects :expose }
+        klass.use(:form, type: form_class)
+
+        result = klass.call(params: { foo: "bar" }, expose: "an input value")
+
+        expect(result).to be_ok
+        expect(result.form).to be_a(form_class)
+      end
+
+      it "still fails the action on an invalid form when `fail!` is shadowed by a def" do
+        klass = shadowing(:fail!) {}
+        klass.use(:form, type: form_class)
+
+        expect(klass.call(params: { foo: nil })).not_to be_ok
+      end
+    end
+
+    # `Factory.build` takes `superclass:` / `include:` / `prepend:`, all public API — so the generated
+    # #call runs on a class that may carry the user's own `expose`.
+    it "still exposes the return value when a factory-built action's `expose` is shadowed" do
+      shadow = Module.new { def expose(*, **) = :taken_by_the_user }
+      klass = Axn::Factory.build(expose_return_as: :out, include: [shadow]) { 3 }
+
+      result = klass.call
+
+      expect(result).to be_ok
+      expect(result.out).to eq(3)
+    end
+
+    it "still forwards a Result handed to `expose` when `_expose_from_result` is shadowed" do
+      klass = build_axn do
+        exposes :out
+        def _expose_from_result(*, **) = :taken_by_the_user
+        def call = expose(Axn::Result.ok(out: 3))
+      end
+
+      result = klass.call
+
+      expect(result).to be_ok
+      expect(result.out).to eq(3)
+    end
+
     it "still redacts a sensitive field whose predicate raises when `warn` is shadowed" do
       logged = []
       klass = shadowing(:warn) do

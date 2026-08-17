@@ -331,7 +331,9 @@ module Axn
             end
 
             retval = instance_exec(**unwrapped_kwargs, &executable)
-            expose(expose_return_as => retval) if expose_return_as
+            # Through the funnel: `superclass:`/`include:`/`prepend:` are public API, so a factory-built
+            # class can carry a user's own `expose` — and the generated #call is axn's, not theirs.
+            ::Axn::Internal::ActionState.expose(self, expose_return_as => retval) if expose_return_as
           end
         end
       ensure
