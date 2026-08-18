@@ -38,7 +38,8 @@ module Axn
       #     `Axn.config.async_exception_reporting` gets validation re-run against the new mode.
       #   * `Core::InstanceDeferral`'s record of which inherited methods it has already announced. The
       #     announcement is a log line already emitted, so re-arming it here would have a host app's suite
-      #     re-decide a deferral the class definition settled. Its private spec hook is for axn's own suite.
+      #     re-decide a deferral the process already announced on that action's first run. Its private spec
+      #     hook is for axn's own suite.
       #
       # Two further pieces of per-execution state need nothing here: Internal::ExceptionClassification
       # and Internal::CarriedPresentation both store in ActiveSupport::IsolatedExecutionState and are

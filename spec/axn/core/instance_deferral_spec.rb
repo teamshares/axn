@@ -84,7 +84,7 @@ RSpec.describe Axn::Core::InstanceDeferral do
 
     expect(described_class.definers(child)).to be_empty
     expect(described_class.shim(child)).to be_nil
-    expect(described_class.definer_behind(child, described_class.shim(parent_action), :log)).to eq(parent)
+    expect(described_class.definer_behind(described_class.shim(parent_action), :log)).to eq(parent)
     expect(Axn::Internal::NameOwnership.owner_of(child, :log)).to eq(parent)
   end
 
@@ -624,6 +624,68 @@ RSpec.describe Axn::Core::InstanceDeferral do
 
       expect(action.send(:new).log).to eq("PARENT-LOG")
       expect(Axn::Internal::NameOwnership.owner_of(action, :log)).to eq(parent)
+    end
+  end
+
+  # The other direction of the pair across a hierarchy: the base class chose axn's, one subclass takes the
+  # inherited implementation back, and everything else keeps what the base class chose.
+  describe "prefer_inherited on a subclass of a class that preferred axn's" do
+    before do
+      stub_const("ApplicationService", Class.new { def log(*) = "PARENT-LOG" })
+      stub_const("ApplicationAction", Class.new(ApplicationService) do
+        include Axn
+        prefer_axn :log
+      end)
+      stub_const("ChargeCard", Class.new(ApplicationAction) { prefer_inherited :log })
+      stub_const("SendReceipt", Class.new(ApplicationAction))
+    end
+
+    it "gives the declaring class the implementation its own hierarchy declares" do
+      expect(ChargeCard.send(:new).log).to eq("PARENT-LOG")
+      expect(Axn::Internal::NameOwnership.owner_of(ChargeCard, :log)).to eq(ApplicationService)
+    end
+
+    it "leaves the parent, which owns the record, on axn's implementation" do
+      expect(Axn::Internal::NameOwnership.owner_of(ApplicationAction, :log)).to eq(Axn::Core::Logging::InstanceMethods)
+      expect(described_class.definers(ApplicationAction)[:log]).to eq(Axn::Core::Logging::InstanceMethods)
+    end
+
+    it "leaves a sibling on axn's implementation" do
+      expect(Axn::Internal::NameOwnership.owner_of(SendReceipt, :log)).to eq(Axn::Core::Logging::InstanceMethods)
+    end
+  end
+
+  # A `def` of the author's own outranks anything axn installs, so the declaration cannot change what answers.
+  # What it does change is what `super` from that `def` reaches, which is the only reachable difference — and
+  # the reason `prefer_axn` is worth writing beside a wrapper method.
+  describe "prefer_axn beside a definition of the class's own" do
+    it "redirects super from the class's own def to axn's implementation" do
+      parent = Class.new { def fail!(msg) = raise(ArgumentError, "PARENT-FAIL #{msg}") }
+      action = Class.new(parent) do
+        include Axn
+        def fail!(msg) = super("wrapped: #{msg}")
+        prefer_axn :fail!
+        def call = fail!("declined")
+      end
+
+      result = action.call
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("wrapped: declined")
+    end
+
+    # The cost of the same rule on a class that had no deferral to begin with: axn's implementation was already
+    # what `super` reached, so the wrapper the declaration installs is a frame that changes nothing. Pinned
+    # rather than optimised away, because telling the two apart means asking what would answer BELOW the class's
+    # own table — a walk the record exists to avoid.
+    it "opens a record even where the declaration changes nothing" do
+      action = Class.new do
+        include Axn
+        def log(*) = "MINE"
+        prefer_axn :log
+      end
+
+      expect(action.send(:new).log).to eq("MINE")
+      expect(described_class.definers(action)).to eq(log: Axn::Core::Logging::InstanceMethods)
     end
   end
 

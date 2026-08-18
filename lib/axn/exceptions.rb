@@ -285,6 +285,53 @@ module Axn
       end
     end
 
+    # A name `prefer_inherited`/`prefer_axn` cannot choose between, because axn does not hand it over: `call`
+    # and the other names axn dispatches on the action by name, an axn internal, the ambient sentinel, Ruby's
+    # own — or a name that is not part of axn's public instance surface at all, which is one verdict covering
+    # both a name nothing defines and a private helper of axn's.
+    #
+    # `belongs_to:` is the owner sentence `Internal::NameOwnership.describe` writes, composed by the caller
+    # rather than here: the ownership rules live there, and this file is loaded standalone by adapter gems, so
+    # reaching for that module from a message path would close a require cycle. nil is the no-owner branch.
+    #
+    # Every value is rendered before the join, for the reason every message here renders: a declared name is the
+    # AUTHOR's bytes, which only have to be ASCII-compatible, and joining those to axn's UTF-8 prose raw can
+    # replace the declaration error with an `Encoding::CompatibilityError` out of the message path.
+    class UnpreferableName < ContractViolation
+      def initialize(declaration:, name:, belongs_to: nil)
+        declaration = Axn::Internal::RenderedText.of(declaration)
+        name = Axn::Internal::RenderedText.of(name)
+        owned = if belongs_to.nil?
+                  "is not part of axn's public instance surface"
+                else
+                  "belongs to #{Axn::Internal::RenderedText.of(belongs_to)}"
+                end
+
+        super("`#{declaration} :#{name}` names something axn cannot choose for you: ##{name} #{owned}. " \
+              "Remove the declaration, or check the name.")
+      end
+    end
+
+    # `prefer_inherited` for a name axn never stepped aside for. The declaration names an outcome that cannot be
+    # delivered: there is no inherited implementation for axn to be standing behind, so nothing would change if
+    # the declaration were honoured.
+    #
+    # What the message can honestly assert is what the deferral record knows — that nothing above the class
+    # declared the name when `include Axn` ran. A definition made AFTER the include, in the class's own body or
+    # in a module included later, is the other way to land here, and it already wins on its own terms, so the
+    # message names that case rather than claiming no such definition exists.
+    class NothingToPrefer < ContractViolation
+      def initialize(klass:, name:)
+        klass = Axn::Internal::RenderedModuleName.of(klass)
+        name = Axn::Internal::RenderedText.of(name)
+
+        super("`prefer_inherited :#{name}` has nothing to prefer: axn surrendered no ##{name} on #{klass}, " \
+              "because nothing above it declared the name when `include Axn` ran. Remove the declaration, or " \
+              "check the name — a definition made after the include, in the class's own body or in a module " \
+              "included later, already wins on its own terms.")
+      end
+    end
+
     class UnknownExposure < ContractViolation
       def initialize(key)
         @key = key

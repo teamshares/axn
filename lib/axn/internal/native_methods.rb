@@ -57,7 +57,6 @@ module Axn
       MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
       MODULE_NAME = ::Module.instance_method(:name)
       MODULE_PREPEND = ::Module.instance_method(:prepend)
-      MODULE_REMOVE_METHOD = ::Module.instance_method(:remove_method)
       MODULE_PUBLIC_INSTANCE_METHODS = ::Module.instance_method(:public_instance_methods)
       MODULE_PUBLIC_METHOD_DEFINED = ::Module.instance_method(:public_method_defined?)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
@@ -69,7 +68,7 @@ module Axn
       private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
                        :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS,
-                       :MODULE_NAME, :MODULE_PREPEND, :MODULE_REMOVE_METHOD,
+                       :MODULE_NAME, :MODULE_PREPEND,
                        :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PROTECTED_INSTANCE_METHODS,
                        :MODULE_PUBLIC_INSTANCE_METHODS, :MODULE_PUBLIC_METHOD_DEFINED
 
@@ -274,7 +273,6 @@ module Axn
       # another module's method has to be declared at THAT module's visibility, or the installation publishes a
       # method its author deliberately kept off the class's surface.
       def self.define_own_instance_method(mod, name, &) = MODULE_DEFINE_METHOD.bind_call(mod, name, &)
-      def self.remove_own_instance_method(mod, name) = MODULE_REMOVE_METHOD.bind_call(mod, name)
       def self.set_declared_visibility(mod, name, visibility) = VISIBILITY_SETTERS.fetch(visibility).bind_call(mod, name)
 
       # A MODULE's own singleton class, read natively — for a caller that has to INSTALL something on it

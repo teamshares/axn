@@ -20,6 +20,7 @@ module Axn
     # yields and which it refuses outright are one subject in one place rather than two.
     module InstanceDeferral
       DEFERRALS_IVAR = :@__axn_instance_deferrals
+      SHIM_RECORD_IVAR = :@__axn_deferral_shim_record
       ACKNOWLEDGED_IVAR = :@__axn_acknowledged_deferrals
       ANNOUNCED_IVAR = :@__axn_deferrals_announced
       KERNEL_IVAR_GET = ::Kernel.instance_method(:instance_variable_get)
@@ -86,7 +87,7 @@ module Axn
       # What `include Axn` contributes: a wrapper for every name the class's own hierarchy already owned.
       def self.install(base)
         deferrals = _collect(base)
-        return NO_DEFERRALS if deferrals.empty?
+        return if deferrals.empty?
 
         record = _own_record(base)
         deferrals.each { |name, capture| _stand_in(record, name, *capture) }
@@ -94,7 +95,7 @@ module Axn
         # may put axn's implementation back in front, and the capture is the only remaining record of the
         # implementation, and the visibility, the include surrendered to.
         record[:captured].update(deferrals)
-        record[:definers]
+        nil
       end
 
       # One record, and one module of wrappers, per class: `include Axn` opens it and a declaration in the class
@@ -111,6 +112,9 @@ module Axn
 
         state = { shim: ::Module.new, definers: {}, captured: {} }
         KERNEL_IVAR_SET.bind_call(klass, DEFERRALS_IVAR, state)
+        # The same record object, reachable from the shim as well as from the class, so a caller holding only
+        # the module a lookup landed on can ask what it stands for without searching for it.
+        KERNEL_IVAR_SET.bind_call(state[:shim], SHIM_RECORD_IVAR, state)
         Axn::Internal::NativeMethods.include_module(klass, state[:shim])
         state
       end
@@ -141,6 +145,10 @@ module Axn
       # Nearest record first, and each name settled by the first record that answers it, because that is the
       # order a dispatch resolves in: a subclass that put axn's implementation back in front of an inherited
       # one has nothing left to be warned about.
+      #
+      # The one ordering this leaves: a declaration must be in place before the class's FIRST run. Reopening a
+      # class to add `prefer_inherited` after it has already executed announces nothing new, and silences
+      # nothing either — the line for that name is already written.
       def self.announce_deferrals!(klass)
         return if KERNEL_IVAR_GET.bind_call(klass, ANNOUNCED_IVAR)
 
@@ -214,23 +222,20 @@ module Axn
       # all — the honest answer for a caller that only ASKS who a name belongs to and has landed on axn's
       # bookkeeping instead of on a module anyone wrote.
       #
-      # Found by matching the SHIM rather than by taking the nearest record, because a class may own a record
-      # while the name in question is answered by an ancestor's: a subclass that declares `prefer_axn :fail!`
-      # owns a shim holding that one wrapper, and every other helper it inherits still resolves through the shim
-      # its base class installed.
+      # Answered from the SHIM's own reference to the record, rather than by searching a class's ancestry for a
+      # record whose shim matches, for two reasons. It is the shim that is being asked about, so nothing else
+      # can answer more directly; and this is on the path of every field declaration, where the owner is
+      # ordinarily `Kernel`, one of axn's modules or the user's own class — a search would scan to BasicObject
+      # on each of those before reporting the miss it is going to report.
       #
       # Kept apart from `shim`/`definers` rather than folded into them, because those two are what a caller that
       # MUTATES a record must use: removing a wrapper from an ancestor's shim, or dropping a name from its map,
       # would take the helper away from that ancestor and from every other class beneath it. Own record to
-      # change, the whole ancestry to read.
-      def self.definer_behind(klass, owner, name)
-        Axn::Internal::NativeMethods.module_ancestors(klass).each do |mod|
-          state = _state(mod)
-          next if state.nil? || !Axn::Internal::Identity.same?(state[:shim], owner)
-
-          return state[:definers][name]
-        end
-        nil
+      # change, the shim's own record to read — a class may own a record while the name asked about is answered
+      # by an ancestor's, which is exactly the shape `prefer_axn` on a subclass produces.
+      def self.definer_behind(owner, name)
+        record = KERNEL_IVAR_GET.bind_call(owner, SHIM_RECORD_IVAR)
+        record && record[:definers][name]
       end
 
       def self._state(klass) = KERNEL_IVAR_GET.bind_call(klass, DEFERRALS_IVAR)
@@ -242,14 +247,7 @@ module Axn
       def self._prefer_inherited!(klass, name)
         name = _assert_deferrable!(klass, name, :prefer_inherited)
         definer, impl, visibility = _captured_deferral(klass, name)
-        if definer.nil?
-          raise Axn::ContractViolation,
-                "`prefer_inherited :#{Axn::Internal::RenderedText.of(name)}` has nothing to prefer: axn " \
-                "surrendered no ##{Axn::Internal::RenderedText.of(name)} on this class, because nothing above " \
-                "it declared the name when `include Axn` ran. Remove the declaration, or check the name — a " \
-                "definition made after the include, in this class's own body or in a module included later, " \
-                "already wins on its own terms."
-        end
+        raise Axn::ContractViolation::NothingToPrefer.new(klass:, name:) if definer.nil?
 
         _acknowledge(klass, name)
         _prefer!(klass, name, definer, impl, visibility)
@@ -285,7 +283,7 @@ module Axn
         owner = Axn::Internal::NativeMethods.declared_instance_method(klass, name)&.owner
         return nil if owner.nil?
 
-        definer_behind(klass, owner, name) || owner
+        definer_behind(owner, name) || owner
       end
       private_class_method :_live_definer
 
@@ -328,25 +326,18 @@ module Axn
       private_class_method :_acknowledge
 
       # The same question a declaration asks, so the two cannot drift: a name axn defines and may hand over.
-      # Anything else is refused with the message `NameOwnership` already writes for it — `call` and its
-      # siblings, an axn internal, the ambient sentinel, Ruby's own — and a name no owner at all reports is
-      # refused on the one fact that covers both an unknown name and a private helper of axn's: it is not part
-      # of the surface axn hands to anyone.
+      # Anything else is refused, naming the owner `NameOwnership` reports — `call` and its siblings, an axn
+      # internal, the ambient sentinel, Ruby's own. `conflict_for` reports no owner at all for two different
+      # names, an unknown one and a private helper of axn's, so the message for that branch asserts only what
+      # covers both: the name is not part of the surface axn hands to anyone.
       def self._assert_deferrable!(klass, name, declaration)
         name = name.to_sym
         return name if MethodShadowing.deferrable_names.include?(name)
 
-        label = Axn::Internal::RenderedText.of(name)
         conflict = Axn::Internal::NameOwnership.conflict_for(klass, name)
-        belongs = if conflict.nil?
-                    "is not part of axn's public instance surface, so axn has no implementation of it to prefer"
-                  else
-                    "belongs to #{Axn::Internal::NameOwnership.describe(conflict, name:)}"
-                  end
+        belongs_to = Axn::Internal::NameOwnership.describe(conflict, name:) unless conflict.nil?
 
-        raise Axn::ContractViolation,
-              "`#{declaration} :#{label}` names something axn cannot choose for you: ##{label} #{belongs}. " \
-              "Remove the declaration, or check the name."
+        raise Axn::ContractViolation::UnpreferableName.new(declaration:, name:, belongs_to:)
       end
       private_class_method :_assert_deferrable!
 

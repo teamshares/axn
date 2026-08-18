@@ -109,7 +109,9 @@ Each raises when the outcome it names cannot be delivered, which is one rule rat
 
 ### 6. The warning is keyed to the definer, not the class
 
-One `Axn.config.logger.warn` per `(definer_module, name)` per process, naming the class it first fired for, the owner, and both resolutions. An `ApplicationService#log` inherited by fifty actions produces one line at boot rather than fifty, which is what makes an unsilenceable-by-default warning tolerable; `prefer_inherited` suppresses it for a class that has said the deferral is intended.
+One `Axn.config.logger.warn` per `(definer_module, name)` per process, naming the class it first fired for, the owner, and both resolutions. An `ApplicationService#log` inherited by fifty actions produces one line rather than fifty, which is what makes an unsilenceable-by-default warning tolerable; `prefer_inherited` suppresses it for a class that has said the deferral is intended.
+
+It fires at the execution funnel rather than at `include Axn`, for the same reason §3's refusal does and one more: a line already written to the log cannot be unsaid by a `prefer_inherited` that runs later in the same class body, so silencing is only possible once the class body has finished. The cost is that an action never called never announces its deferral, and the two deferred checks share one seam instead of occupying two.
 
 The warned-set is a record of a side effect already committed, so it is not reset by `Axn.config` reload or by a test helper that resets configuration — clearing it would re-warn for a decision the process already announced.
 

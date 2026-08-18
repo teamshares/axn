@@ -348,7 +348,7 @@ RSpec.describe Axn::Core::InstanceDeferral do
       def expose_nothing = nil
     end
 
-    expect(action.new.log("x")).to eq("PARENT-LOG(x)")
+    expect(action.send(:new).log("x")).to eq("PARENT-LOG(x)")
   end
 
   it "leaves the un-shadowed helpers alone" do
@@ -373,14 +373,14 @@ RSpec.describe Axn::Core::InstanceDeferral do
     end
     action = Class.new(base) { include Axn }
 
-    expect(action.new.log(1, 2, 3, kw: 4, other: 5) { 6 }).to eq([1, 2, [3], 4, { other: 5 }, 6])
+    expect(action.send(:new).log(1, 2, 3, kw: 4, other: 5) { 6 }).to eq([1, 2, [3], 4, { other: 5 }, 6])
   end
 
   it "keeps a Hash passed positionally positional" do
     base = Class.new { def log(payload) = payload }
     action = Class.new(base) { include Axn }
 
-    expect(action.new.log({ level: :warn })).to eq(level: :warn)
+    expect(action.send(:new).log({ level: :warn })).to eq(level: :warn)
   end
 
   it "lets a class-body def wrap the inherited implementation through super" do
@@ -389,7 +389,7 @@ RSpec.describe Axn::Core::InstanceDeferral do
       def log(msg, **kw) = "WRAPPED[#{super}]"
     end
 
-    expect(action.new.log("x")).to eq("WRAPPED[PARENT-LOG(x)]")
+    expect(action.send(:new).log("x")).to eq("WRAPPED[PARENT-LOG(x)]")
   end
 
   it "leaves a class-body def written before the include reaching axn's implementation" do
@@ -402,7 +402,7 @@ RSpec.describe Axn::Core::InstanceDeferral do
       def log(msg, **kw) = super("[wrapped] #{msg}", **kw)
       include Axn
     end
-    action.new.log("x")
+    action.send(:new).log("x")
 
     expect(logged.first).to include("[wrapped] x")
   end
@@ -1032,7 +1032,7 @@ Append to `spec/axn/core/instance_deferral_spec.rb`:
         prefer_axn :fail!
       end
 
-      expect(action.new.log).to eq("PARENT-LOG")
+      expect(action.send(:new).log).to eq("PARENT-LOG")
     end
 
     it "is a satisfied assertion when nothing was deferred" do
@@ -1055,7 +1055,7 @@ Append to `spec/axn/core/instance_deferral_spec.rb`:
         prefer_inherited :log
       end
 
-      expect(action.new.log).to eq("PARENT-LOG")
+      expect(action.send(:new).log).to eq("PARENT-LOG")
       expect(warnings).to be_empty
     end
 
@@ -1208,7 +1208,7 @@ Append to `spec/axn/core/method_shadowing_integrity_spec.rb`. The existing file 
 
         it "wins over axn's helper" do
           action = Class.new(parent) { include Axn }
-          expect(action.new.public_send(name)).to eq(:parent_implementation)
+          expect(action.send(:new).public_send(name)).to eq(:parent_implementation)
         end
 
         it "leaves every other axn path working" do
@@ -1230,7 +1230,7 @@ Append to `spec/axn/core/method_shadowing_integrity_spec.rb`. The existing file 
             define_method(name) { |*args| [:wrapped, super(*args)] }
           end
 
-          expect(action.new.public_send(name)).to eq([:wrapped, :parent_implementation])
+          expect(action.send(:new).public_send(name)).to eq([:wrapped, :parent_implementation])
         end
       end
     end
