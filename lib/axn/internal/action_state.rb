@@ -89,7 +89,12 @@ module Axn
       # instead (a guard firing before the instance exists), and `respond_to?(:result)` cannot tell
       # them apart from an instance whose `result` a user has taken — it answers true and then hands
       # back a String.
-      def instance?(obj) = Identity.kind?(obj, ::Axn)
+      #
+      # Asked of `Axn::Core`, not `Axn`: that is the module supplying every implementation this file
+      # binds, and it is what both supported inclusion paths have in common — `include Axn` pulls it in,
+      # and a base class may `include Axn::Core` directly. Testing `Axn` rejected the latter, which are
+      # real actions, and silently degraded their reports to the raw exception.
+      def instance?(obj) = Identity.kind?(obj, ::Axn::Core)
 
       # True for a proxy axn built in place of an instance. Undispatched, like every other question
       # here: the discarded-job proxy answers `class` with the action's class, so anything that

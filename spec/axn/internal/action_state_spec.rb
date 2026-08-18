@@ -200,4 +200,40 @@ RSpec.describe Axn::Internal::ActionState do
       expect(described_class.result_or_nil(Object.new)).to be_nil
     end
   end
+  describe "both supported inclusion paths" do
+    # A base class may `include Axn::Core` directly instead of `include Axn` (see
+    # spec/inheritance_callback_spec.rb). Those are real actions, and asking `Axn === obj` rejected them —
+    # so the funnel discarded their result and their reports degraded to the raw exception.
+    let(:core_only) do
+      Class.new do
+        include Axn::Core
+        exposes :out
+        def call = expose(out: "ran")
+      end
+    end
+
+    it "recognises an instance of a class that includes Axn::Core directly" do
+      action = core_only.send(:new)
+
+      expect(described_class.instance?(action)).to be true
+      expect(described_class.result_or_nil(action)).to be_a(Axn::Result)
+    end
+
+    it "still recognises an instance of a class that includes Axn" do
+      action = build_axn {}.send(:new)
+
+      expect(described_class.instance?(action)).to be true
+      expect(described_class.result_or_nil(action)).to be_a(Axn::Result)
+    end
+
+    it "reads the real result through a shadow on either path" do
+      shadowed = Class.new do
+        include Axn::Core
+        def result = "shadowed"
+      end.send(:new)
+
+      expect(shadowed.result).to eq("shadowed")
+      expect(described_class.result(shadowed)).to be_a(Axn::Result)
+    end
+  end
 end
