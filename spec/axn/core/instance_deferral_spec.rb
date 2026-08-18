@@ -77,15 +77,15 @@ RSpec.describe Axn::Core::InstanceDeferral do
 
   # `shim` and `definers` answer for the class's OWN record, and a subclass has none: `install` runs on the class
   # that includes Axn. A caller that CHANGES a record depends on exactly that, since editing an ancestor's shim
-  # would strip the helper from every class beneath it. `nearest_record` is the read that walks instead.
+  # would strip the helper from every class beneath it. `definer_behind` is the read that walks instead.
   it "records nothing on a subclass of a class that did defer" do
     parent_action = Class.new(parent) { include Axn }
     child = Class.new(parent_action)
 
     expect(described_class.definers(child)).to be_empty
     expect(described_class.shim(child)).to be_nil
-    expect(described_class.nearest_record(child)).to eq(described_class.nearest_record(parent_action))
-    expect(described_class.nearest_record(child)[:definers]).to eq(log: parent, info: parent)
+    expect(described_class.definer_behind(child, described_class.shim(parent_action), :log)).to eq(parent)
+    expect(Axn::Internal::NameOwnership.owner_of(child, :log)).to eq(parent)
   end
 
   it "runs the action end to end with a deferred logging helper" do
@@ -357,14 +357,27 @@ RSpec.describe Axn::Core::InstanceDeferral do
       stub_const("ApplicationService", Class.new { def log(*) = nil })
       stub_const("ChargeCard", Class.new(ApplicationService))
       ChargeCard.class_eval { include Axn }
+      ChargeCard.call
 
       expect(warnings.size).to eq(1)
       expect(warnings.first).to include("ChargeCard", "ApplicationService", "log", "prefer_inherited", "prefer_axn")
     end
 
+    # Announced when the action RUNS, not when it is defined: the remedies the message names are declarations in
+    # the class body, which only runs after the include, so a warning written during the include would be one no
+    # author could answer.
+    it "says nothing until the class is run" do
+      stub_const("ApplicationService", Class.new { def log(*) = nil })
+      action = Class.new(ApplicationService) { include Axn }
+      expect(warnings).to be_empty
+
+      action.call
+      expect(warnings.size).to eq(1)
+    end
+
     it "warns once per definer method however many classes inherit it" do
       stub_const("ApplicationService", Class.new { def log(*) = nil })
-      3.times { Class.new(ApplicationService) { include Axn } }
+      3.times { Class.new(ApplicationService) { include Axn }.call }
 
       expect(warnings.size).to eq(1)
     end
@@ -374,8 +387,8 @@ RSpec.describe Axn::Core::InstanceDeferral do
     it "warns separately for a second definer of the same name" do
       stub_const("Alpha", Class.new { def log(*) = nil })
       stub_const("Beta", Class.new { def log(*) = nil })
-      Class.new(Alpha) { include Axn }
-      Class.new(Beta) { include Axn }
+      Class.new(Alpha) { include Axn }.call
+      Class.new(Beta) { include Axn }.call
 
       expect(warnings.size).to eq(2)
     end
@@ -385,13 +398,51 @@ RSpec.describe Axn::Core::InstanceDeferral do
         def log(*) = nil
         def info(*) = nil
       end)
-      Class.new(ApplicationService) { include Axn }
+      Class.new(ApplicationService) { include Axn }.call
 
       expect(warnings.size).to eq(2)
     end
 
     it "says nothing when there is no collision" do
-      Class.new { include Axn }
+      Class.new { include Axn }.call
+      expect(warnings).to be_empty
+    end
+
+    # Once per class as well as once per definer: the ancestry walk it needs is not something to repeat on every
+    # call of a hot action.
+    it "announces once however many times the class is run" do
+      stub_const("ApplicationService", Class.new { def log(*) = nil })
+      action = Class.new(ApplicationService) { include Axn }
+      3.times { action.call }
+
+      expect(warnings.size).to eq(1)
+    end
+
+    # A preference is an answer to the warning, so there is nothing left to announce — for the name it names,
+    # and for that name only.
+    it "says nothing for a name the class put back on axn's implementation" do
+      stub_const("ApplicationService", Class.new do
+        def log(*) = nil
+        def info(*) = nil
+      end)
+      action = Class.new(ApplicationService) do
+        include Axn
+        prefer_axn :log
+      end
+      action.call
+
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to include("#info")
+    end
+
+    # The record belongs to the base class and the preference to the subclass, so only the class being RUN can
+    # answer what it resolves to.
+    it "says nothing for a name a subclass put back on axn's implementation" do
+      stub_const("ApplicationService", Class.new { def log(*) = nil })
+      base = Class.new(ApplicationService) { include Axn }
+      child = Class.new(base) { prefer_axn :log }
+      child.call
+
       expect(warnings).to be_empty
     end
 
@@ -399,16 +450,247 @@ RSpec.describe Axn::Core::InstanceDeferral do
     # deliberately DOES re-arm axn's other once-per-process warning.
     it "does not re-announce a deferral after a suite-level reset" do
       stub_const("ApplicationService", Class.new { def log(*) = nil })
-      Class.new(ApplicationService) { include Axn }
+      Class.new(ApplicationService) { include Axn }.call
       expect(warnings.size).to eq(1)
 
       Axn::Testing.reset!
       logger = instance_double(Logger, info: nil, debug: nil)
       allow(logger).to receive(:warn) { |msg| warnings << msg }
       allow(Axn.config).to receive(:logger).and_return(logger)
-      Class.new(ApplicationService) { include Axn }
+      Class.new(ApplicationService) { include Axn }.call
 
       expect(warnings.size).to eq(1)
+    end
+  end
+
+  describe "prefer_axn" do
+    let(:parent) do
+      Class.new do
+        def fail!(msg) = raise(ArgumentError, "PARENT-FAIL #{msg}")
+        def log(*) = "PARENT-LOG"
+      end
+    end
+
+    it "restores axn's implementation and its semantics" do
+      action = Class.new(parent) do
+        include Axn
+        prefer_axn :fail!
+        def call = fail!("declined")
+      end
+
+      result = action.call
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("declined")
+    end
+
+    # The point of restoring the canonical OWNER rather than some wrapper of axn's: a field declaration asks who
+    # owns the name, and anything but axn's own module is refused as "not axn's to surrender".
+    it "restores the canonical owner, so a declaration may surrender the name again" do
+      action = Class.new(parent) do
+        include Axn
+        prefer_axn :fail!
+      end
+
+      expect(Axn::Internal::NameOwnership.owner_of(action, :fail!)).to eq(Axn::Core)
+      expect(Axn::Internal::NameOwnership.conflict_for(action, :fail!)).to be_nil
+    end
+
+    it "leaves the other deferrals on the class intact" do
+      action = Class.new(parent) do
+        include Axn
+        prefer_axn :fail!
+      end
+
+      expect(action.send(:new).log).to eq("PARENT-LOG")
+      expect(described_class.definers(action)[:log]).to eq(parent)
+    end
+
+    it "is a satisfied assertion when nothing was deferred" do
+      action = Class.new do
+        include Axn
+        prefer_axn :log
+      end
+
+      expect(described_class.shim(action)).to be_nil
+      expect(Axn::Internal::NameOwnership.owner_of(action, :log)).to eq(Axn::Core::Logging::InstanceMethods)
+    end
+  end
+
+  # The ordinary Rails arrangement: one base class includes Axn (and so owns the deferral record), and every
+  # action is a subclass of it. A declaration on the subclass must deliver its own outcome without touching a
+  # record it does not own -- editing the inherited shim would rewrite the base class and every sibling.
+  describe "a declaration on a subclass of the class that deferred" do
+    before do
+      stub_const("ApplicationService", Class.new do
+        def fail!(msg) = raise(ArgumentError, "PARENT-FAIL #{msg}")
+        def log(*) = "PARENT-LOG"
+      end)
+      stub_const("ApplicationAction", Class.new(ApplicationService) { include Axn })
+      stub_const("ChargeCard", Class.new(ApplicationAction) do
+        prefer_axn :fail!
+        def call = fail!("declined")
+      end)
+      stub_const("SendReceipt", Class.new(ApplicationAction))
+    end
+
+    it "gives the declaring class axn's implementation" do
+      result = ChargeCard.call
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("declined")
+    end
+
+    it "leaves the parent, which owns the record, running its own inherited implementation" do
+      expect { ApplicationAction.send(:new).fail!("x") }.to raise_error(ArgumentError, "PARENT-FAIL x")
+      expect(Axn::Internal::NameOwnership.owner_of(ApplicationAction, :fail!)).to eq(ApplicationService)
+      expect(described_class.definers(ApplicationAction)).to eq(fail!: ApplicationService, log: ApplicationService)
+    end
+
+    it "leaves a sibling running its own inherited implementation" do
+      expect { SendReceipt.send(:new).fail!("x") }.to raise_error(ArgumentError, "PARENT-FAIL x")
+      expect(Axn::Internal::NameOwnership.owner_of(SendReceipt, :fail!)).to eq(ApplicationService)
+    end
+
+    it "leaves the declaring class's other inherited helpers alone" do
+      expect(ChargeCard.send(:new).log).to eq("PARENT-LOG")
+      expect(Axn::Internal::NameOwnership.owner_of(ChargeCard, :log)).to eq(ApplicationService)
+    end
+
+    it "accepts prefer_inherited for a deferral recorded on the parent" do
+      expect { ChargeCard.class_eval { prefer_inherited :log } }.not_to raise_error
+      expect(ChargeCard.send(:new).log).to eq("PARENT-LOG")
+    end
+  end
+
+  describe "prefer_inherited" do
+    let(:parent) { Class.new { def log(*) = "PARENT-LOG" } }
+
+    it "keeps the inherited implementation and silences the warning" do
+      logger = instance_double(Logger, info: nil, debug: nil)
+      warnings = []
+      allow(logger).to receive(:warn) { |msg| warnings << msg }
+      allow(Axn.config).to receive(:logger).and_return(logger)
+      described_class.send(:_reset_warned_for_specs!)
+
+      action = Class.new(parent) do
+        include Axn
+        prefer_inherited :log
+        def call = nil
+      end
+
+      expect(action.call).to be_ok
+      expect(action.send(:new).log).to eq("PARENT-LOG")
+      expect(warnings).to be_empty
+    end
+
+    # Per name, not per class: acknowledging one deferral says nothing about the others.
+    it "leaves the warning standing for a name it did not name" do
+      logger = instance_double(Logger, info: nil, debug: nil)
+      warnings = []
+      allow(logger).to receive(:warn) { |msg| warnings << msg }
+      allow(Axn.config).to receive(:logger).and_return(logger)
+      described_class.send(:_reset_warned_for_specs!)
+
+      parent_with_two = Class.new do
+        def log(*) = "PARENT-LOG"
+        def info(*) = "PARENT-INFO"
+      end
+      action = Class.new(parent_with_two) do
+        include Axn
+        prefer_inherited :log
+        def call = nil
+      end
+      action.call
+
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to include("#info")
+    end
+
+    it "raises when nothing in the hierarchy owns the name" do
+      expect do
+        Class.new do
+          include Axn
+          prefer_inherited :log
+        end
+      end.to raise_error(Axn::ContractViolation, /nothing to prefer/)
+    end
+
+    # The declarations are a pair, so the second one wins rather than reporting the first as an obstacle.
+    it "takes the name back from a prefer_axn on the same class" do
+      action = Class.new(parent) do
+        include Axn
+        prefer_axn :log
+        prefer_inherited :log
+      end
+
+      expect(action.send(:new).log).to eq("PARENT-LOG")
+      expect(Axn::Internal::NameOwnership.owner_of(action, :log)).to eq(parent)
+    end
+  end
+
+  describe "the guard on both declarations" do
+    %i[call _run initialize].each do |name|
+      it "refuses #{name}, which axn dispatches to run the action" do
+        expect do
+          Class.new do
+            include Axn
+            prefer_inherited name
+          end
+        end.to raise_error(Axn::ContractViolation, /axn itself/)
+
+        expect do
+          Class.new do
+            include Axn
+            prefer_axn name
+          end
+        end.to raise_error(Axn::ContractViolation, /axn itself/)
+      end
+    end
+
+    it "refuses ambient_context, a sentinel rather than a convenience" do
+      expect do
+        Class.new do
+          include Axn
+          prefer_axn :ambient_context
+        end
+      end.to raise_error(Axn::ContractViolation, /AmbientContext/)
+    end
+
+    it "refuses a Ruby-owned name" do
+      expect do
+        Class.new do
+          include Axn
+          prefer_axn :inspect
+        end
+      end.to raise_error(Axn::ContractViolation, /Kernel|Object/)
+    end
+
+    it "refuses an axn internal" do
+      expect do
+        Class.new do
+          include Axn
+          prefer_axn :_forward_to_class
+        end
+      end.to raise_error(Axn::ContractViolation, /internals/)
+    end
+
+    # `conflict_for` reports a name no one owns as free, which is not the same verdict as "axn will hand this
+    # over": axn has no implementation to choose, so neither declaration means anything.
+    it "refuses a name axn does not define at all" do
+      expect do
+        Class.new do
+          include Axn
+          prefer_axn :perform_later
+        end
+      end.to raise_error(Axn::ContractViolation, /public instance surface/)
+    end
+
+    it "refuses a private axn helper, which is not a surface anyone can stand in for" do
+      expect do
+        Class.new do
+          include Axn
+          prefer_inherited :internal_context
+        end
+      end.to raise_error(Axn::ContractViolation, /public instance surface/)
     end
   end
 end

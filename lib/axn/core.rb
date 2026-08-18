@@ -40,6 +40,7 @@ module Axn
     module ClassMethods
       def call(**)
         Core::InstanceDeferral.assert_dispatchable_names_free!(self)
+        Core::InstanceDeferral.announce_deferrals!(self)
         Axn::Internal::ActionState.result(new(**).tap(&:_run))
       end
 
@@ -51,6 +52,10 @@ module Axn
     def self.included(base)
       base.class_eval do
         extend ClassMethods
+
+        # `prefer_inherited` / `prefer_axn`: the class body's say in which implementation is live for a name
+        # both axn and the class's own hierarchy define (see Core::InstanceDeferral).
+        extend Core::InstanceDeferral::ClassMethods
 
         # DSL modules that add class methods/attributes users interact with
         include Core::Hooks
