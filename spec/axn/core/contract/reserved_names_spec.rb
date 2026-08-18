@@ -132,17 +132,58 @@ RSpec.describe "reserved names for expectations" do
     end
   end
 
-  it "applies the same rule to an `as:` reader name" do
-    expect { build_axn { expects :thing, as: :class } }
-      .to raise_error(Axn::ContractViolation::ReservedAttributeError, /class/)
+  # The rule is about the READER a declaration defines, not the wire key it reads from. A wire key is a
+  # Hash key on the way in and lands on no method table, so an unavailable name there is not a conflict —
+  # which is what makes renaming the reader a real way out of every rejection above, and what lets a
+  # contract whose caller-facing key is `format` keep that key.
+  describe "the reader, not the wire key" do
+    it "applies the rule to an `as:` reader name" do
+      expect { build_axn { expects :thing, as: :class } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /class/)
+    end
+
+    it "applies the rule to a `prefix:`-composed reader name" do
+      expect { build_axn { expects :class, prefix: :the_ } }.not_to raise_error
+      expect { build_axn { expects :thing, prefix: :in } }.not_to raise_error
+      expect { build_axn { expects :spect, prefix: :in } } # composes :inspect
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /inspect/)
+    end
+
+    it "accepts a reserved WIRE KEY whose reader is renamed, and reads the value back" do
+      klass = build_axn do
+        expects :format, as: :fmt
+        exposes :out
+        def call = expose(out: fmt)
+      end
+
+      expect(klass.call(format: "csv").out).to eq("csv")
+    end
+
+    it "accepts a reserved wire key behind a `prefix:` too" do
+      klass = build_axn do
+        expects :format, prefix: :in_
+        exposes :out
+        def call = expose(out: in_format)
+      end
+
+      expect(klass.call(format: "csv").out).to eq("csv")
+    end
+
+    it "lets an author keep a wire key their own def already answers to" do
+      klass = Class.new do
+        include Axn
+        def helper = "mine"
+        expects :helper, as: :given_helper
+        exposes :out
+        def call = expose(out: [given_helper, helper])
+      end
+
+      expect(klass.call(helper: "theirs").out).to eq(%w[theirs mine])
+    end
   end
 
-  it "applies the same rule to a `prefix:` reader name" do
-    expect { build_axn { expects :name, prefix: :in } }.not_to raise_error
-  end
-
-  it "names the owner in the message so the author knows what is in the way" do
+  it "names the owner in the message, and the rename that gets around it" do
     expect { build_axn { expects :class } }
-      .to raise_error(Axn::ContractViolation::ReservedAttributeError, /Kernel.*as:/m)
+      .to raise_error(Axn::ContractViolation::ReservedAttributeError, /Kernel.*`as:`/m)
   end
 end

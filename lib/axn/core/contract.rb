@@ -503,8 +503,6 @@ module Axn
                                                             "encoding).")
                end
 
-          fields.each { |field| _reject_shadowed_name!(field) }
-
           # A field's wire key always names a single key; the nested-path capability lives entirely in a
           # dotted `on:` (`expects :b, on: "a"`). A dotted field NAME is therefore never valid — reject it
           # unconditionally, pointed at the dotted-`on:` spelling (PRO-2926). A dotted `on:` VALUE is fine.
@@ -523,7 +521,12 @@ module Axn
                   "reads its wire key and never invokes a method. Add `on:` to name the parent, or drop `method_call:`."
           end
 
+          # Judged on the RESOLVED reader, never on the wire key: a wire key is a Hash key on the way in
+          # and lands on no method table, while the reader is the method a declaration defines. That is
+          # what makes `as:`/`prefix:` the escape hatch the error message offers — a contract whose wire
+          # key happens to be `format` keeps its public API and renames only what it puts on the class.
           reader_names = _resolve_reader_names(fields, as:, prefix:)
+          reader_names.each_value { |reader| _reject_shadowed_name!(reader) }
           _validate_reader_names!(reader_names)
 
           validations, metadata = _partition_field_options(fields, **)
@@ -1007,12 +1010,9 @@ module Axn
           raise ContractViolation::ReservedAttributeError.new(name, owner: Axn::Internal::NameOwnership.describe(conflict))
         end
 
-        # Renamed readers must clear the same reserved-name bar as wire keys (identity readers are
-        # already reserved-checked against their wire key in `expects`), and no two declarations may
-        # resolve to the same reader name.
+        # No two declarations may resolve to the same reader name. (The shadowing bar every reader clears
+        # is applied by the caller, over the same resolved names.)
         def _validate_reader_names!(reader_names)
-          reader_names.reject { |field, reader| field == reader }.each_value { |reader| _reject_shadowed_name!(reader) }
-
           # A collision is a *new* reader name already claimed by an existing config under a different
           # wire key. A same-wire-key clash is a genuine duplicate field, reported downstream with a
           # clearer DuplicateFieldError, so it's excluded here. Checking every new reader (not just

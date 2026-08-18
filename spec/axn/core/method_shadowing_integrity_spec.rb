@@ -114,9 +114,11 @@ RSpec.describe "shadowing an axn instance method" do
     ].freeze
 
     # The subset a field declaration can take. The rest are rejected by `expects`: `ambient_context` is
-    # a sentinel the subfield resolver compares roots against rather than a convenience,
-    # `default_error`/`default_success` are owned by the inbound facade the value is read from, and
-    # `fail!`/`done!` are owned there too (ContextFacade#fail!).
+    # a sentinel the subfield resolver compares roots against rather than a convenience, and
+    # `default_error`/`default_success`/`fail!` are owned by the inbound facade the value is read from
+    # (InternalContext's own two, and ContextFacade#fail!).
+    # `done!` is declarable too, but it is exercised on its own below: the generic rows settle through
+    # `done!`, so an action that has surrendered it cannot produce the exposure they check.
     shadowable_by_declaration = %i[
       result inputs expose log debug info warn error fatal execution_context internal_context forward!
     ].freeze
@@ -180,6 +182,27 @@ RSpec.describe "shadowing an axn instance method" do
 
         expect(klass.send(:new, given: 1, name => "an input value").public_send(name)).to eq("an input value")
       end
+    end
+
+    # `done!` is surrendered by a declaration like any other convenience — early completion is then the
+    # user's own value, and every other route to settling still works.
+    it "still runs and exposes when `done!` is taken by a field declaration" do
+      klass = build_axn do
+        expects :given, :done!
+        exposes :out
+        def call = expose(out: given * 2)
+      end
+
+      result = klass.call(given: 21, done!: "an input value")
+
+      expect(result).to be_ok
+      expect(result.out).to eq(42)
+    end
+
+    it "hands the user their own value back for `done!`" do
+      klass = build_axn { expects :given, :done! }
+
+      expect(klass.send(:new, given: 1, done!: "an input value").done!).to eq("an input value")
     end
 
     # `expose` is the one helper whose loss the user cannot route around, so these check the routes

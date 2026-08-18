@@ -172,7 +172,9 @@ module Axn
     class ReservedAttributeError < ContractViolation
       # `owner:` names what already holds the name, when the caller knows it (see
       # Internal::NameOwnership). Without it the message can only say the name is unavailable, which
-      # leaves the author guessing at what they collided with.
+      # leaves the author guessing at what they collided with. `name` is then the READER the
+      # declaration would define, which may not be the wire key — that is what makes the `as:` advice
+      # below a real way out rather than a suggestion the guard refuses.
       def initialize(name, owner: nil)
         @name = name
         @owner = owner
@@ -182,9 +184,9 @@ module Axn
       def message
         return "Cannot call expects or exposes with reserved field name: #{@name}" if @owner.nil?
 
-        "Cannot declare a field named `#{@name}`: that name belongs to #{@owner}. A declared field's " \
-          "reader is defined on the action itself, so it would take the name over. Rename the field, or " \
-          "keep the wire key and rename only the reader with `as:`."
+        "Cannot declare a reader named `#{@name}`: that name belongs to #{@owner}. A field's reader is " \
+          "defined on the action itself, so declaring it would take the name over. Rename the field, or " \
+          "keep the wire key and rename only the reader, with `as:` (or `prefix:`)."
       end
     end
 
