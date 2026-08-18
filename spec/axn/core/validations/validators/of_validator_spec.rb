@@ -224,6 +224,42 @@ RSpec.describe Axn::Validators::OfValidator do
         build_axn { expects :items, type: Array, of: {} }
       end.to raise_error(ArgumentError, /must supply :klass/)
     end
+
+    it "rejects a nested of: inside the of: bag, which used to constrain nothing" do
+      expect do
+        build_axn { expects :matrix, type: Array, of: { klass: Array, of: Integer } }
+      end.to raise_error(ArgumentError, /of: does not support of:/)
+    end
+
+    it "rejects a nested shape: inside the of: bag" do
+      expect do
+        build_axn { expects :rows, type: Array, of: { klass: Hash, shape: { members: [] } } }
+      end.to raise_error(ArgumentError, /of: does not support shape:/)
+    end
+
+    it "rejects a misspelled message: rather than dropping the custom message" do
+      expect do
+        build_axn { expects :rows, type: Array, of: { klass: String, mesage: "nope" } }
+      end.to raise_error(ArgumentError, /of: does not support mesage:/)
+    end
+
+    it "names every unsupported key at once" do
+      expect do
+        build_axn { expects :rows, type: Array, of: { klass: String, wat: 1, huh: 2 } }
+      end.to raise_error(ArgumentError, /of: does not support wat:, huh:/)
+    end
+
+    it "still accepts the supported keys" do
+      expect do
+        build_axn { expects :rows, type: Array, of: { klass: String, message: "custom", allow_nil: true } }
+      end.not_to raise_error
+    end
+
+    it "leaves on: to the context-scope guard, which has the better message" do
+      expect do
+        build_axn { expects :rows, type: Array, of: { klass: String, on: :create } }
+      end.to raise_error(ArgumentError, /validation context/)
+    end
   end
 
   # ─── Works on exposes too ─────────────────────────────────────────────────────

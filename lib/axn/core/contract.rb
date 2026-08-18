@@ -1141,6 +1141,14 @@ module Axn
                                           if unless on message strict
                                         ]).freeze
 
+        # What an `of:` bag may carry. Everything else is refused rather than ignored: the bag reaches
+        # `OfValidator` as an EachValidator options hash, which reads the keys it knows and drops the rest —
+        # so an unrecognized key declares cleanly, constrains nothing, and every value passes.
+        #
+        # `on:` is admitted here and refused by `_reject_validator_context_scope!`, which names the actual
+        # problem (axn has no validation contexts) instead of reporting the key as unknown.
+        OF_OPTION_KEYS = (Set.new(%i[klass message]) | Axn::Validation::Base.shared_validation_option_keys).freeze
+
         # Types for which a shape block is meaningless — the block describes the members of a
         # structured value (Array elements, Hash keys, or a class's readers), not a scalar.
         SHAPE_INCOMPATIBLE_TYPES = [String, Integer, Float, Numeric, TrueClass, FalseClass, Symbol, NilClass,
@@ -2135,7 +2143,19 @@ module Axn
           declared_klasses = Array(validations.dig(:type, :klass))
           raise ArgumentError, "of: requires type: Array (got #{declared_klasses.inspect})" unless declared_klasses == [Array]
 
+          _reject_unknown_of_keys!(validations[:of], OF_OPTION_KEYS)
           raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
+        end
+
+        # Every offender at once: an author who wrote two of them has one declaration to fix, not two rounds
+        # of the same error.
+        def _reject_unknown_of_keys!(bag, allowed)
+          offenders = bag.keys.reject { |key| allowed.include?(key) }
+          return if offenders.empty?
+
+          raise ArgumentError,
+                "of: does not support #{offenders.map { |key| "#{key}:" }.join(', ')} " \
+                "(supported: #{allowed.to_a.map { |key| "#{key}:" }.join(', ')})"
         end
 
         # `on:` inside a validator's own option bag is ActiveModel's validation CONTEXT option, and axn has no
