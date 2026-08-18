@@ -237,6 +237,35 @@ RSpec.describe "reserved names for expectations" do
     end
   end
 
+  # The guard reads the action class's method table, and that class is the AUTHOR's. A metaprogramming base
+  # defining its own singleton `method_defined?`/`instance_method` would otherwise decide this verdict — and
+  # one answering "free" admits the declaration whose reader then replaces `Object#class`. A guard a caller
+  # can invert is not a guard.
+  it "is not answered by the action class's own singleton method-table methods" do
+    klass = Class.new do
+      include Axn
+      def self.method_defined?(*) = false
+      def self.private_method_defined?(*) = false
+      def self.instance_method(*) = raise("instance_method explodes")
+    end
+
+    expect { klass.class_eval { expects :class } }
+      .to raise_error(Axn::ContractViolation::ReservedAttributeError, /`class`/)
+  end
+
+  it "still admits a legal name on such a class, and reads the caller's value back" do
+    klass = Class.new do
+      include Axn
+      def self.method_defined?(*) = false
+      def self.instance_method(*) = raise("instance_method explodes")
+      expects :fine_name
+      exposes :out
+      def call = expose(out: fine_name)
+    end
+
+    expect(klass.call(fine_name: "value").out).to eq("value")
+  end
+
   it "names the owner in the message, and the rename that gets around it" do
     expect { build_axn { expects :class } }
       .to raise_error(Axn::ContractViolation::ReservedAttributeError, /Kernel.*`as:`/m)

@@ -226,6 +226,18 @@ RSpec.describe Axn::Internal::ActionState do
       expect(described_class.result_or_nil(action)).to be_a(Axn::Result)
     end
 
+    it "routes a CLASS target's log through that class on either path" do
+      logged = []
+      core_only_class = Class.new do
+        include Axn::Core
+        define_singleton_method(:log) { |message, **| logged << message }
+      end
+
+      described_class.log(core_only_class, "MSG")
+
+      expect(logged).to eq(["MSG"])
+    end
+
     it "reads the real result through a shadow on either path" do
       shadowed = Class.new do
         include Axn::Core

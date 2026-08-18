@@ -1111,7 +1111,9 @@ module Axn
           # an INFERRED reader is free too: it is not a declaration, so the explicit one takes the name
           # and the inferred reader yields (_inferred_reader?).
           existing = _reader_owners
-                     .select { |reader, _config| method_defined?(reader) && !_inferred_reader?(reader) }
+                     .select do |reader, _config|
+                       Internal::NativeMethods.declared_instance_method(self, reader) && !_inferred_reader?(reader)
+                     end
                      .transform_values(&:field)
           collisions = reader_names.filter_map { |field, reader| reader if existing.key?(reader) && existing[reader] != field }
           collisions |= reader_names.values.tally.select { |_, count| count > 1 }.keys
@@ -1833,7 +1835,10 @@ module Axn
         # leaves a debug-level breadcrumb so a surprising shadow is discoverable. Returns true when
         # the name is free (caller should define it), false when it's taken (already logged).
         def _reader_name_available?(name, kind:)
-          return true unless method_defined?(name) || private_method_defined?(name)
+          # Read natively here and in the two readers below: `self` is the author's own class, so a singleton
+          # `method_defined?`/`instance_method` of its own would otherwise answer a question these guards
+          # decide on, and one answering "free" is how a declaration slips past into a taken name.
+          return true unless Internal::NativeMethods.declared_instance_method(self, name)
 
           Axn.config.logger.debug { "[Axn] #{self.name || 'Action'}: skipping auto-generated #{kind} reader `#{name}` (already defined)" }
           false
@@ -1857,9 +1862,10 @@ module Axn
         # with one is never the explicit-vs-explicit conflict the collision guards raise on: the explicit
         # name wins and the inferred reader yields.
         def _inferred_reader?(name)
-          return false unless method_defined?(name) || private_method_defined?(name)
+          method = Internal::NativeMethods.declared_instance_method(self, name)
+          return false unless method
 
-          instance_method(name).owner.is_a?(InferredReaders)
+          Internal::Identity.kind?(method.owner, InferredReaders)
         end
 
         # Whether the method answering to `name` is a reader axn GENERATED on the class from a
@@ -1868,9 +1874,9 @@ module Axn
         # The owner must be a Class: every generated reader is defined onto the action class itself, while
         # axn's own sugar lives in MODULES that share the same source file.
         def _axn_generated_reader?(name)
-          return false unless method_defined?(name) || private_method_defined?(name)
+          method = Internal::NativeMethods.declared_instance_method(self, name)
+          return false unless method
 
-          method = instance_method(name)
           Axn::Internal::Identity.kind?(method.owner, ::Class) &&
             method.source_location&.first == GENERATED_READER_SOURCE_PATH
         end

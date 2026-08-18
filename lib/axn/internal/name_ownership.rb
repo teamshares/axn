@@ -53,11 +53,13 @@ module Axn
       # Private methods count: they are as shadowable as public ones (a generated reader lands in front
       # of either), and several of them — `internal_context`, `_build_context_facade` — are exactly the
       # ones whose loss would matter.
+      # Read natively: `klass` is the CALLER's action class, so a singleton `method_defined?` or
+      # `instance_method` of its own — a metaprogramming base is the realistic shape — would otherwise
+      # decide this guard's verdict, and one answering "free" admits the declaration whose reader then
+      # replaces `Object#class`. `declared_instance_method` is one bound lookup at any visibility, which is
+      # both questions the two predicates used to ask.
       def owner_of(klass, name)
-        name = name.to_sym
-        return nil unless klass.method_defined?(name) || klass.private_method_defined?(name)
-
-        klass.instance_method(name).owner
+        Axn::Internal::NativeMethods.declared_instance_method(klass, name.to_sym)&.owner
       end
 
       # What `klass` ITSELF contributes under `name` — its own ancestors up to (not including) Object,
@@ -68,7 +70,8 @@ module Axn
       # calls — for a collision that exists only in Kernel.
       def owner_within(klass, name)
         owner = owner_of(klass, name)
-        return nil if owner.nil? || !klass.ancestors.take_while { |mod| mod != ::Object }.include?(owner)
+        return nil if owner.nil?
+        return nil unless Axn::Internal::NativeMethods.module_ancestors(klass).take_while { |mod| mod != ::Object }.include?(owner)
 
         owner
       end

@@ -80,7 +80,7 @@ module Axn
       def log(target, message, **kwargs)
         return LOG.bind_call(target, message, **kwargs) if instance?(target)
         return target.log(message, **kwargs) if report_proxy?(target)
-        return target.log(message, **kwargs) if Identity.kind?(target, ::Module) && target < ::Axn
+        return target.log(message, **kwargs) if Identity.kind?(target, ::Module) && Axn::Internal::NativeMethods.includes_module?(target, ::Axn::Core)
 
         Axn.config.logger.send(kwargs.fetch(:level) { Axn.config.log_level }, message)
       end
