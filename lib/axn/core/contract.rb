@@ -1149,6 +1149,18 @@ module Axn
         # problem (axn has no validation contexts) instead of reporting the key as unknown.
         OF_OPTION_KEYS = (Set.new(%i[klass message]) | Axn::Validation::Base.shared_validation_option_keys).freeze
 
+        # The same set for the other container. A Hash's insides are two axes rather than one element position,
+        # so `klass:` has no reading here and is absent: which axis it named would be a convention rather than
+        # something the declaration says. `message:` is absent for the neighbouring reason — one message cannot
+        # say which axis failed, and a per-axis message needs the nested bag `_reject_nested_map_contract!`
+        # refuses — so a map's failures are described per axis by the validator itself.
+        MAP_OF_OPTION_KEYS = (Set.new(%i[keys values]) | Axn::Validation::Base.shared_validation_option_keys).freeze
+
+        # Both halves of "name an axis": a bare `of: Integer` names none of them, and a bag naming neither
+        # constrains nothing at all. One message, since the fix is the same one either way.
+        MAP_OF_REQUIRED_MESSAGE = "of: requires keys: and/or values: for a Hash — a Hash has two things inside it, " \
+                                  "so name the axis you are constraining"
+
         # Types for which a shape block is meaningless — the block describes the members of a
         # structured value (Array elements, Hash keys, or a class's readers), not a scalar.
         SHAPE_INCOMPATIBLE_TYPES = [String, Integer, Float, Numeric, TrueClass, FalseClass, Symbol, NilClass,
@@ -2125,13 +2137,13 @@ module Axn
         # `model:` at all — a reader-less member cannot resolve a record, so it is refused ahead of this rather
         # than expanded into a bag that would quietly type-check the element instead.
         #
-        # The `of:` pair below is the same seam deliberately, not a guard that happens to sit here: both read
-        # the bag the expansion just produced (`type:`'s klass list, `of:`'s own bag), so they are the checks
-        # canonicalizing MAKES possible, and splitting them from it is what let a member expand like a field
-        # and validate like nothing. Together they are one rule with two halves — the option only means
-        # something over an Array, and it must name what the elements are — and neither has any runtime
-        # counterpart to fall back on: `OfValidator` returns before it inspects a value that is not an Array,
-        # so `of:` beside `type: Hash` never applied at all, while `of: nil` reached `check_validity!` and
+        # The `of:` branch below is the same seam deliberately, not a guard that happens to sit here: it reads
+        # the bag the expansion just produced (`type:`'s klass list, `of:`'s own bag), so its checks are the
+        # ones canonicalizing MAKES possible, and splitting them from it is what let a member expand like a
+        # field and validate like nothing. They are one rule with two halves — the option only means something
+        # over a container, and it must name what is inside that container — and neither has any runtime
+        # counterpart to fall back on: `OfValidator` returns before it inspects a value of the wrong shape, so
+        # `of:` beside `type: String` never applies at all, while `of: nil` reached `check_validity!` and
         # raised on every call instead of at the author.
         def _canonicalize_validator_options!(validations, fields)
           validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
@@ -2139,12 +2151,102 @@ module Axn
           validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
           return unless validations.key?(:of)
 
-          validations[:of] = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
-          declared_klasses = Array(validations.dig(:type, :klass))
-          raise ArgumentError, "of: requires type: Array (got #{declared_klasses.inspect})" unless declared_klasses == [Array]
+          container = _of_container!(validations)
+          _drop_derived_of_container!(validations, container)
+          validations[:of] = container.equal?(::Hash) ? _canonical_map_of!(validations) : _canonical_array_of!(validations, fields)
+        end
 
-          _reject_unknown_of_keys!(validations[:of], OF_OPTION_KEYS)
-          raise ArgumentError, "of: must supply :klass" if validations[:of][:klass].nil?
+        # `of:` names what is INSIDE a container, so the declared type is what decides which grammar the bag is
+        # held to: an Array has elements, a Hash has keys and values. Derived here and stored in the bag, so the
+        # validator dispatches on what was DECLARED rather than on the value it is handed — a Hash arriving under
+        # `type: Array` is a type error, not a map.
+        #
+        # A union names no single container, which is the same situation `shape:` refuses for the same reason.
+        def _of_container!(validations)
+          declared = Array(validations.dig(:type, :klass))
+          container = declared.first if declared.size == 1
+          # Identity, not `==`: the declared class is the caller's, and one answering `==` for its own
+          # purposes would otherwise choose which grammar its bag is held to.
+          return container if container.equal?(::Array) || container.equal?(::Hash)
+
+          raise ArgumentError, "of: requires type: Array or Hash (got #{declared.inspect})"
+        end
+
+        # This seam runs over a shape MEMBER's bag twice — once as the member is built like a field
+        # (`_build_shape_member` → `_parse_field_configs`), and again as the declaration walk snapshots it
+        # (`ShapeDeclaration#_symbol_keyed_member_validations`), which is handed the very bag the first pass
+        # produced. `container:` is derived rather than declared, so without this the second pass reports axn's
+        # own key as one the grammar does not support and fails a well-formed declaration.
+        #
+        # Dropped rather than returned early on, so every check runs on every pass and nothing rides in on the
+        # second one. And dropped ONLY when it names the container just derived: a bag naming a DIFFERENT one
+        # did not come from here, so it falls through to the whitelist and is refused there. What that leaves is
+        # a hand-written `container:` agreeing with the declared `type:`, which nothing distinguishes from a
+        # derived one — so it is discarded and derived again, redundant rather than authoritative. Mutates
+        # `validations`.
+        def _drop_derived_of_container!(validations, container)
+          bag = Internal::ShapeGraph.hash_or_nil(validations[:of])
+          return if nil.equal?(bag)
+          return unless container.equal?(bag[:container])
+
+          validations[:of] = bag.except(:container)
+        end
+
+        # An Array holds one kind of thing, so the bare form says everything there is to say and expands into the
+        # bag `OfValidator` reads. It has to name that class: a bag without one reaches `check_validity!` and
+        # raises on every call rather than at the author who wrote it.
+        def _canonical_array_of!(validations, fields)
+          bag = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
+          _reject_unknown_of_keys!(bag, OF_OPTION_KEYS)
+          raise ArgumentError, "of: must supply :klass" if bag[:klass].nil?
+
+          bag.merge(container: ::Array)
+        end
+
+        # A Hash has two things inside it, so the bare form has no honest reading: `of: Integer` would have to
+        # pick an axis by convention, and which one it picked would not be visible in the declaration.
+        def _canonical_map_of!(validations)
+          bag = Internal::ShapeGraph.hash_or_nil(validations[:of])
+          raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if nil.equal?(bag)
+
+          _reject_unknown_of_keys!(bag, MAP_OF_OPTION_KEYS)
+          raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if bag[:keys].nil? && bag[:values].nil?
+
+          _reject_nested_map_contract!(bag)
+          _reject_map_beside_shape!(validations)
+          bag.merge(container: ::Hash)
+        end
+
+        # An axis takes the same forms `type:` does — a class, a union of them, a `:boolean`/`:uuid`/`:params`
+        # symbol — and not a contract of its own. Refused as "not supported yet" rather than as meaningless,
+        # because it is the spelling a nested contract will take.
+        def _reject_nested_map_contract!(bag)
+          %i[keys values].each do |axis|
+            next unless _names_nested_contract?(bag[axis])
+
+            raise ArgumentError, "of: #{axis}: takes a type, not a nested contract — that is not supported yet"
+          end
+        end
+
+        # A bag of its own, or a union carrying one. The bare spelling is answered BEFORE the union is
+        # unwrapped, because `Array()` reaches a Hash as its entry pairs rather than as the Hash itself — which
+        # reads as a union of two-element arrays and nothing nested at all. Classified through
+        # `ShapeGraph.hash_or_nil` rather than `is_a?`: the value is the caller's, and a Hash subclass denying
+        # its own class would otherwise decide the verdict.
+        def _names_nested_contract?(declared)
+          return true unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
+
+          Array(declared).any? { |entry| !nil.equal?(Internal::ShapeGraph.hash_or_nil(entry)) }
+        end
+
+        # `shape:` names a Hash's own members and `of:` names its values, so the two describe different nodes and
+        # are complements rather than rivals. Refused as "not supported yet" so granting the combination later
+        # contradicts nothing already released.
+        def _reject_map_beside_shape!(validations)
+          return if nil.equal?(Internal::ShapeGraph.hash_or_nil(validations[:shape]))
+
+          raise ArgumentError, "of: beside shape: on a Hash is not supported yet — shape: names the hash's own " \
+                               "members while of: names its values"
         end
 
         # Every offender at once: an author who wrote two of them has one declaration to fix, not two rounds

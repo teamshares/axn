@@ -201,22 +201,22 @@ RSpec.describe Axn::Validators::OfValidator do
   # ─── Declaration-time guards ──────────────────────────────────────────────────
 
   describe "declaration-time validation" do
-    it "raises ArgumentError when of: is used without type: Array" do
+    it "raises ArgumentError when of: is used with a type: that is no container at all" do
       expect do
         build_axn { expects :items, type: String, of: String }
-      end.to raise_error(ArgumentError, /of: requires type: Array/)
+      end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [String])")
     end
 
     it "raises ArgumentError when type: is a union containing Array" do
       expect do
         build_axn { expects :items, type: [Array, String], of: String }
-      end.to raise_error(ArgumentError, /of: requires type: Array/)
+      end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [Array, String])")
     end
 
     it "raises ArgumentError when of: is used without any type:" do
       expect do
         build_axn { expects :items, of: String }
-      end.to raise_error(ArgumentError, /of: requires type: Array/)
+      end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
     end
 
     it "raises ArgumentError when of: is a hash with no :klass key" do
@@ -259,6 +259,151 @@ RSpec.describe Axn::Validators::OfValidator do
       expect do
         build_axn { expects :rows, type: Array, of: { klass: String, on: :create } }
       end.to raise_error(ArgumentError, /validation context/)
+    end
+  end
+
+  # ─── Hash containers (maps) ───────────────────────────────────────────────────
+
+  describe "Hash containers (maps)" do
+    it "accepts keys: and values:" do
+      expect { build_axn { expects :counts, type: Hash, of: { keys: Symbol, values: Integer } } }.not_to raise_error
+    end
+
+    it "accepts values: alone — an unconstrained key axis is said by omitting it" do
+      expect { build_axn { expects :counts, type: Hash, of: { values: Integer } } }.not_to raise_error
+    end
+
+    it "accepts keys: alone" do
+      expect { build_axn { expects :counts, type: Hash, of: { keys: Symbol } } }.not_to raise_error
+    end
+
+    it "accepts a union on either axis" do
+      expect { build_axn { expects :counts, type: Hash, of: { keys: [String, Symbol], values: [String, Integer] } } }
+        .not_to raise_error
+    end
+
+    it "rejects the bare form, which does not say which axis it constrains" do
+      expect { build_axn { expects :counts, type: Hash, of: Integer } }
+        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+    end
+
+    it "rejects klass:, pointing at values:" do
+      expect { build_axn { expects :counts, type: Hash, of: { klass: Integer } } }
+        .to raise_error(ArgumentError, /of: does not support klass:/)
+    end
+
+    it "rejects a bag that constrains nothing" do
+      expect { build_axn { expects :counts, type: Hash, of: {} } }
+        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+    end
+
+    it "rejects message:, which cannot say which axis failed" do
+      expect { build_axn { expects :counts, type: Hash, of: { values: Integer, message: "nope" } } }
+        .to raise_error(ArgumentError, /of: does not support message:/)
+    end
+
+    it "rejects a nested contract on an axis as not yet supported" do
+      expect { build_axn { expects :counts, type: Hash, of: { values: { klass: Integer } } } }
+        .to raise_error(ArgumentError, /not supported yet/)
+    end
+
+    it "rejects a nested contract inside a union on an axis" do
+      expect { build_axn { expects :counts, type: Hash, of: { values: [String, { klass: Integer }] } } }
+        .to raise_error(ArgumentError, /not supported yet/)
+    end
+
+    it "rejects of: beside shape: on a Hash as not yet supported" do
+      expect do
+        build_axn do
+          expects :counts, type: Hash, of: { values: Integer }, shape: { members: [] }
+        end
+      end.to raise_error(ArgumentError, /not supported yet/)
+    end
+
+    it "rejects values: on an Array, pointing at klass:" do
+      expect { build_axn { expects :ids, type: Array, of: { values: Integer } } }
+        .to raise_error(ArgumentError, /of: does not support values:/)
+    end
+
+    it "rejects a union type:, from which no container can be derived" do
+      expect { build_axn { expects :counts, type: [Array, Hash], of: { values: Integer } } }
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [Array, Hash])")
+    end
+
+    it "rejects of: with no type: at all" do
+      expect { build_axn { expects :counts, of: { values: Integer } } }
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
+    end
+
+    it "holds a shape member's bag to the same rules, since both pass through one seam" do
+      expect do
+        build_axn do
+          expects :order, type: Hash do
+            field :counts, type: Hash, of: { klass: Integer }
+          end
+        end
+      end.to raise_error(ArgumentError, /of: does not support klass:/)
+    end
+  end
+
+  # ─── The derived container ────────────────────────────────────────────────────
+
+  describe "the container the canonical bag carries" do
+    def of_bag(klass, field) = klass.internal_field_configs.find { |config| config.field == field }.validations[:of]
+
+    def member_of_bag(klass, member)
+      klass.internal_field_configs.first.validations[:shape][:members].find { |m| m.field == member }.validations[:of]
+    end
+
+    it "records Array for an Array field, beside the element class" do
+      bag = of_bag(build_axn { expects :ids, type: Array, of: Integer }, :ids)
+
+      expect(bag[:container]).to eq(Array)
+      expect(bag[:klass]).to eq(Integer)
+    end
+
+    it "records Hash for a map field, beside the axes" do
+      bag = of_bag(build_axn { expects :counts, type: Hash, of: { keys: Symbol, values: Integer } }, :counts)
+
+      expect(bag[:container]).to eq(Hash)
+      expect(bag[:keys]).to eq(Symbol)
+      expect(bag[:values]).to eq(Integer)
+      expect(bag).not_to have_key(:klass)
+    end
+
+    # A shape member's bag reaches the canonicalization seam TWICE — once as the member is built like a field
+    # (`_parse_field_configs`), and again as the declaration walk snapshots it
+    # (`_symbol_keyed_member_validations`), which is handed the very bag the first pass produced. The derived
+    # `container:` is a key no caller may write, so a second pass that did not account for it would report axn's
+    # own key as unsupported and fail a declaration that is perfectly well-formed.
+    it "canonicalizes a shape member's bag idempotently, though the seam runs over it twice" do
+      klass = nil
+      expect do
+        klass = build_axn do
+          expects :order, type: Hash do
+            field :ids, type: Array, of: Integer
+            field :counts, type: Hash, of: { values: Integer }
+          end
+        end
+      end.not_to raise_error
+
+      expect(member_of_bag(klass, :ids)[:container]).to eq(Array)
+      expect(member_of_bag(klass, :counts)[:container]).to eq(Hash)
+    end
+
+    it "refuses a container: naming something other than the declared type:" do
+      expect { build_axn { expects :ids, type: Array, of: { klass: Integer, container: Hash } } }
+        .to raise_error(ArgumentError, /of: does not support container:/)
+    end
+
+    # The other half of the same rule: the container is DERIVED, so one written out by hand is dropped and
+    # derived again rather than believed. Redundant rather than refused — the declaration means exactly what
+    # it would without the key — because nothing distinguishes it from the key axn itself derived.
+    it "derives the container over a hand-written one that agrees with the declared type:" do
+      bag = of_bag(build_axn { expects :ids, type: Array, of: { klass: Integer, container: Array } }, :ids)
+
+      expect(bag[:container]).to eq(Array)
+      expect(bag[:klass]).to eq(Integer)
     end
   end
 

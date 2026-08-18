@@ -710,19 +710,19 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
 
       # Expanding a shorthand is only half of what canonicalizing a bag is for: the compatibility guards that
       # read the canonical bag live in the same seam, so a member is held to exactly what a field is held to.
-      # `of:` beside a non-Array `type:` is the case with no runtime signal at all — `OfValidator` returns
-      # before it inspects anything that is not an Array, so on a value the declared `type:` accepts the
-      # element constraint simply never applies. It declared cleanly and every call succeeded.
-      it "rejects `of:` beside a non-Array `type:` at declaration, with the field path's own message" do
-        expect { declared_with({ type: Hash, of: String }) }
-          .to raise_error(ArgumentError, "of: requires type: Array (got [Hash])")
+      # `of:` beside a `type:` naming no container is the case with no runtime signal at all — `OfValidator`
+      # returns before it inspects anything that is not a container, so on a value the declared `type:` accepts
+      # the constraint simply never applies. It declared cleanly and every call succeeded.
+      it "rejects `of:` beside a `type:` that is neither Array nor Hash, with the field path's own message" do
+        expect { declared_with({ type: String, of: String }) }
+          .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [String])")
       end
 
-      # Same guard, the other spelling of the same mistake: with no `type:` at all the element check applies to
-      # an Array and to nothing else, so the member accepted every non-Array value it was declared to constrain.
+      # Same guard, the other spelling of the same mistake: with no `type:` at all there is no container to read
+      # the constraint against, so the member accepted every value it was declared to constrain.
       it "rejects a bare `of:` with no `type:`, as the field path does" do
         expect { declared_with({ of: String }) }
-          .to raise_error(ArgumentError, "of: requires type: Array (got [])")
+          .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
       end
 
       # The required-option half of the same pair, reached through the expansion (`of: nil` expands to
