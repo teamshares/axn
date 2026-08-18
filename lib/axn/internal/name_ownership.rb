@@ -65,12 +65,14 @@ module Axn
 
         # A deferral shim is axn's own bookkeeping: it holds a wrapper around a method some ancestor of the
         # user's declares, so the honest answer to "whose name is this?" is that ancestor's. Named as-is, the
-        # anonymous shim sends an author to axn's source for a collision with their own base class. Only the
-        # shim resolves through the record — a definition the class makes itself sits in front of the shim and
-        # is the collision to report.
-        return owner unless Axn::Internal::Identity.same?(owner, Axn::Core::InstanceDeferral.shim(klass))
+        # anonymous shim sends an author to axn's source for a collision with their own base class. The record
+        # is read from the ancestry because the class declaring the field is often a subclass of the one that
+        # included Axn, and only the shim resolves through it — a definition the class makes itself sits in
+        # front of the shim and is the collision to report.
+        record = Axn::Core::InstanceDeferral.nearest_record(klass)
+        return owner unless record && Axn::Internal::Identity.same?(owner, record[:shim])
 
-        Axn::Core::InstanceDeferral.definers(klass).fetch(name, owner)
+        record[:definers].fetch(name, owner)
       end
 
       # What `klass` ITSELF contributes under `name` — its own ancestors up to (not including) Object,

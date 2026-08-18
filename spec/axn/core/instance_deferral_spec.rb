@@ -75,6 +75,19 @@ RSpec.describe Axn::Core::InstanceDeferral do
     expect(described_class.definers(child)).to be_empty
   end
 
+  # `shim` and `definers` answer for the class's OWN record, and a subclass has none: `install` runs on the class
+  # that includes Axn. A caller that CHANGES a record depends on exactly that, since editing an ancestor's shim
+  # would strip the helper from every class beneath it. `nearest_record` is the read that walks instead.
+  it "records nothing on a subclass of a class that did defer" do
+    parent_action = Class.new(parent) { include Axn }
+    child = Class.new(parent_action)
+
+    expect(described_class.definers(child)).to be_empty
+    expect(described_class.shim(child)).to be_nil
+    expect(described_class.nearest_record(child)).to eq(described_class.nearest_record(parent_action))
+    expect(described_class.nearest_record(child)[:definers]).to eq(log: parent, info: parent)
+  end
+
   it "runs the action end to end with a deferred logging helper" do
     action = Class.new(parent) do
       include Axn
@@ -156,6 +169,16 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect { action.class_eval { expects :log } }.to raise_error(Axn::ContractViolation::ReservedAttributeError) do |error|
         expect(error.message).not_to include("instance_deferral")
       end
+    end
+
+    # One base class includes Axn and the per-action subclasses declare the fields, which is the common shape.
+    # The subclass inherits the shim without owning a record, so the message has to come from the ancestor's.
+    it "names the base class for a subclass of the action that deferred" do
+      action = Class.new(Class.new(named_parent) { include Axn })
+
+      expect { action.class_eval { expects :log } }.to raise_error(
+        Axn::ContractViolation::ReservedAttributeError, /ApplicationService/
+      )
     end
 
     it "still surrenders a name axn owns outright" do

@@ -47,6 +47,23 @@ module Axn
 
       def self.shim(klass) = _state(klass)&.fetch(:shim)
 
+      # The nearest `{shim:, definers:}` in `klass`'s ancestry, or nil, for a caller that only ASKS who a name
+      # belongs to. `install` runs on the class that includes Axn, so a subclass of an action inherits the shim in
+      # its ancestry while owning no record — asked about its own record alone, it would report the anonymous shim
+      # as the owner of a name its base class actually declares.
+      #
+      # Kept apart from `shim`/`definers` rather than folded into them, because those two are what a caller that
+      # MUTATES a record must use: removing a wrapper from an ancestor's shim, or dropping a name from its map,
+      # would take the helper away from that ancestor and from every other class beneath it. Own record to change,
+      # nearest record to read.
+      def self.nearest_record(klass)
+        Axn::Internal::NativeMethods.module_ancestors(klass).each do |mod|
+          state = _state(mod)
+          return state unless state.nil?
+        end
+        nil
+      end
+
       def self._state(klass) = KERNEL_IVAR_GET.bind_call(klass, DEFERRALS_IVAR)
       private_class_method :_state
 
