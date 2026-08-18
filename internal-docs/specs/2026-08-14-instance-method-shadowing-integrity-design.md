@@ -11,7 +11,7 @@ The ticket framed this as ~19 injected names. The probe found the surface is not
 Three defects share the root:
 
 1. Internals dispatch through public, user-shadowable instance names — `result`, `internal_context`, `log`, `warn`, `execution_context`, `ambient_context`, `inputs`, `expose`.
-2. `RESERVED_FIELD_NAMES_FOR_EXPECTATIONS` / `_FOR_EXPOSURES` (`contract.rb:1029-1053`) are hand-maintained, and guard only field declarations — a bare `def` is unguarded. Both lists are simultaneously too narrow (real holes below) and too wide (seven entries name methods that do not exist).
+2. `RESERVED_FIELD_NAMES_FOR_EXPECTATIONS` / `_FOR_EXPOSURES` (`contract.rb:1029-1053`) are hand-maintained, and guard only field declarations — a bare `def` is unguarded. Both lists are simultaneously too narrow (real holes below) and too wide — though only four of the seven flagged exposure entries are genuinely free names; the other three guard collisions that ownership alone can't see (below).
 3. `class_attribute` without `instance_accessor: false` leaks a further 18 unprefixed public instance methods that neither list mentions.
 
 ## What the probe found
@@ -36,7 +36,7 @@ exposes :class        → result.class returns the exposure; the Result cannot r
 
 `expects :call` is the worst of these: the action reports **success** for code that never executed.
 
-The lists are stale in both directions. `Axn::Result`'s real public API is exactly `__action__ __exposed_keys__ declared_fields deconstruct_keys elapsed_time error exception fail! finalized? message ok? outcome success`. Against that, `RESERVED_FIELD_NAMES_FOR_EXPOSURES` reserves seven names Result does not answer to at all (`each_pair`, `ok`, `result`, `standalone`, `inputs`, `ambient_context`, `default_error`) while leaving `declared_fields` and `deconstruct_keys` — both load-bearing — unguarded.
+The lists are stale, but not the way they first look. `Axn::Result`'s real public API is exactly `__action__ __exposed_keys__ declared_fields deconstruct_keys elapsed_time error exception fail! finalized? message ok? outcome success`. Against that method table, `RESERVED_FIELD_NAMES_FOR_EXPOSURES` reserves seven names (`each_pair`, `ok`, `result`, `standalone`, `inputs`, `ambient_context`, `default_error`) while leaving `declared_fields` and `deconstruct_keys` — both load-bearing — unguarded. Only four of the seven — `each_pair`, `result`, `inputs`, `ambient_context` — are genuinely free: no method, and nothing else in the contract answers to them either. The other three guard collisions a method-table check can't see at all: `ok` is a key `deconstruct_keys` itself emits (not a method), `standalone` is a control kwarg `fail!`/`done!` read ahead of exposures, and `default_error` is owned by the inbound facade — a second receiver an exposed field is also implicitly readable through. A guard derived purely from `Method#owner` would have wrongly lifted all three; the actual guard also has to read the emitted key set and `.parameters`, not just the method table.
 
 The user-facing helpers cannot be wrapped today. `delegate :log, *LEVELS, to: :class` runs inside `class_eval`, so `log` is owned by the user's own class; `def log(msg) = super(...)` raises `super: no superclass method 'log'`, and that `NoMethodError` is itself swallowed into the exception-report side channel. Every other injected name is module-owned; only the six logging names have this problem.
 
@@ -108,7 +108,7 @@ What replaces them is an enumeration of *modules*, not of names, and that is wha
 
 Distinguishing a user's `def` from an earlier declaration's reader (both owned by the class) uses the existing `_reader_owners` map; a duplicate declaration keeps reporting the clearer `DuplicateFieldError` it reports today.
 
-**Exposures**, judged against `Axn::Result`: no sugar tier exists there, so any name Result answers to raises. This closes `declared_fields`, `deconstruct_keys`, `hash` and `class`, and lifts the seven stale restrictions.
+**Exposures**, judged against `Axn::Result`: no sugar tier exists there, so any name Result answers to raises. This closes `declared_fields`, `deconstruct_keys`, `hash` and `class`, and lifts four of the seven stale restrictions — `each_pair`, `result`, `inputs`, `ambient_context`. The other three (`ok`, `standalone`, `default_error`) stay reserved: ownership alone can't see them, so the guard also has to check the key set `deconstruct_keys` builds and the control kwargs `fail!`/`done!`'s `.parameters` declare, and to ask the inbound facade as a second receiver.
 
 Errors are `ContractViolation::ReservedAttributeError` as today, with a message naming the colliding owner and how to fix it (rename the field, or use `as:` to rename only the reader).
 
@@ -129,7 +129,7 @@ The grid is *declaration form* × *shadowed name*, asserting on the observable o
 - `call`, `_run` × both forms → raises at declaration naming the collision
 - `Object`/`Kernel`-owned names (`class`, `hash`, `send`, `inspect`) × both surfaces → raises at declaration; specifically, `expects :class` no longer produces `SystemStackError`
 - `Axn::Result`'s full public API × `exposes` → raises at declaration; `declared_fields`, `deconstruct_keys`, `hash`, `class` are regression cases with a named ticket reference
-- the seven lifted names × `exposes` → declare and read cleanly
+- the four genuinely-liftable names (`each_pair`, `result`, `inputs`, `ambient_context`) × `exposes` → declare and read cleanly; `ok`, `standalone`, `default_error` stay reserved as non-method collisions
 - no internal `NoMethodError` reaches a side channel in any of the above — asserted against the `on_ignored_exception` seam from PRO-3139, so a swallowed internal error fails the test rather than printing a warning
 
 ## Out of scope
