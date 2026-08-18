@@ -59,7 +59,18 @@ module Axn
       # replaces `Object#class`. `declared_instance_method` is one bound lookup at any visibility, which is
       # both questions the two predicates used to ask.
       def owner_of(klass, name)
-        Axn::Internal::NativeMethods.declared_instance_method(klass, name.to_sym)&.owner
+        name = name.to_sym
+        owner = Axn::Internal::NativeMethods.declared_instance_method(klass, name)&.owner
+        return nil if owner.nil?
+
+        # A deferral shim is axn's own bookkeeping: it holds a wrapper around a method some ancestor of the
+        # user's declares, so the honest answer to "whose name is this?" is that ancestor's. Named as-is, the
+        # anonymous shim sends an author to axn's source for a collision with their own base class. Only the
+        # shim resolves through the record — a definition the class makes itself sits in front of the shim and
+        # is the collision to report.
+        return owner unless Axn::Internal::Identity.same?(owner, Axn::Core::InstanceDeferral.shim(klass))
+
+        Axn::Core::InstanceDeferral.definers(klass).fetch(name, owner)
       end
 
       # What `klass` ITSELF contributes under `name` — its own ancestors up to (not including) Object,

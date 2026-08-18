@@ -133,4 +133,39 @@ RSpec.describe Axn::Core::InstanceDeferral do
     # An external dispatch is what public MEANS here; a private or protected wrapper would raise NoMethodError.
     expect(action.send(:new).log("x")).to eq("PARENT-LOG(x)")
   end
+
+  describe "a declaration that collides with a deferred name" do
+    let(:named_parent) do
+      stub_const("ApplicationService", Class.new { def log(*) = "PARENT" })
+      ApplicationService
+    end
+
+    it "raises naming the class that owns it, not an anonymous module" do
+      action = Class.new(named_parent) { include Axn }
+
+      expect { action.class_eval { expects :log } }.to raise_error(
+        Axn::ContractViolation::ReservedAttributeError, /ApplicationService/
+      )
+    end
+
+    # The wrapper the shim holds is defined in axn's own source, so an owner left unresolved reports a path
+    # inside axn for a collision between the author's base class and the field they declared.
+    it "does not name axn's own source file" do
+      action = Class.new(named_parent) { include Axn }
+
+      expect { action.class_eval { expects :log } }.to raise_error(Axn::ContractViolation::ReservedAttributeError) do |error|
+        expect(error.message).not_to include("instance_deferral")
+      end
+    end
+
+    it "still surrenders a name axn owns outright" do
+      action = Class.new(named_parent) do
+        include Axn
+        expects :info
+        def call = nil
+      end
+
+      expect(action.call(info: "x")).to be_ok
+    end
+  end
 end

@@ -70,4 +70,32 @@ RSpec.describe Axn::Internal::NameOwnership do
       expect(described_class.describe(:unsurrenderable)).to include("axn itself")
     end
   end
+
+  describe ".owner_of with a deferral shim in the chain" do
+    it "reports the module the shim stands for" do
+      parent = Class.new { def log(*) = nil }
+      action = Class.new(parent) { include Axn }
+
+      expect(described_class.owner_of(action, :log)).to eq(parent)
+    end
+
+    it "reports the shim's own owner for a name it does not stand for" do
+      parent = Class.new { def log(*) = nil }
+      action = Class.new(parent) { include Axn }
+
+      expect(described_class.owner_of(action, :info)).to eq(Axn::Core::Logging::InstanceMethods)
+    end
+
+    # The record answers for the shim only. A definition the class makes itself sits in front of the shim and is
+    # the collision an author has to hear about, so it must not be traded for the definer standing behind it.
+    it "reports the class's own definition ahead of the definer it deferred to" do
+      parent = Class.new { def log(*) = nil }
+      action = Class.new(parent) do
+        include Axn
+        def log(*) = nil
+      end
+
+      expect(described_class.owner_of(action, :log)).to eq(action)
+    end
+  end
 end
