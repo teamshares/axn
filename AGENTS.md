@@ -181,6 +181,12 @@ The rules it backs:
   - `Internal::NativeMethods.declared_instance_method(mod, name)` — bound `Module#instance_method`,
     any visibility, nil on `NameError`. One call replaces a `method_defined? ||
     private_method_defined?` pair AND the follow-up `instance_method(name)`.
+  - `Internal::NativeMethods.declares_own_instance_method?(mod, name)` — the module's OWN table, which
+    is a different question from `declared_instance_method(...)&.owner == mod`. Effective lookup answers
+    what a call would REACH, and a PREPENDED module changes that: a class defining `#call` that also
+    prepends a module defining `#call` resolves to the prepend, so an owner comparison calls the class's
+    own definition absent while it sits in its own table waiting to be overwritten. A guard deciding
+    whether it may DEFINE a name wants the table; one asking what a dispatch reaches wants the lookup.
   - `Internal::NativeMethods.public_instance_method?(mod, name)` — when the question is "could a
     consumer dispatch this?" rather than "does the module declare it?"
   - `Internal::NativeMethods.module_ancestors`, `.includes_module?`, `.module_singleton_class` — the
@@ -193,6 +199,14 @@ The rules it backs:
     (`spec/axn/standalone_require_spec.rb` catches it).
   - `Internal::Identity.kind?` instead of `is_a?`, and `Internal::Identity.same?` instead of `==`
     when comparing modules — a `Module#==` of the class's own is as overridable as the rest.
+- A class or module NAME is the exception to all of the above: read it by DISPATCH. Axn installs a `name`
+  of its own on the classes it builds (`Mountable::Helpers::ClassBuilder#configure_class_name`,
+  `Strategies::Form.resolve_type`), so on an action class or a mounted axn a bound `Module#name`/`#to_s`
+  answers `#<Class:0x…>::Axns::Inner` where axn intends `AnonymousClient_2980::Axns::Inner` — the
+  override is axn's naming mechanism, not a caller's lie, and binding it substitutes an object address
+  for prose. Reach for `Rendering.module_name` only where the receiver is a class axn never renames: a
+  caller's exception class, a config source module. Keep the `|| "Action"` fallbacks — a bound read
+  replaces them too, and an anonymous action class is the common case in tests.
 - Every declared name written into prose routes through `PropertyNames`'s renderers — never render a
   name by running the name's own code — and a name is canonicalized exactly once per verdict, never
   re-canonicalized inside a nested check.

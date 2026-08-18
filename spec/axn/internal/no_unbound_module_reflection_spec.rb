@@ -78,8 +78,9 @@ RSpec.describe "unbound reflection on a caller-supplied module" do
     expect(offenders).to be_empty, <<~MSG
       A guard or error path must not ask a caller-supplied class about its own method table — a class
       that answers wrongly inverts the verdict. Read it through Axn::Internal::NativeMethods instead
-      (`declared_instance_method`, `public_instance_method?`, `module_ancestors`, `includes_module?`,
-      `module_singleton_class`), after establishing the receiver IS a Module via `Identity.kind?`.
+      (`declared_instance_method`, `declares_own_instance_method?`, `public_instance_method?`,
+      `module_ancestors`, `includes_module?`, `module_singleton_class`), after establishing the receiver
+      IS a Module via `Identity.kind?`.
       Offending lines:
 
       #{offenders.join("\n")}

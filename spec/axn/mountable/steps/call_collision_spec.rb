@@ -125,6 +125,28 @@ RSpec.describe "Steps + custom #call collision" do
     end.to raise_error(ArgumentError, /steps and a custom #call/i)
   end
 
+  it "raises when the class defines #call and ALSO prepends a module defining #call" do
+    # Effective lookup is the wrong question here. A prepended `#call` sits ahead of the class's own, so
+    # resolving the name reports the prepend as owner and the author's `def call` looks absent — while it
+    # is still right there in the class's own method table, waiting to be overwritten.
+    wrapper = Module.new do
+      def call
+        @wrapped = true
+        super
+      end
+    end
+    step_child = child
+    prepended = wrapper
+
+    expect do
+      build_axn do
+        prepend prepended
+        def call = :USERS_OWN
+        step "a", step_child
+      end
+    end.to raise_error(ArgumentError, /steps and a custom #call/i)
+  end
+
   it "installs the guard even when the singleton class declines to prepend" do
     # The install is the guard itself, so a `prepend` that quietly declines leaves the reverse
     # declaration order unguarded — a later `def call` would replace the generated orchestrator with

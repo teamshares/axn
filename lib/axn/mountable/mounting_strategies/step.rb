@@ -158,17 +158,18 @@ module Axn
           )
         end
 
-        # Whether `target` itself declares `#call`, at any visibility — read out of the method table rather
-        # than asked of the class, since a class that answers the reflection wrongly would otherwise have the
-        # generated orchestrator silently replace the `#call` its author wrote. `owner` is compared by identity
-        # (`Module#==` is as overridable as the rest), and an inherited or prepended `#call` is correctly NOT a
-        # collision: it is the same answer the `instance_methods(false)` pair gave, from a lookup that cannot
-        # be misreported.
+        # Whether `target` itself declares `#call`, at any visibility — read out of its OWN method table
+        # rather than asked of the class, since a class that answers the reflection wrongly would otherwise
+        # have the generated orchestrator silently replace the `#call` its author wrote.
+        #
+        # The own table, not effective lookup: a class that defines `#call` AND prepends a module defining
+        # `#call` resolves the name to the prepend, so an owner comparison would call the author's own
+        # definition absent and overwrite it. An inherited or purely-prepended `#call` is correctly not a
+        # collision — the same answer the unbound `instance_methods(false)` pair gave.
         def _declares_own_call?(target)
           return false unless ::Axn::Internal::Identity.kind?(target, ::Module)
 
-          owner = ::Axn::Internal::NativeMethods.declared_instance_method(target, :call)&.owner
-          ::Axn::Internal::Identity.same?(owner, target)
+          ::Axn::Internal::NativeMethods.declares_own_instance_method?(target, :call)
         end
       end
     end

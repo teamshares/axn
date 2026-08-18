@@ -14,10 +14,7 @@ module Axn
       # includes any module patched onto Object, and one of those defining its own `self.name` would get
       # that code run during `include Axn` — a raise there takes the include down.
       KERNEL_SINGLETON_CLASS = ::Kernel.instance_method(:singleton_class)
-      MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
-      MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
-      private_constant :KERNEL_SINGLETON_CLASS, :MODULE_INSTANCE_METHODS,
-                       :MODULE_PRIVATE_INSTANCE_METHODS
+      private_constant :KERNEL_SINGLETON_CLASS
 
       module_function
 
@@ -29,8 +26,7 @@ module Axn
         ancestry.any? do |mod|
           next false if _axn_core_owned?(mod)
 
-          MODULE_INSTANCE_METHODS.bind_call(mod, false).include?(name) ||
-            MODULE_PRIVATE_INSTANCE_METHODS.bind_call(mod, false).include?(name)
+          Axn::Internal::NativeMethods.declares_own_instance_method?(mod, name)
         end
       end
 

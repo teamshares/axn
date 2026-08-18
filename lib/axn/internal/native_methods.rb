@@ -189,6 +189,23 @@ module Axn
       # also true for `mod == other`, matching `ancestors`' own inclusion of the receiver).
       def self.includes_module?(mod, other) = module_ancestors(mod).include?(other)
 
+      # Whether `mod`'s OWN method table declares `name`, at any visibility — read natively, and
+      # deliberately NOT the same question as `declared_instance_method(mod, name)&.owner == mod`.
+      #
+      # Effective lookup answers what a call would REACH, which a PREPENDED module changes: a class that
+      # defines `#call` and also prepends a module defining `#call` resolves the name to the prepend, so an
+      # owner comparison reports the class's own definition absent while it sits in the class's own table,
+      # ready to be overwritten by a generator that concluded the name was free. A declaration guard
+      # deciding whether it may DEFINE a name wants the table; a caller asking what a dispatch will reach
+      # wants the lookup.
+      #
+      # Both visibilities, because `instance_methods(false)` omits a `private def` — which shadows just as
+      # completely as a public one. Same Module precondition as the readers above.
+      def self.declares_own_instance_method?(mod, name)
+        MODULE_INSTANCE_METHODS.bind_call(mod, false).include?(name) ||
+          MODULE_PRIVATE_INSTANCE_METHODS.bind_call(mod, false).include?(name)
+      end
+
       # A module's CONSTANT PATH, or nil when it is anonymous — read natively, because `Module#name` is
       # overridable like the rest and one that raises replaces the message being composed. Distinct from
       # `Rendering.module_name`, which binds `to_s` and so always answers with something: this preserves
