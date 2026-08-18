@@ -122,12 +122,20 @@ module Axn
       # Proxy action for discarded/dead job reporting that mimics an Axn action instance.
       # Provides the interface expected by on_exception handlers.
       class DiscardedJobAction
+        # Marked so `Internal::ActionState` reads this proxy rather than treating it as a foreign
+        # object: axn's own report path funnels through there, and without the marker a discarded job's
+        # report loses both this class's warning level and its prefix, and falls back to the raw
+        # exception instead of `DiscardedJobResult#error`.
+        include Axn::Internal::ActionState::ReportProxy
+
         def initialize(action_class, exception)
           @action_class = action_class
           @exception = exception
         end
 
-        def log(message)
+        # Tolerates the kwargs the funnel forwards (`level:` and friends); the level is this proxy's
+        # own call, since a discarded job is a warning whatever the caller's default is.
+        def log(message, **)
           Axn.config.logger.warn("[Axn::DiscardedJob] #{message}")
         end
 

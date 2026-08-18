@@ -167,4 +167,37 @@ RSpec.describe Axn::Internal::ActionState do
       expect(described_class.result_or_nil(impostor)).to be_nil
     end
   end
+  describe ".report_proxy? / proxy handling" do
+    let(:proxy) { Axn::Async::ExceptionReporting::DiscardedJobAction.new(build_axn {}, RuntimeError.new("boom")) }
+
+    it "recognises a proxy axn built in place of an instance" do
+      expect(described_class.report_proxy?(proxy)).to be true
+      expect(described_class.instance?(proxy)).to be false
+    end
+
+    it "reads the proxy's own result rather than reporting none" do
+      expect(described_class.result_or_nil(proxy).error).to eq("boom")
+    end
+
+    it "routes the proxy's log through the proxy, keeping its level and prefix" do
+      lines = []
+      allow(Axn.config.logger).to receive(:warn) { |message| lines << message }
+
+      described_class.log(proxy, "MSG")
+
+      expect(lines).to eq(["[Axn::DiscardedJob] MSG"])
+    end
+
+    it "cannot be claimed by a user's declaration" do
+      impostor = build_axn { expects :result }.send(:new, result: "mine")
+
+      expect(described_class.report_proxy?(impostor)).to be false
+      expect(described_class.result_or_nil(impostor)).to be_a(Axn::Result)
+    end
+
+    it "is nil for a plain foreign object" do
+      expect(described_class.report_proxy?(Object.new)).to be false
+      expect(described_class.result_or_nil(Object.new)).to be_nil
+    end
+  end
 end

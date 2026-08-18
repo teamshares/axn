@@ -33,6 +33,12 @@ module Axn
                        :SET_EXECUTION_CONTEXT, :INPUTS_FOR_LOGGING, :OUTPUTS_FOR_LOGGING, :AMBIENT_CONTEXT,
                        :LOG, :FAIL
 
+      # Marks a stand-in axn builds itself when a report has no action instance to read from — the
+      # discarded/dead-job proxy is the only one today. A MODULE rather than a duck-type probe on
+      # purpose: axn owns every includer, so a user's field declaration can never claim it, which is
+      # exactly what `respond_to?(:result)` could not promise.
+      module ReportProxy; end
+
       module_function
 
       def result(action) = RESULT.bind_call(action)
@@ -73,6 +79,7 @@ module Axn
       # names a level itself, because there is no `log` left to apply the default.
       def log(target, message, **kwargs)
         return LOG.bind_call(target, message, **kwargs) if instance?(target)
+        return target.log(message, **kwargs) if report_proxy?(target)
         return target.log(message, **kwargs) if Identity.kind?(target, ::Module) && target < ::Axn
 
         Axn.config.logger.send(kwargs.fetch(:level) { Axn.config.log_level }, message)
@@ -84,9 +91,19 @@ module Axn
       # back a String.
       def instance?(obj) = Identity.kind?(obj, ::Axn)
 
+      # True for a proxy axn built in place of an instance. Undispatched, like every other question
+      # here: the discarded-job proxy answers `class` with the action's class, so anything that
+      # consulted the object would get the wrong answer.
+      def report_proxy?(obj) = Identity.kind?(obj, ReportProxy)
+
       # The result when there is one, nil for every shape that cannot have one — a degraded report
       # naming the exception beats no report at all.
-      def result_or_nil(obj) = instance?(obj) ? result(obj) : nil
+      def result_or_nil(obj)
+        return result(obj) if instance?(obj)
+        return obj.result if report_proxy?(obj)
+
+        nil
+      end
     end
   end
 end
