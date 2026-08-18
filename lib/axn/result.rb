@@ -118,16 +118,22 @@ module Axn
     # like __action__ — see reserved_attribute_names_spec.
     def __exposed_keys__ = @context.exposed_data.keys
 
+    # The outcome keys a pattern match sees, and how each is read. `deconstruct_keys` BUILDS the hash
+    # from this map rather than repeating it, so the exposures guard (which refuses these names, since
+    # the exposed data merged below would overwrite rather than append to them) reads exactly what is
+    # emitted instead of predicting it.
+    PATTERN_MATCH_KEYS = {
+      ok: :ok?,
+      success: :success,
+      error: :error,
+      message: :message,
+      outcome: :_outcome_symbol,
+      finalized: :finalized?,
+    }.freeze
+
     # Enable pattern matching support for Ruby 3+
     def deconstruct_keys(keys)
-      attrs = {
-        ok: ok?,
-        success:,
-        error:,
-        message:,
-        outcome: outcome.to_sym,
-        finalized: finalized?,
-      }
+      attrs = PATTERN_MATCH_KEYS.transform_values { |reader| send(reader) }
 
       # Add all exposed data
       attrs.merge!(@context.exposed_data)
@@ -137,6 +143,9 @@ module Axn
     end
 
     private
+
+    # A pattern match binds the outcome as a plain Symbol; the public reader answers a StringInquirer.
+    def _outcome_symbol = outcome.to_sym
 
     def _context_data_source = @context.exposed_data
 

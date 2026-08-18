@@ -80,12 +80,30 @@ module Axn
       # later is covered without editing anything here.
       def internal_name?(name) = name.to_s.start_with?("_")
 
-      def describe(conflict)
+      # `name` is optional and used only to locate an anonymous owner's source (see owner_label).
+      def describe(conflict, name: nil)
         case conflict
         when :unsurrenderable then "axn itself (the framework dispatches that name to run the action)"
         when :internal then "axn's internals (a leading underscore marks a name axn dispatches on itself)"
-        else "#{conflict} (not axn's to surrender)"
+        when :pattern_match_key
+          "the keys a Result reports for pattern matching (an exposure of that name would be bound by " \
+          "`case result in { #{name}: }` instead of the outcome)"
+        when :settlement_control_kwarg
+          "a control keyword of `fail!`/`done!` (it binds ahead of their exposures, so `fail!(\"...\", " \
+          "#{name}: value)` would set the control and leave the exposure unset)"
+        else "#{owner_label(conflict, name)} (not axn's to surrender)"
         end
+      end
+
+      # An anonymous module — the shape a monkeypatch of Object usually takes — inspects as
+      # `#<Module:0x…>`, which tells an author nothing about what they collided with. Point at where the
+      # method was written instead; the owner is by definition the module that defines it.
+      def owner_label(owner, name)
+        return owner.name if owner.name
+        return owner.inspect if name.nil?
+
+        file, line = owner.instance_method(name).source_location
+        file ? "an anonymous module (#{file}:#{line})" : owner.inspect
       end
     end
   end

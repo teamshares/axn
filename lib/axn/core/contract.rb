@@ -1007,7 +1007,7 @@ module Axn
                      Axn::Internal::NameOwnership.owner_within(Axn::Core::InternalContext, name)
           return unless conflict
 
-          raise ContractViolation::ReservedAttributeError.new(name, owner: Axn::Internal::NameOwnership.describe(conflict))
+          raise ContractViolation::ReservedAttributeError.new(name, owner: Axn::Internal::NameOwnership.describe(conflict, name:))
         end
 
         # Refuse an exposure name that a reader would take over. Nothing an exposure lands on is
@@ -1027,16 +1027,40 @@ module Axn
         #   the two names that reach only this way. Only its OWN surface is asked (owner_within); Ruby's
         #   universal methods are judged once, above.
         #
+        # Two more names a reader never touches, and that ownership therefore cannot see. Both are places
+        # an exposure and axn's own machinery share a KEY rather than a method, and in both the machinery
+        # wins silently — the wrong answer this rule exists to prevent:
+        #
+        # - a key `deconstruct_keys` reports (`ok`, `finalized`; the other four are method-owned too).
+        #   The exposed data is merged OVER the outcome hash, so `case result in {ok:}` binds the
+        #   exposure while `result.ok?` still reports the outcome — a destructuring that contradicts the
+        #   result it came from.
+        # - a control keyword of `fail!`/`done!` (`standalone`), which binds ahead of their `**exposures`
+        #   splat: `fail!("boom", standalone: value)` sets the control and leaves the exposure nil.
+        #
+        # Both are read from what the consumer actually emits (Result::PATTERN_MATCH_KEYS, which
+        # `deconstruct_keys` builds its hash from; the `fail!`/`done!` signatures), so neither is a
+        # second hand-maintained list.
+        #
         # `exposes` has no `as:`/`prefix:`, so the wire key IS the reader: unlike an expectation, the only
         # way past this is a different name, and the message says so.
         def _reject_shadowed_exposure_name!(name)
-          owner = Axn::Internal::NameOwnership.owner_of(Axn::Result, name) ||
-                  Axn::Internal::NameOwnership.owner_within(Axn::Core::InternalContext, name)
-          return unless owner
+          conflict = Axn::Internal::NameOwnership.owner_of(Axn::Result, name) ||
+                     Axn::Internal::NameOwnership.owner_within(Axn::Core::InternalContext, name) ||
+                     _exposure_key_conflict(name)
+          return unless conflict
 
           raise ContractViolation::ReservedAttributeError.new(
-            name, owner: Axn::Internal::NameOwnership.describe(owner), kind: :exposure
+            name, owner: Axn::Internal::NameOwnership.describe(conflict, name:), kind: :exposure
           )
+        end
+
+        def _exposure_key_conflict(name)
+          name = name.to_sym
+          return :pattern_match_key if Axn::Result::PATTERN_MATCH_KEYS.key?(name)
+          return :settlement_control_kwarg if Axn::Core::SETTLEMENT_CONTROL_KWARGS.include?(name)
+
+          nil
         end
 
         # A boolean exposure lands a SECOND name on the Result — `<field>?`, aliased onto the same

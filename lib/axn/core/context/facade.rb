@@ -15,6 +15,16 @@ module Axn
         @declared_fields = declared_fields
 
         (@declared_fields + Array(implicitly_allowed_fields)).each do |field|
+          # Never define over a name the facade ITSELF answers to — its own ancestry up to Object,
+          # private methods included, since those are the ones it dispatches on itself
+          # (`default_error`, `_msg_resolver`). Declarations that would land such a name are refused up
+          # front (Contract::ClassMethods#_reject_shadowed_exposure_name! and its inbound twin); this is
+          # the definition-site half of that rule, so a config reaching a facade without passing through
+          # the DSL cannot silently take a method away. Object/Kernel are deliberately NOT asked: an
+          # inbound field named `warn` or `format` is legal by design (judged on the action class, where
+          # its reader lands), and the facade must answer for its wire key.
+          next if Axn::Internal::NameOwnership.owner_within(self.class, field)
+
           _define_reader_for(field)
         end
       end

@@ -158,5 +158,14 @@ module Axn
     def initialize(**)
       @__context = Axn::Core::Context.new(**)
     end
+
+    # The keyword names `fail!`/`done!` bind BEFORE their `**exposures` splat. An action exposing one
+    # of these cannot set it through either call — `fail!("boom", standalone: value)` binds the control
+    # and the exposure silently stays nil — so `exposes` refuses the name (see
+    # Contract::ClassMethods#_reject_shadowed_exposure_name!). Read off the signatures rather than
+    # listed, so a control added to either later is covered without editing anything.
+    SETTLEMENT_CONTROL_KWARGS = %i[fail! done!].flat_map do |name|
+      instance_method(name).parameters.filter_map { |type, param| param if %i[key keyreq].include?(type) }
+    end.uniq.freeze
   end
 end

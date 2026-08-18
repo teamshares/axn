@@ -192,9 +192,8 @@ module Axn
 
         case @kind
         when :exposure
-          "Cannot expose `#{@name}`: that name belongs to #{@owner}. An exposure's reader is defined on the " \
-          "Result itself, so declaring it would take the name over. `exposes` has no reader alias, so rename " \
-          "the field."
+          "Cannot expose `#{@name}`: that name belongs to #{@owner}, and an exposure cannot share it. " \
+          "`exposes` has no reader alias, so rename the field."
         else
           "Cannot declare a reader named `#{@name}`: that name belongs to #{@owner}. A field's reader is " \
           "defined on the action itself, so declaring it would take the name over. Rename the field, or " \

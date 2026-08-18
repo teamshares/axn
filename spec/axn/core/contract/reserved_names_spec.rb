@@ -241,8 +241,48 @@ RSpec.describe "reserved names for exposures" do
     end
   end
 
-  describe "names lifted because neither receiver owns them" do
-    %i[each_pair ok result standalone inputs ambient_context].each do |name|
+  # Two names no reader ever touches, so ownership cannot see them — an exposure and axn's machinery
+  # share a KEY instead, and the machinery wins silently. Both refusals are derived from what their
+  # consumer emits (Result::PATTERN_MATCH_KEYS, which deconstruct_keys builds its hash from; the
+  # `fail!`/`done!` signatures), never from a second list.
+  describe "keys an exposure would collide with rather than shadow" do
+    it "rejects `exposes :ok`, which a pattern match would bind instead of the outcome" do
+      expect { build_axn { exposes :ok } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /pattern matching/)
+    end
+
+    it "rejects `exposes :finalized` for the same reason" do
+      expect { build_axn { exposes :finalized } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /pattern matching/)
+    end
+
+    it "covers every key deconstruct_keys reports" do
+      Axn::Result::PATTERN_MATCH_KEYS.each_key do |key|
+        expect { build_axn { exposes key } }.to raise_error(Axn::ContractViolation::ReservedAttributeError)
+      end
+    end
+
+    it "leaves a pattern match reporting the outcome" do
+      result = build_axn { def call = nil }.call
+
+      expect(result.deconstruct_keys(nil)).to include(ok: true, outcome: :success, finalized: true)
+    end
+
+    it "rejects `exposes :standalone`, which `fail!` would bind as its control keyword" do
+      expect { build_axn { exposes :standalone } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /control keyword/)
+    end
+
+    it "covers every control keyword `fail!`/`done!` take" do
+      expect(Axn::Core::SETTLEMENT_CONTROL_KWARGS).not_to be_empty
+      Axn::Core::SETTLEMENT_CONTROL_KWARGS.each do |kwarg|
+        expect { build_axn { exposes kwarg } }.to raise_error(Axn::ContractViolation::ReservedAttributeError)
+      end
+    end
+  end
+
+  describe "names lifted because nothing owns or emits them" do
+    %i[each_pair result inputs ambient_context].each do |name|
       it "allows `exposes :#{name}`" do
         klass = build_axn do
           exposes name
@@ -268,8 +308,8 @@ RSpec.describe "reserved names for exposures" do
     end
 
     it "rejects a boolean exposure whose predicate would take a public one" do
-      expect { build_axn { exposes :ok, type: :boolean } }
-        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /ok\?/)
+      expect { build_axn { exposes :frozen, type: :boolean } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /frozen\?/)
     end
 
     it "leaves the same name declarable when it lands no predicate" do
@@ -295,14 +335,40 @@ RSpec.describe "reserved names for exposures" do
     it "leaves error resolution intact for a boolean exposure it does allow" do
       klass = build_axn do
         error "Base trouble"
-        exposes :standalone, type: :boolean
+        exposes :flagged, type: :boolean
         def call
-          expose(standalone: true)
+          expose(flagged: true)
           fail! "boom"
         end
       end
 
       expect(klass.call.error).to eq("Base trouble: boom")
+    end
+  end
+
+  # The definition-site half of the same rule: the declaration guard is the primary defence, but a
+  # config assigned straight onto a class never passes through the DSL, and a facade must not hand its
+  # own method away to one.
+  describe "the facade's own backstop" do
+    it "declines to define a reader over a facade method for a config that skipped the DSL" do
+      klass = build_axn do
+        exposes :probe
+        def call = expose(probe: default_error)
+      end
+      config = Axn::Core::Contract::FieldConfig.new(field: :default_error, validations: {}, reader_as: :default_error)
+      klass.external_field_configs = (klass.external_field_configs + [config]).freeze
+
+      expect(klass.call.probe).to eq("Something went wrong")
+    end
+
+    it "still defines a reader for a wire key Ruby owns, which the inbound facade must answer" do
+      klass = build_axn do
+        expects :format, as: :fmt
+        exposes :out
+        def call = expose(out: fmt)
+      end
+
+      expect(klass.call(format: "csv").out).to eq("csv")
     end
   end
 
@@ -322,6 +388,17 @@ RSpec.describe "reserved names for exposures" do
     it "names the owner and tells the author to rename the field" do
       expect { build_axn { exposes :class } }
         .to raise_error(Axn::ContractViolation::ReservedAttributeError, /Kernel.*rename the field/m)
+    end
+
+    # The worst case of deriving from a live method table: an Object monkeypatch is usually an
+    # anonymous module, whose inspect (`#<Module:0x…>`) names nothing an author could act on.
+    it "points at the source when the owner has no name" do
+      Object.include(Module.new { def some_patched_name = "patched" })
+
+      expect { build_axn { exposes :some_patched_name } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /an anonymous module \(.*reserved_names_spec\.rb:\d+\)/)
+    ensure
+      Object.send(:undef_method, :some_patched_name)
     end
 
     it "does not offer `as:`, which exposes would refuse" do

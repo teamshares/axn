@@ -61,7 +61,10 @@ RSpec.describe Axn do
     end
 
     context "with other reserved field names" do
-      %w[outcome exception elapsed_time finalized? __action__ __exposed_keys__].each do |field_name|
+      # `standalone` is refused because it is a control kwarg on `fail!`/`done!`, which binds ahead of
+      # their exposures: `fail!("msg", standalone: value)` would set the option and leave the exposure
+      # unset. Read off those signatures rather than listed (Axn::Core::SETTLEMENT_CONTROL_KWARGS).
+      %w[outcome exception elapsed_time finalized? __action__ __exposed_keys__ standalone].each do |field_name|
         context "with #{field_name}" do
           let(:action) do
             build_axn do
