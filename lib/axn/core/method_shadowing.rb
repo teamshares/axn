@@ -73,9 +73,13 @@ module Axn
       private_class_method :_axn_core_owned?
 
       # The instance-side names axn will hand to a user's own hierarchy: the public helpers its surrenderable
-      # modules own, minus the internals a leading underscore marks. Both halves are NameOwnership's answers, not
-      # a second opinion — a name a declaration may take is a name a superclass may take, and deriving from the
-      # same source is what keeps the two from drifting.
+      # modules own, minus the internals a leading underscore marks. Which modules and which underscores are
+      # NameOwnership's answers rather than a second opinion, so the set of sugar axn is willing to lose cannot
+      # drift from the set a declaration is allowed to take.
+      #
+      # PUBLIC only, which is where this set is narrower than `conflict_for`: that guard counts a private helper,
+      # because a reader defined on the action shadows one as completely as a public one, but a private helper is
+      # not a surface a user's superclass could be standing in for, so there is nothing here to defer to.
       #
       # Computed on first use, not at load: this file is required before the modules it asks about.
       #

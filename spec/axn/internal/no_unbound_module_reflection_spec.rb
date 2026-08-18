@@ -21,7 +21,7 @@ RSpec.describe "unbound reflection on a caller-supplied module" do
   # tell it from a Module's. That read goes through `NativeMethods.module_ancestors`.
   let(:operators) do
     %w[method_defined? private_method_defined? public_method_defined?
-       instance_method instance_methods private_instance_methods singleton_class]
+       instance_method instance_methods private_instance_methods public_instance_methods singleton_class]
   end
 
   # Operators are ESCAPED: a bare `method_defined?` reads as "method_define" plus an optional "d" in a
@@ -47,6 +47,7 @@ RSpec.describe "unbound reflection on a caller-supplied module" do
       "if (target.instance_methods(false) + target.private_instance_methods(false)).include?(:call)",
       "target.singleton_class.prepend(CallCollisionGuard)",
       "child_params[:parent_form] = self if klass.instance_methods.include?(:parent_form=)",
+      "names = mod.public_instance_methods(false)",
     ]
 
     expect(offending.grep_v(pattern)).to be_empty

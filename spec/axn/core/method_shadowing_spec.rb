@@ -63,6 +63,10 @@ RSpec.describe Axn::Core::MethodShadowing do
         include Axn
       end
 
+      # Self-checking precondition: something above `mod` declares `log`, and on this class that can only be axn.
+      ancestry = action.ancestors
+      expect(ancestry.index { |ancestor| ancestor.instance_methods(false).include?(:log) }).to be < ancestry.index(mod)
+
       expect(described_class.inherited_definer(action, :log)).to eq(mod)
     end
 
