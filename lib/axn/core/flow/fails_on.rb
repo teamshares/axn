@@ -75,7 +75,7 @@ module Axn
             return if unreachable.empty?
 
             raise ArgumentError,
-                  "fails_on cannot reclassify #{unreachable.map { |klass| klass.name || klass.inspect }.join(', ')} — axn never converts " \
+                  "fails_on cannot reclassify #{unreachable.map { |klass| Axn::Internal::Rendering.module_name(klass) }.join(', ')} — axn never converts " \
                   "#{unreachable.one? ? 'it' : 'them'} into a result (a signal, an `exit`, or a library's own " \
                   "control-flow signal is raised straight through `.call`), so the declaration would have no " \
                   "effect. Remove it, and rescue at the call site if the caller needs to handle it."

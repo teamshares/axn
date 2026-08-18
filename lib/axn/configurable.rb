@@ -281,7 +281,8 @@ module Axn
         # DSL collision, not a merge; fail fast (re-registering the same source is a no-op).
         if existing && !existing.equal?(self)
           raise ArgumentError,
-                "config_namespace #{ns.inspect} is already owned by #{existing} on " \
+                "config_namespace #{ns.inspect} is already owned by " \
+                "#{Axn::Internal::Rendering.module_name(existing)} on " \
                 "#{base.name || base}; two config sources cannot share a namespace"
         end
 
@@ -574,13 +575,20 @@ module Axn
       # wins: axn generates this one, so it defers rather than replacing behavior the author wrote,
       # leaving a debug breadcrumb instead. Settings still reset through the flat `<name>=` writers.
       def self.extended(base)
-        if base.method_defined?(:reset!) || base.private_method_defined?(:reset!)
+        # ONE bound lookup answers both halves — whether a `reset!` is already there, and who owns it — where
+        # the pair of predicates plus a follow-up `instance_method` let the class answer its own collision
+        # question: one reporting a `reset!` it does not declare made the follow-up raise `NameError` straight
+        # out of `extend`. Both classes named in the breadcrumb are named from bound base implementations, since
+        # a `to_s` of their own would otherwise replace the collision this is announcing with its own failure.
+        existing = Axn::Internal::Identity.kind?(base, ::Module) &&
+                   Axn::Internal::NativeMethods.declared_instance_method(base, :reset!)
+        if existing
           if defined?(Axn.config)
-            owner = base.instance_method(:reset!).owner
             Axn::Extensions.best_effort("logging a reset! collision", action: base) do
               Axn.config.logger.debug do
-                "[Axn] #{base.name || base}: instance method `reset!` is already defined by #{owner}, so the " \
-                  "Configurable settings DSL leaves it alone. Per-setting reset is unavailable on this class."
+                "[Axn] #{Axn::Internal::Rendering.module_name(base)}: instance method `reset!` is already " \
+                  "defined by #{Axn::Internal::Rendering.module_name(existing.owner)}, so the Configurable " \
+                  "settings DSL leaves it alone. Per-setting reset is unavailable on this class."
               end
             end
           end

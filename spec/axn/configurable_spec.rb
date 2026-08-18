@@ -816,6 +816,56 @@ RSpec.describe "#reset!" do
       expect(klass.new.reset!(:literal)).to eq(:the_authors_own)
     end
 
+    it "extends cleanly when the class reports a reset! it does not declare" do
+      # The collision is read out of the method table, so a class whose reflection reports a `reset!`
+      # it never declared cannot make `extend` raise `NameError` on the follow-up lookup.
+      klass = nil
+      expect do
+        klass = Class.new do
+          def self.method_defined?(*) = true
+          def self.private_method_defined?(*) = true
+
+          extend Axn::Configurable::Settings
+
+          setting :literal, default: :original
+        end
+      end.not_to raise_error
+
+      instance = klass.new
+      instance.literal = :changed
+      instance.reset!(:literal)
+      expect(instance.literal).to eq(:original)
+    end
+
+    it "names the colliding owner without running its to_s" do
+      # The breadcrumb names a class the caller supplied; running its `to_s` from the log path would
+      # replace the collision being announced (and `best_effort` would report a failure that is ours).
+      owner = Module.new do
+        def reset!(*) = :the_authors_own
+        def self.to_s = raise(NotImplementedError, "to_s must not run in the log path")
+      end
+
+      messages = []
+      sink = messages
+      logger = Object.new
+      logger.define_singleton_method(:debug) { |*args, &blk| sink << (blk ? blk.call : args.first) }
+      allow(Axn.config).to receive(:logger).and_return(logger)
+
+      klass = nil
+      expect do
+        klass = Class.new do
+          include owner
+
+          extend Axn::Configurable::Settings
+
+          setting :literal, default: :original
+        end
+      end.not_to raise_error
+
+      expect(klass.new.reset!(:literal)).to eq(:the_authors_own)
+      expect(messages.join).to match(/instance method `reset!` is already defined by/)
+    end
+
     it "defers to a reset! the class defined itself rather than replacing it" do
       klass = Class.new do
         def reset!(*) = :the_authors_own

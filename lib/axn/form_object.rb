@@ -3,6 +3,8 @@
 # activemodel is a hard gem dependency; declared here so this file does not rely on the top-level
 # `axn` entrypoint having loaded it first.
 require "active_model"
+require "axn/internal/identity"
+require "axn/internal/native_methods"
 
 # This is a base class for all form objects that are used with Axn actions.
 #
@@ -56,8 +58,15 @@ module Axn
 
             child_params = params.dup
 
-            # Automatically inject the parent into the child form if it has a parent= method
-            child_params[:parent_form] = self if klass.instance_methods.include?(:parent_form=)
+            # Automatically inject the parent into the child form if it has a parent= method. The
+            # capability is read out of the child's method table rather than asked of it: a class
+            # answering the reflection wrongly would silently lose its parent — the injection simply
+            # would not happen — instead of failing where an author could see it. Public specifically,
+            # because `klass.new` below is what has to be able to set it.
+            if ::Axn::Internal::Identity.kind?(klass, ::Module) &&
+               ::Axn::Internal::NativeMethods.public_instance_method?(klass, :parent_form=)
+              child_params[:parent_form] = self
+            end
 
             instance_variable_set("@#{name}", klass.new(child_params))
           end

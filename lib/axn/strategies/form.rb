@@ -27,7 +27,22 @@ module Axn
 
             resolved_type = Axn::Strategies::Form.resolve_type(type, expose_attr, name, &block)
 
-            raise ArgumentError, "form strategy: #{resolved_type} must implement `valid?`" unless resolved_type.method_defined?(:valid?)
+            # Both halves of this guard are read rather than asked. `Module#===` establishes that a
+            # resolved type IS a module before anything is bound to it (a String `type:` naming a
+            # constant that holds a plain value resolves to one), the capability comes out of the
+            # method table, and the name in the message comes from bound base implementations — a form
+            # class defining its own `to_s` is ordinary, and running it here would replace the failure
+            # being reported. `public_instance_method?` rather than any-visibility, because the strategy
+            # DISPATCHES `valid?` on the form below: a non-public one is not a capability a consumer has.
+            unless ::Axn::Internal::Identity.kind?(resolved_type, ::Module) &&
+                   ::Axn::Internal::NativeMethods.public_instance_method?(resolved_type, :valid?)
+              named = if ::Axn::Internal::Identity.kind?(resolved_type, ::Module)
+                        ::Axn::Internal::Rendering.module_name(resolved_type)
+                      else
+                        ::Axn::Internal::Rendering.class_name(resolved_type)
+                      end
+              raise ArgumentError, "form strategy: #{named} must implement `valid?`"
+            end
 
             expects expect_attr, type: :params
             exposes(expose_attr, type: resolved_type)

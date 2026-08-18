@@ -73,9 +73,7 @@ module Axn
           # private methods too: instance_methods(false) omits a `private def call`, which would
           # otherwise be silently replaced (the reverse order is caught by method_added, which fires
           # regardless of visibility).
-          if (target.instance_methods(false) + target.private_instance_methods(false)).include?(:call)
-            raise ArgumentError, format(CALL_COLLISION_MESSAGE, target.name || "Action")
-          end
+          raise ArgumentError, format(CALL_COLLISION_MESSAGE, target.name || "Action") if _declares_own_call?(target)
 
           _define_steps_call(target)
           _install_call_collision_guard(target)
@@ -155,7 +153,23 @@ module Axn
         # guard through the singleton-class ancestry, so re-installing on a subclass that adds a step
         # is harmless.
         def _install_call_collision_guard(target)
-          target.singleton_class.prepend(CallCollisionGuard)
+          ::Axn::Internal::NativeMethods.prepend_module(
+            ::Axn::Internal::NativeMethods.module_singleton_class(target), CallCollisionGuard
+          )
+        end
+
+        # Whether `target` itself declares `#call`, at any visibility — read out of its OWN method table
+        # rather than asked of the class, since a class that answers the reflection wrongly would otherwise
+        # have the generated orchestrator silently replace the `#call` its author wrote.
+        #
+        # The own table, not effective lookup: a class that defines `#call` AND prepends a module defining
+        # `#call` resolves the name to the prepend, so an owner comparison would call the author's own
+        # definition absent and overwrite it. An inherited or purely-prepended `#call` is correctly not a
+        # collision — the same answer the unbound `instance_methods(false)` pair gave.
+        def _declares_own_call?(target)
+          return false unless ::Axn::Internal::Identity.kind?(target, ::Module)
+
+          ::Axn::Internal::NativeMethods.declares_own_instance_method?(target, :call)
         end
       end
     end
