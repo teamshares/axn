@@ -10,6 +10,12 @@ module Axn
     # this to defer instead of clobbering (PRO-2875) — the same discipline that gave `axn_name` its
     # prefix, applied to the other generic names a transport base class is likely to already define.
     module MethodShadowing
+      # Bound rather than dispatched: this walks EVERY ancestor of the including class's singleton, which
+      # includes any module patched onto Object, and one of those defining its own `self.name` would get
+      # that code run during `include Axn` — a raise there takes the include down.
+      MODULE_NAME = ::Module.instance_method(:name)
+      private_constant :MODULE_NAME
+
       module_function
 
       # True when `base` already provides class method `name` from somewhere other than an axn-CORE
@@ -29,7 +35,7 @@ module Axn
       # picks up `description`/`input_schema`/`output_schema` from an `Axn::MCP::*` module counts as
       # external, so axn won't re-extend and shadow it.
       def _axn_core_owned?(mod)
-        !!mod.name&.start_with?("Axn::Core::")
+        !!MODULE_NAME.bind_call(mod)&.start_with?("Axn::Core::")
       end
       # `module_function` already made the instance copy private; this makes the module-level one match.
       private_class_method :_axn_core_owned?

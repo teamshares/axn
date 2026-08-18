@@ -104,18 +104,33 @@ module Axn
         end
       end
 
+      # Bound rather than dispatched, because this runs while an error message is being COMPOSED: a class
+      # that defines its own `self.name`, `inspect`, or `instance_method` would otherwise have that code
+      # run here, and one that raises would replace the declaration error being reported with its own
+      # failure. `Module#name` is nil for an anonymous module, which is exactly the branch below.
+      MODULE_NAME = ::Module.instance_method(:name)
+      MODULE_INSTANCE_METHOD = ::Module.instance_method(:instance_method)
+      private_constant :MODULE_NAME, :MODULE_INSTANCE_METHOD
+
       # An anonymous module — the shape a monkeypatch of Object usually takes — inspects as
       # `#<Module:0x…>`, which tells an author nothing about what they collided with. Point at where the
       # method was written instead; the owner is by definition the module that defines it.
       def owner_label(owner, name)
-        return Axn::Internal::Reflection::PropertyNames.renderable_module_name(owner) if owner.name
-        return Axn::Internal::Text.renderable(owner.inspect) if name.nil?
+        return Axn::Internal::Reflection::PropertyNames.renderable_module_name(owner) if MODULE_NAME.bind_call(owner)
+        return _anonymous_label(owner) if name.nil?
 
-        file, line = owner.instance_method(name).source_location
-        return Axn::Internal::Text.renderable(owner.inspect) unless file
+        file, line = MODULE_INSTANCE_METHOD.bind_call(owner, name).source_location
+        return _anonymous_label(owner) unless file
 
         "an anonymous module (#{Axn::Internal::Text.renderable(file)}:#{line})"
+      rescue ::StandardError
+        # Naming where an anonymous owner came from is a courtesy; losing it must not cost the caller the
+        # collision error itself.
+        _anonymous_label(owner)
       end
+
+      # `Module#to_s` bound, which answers "#<Module:0x…>" for an anonymous module and never nil.
+      def _anonymous_label(owner) = Axn::Internal::Reflection::PropertyNames.renderable_module_name(owner)
     end
   end
 end

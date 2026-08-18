@@ -456,6 +456,25 @@ RSpec.describe "reserved names for exposures" do
       Object.send(:undef_method, :some_patched_name)
     end
 
+    # Composing this message must not run the OWNER's code. An Object monkeypatch is the author's own
+    # module, and one that defines `self.name`/`inspect`/`instance_method` — a DSL gem doing so is
+    # ordinary — would otherwise have that code run mid-message, and one that raises would replace the
+    # collision error with its own failure.
+    it "names the owner without dispatching the owner's own singleton methods" do
+      Object.include(Module.new do
+        def self.name = raise("name explodes")
+        def self.inspect = raise("inspect explodes")
+        def self.instance_method(*) = raise("instance_method explodes")
+
+        def hostile_patched_name = "patched"
+      end)
+
+      expect { build_axn { exposes :hostile_patched_name } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /hostile_patched_name.*anonymous module/m)
+    ensure
+      Object.send(:undef_method, :hostile_patched_name)
+    end
+
     it "does not offer `as:`, which exposes would refuse" do
       expect { build_axn { exposes :class } }
         .to raise_error(Axn::ContractViolation::ReservedAttributeError) { |e| expect(e.message).not_to include("as:") }
