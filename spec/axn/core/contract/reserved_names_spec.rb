@@ -78,9 +78,11 @@ RSpec.describe "reserved names for expectations" do
     end
 
     # These are free on the action class — nothing there owns them, or what does is surrenderable
-    # sugar — and are refused by the SECOND receiver: the inbound facade the value is read from, where
-    # a generated reader would replace machinery every other field's reader depends on.
-    %i[declared_fields action action_name default_error default_success fail!].each do |name|
+    # sugar — and are refused as WIRE KEYS: the inbound facade builds a reader per declared field and
+    # declines to define over its own methods, so a key naming one reads back the facade's method
+    # result instead of the caller's value.
+    %i[declared_fields action action_name context inspect method_missing
+       default_error default_success fail! _msg_resolver].each do |name|
       it "rejects `expects :#{name}`, which the inbound facade owns" do
         expect { build_axn { expects name } }.to raise_error(Axn::ContractViolation::ReservedAttributeError)
       end
@@ -132,10 +134,11 @@ RSpec.describe "reserved names for expectations" do
     end
   end
 
-  # The rule is about the READER a declaration defines, not the wire key it reads from. A wire key is a
-  # Hash key on the way in and lands on no method table, so an unavailable name there is not a conflict —
-  # which is what makes renaming the reader a real way out of every rejection above, and what lets a
-  # contract whose caller-facing key is `format` keep that key.
+  # A declaration lands TWO names on two receivers, and `as:`/`prefix:` pull them apart: the reader is
+  # a method on the action class, the wire key is a reader on the inbound facade the value is read
+  # from. Each is judged where it lands — which is what makes renaming the reader a real way out of a
+  # reader collision (a contract whose caller-facing key is `format` keeps that key), and what keeps a
+  # key the facade owns refused however the reader is spelled.
   describe "the reader, not the wire key" do
     it "applies the rule to an `as:` reader name" do
       expect { build_axn { expects :thing, as: :class } }
@@ -179,6 +182,44 @@ RSpec.describe "reserved names for expectations" do
       end
 
       expect(klass.call(helper: "theirs").out).to eq(%w[theirs mine])
+    end
+  end
+
+  # The other half of the same split. Renaming the reader leaves the wire key exactly as written, so a
+  # key the inbound facade answers to survives every alias — and the facade, which will not define a
+  # reader over one of its own methods, then answered the field with its own method result: the caller
+  # passed a value, the action read "Something went wrong", and `ok?` was true.
+  describe "the wire key, not the reader" do
+    %i[default_error default_success declared_fields action context inspect].each do |key|
+      it "rejects a reserved wire key `#{key}` behind an `as:` reader" do
+        expect { build_axn { expects key, as: :aliased } }
+          .to raise_error(Axn::ContractViolation::ReservedAttributeError, /#{key}/)
+      end
+
+      it "rejects a reserved wire key `#{key}` behind a `prefix:` too" do
+        expect { build_axn { expects key, prefix: :in_ } }
+          .to raise_error(Axn::ContractViolation::ReservedAttributeError, /#{key}/)
+      end
+    end
+
+    it "names the wire key and does not offer a rename that cannot help" do
+      expect { build_axn { expects :default_error, as: :de } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError,
+                        /inbound field named `default_error`.*Rename the field/m)
+    end
+
+    # The facade is asked only about its OWN surface, so a wire key owned by Ruby stays legal — the
+    # reader is where that collision is judged, and `as:` moves it out of the way. The facade defines
+    # its readers without dispatching a name one of them may have taken, so the key still reads back.
+    it "still accepts a wire key owned by Ruby, and reads the caller's value back" do
+      klass = build_axn do
+        expects :class, as: :klass
+        expects :other
+        exposes :out
+        def call = expose(out: [klass, other])
+      end
+
+      expect(klass.call(class: "theirs", other: "second").out).to eq(%w[theirs second])
     end
   end
 

@@ -1,5 +1,11 @@
 # frozen_string_literal: true
 
+begin
+  require "faraday"
+rescue LoadError
+  # An optional peer dependency: the client-strategy examples below skip without it.
+end
+
 # `include Axn` puts helpers on the user's class, and the user may take any of those names — with a
 # `def`, or with a field declaration whose generated reader lands on the same class. Taking one must
 # cost them that helper and nothing else: axn's own machinery reaches its implementations through
@@ -317,6 +323,50 @@ RSpec.describe "shadowing an axn instance method" do
 
       expect(result).not_to be_ok
       expect(result.error).to eq("inner: child boom")
+    end
+
+    # The client strategy's middleware annotates the action with the last request it made, so an
+    # exception report names the call that preceded it. It writes that annotation onto the action
+    # instance, and `set_execution_context` is ordinary sugar the user may take — so a `respond_to?`
+    # probe there answers for the user's field reader just as truthfully as for the real method, and
+    # the write lands on a reader that takes no arguments.
+    describe "the client strategy's request annotation" do
+      let(:klass) do
+        build_axn do
+          expects :set_execution_context
+          exposes :status, :annotated
+
+          use :client, url: "https://api.example.com" do |conn|
+            conn.adapter :test do |stub|
+              stub.get("/users") { [200, { "Content-Type" => "application/json" }, "{}"] }
+            end
+          end
+
+          def call
+            expose(status: client.get("/users").status,
+                   annotated: execution_context[:client_strategy__last_request])
+          end
+        end
+      end
+
+      before { skip "Faraday is not available" unless defined?(Faraday) }
+
+      it "still completes the request when `set_execution_context` is taken by a field declaration" do
+        result = klass.call(set_execution_context: "an input value")
+
+        expect(result).to be_ok
+        expect(result.status).to eq(200)
+      end
+
+      it "still annotates the action with the last request" do
+        result = klass.call(set_execution_context: "an input value")
+
+        expect(result.annotated).to include(url: a_string_matching(/api\.example\.com.*users/), method: "GET", status: 200)
+      end
+
+      it "hands the user their own value back for `set_execution_context`" do
+        expect(klass.send(:new, set_execution_context: "an input value").set_execution_context).to eq("an input value")
+      end
     end
 
     # The form strategy's `before` hook is axn's own machinery: it exposes the built form and gates the

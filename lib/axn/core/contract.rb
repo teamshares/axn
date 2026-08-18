@@ -521,12 +521,18 @@ module Axn
                   "reads its wire key and never invokes a method. Add `on:` to name the parent, or drop `method_call:`."
           end
 
-          # Judged on the RESOLVED reader, never on the wire key: a wire key is a Hash key on the way in
-          # and lands on no method table, while the reader is the method a declaration defines. That is
-          # what makes `as:`/`prefix:` the escape hatch the error message offers — a contract whose wire
-          # key happens to be `format` keeps its public API and renames only what it puts on the class.
+          # Two names, two receivers, judged separately — because `as:`/`prefix:` can pull them apart.
+          # The RESOLVED reader is the method the declaration defines on the action class, so it is
+          # judged there; that is what makes `as:` a real escape hatch, letting a contract whose wire key
+          # happens to be `format` keep its public API and rename only what it puts on the class.
+          # The WIRE KEY is judged at the inbound facade, which builds a reader per declared field and
+          # is the only place the caller's value can be read back from (below).
           reader_names = _resolve_reader_names(fields, as:, prefix:)
           reader_names.each_value { |reader| _reject_shadowed_name!(reader) }
+          # A subfield's wire key is a segment read out of its parent's value, not a field on the facade
+          # (its configs live in `subfield_configs`, which `_declared_fields` never reports), so only a
+          # top-level key lands there.
+          fields.each { |field| _reject_shadowed_wire_key!(field) } if on.nil?
           _validate_reader_names!(reader_names)
 
           validations, metadata = _partition_field_options(fields, **)
@@ -983,17 +989,10 @@ module Axn
         # written in.
         def _reader_owners = Axn::Internal::SubfieldTree.reader_owners(internal_field_configs, subfield_configs)
 
-        # Refuse an inbound name a declared reader would take over from something that is not axn's to
-        # surrender. Both receivers a declaration lands on are asked, because both can be corrupted:
-        #
-        # - the action class, where the reader is defined. Axn's own sugar is surrenderable here — the
-        #   user loses the helper and nothing else, since internals bind rather than dispatch.
-        # - Axn::Core::InternalContext, where the field's VALUE is read from. Its readers are defined on
-        #   that facade's singleton and outrank everything the facade itself holds, and nothing on it is
-        #   sugar — every method there is machinery some other reader depends on — so nothing IT owns is
-        #   surrenderable. `default_error` is owned on both sides, and this second ask is why it stays
-        #   rejected even though the action-side owner would surrender it. Only the facade's OWN surface
-        #   is asked (owner_within): Ruby's universal methods are judged once, on the action class.
+        # Refuse a reader name a declaration would take over from something that is not axn's to
+        # surrender. Judged on the action class, where the reader is defined: axn's own sugar is
+        # surrenderable there — the user loses the helper and nothing else, since internals bind rather
+        # than dispatch — while Ruby's, ActiveSupport's and the user's own names are not.
         #
         # A name axn itself put on the class is left alone: a redeclaration is a duplicate field,
         # reported downstream with the clearer DuplicateFieldError, and a reader DERIVED from another
@@ -1003,11 +1002,31 @@ module Axn
         def _reject_shadowed_name!(name)
           return if _reader_owners.key?(name.to_sym) || _inferred_reader?(name) || _axn_generated_reader?(name)
 
-          conflict = Axn::Internal::NameOwnership.conflict_for(self, name) ||
-                     Axn::Internal::NameOwnership.owner_within(Axn::Core::InternalContext, name)
+          conflict = Axn::Internal::NameOwnership.conflict_for(self, name)
           return unless conflict
 
           raise ContractViolation::ReservedAttributeError.new(name, owner: Axn::Internal::NameOwnership.describe(conflict, name:))
+        end
+
+        # Refuse a top-level inbound WIRE KEY that the inbound facade already answers to. The key is
+        # what the caller passes and what `Axn::Core::InternalContext` builds a reader for, and that
+        # facade declines to define over its own methods (`ContextFacade#initialize`) — so a key naming
+        # one of them is read back as the facade's own method result rather than as the caller's value.
+        # Nothing on the facade is sugar: every method there is machinery some other reader depends on,
+        # so nothing it owns is surrenderable, whatever the reader ends up being called.
+        #
+        # This is a separate question from the reader's, and `as:`/`prefix:` is what separates them:
+        # they rename the method the declaration defines and leave the wire key exactly as written, so
+        # the only way past this one is a different key. Only the facade's OWN surface is asked
+        # (owner_within): Ruby's universal methods are judged once, on the action class, where a
+        # legitimately-named key like `format` or `warn` also lands as a reader.
+        def _reject_shadowed_wire_key!(name)
+          conflict = Axn::Internal::NameOwnership.owner_within(Axn::Core::InternalContext, name)
+          return unless conflict
+
+          raise ContractViolation::ReservedAttributeError.new(
+            name, owner: Axn::Internal::NameOwnership.describe(conflict, name:), kind: :wire_key
+          )
         end
 
         # Refuse an exposure name that a reader would take over. Nothing an exposure lands on is

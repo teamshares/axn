@@ -128,13 +128,18 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   New user-facing sugar goes in an included module (never `class_eval`'d onto the class) so a user
   can wrap it with `super`; new `class_attribute`s take `instance_accessor: false`. Two things
   enforce this, and they catch different shapes: `spec/axn/internal/no_shadowable_dispatch_spec.rb`
-  greps `lib/` for a dispatched name (`action.<name>` / `@action.<name>`) and cannot see a bare
-  self-send (`result.respond_to?(:x)` is indistinguishable from a local variable);
+  greps `lib/` for a sugar name reached on a receiver that holds an action instance — directly or
+  through `send`/`respond_to?`, which is worse, since a shadow answers the probe as truthfully as the
+  real method — and cannot see a bare self-send (`result.respond_to?(:x)` is indistinguishable from a
+  local variable);
   `spec/axn/core/method_shadowing_integrity_spec.rb` carries the behavioural matrix that catches
   those — shadow each sugar name in turn and assert every other sugar path still works.
 - **Reserved names are derived from ownership, never listed.** Whether a declaration may take a name
-  is `Axn::Internal::NameOwnership`'s question, asked of the receivers the reader is defined on — the
-  action class and `Axn::Core::InternalContext` for `expects`, `Axn::Result` for `exposes`. Axn's own
+  is `Axn::Internal::NameOwnership`'s question, asked once per name a declaration lands, at the
+  receiver that name lands on: for `expects`, the resolved reader against the action class and the
+  wire key against `Axn::Core::InternalContext` (`as:`/`prefix:` pull the two apart, so one answer
+  cannot stand for both); for `exposes`, where the wire key IS the reader, `Axn::Result` and that
+  same facade, which carries every exposure as an implicitly-allowed field. Axn's own
   sugar modules are surrenderable; Ruby's methods, the user's own code, and `call`/`_run` are not.
   Ownership alone cannot see a non-method collision — a key a consumer's `deconstruct_keys` emits, a
   control kwarg `fail!`/`done!` reads ahead of exposures — so those are guarded separately, derived

@@ -176,10 +176,12 @@ module Axn
       # declaration would define, which may not be the wire key — that is what makes the `as:` advice
       # below a real way out rather than a suggestion the guard refuses.
       #
-      # `kind:` picks the remedy, because the two declarations do not offer the same one: `expects`
-      # takes `as:`/`prefix:`, so a colliding wire key can be kept and only the reader renamed, while
-      # `exposes` takes neither — an exposed field's name IS the reader defined on the Result, so the
-      # only way out is a different name.
+      # `kind:` picks the remedy, because the three collisions do not offer the same one. An `expects`
+      # READER collision is escapable with `as:`/`prefix:`, which keep the wire key and rename only the
+      # method. An `expects` WIRE KEY collision is not: those options rename the reader and leave the
+      # key as written, so the key itself has to change — and saying otherwise would send the author
+      # after a spelling that cannot help. `exposes` has neither option: an exposed field's name IS the
+      # reader defined on the Result, so the only way out there is a different name too.
       def initialize(name, owner: nil, kind: :input)
         @name = name
         @owner = owner
@@ -194,6 +196,11 @@ module Axn
         when :exposure
           "Cannot expose `#{@name}`: that name belongs to #{@owner}, and an exposure cannot share it. " \
           "`exposes` has no reader alias, so rename the field."
+        when :wire_key
+          "Cannot declare an inbound field named `#{@name}`: that name belongs to #{@owner}. The value a " \
+          "caller passes under a field's name is read back off axn's inbound context facade, which answers " \
+          "to `#{@name}` itself — so the caller's value would be unreachable. Rename the field; `as:` and " \
+          "`prefix:` rename only the reader and leave the wire key as written."
         else
           "Cannot declare a reader named `#{@name}`: that name belongs to #{@owner}. A field's reader is " \
           "defined on the action itself, so declaring it would take the name over. Rename the field, or " \

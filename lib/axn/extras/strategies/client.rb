@@ -23,18 +23,24 @@ module Axn
 
             private
 
+            # Bound through Internal::ActionState, never dispatched by name: `set_execution_context` is
+            # ordinary sugar a user may take (`expects :set_execution_context`), and a shadow answers
+            # `respond_to?` just as truthfully as the real method — so the probe said yes and the send
+            # then reached the field's reader, raising out of every request instead of annotating it.
             def assign_request_context(env)
-              return unless @action_instance.respond_to?(:set_execution_context, true)
+              return unless Axn::Internal::ActionState.instance?(@action_instance)
 
-              @action_instance.send(:set_execution_context,
-                                    client_strategy__last_request: {
-                                      url: env.url.to_s,
-                                      method: env.method.to_s.upcase,
-                                    })
+              Axn::Internal::ActionState.set_execution_context(
+                @action_instance,
+                client_strategy__last_request: {
+                  url: env.url.to_s,
+                  method: env.method.to_s.upcase,
+                },
+              )
             end
 
             def assign_response_context(request_env, response_env)
-              return unless @action_instance.respond_to?(:set_execution_context, true)
+              return unless Axn::Internal::ActionState.instance?(@action_instance)
 
               last_request = {
                 url: request_env.url.to_s,
@@ -42,7 +48,7 @@ module Axn
                 status: response_env.status,
               }
               last_request[:response_content_type] = response_env.response_headers["Content-Type"] if response_env.response_headers["Content-Type"]
-              @action_instance.send(:set_execution_context, client_strategy__last_request: last_request)
+              Axn::Internal::ActionState.set_execution_context(@action_instance, client_strategy__last_request: last_request)
             end
           end)
         end

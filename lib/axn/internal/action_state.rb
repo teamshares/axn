@@ -23,13 +23,15 @@ module Axn
       EXPOSE = Axn::Core::Contract::InstanceMethods.instance_method(:expose)
       EXPOSE_FROM_RESULT = Axn::Core::Contract::InstanceMethods.instance_method(:_expose_from_result)
       EXECUTION_CONTEXT = Axn::Core::Contract::InstanceMethods.instance_method(:execution_context)
+      SET_EXECUTION_CONTEXT = Axn::Core::Contract::InstanceMethods.instance_method(:set_execution_context)
       INPUTS_FOR_LOGGING = Axn::Core::Contract::InstanceMethods.instance_method(:inputs_for_logging)
       OUTPUTS_FOR_LOGGING = Axn::Core::Contract::InstanceMethods.instance_method(:outputs_for_logging)
       AMBIENT_CONTEXT = Axn::Core::AmbientContext.instance_method(:ambient_context)
       LOG = Axn::Core::Logging::InstanceMethods.instance_method(:log)
       FAIL = Axn::Core.instance_method(:fail!)
       private_constant :RESULT, :INTERNAL_CONTEXT, :INPUTS, :EXPOSE, :EXPOSE_FROM_RESULT, :EXECUTION_CONTEXT,
-                       :INPUTS_FOR_LOGGING, :OUTPUTS_FOR_LOGGING, :AMBIENT_CONTEXT, :LOG, :FAIL
+                       :SET_EXECUTION_CONTEXT, :INPUTS_FOR_LOGGING, :OUTPUTS_FOR_LOGGING, :AMBIENT_CONTEXT,
+                       :LOG, :FAIL
 
       module_function
 
@@ -44,6 +46,8 @@ module Axn
       def expose_from_result(action, source_result, **) = EXPOSE_FROM_RESULT.bind_call(action, source_result, **)
 
       def execution_context(action) = EXECUTION_CONTEXT.bind_call(action)
+
+      def set_execution_context(action, **) = SET_EXECUTION_CONTEXT.bind_call(action, **)
 
       def inputs_for_logging(action) = INPUTS_FOR_LOGGING.bind_call(action)
 
