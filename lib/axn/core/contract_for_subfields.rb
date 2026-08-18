@@ -721,7 +721,11 @@ module Axn
             next if config.confirmation_for
 
             reader = config.reader_as
-            if (method_defined?(reader) && !_inferred_reader?(reader)) || seen.include?(reader)
+            # Read natively, like every other method-table question a declaration guard asks: `self` is the
+            # author's class, and a singleton `method_defined?` of its own answering false would admit the
+            # duplicate this refuses.
+            taken = Axn::Internal::NativeMethods.declared_instance_method(self, reader) && !_inferred_reader?(reader)
+            if taken || seen.include?(reader)
               raise ArgumentError,
                     "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined) — " \
                     "rename this subfield's reader, e.g. `expects :#{config.field}, on: #{config.on.inspect}, " \

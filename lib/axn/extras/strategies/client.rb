@@ -83,7 +83,9 @@ module Axn
             extend ActiveSupport::Concern
 
             included do
-              raise ArgumentError, "client strategy: desired client name '#{client_name}' is already taken" if method_defined?(client_name)
+              if Axn::Internal::NativeMethods.declared_instance_method(self, client_name)
+                raise ArgumentError, "client strategy: desired client name '#{client_name}' is already taken"
+              end
 
               define_method client_name do
                 # Hydrate options that are callable (e.g. procs), so we can set e.g. per-request expiration

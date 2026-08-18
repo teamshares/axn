@@ -253,6 +253,22 @@ RSpec.describe "reserved names for expectations" do
       .to raise_error(Axn::ContractViolation::ReservedAttributeError, /`class`/)
   end
 
+  # The duplicate-sub-key guard reads the same method table, so the same lie admits two subfield readers
+  # under one name — the second silently wins and the first field becomes unreadable.
+  it "still refuses a duplicate sub-key reader on such a class" do
+    expect do
+      Class.new do
+        include Axn
+        def self.method_defined?(*) = false
+        def self.private_method_defined?(*) = false
+        expects :payload, type: Hash
+        expects :other, type: Hash
+        expects :a, on: :payload
+        expects :a, on: :other
+      end
+    end.to raise_error(ArgumentError, /duplicate sub-keys.*`a`/m)
+  end
+
   it "still admits a legal name on such a class, and reads the caller's value back" do
     klass = Class.new do
       include Axn

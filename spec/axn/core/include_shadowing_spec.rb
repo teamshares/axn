@@ -138,4 +138,19 @@ RSpec.describe "Axn include does not shadow a pre-existing base-class class meth
       expect(plain.output_schema[:properties][:status]).to include(type: "string")
     end
   end
+  # The deferral walk starts from the including class's SINGLETON, read off the class itself — the author's
+  # own object. A class defining `self.singleton_class` sends the walk somewhere else, it finds no owner for
+  # the name, and axn extends its own version over the superclass DSL this check exists to protect.
+  # Verified: without the bound read, `child.description` comes back empty instead of the parent's.
+  it "defers to a superclass DSL name even when the class redefines singleton_class" do
+    parent = Class.new do
+      def self.description = "PARENT DESC"
+    end
+    child = Class.new(parent) do
+      def self.singleton_class = Object.singleton_class
+      include Axn
+    end
+
+    expect(child.description).to eq("PARENT DESC")
+  end
 end
