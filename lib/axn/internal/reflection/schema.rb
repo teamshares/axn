@@ -1375,8 +1375,10 @@ module Axn
           rejects_empty ? 1 : nil
         end
 
-        # Combine of: (bare element baseline) and shape: (typed member contracts) into items:/properties:.
-        # Precedence: shape: enriches/overrides of: baseline.
+        # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
+        # `additionalProperties:` — and a `shape:`'s typed member contracts as `properties:`.
+        # Precedence: shape: enriches/overrides the of: baseline, which only ever arises on an array (a map's
+        # `of:` is refused beside a shape at declaration).
         def apply_structured_schema!(prop, config, for_output:)
           return unless config.validations[:of] || config.validations[:shape]
 
@@ -1385,9 +1387,15 @@ module Axn
           # emitted here, so a rule charged against the plan and this emission cannot walk different lists.
           shape = plan.shape
 
-          if plan.in_items?
-            # The plan's own type schema, not a second `items_schema_for` call: one build, and the plan is then
-            # literally what gets emitted rather than a parallel derivation of it.
+          if plan.map?
+            # A map's contents land under `additionalProperties` at this very node, so the plan's type schema is
+            # merged in whole. Empty for a keys-only map, which merges nothing — `keys:` has no JSON Schema
+            # spelling worth emitting (see shape_property_plan). No shape can accompany a map's `of:`, so there
+            # is no overlay to apply and nothing here consults `plan.emitted`.
+            prop.merge!(plan.type_schema)
+          elsif plan.in_items?
+            # The plan's own type schema, not a second `contents_schema_for` call: one build, and the plan is
+            # then literally what gets emitted rather than a parallel derivation of it.
             items = plan.type_schema
             if shape && plan.emitted
               member_props, required = member_properties(shape[:members], for_output:)
@@ -1432,21 +1440,33 @@ module Axn
         #     object shape the serializer will not produce.
         #
         # `type_schema` is what the declared TYPE contributes, as the emitter's own Hash: for an array, exactly
-        # what `items_schema_for` seeded from the `of:` element type; for a non-array, a `Data` field's own
-        # members. Carried whole rather than reduced to one property list, because the emitter does not put all
-        # of it at one node — a multi-class `of:` becomes one `anyOf` BRANCH per element type, each with its own
-        # `properties`. `base_properties` is the part that lands at the node itself, which is all the emitter
-        # merges the shape's members into; a consumer that must account for EVERY name (the projection size cap)
-        # walks the whole schema instead. Reducing this to `base_properties` alone is what let a contract naming
-        # 26,000 properties across 26 branches charge zero.
+        # what `contents_schema_for` seeded from the `of:` element type; for a map, that same seed for the
+        # `values:` axis, wrapped in the `additionalProperties` key it lands under; for anything else, a `Data`
+        # field's own members. Carried whole rather than reduced to one property list, because the emitter does
+        # not put all of it at one node — a multi-class `of:` becomes one `anyOf` BRANCH per element type, each
+        # with its own `properties`. `base_properties` is the part that lands at the node itself, which is all the
+        # emitter merges the shape's members into; a consumer that must account for EVERY name (the projection
+        # size cap) walks the whole schema instead. Reducing this to `base_properties` alone is what let a
+        # contract naming 26,000 properties across 26 branches charge zero.
+        #
+        # `container` is the container an `of:` bag names — `::Array`, `::Hash`, or nil where there is no `of:`
+        # at all. It is what tells the two `of:` grammars apart AFTER canonicalization, since a map's bag names
+        # its axes (`keys:`/`values:`) where an array's names one element type (`klass:`), and the two land at
+        # different nodes. `in_items` is the neighbouring question and not the same one: it asks where a SHAPE's
+        # members go, and is answered from the emitted JSON type, so an array with no `of:` still answers true.
         #
         # `shape` is the shape the plan was DERIVED from — the effective one (see effective_validations), which on
         # output is not always the declared one. Carried so that "which members does this emit" has a single
         # answer: `apply_structured_schema!` emits these members, and a rule charged against the plan walks the
         # same list rather than re-reading the config it came from. A plan whose `emitted` is false still carries
         # it (nothing about that decision changes which shape was consulted), so every consumer gates on `emitted`.
-        ShapePropertyPlan = Data.define(:emitted, :in_items, :type_schema, :shape) do
+        ShapePropertyPlan = Data.define(:emitted, :in_items, :type_schema, :shape, :container) do
           def in_items? = in_items
+
+          # A map puts its `of:` contents under `additionalProperties` at the field's own node. Asked of the
+          # container the declaration named rather than of the schema that was built, so a values axis with
+          # nothing to say is still recognizably a map.
+          def map? = ::Hash.equal?(container)
 
           def base_properties = type_schema[:properties] || {}
         end
@@ -1460,7 +1480,13 @@ module Axn
           of = validations[:of]
           shape = validations[:shape]
           in_items = Array(json_type_for(validations, for_output:)[:type]).include?("array")
-          nothing = ShapePropertyPlan.new(emitted: false, in_items:, type_schema: {}, shape:)
+          # The container is read through the same tolerant Hash test the declaration guards use. `of:` is
+          # canonicalized into a bag long before reflection, but a config ASSIGNED onto a class can still carry
+          # the bare spelling the DSL would have expanded, and every branch below asks this before it knows
+          # which grammar it is looking at.
+          of_bag = Axn::Internal::ShapeGraph.hash_or_nil(of)
+          container = of_bag && of_bag[:container]
+          nothing = ShapePropertyPlan.new(emitted: false, in_items:, type_schema: {}, shape:, container:)
 
           # The same two gates `apply_structured_schema!` opens with, in the same order. A declaration with
           # neither `of:` nor `shape:` contributes no object properties AT ALL — not even its type's own members —
@@ -1478,12 +1504,32 @@ module Axn
           if in_items
             # Overlay the shape's object properties onto items only when the ELEMENTS are objects.
             emitted = shape_overlay_applies?(of, for_output:)
-            # `items_schema_for` seeds an element type's own members whenever there is an `of:`, shape or not.
-            return ShapePropertyPlan.new(emitted:, in_items:, shape:, type_schema: of ? items_schema_for(of, for_output:) : {})
+            # `contents_schema_for` seeds an element type's own members whenever there is an `of:`, shape or not.
+            return ShapePropertyPlan.new(emitted:, in_items:, shape:, container:,
+                                         type_schema: of ? contents_schema_for(of[:klass], for_output:) : {})
           end
 
-          # Only the `elsif shape` branch emits object properties for a non-array field: `of:` without a shape on
-          # a non-array type reaches neither branch.
+          # A map's `of:` names its VALUES, which every JSON object key maps to — so the axis reflects as
+          # `additionalProperties` at the field's own node. The `keys:` axis contributes nothing: every JSON
+          # object key is a string, so `keys: String` would say nothing a client can act on and `keys: Symbol`
+          # would be a lie on the wire. `emitted` stays false because it answers only whether a SHAPE's members
+          # become properties here, and a map's `of:` is refused beside a `shape:` at declaration — the values
+          # schema below is the declared TYPE's contribution, which is charged and emitted regardless, exactly
+          # as an array's items are.
+          if ::Hash.equal?(container)
+            # A values axis naming no class constrains nothing at runtime — `matches_axis?` waves every value
+            # through, where an array's element axis instead rejects every element, which is why the two
+            # containers settle emptiness themselves rather than in the shared builder. A class whose schema is
+            # untyped (an unknown type on output) has nothing to state either, and both cases emit no node at
+            # all rather than an empty `additionalProperties` that would read as a constraint.
+            klasses = Array(of_bag[:values])
+            values = klasses.empty? ? {} : contents_schema_for(klasses, for_output:)
+            return ShapePropertyPlan.new(emitted: false, in_items:, shape:, container:,
+                                         type_schema: values.empty? ? {} : { additionalProperties: values })
+          end
+
+          # Only the `elsif shape` branch emits object properties for a non-array, non-map field: `of:` without a
+          # shape on such a type reaches neither branch.
           return nothing unless shape
 
           # A shaped object field IS an object, even when its declared type: (e.g. a Data.define subclass) isn't
@@ -1493,7 +1539,7 @@ module Axn
           base = emitted && type_klass.is_a?(Class) && type_klass < Data ? type_klass.members.to_h { |m| [m, {}] } : {}
           # A non-array type contributes at ONE node (a multi-class `type:` reflects as `anyOf` branches of
           # scalar types, which name no properties), so its schema is just those properties.
-          ShapePropertyPlan.new(emitted:, in_items:, shape:, type_schema: { properties: base })
+          ShapePropertyPlan.new(emitted:, in_items:, shape:, container:, type_schema: { properties: base })
         end
 
         # THE ONE derivation of the validations a projection is BUILT from, and the reason it is a function rather
@@ -1545,19 +1591,25 @@ module Axn
           klass <= Hash || klass < Data || klass < Struct
         end
 
-        def items_schema_for(of_validations, for_output: false)
-          klasses = Array(of_validations[:klass])
+        # The schema for what is INSIDE a container, from the classes an `of:` axis names — an Array's elements
+        # (`klass:`) and a Hash's values (`values:`) alike. One builder for both, because the two describe the
+        # same thing at different nodes: a union reflects as `anyOf` branches either way, and each branch
+        # carries its own type's members. What an axis naming NO class means is the containers' own business
+        # and is settled by each caller (see the map branch of `shape_property_plan`), because the two runtimes
+        # read it oppositely.
+        def contents_schema_for(klasses, for_output: false)
+          klasses = Array(klasses)
           if klasses.size == 1
-            single_items_schema(klasses.first, for_output:)
+            single_contents_schema(klasses.first, for_output:)
           else
-            { anyOf: klasses.map { |k| single_items_schema(k, for_output:) } }
+            { anyOf: klasses.map { |k| single_contents_schema(k, for_output:) } }
           end
         end
 
-        def single_items_schema(klass, for_output: false)
-          # A Data element serializes member-keyed via to_h, so its array items reflect as objects — except
-          # on OUTPUT when the element isn't provably member-keyed (a custom as_json/to_h serialize_value
-          # would follow); leave those items untyped rather than promise an object.
+        def single_contents_schema(klass, for_output: false)
+          # A Data value serializes member-keyed via to_h, so it reflects as an object — except on OUTPUT when
+          # it isn't provably member-keyed (a custom as_json/to_h serialize_value would follow); leave those
+          # untyped rather than promise an object.
           if klass.is_a?(Class) && klass < Data && (!for_output || member_keyed_object_type?(klass))
             { type: "object", properties: klass.members.to_h { |m| [m, {}] } }
           else

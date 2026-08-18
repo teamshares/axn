@@ -1913,6 +1913,45 @@ RSpec.describe "declaration-time property name collisions" do
     end
   end
 
+  # The other namespace a container opens: a map's `of: { values: … }` reflects as `additionalProperties`, and a
+  # value type's own members are property names inside it — the same rung an array's `items` opens, one axis
+  # over. Both rules are judged on what the emitter emits, so neither needs a rule of its own here; what these
+  # pin is that the walk and the charge actually descend through the new rung.
+  describe "properties emitted under a map's additionalProperties" do
+    it "rejects a collision between two members of a map's value type, naming the map rung in the path" do
+      colliding = Data.define(utf8_name, latin1_name)
+
+      expect { project_axn { expects :counts, type: Hash, of: { values: colliding }, optional: true } }
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /resolve to the JSON property "counts\.\{\}\.café"/)
+    end
+
+    it "rejects an unrenderable member name of a map's value type, attributed to the declared type" do
+      shaped = Data.define(unrenderable_name, :ok)
+
+      expect { project_axn { expects :counts, type: Hash, of: { values: shaped }, optional: true } }
+        .to raise_error(ArgumentError, /a member of a declared type becomes a JSON property name/)
+    end
+
+    # A values type whose members are past the emitted bound on their own, so the example reads as "charged or
+    # not charged" with nothing else in play.
+    def wide_value_type = Data.define(*Array.new(26_000) { |i| :"m#{i}" })
+
+    it "charges a map's value-type members against the emitted-property bound" do
+      wide = wide_value_type
+
+      expect { build_axn { expects :counts, type: Hash, of: { values: wide }, optional: true }.input_schema }
+        .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+    end
+
+    # The corollary: a values axis that names no members costs nothing and collides with nothing, so the two
+    # rules stay silent on the ordinary map.
+    it "leaves a scalar values axis alone" do
+      klass = build_axn { expects :counts, type: Hash, of: { keys: Symbol, values: Integer }, optional: true }
+
+      expect(klass.input_schema.dig(:properties, :counts, :additionalProperties)).to eq(type: "integer")
+    end
+  end
+
   # Derivation is only as good as the seam's agreement on WHICH members exist. The declaration guard and the
   # runtime validator capture a member list with `each`; reflection used `Array(...)` and then dispatched
   # `filter_map`, which an Array subclass can answer differently — so the three walks saw two different answers.

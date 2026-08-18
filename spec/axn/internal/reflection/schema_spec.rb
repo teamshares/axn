@@ -1596,6 +1596,103 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
+  # `of:` names what is inside a container, and on a Hash that is two axes. Only the VALUES axis has a JSON
+  # Schema spelling: `additionalProperties` constrains every value the object carries. The keys axis emits
+  # nothing at all — every JSON object key is a string, so `keys: String` would say nothing a client can act
+  # on and `keys: Symbol` would be a lie on the wire.
+  describe "Hash containers (maps)" do
+    def input_property(field, &declaration)
+      klass = build_axn(&declaration)
+      described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][field]
+    end
+
+    it "emits the values axis as additionalProperties" do
+      prop = input_property(:counts) { expects :counts, type: Hash, of: { values: Integer } }
+
+      expect(prop).to include(type: "object", additionalProperties: { type: "integer" })
+    end
+
+    # The same `anyOf` a union `of:` element type reflects as, one rung down: the two containers share the
+    # builder, so a union reads the same whichever side of the map/array line it is declared on.
+    it "emits a union values axis as anyOf branches under additionalProperties" do
+      prop = input_property(:counts) { expects :counts, type: Hash, of: { values: [String, Integer] } }
+
+      expect(prop[:additionalProperties]).to eq(anyOf: [{ type: "string" }, { type: "integer" }])
+    end
+
+    it "emits a Data values type's own members under additionalProperties" do
+      point = Data.define(:x, :y)
+      prop = input_property(:points) { expects :points, type: Hash, of: { values: point } }
+
+      expect(prop[:additionalProperties]).to eq(type: "object", properties: { x: {}, y: {} })
+    end
+
+    it "emits nothing for the keys axis, and still emits the values axis beside it" do
+      prop = input_property(:counts) { expects :counts, type: Hash, of: { keys: Symbol, values: Integer } }
+
+      expect(prop).not_to have_key(:propertyNames)
+      expect(prop[:additionalProperties]).to eq(type: "integer")
+    end
+
+    # A keys-only map constrains no value, so there is nothing for `additionalProperties` to say: emitting an
+    # empty one would read as a constraint the declaration never made.
+    it "emits no additionalProperties for a keys-only map" do
+      prop = input_property(:counts) { expects :counts, type: Hash, of: { keys: Symbol } }
+
+      expect(prop).not_to have_key(:additionalProperties)
+      expect(prop[:type]).to eq("object")
+    end
+
+    # An axis naming an EMPTY union says the same thing as an absent one on this container: `matches_axis?`
+    # waves every value through when the axis names no class. (An array's element axis reads the same emptiness
+    # oppositely — nothing matches — which is why the two containers settle it separately.)
+    it "emits no additionalProperties for a values axis naming no class at all" do
+      prop = input_property(:counts) { expects :counts, type: Hash, of: { values: [] } }
+
+      expect(prop).not_to have_key(:additionalProperties)
+    end
+
+    it "still emits additionalProperties for a nil-allowed map, whose type is the [\"object\", \"null\"] pair" do
+      prop = input_property(:counts) { expects :counts, type: Hash, of: { values: Integer }, allow_nil: true }
+
+      expect(prop[:type]).to eq(%w[object null])
+      expect(prop[:additionalProperties]).to eq(type: "integer")
+    end
+
+    it "emits it for a map declared as a shape member too" do
+      klass = build_axn do
+        expects :order, type: Hash do
+          field :counts, type: Hash, of: { values: Integer }
+        end
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema.dig(:properties, :order, :properties, :counts, :additionalProperties)).to eq(type: "integer")
+    end
+
+    it "takes the same path on output" do
+      klass = build_axn do
+        exposes :counts, type: Hash, of: { values: Integer }
+        def call = expose(counts: {})
+      end
+      prop = described_class.build_output(klass.external_field_configs)[:properties][:counts]
+
+      expect(prop[:additionalProperties]).to eq(type: "integer")
+    end
+
+    # Output goes through `effective_validations` like every other constraint: a per-validator gate can skip
+    # the `of:` check on a given call, so the values it would have constrained cannot be promised outbound.
+    it "emits nothing on output for a map whose of: entry carries a gate of its own" do
+      klass = build_axn do
+        exposes :counts, optional: true, type: Hash, of: { values: Integer, if: :flag }
+        def call = nil
+      end
+      prop = described_class.build_output(klass.external_field_configs)[:properties][:counts]
+
+      expect(prop).not_to have_key(:additionalProperties)
+    end
+  end
+
   # PRO-2917 (archived not-reproducible): a self-referential Data.define type does NOT overflow the
   # stack — the type-boundary expansion is one level deep (`klass.members.to_h { |m| [m, {}] }`), so a
   # self-reference collapses to a permissive `{}` placeholder rather than recursing. This guards that
