@@ -172,6 +172,27 @@ The rules it backs:
 - Don't build a guard that depends on foreign behaviour being honest — verifying that an object
   BEHAVES is unbounded. Ask ownership (`Internal::NativeMethods`) instead, and refuse (`freeze` is
   the documented escape) when the object isn't native.
+- The bound readers to reach for, so a guard never asks a caller's class about itself. Each of the
+  `NativeMethods` module readers requires the caller to have established that the receiver IS a Module
+  first, via `Internal::Identity.kind?(mod, ::Module)` (`Module#===` is C-level and runs none of the
+  object's code) — binding one to anything else is a `TypeError`, i.e. the replaced-verdict failure
+  they exist to prevent. `spec/axn/internal/no_unbound_module_reflection_spec.rb` enforces the
+  method-table half of this; the naming half is carried by review.
+  - `Internal::NativeMethods.declared_instance_method(mod, name)` — bound `Module#instance_method`,
+    any visibility, nil on `NameError`. One call replaces a `method_defined? ||
+    private_method_defined?` pair AND the follow-up `instance_method(name)`.
+  - `Internal::NativeMethods.public_instance_method?(mod, name)` — when the question is "could a
+    consumer dispatch this?" rather than "does the module declare it?"
+  - `Internal::NativeMethods.module_ancestors`, `.includes_module?`, `.module_singleton_class` — the
+    last for INSTALLING onto a module's singleton class, where a misdirected read lands the
+    installation somewhere else entirely rather than merely inverting a verdict.
+  - `Internal::Rendering.module_name(mod)` for a class or module named in prose,
+    `Internal::Rendering.class_name(value)` for a value's class, `Internal::Text.renderable` for
+    caller bytes — and in `axn/exceptions.rb`, `Text.renderable`/`RenderedClassName` only, since
+    reaching up to the reflection layer would close a require cycle
+    (`spec/axn/standalone_require_spec.rb` catches it).
+  - `Internal::Identity.kind?` instead of `is_a?`, and `Internal::Identity.same?` instead of `==`
+    when comparing modules — a `Module#==` of the class's own is as overridable as the rest.
 - Every declared name written into prose routes through `PropertyNames`'s renderers — never render a
   name by running the name's own code — and a name is canonicalized exactly once per verdict, never
   re-canonicalized inside a nested check.
