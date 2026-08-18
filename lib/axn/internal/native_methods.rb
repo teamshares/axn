@@ -51,10 +51,13 @@ module Axn
       KERNEL_FROZEN = ::Kernel.instance_method(:frozen?)
       KERNEL_SINGLETON_CLASS = ::Kernel.instance_method(:singleton_class)
       MODULE_ANCESTORS = ::Module.instance_method(:ancestors)
+      MODULE_DEFINE_METHOD = ::Module.instance_method(:define_method)
+      MODULE_INCLUDE = ::Module.instance_method(:include)
       MODULE_INSTANCE_METHOD = ::Module.instance_method(:instance_method)
       MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
       MODULE_NAME = ::Module.instance_method(:name)
       MODULE_PREPEND = ::Module.instance_method(:prepend)
+      MODULE_REMOVE_METHOD = ::Module.instance_method(:remove_method)
       MODULE_PUBLIC_INSTANCE_METHODS = ::Module.instance_method(:public_instance_methods)
       MODULE_PUBLIC_METHOD_DEFINED = ::Module.instance_method(:public_method_defined?)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
@@ -63,8 +66,9 @@ module Axn
       SYMBOL_ENCODING = ::Symbol.instance_method(:encoding)
       private_constant :SYMBOL_ENCODING
       private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
-                       :MODULE_ANCESTORS, :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS,
-                       :MODULE_NAME, :MODULE_PREPEND,
+                       :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
+                       :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS,
+                       :MODULE_NAME, :MODULE_PREPEND, :MODULE_REMOVE_METHOD,
                        :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PUBLIC_INSTANCE_METHODS,
                        :MODULE_PUBLIC_METHOD_DEFINED
 
@@ -225,6 +229,14 @@ module Axn
       # installing a GUARD, where a `prepend` that quietly declines leaves the guard uninstalled and the
       # thing it was watching for silently permitted. Absent functionality is loud; an absent guard is not.
       def self.prepend_module(mod, other) = MODULE_PREPEND.bind_call(mod, other)
+
+      # `include`, `define_method` and `remove_method`, bound — for INSTALLING onto a caller's class or onto a
+      # module axn hands it, rather than asking a question. Same reasoning as `prepend_module`: a class that
+      # defines its own `include` and quietly declines would leave the installation absent, and an absent
+      # deferral silently restores the shadowing it was there to remove.
+      def self.include_module(mod, other) = MODULE_INCLUDE.bind_call(mod, other)
+      def self.define_own_instance_method(mod, name, &) = MODULE_DEFINE_METHOD.bind_call(mod, name, &)
+      def self.remove_own_instance_method(mod, name) = MODULE_REMOVE_METHOD.bind_call(mod, name)
 
       # A MODULE's own singleton class, read natively — for a caller that has to INSTALL something on it
       # rather than ask a question about it. A class that answers with someone else's singleton class

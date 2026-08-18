@@ -53,21 +53,25 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(described_class.inherited_definer(action, :fail!)).to be_nil
     end
 
-    # Skipping an axn-core owner has to CONTINUE the walk, not end it. `include Axn` LAST puts axn's logging
-    # module ahead of the user's in the MRO, so the walk meets the skip before the answer: a skip written as a
-    # halt would report no definer here and let axn shadow the user's own `log`.
+    # Skipping an axn-core owner has to CONTINUE the walk, not end it. `include Axn` LAST puts axn's own module
+    # ahead of the user's in the MRO, so the walk meets the skip before the answer: a skip written as a halt
+    # would report no definer here and let axn shadow the user's own method.
+    #
+    # The name is one axn core declares and does NOT surrender, which is what keeps this example about the skip:
+    # for a surrendered name, `include Axn` also installs the deferral shim above the user's module, and the
+    # shim — declaring the name, and not axn-core-owned — would be the honest answer to this walk.
     it "continues past an axn-core owner to a user module below it" do
-      mod = Module.new { def log(*) = "USER" }
+      mod = Module.new { def _run(*) = "USER" }
       action = Class.new do
         include mod
         include Axn
       end
 
-      # Self-checking precondition: something above `mod` declares `log`, and on this class that can only be axn.
+      # Self-checking precondition: something above `mod` declares `_run`, and on this class that can only be axn.
       ancestry = action.ancestors
-      expect(ancestry.index { |ancestor| ancestor.instance_methods(false).include?(:log) }).to be < ancestry.index(mod)
+      expect(ancestry.index { |ancestor| ancestor.instance_methods(false).include?(:_run) }).to be < ancestry.index(mod)
 
-      expect(described_class.inherited_definer(action, :log)).to eq(mod)
+      expect(described_class.inherited_definer(action, :_run)).to eq(mod)
     end
 
     it "counts a satellite axn namespace as external, matching the class-side rule" do

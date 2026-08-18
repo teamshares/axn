@@ -83,6 +83,10 @@ module Axn
       Array(Axn.config.additional_includes).each { |mod| include mod }
     end
 
+    # Last, so the module it installs outranks every module the class_eval above included — including
+    # `Axn.config.additional_includes`. A name the user's own hierarchy owns wins over axn's helper.
+    Core::InstanceDeferral.install(base)
+
     Axn::Tools::Registry.register_class(base)
   end
 end
