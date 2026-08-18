@@ -76,6 +76,13 @@ module Axn
       # their DSL is exactly what we must defer to: an adapter base that picks up
       # `description`/`input_schema`/`output_schema` from an `Axn::MCP::*` module counts as external, so
       # axn won't re-extend and shadow it.
+      #
+      # That narrowness has a second consequence now that `core_definition_answers?` reads this too: an action's
+      # ancestry also holds `Axn`, `Axn::Async`, `Axn::Async::BatchEnqueue` and `Axn::Mountable`, and any of them
+      # declaring `call`, `_run` or `initialize` in its own table would be read as a foreign owner standing in
+      # front of axn — making every action raise. `InstanceDeferral`'s "leaves an ordinary action untouched" is
+      # the tripwire for it; a name added to one of those modules either belongs under `Axn::Core` or belongs
+      # here.
       def _axn_core_owned?(mod)
         name = Axn::Internal::NativeMethods.declared_module_name(mod)
         return false unless name

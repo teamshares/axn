@@ -23,6 +23,13 @@ RSpec.describe Axn::Internal::Rendering do
 
       expect(described_class.module_name(mod)).to match(/\A#<Class:/)
     end
+
+    # `Module#to_s` is a TypeError on anything else, and the callers are public exception kwargs: a message
+    # path owes an answer about the value rather than an error about rendering it.
+    it "names a non-Module rather than raising out of the message path" do
+      expect(described_class.module_name(:not_a_module)).to eq("not_a_module")
+      expect(described_class.module_name(42)).to eq("Integer")
+    end
   end
 
   describe ".exception_message" do

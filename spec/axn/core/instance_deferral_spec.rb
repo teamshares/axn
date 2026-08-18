@@ -224,6 +224,18 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect { action.call }.to raise_error(/compose|define .*in this class|rename/i)
     end
 
+    # The two remedies are not interchangeable, and a message that blurs them sends the reader back to the bug:
+    # `def call = super` on the action reaches axn's default, not the parent's, and reports success exactly as
+    # before. So the message has to say which branch keeps the parent's implementation running.
+    it "does not let the two remedies read as one" do
+      action = Class.new(service_base) { include Axn }
+
+      expect { action.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod) do |error|
+        expect(error.message).to include("reaches axn's default, not ServiceBase's")
+        expect(error.message).to include("to keep ServiceBase's #call running, compose ServiceBase in")
+      end
+    end
+
     it "does not raise when the class defines the name itself" do
       action = Class.new(service_base) do
         include Axn
@@ -242,6 +254,15 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect(built.call.out).to eq(42)
     end
 
+    # The factory defines `call` on the built class but never `initialize`, so a superclass owning one is refused
+    # like any other: the parent's initializer genuinely would not run.
+    it "still raises for a factory-built class whose superclass owns initialize" do
+      base = Class.new { def initialize(user: nil) = @user = user }
+      built = Axn::Factory.build(-> { 42 }, superclass: base, expose_return_as: :out)
+
+      expect { built.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod, /#initialize/)
+    end
+
     it "propagates out of .call rather than settling into a result, since there is no action yet" do
       action = Class.new(service_base) { include Axn }
 
@@ -249,6 +270,9 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect { action.call! }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod)
     end
 
+    # An exact count, not a ceiling: this fixture reaches `inherited_definer` once per unmemoized check (its own
+    # `call`/`initialize` are answered by `core_definition_answers?` and never get that far), so a ceiling of
+    # three would be met by a guard that re-walked on every call.
     it "checks once per class" do
       action = Class.new(service_base) do
         include Axn
@@ -258,7 +282,34 @@ RSpec.describe Axn::Core::InstanceDeferral do
       allow(Axn::Core::MethodShadowing).to receive(:inherited_definer).and_call_original
 
       3.times { action.call }
-      expect(Axn::Core::MethodShadowing).to have_received(:inherited_definer).at_most(3).times
+      expect(Axn::Core::MethodShadowing).to have_received(:inherited_definer).once
+    end
+
+    # The memo is a class-level ivar, which a subclass does not inherit. Pinned by instrumentation because no
+    # subclass of a PASSING action can be made to fail — the parent's own definition is inherited along with the
+    # verdict — so what needs proving is that the subclass asks the question again rather than what it answers.
+    it "re-checks a subclass, which inherits no verdict from the class it descends from" do
+      action = Class.new(service_base) do
+        include Axn
+        def initialize(**) = super()
+        def call = nil
+      end
+      action.call
+      subclass = Class.new(action)
+      allow(Axn::Core::MethodShadowing).to receive(:core_definition_answers?).and_call_original
+
+      expect(subclass.call).to be_ok
+      expect(Axn::Core::MethodShadowing).to have_received(:core_definition_answers?).exactly(3).times
+    end
+
+    # The memo is set only after the loop clears, so a refused class stays refused. Set before it, every caller
+    # after the first would get the silent success back.
+    it "raises again on a second call rather than going quiet after the first" do
+      action = Class.new(service_base) { include Axn }
+
+      2.times do
+        expect { action.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod)
+      end
     end
 
     it "leaves an ordinary action untouched" do

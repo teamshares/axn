@@ -58,13 +58,6 @@ module Axn
       def self.of(value) = Text.renderable(ClassName.of(value))
     end
 
-    # A class or module named in its OWN right — the module that declares a method, a declared `type:` — with
-    # the same two halves composed. `RenderedClassName` cannot stand in for it: handed a Module, it answers with
-    # that Module's class, so an owner named through it reads as "Class".
-    module RenderedModuleName
-      def self.of(mod) = Text.renderable(ClassName.of_module(mod))
-    end
-
     # A caller-supplied value written into one of this file's messages, whatever it turns out to be.
     #
     # `Text.renderable` is String-only by contract — it binds String methods, so anything else is a
@@ -90,6 +83,18 @@ module Axn
         else RenderedClassName.of(value)
         end
       end
+    end
+
+    # A class or module named in its OWN right — the module that declares a method, a declared `type:` — rather
+    # than a value's class. `RenderedClassName` cannot stand in for it: handed a Module, it answers with that
+    # Module's CLASS, so an owner named through it reads as "Class".
+    #
+    # `ClassName.of_module` binds `Module#to_s`, which is a TypeError on anything that is not a Module, so what
+    # arrives is type-tested first — undispatched, since a caller filling in a public exception's kwarg is
+    # exactly who might hand over something else, and a message path owes an answer rather than an error about
+    # rendering. Anything else falls through to `RenderedText`, which names it by its class.
+    module RenderedModuleName
+      def self.of(mod) = Identity.kind?(mod, ::Module) ? Text.renderable(ClassName.of_module(mod)) : RenderedText.of(mod)
     end
 
     # Internal only -- rescued before Axn::Result is returned
@@ -259,10 +264,14 @@ module Axn
     #
     # Every value it interpolates is rendered, for the reason every message here renders: a constant path may
     # hold bytes with no UTF-8 rendering, and joining those would replace this failure with an
-    # Encoding::CompatibilityError out of the message path. `klass` and `owner` are Modules named in their own
-    # right, so `RenderedModuleName` is their reader — `RenderedClassName` would name a Module's own class and
-    # read as "Class". `name` goes through `RenderedText`, which decides by type what it can honestly get, since
-    # this is a public class and a Symbol is only the obvious thing to pass, not the guaranteed one.
+    # Encoding::CompatibilityError out of the message path. `klass` and `owner` are named in their own right, so
+    # `RenderedModuleName` is their reader; `name` goes through `RenderedText`. Both take whatever a caller of
+    # this public class actually passes rather than only what it ought to.
+    #
+    # The two remedies are spelled out separately because they do NOT amount to the same thing, and a reader who
+    # merges them lands back on the failure being reported: defining the name on the action moves the behaviour
+    # into the action (a bare `super` from there reaches axn's own default, NOT the inherited implementation),
+    # while composing is the branch that keeps the inherited implementation running.
     class UnsurrenderableInheritedMethod < ContractViolation
       def initialize(klass:, name:, owner:)
         klass = Axn::Internal::RenderedModuleName.of(klass)
@@ -270,9 +279,9 @@ module Axn
         name = Axn::Internal::RenderedText.of(name)
 
         super("#{owner} defines ##{name}, which #{klass} cannot inherit: axn must own that name to run the " \
-              "action, so the inherited definition would never be called. Either define ##{name} on " \
-              "#{klass} itself (axn's is then reachable with `super`), or compose #{owner} in rather than " \
-              "inheriting from it.")
+              "action, so the inherited definition would never be called. Either move that behaviour into " \
+              "#{klass}'s own ##{name} (`super` from there reaches axn's default, not #{owner}'s), or, to keep " \
+              "#{owner}'s ##{name} running, compose #{owner} in rather than inheriting from it.")
       end
     end
 

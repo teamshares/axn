@@ -113,6 +113,19 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(described_class.core_definition_answers?(action, :call)).to be false
     end
 
+    # The shape a re-walk of own tables gets wrong: `call` is declared on the class, but the prepended module
+    # sits in front of it and is what a dispatch reaches.
+    it "is false for a module prepended to the class, which outranks the class's own definition" do
+      mine = Module.new { def call = nil }
+      action = Class.new do
+        include Axn
+        prepend mine
+        def call = raise("prepended module answers instead")
+      end
+
+      expect(described_class.core_definition_answers?(action, :call)).to be false
+    end
+
     it "is false for a name nothing in the ancestry declares" do
       expect(described_class.core_definition_answers?(Class.new { include Axn }, :no_such_method)).to be false
     end
