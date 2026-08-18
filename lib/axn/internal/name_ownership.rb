@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "axn/internal/text"
+require "axn/internal/reflection/property_names"
+
 module Axn
   module Internal
     # Whether a declared reader may take a name, decided by who currently OWNS it rather than by a
@@ -81,7 +84,13 @@ module Axn
       def internal_name?(name) = name.to_s.start_with?("_")
 
       # `name` is optional and used only to locate an anonymous owner's source (see owner_label).
+      # Every name and module written into the prose below goes through `PropertyNames`' renderers first.
+      # A declared name is the AUTHOR's bytes and only has to be ASCII-COMPATIBLE, so a Latin-1 name beside
+      # a UTF-8 module name would otherwise raise `Encoding::CompatibilityError` out of the message and hide
+      # the declaration error it was written to report.
       def describe(conflict, name: nil)
+        name = Axn::Internal::Reflection::PropertyNames.renderable_label(name) unless name.nil?
+
         case conflict
         when :unsurrenderable then "axn itself (the framework dispatches that name to run the action)"
         when :internal then "axn's internals (a leading underscore marks a name axn dispatches on itself)"
@@ -99,11 +108,13 @@ module Axn
       # `#<Module:0x…>`, which tells an author nothing about what they collided with. Point at where the
       # method was written instead; the owner is by definition the module that defines it.
       def owner_label(owner, name)
-        return owner.name if owner.name
-        return owner.inspect if name.nil?
+        return Axn::Internal::Reflection::PropertyNames.renderable_module_name(owner) if owner.name
+        return Axn::Internal::Text.renderable(owner.inspect) if name.nil?
 
         file, line = owner.instance_method(name).source_location
-        file ? "an anonymous module (#{file}:#{line})" : owner.inspect
+        return Axn::Internal::Text.renderable(owner.inspect) unless file
+
+        "an anonymous module (#{Axn::Internal::Text.renderable(file)}:#{line})"
       end
     end
   end

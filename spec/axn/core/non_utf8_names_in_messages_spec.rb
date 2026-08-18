@@ -223,4 +223,45 @@ RSpec.describe "non-UTF-8 declared names in messages" do
       expect(message).to include("reached from the shape member of class Café")
     end
   end
+  # `ReservedAttributeError` composes the declared NAME with the OWNER's label, and both can carry non-ASCII
+  # independently: the name is the author's bytes (ASCII-compatible is all a declared name promises) while the
+  # owner label is a UTF-8 module name or a file path. Raw interpolation raised out of `#message` itself, so the
+  # author got an encoding failure in place of the collision that was refused.
+  describe "a reserved-name error whose name and owner are in different encodings" do
+    # The owner is the action's OWN class, so the collision is real: a `def` the author already wrote.
+    def action_with_latin1_method(class_name)
+      latin1 = latin1_name
+      klass = Class.new do
+        include Axn
+        define_method(latin1) { "the author's own" }
+      end
+      Object.const_set(class_name, klass) unless Object.const_defined?(class_name)
+      klass
+    end
+
+    it "renders both sides rather than raising out of the message" do
+      klass = action_with_latin1_method(:NonUtf8OwnerAçtion)
+      latin1 = latin1_name
+
+      expect { klass.class_eval { expects latin1 } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError) { |error|
+          expect(error.message).to be_readable_utf8
+          expect(error.message).to include("café", "NonUtf8OwnerAçtion")
+        }
+    end
+
+    # The control: a latin-1 name is a LEGAL declaration, and rendering it in error prose must not have
+    # made it illegal. The reader is what the rule judges, so `as:` moves the collision out of the way
+    # while the caller keeps passing the latin-1 wire key.
+    it "still accepts a latin-1 name and reads the caller's value back" do
+      latin1 = latin1_name
+      klass = build_axn do
+        expects latin1, as: :renamed
+        exposes :out
+        def call = expose(out: renamed)
+      end
+
+      expect(klass.call(latin1 => "the caller's value").out).to eq("the caller's value")
+    end
+  end
 end
