@@ -77,12 +77,18 @@ module Axn
       # `description`/`input_schema`/`output_schema` from an `Axn::MCP::*` module counts as external, so
       # axn won't re-extend and shadow it.
       #
-      # That narrowness has a second consequence now that `core_definition_answers?` reads this too: an action's
-      # ancestry also holds `Axn`, `Axn::Async`, `Axn::Async::BatchEnqueue` and `Axn::Mountable`, and any of them
-      # declaring `call`, `_run` or `initialize` in its own table would be read as a foreign owner standing in
-      # front of axn — making every action raise. `InstanceDeferral`'s "leaves an ordinary action untouched" is
-      # the tripwire for it; a name added to one of those modules either belongs under `Axn::Core` or belongs
-      # here.
+      # That narrowness is load-bearing now that `core_definition_answers?` reads this too, and what it costs
+      # depends on where the module sits. `Axn::Async::BatchEnqueue`, `Axn::Async` and `Axn::Mountable` are
+      # included AHEAD of `Axn::Core::DefaultCall`, so one of them declaring `call`, `_run` or `initialize` makes
+      # this answer false for that name: the unsurrenderable guard skips it and axn quietly defers to the
+      # hijacking module rather than raising, which no spec catches, because nothing fails at the guard — only
+      # whatever the hijacked method was doing fails, if anything.
+      #
+      # `Axn` itself sits BELOW `Axn::Core`, so a name declared there is found as a foreign owner instead: every
+      # action that does not define that name in its own body raises, and for `_run`/`initialize`, which no
+      # ordinary action defines, every action raises full stop. A fixture with its own `def call` cannot show
+      # either failure, so verify by hand before adding one of these three names to an axn module outside
+      # `Axn::Core` — the name either belongs under `Axn::Core` or belongs in this predicate.
       def _axn_core_owned?(mod)
         name = Axn::Internal::NativeMethods.declared_module_name(mod)
         return false unless name

@@ -236,6 +236,23 @@ RSpec.describe Axn::Core::InstanceDeferral do
       end
     end
 
+    # The runtime fact the message asserts, and the sentence an author will act on: `super` from the action's own
+    # `call` reaches axn's default, NOT the parent's implementation. Which is why the message names composition
+    # as the branch that keeps the parent's `call` running, and this one as the branch that replaces it.
+    it "reaches axn's default from super rather than the inherited implementation" do
+      ran = []
+      base = Class.new { define_method(:call) { ran << :parent_call_ran } }
+      action = Class.new(base) do
+        include Axn
+        # Not useless: this bare `super` is the literal shape the error message describes, and where it lands
+        # is the fact under test.
+        def call = super # rubocop:disable Lint/UselessMethodDefinition
+      end
+
+      expect(action.call).to be_ok
+      expect(ran).to be_empty
+    end
+
     it "does not raise when the class defines the name itself" do
       action = Class.new(service_base) do
         include Axn

@@ -113,14 +113,15 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(described_class.core_definition_answers?(action, :call)).to be false
     end
 
-    # The shape a re-walk of own tables gets wrong: `call` is declared on the class, but the prepended module
-    # sits in front of it and is what a dispatch reaches.
-    it "is false for a module prepended to the class, which outranks the class's own definition" do
+    # The shape a re-walk of own tables gets wrong, and the reason this predicate reads the EFFECTIVE owner: the
+    # class's own table is empty, so an own-table reading finds nothing of the user's and concludes axn answers —
+    # which inside `assert_dispatchable_names_free!` is a wrong raise against a superclass. The prepended module
+    # is what a call would actually reach.
+    it "is false for a module prepended to a class that declares nothing of its own" do
       mine = Module.new { def call = nil }
       action = Class.new do
         include Axn
         prepend mine
-        def call = raise("prepended module answers instead")
       end
 
       expect(described_class.core_definition_answers?(action, :call)).to be false
