@@ -41,7 +41,7 @@ Blast radius today is zero. Across os-app, buyout-app, invoice-app, data_shifter
 
 `Axn::Core::MethodShadowing` gains the instance-side check beside the class-side one, sharing a single private walk, because the acceptance criterion is that a future reader meets one rule with one difference rather than two similar checks to reconcile.
 
-The walk is what `externally_defined?` does today: enumerate ancestors, skip anything an `Axn::Core::*` module owns, and ask `NativeMethods.declares_own_instance_method?`. Three parameters differ:
+The walk is what `externally_defined?` does today: enumerate ancestors, skip anything axn core owns — `Axn::Core` itself as well as its namespace, since `Axn::Core` declares `fail!`/`done!`/`forward!`/`_run`/`initialize` in its own table — and ask `NativeMethods.declares_own_instance_method?`. Three parameters differ:
 
 | | class side (PRO-2875) | instance side (this ticket) |
 | -- | -- | -- |
@@ -49,9 +49,9 @@ The walk is what `externally_defined?` does today: enumerate ancestors, skip any
 | truncation | none | `take_while { _1 != ::Object }` |
 | `base` itself | included (an explicit `def self.x` defers) | **excluded** (a `def x` in the class body is the user's own, and wins on its own) |
 
-The truncation is the whole difference in kind, and it exists for one reason: `Kernel` owns `warn` and `Object` owns `inspect`/`hash`/`then`/`tap`, so an untruncated walk would make axn permanently decline to define `warn` and silently redirect every `warn("msg")` inside an action to stderr. Everything before `Object` is the user's own hierarchy; everything from `Object` outward is Ruby's, and axn takes it.
+The truncation is the whole difference in kind, and it exists for one reason: `Kernel` owns `warn`, `inspect`, `hash`, `then` and `tap`, and `::Object` stands in front of it in every class's ancestry, so truncating there is what excludes them. An untruncated walk would make axn permanently decline to define `warn` and silently redirect every `warn("msg")` inside an action to stderr. Everything before `Object` is the user's own hierarchy; everything from `Object` outward is Ruby's, and axn takes it.
 
-Skipping only `Axn::Core::*`-owned modules — not the whole `Axn::` namespace — is carried over unchanged, and it means the same thing here as on the class side: an instance method a base class picks up from a satellite adapter module like `Axn::MCP::*` counts as external, and axn defers to it. That is the case the class-side rule was written for, applied to the other receiver.
+Skipping only axn core's own modules — not the whole `Axn::` namespace — is carried over unchanged, and it means the same thing here as on the class side: an instance method a base class picks up from a satellite adapter module like `Axn::MCP::*` counts as external, and axn defers to it. That is the case the class-side rule was written for, applied to the other receiver.
 
 Excluding `base` itself is what keeps PRO-3062's wrap idiom intact. `def log(...) = super` written either side of `include Axn` still resolves to the class's own method with `super` reaching axn's, because the class is never a deferral target for itself.
 

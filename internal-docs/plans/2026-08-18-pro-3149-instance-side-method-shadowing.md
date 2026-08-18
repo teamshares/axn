@@ -1334,7 +1334,7 @@ Add one entry to `AGENTS.md`, in the same bullet list that carries "Internals ne
 
 - `Axn::Core::MethodShadowing` decides whether axn may define a name, for both receivers, through one ancestry walk (`_external_definer`).
 - Class side: `base.singleton_class`'s ancestors, untruncated, `base` included.
-- Instance side: `base`'s ancestors, truncated at `::Object`, `base` and its prepends excluded — because `Kernel` owns `warn` and `Object` owns `inspect`/`hash`/`then`/`tap`, so an untruncated walk would silently redirect `warn("msg")` inside every action to stderr.
+- Instance side: `base`'s ancestors, truncated at `::Object`, `base` and its prepends excluded — `Kernel` owns `warn`/`inspect`/`hash`/`then`/`tap` and sits behind `::Object`, so truncating there is what keeps them axn's; an untruncated walk would silently redirect `warn("msg")` inside every action to stderr.
 - Both skip `Axn::Core::*` owners only, so a satellite adapter's module counts as external.
 - The deferrable surface is `SURRENDERABLE_OWNERS`' public methods minus `internal_name?`; `UNSURRENDERABLE` names raise at the execution funnel instead, because only the finished class reveals whether the class defines its own.
 - New user-facing sugar therefore needs no edit here; adding a whole new sugar module does.
