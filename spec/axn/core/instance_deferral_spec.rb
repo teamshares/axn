@@ -9,11 +9,7 @@ RSpec.describe Axn::Core::InstanceDeferral do
   end
 
   it "lets the inherited definition win over axn's helper" do
-    action = Class.new(parent) do
-      include Axn
-      def call = expose_nothing
-      def expose_nothing = nil
-    end
+    action = Class.new(parent) { include Axn }
 
     expect(action.send(:new).log("x")).to eq("PARENT-LOG(x)")
   end
@@ -89,5 +85,52 @@ RSpec.describe Axn::Core::InstanceDeferral do
     result = action.call
     expect(result).to be_ok
     expect(result.out).to eq("PARENT-LOG(hi)")
+  end
+
+  it "defers to a definer the class picked up from an included module" do
+    concern = Module.new { def log(msg, **) = "CONCERN-LOG(#{msg})" }
+    action = Class.new do
+      include concern
+      include Axn
+    end
+
+    expect(described_class.definers(action)).to eq(log: concern)
+    expect(action.send(:new).log("x")).to eq("CONCERN-LOG(x)")
+  end
+
+  # The deferral reproduces the definer's declaration, which means reproducing its VISIBILITY: a wrapper is
+  # defined public unless told otherwise, so without this the action would publish a helper its author kept off
+  # the class's surface, and duck-type probes on the instance would start answering differently.
+  it "keeps a private definer's method private, still reachable with an implicit receiver" do
+    base = Class.new { private def log(msg) = "PRIVATE-LOG(#{msg})" }
+    action = Class.new(base) do
+      include Axn
+      def wrapped = log("x")
+    end
+
+    expect(action).not_to be_public_method_defined(:log)
+    expect(action.send(:new)).not_to respond_to(:log)
+    expect(action.send(:new).wrapped).to eq("PRIVATE-LOG(x)")
+  end
+
+  # Protected is its own case rather than a shade of private: collapsing it either way breaks something.
+  it "keeps a protected definer's method protected, so one instance can still reach another's" do
+    base = Class.new { protected def log(msg) = "PROTECTED-LOG(#{msg})" }
+    action = Class.new(base) do
+      include Axn
+      def log_peer(other) = other.log("x")
+    end
+
+    expect(action).not_to be_public_method_defined(:log)
+    expect(action).to be_protected_method_defined(:log)
+    expect(action.send(:new).log_peer(action.send(:new))).to eq("PROTECTED-LOG(x)")
+  end
+
+  it "keeps a public definer's method public" do
+    action = Class.new(parent) { include Axn }
+
+    expect(action).to be_public_method_defined(:log)
+    # An external dispatch is what public MEANS here; a private or protected wrapper would raise NoMethodError.
+    expect(action.send(:new).log("x")).to eq("PARENT-LOG(x)")
   end
 end

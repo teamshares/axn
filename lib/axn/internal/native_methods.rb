@@ -61,6 +61,7 @@ module Axn
       MODULE_PUBLIC_INSTANCE_METHODS = ::Module.instance_method(:public_instance_methods)
       MODULE_PUBLIC_METHOD_DEFINED = ::Module.instance_method(:public_method_defined?)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
+      MODULE_PROTECTED_INSTANCE_METHODS = ::Module.instance_method(:protected_instance_methods)
       STRING_EMPTY = ::String.instance_method(:empty?)
       STRING_ENCODING = ::String.instance_method(:encoding)
       SYMBOL_ENCODING = ::Symbol.instance_method(:encoding)
@@ -69,8 +70,19 @@ module Axn
                        :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
                        :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS,
                        :MODULE_NAME, :MODULE_PREPEND, :MODULE_REMOVE_METHOD,
-                       :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PUBLIC_INSTANCE_METHODS,
-                       :MODULE_PUBLIC_METHOD_DEFINED
+                       :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PROTECTED_INSTANCE_METHODS,
+                       :MODULE_PUBLIC_INSTANCE_METHODS, :MODULE_PUBLIC_METHOD_DEFINED
+
+      # Keyed by the visibility they declare, so a caller reproducing a declaration passes the answer
+      # `declared_visibility` gave it straight through instead of branching on it, and `fetch` refuses anything
+      # that is not one of the three. `:public` is a no-op against a method `define_method` just defined; it is
+      # here to keep the setter total over the reader's range rather than because it changes anything today.
+      VISIBILITY_SETTERS = {
+        public: ::Module.instance_method(:public),
+        protected: ::Module.instance_method(:protected),
+        private: ::Module.instance_method(:private),
+      }.freeze
+      private_constant :VISIBILITY_SETTERS
 
       # ActiveSupport's own definition of a blank String, matched against the value's BYTES rather than asked
       # of the value (`Regexp#match?` reads a String operand's bytes in C — no `to_str`, no `=~`, and the
@@ -212,6 +224,24 @@ module Axn
           MODULE_PRIVATE_INSTANCE_METHODS.bind_call(mod, false).include?(name)
       end
 
+      # WHICH visibility a MODULE declares `name` at in its OWN table — :public, :protected or :private — or nil
+      # when it declares none. For a caller that has to REPRODUCE a declaration elsewhere, where the
+      # public/not-public boolean `public_instance_method?` answers is not enough: protected collapses into
+      # neither of the others. Made private, a protected helper stops answering `other.helper` between two
+      # instances of the same family; made public, it joins the class's outside surface, which is exactly where
+      # its author declined to put it.
+      #
+      # Three disjoint own-table reads rather than a subtraction, because `instance_methods` counts protected
+      # methods among the public ones. Own table rather than effective lookup, and the same Module precondition,
+      # for the same reasons as `declares_own_instance_method?` above.
+      def self.declared_visibility(mod, name)
+        return :public if MODULE_PUBLIC_INSTANCE_METHODS.bind_call(mod, false).include?(name)
+        return :protected if MODULE_PROTECTED_INSTANCE_METHODS.bind_call(mod, false).include?(name)
+        return :private if MODULE_PRIVATE_INSTANCE_METHODS.bind_call(mod, false).include?(name)
+
+        nil
+      end
+
       # A module's OWN public instance methods, read natively. Same Module precondition as the readers above.
       # Public only: a private helper is not a surface a caller dispatches, so it is not a surface axn hands to
       # anyone else either.
@@ -230,13 +260,22 @@ module Axn
       # thing it was watching for silently permitted. Absent functionality is loud; an absent guard is not.
       def self.prepend_module(mod, other) = MODULE_PREPEND.bind_call(mod, other)
 
-      # `include`, `define_method` and `remove_method`, bound — for INSTALLING onto a caller's class or onto a
-      # module axn hands it, rather than asking a question. Same reasoning as `prepend_module`: a class that
-      # defines its own `include` and quietly declines would leave the installation absent, and an absent
-      # deferral silently restores the shadowing it was there to remove.
+      # `include`, bound — for INSTALLING onto a CALLER'S class rather than asking a question. Same reasoning as
+      # `prepend_module`: a class that defines its own `include` and quietly declines would leave the module
+      # absent, and an absent deferral silently restores the shadowing it was there to remove.
       def self.include_module(mod, other) = MODULE_INCLUDE.bind_call(mod, other)
+
+      # The method-table WRITERS, bound. Unlike the two above, these only ever target a module axn built itself,
+      # where there is no user definition to decline: binding them buys no defence, and is here so that one
+      # install path reads consistently rather than half through Ruby's own implementations and half through
+      # whatever the receiver happens to answer.
+      #
+      # `set_declared_visibility` exists because `define_method` always defines PUBLIC. A wrapper standing in for
+      # another module's method has to be declared at THAT module's visibility, or the installation publishes a
+      # method its author deliberately kept off the class's surface.
       def self.define_own_instance_method(mod, name, &) = MODULE_DEFINE_METHOD.bind_call(mod, name, &)
       def self.remove_own_instance_method(mod, name) = MODULE_REMOVE_METHOD.bind_call(mod, name)
+      def self.set_declared_visibility(mod, name, visibility) = VISIBILITY_SETTERS.fetch(visibility).bind_call(mod, name)
 
       # A MODULE's own singleton class, read natively — for a caller that has to INSTALL something on it
       # rather than ask a question about it. A class that answers with someone else's singleton class

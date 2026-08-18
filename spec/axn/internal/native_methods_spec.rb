@@ -412,6 +412,49 @@ RSpec.describe Axn::Internal::NativeMethods do
       expect(described_class.own_public_instance_methods(mod)).to eq([:public_one])
     end
   end
+
+  describe ".declared_visibility" do
+    let(:mod) do
+      Module.new do
+        def public_one = nil
+        def protected_one = nil
+        def private_one = nil
+        protected :protected_one
+        private :private_one
+      end
+    end
+
+    it "separates the three visibilities a module declares" do
+      expect(described_class.declared_visibility(mod, :public_one)).to eq(:public)
+      expect(described_class.declared_visibility(mod, :private_one)).to eq(:private)
+    end
+
+    # `instance_methods` counts protected methods among the public ones, so a reader written as
+    # "public unless private" reports this one public and a caller reproducing the declaration leaks it.
+    it "does not report a protected method as public" do
+      expect(described_class.declared_visibility(mod, :protected_one)).to eq(:protected)
+    end
+
+    it "answers nil for a name the module does not declare, including one it inherits" do
+      declaring = mod
+      child = Module.new { include declaring }
+
+      expect(described_class.declared_visibility(child, :public_one)).to be_nil
+      expect(described_class.declared_visibility(child, :nope_not_here)).to be_nil
+    end
+
+    it "reads the table natively rather than dispatching" do
+      hijacked = Module.new do
+        def self.public_instance_methods(*) = raise("hijacked")
+        def self.protected_instance_methods(*) = raise("hijacked")
+        def self.private_instance_methods(*) = raise("hijacked")
+        def protected_one = nil
+        protected :protected_one
+      end
+
+      expect(described_class.declared_visibility(hijacked, :protected_one)).to eq(:protected)
+    end
+  end
 end
 
 RSpec.describe Axn::Internal::NativeMethods, ".declared_instance_method" do

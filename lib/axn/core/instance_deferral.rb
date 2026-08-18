@@ -26,10 +26,13 @@ module Axn
         return NO_DEFERRALS if deferrals.empty?
 
         shim = ::Module.new
-        deferrals.each_value do |(_definer, impl)|
+        deferrals.each_value do |(_definer, impl, visibility)|
           Axn::Internal::NativeMethods.define_own_instance_method(shim, impl.name) do |*args, **kwargs, &blk|
             impl.bind_call(self, *args, **kwargs, &blk)
           end
+          # `define_method` defines public, so without this a definer's `private def log` would come back out of
+          # the deferral as part of the action's public surface — the opposite of stepping aside.
+          Axn::Internal::NativeMethods.set_declared_visibility(shim, impl.name, visibility)
         end
         Axn::Internal::NativeMethods.include_module(base, shim)
 
@@ -47,15 +50,22 @@ module Axn
       def self._state(klass) = KERNEL_IVAR_GET.bind_call(klass, DEFERRALS_IVAR)
       private_class_method :_state
 
-      # Captured as an UnboundMethod at include time, so a later reopening of the definer cannot silently
-      # retarget a deferral the class already committed to.
+      # Captured — implementation and visibility both — at include time, which cuts two ways and deliberately
+      # so. A definer reopened afterwards cannot silently retarget a deferral the class already committed to;
+      # by the same token, a body redefined on that definer, or a module `prepend`ed to it, AFTER the action
+      # class was defined is not picked up, because the wrapper keeps calling the implementation that was there
+      # at include time where a plain dispatch would reach the new one. A Zeitwerk reload re-creates the action
+      # class and so re-captures, which covers the common Rails path; a post-boot monkeypatch or an
+      # instrumentation `prepend` does not.
       def self._collect(base)
         MethodShadowing.deferrable_names.each_with_object({}) do |name, acc|
           definer = MethodShadowing.inherited_definer(base, name)
           next if definer.nil?
 
           impl = Axn::Internal::NativeMethods.declared_instance_method(definer, name)
-          acc[name] = [definer, impl] unless impl.nil?
+          next if impl.nil?
+
+          acc[name] = [definer, impl, Axn::Internal::NativeMethods.declared_visibility(definer, name)]
         end
       end
       private_class_method :_collect
