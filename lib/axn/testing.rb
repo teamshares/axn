@@ -36,6 +36,9 @@ module Axn
       #     `middleware_registered?` as false and raise on the next job. Only its validation memo
       #     is dropped, via `reset_validation!`, so a spec that changes
       #     `Axn.config.async_exception_reporting` gets validation re-run against the new mode.
+      #   * `Core::InstanceDeferral`'s record of which inherited methods it has already announced. The
+      #     announcement is a log line already emitted, so re-arming it here would have a host app's suite
+      #     re-decide a deferral the process settled at boot. Its private spec hook is for axn's own suite.
       #
       # Two further pieces of per-execution state need nothing here: Internal::ExceptionClassification
       # and Internal::CarriedPresentation both store in ActiveSupport::IsolatedExecutionState and are

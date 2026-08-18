@@ -369,6 +369,17 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect(warnings.size).to eq(1)
     end
 
+    # The other half of the pair key: keyed by name alone, a second hierarchy shadowing a name already
+    # announced for the first would be silently swallowed — the case the warning exists for.
+    it "warns separately for a second definer of the same name" do
+      stub_const("Alpha", Class.new { def log(*) = nil })
+      stub_const("Beta", Class.new { def log(*) = nil })
+      Class.new(Alpha) { include Axn }
+      Class.new(Beta) { include Axn }
+
+      expect(warnings.size).to eq(2)
+    end
+
     it "warns separately for a second name from the same definer" do
       stub_const("ApplicationService", Class.new do
         def log(*) = nil

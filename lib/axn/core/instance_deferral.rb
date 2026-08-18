@@ -83,21 +83,27 @@ module Axn
       # under fifty actions is one line at boot, not fifty. A definer that lies about `hash`/`eql?` gets warned
       # about more than once, which is the right way for a courtesy to degrade.
       #
-      # Never cleared. This is the record of a side effect already committed — the process has announced the
-      # deferral — so a configuration reset in a test suite must not make it announce it again.
+      # Never cleared by any public reset. This is the record of a side effect already committed — the process
+      # has announced the deferral — so a configuration reset in a test suite must not make it announce it again.
+      #
+      # A class-reloading host is where the "one line at boot" premise thins out: each generation of
+      # `ApplicationService` is a distinct class object, so a reload re-announces and leaves the previous
+      # generation held here. Both follow from the definer genuinely having been redefined, and a reload cycle
+      # is a boot of sorts, but a long dev session accumulates one entry (and one line) per reload per name.
       WARNED = {} # rubocop:disable Style/MutableConstant (grown at include time; a frozen one could record nothing)
       private_constant :WARNED
 
       # Announced rather than logged at debug: a deferral the author did not intend changes which code runs, and
       # a debug line is invisible to the developer who needs to know.
       def self._warn_once(base, name, definer)
-        return unless WARNED[[definer, name]].nil?
+        key = [definer, name]
+        return if WARNED.key?(key)
 
-        WARNED[[definer, name]] = true
+        WARNED[key] = true
         owner = Axn::Internal::Rendering.module_name(definer)
         klass = Axn::Internal::Rendering.module_name(base)
         Axn.config.logger.warn(
-          "[#{klass}] axn did not define ##{name}: #{owner} already defines it, so calls reach #{owner}'s " \
+          "[#{klass}] axn left ##{name} to #{owner}: it already defines the name, so calls reach #{owner}'s " \
           "version. Declare `prefer_inherited :#{name}` to confirm that, or `prefer_axn :#{name}` to use " \
           "axn's instead.",
         )
