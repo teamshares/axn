@@ -320,6 +320,75 @@ RSpec.describe Axn::Validators::OfValidator do
       end.to raise_error(ArgumentError, /not supported yet/)
     end
 
+    # The same rule in its second spelling. A subfield declared `on:` a map names one of that hash's members
+    # exactly as a `shape:` member does, so refusing one spelling and permitting the other would leave the
+    # combination half-closed — and the schema it emitted said `{"n": "abc"}` was acceptable where the runtime
+    # rejects it, since `additionalProperties` applies only to keys `properties` does not match.
+    describe "of: beside a subfield on a Hash" do
+      it "rejects a subfield declared directly on a map" do
+        expect do
+          build_axn do
+            expects :counts, type: Hash, of: { values: Integer }
+            expects :n, on: :counts, type: String
+          end
+        end.to raise_error(ArgumentError, /not supported yet/)
+      end
+
+      # The other declaration order: the subfield is declared against a node that only BECOMES a map when the
+      # later declaration lands, so the guard cannot depend on which arrived first.
+      it "rejects the map declared after the subfield it would swallow" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :n, on: "payload.counts", type: String
+            expects :counts, on: :payload, type: Hash, of: { values: Integer }
+          end
+        end.to raise_error(ArgumentError, /not supported yet/)
+      end
+
+      it "rejects a subfield any depth below the map, through a dotted on:" do
+        expect do
+          build_axn do
+            expects :counts, type: Hash, of: { values: Hash }
+            expects :n, on: "counts.inner", type: String
+          end
+        end.to raise_error(ArgumentError, /not supported yet/)
+      end
+
+      it "names both declarations, so the author knows which two to reconcile" do
+        expect do
+          build_axn do
+            expects :counts, type: Hash, of: { values: Integer }
+            expects :n, on: :counts, type: String
+          end
+        end.to raise_error(ArgumentError, /subfield :n \(on :counts\) names the key :n of :counts/)
+      end
+
+      # The path that must NOT regress: an ordinary Hash parent has no `of:` and takes subfields as it always
+      # has — the refusal is about the two ways of naming a map's members, not about Hash parents.
+      it "leaves an ordinary Hash parent's subfields alone" do
+        klass = nil
+        expect do
+          klass = build_axn do
+            expects :counts, type: Hash
+            expects :n, on: :counts, type: String
+          end
+        end.not_to raise_error
+        expect(klass.input_schema.dig(:properties, :counts, :properties, :n)).to include(type: "string")
+      end
+
+      # An ARRAY `of:` names element positions rather than members, so a subfield beside one is a different
+      # question and stays legal.
+      it "leaves an Array of: alone" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :ids, on: :payload, type: Array, of: Integer
+          end
+        end.not_to raise_error
+      end
+    end
+
     it "rejects values: on an Array, pointing at klass:" do
       expect { build_axn { expects :ids, type: Array, of: { values: Integer } } }
         .to raise_error(ArgumentError, /of: does not support values:/)

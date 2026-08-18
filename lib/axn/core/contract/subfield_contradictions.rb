@@ -24,8 +24,50 @@ module Axn
         def check!(field_configs, subfield_configs, crossings: true)
           tree = Axn::Internal::SubfieldTree.build(field_configs, subfield_configs)
           check_unanswerable_segments!(tree) # first: an unreachable path moots any ambiguity on it
+          check_subfields_under_map!(tree)
           check_ambiguous_crossings!(tree) if crossings
           check_dead_nil_tolerance!(tree, field_configs)
+        end
+
+        # The MAP-PARENT check: a subfield read out of a Hash that declares `of:`. `of:` names what every key of
+        # that hash maps to, and a subfield names one of those keys — so the two describe the same keys two ways,
+        # and no reflected schema can state both. JSON Schema's `additionalProperties` applies only to keys
+        # `properties` does not match, so emitting the pair says a key named by a subfield is exempt from the
+        # `of:` the runtime enforces on it: a document the schema calls valid and the contract rejects.
+        #
+        # This is `Core::Contract#_reject_map_beside_shape!` in its second spelling — a `shape:` member and an
+        # `on:` subfield are two ways to name a hash's own member — and it carries that guard's "not supported
+        # yet" wording for the same reason: granting the combination later must contradict nothing shipped.
+        # Refusing one spelling while permitting the other left the rule half-closed.
+        #
+        # Judged over the whole candidate tree, like every check here, so neither declaration order gets through:
+        # the map may be declared before the subfield or after it, and every ancestor of the subfield is asked,
+        # so a dotted `on:` reading THROUGH a map is refused at any depth.
+        def check_subfields_under_map!(tree)
+          tree.index.each do |config, path|
+            next unless config.subfield? # a top-level config is read from no parent
+
+            path.ancestors.each do |(node, segment)|
+              blocker = node.configs.find { |c| map_valued?(c) }
+              raise_subfield_under_map!(config, blocker, segment) if blocker
+            end
+          end
+        end
+
+        # Whether a config declares a MAP, read through reflection's one derivation of an `of:` bag's container —
+        # the same answer the emitter acts on, so what this refuses and what would have been emitted cannot drift.
+        def map_valued?(config) = ::Hash.equal?(Axn::Internal::Reflection::Schema.of_container(config.validations))
+
+        # `segment` is the key read out of the MAP itself, which at depth is an intermediate rather than the
+        # subfield's own name — so the message names the key that actually collides with the `of:` as well as
+        # the two declarations that produced it.
+        def raise_subfield_under_map!(config, blocker, segment)
+          raise ArgumentError,
+                "subfield #{config.field.inspect} (on #{config.on.inspect}) names the key #{segment.inspect} of " \
+                "#{blocker.field.inspect}, which declares `of:` on a Hash — of: beside a subfield on a Hash is " \
+                "not supported yet: of: names what EVERY key of that hash maps to, while the subfield names one " \
+                "key of its own, so the reflected schema would exempt #{segment.inspect} from the of: the " \
+                "runtime enforces on it. Drop the `of:` on #{blocker.field.inspect}, or drop the subfield."
         end
 
         # The AMBIGUOUS-CROSSING check (PRO-3068): a config whose dotted `on:` tail resolves its parent

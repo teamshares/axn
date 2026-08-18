@@ -1480,12 +1480,7 @@ module Axn
           of = validations[:of]
           shape = validations[:shape]
           in_items = Array(json_type_for(validations, for_output:)[:type]).include?("array")
-          # The container is read through the same tolerant Hash test the declaration guards use. `of:` is
-          # canonicalized into a bag long before reflection, but a config ASSIGNED onto a class can still carry
-          # the bare spelling the DSL would have expanded, and every branch below asks this before it knows
-          # which grammar it is looking at.
-          of_bag = Axn::Internal::ShapeGraph.hash_or_nil(of)
-          container = of_bag && of_bag[:container]
+          container = of_container(validations)
           nothing = ShapePropertyPlan.new(emitted: false, in_items:, type_schema: {}, shape:, container:)
 
           # The same two gates `apply_structured_schema!` opens with, in the same order. A declaration with
@@ -1522,7 +1517,7 @@ module Axn
             # containers settle emptiness themselves rather than in the shared builder. A class whose schema is
             # untyped (an unknown type on output) has nothing to state either, and both cases emit no node at
             # all rather than an empty `additionalProperties` that would read as a constraint.
-            klasses = Array(of_bag[:values])
+            klasses = Array(of[:values])
             values = klasses.empty? ? {} : contents_schema_for(klasses, for_output:)
             return ShapePropertyPlan.new(emitted: false, in_items:, shape:, container:,
                                          type_schema: values.empty? ? {} : { additionalProperties: values })
@@ -1581,6 +1576,20 @@ module Axn
 
           klasses = Array(of_validations[:klass])
           klasses.any? && klasses.all? { |k| member_keyed_object_type?(k) }
+        end
+
+        # The container an `of:` bag names — `::Array` for an element list, `::Hash` for a map, nil where there
+        # is no `of:` at all. THE one read of it, so the emitter deciding which node an `of:` lands at and the
+        # declaration guard deciding whether a map may carry subfields cannot disagree about what a map is.
+        #
+        # Read through the same tolerant Hash test the declaration guards use: `of:` is canonicalized into a bag
+        # long before either caller, but a config ASSIGNED onto a class can still carry the bare spelling the
+        # DSL would have expanded, and asking a String for `[:container]` raises where an honest answer of "no
+        # container named" is what both callers want. A `::Hash` answer therefore also PROVES the bag is a Hash,
+        # which is what lets the map branches read `[:values]` off it without asking again.
+        def of_container(validations)
+          bag = Axn::Internal::ShapeGraph.hash_or_nil(validations[:of])
+          bag && bag[:container]
         end
 
         # Whether an element type is an OBJECT on the wire a client sends (input): Hash/`:params`/Data/Struct.
