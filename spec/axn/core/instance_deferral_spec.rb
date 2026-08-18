@@ -338,4 +338,66 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect(action.call).to be_ok
     end
   end
+
+  describe "the warning" do
+    let(:warnings) { [] }
+
+    before do
+      logger = instance_double(Logger)
+      allow(logger).to receive(:warn) { |msg| warnings << msg }
+      allow(logger).to receive(:info)
+      allow(logger).to receive(:debug)
+      allow(Axn.config).to receive(:logger).and_return(logger)
+      described_class.send(:_reset_warned_for_specs!)
+    end
+
+    # Bound to its constant before the include, the way `class ChargeCard < ApplicationService` binds it before
+    # the body runs: the class has to know its own name by the time the warning names it.
+    it "names the class, the owner, the name, and both ways to resolve it" do
+      stub_const("ApplicationService", Class.new { def log(*) = nil })
+      stub_const("ChargeCard", Class.new(ApplicationService))
+      ChargeCard.class_eval { include Axn }
+
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to include("ChargeCard", "ApplicationService", "log", "prefer_inherited", "prefer_axn")
+    end
+
+    it "warns once per definer method however many classes inherit it" do
+      stub_const("ApplicationService", Class.new { def log(*) = nil })
+      3.times { Class.new(ApplicationService) { include Axn } }
+
+      expect(warnings.size).to eq(1)
+    end
+
+    it "warns separately for a second name from the same definer" do
+      stub_const("ApplicationService", Class.new do
+        def log(*) = nil
+        def info(*) = nil
+      end)
+      Class.new(ApplicationService) { include Axn }
+
+      expect(warnings.size).to eq(2)
+    end
+
+    it "says nothing when there is no collision" do
+      Class.new { include Axn }
+      expect(warnings).to be_empty
+    end
+
+    # The record is of a side effect already committed, so no reset re-arms it — including the one that
+    # deliberately DOES re-arm axn's other once-per-process warning.
+    it "does not re-announce a deferral after a suite-level reset" do
+      stub_const("ApplicationService", Class.new { def log(*) = nil })
+      Class.new(ApplicationService) { include Axn }
+      expect(warnings.size).to eq(1)
+
+      Axn::Testing.reset!
+      logger = instance_double(Logger, info: nil, debug: nil)
+      allow(logger).to receive(:warn) { |msg| warnings << msg }
+      allow(Axn.config).to receive(:logger).and_return(logger)
+      Class.new(ApplicationService) { include Axn }
+
+      expect(warnings.size).to eq(1)
+    end
+  end
 end

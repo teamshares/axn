@@ -75,8 +75,39 @@ module Axn
 
         definers = deferrals.transform_values(&:first)
         KERNEL_IVAR_SET.bind_call(base, DEFERRALS_IVAR, { shim:, definers: })
+        deferrals.each { |name, (definer, _impl)| _warn_once(base, name, definer) }
         definers
       end
+
+      # Keyed to the DEFINER's method rather than to the class that inherited it: one `ApplicationService#log`
+      # under fifty actions is one line at boot, not fifty. A definer that lies about `hash`/`eql?` gets warned
+      # about more than once, which is the right way for a courtesy to degrade.
+      #
+      # Never cleared. This is the record of a side effect already committed — the process has announced the
+      # deferral — so a configuration reset in a test suite must not make it announce it again.
+      WARNED = {} # rubocop:disable Style/MutableConstant (grown at include time; a frozen one could record nothing)
+      private_constant :WARNED
+
+      # Announced rather than logged at debug: a deferral the author did not intend changes which code runs, and
+      # a debug line is invisible to the developer who needs to know.
+      def self._warn_once(base, name, definer)
+        return unless WARNED[[definer, name]].nil?
+
+        WARNED[[definer, name]] = true
+        owner = Axn::Internal::Rendering.module_name(definer)
+        klass = Axn::Internal::Rendering.module_name(base)
+        Axn.config.logger.warn(
+          "[#{klass}] axn did not define ##{name}: #{owner} already defines it, so calls reach #{owner}'s " \
+          "version. Declare `prefer_inherited :#{name}` to confirm that, or `prefer_axn :#{name}` to use " \
+          "axn's instead.",
+        )
+      end
+      private_class_method :_warn_once
+
+      # Specs assert the once-per-definer property, which needs the record cleared between examples. Deliberately
+      # not part of any public reset: see WARNED.
+      def self._reset_warned_for_specs! = WARNED.clear
+      private_class_method :_reset_warned_for_specs!
 
       # Which module axn stepped aside for, per name. The recorded answer rather than a fresh walk: once the
       # shim is installed it is itself the nearest declaration of the name, so a re-walk would report the shim.
