@@ -43,7 +43,7 @@ module Axn
           # - If there's a default, skip it - the default will be applied later
         end
 
-        expose(**exposures) if exposures.any?
+        Axn::Internal::ActionState.expose(self, **exposures) if exposures.any?
       end
     end
   end

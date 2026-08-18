@@ -75,7 +75,7 @@ module Axn
 
       if base.is_a?(Class)
         base.class_eval do
-          class_attribute :_mounted_axn_descriptors, default: []
+          class_attribute :_mounted_axn_descriptors, instance_accessor: false, default: []
 
           # Eagerly create action class constants for inherited descriptors
           # (e.g. allow TeamsharesAPI::Company::Axns::Get.call to work *without* having to

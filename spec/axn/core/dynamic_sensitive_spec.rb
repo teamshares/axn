@@ -115,7 +115,7 @@ RSpec.describe "Dynamic sensitive fields" do
 
       it "filters ssn in internal_context inspect" do
         result = action.call(ssn: "123-45-6789")
-        expect(result.__action__.internal_context.inspect).to include("ssn: [FILTERED]")
+        expect(inbound_facade(result.__action__).inspect).to include("ssn: [FILTERED]")
       end
     end
 
@@ -326,13 +326,13 @@ RSpec.describe "Dynamic sensitive fields" do
     end
 
     it "redacts a sensitive shape member declared after the first logged call" do
-      klass = build_axn { expects(:p, type: Hash) { field :m, type: String } }
-      expect(logged(klass, { p: { m: "1" } })).to eq({ p: { m: "1" } })
+      klass = build_axn { expects(:par, type: Hash) { field :m, type: String } }
+      expect(logged(klass, { par: { m: "1" } })).to eq({ par: { m: "1" } })
 
       klass.class_eval { expects(:q, type: Hash) { field :ssn, type: String, sensitive: true } }
 
-      expect(logged(klass, { p: { m: "1" }, q: { ssn: "9", other: "x" } }))
-        .to eq({ p: { m: "1" }, q: { ssn: "[FILTERED]", other: "x" } })
+      expect(logged(klass, { par: { m: "1" }, q: { ssn: "9", other: "x" } }))
+        .to eq({ par: { m: "1" }, q: { ssn: "[FILTERED]", other: "x" } })
       # The shaped value may also be a non-Hash the key filter cannot descend into, which is masked wholesale
       # off the derived shape paths rather than the field-name set.
       expect(logged(klass, { q: "opaque" })).to eq({ q: "[FILTERED]" })
@@ -413,7 +413,7 @@ RSpec.describe "Dynamic sensitive fields" do
       accepted.each do |value|
         expect { build_axn { expects :a, sensitive: value, optional: true } }.not_to raise_error
         expect { build_axn { exposes :b, sensitive: value, optional: true } }.not_to raise_error
-        expect { build_axn { expects(:p, type: Hash, optional: true) { field :m, sensitive: value } } }.not_to raise_error
+        expect { build_axn { expects(:par, type: Hash, optional: true) { field :m, sensitive: value } } }.not_to raise_error
       end
     end
 
@@ -438,7 +438,7 @@ RSpec.describe "Dynamic sensitive fields" do
       end.to raise_error(ArgumentError, grammar_error)
       expect { build_axn { expects :a, on: :ambient_context, sensitive: "yes", optional: true } }
         .to raise_error(ArgumentError, grammar_error)
-      expect { build_axn { expects(:p, type: Hash, optional: true) { field :m, sensitive: "yes" } } }
+      expect { build_axn { expects(:par, type: Hash, optional: true) { field :m, sensitive: "yes" } } }
         .to raise_error(ArgumentError, grammar_error)
     end
 
@@ -504,7 +504,7 @@ RSpec.describe "Dynamic sensitive fields" do
     end
 
     it "rejects a required-parameter Proc on a shape member too" do
-      expect { build_axn { expects(:p, type: Hash, optional: true) { field :m, sensitive: ->(v) { v } } } }
+      expect { build_axn { expects(:par, type: Hash, optional: true) { field :m, sensitive: ->(v) { v } } } }
         .to raise_error(ArgumentError, arity_error)
     end
   end
@@ -516,8 +516,10 @@ RSpec.describe "Dynamic sensitive fields" do
   describe "sensitive: runtime resolution failures fail closed" do
     let(:warnings) { [] }
 
+    # Stubbed on the CLASS: internals reach the warning through a bound `log`, which lands on the
+    # action class, rather than dispatching the instance-level `warn` a user is free to take.
     def stub_warnings(action, warnings)
-      allow_any_instance_of(action).to receive(:warn) { |_, msg| warnings << msg }
+      allow(action).to receive(:log) { |msg, **| warnings << msg }
     end
 
     it "redacts and warns, rather than raising, when the named method takes a required argument" do

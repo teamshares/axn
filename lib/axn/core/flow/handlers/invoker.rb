@@ -52,7 +52,9 @@ module Axn
 
           def call_symbol_handler(action:, symbol:, exception: nil)
             unless action.respond_to?(symbol, true)
-              action.warn("Ignoring apparently-invalid symbol #{symbol.inspect} -- action does not respond to method")
+              Axn::Internal::ActionState.log(action,
+                                             "Ignoring apparently-invalid symbol #{symbol.inspect} -- action does not respond to method",
+                                             level: :warn)
               return nil
             end
 

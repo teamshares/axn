@@ -51,7 +51,7 @@ module Axn
       extend ActiveSupport::Concern
 
       included do
-        class_attribute :_batch_enqueue_configs, default: []
+        class_attribute :_batch_enqueue_configs, instance_accessor: false, default: []
       end
 
       # DSL methods for batch enqueueing

@@ -9,7 +9,7 @@ module Axn
       module Callbacks
         def self.included(base)
           base.class_eval do
-            class_attribute :_callbacks_registry, default: Axn::Core::Flow::Handlers::Registry.empty
+            class_attribute :_callbacks_registry, instance_accessor: false, default: Axn::Core::Flow::Handlers::Registry.empty
 
             extend ClassMethods
           end

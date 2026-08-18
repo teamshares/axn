@@ -118,16 +118,22 @@ module Axn
     # like __action__ — see reserved_attribute_names_spec.
     def __exposed_keys__ = @context.exposed_data.keys
 
+    # The outcome keys a pattern match sees, and how each is read. `deconstruct_keys` BUILDS the hash
+    # from this map rather than repeating it, so the exposures guard (which refuses these names, since
+    # the exposed data merged below would overwrite rather than append to them) reads exactly what is
+    # emitted instead of predicting it.
+    PATTERN_MATCH_KEYS = {
+      ok: :ok?,
+      success: :success,
+      error: :error,
+      message: :message,
+      outcome: :_outcome_symbol,
+      finalized: :finalized?,
+    }.freeze
+
     # Enable pattern matching support for Ruby 3+
     def deconstruct_keys(keys)
-      attrs = {
-        ok: ok?,
-        success:,
-        error:,
-        message:,
-        outcome: outcome.to_sym,
-        finalized: finalized?,
-      }
+      attrs = PATTERN_MATCH_KEYS.transform_values { |reader| send(reader) }
 
       # Add all exposed data
       attrs.merge!(@context.exposed_data)
@@ -138,10 +144,13 @@ module Axn
 
     private
 
+    # A pattern match binds the outcome as a plain Symbol; the public reader answers a StringInquirer.
+    def _outcome_symbol = outcome.to_sym
+
     def _context_data_source = @context.exposed_data
 
     def _define_boolean_predicate_readers
-      action.external_field_configs.each do |config|
+      action.class.external_field_configs.each do |config|
         next unless declared_fields.include?(config.field)
         next unless config.boolean?
 
@@ -154,9 +163,13 @@ module Axn
       return if field_name.end_with?("?")
 
       predicate_name = "#{field_name}?"
-      return if singleton_class.method_defined?(predicate_name)
+      # Private methods count, as they do at the inbound definition site (`_reader_name_available?`):
+      # a name Result answers to privately (`_fail_standalone?`) is exactly the kind an alias must not
+      # take, since Result dispatches it on itself. Declaration refuses such a pair outright
+      # (_reject_shadowed_predicate_name!); this stays as the definition-site backstop.
+      return if @__singleton.method_defined?(predicate_name) || @__singleton.private_method_defined?(predicate_name)
 
-      singleton_class.alias_method predicate_name, field
+      @__singleton.alias_method predicate_name, field
     end
 
     # Memoized so resolution and _error_from_declared_source? share one resolver instance — message

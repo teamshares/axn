@@ -61,8 +61,8 @@ module Axn
           context_str = if context_instance && context_direction
                           # Instance-level: use private inputs_for_logging / outputs_for_logging
                           data = case context_direction
-                                 when :inbound then context_instance.send(:inputs_for_logging)
-                                 when :outbound then context_instance.send(:outputs_for_logging)
+                                 when :inbound then ActionState.inputs_for_logging(context_instance)
+                                 when :outbound then ActionState.outputs_for_logging(context_instance)
                                  end
                           format_context(data)
                         elsif context_data && context_direction

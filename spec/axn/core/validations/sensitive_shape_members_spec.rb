@@ -132,7 +132,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
         def call; end
       end
 
-      inspected = action.call(items: [{ ssn: "111-11-1111", name: "Alice" }]).__action__.internal_context.inspect
+      inspected = inbound_facade(action.call(items: [{ ssn: "111-11-1111", name: "Alice" }]).__action__).inspect
 
       expect(inspected).to include("[FILTERED]")
       expect(inspected).not_to include("111-11-1111")
@@ -149,7 +149,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
         def call; end
       end
 
-      inspected = action.call(payload: { token: "s3cr3t", user: "alice" }).__action__.internal_context.inspect
+      inspected = inbound_facade(action.call(payload: { token: "s3cr3t", user: "alice" }).__action__).inspect
 
       expect(inspected).to include("[FILTERED]")
       expect(inspected).not_to include("s3cr3t")
@@ -166,7 +166,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
         def call; end
       end
 
-      inspected = action.call(order: { customer: { ssn: "999-99-9999" } }).__action__.internal_context.inspect
+      inspected = inbound_facade(action.call(order: { customer: { ssn: "999-99-9999" } }).__action__).inspect
 
       expect(inspected).to include("[FILTERED]")
       expect(inspected).not_to include("999-99-9999")
@@ -182,7 +182,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
         def call; end
       end
 
-      inspected = action.call(items: [{ ssn: "111-11-1111", name: "Alice" }]).__action__.internal_context.inspect
+      inspected = inbound_facade(action.call(items: [{ ssn: "111-11-1111", name: "Alice" }]).__action__).inspect
 
       expect(inspected).to include("items: [FILTERED]")
       # The non-sensitive sibling must not leak out of a wholesale-redacted parent.
@@ -200,7 +200,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
         def call; end
       end
 
-      inspected = action.call(payload: { details: { token: "s3cr3t", user: "alice" } }).__action__.internal_context.inspect
+      inspected = inbound_facade(action.call(payload: { details: { token: "s3cr3t", user: "alice" } }).__action__).inspect
 
       expect(inspected).to include("[FILTERED]")
       expect(inspected).not_to include("s3cr3t")
@@ -232,7 +232,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       end
 
       result = action.call(items: [{ name: "Alice" }])
-      expect { result.__action__.internal_context.inspect }.not_to raise_error
+      expect { inbound_facade(result.__action__).inspect }.not_to raise_error
     end
 
     # A raw member reaches redaction without passing through `expects`, so the `sensitive:` grammar is enforced
@@ -320,7 +320,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       instance = action.send(:new, payload: { ssn: "111-11-1111" })
       expect(instance.send(:inputs_for_logging)[:payload]).to eq({ ssn: "[FILTERED]" })
 
-      inspected = action.call(payload: { ssn: "111-11-1111" }).__action__.internal_context.inspect
+      inspected = inbound_facade(action.call(payload: { ssn: "111-11-1111" }).__action__).inspect
       expect(inspected).to include("[FILTERED]")
       expect(inspected).not_to include("111-11-1111")
     end
@@ -382,7 +382,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       instance = action.send(:new, payload: { person: { ssn: "111-11-1111" } })
       expect(instance.send(:inputs_for_logging).dig(:payload, :person)).to eq({ ssn: "[FILTERED]" })
 
-      inspected = action.call(payload: { person: { ssn: "111-11-1111" } }).__action__.internal_context.inspect
+      inspected = inbound_facade(action.call(payload: { person: { ssn: "111-11-1111" } }).__action__).inspect
       expect(inspected).to include("[FILTERED]")
       expect(inspected).not_to include("111-11-1111")
     end
@@ -422,7 +422,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
         def call; end
       end
 
-      inspected = action.call(person: klass.new(name: "Alice", ssn: "111-11-1111")).__action__.internal_context.inspect
+      inspected = inbound_facade(action.call(person: klass.new(name: "Alice", ssn: "111-11-1111")).__action__).inspect
 
       expect(inspected).to include("[FILTERED]")
       expect(inspected).not_to include("111-11-1111")

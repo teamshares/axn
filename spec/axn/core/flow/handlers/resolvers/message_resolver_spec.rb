@@ -183,7 +183,7 @@ RSpec.describe "join: Proc raise-safety" do
       on_failure { events << :on_failure }
       def call = fail!("inner")
     end
-    allow(action).to receive(:warn)
+    allow(action).to receive(:log)
 
     result = action.call
 
@@ -255,7 +255,9 @@ RSpec.describe "join: Proc raise-safety" do
       error "Outer", join: ->(_base, _reason) { returned }
       def call = fail!("inner")
     end
-    allow_any_instance_of(action).to receive(:warn) { |_, msg| warnings << msg }
+    # On the CLASS: the diagnostic reaches the log through a bound instance method that lands there,
+    # never through the instance-level `warn` a user is free to take.
+    allow(action).to receive(:log) { |msg, **| warnings << msg }
 
     expect(action.call.error).to eq("Outer: inner")
     expect(warnings).to include(a_string_matching(/join: callable returned .+ \(expected a non-blank String\)/))
@@ -291,7 +293,7 @@ RSpec.describe "join: Proc raise-safety" do
     end
 
     warnings = []
-    allow(action).to receive(:warn) { |msg| warnings << msg }
+    allow(action).to receive(:log) { |msg, **| warnings << msg }
 
     result = action.call
     expect { result.error }.not_to raise_error

@@ -11,13 +11,13 @@ module Axn
     extend ActiveSupport::Concern
 
     included do
-      class_attribute :_async_adapter, :_async_config, :_async_config_block, default: nil
+      class_attribute :_async_adapter, :_async_config, :_async_config_block, instance_accessor: false, default: nil
       # True when the adapter was applied via the global default (call_async/worker hook)
       # rather than an explicit `async ...` in the action body. The Sidekiq adapter uses this
       # to decide between a per-action Worker subclass (explicit: reconstructable in a worker)
       # and the shared generic Worker (global default: no per-action body to reconstruct).
-      class_attribute :_async_via_default, default: false
-      class_attribute :_async_exception_reporting, default: nil
+      class_attribute :_async_via_default, instance_accessor: false, default: false
+      class_attribute :_async_exception_reporting, instance_accessor: false, default: nil
 
       # Include batch enqueue functionality
       include BatchEnqueue

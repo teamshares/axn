@@ -234,7 +234,7 @@ module Axn
         # separately from the resolution rescue: the sensitive predicate raising is the ordinary case this
         # whole method exists for, but the environment that made a predicate misbehave (a custom logger
         # writing to a closed IO, a network sink timing out) is exactly the kind where the CONFIGURED
-        # LOGGER is also more likely to raise, and `action_instance.warn` ultimately dispatches to
+        # LOGGER is also more likely to raise, and the warning ultimately reaches
         # `Axn.config.logger`, which is caller-supplied. Swallowed on the same terms as everywhere else axn
         # decides what it will ever absorb — silently, since a second diagnostic about the first one
         # failing has nowhere honest left to go.
@@ -256,9 +256,11 @@ module Axn
         # out-of-grammar value by class.
         def _warn_sensitive_resolution_failure(action_instance, field, sensitive, error)
           field_label = field.nil? ? "" : "#{Axn::Internal::Reflection::PropertyNames.inspect_field_name(field)} "
-          action_instance.warn("sensitive: #{field_label}(#{_describe_sensitive_rule(sensitive)}) raised " \
-                               "#{Axn::Internal::Rendering.class_name(error)} at #{Axn::Internal::Rendering.exception_source_location(error)} " \
-                               "— redacting (fail closed)")
+          Axn::Internal::ActionState.log(action_instance,
+                                         "sensitive: #{field_label}(#{_describe_sensitive_rule(sensitive)}) raised " \
+                                         "#{Axn::Internal::Rendering.class_name(error)} at " \
+                                         "#{Axn::Internal::Rendering.exception_source_location(error)} — redacting (fail closed)",
+                                         level: :warn)
         rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
           nil
         end

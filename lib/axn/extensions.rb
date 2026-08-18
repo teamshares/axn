@@ -122,7 +122,8 @@ module Axn
       # Axn.config.best_effort_raises_in_dev is set, where it re-raises (as `Axn::ReraiseFailed`
       # carrying the original as `cause` for the rare exception `raise` cannot hand back as itself).
       # `desc` names the intent ("resolving webhook subscribers"); `action` is an optional
-      # warn-target (an action instance/class responding to :warn), defaulting to the config logger.
+      # warn-target (an action instance or class, whose own prefix the line then carries), and
+      # anything else — nil included — warns through the config logger.
       #
       # Swallows StandardError plus SWALLOWABLE_BEYOND_STANDARD_ERROR — the right default almost
       # everywhere, and required for a true side channel whose outcome nothing reads (emitting a log
@@ -268,14 +269,12 @@ module Axn
       # `outcome` is side-effect-free and does not itself finalize.
       #
       # Returns nil rather than raising for every shape that cannot answer: `action` is nil at several
-      # guards and an action CLASS at others (neither responds to `result`), and a degraded report naming
-      # the exception beats no report at all.
+      # guards and an action CLASS at others (neither has a result), and a degraded report naming the
+      # exception beats no report at all. The funnel answers that question by identity, so what comes
+      # back is an `Axn::Result` or nothing — no further probing of the object it handed over.
       def _surrounding_outcome(action)
-        return nil unless action.respond_to?(:result)
-
-        result = action.result
-        return nil unless result.respond_to?(:finalized?) && result.finalized?
-        return nil unless result.respond_to?(:outcome)
+        result = Internal::ActionState.result_or_nil(action)
+        return nil unless result&.finalized?
 
         Internal::Text.renderable(result.outcome.to_s)
       rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
@@ -319,8 +318,11 @@ module Axn
       # a different object, and the usual cause is an action-level override rather than the backend. If
       # both fail there is nothing left to warn WITH, so the warning is dropped — a lost diagnostic is
       # strictly better than a lost exception.
+      #
+      # `action` is an action instance or class, or nil; anything else warns through the configured
+      # logger, which is what `ActionState.log` does with a target it cannot identify.
       def _emit_warning(action, message)
-        (action || Axn.config.logger).send(:warn, message)
+        Internal::ActionState.log(action, message, level: :warn)
       rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
         return if action.nil?
 

@@ -302,8 +302,8 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
     it "passes static fields through to each enqueued job" do
       cc = company_class
       target = build_axn do
-        mount_axn(:sync_company, expects: %i[company format]) do |company:, format:|
-          "Processed #{company.name} as #{format}"
+        mount_axn(:sync_company, expects: %i[company out_format]) do |company:, out_format:|
+          "Processed #{company.name} as #{out_format}"
         end
       end
 
@@ -314,17 +314,17 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
       enqueued = []
       allow(mounted_action).to receive(:call_async) { |**args| enqueued << args }
 
-      mounted_action.enqueue_all(format: :csv)
+      mounted_action.enqueue_all(out_format: :csv)
 
       expect(enqueued.length).to eq(3)
-      expect(enqueued.all? { |e| e[:format] == :csv }).to be true
+      expect(enqueued.all? { |e| e[:out_format] == :csv }).to be true
     end
 
     it "raises when required static field is missing" do
       cc = company_class
       target = build_axn do
-        mount_axn(:sync_company, expects: %i[company format]) do |company:, format:|
-          "Processed #{company.name} as #{format}"
+        mount_axn(:sync_company, expects: %i[company out_format]) do |company:, out_format:|
+          "Processed #{company.name} as #{out_format}"
         end
       end
 
@@ -334,7 +334,7 @@ RSpec.describe "Axn::Mountable with enqueue_all" do
 
       expect do
         mounted_action.enqueue_all
-      end.to raise_error(ArgumentError, /Missing required static field.*format/)
+      end.to raise_error(ArgumentError, /Missing required static field.*out_format/)
     end
   end
 

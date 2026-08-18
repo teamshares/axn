@@ -80,13 +80,17 @@ RSpec.describe Axn do
         end
       end
 
+      # Captured on the CLASS, where both halves land: the handler lines come from the user's own
+      # `log` (which delegates there) and the handled-exception line from a bound instance method.
       it "triggers all handlers that match the exception" do
-        expect_any_instance_of(action).to receive(:log).with(
-          "#{'#' * 10} Handled exception (RuntimeError): Some internal issue! #{'#' * 10}",
-        ).once
-        expect_any_instance_of(action).to receive(:log).with("Handling RuntimeError (specific)").once
-        expect_any_instance_of(action).to receive(:log).with("Handling StandardError (general)").once
+        logged = []
+        allow(action).to receive(:log) { |msg, **| logged << msg }
+
         expect(action.call).not_to be_ok
+
+        expect(logged.count("#{'#' * 10} Handled exception (RuntimeError): Some internal issue! #{'#' * 10}")).to eq(1)
+        expect(logged.count("Handling RuntimeError (specific)")).to eq(1)
+        expect(logged.count("Handling StandardError (general)")).to eq(1)
       end
 
       context "in production" do
@@ -95,10 +99,14 @@ RSpec.describe Axn do
         end
 
         it "logs less aggressively" do
-          expect_any_instance_of(action).to receive(:log).with("Handled exception (RuntimeError): Some internal issue!").once
-          expect_any_instance_of(action).to receive(:log).with("Handling RuntimeError (specific)").once
-          expect_any_instance_of(action).to receive(:log).with("Handling StandardError (general)").once
+          logged = []
+          allow(action).to receive(:log) { |msg, **| logged << msg }
+
           expect(action.call).not_to be_ok
+
+          expect(logged.count("Handled exception (RuntimeError): Some internal issue!")).to eq(1)
+          expect(logged.count("Handling RuntimeError (specific)")).to eq(1)
+          expect(logged.count("Handling StandardError (general)")).to eq(1)
         end
       end
     end

@@ -17,7 +17,7 @@ module Axn
       def self.included(base)
         base.class_eval do
           # Copy-on-write, frozen at every assignment (see Contract's stores).
-          class_attribute :subfield_configs, default: [].freeze
+          class_attribute :subfield_configs, instance_accessor: false, default: [].freeze
 
           extend ClassMethods
         end
@@ -151,10 +151,26 @@ module Axn
       # analog of the per-hop implicit-intermediate rule in resolve_parent, PRO-2926).
       def self._resolve_parent_by_recipe(source, on, permit_method_call: false)
         root, *rest = on.to_s.split(".")
-        value = source.public_send(root)
+        value = _read_recipe_root(source, root)
         return value if rest.empty?
 
         Axn::Core::FieldResolvers.extract_or_nil(field: rest.join("."), provided_data: value, permit_method_call:)
+      end
+
+      # The two roots a recipe can name are not the same kind of thing, so they are not read the same way.
+      #
+      # `:ambient_context` is axn's own reserved parent — `expects :ambient_context` is refused, and the
+      # tree treats an `on:` rooted there as ambient no matter what the class holds, so its value must come
+      # from the framework's implementation. Dispatching it let a `def ambient_context` feed every ambient
+      # subfield the user's object instead, which surfaced as a bogus "can't be blank" rather than an error
+      # naming the cause.
+      #
+      # Any other root names a reader the USER declared, and dispatch is the point there: the declared
+      # reader — theirs, or the one axn generated for their declaration — is exactly what should answer.
+      def self._read_recipe_root(source, root)
+        return Axn::Internal::ActionState.ambient_context(source) if root.to_sym == Axn::Core::AmbientContext::PARENT
+
+        source.public_send(root)
       end
 
       # THE subfield value read — readers and validation share it: leaf-extract from the canonically
@@ -286,7 +302,7 @@ module Axn
         if config.subfield?
           [action, :"@_memoized_reader_#{config.reader_as}"]
         else
-          [action.internal_context, :"@_memoized_reader_#{config.field}"]
+          [Axn::Internal::ActionState.internal_context(action), :"@_memoized_reader_#{config.field}"]
         end
       end
 
@@ -504,7 +520,8 @@ module Axn
       # deliberately absent and stay public: `Core::Executor` calls `_memoized_raw_extract` and
       # `_declared_id_token` on this module by name, and `ClassMethods`' `<field>_id` companion reader
       # calls `_declared_id_token` the same way.
-      private_class_method :crosses?, :_reader_config, :_deepest_reader_name, :_read_deepest_reader, :_resolve_parent_by_recipe,
+      private_class_method :crosses?, :_reader_config, :_deepest_reader_name, :_read_deepest_reader,
+                           :_resolve_parent_by_recipe, :_read_recipe_root,
                            :_resolve_in_progress_set, :_transform_in_progress_set, :_raw_extract_memo,
                            :_raw_reads?, :_reader_memo_ref, :_mark_provisional_reader,
                            :_drop_provisional_reader_memos, :_apply_read_path_transforms,
@@ -704,7 +721,11 @@ module Axn
             next if config.confirmation_for
 
             reader = config.reader_as
-            if (method_defined?(reader) && !_inferred_reader?(reader)) || seen.include?(reader)
+            # Read natively, like every other method-table question a declaration guard asks: `self` is the
+            # author's class, and a singleton `method_defined?` of its own answering false would admit the
+            # duplicate this refuses.
+            taken = Axn::Internal::NativeMethods.declared_instance_method(self, reader) && !_inferred_reader?(reader)
+            if taken || seen.include?(reader)
               raise ArgumentError,
                     "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined) — " \
                     "rename this subfield's reader, e.g. `expects :#{config.field}, on: #{config.on.inspect}, " \

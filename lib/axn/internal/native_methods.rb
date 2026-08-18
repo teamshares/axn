@@ -176,6 +176,16 @@ module Axn
       # would be exactly the replaced-verdict failure the bound read exists to prevent.
       def self.public_instance_method?(mod, name) = MODULE_PUBLIC_METHOD_DEFINED.bind_call(mod, name)
 
+      # `mod`'s ancestry, read natively. A class that defines its own `ancestors` — or its own `<` — would
+      # otherwise get to answer a membership question axn decides guards on, and a declaration guard a
+      # caller can invert is not a guard. Same precondition as the readers above: the caller must have
+      # established that `mod` IS a Module undispatched.
+      def self.module_ancestors(mod) = MODULE_ANCESTORS.bind_call(mod)
+
+      # Whether `mod` counts `other` among its ancestors — the undispatched form of `mod < other` (which is
+      # also true for `mod == other`, matching `ancestors`' own inclusion of the receiver).
+      def self.includes_module?(mod, other) = module_ancestors(mod).include?(other)
+
       # The UnboundMethod a MODULE declares for `name` at ANY visibility, or nil when it declares none — the
       # module-level twin of `method_owner`, for a caller that needs the method itself (its `owner`, its
       # `source_location`) rather than just its owner.

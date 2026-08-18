@@ -27,7 +27,7 @@ module Axn
           # never `<<` — which would now raise FrozenError rather than silently mutating the
           # superclass's contract), so the per-class resolved-subfield cache can key on array
           # identity and concurrent readers always see an immutable snapshot.
-          class_attribute :internal_field_configs, :external_field_configs, default: [].freeze
+          class_attribute :internal_field_configs, :external_field_configs, instance_accessor: false, default: [].freeze
 
           extend ClassMethods
           include InstanceMethods
@@ -503,10 +503,6 @@ module Axn
                                                             "encoding).")
                end
 
-          fields.each do |field|
-            raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
-          end
-
           # A field's wire key always names a single key; the nested-path capability lives entirely in a
           # dotted `on:` (`expects :b, on: "a"`). A dotted field NAME is therefore never valid — reject it
           # unconditionally, pointed at the dotted-`on:` spelling (PRO-2926). A dotted `on:` VALUE is fine.
@@ -525,7 +521,18 @@ module Axn
                   "reads its wire key and never invokes a method. Add `on:` to name the parent, or drop `method_call:`."
           end
 
+          # Two names, two receivers, judged separately — because `as:`/`prefix:` can pull them apart.
+          # The RESOLVED reader is the method the declaration defines on the action class, so it is
+          # judged there; that is what makes `as:` a real escape hatch, letting a contract whose wire key
+          # happens to be `format` keep its public API and rename only what it puts on the class.
+          # The WIRE KEY is judged at the inbound facade, which builds a reader per declared field and
+          # is the only place the caller's value can be read back from (below).
           reader_names = _resolve_reader_names(fields, as:, prefix:)
+          reader_names.each_value { |reader| _reject_shadowed_name!(reader) }
+          # A subfield's wire key is a segment read out of its parent's value, not a field on the facade
+          # (its configs live in `subfield_configs`, which `_declared_fields` never reports), so only a
+          # top-level key lands there.
+          fields.each { |field| _reject_shadowed_wire_key!(field) } if on.nil?
           _validate_reader_names!(reader_names)
 
           validations, metadata = _partition_field_options(fields, **)
@@ -592,9 +599,7 @@ module Axn
           # one) as well as in `output_schema`, so it must be rejected whatever the schema emits.
           _reject_unrenderable_field_names!(fields)
 
-          fields.each do |field|
-            raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
-          end
+          fields.each { |field| _reject_shadowed_exposure_name!(field) }
 
           # exposes has no `on:`/subfields, so a dotted name has no valid meaning at all (see expects).
           _reject_dotted_field_name!(fields, on: nil, kind: "exposes")
@@ -653,6 +658,8 @@ module Axn
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
               raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
             end
+
+            configs.each { |c| _reject_shadowed_predicate_name!(c) }
 
             _reject_duplicate_fields!(external_field_configs, configs)
             # The outbound claim space. `exposes` has no `on:`, so there are no routes to resolve — but a shape
@@ -982,14 +989,113 @@ module Axn
         # written in.
         def _reader_owners = Axn::Internal::SubfieldTree.reader_owners(internal_field_configs, subfield_configs)
 
-        # Renamed readers must clear the same reserved-name bar as wire keys (identity readers are
-        # already reserved-checked against their wire key in `expects`), and no two declarations may
-        # resolve to the same reader name.
-        def _validate_reader_names!(reader_names)
-          reader_names.reject { |field, reader| field == reader }.each_value do |reader|
-            raise ContractViolation::ReservedAttributeError, reader if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(reader.to_s)
-          end
+        # Refuse a reader name a declaration would take over from something that is not axn's to
+        # surrender. Judged on the action class, where the reader is defined: axn's own sugar is
+        # surrenderable there — the user loses the helper and nothing else, since internals bind rather
+        # than dispatch — while Ruby's, ActiveSupport's and the user's own names are not.
+        #
+        # A name axn itself put on the class is left alone: a redeclaration is a duplicate field,
+        # reported downstream with the clearer DuplicateFieldError, and a reader DERIVED from another
+        # declaration (a confirmation companion, a `model:` field's `<field>_id`) yields to an explicit
+        # declaration of its name — which is already the behaviour in the other declaration order, where
+        # `_reader_name_available?` declines to generate over the explicit reader.
+        def _reject_shadowed_name!(name)
+          return if _reader_owners.key?(name.to_sym) || _inferred_reader?(name) || _axn_generated_reader?(name)
 
+          conflict = Axn::Internal::NameOwnership.conflict_for(self, name)
+          return unless conflict
+
+          raise ContractViolation::ReservedAttributeError.new(name, owner: Axn::Internal::NameOwnership.describe(conflict, name:))
+        end
+
+        # Refuse a top-level inbound WIRE KEY that the inbound facade already answers to. The key is
+        # what the caller passes and what `Axn::Core::InternalContext` builds a reader for, and that
+        # facade declines to define over its own methods (`ContextFacade#initialize`) — so a key naming
+        # one of them is read back as the facade's own method result rather than as the caller's value.
+        # Nothing on the facade is sugar: every method there is machinery some other reader depends on,
+        # so nothing it owns is surrenderable, whatever the reader ends up being called.
+        #
+        # This is a separate question from the reader's, and `as:`/`prefix:` is what separates them:
+        # they rename the method the declaration defines and leave the wire key exactly as written, so
+        # the only way past this one is a different key. Only the facade's OWN surface is asked
+        # (owner_within): Ruby's universal methods are judged once, on the action class, where a
+        # legitimately-named key like `format` or `warn` also lands as a reader.
+        def _reject_shadowed_wire_key!(name)
+          conflict = Axn::Internal::NameOwnership.owner_within(Axn::Core::InternalContext, name)
+          return unless conflict
+
+          raise ContractViolation::ReservedAttributeError.new(
+            name, owner: Axn::Internal::NameOwnership.describe(conflict, name:), kind: :wire_key
+          )
+        end
+
+        # Refuse an exposure name that a reader would take over. Nothing an exposure lands on is
+        # surrenderable, so both the receivers it lands on are asked and neither offers anything:
+        #
+        # - Axn::Result, where the exposure's own reader is defined — on the INSTANCE's singleton class,
+        #   which outranks Result's own API, Ruby's and ActiveSupport's alike. Unlike the action class, a
+        #   Result carries no user-facing sugar a declaration could take over harmlessly: every name it
+        #   answers to is either machinery Result dispatches on itself (`ok?`, `exception`,
+        #   `deconstruct_keys`, `_fail_standalone?`) or a universal method its callers dispatch on it
+        #   (`hash` puts it in a Set, `class` reports its type, `inspect` logs it). So the whole method
+        #   table is asked — public and private, inherited included — via `owner_of`.
+        # - Axn::Core::InternalContext, which builds a reader for every OUTBOUND field too (they are the
+        #   inbound facade's implicitly-allowed fields, so an action body can read back what it exposed).
+        #   That reader reads `provided_data`, so an exposure named after one of the facade's own methods
+        #   answers nil in the action body instead of running it — `default_error`/`default_success` are
+        #   the two names that reach only this way. Only its OWN surface is asked (owner_within); Ruby's
+        #   universal methods are judged once, above.
+        #
+        # Two more names a reader never touches, and that ownership therefore cannot see. Both are places
+        # an exposure and axn's own machinery share a KEY rather than a method, and in both the machinery
+        # wins silently — the wrong answer this rule exists to prevent:
+        #
+        # - a key `deconstruct_keys` reports (`ok`, `finalized`; the other four are method-owned too).
+        #   The exposed data is merged OVER the outcome hash, so `case result in {ok:}` binds the
+        #   exposure while `result.ok?` still reports the outcome — a destructuring that contradicts the
+        #   result it came from.
+        # - a control keyword of `fail!`/`done!` (`standalone`), which binds ahead of their `**exposures`
+        #   splat: `fail!("boom", standalone: value)` sets the control and leaves the exposure nil.
+        #
+        # Both are read from what the consumer actually emits (Result::PATTERN_MATCH_KEYS, which
+        # `deconstruct_keys` builds its hash from; the `fail!`/`done!` signatures), so neither is a
+        # second hand-maintained list.
+        #
+        # `exposes` has no `as:`/`prefix:`, so the wire key IS the reader: unlike an expectation, the only
+        # way past this is a different name, and the message says so.
+        def _reject_shadowed_exposure_name!(name)
+          conflict = Axn::Internal::NameOwnership.owner_of(Axn::Result, name) ||
+                     Axn::Internal::NameOwnership.owner_within(Axn::Core::InternalContext, name) ||
+                     _exposure_key_conflict(name)
+          return unless conflict
+
+          raise ContractViolation::ReservedAttributeError.new(
+            name, owner: Axn::Internal::NameOwnership.describe(conflict, name:), kind: :exposure
+          )
+        end
+
+        def _exposure_key_conflict(name)
+          name = name.to_sym
+          return :pattern_match_key if Axn::Result::PATTERN_MATCH_KEYS.key?(name)
+          return :settlement_control_kwarg if Axn::Core::SETTLEMENT_CONTROL_KWARGS.include?(name)
+
+          nil
+        end
+
+        # A boolean exposure lands a SECOND name on the Result — `<field>?`, aliased onto the same
+        # singleton — so that name clears the same bar. Mirrors the conditions at the definition site
+        # (Result#_define_boolean_predicate_reader): only boolean fields get a predicate, and a field
+        # already spelled with a `?` gets none.
+        def _reject_shadowed_predicate_name!(config)
+          return unless config.boolean?
+          return if config.field.to_s.end_with?("?")
+
+          _reject_shadowed_exposure_name!(:"#{config.field}?")
+        end
+
+        # No two declarations may resolve to the same reader name. (The shadowing bar every reader clears
+        # is applied by the caller, over the same resolved names.)
+        def _validate_reader_names!(reader_names)
           # A collision is a *new* reader name already claimed by an existing config under a different
           # wire key. A same-wire-key clash is a genuine duplicate field, reported downstream with a
           # clearer DuplicateFieldError, so it's excluded here. Checking every new reader (not just
@@ -1005,7 +1111,9 @@ module Axn
           # an INFERRED reader is free too: it is not a declaration, so the explicit one takes the name
           # and the inferred reader yields (_inferred_reader?).
           existing = _reader_owners
-                     .select { |reader, _config| method_defined?(reader) && !_inferred_reader?(reader) }
+                     .select do |reader, _config|
+                       Internal::NativeMethods.declared_instance_method(self, reader) && !_inferred_reader?(reader)
+                     end
                      .transform_values(&:field)
           collisions = reader_names.filter_map { |field, reader| reader if existing.key?(reader) && existing[reader] != field }
           collisions |= reader_names.values.tally.select { |_, count| count > 1 }.keys
@@ -1025,32 +1133,6 @@ module Axn
         def _validate_user_facing!(user_facing)
           Contract.validate_user_facing!(user_facing)
         end
-
-        RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
-          fail! forward! ok?
-          inspect default_error
-          each_pair
-          default_success
-          action_name
-          inputs
-          ambient_context
-        ].freeze
-
-        RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[
-          fail! ok?
-          inspect each_pair default_error
-          ok error success message
-          result
-          outcome
-          exception
-          elapsed_time
-          finalized?
-          __action__
-          __exposed_keys__
-          standalone
-          inputs
-          ambient_context
-        ].freeze
 
         KNOWN_VALIDATION_KEYS = Set.new(%i[
                                           absence acceptance comparison confirmation exclusion format
@@ -1753,7 +1835,10 @@ module Axn
         # leaves a debug-level breadcrumb so a surprising shadow is discoverable. Returns true when
         # the name is free (caller should define it), false when it's taken (already logged).
         def _reader_name_available?(name, kind:)
-          return true unless method_defined?(name) || private_method_defined?(name)
+          # Read natively here and in the two readers below: `self` is the author's own class, so a singleton
+          # `method_defined?`/`instance_method` of its own would otherwise answer a question these guards
+          # decide on, and one answering "free" is how a declaration slips past into a taken name.
+          return true unless Internal::NativeMethods.declared_instance_method(self, name)
 
           Axn.config.logger.debug { "[Axn] #{self.name || 'Action'}: skipping auto-generated #{kind} reader `#{name}` (already defined)" }
           false
@@ -1777,9 +1862,23 @@ module Axn
         # with one is never the explicit-vs-explicit conflict the collision guards raise on: the explicit
         # name wins and the inferred reader yields.
         def _inferred_reader?(name)
-          return false unless method_defined?(name) || private_method_defined?(name)
+          method = Internal::NativeMethods.declared_instance_method(self, name)
+          return false unless method
 
-          instance_method(name).owner.is_a?(InferredReaders)
+          Internal::Identity.kind?(method.owner, InferredReaders)
+        end
+
+        # Whether the method answering to `name` is a reader axn GENERATED on the class from a
+        # declaration — as opposed to one the author wrote. Identified by generation site, the same
+        # signal schema reflection uses to tell the two apart (Reflection::Schema#framework_generated_reader?).
+        # The owner must be a Class: every generated reader is defined onto the action class itself, while
+        # axn's own sugar lives in MODULES that share the same source file.
+        def _axn_generated_reader?(name)
+          method = Internal::NativeMethods.declared_instance_method(self, name)
+          return false unless method
+
+          Axn::Internal::Identity.kind?(method.owner, ::Class) &&
+            method.source_location&.first == GENERATED_READER_SOURCE_PATH
         end
 
         # Whether the method answering to a config's reader name belongs to something OTHER than the config:
@@ -1878,7 +1977,11 @@ module Axn
           # NOTE: exposes fields are intentionally excluded — access those via result.field instead.
           # `reader` is the method name (may be aliased via as:/prefix:); `source` is the wire key
           # the value actually lives under in the inbound context.
-          target.define_method(reader) { internal_context.public_send(source) }
+          #
+          # Bound rather than dispatched: this body runs on the USER's class, so a sibling declaration
+          # (`expects :internal_context`) or a `def` would otherwise redirect EVERY field's read at the
+          # user's own value — the shadow costing them every reader instead of the one helper.
+          target.define_method(reader) { Axn::Internal::ActionState.internal_context(self).public_send(source) }
         end
 
         # Aliased in the same module as the reader it points at (an alias can only name a method its own
@@ -2542,7 +2645,16 @@ module Axn
       RESERVED_EXECUTION_CONTEXT_KEYS = %i[inputs outputs async ambient_context axn_stack tags dimensions].freeze
 
       module InstanceMethods
+        # The inbound facade every generated reader resolves through. Private, and reached by axn's own
+        # machinery only through `Internal::ActionState` (an UnboundMethod resolves and binds a private
+        # method fine): nothing dispatches the name, so it costs the user nothing and they are free to
+        # declare a field called `internal_context`.
+        #
+        # Privatized one method at a time rather than with a bare `private`, which would also withdraw the
+        # user-facing sugar (`inputs`, `expose`, `set_execution_context`, `execution_context`) below.
         def internal_context = @__internal_context ||= _build_context_facade(:inbound)
+        private :internal_context
+
         def result = @__result ||= _build_context_facade(:outbound)
 
         # Resolved declared-inbound fields as a Hash (defaults/preprocess applied, model: fields
@@ -2552,20 +2664,25 @@ module Axn
         # the record lives only in the reader. Fields whose resolved value is nil are omitted, so a
         # nested action still applies its own absent/default handling for them.
         def inputs
+          context = Axn::Internal::ActionState.internal_context(self)
           self.class._declared_fields(:inbound).each_with_object({}) do |field, hash|
-            value = internal_context.public_send(field)
+            value = context.public_send(field)
             hash[field] = value unless value.nil?
           end
         end
 
-        delegate :default_error, :default_success, to: :internal_context
+        # Sugar reaching sugar is the same defect as an internal dispatching one: a user who takes
+        # `internal_context` would otherwise redirect these two at their own value.
+        def default_error = Axn::Internal::ActionState.internal_context(self).default_error
+        def default_success = Axn::Internal::ActionState.internal_context(self).default_success
 
         # Accepts:
         # - a single Axn::Result: forwards (result.declared_fields & own outbound declared fields)
         # - two positional arguments (key, value)
         # - a hash of key/value pairs
         def expose(*args, **kwargs)
-          return _expose_from_result(args.first) if args.size == 1 && kwargs.empty? && args.first.is_a?(Axn::Result)
+          forwarding_a_result = args.size == 1 && kwargs.empty? && args.first.is_a?(Axn::Result)
+          return Axn::Internal::ActionState.expose_from_result(self, args.first) if forwarding_a_result
 
           if args.any?
             if args.size != 2
@@ -2584,7 +2701,7 @@ module Axn
             # the declared field would read nil.
             key = key.to_sym
 
-            raise Axn::ContractViolation::UnknownExposure, key unless result.respond_to?(key)
+            raise Axn::ContractViolation::UnknownExposure, key unless Axn::Internal::ActionState.result(self).respond_to?(key)
 
             @__context.exposed_data[key] = value
           end
@@ -2626,8 +2743,8 @@ module Axn
           extra_context = explicit_context.merge(hook_context).except(*RESERVED_EXECUTION_CONTEXT_KEYS)
 
           ctx = {
-            inputs: _safe_execution_context_slice { inputs_for_logging },
-            outputs: _safe_execution_context_slice { outputs_for_logging },
+            inputs: _safe_execution_context_slice { Axn::Internal::ActionState.inputs_for_logging(self) },
+            outputs: _safe_execution_context_slice { Axn::Internal::ActionState.outputs_for_logging(self) },
             **extra_context,
           }
 
@@ -2638,7 +2755,8 @@ module Axn
           # ambient_context here rather than propagate.
           ambient = _safe_execution_context_slice do
             ambient_filter = self.class._has_dynamic_sensitive_fields? ? self.class._build_instance_filter(self) : self.class.inspection_filter
-            masked = self.class._mask_unfilterable_shapes(ambient_context, self.class._sensitive_ambient_shape_paths(self), self)
+            masked = self.class._mask_unfilterable_shapes(Axn::Internal::ActionState.ambient_context(self),
+                                                          self.class._sensitive_ambient_shape_paths(self), self)
             self.class.send(:_filter_tolerating_cycles, ambient_filter, masked)
           end
           ctx[:ambient_context] = ambient if ambient.present?

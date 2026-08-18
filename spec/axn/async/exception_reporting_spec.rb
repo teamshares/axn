@@ -315,6 +315,43 @@ RSpec.describe Axn::Async::ExceptionReporting do
       end
     end
 
+    context "axn's own report line for the proxy" do
+      # The proxy is not an Axn instance, so `Internal::ActionState` has to recognise it explicitly.
+      # Without that, axn's own message build in `configuration.rb` skips `DiscardedJobResult#error`
+      # and the log line drops to the caller's default level with no prefix — the existing coverage
+      # above misses this because it asserts on `action.result.error` from inside the HANDLER, which
+      # dispatches on the proxy directly and never goes through the funnel.
+      def capture_discarded_report(exc)
+        lines = []
+        allow(Axn.config.logger).to receive(:warn) { |message| lines << [:warn, message] }
+        allow(Axn.config.logger).to receive(:info) { |message| lines << [:info, message] }
+
+        described_class.trigger_on_exception(
+          exception: exc,
+          action_class:,
+          retry_context:,
+          job_args:,
+          extra_context: {},
+          log_prefix: "test",
+        )
+
+        lines
+      end
+
+      it "logs at warn with the DiscardedJob prefix" do
+        reported = capture_discarded_report(exception)
+
+        expect(reported).to include([:warn, a_string_including("[Axn::DiscardedJob]")])
+        expect(reported).not_to include([:info, a_string_including("Handled exception")])
+      end
+
+      it "reports the proxy result's error rather than falling back to the exception" do
+        reported = capture_discarded_report(nil)
+
+        expect(reported).to include([:warn, a_string_including("Job was discarded")])
+      end
+    end
+
     context "when the discarded/exhausted exception's own #message raises" do
       # DiscardedJobResult#error feeds `action.result.error` inside Axn.config.on_exception's own
       # message build (configuration.rb). The best_effort here contains the raise (it does not escape

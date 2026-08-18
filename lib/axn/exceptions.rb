@@ -170,12 +170,55 @@ module Axn
     include Axn::Error
 
     class ReservedAttributeError < ContractViolation
-      def initialize(name)
+      # `owner:` names what already holds the name, when the caller knows it (see
+      # Internal::NameOwnership). Without it the message can only say the name is unavailable, which
+      # leaves the author guessing at what they collided with. `name` is then the READER the
+      # declaration would define, which may not be the wire key — that is what makes the `as:` advice
+      # below a real way out rather than a suggestion the guard refuses.
+      #
+      # `kind:` picks the remedy, because the three collisions do not offer the same one. An `expects`
+      # READER collision is escapable with `as:`/`prefix:`, which keep the wire key and rename only the
+      # method. An `expects` WIRE KEY collision is not: those options rename the reader and leave the
+      # key as written, so the key itself has to change — and saying otherwise would send the author
+      # after a spelling that cannot help. `exposes` has neither option: an exposed field's name IS the
+      # reader defined on the Result, so the only way out there is a different name too.
+      def initialize(name, owner: nil, kind: :input)
         @name = name
+        @owner = owner
+        @kind = kind
         super()
       end
 
-      def message = "Cannot call expects or exposes with reserved field name: #{@name}"
+      def message
+        # Both operands are rendered before the join, never one of them: the name is the AUTHOR's bytes
+        # (ASCII-compatible is all a declared name promises) and the owner label carries a module name or
+        # path, so composing either raw can raise `Encoding::CompatibilityError` out of this method and
+        # replace the declaration error with a rendering failure.
+        #
+        # `Text.renderable` rather than `PropertyNames.renderable_label`: this file is loaded standalone by
+        # `Internal::Reflection::Values` (which requires it), so reaching for PropertyNames here would close
+        # a require cycle and leave the constant undefined exactly when a message needs it. Text gives the
+        # same two tiers — the name's text when it renders, its escaped spelling when it does not.
+        name = Axn::Internal::Text.renderable(@name.to_s)
+        return "Cannot call expects or exposes with reserved field name: #{name}" if @owner.nil?
+
+        owner = Axn::Internal::Text.renderable(@owner.to_s)
+
+        case @kind
+        when :exposure
+          "Cannot expose `#{name}`: that name belongs to #{owner}, and an exposure cannot share it. " \
+          "`exposes` has no reader alias, so rename the field."
+        when :wire_key
+          "Cannot declare an inbound field named `#{name}`: that name belongs to #{owner}. The value a " \
+          "caller passes under a field's name is read back off axn's inbound context facade, which answers " \
+          "to `#{name}` itself — so the caller's value would be unreachable. Rename the field; `as:` and " \
+          "`prefix:` rename only the reader and leave the wire key as written."
+        else
+          "Cannot declare a reader named `#{name}`: that name belongs to #{owner}. A field's reader is " \
+          "defined on the action itself, so declaring it would take the name over. Rename the field, or " \
+          "keep the wire key and rename only the reader, with `as:` (or `prefix:`)."
+        end
+      end
     end
 
     class MethodNotAllowed < ContractViolation; end

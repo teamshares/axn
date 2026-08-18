@@ -55,7 +55,9 @@ module Axn
                 klass = Object.const_get(@rule.to_s)
                 klass && Axn::Internal::Identity.kind?(exception, klass)
               rescue NameError
-                action.warn("Ignoring apparently-invalid matcher #{@rule.inspect} -- neither action method nor constant found")
+                Axn::Internal::ActionState.log(action,
+                                               "Ignoring apparently-invalid matcher #{@rule.inspect} -- neither action method nor constant found",
+                                               level: :warn)
                 false
               end
             end
@@ -75,7 +77,9 @@ module Axn
           end
 
           def handle_invalid(action:)
-            action.warn("Ignoring apparently-invalid matcher #{@rule.inspect} -- could not find way to apply it")
+            Axn::Internal::ActionState.log(action,
+                                           "Ignoring apparently-invalid matcher #{@rule.inspect} -- could not find way to apply it",
+                                           level: :warn)
             false
           end
         end

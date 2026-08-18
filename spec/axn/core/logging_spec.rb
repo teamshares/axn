@@ -1,5 +1,27 @@
 # frozen_string_literal: true
 
+RSpec.describe Axn::Core::Logging do
+  it "lets a user wrap `log` with super" do
+    logged = []
+    allow(Axn.config.logger).to receive(:info) { |msg| logged << msg }
+
+    klass = build_axn do
+      def log(message, **) = super("[wrapped] #{message}")
+      def call = log("hello", level: :info)
+    end
+    klass.call
+
+    expect(logged).to include(a_string_including("[wrapped] hello"))
+  end
+
+  it "owns the helpers in a module rather than on the user's class" do
+    klass = build_axn {}
+
+    expect(klass.instance_method(:log).owner).to eq(described_class::InstanceMethods)
+    expect(klass.instance_method(:info).owner).to eq(described_class::InstanceMethods)
+  end
+end
+
 RSpec.describe Axn do
   describe "Logging" do
     let(:action) do

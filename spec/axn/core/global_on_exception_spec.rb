@@ -37,11 +37,14 @@ RSpec.describe "Global on_exception handler" do
         Axn.config.instance_variable_set(:@on_exception, nil)
       end
 
+      # Captured on the CLASS: the handled-exception line reaches the log through a bound instance
+      # method, which lands there, rather than through the instance-level `log` a user may take.
       it "logs the exception but doesn't call a custom handler" do
-        expect_any_instance_of(action).to receive(:log).with(
-          "#{'#' * 10} Handled exception (RuntimeError): Something went wrong! #{'#' * 10}",
-        )
+        logged = []
+        allow(action).to receive(:log) { |msg, **| logged << msg }
+
         expect(action.call(name: "error", age: 25)).not_to be_ok
+        expect(logged).to include("#{'#' * 10} Handled exception (RuntimeError): Something went wrong! #{'#' * 10}")
       end
     end
 
@@ -237,10 +240,12 @@ RSpec.describe "Global on_exception handler" do
 
       it "logs with decorative formatting" do
         expect(Axn.config).to receive(:on_exception).and_call_original
-        expect_any_instance_of(action).to receive(:log).with(
-          "#{'#' * 10} Handled exception (RuntimeError): Test error #{'#' * 10}",
-        )
+        logged = []
+        allow(action).to receive(:log) { |msg, **| logged << msg }
+
         action.call
+
+        expect(logged).to include("#{'#' * 10} Handled exception (RuntimeError): Test error #{'#' * 10}")
       end
     end
 
@@ -251,10 +256,12 @@ RSpec.describe "Global on_exception handler" do
 
       it "logs without decorative formatting" do
         expect(Axn.config).to receive(:on_exception).and_call_original
-        expect_any_instance_of(action).to receive(:log).with(
-          "Handled exception (RuntimeError): Test error",
-        )
+        logged = []
+        allow(action).to receive(:log) { |msg, **| logged << msg }
+
         action.call
+
+        expect(logged).to include("Handled exception (RuntimeError): Test error")
       end
     end
   end
@@ -277,12 +284,12 @@ RSpec.describe "Global on_exception handler" do
         context: hash_including(inputs: { trigger_error: true }, outputs: {}),
       ).and_call_original
 
-      expect_any_instance_of(action).to receive(:log).with(
-        "#{'#' * 10} Handled exception (RuntimeError): Test error #{'#' * 10}",
-      )
+      logged = []
+      allow(action).to receive(:log) { |msg, **| logged << msg }
 
       result = action.call(trigger_error: true)
       expect(result).not_to be_ok
+      expect(logged).to include("#{'#' * 10} Handled exception (RuntimeError): Test error #{'#' * 10}")
     end
   end
 

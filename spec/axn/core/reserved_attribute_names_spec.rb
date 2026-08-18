@@ -23,7 +23,7 @@ RSpec.describe Axn do
     end
 
     context "with other reserved expectation field names" do
-      %w[default_success action_name inputs forward!].each do |field_name|
+      %w[default_success action_name].each do |field_name|
         context "with #{field_name}" do
           let(:action) do
             build_axn do
@@ -60,20 +60,10 @@ RSpec.describe Axn do
       it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
     end
 
-    context "with result field name" do
-      let(:action) do
-        build_axn do
-          exposes :result, allow_blank: true
-        end
-      end
-
-      it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
-    end
-
     context "with other reserved field names" do
-      # `standalone` is reserved because it is a control kwarg on `fail!`/`done!`;
-      # exposing it would let `fail!("msg", standalone: value)` silently bind to the option instead
-      # of the exposure.
+      # `standalone` is refused because it is a control kwarg on `fail!`/`done!`, which binds ahead of
+      # their exposures: `fail!("msg", standalone: value)` would set the option and leave the exposure
+      # unset. Read off those signatures rather than listed (Axn::Core::SETTLEMENT_CONTROL_KWARGS).
       %w[outcome exception elapsed_time finalized? __action__ __exposed_keys__ standalone].each do |field_name|
         context "with #{field_name}" do
           let(:action) do
@@ -85,16 +75,6 @@ RSpec.describe Axn do
           it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
         end
       end
-    end
-
-    context "with inputs reserved exposure name" do
-      let(:action) do
-        build_axn do
-          exposes :inputs, type: String
-        end
-      end
-
-      it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
     end
   end
 end

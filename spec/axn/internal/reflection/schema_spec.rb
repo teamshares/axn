@@ -140,10 +140,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     it "does NOT require a params field whose blank {} default has no presence to reject it (runtime: call ok)" do
       klass = Class.new do
         include Axn
-        expects :p, type: :params, default: {}
+        expects :par, type: :params, default: {}
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-      expect(schema[:required] || []).not_to include("p")
+      expect(schema[:required] || []).not_to include("par")
     end
 
     it "does NOT require a presence: false field whose blank {} default is accepted at runtime" do

@@ -38,7 +38,7 @@ module Axn
   module Core
     module ClassMethods
       def call(**)
-        new(**).tap(&:_run).result
+        Axn::Internal::ActionState.result(new(**).tap(&:_run))
       end
 
       def call!(**)
@@ -90,12 +90,12 @@ module Axn
     end
 
     def fail!(message = nil, standalone: false, **exposures)
-      expose(**exposures) if exposures.any?
+      Axn::Internal::ActionState.expose(self, **exposures) if exposures.any?
       raise Axn::Failure.new(message, standalone:, action: self)
     end
 
     def done!(message = nil, standalone: false, **exposures)
-      expose(**exposures) if exposures.any?
+      Axn::Internal::ActionState.expose(self, **exposures) if exposures.any?
       raise Axn::Internal::EarlyCompletion.new(message, standalone:)
     end
 
@@ -119,7 +119,7 @@ module Axn
 
       raise ArgumentError, "forward!: expected an Axn class or an Axn::Result (got #{result.class})" unless Internal::Identity.kind?(result, Axn::Result)
 
-      _expose_from_result(result, require_overlap: false)
+      Internal::ActionState.expose_from_result(self, result, require_overlap: false)
 
       Internal::TransparentBubbling.bubble!(result)
     end
@@ -143,7 +143,7 @@ module Axn
 
       raise result.exception if result.outcome.exception?
 
-      fail!("#{error_prefix}#{result.error}")
+      Internal::ActionState.fail!(self, "#{error_prefix}#{result.error}")
     end
 
     # Mirrors the `steps` DSL's membership check, one phase later: `step` can validate at declaration
@@ -152,11 +152,20 @@ module Axn
     def _forward_to_class(klass)
       raise ArgumentError, "forward!: #{klass} must include Axn" unless klass.included_modules.include?(::Axn) || klass < ::Axn
 
-      klass.call(**inputs)
+      klass.call(**Internal::ActionState.inputs(self))
     end
 
     def initialize(**)
       @__context = Axn::Core::Context.new(**)
     end
+
+    # The keyword names `fail!`/`done!` bind BEFORE their `**exposures` splat. An action exposing one
+    # of these cannot set it through either call — `fail!("boom", standalone: value)` binds the control
+    # and the exposure silently stays nil — so `exposes` refuses the name (see
+    # Contract::ClassMethods#_reject_shadowed_exposure_name!). Read off the signatures rather than
+    # listed, so a control added to either later is covered without editing anything.
+    SETTLEMENT_CONTROL_KWARGS = %i[fail! done!].flat_map do |name|
+      instance_method(name).parameters.filter_map { |type, param| param if %i[key keyreq].include?(type) }
+    end.uniq.freeze
   end
 end

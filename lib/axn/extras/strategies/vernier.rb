@@ -20,9 +20,9 @@ module Axn
             extend ActiveSupport::Concern
 
             included do
-              class_attribute :_vernier_condition, default: condition
-              class_attribute :_vernier_sample_rate, default: sample_rate_value
-              class_attribute :_vernier_output_dir, default: output_dir_value
+              class_attribute :_vernier_condition, instance_accessor: false, default: condition
+              class_attribute :_vernier_sample_rate, instance_accessor: false, default: sample_rate_value
+              class_attribute :_vernier_output_dir, instance_accessor: false, default: output_dir_value
 
               around do |hooked|
                 _with_vernier_profiling { hooked.call }

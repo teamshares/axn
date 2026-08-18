@@ -350,9 +350,11 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       cc = company_class
       build_axn do
         expects :company, type: cc
-        expects :format
+        # A wire key `Kernel` already answers to, kept as-is: only the READER is renamed, so the
+        # caller-facing key `enqueue_all` and the enqueued job carry stays `format`.
+        expects :format, as: :out_format
 
-        define_method(:call) { "processed #{company.name} as #{format}" }
+        define_method(:call) { "processed #{company.name} as #{out_format}" }
 
         enqueues_each :company, from: -> { cc.all }
       end.tap { |klass| enable_async_on(klass) }
@@ -588,7 +590,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       describe "multiple fields with mixed scalars and enumerables" do
         let(:action_class) do
           build_axn do
-            expects :format
+            expects :format, as: :out_format
             expects :mode
             expects :priority
           end.tap { |klass| enable_async_on(klass) }
@@ -600,8 +602,8 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
 
           action_class.enqueue_all(
             format: %i[csv json], # iterate
-            mode: :full,           # static
-            priority: [1, 2],      # iterate
+            mode: :full,          # static
+            priority: [1, 2],     # iterate
           )
 
           # 2 formats × 1 mode × 2 priorities = 4 jobs

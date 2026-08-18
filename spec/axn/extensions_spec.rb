@@ -86,7 +86,29 @@ RSpec.describe Axn::Extensions do
     let(:boom) { -> { raise StandardError, "fail message" } }
     let(:logger) { double(:logger) }
 
+    # Warn-targets are real actions, because `ActionState.log` identifies its target rather than asking
+    # whether it answers to a level name — a duck-type probe is the very thing the funnel replaces. The
+    # ACTION's own log is stubbed at the class level: that is where an instance's log lands, and the only
+    # half a user can still break now that internals bind the instance method instead of dispatching it.
+    let(:logged_by_action) { [] }
+    let(:logging_action) do
+      lines = logged_by_action
+      klass = build_axn {}
+      klass.define_singleton_method(:log) { |message, **| lines << message }
+      klass.send(:new)
+    end
+    let(:broken_log_action) do
+      klass = build_axn {}
+      klass.define_singleton_method(:log) { |*, **| raise SystemStackError }
+      klass.send(:new)
+    end
+
     before do
+      # Built before the stubs below replace `Axn.config` with a message-chain double that answers only
+      # what an example asks for: `include Axn` reads several real settings while wiring a class.
+      logging_action
+      broken_log_action
+
       allow(Axn).to receive_message_chain(:config, :logger).and_return(logger)
       allow(Axn).to receive_message_chain(:config, :best_effort_raises_in_dev).and_return(false)
       # `Axn.config` here is a message-chain double, which answers ONLY the messages an example stubs.
@@ -127,13 +149,19 @@ RSpec.describe Axn::Extensions do
       end
     end
 
-    context "with a custom action warn-target" do
-      let(:action) { double(:action) }
+    context "with an action warn-target" do
+      before { allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true) }
 
-      it "warns on the action instead of the config logger" do
-        allow(Axn).to receive_message_chain(:config, :env, :production?).and_return(true)
-        expect(action).to receive(:warn).with(/Ignoring exception raised while foo/)
-        described_class.best_effort("foo", action:, &boom)
+      it "routes the warning through the action's own log" do
+        described_class.best_effort("foo", action: logging_action, &boom)
+
+        expect(logged_by_action).to include(a_string_matching(/Ignoring exception raised while foo/))
+      end
+
+      it "still warns through the configured logger for a target it cannot identify" do
+        expect(logger).to receive(:warn).with(/Ignoring exception raised while foo/)
+
+        described_class.best_effort("foo", action: double(:not_an_action), &boom)
       end
     end
 
@@ -222,20 +250,16 @@ RSpec.describe Axn::Extensions do
         expect { described_class.best_effort("foo", &boom) }.not_to raise_error
       end
 
-      it "gives the configured logger an independent attempt when an action's warn is the broken one" do
-        action = double(:action)
-        allow(action).to receive(:warn).and_raise(SystemStackError)
+      it "gives the configured logger an independent attempt when an action's log is the broken one" do
         expect(logger).to receive(:warn).with(/Ignoring exception raised while foo/)
 
-        expect { described_class.best_effort("foo", action:, &boom) }.not_to raise_error
+        expect { described_class.best_effort("foo", action: broken_log_action, &boom) }.not_to raise_error
       end
 
       it "still swallows when both targets are broken" do
-        action = double(:action)
-        allow(action).to receive(:warn).and_raise(SystemStackError)
         allow(Axn).to receive_message_chain(:config, :logger).and_return(broken)
 
-        expect { described_class.best_effort("foo", action:, &boom) }.not_to raise_error
+        expect { described_class.best_effort("foo", action: broken_log_action, &boom) }.not_to raise_error
       end
     end
 

@@ -232,7 +232,7 @@ module Axn
       # subfield wire paths (dotted, precise to their parent) plus sensitive shape-member names (flat —
       # a member redacts by name wherever it appears, i.e. every array element and any nesting depth).
       def nested_sensitive_keys(field)
-        subfield_paths = action.subfield_configs
+        subfield_paths = action.class.subfield_configs
                                .select { |config| sensitive_subfield_on?(config, field) }
                                .map { |config| action.class._resolved_subfields.index[config].wire_path.join(".") }
 
@@ -262,7 +262,7 @@ module Axn
       # `subfield_configs`; inspect must match rather than only covering top-level shapes.
       def shape_bearing_configs_under(field)
         top_level = (action.class.internal_field_configs + action.class.external_field_configs).select { |c| c.field == field }
-        subfields = action.subfield_configs.select do |config|
+        subfields = action.class.subfield_configs.select do |config|
           path = action.class._resolved_subfields.index[config]
           path && path.wire_path.first == field
         end

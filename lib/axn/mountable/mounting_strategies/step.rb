@@ -134,7 +134,9 @@ module Axn
               # doesn't declare but a child step does) still pass through raw; exposed_data wins
               # last, matching __combined_data's prior exposure-over-input precedence.
               passthrough = @__context.provided_data.except(*self.class._declared_fields(:inbound))
-              step_result = axn.call(**passthrough, **inputs, **@__context.exposed_data)
+              # Root-anchored: this module's own namespace holds a nested `Axn` strategy constant, which
+              # a relative `Axn::` would resolve to first.
+              step_result = axn.call(**passthrough, **::Axn::Internal::ActionState.inputs(self), **@__context.exposed_data)
 
               # Propagate before absorbing, so the FAILING step's own partial exposures never land on
               # the parent: they are values that step began and did not finish producing. An earlier

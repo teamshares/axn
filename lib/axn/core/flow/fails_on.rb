@@ -13,7 +13,7 @@ module Axn
       module FailsOn
         def self.included(base)
           base.class_eval do
-            class_attribute :_fails_on_matchers, default: [].freeze
+            class_attribute :_fails_on_matchers, instance_accessor: false, default: [].freeze
 
             extend ClassMethods
           end

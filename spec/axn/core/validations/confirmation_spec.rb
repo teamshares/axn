@@ -982,7 +982,7 @@ RSpec.describe "confirmation:" do
       expect(instance.send(:inputs_for_logging)[:password_confirmation]).to eq("[FILTERED]")
 
       result = klass.call(password: "s3cret", password_confirmation: "s3cret")
-      expect(result.__action__.internal_context.inspect).to include("password_confirmation: [FILTERED]")
+      expect(inbound_facade(result.__action__).inspect).to include("password_confirmation: [FILTERED]")
     end
 
     # `reject_undeclared_inputs` is a per-call gate only the tool Invoker sets in production

@@ -7,10 +7,17 @@ module Axn
     module Logging
       LEVELS = %i[debug info warn error fatal].freeze
 
+      # In a module rather than stamped onto the action class, so a user who wants to wrap one of
+      # these (to prefix every message, say) can `def log` and reach axn's via `super` — and so a user
+      # who takes the name outright loses only the helper. Internals never come through here.
+      module InstanceMethods
+        delegate :log, *LEVELS, to: :class
+      end
+
       def self.included(base)
         base.class_eval do
           extend ClassMethods
-          delegate :log, *LEVELS, to: :class
+          include InstanceMethods
         end
       end
 

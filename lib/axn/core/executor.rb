@@ -360,7 +360,7 @@ module Axn
 
         update_payload = proc do
           Axn::Extensions.best_effort("updating notification payload while tracing axn.call", action: @action) do
-            result = @action.result
+            result = Internal::ActionState.result(@action)
             outcome = result.outcome.to_s
             payload[:outcome] = outcome
             payload[:result] = result
@@ -492,7 +492,7 @@ module Axn
           emit_metrics_proc = Axn.config.emit_metrics
           next unless emit_metrics_proc
 
-          result = @action.result
+          result = Internal::ActionState.result(@action)
           Internal::Callable.call_with_desired_shape(emit_metrics_proc,
                                                      kwargs: { resource:, result:, dimensions: Core::Tagging.dup_facets(resolved_dimensions) })
         end
@@ -501,7 +501,7 @@ module Axn
       # The attempt's view of whether the action's result has SETTLED. Same `finalized?` signal
       # `log_after` gates on — true on every settling path, false for a body that never reached the
       # exception boundary.
-      def action_result_finalized? = @action.result.finalized?
+      def action_result_finalized? = Internal::ActionState.result(@action).finalized?
 
       # Runs an observer (the span, the notification) so its OWN failure is logged and swallowed while
       # a failure of the stack it wraps escapes untouched. Both callers reach `block.call` through the
@@ -636,7 +636,7 @@ module Axn
 
       def finalize_span(span)
         Axn::Extensions.best_effort("updating OTel span while tracing axn.call", action: @action) do
-          result = @action.result
+          result = Internal::ActionState.result(@action)
           outcome = result.outcome.to_s
           span.set_attribute("axn.outcome", outcome)
 
@@ -755,20 +755,21 @@ module Axn
         # non-StandardError escaped `log_before`. Reporting either would state an outcome that never
         # happened — the unsettled result reads `success` — and formatting a nil duration would raise out
         # of this ensure, replacing the exception in flight.
-        return unless @action.result.finalized?
+        result = Internal::ActionState.result(@action)
+        return unless result.finalized?
 
-        level = @action_class._auto_log_level_for(@action.result.outcome)
+        level = @action_class._auto_log_level_for(result.outcome)
         return unless level
 
-        log_after_at_level(level)
+        log_after_at_level(level, result)
       end
 
-      def log_after_at_level(level)
+      def log_after_at_level(level, result)
         Internal::CallLogger.log_at_level(
           @action_class,
           level:,
           message_parts: [
-            "Execution completed (with outcome: #{@action.result.outcome}) in #{Internal::Timing.human_duration(@action.result.elapsed_time)}",
+            "Execution completed (with outcome: #{result.outcome}) in #{Internal::Timing.human_duration(result.elapsed_time)}",
           ],
           join_string: ". Set: ",
           after: top_level_separator,
@@ -924,7 +925,7 @@ module Axn
       # This method is called bare from `_settle_exception!`, which is the whole reason nothing here may be
       # asked of the exception.
       def _resolve_and_stamp_presentation(exception)
-        resolved = @action.result.error
+        resolved = Internal::ActionState.result(@action).error
         return unless resolved && Axn::Extensions.owned_failure?(exception)
 
         stamper = Internal::Identity.kind?(exception, Failure) ? FAILURE_PRESENT_AS : VALIDATION_PRESENT_AS
@@ -1083,8 +1084,8 @@ module Axn
 
         failures = @action_class.send(:external_field_configs).filter_map do |config|
           validator_class = @action_class._cached_validator_class_for(config:, effective_validations: config.validations, coerce: false)
-          errors = Axn::Validation::Fields.errors_for(validator_class, source: @action.result, validations: config.validations, action: @action,
-                                                                       permit_method_call: true)
+          errors = Axn::Validation::Fields.errors_for(validator_class, source: Internal::ActionState.result(@action), validations: config.validations,
+                                                                       action: @action, permit_method_call: true)
           ContractFailure.new(config:, path: nil, errors:, stranded_at: nil) if errors.any?
         end
         raise OutboundValidationError, _aggregate_errors(failures, []) if failures.any?
@@ -1167,7 +1168,7 @@ module Axn
           confirmation = _confirmation_pair_for(config)
           errors = Axn::Validation::Fields.errors_for(
             validator_class,
-            source: config.subfield? ? _resolved_parent_value(config) : @action.internal_context,
+            source: config.subfield? ? _resolved_parent_value(config) : Internal::ActionState.internal_context(@action),
             validations: effective_validations,
             action: @action,
             reader: @action_class.send(:_validation_reader_for, config),
@@ -1438,7 +1439,7 @@ module Axn
 
         @action_class.send(:internal_field_configs).each do |config|
           next unless _id_based_model?(config)
-          next if _model_gate_closed?(config) { @action.internal_context }
+          next if _model_gate_closed?(config) { Internal::ActionState.internal_context(@action) }
 
           # Reuse the per-config raw memo (present_record read the same key during resolution), so the
           # directly-provided record — and its `method_call:` dispatch — is read at most once (PRO-2910).
@@ -1571,7 +1572,7 @@ module Axn
           # still reads back as nil through the field's own reader, so skipping costs a caller nothing.
           unless @context.exposed_data.key?(field)
             if @action_class.send(:internal_field_configs).any? { |c| c.field == field }
-              inbound_value = @action.internal_context.public_send(field)
+              inbound_value = Internal::ActionState.internal_context(@action).public_send(field)
               inbound_present = !inbound_value.nil? || @context.provided_data.key?(field)
               @context.exposed_data[field] = inbound_value if inbound_present
             elsif @context.provided_data.key?(field)

@@ -50,13 +50,17 @@ RSpec.describe "Axn ambient_context (reader + subfield parent)" do
     end.to raise_error(Axn::ContractViolation::ReservedAttributeError)
   end
 
-  it "rejects a user-declared ambient_context exposure" do
-    expect do
-      Class.new do
-        include Axn
-        exposes :ambient_context
-      end
-    end.to raise_error(Axn::ContractViolation::ReservedAttributeError)
+  # Only the INBOUND name is a sentinel: the subfield resolver compares a route's root against
+  # AmbientContext::PARENT, and there is no outbound counterpart — nothing reads `ambient_context` off
+  # a Result — so an exposure of that name takes nothing over.
+  it "allows a user-declared ambient_context exposure" do
+    klass = Class.new do
+      include Axn
+      exposes :ambient_context
+      def call = expose(ambient_context: "mine")
+    end
+
+    expect(klass.call.ambient_context).to eq("mine")
   end
 end
 
