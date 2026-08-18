@@ -294,6 +294,32 @@ RSpec.describe Axn::Strategies::Form do
         end.to raise_error(ArgumentError, "form strategy: #{invalid_form_class} must implement `valid?`")
       end
 
+      it "names the offending form class without running its to_s" do
+        # The guard's own message must survive a form class whose `to_s` raises: a decorator or value
+        # object defining one is ordinary, and running it here replaces the failure being reported.
+        invalid_form_class = Class.new do
+          def initialize(_attributes = {}); end
+          def self.to_s = raise(NotImplementedError, "to_s must not run in the error path")
+        end
+
+        expect do
+          test_action.use(:form, type: invalid_form_class)
+        end.to raise_error(ArgumentError, /must implement `valid\?`/)
+      end
+
+      it "refuses a form class that answers method_defined? without declaring valid?" do
+        # The capability question is read from the method table, so a class answering it wrongly
+        # cannot admit itself past a declaration guard and fail at call time instead.
+        invalid_form_class = Class.new do
+          def initialize(_attributes = {}); end
+          def self.method_defined?(name, *) = name == :valid? ? true : super
+        end
+
+        expect do
+          test_action.use(:form, type: invalid_form_class)
+        end.to raise_error(ArgumentError, /must implement `valid\?`/)
+      end
+
       let(:existing_form_class) do
         Class.new(Axn::FormObject) do
           attr_accessor :foo

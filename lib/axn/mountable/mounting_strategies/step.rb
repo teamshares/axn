@@ -73,9 +73,7 @@ module Axn
           # private methods too: instance_methods(false) omits a `private def call`, which would
           # otherwise be silently replaced (the reverse order is caught by method_added, which fires
           # regardless of visibility).
-          if (target.instance_methods(false) + target.private_instance_methods(false)).include?(:call)
-            raise ArgumentError, format(CALL_COLLISION_MESSAGE, target.name || "Action")
-          end
+          raise ArgumentError, format(CALL_COLLISION_MESSAGE, target.name || "Action") if _declares_own_call?(target)
 
           _define_steps_call(target)
           _install_call_collision_guard(target)
@@ -155,7 +153,20 @@ module Axn
         # guard through the singleton-class ancestry, so re-installing on a subclass that adds a step
         # is harmless.
         def _install_call_collision_guard(target)
-          target.singleton_class.prepend(CallCollisionGuard)
+          ::Axn::Internal::NativeMethods.module_singleton_class(target).prepend(CallCollisionGuard)
+        end
+
+        # Whether `target` itself declares `#call`, at any visibility — read out of the method table rather
+        # than asked of the class, since a class that answers the reflection wrongly would otherwise have the
+        # generated orchestrator silently replace the `#call` its author wrote. `owner` is compared by identity
+        # (`Module#==` is as overridable as the rest), and an inherited or prepended `#call` is correctly NOT a
+        # collision: it is the same answer the `instance_methods(false)` pair gave, from a lookup that cannot
+        # be misreported.
+        def _declares_own_call?(target)
+          return false unless ::Axn::Internal::Identity.kind?(target, ::Module)
+
+          owner = ::Axn::Internal::NativeMethods.declared_instance_method(target, :call)&.owner
+          ::Axn::Internal::Identity.same?(owner, target)
         end
       end
     end

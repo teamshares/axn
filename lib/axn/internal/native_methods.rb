@@ -186,6 +186,16 @@ module Axn
       # also true for `mod == other`, matching `ancestors`' own inclusion of the receiver).
       def self.includes_module?(mod, other) = module_ancestors(mod).include?(other)
 
+      # A MODULE's own singleton class, read natively — for a caller that has to INSTALL something on it
+      # rather than ask a question about it. A class that answers with someone else's singleton class
+      # redirects the installation rather than merely inverting a verdict: a `method_added` hook meant for
+      # one class, prepended to `::Object`'s singleton class, fires for every class in the process.
+      #
+      # Same precondition as the readers above — the caller must have established that `mod` IS a Module
+      # undispatched — though this one binds `Kernel#singleton_class`, so it is a Module's singleton class
+      # only because the caller already knows `mod` is one.
+      def self.module_singleton_class(mod) = KERNEL_SINGLETON_CLASS.bind_call(mod)
+
       # The UnboundMethod a MODULE declares for `name` at ANY visibility, or nil when it declares none — the
       # module-level twin of `method_owner`, for a caller that needs the method itself (its `owner`, its
       # `source_location`) rather than just its owner.

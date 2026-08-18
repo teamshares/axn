@@ -92,6 +92,39 @@ RSpec.describe "Steps + custom #call collision" do
     expect(result.b).to eq(2)
   end
 
+  it "installs the guard on the declaring class rather than wherever it names" do
+    # The guard is prepended to a singleton class READ from the target, not asked of it. A class
+    # answering with someone else's singleton class would otherwise have axn install its
+    # `method_added` hook process-wide.
+    step_child = child
+    guard = Axn::Mountable::MountingStrategies::Step::CallCollisionGuard
+    expect(Object.singleton_class.ancestors).not_to include(guard)
+
+    klass = Class.new do
+      include Axn
+      def self.singleton_class = Object.singleton_class
+      step "a", step_child
+    end
+
+    expect(klass).to be_truthy
+    expect(Object.singleton_class.ancestors).not_to include(guard)
+  end
+
+  it "raises for a pre-existing #call the class declines to report" do
+    # The collision is read out of the method table, so a class answering the reflection wrongly
+    # cannot admit itself past the guard and have its own `#call` silently replaced.
+    step_child = child
+    expect do
+      build_axn do
+        def call = :USERS_OWN
+
+        def self.instance_methods(*) = []
+        def self.private_instance_methods(*) = []
+        step "a", step_child
+      end
+    end.to raise_error(ArgumentError, /steps and a custom #call/i)
+  end
+
   it "preserves a pre-existing self.method_added hook when steps are declared" do
     step_child = child
     observed = []
