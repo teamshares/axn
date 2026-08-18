@@ -53,6 +53,8 @@ module Axn
       MODULE_ANCESTORS = ::Module.instance_method(:ancestors)
       MODULE_INSTANCE_METHOD = ::Module.instance_method(:instance_method)
       MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
+      MODULE_NAME = ::Module.instance_method(:name)
+      MODULE_PREPEND = ::Module.instance_method(:prepend)
       MODULE_PUBLIC_METHOD_DEFINED = ::Module.instance_method(:public_method_defined?)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
       STRING_EMPTY = ::String.instance_method(:empty?)
@@ -61,6 +63,7 @@ module Axn
       private_constant :SYMBOL_ENCODING
       private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS,
+                       :MODULE_NAME, :MODULE_PREPEND,
                        :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PUBLIC_METHOD_DEFINED
 
       # ActiveSupport's own definition of a blank String, matched against the value's BYTES rather than asked
@@ -185,6 +188,19 @@ module Axn
       # Whether `mod` counts `other` among its ancestors — the undispatched form of `mod < other` (which is
       # also true for `mod == other`, matching `ancestors`' own inclusion of the receiver).
       def self.includes_module?(mod, other) = module_ancestors(mod).include?(other)
+
+      # A module's CONSTANT PATH, or nil when it is anonymous — read natively, because `Module#name` is
+      # overridable like the rest and one that raises replaces the message being composed. Distinct from
+      # `Rendering.module_name`, which binds `to_s` and so always answers with something: this preserves
+      # the nil that tells a caller to reach for its own fallback ("Action" reads better than
+      # `#<Class:0x…>`, and an anonymous action class is the common case in tests).
+      def self.declared_module_name(mod) = MODULE_NAME.bind_call(mod)
+
+      # `prepend`, bound — for INSTALLING a module rather than asking a question. Ordinarily dispatching
+      # this would be the caller sabotaging only itself, which is not axn's to defend; the exception is
+      # installing a GUARD, where a `prepend` that quietly declines leaves the guard uninstalled and the
+      # thing it was watching for silently permitted. Absent functionality is loud; an absent guard is not.
+      def self.prepend_module(mod, other) = MODULE_PREPEND.bind_call(mod, other)
 
       # A MODULE's own singleton class, read natively — for a caller that has to INSTALL something on it
       # rather than ask a question about it. A class that answers with someone else's singleton class

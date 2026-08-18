@@ -283,7 +283,7 @@ module Axn
           raise ArgumentError,
                 "config_namespace #{ns.inspect} is already owned by " \
                 "#{Axn::Internal::Rendering.module_name(existing)} on " \
-                "#{Axn::Internal::Rendering.module_name(base)}; two config sources cannot share a namespace"
+                "#{base.name || base}; two config sources cannot share a namespace"
         end
 
         registry[ns] = self

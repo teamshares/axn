@@ -125,6 +125,35 @@ RSpec.describe "Steps + custom #call collision" do
     end.to raise_error(ArgumentError, /steps and a custom #call/i)
   end
 
+  it "installs the guard even when the singleton class declines to prepend" do
+    # The install is the guard itself, so a `prepend` that quietly declines leaves the reverse
+    # declaration order unguarded — a later `def call` would replace the generated orchestrator with
+    # no error at all. Unlike installing FUNCTIONALITY, whose absence is loud, this fails silent.
+    step_child = child
+    klass = Class.new do
+      include Axn
+      singleton_class.define_singleton_method(:prepend) { |*| self }
+      step "a", step_child
+    end
+
+    expect do
+      klass.class_eval { def call = :USERS_OWN }
+    end.to raise_error(ArgumentError, /steps and a custom #call/i)
+  end
+
+  it "still calls an anonymous class 'Action' rather than its object address" do
+    # `.name` is DISPATCHED here on purpose: `ClassBuilder#configure_class_name` installs a `name` of
+    # axn's own on mounted axns, so a bound read would answer with an object address in place of the
+    # name axn chose. This pins the anonymous fallback that a bound read would also have replaced.
+    step_child = child
+    expect do
+      build_axn do
+        def call = :USERS_OWN
+        step "a", step_child
+      end
+    end.to raise_error(ArgumentError, /\AAction declares steps/)
+  end
+
   it "preserves a pre-existing self.method_added hook when steps are declared" do
     step_child = child
     observed = []

@@ -153,7 +153,9 @@ module Axn
         # guard through the singleton-class ancestry, so re-installing on a subclass that adds a step
         # is harmless.
         def _install_call_collision_guard(target)
-          ::Axn::Internal::NativeMethods.module_singleton_class(target).prepend(CallCollisionGuard)
+          ::Axn::Internal::NativeMethods.prepend_module(
+            ::Axn::Internal::NativeMethods.module_singleton_class(target), CallCollisionGuard
+          )
         end
 
         # Whether `target` itself declares `#call`, at any visibility — read out of the method table rather

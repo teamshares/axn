@@ -3,6 +3,8 @@
 # activemodel is a hard gem dependency; declared here so this file does not rely on the top-level
 # `axn` entrypoint having loaded it first.
 require "active_model"
+require "axn/internal/identity"
+require "axn/internal/native_methods"
 
 # This is a base class for all form objects that are used with Axn actions.
 #

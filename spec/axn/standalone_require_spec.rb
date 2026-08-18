@@ -14,6 +14,7 @@ module StandaloneRequireProbe
   # The files an adapter gem is documented to load directly (`docs/recipes/authoring-tool-adapters.md`).
   ENTRY_POINTS = %w[
     axn/extensions/serialization
+    axn/form_object
     axn/internal/reflection/property_names
     axn/internal/reflection/schema
     axn/internal/reflection/values
