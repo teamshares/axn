@@ -302,7 +302,7 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
     def validating(shape)
       klass = build_axn
       klass.internal_field_configs = [
-        Axn::Core::Contract::FieldConfig.new(field: :p, reader_as: :p, validations: { type: { klass: Hash }, shape: }),
+        Axn::Core::Contract::FieldConfig.new(field: :par, reader_as: :par, validations: { type: { klass: Hash }, shape: }),
       ].freeze
       klass
     end
@@ -319,12 +319,12 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
       shape = { container: Hash }
       shape[:members] = [member(:tok, { presence: true }), member(:nxt, { shape: })]
 
-      result = validating(shape).call(p: self_referential_value)
+      result = validating(shape).call(par: self_referential_value)
 
       # The verdict the contract actually has, rather than a stack overflow: `tok` is missing from the value.
       expect(result).not_to be_ok
       expect(result.exception).to be_a(Axn::InboundValidationError)
-      expect(result.exception.message).to include("P tok can't be blank")
+      expect(result.exception.message).to include("Par tok can't be blank")
     end
 
     it "closes the same cycle when it runs through an Array container" do
@@ -334,10 +334,10 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
       value = {}
       value[:list] = [value]
 
-      result = validating(shape).call(p: value)
+      result = validating(shape).call(par: value)
 
       expect(result.exception).to be_a(Axn::InboundValidationError)
-      expect(result.exception.message).to include("P tok can't be blank")
+      expect(result.exception.message).to include("Par tok can't be blank")
     end
 
     # Why the value alone cannot be the key. This declaration is ORDINARY — two levels, acyclic, no assigned
@@ -346,16 +346,16 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
     # verdict a legal contract has always produced. The guard has to stay invisible here.
     it "still validates every level a legal declared shape reaches into a self-referential value" do
       klass = build_axn do
-        expects :p, type: Hash do
+        expects :par, type: Hash do
           field :nxt, type: Hash do
             field :leaf, presence: true
           end
         end
       end
 
-      result = klass.call(p: self_referential_value)
+      result = klass.call(par: self_referential_value)
 
-      expect(result.exception.message).to include("P nxt leaf can't be blank")
+      expect(result.exception.message).to include("Par nxt leaf can't be blank")
     end
 
     # Why the SHAPE alone cannot be the key either — the same reason the mask above guards the value. The graph
@@ -364,10 +364,10 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
       shape = { container: Hash }
       shape[:members] = [member(:tok, { presence: true }), member(:nxt, { type: { klass: Hash }, shape: })]
 
-      result = validating(shape).call(p: { tok: "t0", nxt: { tok: "t1", nxt: { nxt: {} } } })
+      result = validating(shape).call(par: { tok: "t0", nxt: { tok: "t1", nxt: { nxt: {} } } })
 
       # The third level's `tok` is missing and reported; a shape-keyed guard stopped at the second.
-      expect(result.exception.message).to include("P nxt nxt tok can't be blank")
+      expect(result.exception.message).to include("Par nxt nxt tok can't be blank")
     end
 
     # The case that decides value-vs-pair, and the one the reported repro does not reach. ONE value is reached
@@ -379,9 +379,9 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
       outer[:members] = [member(:outer_req, { presence: true }), member(:nxt, { shape: inner })]
       inner[:members] = [member(:inner_req, { presence: true }), member(:nxt, { shape: outer })]
 
-      result = validating(outer).call(p: self_referential_value)
+      result = validating(outer).call(par: self_referential_value)
 
-      expect(result.exception.message).to include("P outer_req can't be blank").and include("P nxt inner_req can't be blank")
+      expect(result.exception.message).to include("Par outer_req can't be blank").and include("Par nxt inner_req can't be blank")
     end
 
     # Ancestry, not sightings: the pair is popped on the way out, so one value at two SIBLING positions is
@@ -391,9 +391,9 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
       shape = { container: Hash, members: [member(:left, { shape: leaf }), member(:right, { shape: leaf })] }
       shared = {}
 
-      result = validating(shape).call(p: { left: shared, right: shared })
+      result = validating(shape).call(par: { left: shared, right: shared })
 
-      expect(result.exception.message).to include("P left need can't be blank").and include("P right need can't be blank")
+      expect(result.exception.message).to include("Par left need can't be blank").and include("Par right need can't be blank")
     end
 
     # The other half of untraversability, which no identity guard can see: a member minting a FRESH nested shape
@@ -405,7 +405,7 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
         def validations = { type: { klass: Hash }, shape: { members: [self], container: Hash } }
       end.new
 
-      result = validating({ members: [generative], container: Hash }).call(p: self_referential_value)
+      result = validating({ members: [generative], container: Hash }).call(par: self_referential_value)
 
       expect(result).not_to be_ok
       expect(result.exception).to be_a(ArgumentError)
@@ -427,8 +427,8 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
       value = {}
       64.times { value = { n: value } }
 
-      klass = build_axn { expects :p, type: Hash, shape: }
-      result = klass.call(p: value)
+      klass = build_axn { expects :par, type: Hash, shape: }
+      result = klass.call(par: value)
 
       expect(result.exception).to be_a(Axn::InboundValidationError)
       expect(result.exception.message).to include("leaf can't be blank")
@@ -437,7 +437,7 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
     # An ordinary shaped call is unchanged — the bound is on the descent, not on the members.
     it "leaves an ordinary nested shape validating exactly as before" do
       klass = build_axn do
-        expects :p, type: Hash do
+        expects :par, type: Hash do
           field :name, presence: true
           field :meta, type: Hash do
             field :id, presence: true
@@ -445,8 +445,8 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
         end
       end
 
-      expect(klass.call(p: { name: "n", meta: { id: 1 } })).to be_ok
-      expect(klass.call(p: { name: "n", meta: {} }).exception.message).to include("P meta id can't be blank")
+      expect(klass.call(par: { name: "n", meta: { id: 1 } })).to be_ok
+      expect(klass.call(par: { name: "n", meta: {} }).exception.message).to include("Par meta id can't be blank")
     end
   end
 
@@ -495,7 +495,7 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
 
     it "accepts an honest graph at the cap, for declaration AND projection" do
       shape = linear_shape(63)
-      klass = build_axn { expects :p, type: Hash, shape: }
+      klass = build_axn { expects :par, type: Hash, shape: }
 
       expect { klass.input_schema }.not_to raise_error
       expect { klass.output_schema }.not_to raise_error
@@ -504,7 +504,7 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
     it "rejects one level past it at declaration" do
       shape = linear_shape(65)
 
-      expect { build_axn { expects :p, type: Hash, shape: } }
+      expect { build_axn { expects :par, type: Hash, shape: } }
         .to raise_error(ArgumentError, /nested more than 64 levels deep/)
     end
 
@@ -528,7 +528,7 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
 
     it "accepts a shared-tail graph at the cap, for declaration AND projection" do
       shape = shared_tail_shape(64)
-      klass = build_axn { expects :p, type: Hash, shape: }
+      klass = build_axn { expects :par, type: Hash, shape: }
 
       expect { klass.input_schema }.not_to raise_error
       expect { klass.output_schema }.not_to raise_error
@@ -540,11 +540,11 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
     # that deep — a stored graph past the bound would mask values in a contract with no `sensitive:` in it at all.
     it "logs a shared-tail graph at the cap in the clear, with no `sensitive:` declared" do
       shape = shared_tail_shape(64)
-      klass = build_axn { expects :p, type: Hash, shape: }
+      klass = build_axn { expects :par, type: Hash, shape: }
 
-      logged = klass.send(:new, p: { m63: { n62: "visible" } }).send(:inputs_for_logging)
+      logged = klass.send(:new, par: { m63: { n62: "visible" } }).send(:inputs_for_logging)
 
-      expect(logged).to eq({ p: { m63: { n62: "visible" } } })
+      expect(logged).to eq({ par: { m63: { n62: "visible" } } })
     end
 
     # The counterexample a subtree memo admits unless the bound is re-judged at each reference: every level of
@@ -555,7 +555,7 @@ RSpec.describe "a shape graph a class holds that cannot be traversed" do
     it "rejects a graph whose depth is reached only through subtrees already verified shallower" do
       shape = shared_tail_shape(71)
 
-      expect { build_axn { expects :p, type: Hash, shape: } }
+      expect { build_axn { expects :par, type: Hash, shape: } }
         .to raise_error(ArgumentError, /nested more than 64 levels deep/)
     end
   end

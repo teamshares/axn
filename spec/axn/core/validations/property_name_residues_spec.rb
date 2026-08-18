@@ -55,11 +55,11 @@ RSpec.describe "the property-name rules' recorded residues" do
     it "cannot be reached by declaring the same name twice" do
       expect do
         build_axn do
-          expects "dup", optional: true
-          expects "dup".dup, optional: true
+          expects "tok", optional: true
+          expects "tok".dup, optional: true
         end
       end
-        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate field\(s\) declared: dup/)
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate field\(s\) declared: tok/)
     end
   end
 
@@ -126,7 +126,7 @@ RSpec.describe "the property-name rules' recorded residues" do
 
     def members_named(*names)
       members = names.map { |name| Axn::Core::Contract::ShapeConfig.new(field: name, validations: {}) }
-      build_axn { expects :p, type: Hash, shape: { members:, container: Hash } }
+      build_axn { expects :par, type: Hash, shape: { members:, container: Hash } }
     end
 
     # The collapse such a name might be expected to cause does not happen: both arrangements are refused at

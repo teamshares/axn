@@ -1020,9 +1020,9 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           def field = :ok
           def validations = {}
         end.new
-        klass = build_axn { expects :p, type: Hash, shape: { members: [member] } }
+        klass = build_axn { expects :par, type: Hash, shape: { members: [member] } }
 
-        expect(klass.input_schema.dig(:properties, :p, :properties)).to eq({ ok: {} })
+        expect(klass.input_schema.dig(:properties, :par, :properties)).to eq({ ok: {} })
         expect(klass.output_schema[:properties]).to eq({})
       end
 
@@ -1031,9 +1031,9 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           def field = :ok
           def validations = {}
         end.new
-        klass = build_axn { exposes :p, type: Hash, shape: { members: [member] } }
+        klass = build_axn { exposes :par, type: Hash, shape: { members: [member] } }
 
-        expect(klass.output_schema.dig(:properties, :p, :properties)).to eq({ ok: {} })
+        expect(klass.output_schema.dig(:properties, :par, :properties)).to eq({ ok: {} })
       end
 
       it "still emits a description when the member defines one" do
@@ -1042,9 +1042,9 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           def validations = {}
           def description = "the ok member"
         end.new
-        klass = build_axn { expects :p, type: Hash, shape: { members: [member] } }
+        klass = build_axn { expects :par, type: Hash, shape: { members: [member] } }
 
-        expect(klass.input_schema.dig(:properties, :p, :properties, :ok)).to eq({ description: "the ok member" })
+        expect(klass.input_schema.dig(:properties, :par, :properties, :ok)).to eq({ description: "the ok member" })
       end
     end
 

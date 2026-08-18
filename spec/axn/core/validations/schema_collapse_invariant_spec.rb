@@ -101,7 +101,7 @@ RSpec.describe "a collision verdict and the schema it is about" do
 
     {
       "plain colliding members" => proc {
-        expects(:p, type: Hash) do
+        expects(:par, type: Hash) do
           field utf8, type: String
           field latin1, type: Integer
         end

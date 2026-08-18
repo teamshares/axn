@@ -1031,13 +1031,13 @@ RSpec.describe "declaration-time property name collisions" do
     # where the same declaration written honestly is a duplicate. Canonicalized once, at declaration, exactly
     # as a field NAME is — after which every read is a Symbol's own.
     describe "a route that renders differently on each read" do
-      # A `String` route whose rendering is "q" first and "p" afterwards. Both conversions flip together, so
+      # A `String` route whose rendering is "q" first and "par" afterwards. Both conversions flip together, so
       # the fixture does not depend on which one a layer reaches for.
       def flipping_route
         Class.new(String) do
           def to_s
             @reads = (@reads || 0) + 1
-            @reads == 1 ? "q" : "p"
+            @reads == 1 ? "q" : "par"
           end
 
           def to_sym = to_s.to_sym
@@ -1048,27 +1048,27 @@ RSpec.describe "declaration-time property name collisions" do
       it "anchors the subfield where the guard judged it, not where a later read points" do
         route = flipping_route
         klass = build_axn do
-          expects :p, type: Hash
+          expects :par, type: Hash
           expects :q, type: Hash
-          expects :a, on: :p, optional: true
+          expects :a, on: :par, optional: true
           expects :a, on: route, as: :qa, optional: true
         end
 
         expect(route.reads).to eq(1)
-        expect(klass.subfield_configs.map(&:on)).to eq(%i[p q])
-        expect(klass.input_schema[:properties].transform_values { |prop| prop[:properties]&.keys }).to eq({ p: [:a], q: [:a] })
+        expect(klass.subfield_configs.map(&:on)).to eq(%i[par q])
+        expect(klass.input_schema[:properties].transform_values { |prop| prop[:properties]&.keys }).to eq({ par: [:a], q: [:a] })
       end
 
       # And the other direction: when that one read is the colliding one, it is rejected — rather than cleared
       # by the guard on one route and then resolved onto the other.
       it "rejects it as a duplicate when the judged route is the one already declared" do
         route = flipping_route
-        route.to_s # spend the "q" answer, so the read the declaration makes is "p"
+        route.to_s # spend the "q" answer, so the read the declaration makes is "par"
 
         expect do
           build_axn do
-            expects :p, type: Hash
-            expects :a, on: :p, optional: true
+            expects :par, type: Hash
+            expects :a, on: :par, optional: true
             expects :a, on: route, as: :pa, optional: true
           end
         end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate field\(s\) declared: a/)
@@ -1098,15 +1098,15 @@ RSpec.describe "declaration-time property name collisions" do
             @reads = (@reads || 0) + 1
             @reads == 1
           end
-        end.new("p")
+        end.new("par")
 
         klass = build_axn do
-          expects :p, type: Hash
+          expects :par, type: Hash
           expects :a, on: route, optional: true
         end
 
-        expect(klass.subfield_configs.map(&:on)).to eq([:p])
-        expect(klass.input_schema.dig(:properties, :p, :properties).keys).to eq([:a])
+        expect(klass.subfield_configs.map(&:on)).to eq([:par])
+        expect(klass.input_schema.dig(:properties, :par, :properties).keys).to eq([:a])
       end
 
       # The complement, so the fix is not just "always symbolize": a genuinely absent route still means "no
@@ -1117,12 +1117,12 @@ RSpec.describe "declaration-time property name collisions" do
       it "still treats every blank spelling as no route at all" do
         [nil, false, "", "   ", "\t\n", " ", (+"  ").force_encoding("ASCII-8BIT"), "  ".encode("UTF-16LE"), :""].each do |absent|
           klass = build_axn do
-            expects :p, type: Hash
+            expects :par, type: Hash
             expects :a, on: absent, optional: true
           end
 
           expect(klass.subfield_configs).to be_empty
-          expect(klass.internal_field_configs.map(&:field)).to eq(%i[p a])
+          expect(klass.internal_field_configs.map(&:field)).to eq(%i[par a])
         end
       end
 
@@ -1133,14 +1133,14 @@ RSpec.describe "declaration-time property name collisions" do
         route = Class.new(String) do
           def blank? = true
           def present? = false
-        end.new("p")
+        end.new("par")
 
         klass = build_axn do
-          expects :p, type: Hash
+          expects :par, type: Hash
           expects :a, on: route, optional: true
         end
 
-        expect(klass.subfield_configs.map(&:on)).to eq([:p])
+        expect(klass.subfield_configs.map(&:on)).to eq([:par])
       end
 
       # And the other direction of the same split, which is why absence canonicalizes to `nil` rather than
@@ -1156,12 +1156,12 @@ RSpec.describe "declaration-time property name collisions" do
 
         ["", "   "].each do |bytes|
           klass = build_axn do
-            expects :p, type: Hash
+            expects :par, type: Hash
             expects :a, on: route.new(bytes), optional: true
           end
 
           expect(klass.subfield_configs).to be_empty
-          expect(klass.internal_field_configs.map(&:field)).to eq(%i[p a])
+          expect(klass.internal_field_configs.map(&:field)).to eq(%i[par a])
         end
       end
 
@@ -1172,7 +1172,7 @@ RSpec.describe "declaration-time property name collisions" do
       it "leaves a route whose bytes are invalid for its encoding to the name it converts to" do
         expect do
           build_axn do
-            expects :p, type: Hash
+            expects :par, type: Hash
             expects :a, on: (+"\xff").force_encoding("UTF-8"), optional: true
           end
         end.to raise_error(EncodingError)
@@ -1187,7 +1187,7 @@ RSpec.describe "declaration-time property name collisions" do
         { [] => "Array", {} => "Hash", 123 => "Integer", true => "TrueClass", Object.new => "Object" }.each do |not_a_name, klass|
           expect do
             build_axn do
-              expects :p, type: Hash
+              expects :par, type: Hash
               expects :a, on: not_a_name, optional: true
             end
           end.to raise_error(ArgumentError, /\Aon: must be a String or Symbol naming a parent reader \(got a value of class #{klass}\)/)
@@ -1204,12 +1204,12 @@ RSpec.describe "declaration-time property name collisions" do
           def is_a?(_klass) = true
           def inspect = raise(NotImplementedError, "inspect should not build the message")
           def to_s = raise(NotImplementedError, "to_s should not build the message")
-          def to_sym = :p
+          def to_sym = :par
         end.new
 
         expect do
           build_axn do
-            expects :p, type: Hash
+            expects :par, type: Hash
             expects :a, on: hostile, optional: true
           end
         end.to raise_error(ArgumentError, /\Aon: must be a String or Symbol naming a parent reader/)
@@ -1262,11 +1262,11 @@ RSpec.describe "declaration-time property name collisions" do
 
       expect do
         project_axn do
-          expects :p, type: Hash
-          expects utf8, on: :p, model: widget, optional: true
-          expects latin1_id, on: :p, optional: true
+          expects :par, type: Hash
+          expects utf8, on: :par, model: widget, optional: true
+          expects latin1_id, on: :par, optional: true
         end
-      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "p\.café_id"/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "par\.café_id"/)
     end
 
     # THE control, and the reason the rule is "canonical equal, raw different" rather than "generated ids
@@ -1852,29 +1852,29 @@ RSpec.describe "declaration-time property name collisions" do
     it "is rejected at declaration rather than failing every call" do
       members = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
 
-      expect { build_axn { expects :p, type: Hash, shape: { members:, container: :junk } } }
+      expect { build_axn { expects :par, type: Hash, shape: { members:, container: :junk } } }
         .to raise_error(ArgumentError, /a shape's `container:` must be a class \(got :junk\)/)
     end
 
     it "names the fix" do
       members = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
 
-      expect { build_axn { expects :p, type: Hash, shape: { members:, container: 42 } } }
+      expect { build_axn { expects :par, type: Hash, shape: { members:, container: 42 } } }
         .to raise_error(ArgumentError, /Name the container class .*or omit `container:`/)
     end
 
     it "accepts a module as well as a class" do
       members = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
 
-      expect { build_axn { expects :p, type: Hash, shape: { members:, container: Enumerable } } }.not_to raise_error
+      expect { build_axn { expects :par, type: Hash, shape: { members:, container: Enumerable } } }.not_to raise_error
     end
 
     it "leaves a valid container: validating as before" do
       members = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { presence: true })]
-      klass = build_axn { expects :p, type: Hash, shape: { members:, container: Hash } }
+      klass = build_axn { expects :par, type: Hash, shape: { members:, container: Hash } }
 
-      expect(klass.call(p: { a: 1 })).to be_ok
-      expect(klass.call(p: {})).not_to be_ok
+      expect(klass.call(par: { a: 1 })).to be_ok
+      expect(klass.call(par: {})).not_to be_ok
     end
   end
 
@@ -1934,10 +1934,10 @@ RSpec.describe "declaration-time property name collisions" do
     it "is walked identically by reflection, the guard, and runtime validation" do
       members = hiding_member_list(Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {}),
                                    Axn::Core::Contract::ShapeConfig.new(field: :b, validations: {}))
-      klass = build_axn { expects :p, type: Hash, shape: { members:, container: Hash } }
+      klass = build_axn { expects :par, type: Hash, shape: { members:, container: Hash } }
       stored = klass.internal_field_configs.first.validations[:shape][:members]
 
-      expect(klass.input_schema.dig(:properties, :p, :properties).keys).to eq(%i[a b])
+      expect(klass.input_schema.dig(:properties, :par, :properties).keys).to eq(%i[a b])
       expect(Axn::Internal::ShapeGraph.capture(stored).size).to eq(2)
       expect(stored.each_with_object([]) { |m, acc| acc << m }.size).to eq(2)
     end
@@ -1946,18 +1946,18 @@ RSpec.describe "declaration-time property name collisions" do
     # walk cannot see contributes no key to the ParameterFilter, so its value is logged in the clear.
     it "still redacts a sensitive: member the list hides from flat_map" do
       members = hiding_member_list(Axn::Core::Contract::ShapeConfig.new(field: :secret, validations: {}, sensitive: true))
-      klass = build_axn { expects :p, type: Hash, shape: { members:, container: Hash } }
+      klass = build_axn { expects :par, type: Hash, shape: { members:, container: Hash } }
 
-      sliced = klass._context_slice(data: { p: { secret: "SHH" } }, direction: :inbound)
+      sliced = klass._context_slice(data: { par: { secret: "SHH" } }, direction: :inbound)
 
-      expect(sliced.dig(:p, :secret)).to eq("[FILTERED]")
+      expect(sliced.dig(:par, :secret)).to eq("[FILTERED]")
     end
 
     it "does not let such a list hide a collision from the guard" do
       members = hiding_member_list(Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: {}),
                                    Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {}))
 
-      expect { project_axn { expects :p, type: Hash, shape: { members:, container: Hash } } }
+      expect { project_axn { expects :par, type: Hash, shape: { members:, container: Hash } } }
         .to raise_error(Axn::ContractViolation::DuplicateFieldError, /café/)
     end
   end
@@ -3012,12 +3012,12 @@ RSpec.describe "declaration-time property name collisions" do
           end.new(members)
           klass = build_axn { expects :other, optional: true }
           config = Axn::Core::Contract::FieldConfig.new(
-            field: :p, reader_as: :p,
+            field: :par, reader_as: :par,
             validations: { type: { klass: Hash }, optional: true, shape: { members: [nameless], container: Hash } }
           )
           klass.internal_field_configs = (klass.internal_field_configs + [config]).freeze
 
-          expect(klass.input_schema.dig(:properties, :p, :properties)).to eq({})
+          expect(klass.input_schema.dig(:properties, :par, :properties)).to eq({})
         end
       end
 
@@ -3144,12 +3144,12 @@ RSpec.describe "declaration-time property name collisions" do
         end.new
         klass = build_axn { expects :ignored, optional: true }
         config = Axn::Core::Contract::FieldConfig.new(
-          field: :p, reader_as: :p,
+          field: :par, reader_as: :par,
           validations: { type: { klass: Hash }, optional: true, shape: { members: members + [string_named], container: Hash } }
         )
         klass.internal_field_configs = [config].freeze
 
-        expect(klass.input_schema.dig(:properties, :p, :properties).size).to eq(24_999)
+        expect(klass.input_schema.dig(:properties, :par, :properties).size).to eq(24_999)
       end
 
       # The other direction the per-declaration charge was wrong in: an implicit intermediate key a dotted `on:`
@@ -3394,9 +3394,9 @@ RSpec.describe "declaration-time property name collisions" do
     end
 
     it "reports a duplicate against an exotic assigned name, whatever its to_s says next" do
-      klass = assigned(flipping_name("dup", "other"))
+      klass = assigned(flipping_name("tok", "other"))
 
-      expect { klass.expects(:dup) }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "dup"/)
+      expect { klass.expects(:tok) }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "tok"/)
     end
 
     # The collision message names the whole resolved path, so an ancestor's name is rendered there as well as at
@@ -3405,24 +3405,24 @@ RSpec.describe "declaration-time property name collisions" do
     # "a declared name that decides its own rendering") — and it is the same path assembly either way.
     it "names the whole resolved path from one rendering of the ancestor" do
       klass = build_axn
-      parent = Axn::Core::Contract::FieldConfig.new(field: "p", reader_as: :p, default: {},
+      parent = Axn::Core::Contract::FieldConfig.new(field: "par", reader_as: :par, default: {},
                                                     validations: { type: { klass: Hash }, allow_nil: true })
       children = [utf8_name, latin1_name].each_with_index.map do |name, index|
-        Axn::Core::Contract::FieldConfig.new(field: name, reader_as: :"c#{index}", on: :p, validations: { allow_nil: true })
+        Axn::Core::Contract::FieldConfig.new(field: name, reader_as: :"c#{index}", on: :par, validations: { allow_nil: true })
       end
       klass.internal_field_configs = [parent].freeze
       klass.subfield_configs = children.freeze
 
-      expect { klass.input_schema }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /the JSON property "p\.café"/)
+      expect { klass.input_schema }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /the JSON property "par\.café"/)
     end
 
     # The declaration path's own report: which of the two duplicate wordings a collision gets is "is it the same
     # raw spelling", and asking a name that with `==` let it answer with an exception instead.
     it "reports a duplicate against an assigned name rather than running its ==" do
-      klass = assigned(raising_eq("dup"))
+      klass = assigned(raising_eq("tok"))
 
-      expect { klass.expects(:dup) }
-        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /"dup" and :dup both render as the JSON property "dup"/)
+      expect { klass.expects(:tok) }
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /"tok" and :tok both render as the JSON property "tok"/)
     end
 
     # The same check reads the name's canonical property, and reads it off a String's own BYTES. That is what the
@@ -3430,10 +3430,10 @@ RSpec.describe "declaration-time property name collisions" do
     # such a name here, and a canonicalization that dispatched `to_s` would let the name raise in place of the
     # duplicate — during class definition, where a NotImplementedError escapes everything.
     it "reports a duplicate against an assigned name whose to_s raises, without running it" do
-      klass = assigned(raising_to_s("dup"))
+      klass = assigned(raising_to_s("tok"))
 
-      expect { klass.expects(:dup) }
-        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /"dup" and :dup both render as the JSON property "dup"/)
+      expect { klass.expects(:tok) }
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /"tok" and :tok both render as the JSON property "tok"/)
     end
 
     # Two names that are the same content in two objects are ONE property, exactly as two identical spellings

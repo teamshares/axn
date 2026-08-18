@@ -503,9 +503,7 @@ module Axn
                                                             "encoding).")
                end
 
-          fields.each do |field|
-            raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(field.to_s)
-          end
+          fields.each { |field| _reject_shadowed_name!(field) }
 
           # A field's wire key always names a single key; the nested-path capability lives entirely in a
           # dotted `on:` (`expects :b, on: "a"`). A dotted field NAME is therefore never valid — reject it
@@ -982,13 +980,38 @@ module Axn
         # written in.
         def _reader_owners = Axn::Internal::SubfieldTree.reader_owners(internal_field_configs, subfield_configs)
 
+        # Refuse an inbound name a declared reader would take over from something that is not axn's to
+        # surrender. Both receivers a declaration lands on are asked, because both can be corrupted:
+        #
+        # - the action class, where the reader is defined. Axn's own sugar is surrenderable here — the
+        #   user loses the helper and nothing else, since internals bind rather than dispatch.
+        # - Axn::Core::InternalContext, where the field's VALUE is read from. Its readers are defined on
+        #   that facade's singleton and outrank everything the facade itself holds, and nothing on it is
+        #   sugar — every method there is machinery some other reader depends on — so nothing IT owns is
+        #   surrenderable. `default_error` is owned on both sides, and this second ask is why it stays
+        #   rejected even though the action-side owner would surrender it. Only the facade's OWN surface
+        #   is asked (owner_within): Ruby's universal methods are judged once, on the action class.
+        #
+        # A name axn itself put on the class is left alone: a redeclaration is a duplicate field,
+        # reported downstream with the clearer DuplicateFieldError, and a reader DERIVED from another
+        # declaration (a confirmation companion, a `model:` field's `<field>_id`) yields to an explicit
+        # declaration of its name — which is already the behaviour in the other declaration order, where
+        # `_reader_name_available?` declines to generate over the explicit reader.
+        def _reject_shadowed_name!(name)
+          return if _reader_owners.key?(name.to_sym) || _inferred_reader?(name) || _axn_generated_reader?(name)
+
+          conflict = Axn::Internal::NameOwnership.conflict_for(self, name) ||
+                     Axn::Internal::NameOwnership.owner_within(Axn::Core::InternalContext, name)
+          return unless conflict
+
+          raise ContractViolation::ReservedAttributeError.new(name, owner: Axn::Internal::NameOwnership.describe(conflict))
+        end
+
         # Renamed readers must clear the same reserved-name bar as wire keys (identity readers are
         # already reserved-checked against their wire key in `expects`), and no two declarations may
         # resolve to the same reader name.
         def _validate_reader_names!(reader_names)
-          reader_names.reject { |field, reader| field == reader }.each_value do |reader|
-            raise ContractViolation::ReservedAttributeError, reader if RESERVED_FIELD_NAMES_FOR_EXPECTATIONS.include?(reader.to_s)
-          end
+          reader_names.reject { |field, reader| field == reader }.each_value { |reader| _reject_shadowed_name!(reader) }
 
           # A collision is a *new* reader name already claimed by an existing config under a different
           # wire key. A same-wire-key clash is a genuine duplicate field, reported downstream with a
@@ -1025,16 +1048,6 @@ module Axn
         def _validate_user_facing!(user_facing)
           Contract.validate_user_facing!(user_facing)
         end
-
-        RESERVED_FIELD_NAMES_FOR_EXPECTATIONS = %w[
-          fail! forward! ok?
-          inspect default_error
-          each_pair
-          default_success
-          action_name
-          inputs
-          ambient_context
-        ].freeze
 
         RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[
           fail! ok?
@@ -1780,6 +1793,19 @@ module Axn
           return false unless method_defined?(name) || private_method_defined?(name)
 
           instance_method(name).owner.is_a?(InferredReaders)
+        end
+
+        # Whether the method answering to `name` is a reader axn GENERATED on the class from a
+        # declaration — as opposed to one the author wrote. Identified by generation site, the same
+        # signal schema reflection uses to tell the two apart (Reflection::Schema#framework_generated_reader?).
+        # The owner must be a Class: every generated reader is defined onto the action class itself, while
+        # axn's own sugar lives in MODULES that share the same source file.
+        def _axn_generated_reader?(name)
+          return false unless method_defined?(name) || private_method_defined?(name)
+
+          method = instance_method(name)
+          Axn::Internal::Identity.kind?(method.owner, ::Class) &&
+            method.source_location&.first == GENERATED_READER_SOURCE_PATH
         end
 
         # Whether the method answering to a config's reader name belongs to something OTHER than the config:

@@ -113,11 +113,12 @@ RSpec.describe "shadowing an axn instance method" do
       fail! done! forward! internal_context
     ].freeze
 
-    # The subset a field declaration can take TODAY. The rest are rejected outright by `expects`
-    # (`inputs`, `ambient_context`, `default_error`, `default_success`), or are not legal field names
-    # at all (the bang trio).
+    # The subset a field declaration can take. The rest are rejected by `expects`: `ambient_context` is
+    # a sentinel the subfield resolver compares roots against rather than a convenience,
+    # `default_error`/`default_success` are owned by the inbound facade the value is read from, and
+    # `fail!`/`done!` are owned there too (ContextFacade#fail!).
     shadowable_by_declaration = %i[
-      result expose log debug info warn error fatal execution_context internal_context
+      result inputs expose log debug info warn error fatal execution_context internal_context forward!
     ].freeze
 
     def shadowing(name, &declaration)

@@ -26,6 +26,7 @@ require "axn/tools"
 
 # Internal utilities
 require "axn/internal/action_state"
+require "axn/internal/name_ownership"
 require "axn/internal/current_call_options"
 require "axn/internal/memoization"
 require "axn/internal/callable"

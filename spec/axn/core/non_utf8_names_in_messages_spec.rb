@@ -171,7 +171,7 @@ RSpec.describe "non-UTF-8 declared names in messages" do
       member = Struct.new(:field, :validations).new(exotic_class.new, {})
 
       expect do
-        build_axn { expects :p, type: Hash, shape: { members: [member], container: Hash } }
+        build_axn { expects :par, type: Hash, shape: { members: [member], container: Hash } }
       end.to raise_error(ArgumentError) { |error|
         expect(error.message).to be_readable_utf8
         expect(error.message).to include("a shape member name must be a String or a Symbol", "Café")
@@ -207,7 +207,7 @@ RSpec.describe "non-UTF-8 declared names in messages" do
       member = exotic_class.new
 
       expect do
-        build_axn { expects :p, type: Hash, shape: { members: [member], container: Hash } }
+        build_axn { expects :par, type: Hash, shape: { members: [member], container: Hash } }
       end.to raise_error(ArgumentError) { |error|
         expect(error.message).to be_readable_utf8
         expect(error.message).to include("of class Café")

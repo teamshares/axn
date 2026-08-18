@@ -558,15 +558,15 @@ RSpec.describe Axn do
           end.to raise_error(ArgumentError, /Unknown key\(s\) :readers in field declaration/)
         end
 
-        # Every subfield generates a reader now, so the duplicate-sub-keys collision check fires
-        # for an inherited-method name — nothing can slip past it readerless.
-        it "raises the duplicate-sub-keys error for a subfield named :class" do
+        # Every subfield generates a reader now, so an inherited-method name is judged by the same
+        # ownership rule a top-level declaration is — nothing can slip past it readerless.
+        it "rejects a subfield named :class, naming what owns it" do
           expect do
             build_axn do
               expects :payload
               expects :class, on: :payload
             end
-          end.to raise_error(ArgumentError, /expects does not support duplicate sub-keys \(i\.e\. `class` is already defined\).*as:/)
+          end.to raise_error(Axn::ContractViolation::ReservedAttributeError, /`class`.*Kernel.*as:/m)
         end
       end
 

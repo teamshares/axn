@@ -170,12 +170,22 @@ module Axn
     include Axn::Error
 
     class ReservedAttributeError < ContractViolation
-      def initialize(name)
+      # `owner:` names what already holds the name, when the caller knows it (see
+      # Internal::NameOwnership). Without it the message can only say the name is unavailable, which
+      # leaves the author guessing at what they collided with.
+      def initialize(name, owner: nil)
         @name = name
+        @owner = owner
         super()
       end
 
-      def message = "Cannot call expects or exposes with reserved field name: #{@name}"
+      def message
+        return "Cannot call expects or exposes with reserved field name: #{@name}" if @owner.nil?
+
+        "Cannot declare a field named `#{@name}`: that name belongs to #{@owner}. A declared field's " \
+          "reader is defined on the action itself, so it would take the name over. Rename the field, or " \
+          "keep the wire key and rename only the reader with `as:`."
+      end
     end
 
     class MethodNotAllowed < ContractViolation; end

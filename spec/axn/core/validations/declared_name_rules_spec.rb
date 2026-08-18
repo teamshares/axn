@@ -176,11 +176,11 @@ RSpec.describe "the rules every declared name is held to" do
   # failure came from splitting the route rather than from converting it.
   describe "a subfield route" do
     it "rejects a wide encoding" do
-      route = wide("p")
+      route = wide("par")
 
       expect do
         build_axn do
-          expects :p, type: Hash
+          expects :par, type: Hash
           expects :a, on: route, optional: true
         end
         # Spelled `on:` rather than `` `on:` `` — both of this option's rules name it the way its own type rule
@@ -190,11 +190,11 @@ RSpec.describe "the rules every declared name is held to" do
 
     it "still accepts a dotted route" do
       klass = build_axn do
-        expects :p, type: Hash
-        expects :a, on: "p.q", optional: true
+        expects :par, type: Hash
+        expects :a, on: "par.q", optional: true
       end
 
-      expect(klass.subfield_configs.map(&:on)).to eq([:"p.q"])
+      expect(klass.subfield_configs.map(&:on)).to eq([:"par.q"])
     end
   end
 

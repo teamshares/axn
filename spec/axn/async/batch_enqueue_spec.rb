@@ -350,9 +350,9 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       cc = company_class
       build_axn do
         expects :company, type: cc
-        expects :format
+        expects :out_format
 
-        define_method(:call) { "processed #{company.name} as #{format}" }
+        define_method(:call) { "processed #{company.name} as #{out_format}" }
 
         enqueues_each :company, from: -> { cc.all }
       end.tap { |klass| enable_async_on(klass) }
@@ -364,16 +364,16 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       enqueued = []
       allow(action_class).to receive(:call_async) { |**args| enqueued << args }
 
-      action_class.enqueue_all(format: :csv)
+      action_class.enqueue_all(out_format: :csv)
 
       expect(enqueued.length).to eq(3)
-      expect(enqueued.all? { |e| e[:format] == :csv }).to be true
+      expect(enqueued.all? { |e| e[:out_format] == :csv }).to be true
     end
 
     it "raises when required static field is missing" do
       expect do
         action_class.enqueue_all
-      end.to raise_error(ArgumentError, /Missing required static field.*format/)
+      end.to raise_error(ArgumentError, /Missing required static field.*out_format/)
     end
   end
 
@@ -588,7 +588,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       describe "multiple fields with mixed scalars and enumerables" do
         let(:action_class) do
           build_axn do
-            expects :format
+            expects :out_format
             expects :mode
             expects :priority
           end.tap { |klass| enable_async_on(klass) }
@@ -599,7 +599,7 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
           allow(action_class).to receive(:call_async) { |**args| enqueued << args }
 
           action_class.enqueue_all(
-            format: %i[csv json], # iterate
+            out_format: %i[csv json], # iterate
             mode: :full,           # static
             priority: [1, 2],      # iterate
           )
@@ -607,10 +607,10 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
           # 2 formats × 1 mode × 2 priorities = 4 jobs
           expect(enqueued.length).to eq(4)
           expect(enqueued).to contain_exactly(
-            { format: :csv, mode: :full, priority: 1 },
-            { format: :csv, mode: :full, priority: 2 },
-            { format: :json, mode: :full, priority: 1 },
-            { format: :json, mode: :full, priority: 2 },
+            { out_format: :csv, mode: :full, priority: 1 },
+            { out_format: :csv, mode: :full, priority: 2 },
+            { out_format: :json, mode: :full, priority: 1 },
+            { out_format: :json, mode: :full, priority: 2 },
           )
         end
       end

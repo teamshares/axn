@@ -326,13 +326,13 @@ RSpec.describe "Dynamic sensitive fields" do
     end
 
     it "redacts a sensitive shape member declared after the first logged call" do
-      klass = build_axn { expects(:p, type: Hash) { field :m, type: String } }
-      expect(logged(klass, { p: { m: "1" } })).to eq({ p: { m: "1" } })
+      klass = build_axn { expects(:par, type: Hash) { field :m, type: String } }
+      expect(logged(klass, { par: { m: "1" } })).to eq({ par: { m: "1" } })
 
       klass.class_eval { expects(:q, type: Hash) { field :ssn, type: String, sensitive: true } }
 
-      expect(logged(klass, { p: { m: "1" }, q: { ssn: "9", other: "x" } }))
-        .to eq({ p: { m: "1" }, q: { ssn: "[FILTERED]", other: "x" } })
+      expect(logged(klass, { par: { m: "1" }, q: { ssn: "9", other: "x" } }))
+        .to eq({ par: { m: "1" }, q: { ssn: "[FILTERED]", other: "x" } })
       # The shaped value may also be a non-Hash the key filter cannot descend into, which is masked wholesale
       # off the derived shape paths rather than the field-name set.
       expect(logged(klass, { q: "opaque" })).to eq({ q: "[FILTERED]" })
@@ -413,7 +413,7 @@ RSpec.describe "Dynamic sensitive fields" do
       accepted.each do |value|
         expect { build_axn { expects :a, sensitive: value, optional: true } }.not_to raise_error
         expect { build_axn { exposes :b, sensitive: value, optional: true } }.not_to raise_error
-        expect { build_axn { expects(:p, type: Hash, optional: true) { field :m, sensitive: value } } }.not_to raise_error
+        expect { build_axn { expects(:par, type: Hash, optional: true) { field :m, sensitive: value } } }.not_to raise_error
       end
     end
 
@@ -438,7 +438,7 @@ RSpec.describe "Dynamic sensitive fields" do
       end.to raise_error(ArgumentError, grammar_error)
       expect { build_axn { expects :a, on: :ambient_context, sensitive: "yes", optional: true } }
         .to raise_error(ArgumentError, grammar_error)
-      expect { build_axn { expects(:p, type: Hash, optional: true) { field :m, sensitive: "yes" } } }
+      expect { build_axn { expects(:par, type: Hash, optional: true) { field :m, sensitive: "yes" } } }
         .to raise_error(ArgumentError, grammar_error)
     end
 
@@ -504,7 +504,7 @@ RSpec.describe "Dynamic sensitive fields" do
     end
 
     it "rejects a required-parameter Proc on a shape member too" do
-      expect { build_axn { expects(:p, type: Hash, optional: true) { field :m, sensitive: ->(v) { v } } } }
+      expect { build_axn { expects(:par, type: Hash, optional: true) { field :m, sensitive: ->(v) { v } } } }
         .to raise_error(ArgumentError, arity_error)
     end
   end
