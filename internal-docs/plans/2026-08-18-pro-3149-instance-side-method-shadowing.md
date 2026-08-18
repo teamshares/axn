@@ -829,7 +829,7 @@ In `lib/axn/core.rb`, `ClassMethods#call`:
 
 `call!` routes through `call`, so it needs no change.
 
-Two details the tests above pin down. `inherited_definer` excludes the class itself, so a class-body `def call` (the factory's included) makes the check pass. And the memo flag is a class-level ivar, which subclasses do not inherit — a subclass of an action re-checks itself, which is correct, since it may have introduced its own `def call`.
+Two details the tests above pin down. The guard asks TWO questions, not one: does a non-axn ancestor declare the name, AND does the effective dispatch land on an axn-core-owned method? `inherited_definer` alone is not enough — it excludes the class itself, so a class-body `def call` (the factory's included) is invisible to it and the parent would still be found. Only "an ancestor declares it AND axn's own definition is what answers" is a refusal. And the memo flag is a class-level ivar, which subclasses do not inherit — a subclass of an action re-checks itself, which is correct, since it may have introduced its own `def call`.
 
 - [ ] **Step 5: Run the tests**
 
