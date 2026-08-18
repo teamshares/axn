@@ -60,21 +60,8 @@ RSpec.describe Axn do
       it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
     end
 
-    context "with result field name" do
-      let(:action) do
-        build_axn do
-          exposes :result, allow_blank: true
-        end
-      end
-
-      it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
-    end
-
     context "with other reserved field names" do
-      # `standalone` is reserved because it is a control kwarg on `fail!`/`done!`;
-      # exposing it would let `fail!("msg", standalone: value)` silently bind to the option instead
-      # of the exposure.
-      %w[outcome exception elapsed_time finalized? __action__ __exposed_keys__ standalone].each do |field_name|
+      %w[outcome exception elapsed_time finalized? __action__ __exposed_keys__].each do |field_name|
         context "with #{field_name}" do
           let(:action) do
             build_axn do
@@ -85,16 +72,6 @@ RSpec.describe Axn do
           it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
         end
       end
-    end
-
-    context "with inputs reserved exposure name" do
-      let(:action) do
-        build_axn do
-          exposes :inputs, type: String
-        end
-      end
-
-      it { expect { subject }.to raise_error(Axn::ContractViolation::ReservedAttributeError) }
     end
   end
 end

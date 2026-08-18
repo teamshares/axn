@@ -593,9 +593,7 @@ module Axn
           # one) as well as in `output_schema`, so it must be rejected whatever the schema emits.
           _reject_unrenderable_field_names!(fields)
 
-          fields.each do |field|
-            raise ContractViolation::ReservedAttributeError, field if RESERVED_FIELD_NAMES_FOR_EXPOSURES.include?(field.to_s)
-          end
+          fields.each { |field| _reject_shadowed_exposure_name!(field) }
 
           # exposes has no `on:`/subfields, so a dotted name has no valid meaning at all (see expects).
           _reject_dotted_field_name!(fields, on: nil, kind: "exposes")
@@ -654,6 +652,8 @@ module Axn
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
               raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
             end
+
+            configs.each { |c| _reject_shadowed_predicate_name!(c) }
 
             _reject_duplicate_fields!(external_field_configs, configs)
             # The outbound claim space. `exposes` has no `on:`, so there are no routes to resolve — but a shape
@@ -1010,6 +1010,46 @@ module Axn
           raise ContractViolation::ReservedAttributeError.new(name, owner: Axn::Internal::NameOwnership.describe(conflict))
         end
 
+        # Refuse an exposure name that a reader would take over. Nothing an exposure lands on is
+        # surrenderable, so both the receivers it lands on are asked and neither offers anything:
+        #
+        # - Axn::Result, where the exposure's own reader is defined — on the INSTANCE's singleton class,
+        #   which outranks Result's own API, Ruby's and ActiveSupport's alike. Unlike the action class, a
+        #   Result carries no user-facing sugar a declaration could take over harmlessly: every name it
+        #   answers to is either machinery Result dispatches on itself (`ok?`, `exception`,
+        #   `deconstruct_keys`, `_fail_standalone?`) or a universal method its callers dispatch on it
+        #   (`hash` puts it in a Set, `class` reports its type, `inspect` logs it). So the whole method
+        #   table is asked — public and private, inherited included — via `owner_of`.
+        # - Axn::Core::InternalContext, which builds a reader for every OUTBOUND field too (they are the
+        #   inbound facade's implicitly-allowed fields, so an action body can read back what it exposed).
+        #   That reader reads `provided_data`, so an exposure named after one of the facade's own methods
+        #   answers nil in the action body instead of running it — `default_error`/`default_success` are
+        #   the two names that reach only this way. Only its OWN surface is asked (owner_within); Ruby's
+        #   universal methods are judged once, above.
+        #
+        # `exposes` has no `as:`/`prefix:`, so the wire key IS the reader: unlike an expectation, the only
+        # way past this is a different name, and the message says so.
+        def _reject_shadowed_exposure_name!(name)
+          owner = Axn::Internal::NameOwnership.owner_of(Axn::Result, name) ||
+                  Axn::Internal::NameOwnership.owner_within(Axn::Core::InternalContext, name)
+          return unless owner
+
+          raise ContractViolation::ReservedAttributeError.new(
+            name, owner: Axn::Internal::NameOwnership.describe(owner), kind: :exposure
+          )
+        end
+
+        # A boolean exposure lands a SECOND name on the Result — `<field>?`, aliased onto the same
+        # singleton — so that name clears the same bar. Mirrors the conditions at the definition site
+        # (Result#_define_boolean_predicate_reader): only boolean fields get a predicate, and a field
+        # already spelled with a `?` gets none.
+        def _reject_shadowed_predicate_name!(config)
+          return unless config.boolean?
+          return if config.field.to_s.end_with?("?")
+
+          _reject_shadowed_exposure_name!(:"#{config.field}?")
+        end
+
         # No two declarations may resolve to the same reader name. (The shadowing bar every reader clears
         # is applied by the caller, over the same resolved names.)
         def _validate_reader_names!(reader_names)
@@ -1048,22 +1088,6 @@ module Axn
         def _validate_user_facing!(user_facing)
           Contract.validate_user_facing!(user_facing)
         end
-
-        RESERVED_FIELD_NAMES_FOR_EXPOSURES = %w[
-          fail! ok?
-          inspect each_pair default_error
-          ok error success message
-          result
-          outcome
-          exception
-          elapsed_time
-          finalized?
-          __action__
-          __exposed_keys__
-          standalone
-          inputs
-          ambient_context
-        ].freeze
 
         KNOWN_VALIDATION_KEYS = Set.new(%i[
                                           absence acceptance comparison confirmation exclusion format

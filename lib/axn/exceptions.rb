@@ -175,18 +175,31 @@ module Axn
       # leaves the author guessing at what they collided with. `name` is then the READER the
       # declaration would define, which may not be the wire key — that is what makes the `as:` advice
       # below a real way out rather than a suggestion the guard refuses.
-      def initialize(name, owner: nil)
+      #
+      # `kind:` picks the remedy, because the two declarations do not offer the same one: `expects`
+      # takes `as:`/`prefix:`, so a colliding wire key can be kept and only the reader renamed, while
+      # `exposes` takes neither — an exposed field's name IS the reader defined on the Result, so the
+      # only way out is a different name.
+      def initialize(name, owner: nil, kind: :input)
         @name = name
         @owner = owner
+        @kind = kind
         super()
       end
 
       def message
         return "Cannot call expects or exposes with reserved field name: #{@name}" if @owner.nil?
 
-        "Cannot declare a reader named `#{@name}`: that name belongs to #{@owner}. A field's reader is " \
+        case @kind
+        when :exposure
+          "Cannot expose `#{@name}`: that name belongs to #{@owner}. An exposure's reader is defined on the " \
+          "Result itself, so declaring it would take the name over. `exposes` has no reader alias, so rename " \
+          "the field."
+        else
+          "Cannot declare a reader named `#{@name}`: that name belongs to #{@owner}. A field's reader is " \
           "defined on the action itself, so declaring it would take the name over. Rename the field, or " \
           "keep the wire key and rename only the reader, with `as:` (or `prefix:`)."
+        end
       end
     end
 

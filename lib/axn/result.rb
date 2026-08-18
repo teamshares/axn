@@ -154,7 +154,11 @@ module Axn
       return if field_name.end_with?("?")
 
       predicate_name = "#{field_name}?"
-      return if singleton_class.method_defined?(predicate_name)
+      # Private methods count, as they do at the inbound definition site (`_reader_name_available?`):
+      # a name Result answers to privately (`_fail_standalone?`) is exactly the kind an alias must not
+      # take, since Result dispatches it on itself. Declaration refuses such a pair outright
+      # (_reject_shadowed_predicate_name!); this stays as the definition-site backstop.
+      return if singleton_class.method_defined?(predicate_name) || singleton_class.private_method_defined?(predicate_name)
 
       singleton_class.alias_method predicate_name, field
     end

@@ -187,3 +187,146 @@ RSpec.describe "reserved names for expectations" do
       .to raise_error(Axn::ContractViolation::ReservedAttributeError, /Kernel.*`as:`/m)
   end
 end
+
+# The outbound half of the same rule, judged against Axn::Result — the object an exposure's reader is
+# defined on. One receiver, and nothing on it is surrenderable, so the examples here mark the
+# boundary between "Result answers to this" and "nothing does" rather than a sugar/machinery line.
+RSpec.describe "reserved names for exposures" do
+  describe "names Result owns" do
+    %i[error message ok? outcome exception elapsed_time finalized? fail!
+       declared_fields deconstruct_keys hash class inspect __action__ __exposed_keys__].each do |name|
+      it "rejects `exposes :#{name}`" do
+        expect { build_axn { exposes name } }
+          .to raise_error(Axn::ContractViolation::ReservedAttributeError)
+      end
+    end
+
+    it "rejects deconstruct_keys rather than breaking pattern matching" do
+      expect { build_axn { exposes :deconstruct_keys } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /deconstruct_keys/)
+    end
+
+    # Not a Result method but a universal one: a Result whose `hash` answered with an exposure would
+    # collide with every other such Result in a Hash or Set.
+    it "rejects `exposes :hash`, which Results are stored by" do
+      expect { build_axn { exposes :hash } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /hash/)
+    end
+
+    it "rejects a private method Result dispatches on itself" do
+      expect { build_axn { exposes :_fail_standalone? } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError)
+    end
+  end
+
+  # An exposed field is also an implicitly-allowed field on the INBOUND facade, which builds a reader
+  # for it so the action body can read back what it exposed. That reader reads provided_data, so an
+  # exposure named after one of that facade's own methods answers nil in the body instead of running
+  # it — the two names that reach only this way.
+  describe "names the inbound facade owns" do
+    %i[default_error default_success].each do |name|
+      it "rejects `exposes :#{name}`" do
+        expect { build_axn { exposes name } }
+          .to raise_error(Axn::ContractViolation::ReservedAttributeError, /#{name}/)
+      end
+    end
+
+    it "leaves the helper answering in the action body" do
+      klass = build_axn do
+        exposes :probe
+        def call = expose(probe: default_error)
+      end
+
+      expect(klass.call.probe).to eq("Something went wrong")
+    end
+  end
+
+  describe "names lifted because neither receiver owns them" do
+    %i[each_pair ok result standalone inputs ambient_context].each do |name|
+      it "allows `exposes :#{name}`" do
+        klass = build_axn do
+          exposes name
+          define_method(:call) { expose(name => "value") }
+        end
+
+        expect(klass.call.public_send(name)).to eq("value")
+      end
+    end
+
+    it "allows a name nothing owns" do
+      expect { build_axn { exposes :widget } }.not_to raise_error
+    end
+  end
+
+  # A boolean exposure aliases `<field>?` onto the same singleton, so that name is judged too — and
+  # a private owner counts, because Result dispatches those on itself: `_fail_standalone?` decides
+  # whether a declared base message is attached to a `fail!` reason.
+  describe "the boolean predicate a declaration also lands" do
+    it "rejects a boolean exposure whose predicate would take a private Result method" do
+      expect { build_axn { exposes :_fail_standalone, type: :boolean } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /_fail_standalone\?/)
+    end
+
+    it "rejects a boolean exposure whose predicate would take a public one" do
+      expect { build_axn { exposes :ok, type: :boolean } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /ok\?/)
+    end
+
+    it "leaves the same name declarable when it lands no predicate" do
+      klass = build_axn do
+        exposes :_fail_standalone
+        def call = expose(_fail_standalone: true)
+      end
+
+      expect(klass.call._fail_standalone).to be(true)
+    end
+
+    it "still generates the predicate for a name Result does not own" do
+      klass = build_axn do
+        exposes :approved, type: :boolean
+        def call = expose(approved: true)
+      end
+
+      expect(klass.call.approved?).to be(true)
+    end
+
+    # The refusal above is what keeps this true: with the predicate defined, `_fail_standalone?`
+    # answered the exposure and the declared base was dropped from the failure message.
+    it "leaves error resolution intact for a boolean exposure it does allow" do
+      klass = build_axn do
+        error "Base trouble"
+        exposes :standalone, type: :boolean
+        def call
+          expose(standalone: true)
+          fail! "boom"
+        end
+      end
+
+      expect(klass.call.error).to eq("Base trouble: boom")
+    end
+  end
+
+  # `exposes` takes neither `as:` nor `prefix:`, so an exposed field's name IS its reader: there is no
+  # equivalent of the inbound escape hatch, and the message must not advertise one.
+  describe "the absence of an escape hatch" do
+    it "has no `as:`" do
+      expect { build_axn { exposes :widget, as: :other } }
+        .to raise_error(ArgumentError, /Unknown key\(s\) :as/)
+    end
+
+    it "has no `prefix:`" do
+      expect { build_axn { exposes :widget, prefix: :out_ } }
+        .to raise_error(ArgumentError, /Unknown key\(s\) :prefix/)
+    end
+
+    it "names the owner and tells the author to rename the field" do
+      expect { build_axn { exposes :class } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError, /Kernel.*rename the field/m)
+    end
+
+    it "does not offer `as:`, which exposes would refuse" do
+      expect { build_axn { exposes :class } }
+        .to raise_error(Axn::ContractViolation::ReservedAttributeError) { |e| expect(e.message).not_to include("as:") }
+    end
+  end
+end
