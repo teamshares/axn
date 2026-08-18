@@ -29,7 +29,7 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(described_class.inherited_definer(Class.new, :log)).to be_nil
     end
 
-    it "is nil for a name only Kernel or Object declares, so axn keeps defining warn" do
+    it "is nil for a name Kernel declares, so axn keeps defining warn" do
       klass = Class.new
       expect(described_class.inherited_definer(klass, :warn)).to be_nil
       expect(described_class.inherited_definer(klass, :inspect)).to be_nil
@@ -53,6 +53,19 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(described_class.inherited_definer(action, :fail!)).to be_nil
     end
 
+    # Skipping an axn-core owner has to CONTINUE the walk, not end it. `include Axn` LAST puts axn's logging
+    # module ahead of the user's in the MRO, so the walk meets the skip before the answer: a skip written as a
+    # halt would report no definer here and let axn shadow the user's own `log`.
+    it "continues past an axn-core owner to a user module below it" do
+      mod = Module.new { def log(*) = "USER" }
+      action = Class.new do
+        include mod
+        include Axn
+      end
+
+      expect(described_class.inherited_definer(action, :log)).to eq(mod)
+    end
+
     it "counts a satellite axn namespace as external, matching the class-side rule" do
       satellite = Module.new { def log(*) = "MCP" }
       stub_const("Axn::Fake::Sugar", satellite)
@@ -70,6 +83,43 @@ RSpec.describe Axn::Core::MethodShadowing do
       parent = Class.new { def self.description = "PARENT" }
       expect(described_class.externally_defined?(Class.new(parent), :description)).to be true
       expect(described_class.externally_defined?(Class.new, :description)).to be false
+    end
+  end
+
+  describe ".deferrable_names" do
+    subject(:names) { described_class.deferrable_names }
+
+    it "is every public helper axn's surrenderable modules own" do
+      expect(names).to include(:fail!, :done!, :forward!)
+      expect(names).to include(:result, :inputs, :expose, :default_error, :default_success)
+      expect(names).to include(:execution_context, :set_execution_context, :clear_execution_context)
+      expect(names).to include(:log, :debug, :info, :warn, :error, :fatal)
+      expect(names.size).to eq(17)
+    end
+
+    it "is derived from SURRENDERABLE_OWNERS rather than listed" do
+      derived = Axn::Internal::NameOwnership::SURRENDERABLE_OWNERS.flat_map do |mod|
+        Axn::Internal::NativeMethods.own_public_instance_methods(mod)
+      end
+      expect(names).to match_array(derived.reject { |n| n.to_s.start_with?("_") }.uniq)
+    end
+
+    it "excludes the names axn dispatches on itself" do
+      expect(names).not_to include(:call, :_run, :initialize)
+      expect(names).not_to include(:_forward_to_class, :_propagate_sub_result_outcome!)
+    end
+
+    it "excludes ambient_context, which is a sentinel rather than a convenience" do
+      expect(names).not_to include(:ambient_context)
+    end
+
+    it "excludes private helpers, which are not a surface a user calls" do
+      expect(names).not_to include(:internal_context, :inputs_for_logging, :outputs_for_logging)
+    end
+
+    it "is frozen and memoized" do
+      expect(names).to be_frozen
+      expect(described_class.deferrable_names).to be(names)
     end
   end
 end

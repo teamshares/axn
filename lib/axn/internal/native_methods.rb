@@ -37,7 +37,7 @@ module Axn
     # question is not whether axn can copy or dispatch the name safely but whether the name HAS a single property
     # to be, since a String carries bytes as well as a rendering and three separate readers pick between them.
     module NativeMethods
-      # `#class`, `#frozen?`, `#singleton_class`, `#ancestors` and the four method-table readers are all
+      # `#class`, `#frozen?`, `#singleton_class`, `#ancestors` and the method-table readers are all
       # overridable, so each is BOUND: one that raised would replace the verdict being decided with the object's
       # own exception — and outside StandardError it escapes every rescue above. `Kernel#frozen?` reads the
       # object's frozen flag in C.
@@ -55,6 +55,7 @@ module Axn
       MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
       MODULE_NAME = ::Module.instance_method(:name)
       MODULE_PREPEND = ::Module.instance_method(:prepend)
+      MODULE_PUBLIC_INSTANCE_METHODS = ::Module.instance_method(:public_instance_methods)
       MODULE_PUBLIC_METHOD_DEFINED = ::Module.instance_method(:public_method_defined?)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
       STRING_EMPTY = ::String.instance_method(:empty?)
@@ -64,7 +65,8 @@ module Axn
       private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS,
                        :MODULE_NAME, :MODULE_PREPEND,
-                       :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PUBLIC_METHOD_DEFINED
+                       :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PUBLIC_INSTANCE_METHODS,
+                       :MODULE_PUBLIC_METHOD_DEFINED
 
       # ActiveSupport's own definition of a blank String, matched against the value's BYTES rather than asked
       # of the value (`Regexp#match?` reads a String operand's bytes in C — no `to_str`, no `=~`, and the
@@ -205,6 +207,11 @@ module Axn
         MODULE_INSTANCE_METHODS.bind_call(mod, false).include?(name) ||
           MODULE_PRIVATE_INSTANCE_METHODS.bind_call(mod, false).include?(name)
       end
+
+      # A module's OWN public instance methods, read natively. Same Module precondition as the readers above.
+      # Public only: a private helper is not a surface a caller dispatches, so it is not a surface axn hands to
+      # anyone else either.
+      def self.own_public_instance_methods(mod) = MODULE_PUBLIC_INSTANCE_METHODS.bind_call(mod, false)
 
       # A module's CONSTANT PATH, or nil when it is anonymous — read natively, because `Module#name` is
       # overridable like the rest and one that raises replaces the message being composed. Distinct from

@@ -30,9 +30,11 @@ module Axn
       # caller both defers to it and names it in an error. Two things differ from the class-side walk above, and
       # both are about what counts as "the user's own":
       #
-      # Truncated at ::Object, because everything from there outward is Ruby's. `Kernel` owns `warn` and `Object`
-      # owns `inspect`/`hash`/`then`/`tap`, so an untruncated walk would make axn permanently decline to define
-      # `warn` and silently redirect every `warn("msg")` inside an action to stderr instead of the logger.
+      # Truncated at ::Object, because everything from there outward is Ruby's — `Kernel` owns `warn`, `inspect`,
+      # `hash`, `then` and `tap`, and `::Object` merely stands in front of it, which is what makes cutting the walk
+      # there exclude them. Untruncated, axn would permanently decline to define `warn` and silently redirect every
+      # `warn("msg")` inside an action to stderr instead of the logger. `base` is an action class, so `::Object` is
+      # always in its ancestry for the truncation to find.
       #
       # `base` itself is excluded (along with anything prepended to it, which already outranks whatever axn
       # installs). A `def log` in the class body is the user's own method and wins on its own terms, with `super`
@@ -55,8 +57,8 @@ module Axn
       end
       private_class_method :_external_definer
 
-      # Only axn CORE is excluded — `Axn::Core` itself, which carries the instance-side `fail!`/`done!`/
-      # `forward!`/`_run`, and everything under it — deliberately NOT the whole `Axn::` namespace.
+      # Only axn CORE is excluded — `Axn::Core` itself, which declares axn's instance-side entry point and its
+      # flow-control helpers, and everything under it — deliberately NOT the whole `Axn::` namespace.
       # Satellite adapters live under sibling namespaces like `Axn::MCP` (see Axn::Configurable), and
       # their DSL is exactly what we must defer to: an adapter base that picks up
       # `description`/`input_schema`/`output_schema` from an `Axn::MCP::*` module counts as external, so
@@ -69,6 +71,21 @@ module Axn
       end
       # `module_function` already made the instance copy private; this makes the module-level one match.
       private_class_method :_axn_core_owned?
+
+      # The instance-side names axn will hand to a user's own hierarchy: the public helpers its surrenderable
+      # modules own, minus the internals a leading underscore marks. Both halves are NameOwnership's answers, not
+      # a second opinion — a name a declaration may take is a name a superclass may take, and deriving from the
+      # same source is what keeps the two from drifting.
+      #
+      # Computed on first use, not at load: this file is required before the modules it asks about.
+      #
+      # Defined with an explicit `self.` receiver rather than inside the `module_function` block above, which
+      # would also stamp a private instance copy onto every action and land the memo on the action instead of here.
+      def self.deferrable_names
+        @deferrable_names ||= Axn::Internal::NameOwnership::SURRENDERABLE_OWNERS.flat_map do |mod|
+          Axn::Internal::NativeMethods.own_public_instance_methods(mod)
+        end.reject { |name| Axn::Internal::NameOwnership.internal_name?(name) }.uniq.freeze
+      end
     end
   end
 end

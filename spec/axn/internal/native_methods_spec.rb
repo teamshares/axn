@@ -388,6 +388,30 @@ RSpec.describe Axn::Internal::NativeMethods do
       end
     end
   end
+
+  describe ".own_public_instance_methods" do
+    it "lists only the module's own public methods" do
+      parent = Module.new { def inherited_one = nil }
+      mod = Module.new do
+        include parent
+        def public_one = nil
+        def private_one = nil
+        private :private_one
+      end
+
+      expect(described_class.own_public_instance_methods(mod)).to eq([:public_one])
+    end
+
+    it "reads the table natively rather than dispatching" do
+      mod = Module.new do
+        def self.instance_methods(*) = raise("hijacked")
+        def self.public_instance_methods(*) = raise("hijacked")
+        def public_one = nil
+      end
+
+      expect(described_class.own_public_instance_methods(mod)).to eq([:public_one])
+    end
+  end
 end
 
 RSpec.describe Axn::Internal::NativeMethods, ".declared_instance_method" do
