@@ -481,4 +481,94 @@ RSpec.describe Axn::Validators::OfValidator do
       expect(result.exception.message).to match(/element at index 0/)
     end
   end
+
+  # ─── Hash containers (maps) ───────────────────────────────────────────────────
+
+  describe "Hash containers (maps) at runtime" do
+    subject(:action) do
+      build_axn do
+        expects :counts, type: Hash, of: { keys: Symbol, values: Integer }
+        def call = nil
+      end
+    end
+
+    it "accepts a map matching both axes" do
+      expect(action.call(counts: { acme: 1, globex: 2 })).to be_ok
+    end
+
+    it "accepts an empty map — emptiness is allow_empty's business, not of:'s" do
+      emptiable = build_axn do
+        expects :counts, type: Hash, of: { keys: Symbol, values: Integer }, allow_empty: true
+        def call = nil
+      end
+      expect(emptiable.call(counts: {})).to be_ok
+    end
+
+    it "reports the offending key by name" do
+      result = action.call(counts: { "acme" => 1 })
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include('key "acme" is not a Symbol')
+    end
+
+    it "reports the offending value with the key that located it" do
+      result = action.call(counts: { acme: "1" })
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("value at key :acme is not a Integer")
+    end
+
+    it "reports both axes independently when both are wrong" do
+      result = action.call(counts: { "acme" => "1" })
+      message = result.exception.message
+      expect(message).to include('key "acme" is not a Symbol')
+      expect(message).to include('value at key "acme" is not a Integer')
+    end
+
+    it "names a union on the failing axis" do
+      unioned = build_axn do
+        expects :counts, type: Hash, of: { values: [String, Integer] }
+        def call = nil
+      end
+      expect(unioned.call(counts: { a: 1.5 }).exception.message).to include("value at key :a is not one of String, Integer")
+    end
+
+    it "leaves the non-Hash error to TypeValidator" do
+      result = action.call(counts: "not a hash")
+      expect(result).not_to be_ok
+      expect(result.exception.message).not_to match(/value at key/)
+    end
+
+    it "names a key that is neither String nor Symbol without asking it to render itself" do
+      hostile = Class.new do
+        def inspect = raise("nope")
+        def to_s = raise("nope")
+      end
+      keyed = build_axn do
+        expects :counts, type: Hash, of: { values: Integer }
+        def call = nil
+      end
+      result = keyed.call(counts: { hostile.new => "x" })
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/value at key #<#<Class:/)
+    end
+
+    it "validates the entries a Hash subclass holds rather than the ones its own each yields" do
+      concealing = Class.new(Hash) do
+        def each; end
+      end
+      counts = concealing.new
+      counts["acme"] = 1
+
+      result = action.call(counts:)
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include('key "acme" is not a Symbol')
+    end
+
+    it "constrains only the declared axis" do
+      values_only = build_axn do
+        expects :counts, type: Hash, of: { values: Integer }
+        def call = nil
+      end
+      expect(values_only.call(counts: { "anything" => 1 })).to be_ok
+    end
+  end
 end
