@@ -44,8 +44,9 @@ module Axn
         def class_name(value) = RenderedClassName.of(value)
 
         # A class or module named in its own right — a declared `type:`, a tool axn — rather than a value's
-        # class. Same two halves.
-        def module_name(mod) = Text.renderable(ClassName.of_module(mod))
+        # class. Same two halves, and DELEGATED for the same reason `class_name` is: the message paths built on
+        # `axn/exceptions` name owners too and cannot reach this file.
+        def module_name(mod) = RenderedModuleName.of(mod)
 
         # A DECLARED type written into a runtime validation message — a class, or one of the pseudo-types
         # (`:boolean`/`:uuid`/`:params`) a contract may name instead of one. Interpolating the token ran its own

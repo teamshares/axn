@@ -45,6 +45,19 @@ module Axn
         _external_definer(above_base.take_while { |mod| !Axn::Internal::Identity.same?(mod, ::Object) }, name)
       end
 
+      # Whether AXN's own definition of `name` is the one a dispatch on `base` would reach. The effective owner
+      # rather than a re-walk of own tables: `Module#instance_method` resolves over the whole ancestry the way a
+      # call does, so a prepended module counts and an `undef_method`'d name is absent.
+      #
+      # The complement of `inherited_definer`, and needed alongside it wherever the question is whether axn is
+      # STANDING IN THE WAY rather than who it would step aside for. A definition of the user's own anywhere
+      # ahead of axn's modules — in the class body, in a module included after `include Axn`, in a prepend —
+      # answers instead, and reaches axn's with `super`.
+      def core_definition_answers?(base, name)
+        owner = Axn::Internal::NativeMethods.declared_instance_method(base, name)&.owner
+        !owner.nil? && _axn_core_owned?(owner)
+      end
+
       # The first module in `ancestry` that declares `name` in its OWN table, skipping axn core's. Own table
       # rather than effective lookup: the question is who would be shadowed, and a prepend elsewhere in the
       # chain does not make a declaration disappear.

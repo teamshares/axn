@@ -191,4 +191,83 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect(action.call(info: "x")).to be_ok
     end
   end
+
+  describe "a name axn cannot yield" do
+    let(:service_base) do
+      stub_const("ServiceBase", Class.new do
+        def initialize(user: nil) = @user = user
+        def call = :parent_call_ran
+      end)
+      ServiceBase
+    end
+
+    it "raises rather than reporting success for a call that never ran" do
+      action = Class.new(service_base) { include Axn }
+
+      expect { action.call }.to raise_error(
+        Axn::ContractViolation::UnsurrenderableInheritedMethod, /ServiceBase.*#call/m
+      )
+    end
+
+    it "raises for an inherited initialize, whose absence would leave the parent's state unset" do
+      action = Class.new(service_base) do
+        include Axn
+        def call = nil
+      end
+
+      expect { action.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod, /#initialize/)
+    end
+
+    it "explains the fix" do
+      action = Class.new(service_base) { include Axn }
+
+      expect { action.call }.to raise_error(/compose|define .*in this class|rename/i)
+    end
+
+    it "does not raise when the class defines the name itself" do
+      action = Class.new(service_base) do
+        include Axn
+        def initialize(**) = super()
+        def call = nil
+      end
+
+      expect(action.call).to be_ok
+    end
+
+    it "does not raise for a factory-built class that defines call after the include" do
+      base = Class.new { def call = :parent_call_ran }
+      built = Axn::Factory.build(-> { 42 }, superclass: base, expose_return_as: :out)
+
+      expect(built.call).to be_ok
+      expect(built.call.out).to eq(42)
+    end
+
+    it "propagates out of .call rather than settling into a result, since there is no action yet" do
+      action = Class.new(service_base) { include Axn }
+
+      expect { action.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod)
+      expect { action.call! }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod)
+    end
+
+    it "checks once per class" do
+      action = Class.new(service_base) do
+        include Axn
+        def initialize(**) = super()
+        def call = nil
+      end
+      allow(Axn::Core::MethodShadowing).to receive(:inherited_definer).and_call_original
+
+      3.times { action.call }
+      expect(Axn::Core::MethodShadowing).to have_received(:inherited_definer).at_most(3).times
+    end
+
+    it "leaves an ordinary action untouched" do
+      action = Class.new do
+        include Axn
+        def call = nil
+      end
+
+      expect(action.call).to be_ok
+    end
+  end
 end

@@ -10,6 +10,9 @@ module Axn
     # no per-class version of them to leave a name out of. It is instead one anonymous module per colliding
     # class, included last so it outranks axn's, holding a wrapper that `bind_call`s the definer's own
     # UnboundMethod. Classes with no collision get no module and no extra frame.
+    #
+    # The names axn CANNOT step aside for live here too (`assert_dispatchable_names_free!`), so which names axn
+    # yields and which it refuses outright are one subject in one place rather than two.
     module InstanceDeferral
       DEFERRALS_IVAR = :@__axn_instance_deferrals
       KERNEL_IVAR_GET = ::Kernel.instance_method(:instance_variable_get)
@@ -17,6 +20,40 @@ module Axn
       private_constant :KERNEL_IVAR_GET, :KERNEL_IVAR_SET
 
       NO_DEFERRALS = {}.freeze
+
+      CHECKED_IVAR = :@__axn_dispatchable_names_checked
+
+      # `Axn::Internal::NameOwnership::UNSURRENDERABLE` names what is dispatched on the action BY NAME from
+      # outside the module that defines it, so axn cannot step aside for an inherited version the way it does
+      # for the helpers — and taking one silently is worse than refusing it: an action whose inherited `call` is
+      # shadowed reports success for code that never ran.
+      #
+      # Asked at execution rather than at include time because only the finished class answers it. A class may
+      # legitimately define one of these itself AFTER `include Axn` — `Axn::Factory` builds exactly that shape —
+      # and its own definition outranks both the inherited one and axn's, so an include-time check would refuse a
+      # legal build. `Core::ClassMethods#call` is the only funnel there is; nothing reaches `_run` around it.
+      #
+      # Two questions, because either answer alone permits the wrong verdict: axn must be the definition that
+      # ANSWERS (a `def call` of the author's own takes the name over on its own terms, whether it appears in the
+      # class body or in a module included after `include Axn`), and there must be an inherited declaration for it
+      # to be standing in front of.
+      #
+      # The memo is a class-level ivar, which a subclass does not inherit, so a subclass re-checks itself. That
+      # is what it needs: it may have introduced a definition of its own, or a new superclass in between.
+      def self.assert_dispatchable_names_free!(klass)
+        return if KERNEL_IVAR_GET.bind_call(klass, CHECKED_IVAR)
+
+        Axn::Internal::NameOwnership::UNSURRENDERABLE.each do |name|
+          next unless MethodShadowing.core_definition_answers?(klass, name)
+
+          owner = MethodShadowing.inherited_definer(klass, name)
+          next if owner.nil?
+
+          raise Axn::ContractViolation::UnsurrenderableInheritedMethod.new(klass:, name:, owner:)
+        end
+
+        KERNEL_IVAR_SET.bind_call(klass, CHECKED_IVAR, true)
+      end
 
       # Bound rather than dispatched, and stored in an ivar rather than a class method, for the same reason the
       # rest of this area is: whatever axn reads back has to be axn's own, on a class whose method table the

@@ -39,6 +39,7 @@ module Axn
   module Core
     module ClassMethods
       def call(**)
+        Core::InstanceDeferral.assert_dispatchable_names_free!(self)
         Axn::Internal::ActionState.result(new(**).tap(&:_run))
       end
 

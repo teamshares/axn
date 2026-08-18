@@ -86,6 +86,38 @@ RSpec.describe Axn::Core::MethodShadowing do
     end
   end
 
+  describe ".core_definition_answers?" do
+    it "is true when axn's own definition is the one a dispatch would reach" do
+      action = Class.new { include Axn }
+
+      expect(described_class.core_definition_answers?(action, :call)).to be true
+      expect(described_class.core_definition_answers?(action, :initialize)).to be true
+    end
+
+    it "is false for a definition of the class's own, which outranks axn's" do
+      action = Class.new do
+        include Axn
+        def call = nil
+      end
+
+      expect(described_class.core_definition_answers?(action, :call)).to be false
+    end
+
+    it "is false for a module included after axn's, which sits ahead of them" do
+      mine = Module.new { def call = nil }
+      action = Class.new do
+        include Axn
+        include mine
+      end
+
+      expect(described_class.core_definition_answers?(action, :call)).to be false
+    end
+
+    it "is false for a name nothing in the ancestry declares" do
+      expect(described_class.core_definition_answers?(Class.new { include Axn }, :no_such_method)).to be false
+    end
+  end
+
   describe ".externally_defined?" do
     it "still answers the class-side question" do
       parent = Class.new { def self.description = "PARENT" }

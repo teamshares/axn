@@ -21,8 +21,9 @@ module Axn
     # renders it, and the composition has one owner per question: `Internal::RenderedClassName` just below for a
     # VALUE's class, which `Internal::Rendering.class_name` delegates to and which the message paths built ON
     # this file (`UnserializableValue#message` and `UnserializableArgument#message` below,
-    # `Internal::Reflection::Values.describe_key_classes`) reach directly; and `Internal::Rendering.module_name`
-    # for a class or module named in its own right, which only callers above this file need. The direction is
+    # `Internal::Reflection::Values.describe_key_classes`) reach directly; and `Internal::RenderedModuleName`
+    # for a class or module named in its own right, which `Internal::Rendering.module_name` delegates to and
+    # which `UnsurrenderableInheritedMethod` below reaches directly. The direction is
     # forced: the reflection and rendering layers require THIS file, so a reference from here up into either
     # would leave a message path NameError-ing under the standalone loads
     # `spec/axn/standalone_require_spec.rb` pins. The byte half they all compose through, `Internal::Text`, has
@@ -55,6 +56,13 @@ module Axn
     # `Internal::Reflection::Values.describe_key_classes`, and `Rendering` itself.
     module RenderedClassName
       def self.of(value) = Text.renderable(ClassName.of(value))
+    end
+
+    # A class or module named in its OWN right — the module that declares a method, a declared `type:` — with
+    # the same two halves composed. `RenderedClassName` cannot stand in for it: handed a Module, it answers with
+    # that Module's class, so an owner named through it reads as "Class".
+    module RenderedModuleName
+      def self.of(mod) = Text.renderable(ClassName.of_module(mod))
     end
 
     # A caller-supplied value written into one of this file's messages, whatever it turns out to be.
@@ -243,6 +251,30 @@ module Axn
     class MethodCallNotPermittedError < ContractViolation; end
 
     class DuplicateFieldError < ContractViolation; end
+
+    # A name axn dispatches on the action itself — `call` from the executor, `_run` from `.call`, `initialize`
+    # from `new` — that the class's own hierarchy also declares. Unlike the helpers, this one cannot be
+    # surrendered: axn's definition must answer, so the inherited one would never run, and an action whose
+    # inherited `call` never runs reports success for code that did not execute.
+    #
+    # Every value it interpolates is rendered, for the reason every message here renders: a constant path may
+    # hold bytes with no UTF-8 rendering, and joining those would replace this failure with an
+    # Encoding::CompatibilityError out of the message path. `klass` and `owner` are Modules named in their own
+    # right, so `RenderedModuleName` is their reader — `RenderedClassName` would name a Module's own class and
+    # read as "Class". `name` goes through `RenderedText`, which decides by type what it can honestly get, since
+    # this is a public class and a Symbol is only the obvious thing to pass, not the guaranteed one.
+    class UnsurrenderableInheritedMethod < ContractViolation
+      def initialize(klass:, name:, owner:)
+        klass = Axn::Internal::RenderedModuleName.of(klass)
+        owner = Axn::Internal::RenderedModuleName.of(owner)
+        name = Axn::Internal::RenderedText.of(name)
+
+        super("#{owner} defines ##{name}, which #{klass} cannot inherit: axn must own that name to run the " \
+              "action, so the inherited definition would never be called. Either define ##{name} on " \
+              "#{klass} itself (axn's is then reachable with `super`), or compose #{owner} in rather than " \
+              "inheriting from it.")
+      end
+    end
 
     class UnknownExposure < ContractViolation
       def initialize(key)
