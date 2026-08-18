@@ -221,6 +221,20 @@ RSpec.describe "reserved names for expectations" do
 
       expect(klass.call(class: "theirs", other: "second").out).to eq(%w[theirs second])
     end
+
+    # `singleton_class` is the same shape as `class` and the more brittle of the two: the facade
+    # dispatches it once per field to define that field's reader, so a reader defined for it would take
+    # the method the loop itself runs on and every LATER field would be defined against a String.
+    it "still accepts `singleton_class` as a wire key, without breaking the fields declared after it" do
+      klass = build_axn do
+        expects :singleton_class, as: :aliased
+        expects :other
+        exposes :out
+        def call = expose(out: [aliased, other])
+      end
+
+      expect(klass.call(singleton_class: "theirs", other: "second").out).to eq(%w[theirs second])
+    end
   end
 
   it "names the owner in the message, and the rename that gets around it" do

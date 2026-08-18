@@ -14,10 +14,14 @@ module Axn
         @action = action
         @declared_fields = declared_fields
 
-        # Read once, before the first reader is defined: a legal wire key may be `class` (judged on the
-        # action class, where nothing of axn's overrides Object), and the reader this loop defines for
-        # it would answer every later `self.class` with the caller's value.
+        # Read once, before the first reader is defined: a legal wire key may be `class` or
+        # `singleton_class` (both judged on the action class, where nothing of axn's overrides Object),
+        # and the reader this loop defines for one would answer every later dispatch with the caller's
+        # value. The singleton lands in an ivar because the reader-defining methods below are also
+        # overridden in InternalContext and called again from Result's predicate pass, and an ivar read
+        # cannot be intercepted at all.
         facade_class = self.class
+        @__singleton = singleton_class
 
         (@declared_fields + Array(implicitly_allowed_fields)).each do |field|
           # Never define over a name the facade ITSELF answers to — its own ancestry up to Object,
@@ -52,7 +56,7 @@ module Axn
         if _model_fields.key?(field)
           _define_model_field_method(field, _model_fields[field])
         else
-          singleton_class.define_method(field) do
+          @__singleton.define_method(field) do
             _context_data_source[field]
           end
         end
@@ -63,7 +67,7 @@ module Axn
       def action_name = @action.class.name.presence || "The action"
 
       def _define_model_field_method(field, options)
-        Axn::Internal::Memoization.define_memoized_reader_method(singleton_class, field) do
+        Axn::Internal::Memoization.define_memoized_reader_method(@__singleton, field) do
           Axn::Core::FieldResolvers.resolve(
             type: :model,
             field:,

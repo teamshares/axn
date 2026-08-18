@@ -167,9 +167,9 @@ module Axn
       # a name Result answers to privately (`_fail_standalone?`) is exactly the kind an alias must not
       # take, since Result dispatches it on itself. Declaration refuses such a pair outright
       # (_reject_shadowed_predicate_name!); this stays as the definition-site backstop.
-      return if singleton_class.method_defined?(predicate_name) || singleton_class.private_method_defined?(predicate_name)
+      return if @__singleton.method_defined?(predicate_name) || @__singleton.private_method_defined?(predicate_name)
 
-      singleton_class.alias_method predicate_name, field
+      @__singleton.alias_method predicate_name, field
     end
 
     # Memoized so resolution and _error_from_declared_source? share one resolver instance — message

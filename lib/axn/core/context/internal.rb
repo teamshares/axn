@@ -21,11 +21,11 @@ module Axn
         return super if config.nil?
 
         if config.validations.key?(:model)
-          Axn::Internal::Memoization.define_memoized_reader_method(singleton_class, field) do
+          Axn::Internal::Memoization.define_memoized_reader_method(@__singleton, field) do
             Axn::Core::ContractForSubfields.resolve_model_value(action, config, config.validations[:model])
           end
         else
-          singleton_class.define_method(field) do
+          @__singleton.define_method(field) do
             Axn::Core::ContractForSubfields.resolve_value(action, config)
           end
         end
