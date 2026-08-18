@@ -24,8 +24,7 @@ module Axn
       EXCEPTION_BACKTRACE = ::Exception.instance_method(:backtrace)
       STRING_SPLIT = ::String.instance_method(:split)
       ARRAY_FIRST = ::Array.instance_method(:first)
-      SYMBOL_NAME = ::Symbol.instance_method(:name)
-      private_constant :EXCEPTION_TO_S, :EXCEPTION_BACKTRACE, :STRING_SPLIT, :ARRAY_FIRST, :SYMBOL_NAME
+      private_constant :EXCEPTION_TO_S, :EXCEPTION_BACKTRACE, :STRING_SPLIT, :ARRAY_FIRST
 
       UNKNOWN_LOCATION = "unknown location"
 
@@ -39,19 +38,6 @@ module Axn
         # `axn/exceptions` — they cannot reach this file (it requires theirs), but this file requires theirs, so
         # the dependency runs one way and there is one composer rather than two identical ones.
         def class_name(value) = RenderedClassName.of(value)
-
-        # A Hash key named in prose — quoted as a String, colon-prefixed as a Symbol, and named by its class
-        # otherwise. Which of those it is IS the thing a `keys:` failure is about, so the two cannot render alike.
-        #
-        # Nothing the key defines runs: a String is rendered from its bytes (`Text.renderable` dispatches
-        # nothing), and `Symbol#name` is bound. Any other key is described rather than rendered, since a key
-        # that raises from `inspect` must not replace the validation verdict with its exception.
-        def hash_key(key)
-          return ":#{Text.renderable(SYMBOL_NAME.bind_call(key))}" if Identity.kind?(key, ::Symbol)
-          return "\"#{Text.renderable(key)}\"" if Identity.kind?(key, ::String)
-
-          "#<#{class_name(key)}>"
-        end
 
         # A class or module named in its own right — a declared `type:`, a tool axn — rather than a value's
         # class. Same two halves.

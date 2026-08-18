@@ -2,7 +2,6 @@
 
 require "active_model"
 
-require "axn/internal/rendering"
 require "axn/internal/shape_graph"
 
 module Axn
@@ -48,22 +47,28 @@ module Axn
         end
       end
 
-      # Both axes are reported independently: a map whose keys and values are both wrong has two things to fix,
-      # and the key is what locates the value either way. An axis left undeclared constrains nothing.
+      # Both axes are reported independently: a map whose keys and values are both wrong has two things to
+      # fix, and the entry's position locates both. An axis left undeclared constrains nothing.
+      #
+      # That position is the ONLY locating token the message carries, and the key deliberately is not. A
+      # validation message is built here and settled unredacted: it reaches `result.exception.message` and the
+      # logged line without passing through `contract/redaction.rb`, so a `sensitive:` map naming its own keys
+      # would publish exactly what the declaration asked to be masked. Value-free is the same rule the element
+      # branch's index already answers to and the one `TypeValidator` states for its own messages. A Hash
+      # enumerates in insertion order, so the index names the entry the caller wrote.
       def validate_entries(record, attribute, value)
         return unless value.is_a?(::Hash)
 
         key_klasses = Array(options[:keys])
         value_klasses = Array(options[:values])
+        index = 0
 
-        # Traversed through a BOUND `Hash#each` so a subclass cannot decide which entries get validated.
+        # Traversed through a BOUND `Hash#each` so a subclass cannot decide which entries get validated — nor,
+        # since nothing here renders a key, which entries get to run their own code while being named.
         Axn::Internal::ShapeGraph.each_entry(value) do |key, entry|
-          rendered = Axn::Internal::Rendering.hash_key(key)
-
-          record.errors.add(attribute, "key #{rendered} #{describe_mismatch(key_klasses)}") unless matches_axis?(key, key_klasses)
-          next if matches_axis?(entry, value_klasses)
-
-          record.errors.add(attribute, "value at key #{rendered} #{describe_mismatch(value_klasses)}")
+          record.errors.add(attribute, "key at index #{index} #{describe_mismatch(key_klasses)}") unless matches_axis?(key, key_klasses)
+          record.errors.add(attribute, "value at index #{index} #{describe_mismatch(value_klasses)}") unless matches_axis?(entry, value_klasses)
+          index += 1
         end
       end
 

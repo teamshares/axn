@@ -504,23 +504,23 @@ RSpec.describe Axn::Validators::OfValidator do
       expect(emptiable.call(counts: {})).to be_ok
     end
 
-    it "reports the offending key by name" do
+    it "reports the offending key by the position that located it" do
       result = action.call(counts: { "acme" => 1 })
       expect(result).not_to be_ok
-      expect(result.exception.message).to include('key "acme" is not a Symbol')
+      expect(result.exception.message).to include("key at index 0 is not a Symbol")
     end
 
-    it "reports the offending value with the key that located it" do
-      result = action.call(counts: { acme: "1" })
+    it "reports the offending value by the position that located it" do
+      result = action.call(counts: { acme: 1, globex: "2" })
       expect(result).not_to be_ok
-      expect(result.exception.message).to include("value at key :acme is not a Integer")
+      expect(result.exception.message).to include("value at index 1 is not a Integer")
     end
 
     it "reports both axes independently when both are wrong" do
       result = action.call(counts: { "acme" => "1" })
       message = result.exception.message
-      expect(message).to include('key "acme" is not a Symbol')
-      expect(message).to include('value at key "acme" is not a Integer')
+      expect(message).to include("key at index 0 is not a Symbol")
+      expect(message).to include("value at index 0 is not a Integer")
     end
 
     it "names a union on the failing axis" do
@@ -528,16 +528,16 @@ RSpec.describe Axn::Validators::OfValidator do
         expects :counts, type: Hash, of: { values: [String, Integer] }
         def call = nil
       end
-      expect(unioned.call(counts: { a: 1.5 }).exception.message).to include("value at key :a is not one of String, Integer")
+      expect(unioned.call(counts: { a: 1.5 }).exception.message).to include("value at index 0 is not one of String, Integer")
     end
 
     it "leaves the non-Hash error to TypeValidator" do
       result = action.call(counts: "not a hash")
       expect(result).not_to be_ok
-      expect(result.exception.message).not_to match(/value at key/)
+      expect(result.exception.message).not_to match(/value at index/)
     end
 
-    it "names a key that is neither String nor Symbol without asking it to render itself" do
+    it "reports an entry without asking its key to render itself" do
       hostile = Class.new do
         def inspect = raise("nope")
         def to_s = raise("nope")
@@ -548,7 +548,7 @@ RSpec.describe Axn::Validators::OfValidator do
       end
       result = keyed.call(counts: { hostile.new => "x" })
       expect(result).not_to be_ok
-      expect(result.exception.message).to match(/value at key #<#<Class:/)
+      expect(result.exception.message).to include("value at index 0 is not a Integer")
     end
 
     it "validates the entries a Hash subclass holds rather than the ones its own each yields" do
@@ -560,7 +560,33 @@ RSpec.describe Axn::Validators::OfValidator do
 
       result = action.call(counts:)
       expect(result).not_to be_ok
-      expect(result.exception.message).to include('key "acme" is not a Symbol')
+      expect(result.exception.message).to include("key at index 0 is not a Symbol")
+    end
+
+    it "does not leak a sensitive map's keys or values into the message" do
+      secrets = build_axn do
+        expects :counts, type: Hash, sensitive: true, of: { keys: Symbol, values: Integer }
+        def call = nil
+      end
+
+      message = secrets.call(counts: { "sk-live-SECRET" => "tok-VALUE" }).exception.message
+      expect(message).to include("key at index 0 is not a Symbol")
+      expect(message).to include("value at index 0 is not a Integer")
+      expect(message).not_to include("sk-live-SECRET")
+      expect(message).not_to include("tok-VALUE")
+    end
+
+    it "locates by position rather than by key for a non-sensitive map too" do
+      message = action.call(counts: { "acme" => "1" }).exception.message
+      expect(message).to include("key at index 0")
+      expect(message).not_to include("acme")
+    end
+
+    it "counts the position per entry so sibling failures are told apart" do
+      message = action.call(counts: { a: "1", b: 2, c: "3" }).exception.message
+      expect(message).to include("value at index 0 is not a Integer")
+      expect(message).to include("value at index 2 is not a Integer")
+      expect(message).not_to include("value at index 1")
     end
 
     it "constrains only the declared axis" do
