@@ -61,12 +61,25 @@ module Axn
       # The first module in `ancestry` that declares `name` in its OWN table, skipping axn core's. Own table
       # rather than effective lookup: the question is who would be shadowed, and a prepend elsewhere in the
       # chain does not make a declaration disappear.
+      #
+      # A CLASS that neither declares the name nor can REACH it ends the walk with no definer, because an
+      # `undef_method` is exactly that shape: it writes an entry no own-table read reports while a lookup
+      # arriving from below stops dead on it. Walking past one finds a definition further out that no dispatch
+      # could ever arrive at, and both callers then act on a method that is not there — a wrapper `bind_call`ing
+      # the implementation the undef removed, or a refusal naming a `call` the class cannot reach anyway.
+      #
+      # Effective lookup is the reader that sees the barrier, and on a CLASS its nil is unambiguous: a class's
+      # lookup covers the whole remainder of this walk and more, so nothing left to visit can be reachable. On
+      # a MODULE nil says only that the module itself does not declare the name — which every module the walk
+      # passes through on its way to the answer would also say.
       def _external_definer(ancestry, name)
-        ancestry.find do |mod|
-          next false if _axn_core_owned?(mod)
-
-          Axn::Internal::NativeMethods.declares_own_instance_method?(mod, name)
+        ancestry.each do |mod|
+          next if _axn_core_owned?(mod)
+          return mod if Axn::Internal::NativeMethods.declares_own_instance_method?(mod, name)
+          return nil if Axn::Internal::Identity.kind?(mod, ::Class) &&
+                        Axn::Internal::NativeMethods.declared_instance_method(mod, name).nil?
         end
+        nil
       end
       private_class_method :_external_definer
 

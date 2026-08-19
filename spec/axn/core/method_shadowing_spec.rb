@@ -36,6 +36,36 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(described_class.inherited_definer(klass, :hash)).to be_nil
     end
 
+    # `undef_method` writes an entry no own-table read reports, while a lookup arriving from below stops dead
+    # on it — so a walk over own tables alone reports a definition that no dispatch could reach.
+    it "stops at an undef_method barrier rather than naming a definition it makes unreachable" do
+      distant = Class.new { def log(*) = "DISTANT" }
+      barrier = Class.new(distant) { undef_method :log }
+
+      expect { barrier.new.log }.to raise_error(NoMethodError)
+      expect(described_class.inherited_definer(Class.new(barrier), :log)).to be_nil
+    end
+
+    it "keeps naming a definer above a barrier for a name the barrier left alone" do
+      distant = Class.new do
+        def log(*) = "DISTANT"
+        def info(*) = "DISTANT-INFO"
+      end
+      barrier = Class.new(distant) { undef_method :log }
+
+      expect(described_class.inherited_definer(Class.new(barrier), :info)).to eq(distant)
+    end
+
+    # The barrier is read off effective lookup, whose nil means "unreachable" on a CLASS only: a module that
+    # simply does not declare the name answers nil too, and the walk passes through those on its way to the
+    # answer. Read as a barrier, this module would end the walk before it reached the parent.
+    it "walks through a module that declares nothing" do
+      parent = Class.new { def log(*) = "PARENT" }
+      child = Class.new(parent) { include Module.new }
+
+      expect(described_class.inherited_definer(Class.new(child), :log)).to eq(parent)
+    end
+
     it "excludes the class's own definition, so a def in the class body is not a deferral target" do
       klass = Class.new { def log(*) = "OWN" }
       expect(described_class.inherited_definer(klass, :log)).to be_nil

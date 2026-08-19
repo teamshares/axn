@@ -192,6 +192,32 @@ RSpec.describe Axn::Core::InstanceDeferral do
     end
   end
 
+  # An `undef_method` above the action takes the name away from every class below it, so there is nothing there
+  # for axn to step aside for. Axn keeps its own helper — the answer it gave before it deferred to anything —
+  # rather than handing the name to an implementation the undef removed.
+  describe "a name an ancestor undefined" do
+    let(:barrier) do
+      distant = Class.new { def log(*) = "DISTANT-LOG" }
+      Class.new(distant) { undef_method :log }
+    end
+
+    it "keeps axn's own helper rather than resurrecting the removed implementation" do
+      action = Class.new(barrier) { include Axn }
+
+      expect(described_class.definers(action)).to be_empty
+      expect(Axn::Internal::NameOwnership.owner_of(action, :log)).to eq(Axn::Core::Logging::InstanceMethods)
+    end
+
+    # The same barrier on a name axn cannot surrender: there is no inherited `call` to be standing in front of,
+    # so refusing would name a conflict the class does not have.
+    it "runs an action whose inherited call the barrier removed" do
+      distant = Class.new { def call = :distant }
+      unreachable_call = Class.new(distant) { undef_method :call }
+
+      expect(Class.new(unreachable_call) { include Axn }.call).to be_ok
+    end
+  end
+
   describe "a name axn cannot yield" do
     let(:service_base) do
       stub_const("ServiceBase", Class.new do
