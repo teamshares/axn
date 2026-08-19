@@ -212,49 +212,76 @@ RSpec.describe Axn::Core::MethodShadowing do
     end
   end
 
-  describe ".core_definition_answers?" do
-    it "is true when axn's own definition is the one a dispatch would reach" do
+  describe ".core_shadowed_definer" do
+    # Nothing behind axn's own definition, so axn shadows nothing.
+    it "is nil for a class whose hierarchy declares none of the names" do
       action = Class.new { include Axn }
 
-      expect(described_class.core_definition_answers?(action, :call)).to be true
-      expect(described_class.core_definition_answers?(action, :initialize)).to be true
+      expect(described_class.core_shadowed_definer(action, :call)).to be_nil
+      expect(described_class.core_shadowed_definer(action, :initialize)).to be_nil
     end
 
-    it "is false for a definition of the class's own, which outranks axn's" do
-      action = Class.new do
+    it "names the ancestor axn's own definition stands in front of" do
+      parent = Class.new { def call = :parent }
+      action = Class.new(parent) { include Axn }
+
+      expect(described_class.core_shadowed_definer(action, :call)).to eq(parent)
+    end
+
+    # The first question. A definition of the author's own ANSWERS, on its own terms, so axn is standing in front
+    # of nothing whatever the hierarchy above it declares — in the class body, in a module included after
+    # `include Axn`, or in a prepend, which is the shape a re-walk of own tables gets wrong: the class's own table
+    # is empty, so an own-table reading finds nothing of the user's, concludes axn answers, and raises against a
+    # superclass it should have left alone.
+    it "is nil for a definition of the class's own, which outranks axn's" do
+      parent = Class.new { def call = :parent }
+      action = Class.new(parent) do
         include Axn
         def call = nil
       end
 
-      expect(described_class.core_definition_answers?(action, :call)).to be false
+      expect(described_class.core_shadowed_definer(action, :call)).to be_nil
     end
 
-    it "is false for a module included after axn's, which sits ahead of them" do
+    it "is nil for a module included after axn's, which sits ahead of them" do
+      parent = Class.new { def call = :parent }
       mine = Module.new { def call = nil }
-      action = Class.new do
+      action = Class.new(parent) do
         include Axn
         include mine
       end
 
-      expect(described_class.core_definition_answers?(action, :call)).to be false
+      expect(described_class.core_shadowed_definer(action, :call)).to be_nil
     end
 
-    # The shape a re-walk of own tables gets wrong, and the reason this predicate reads the EFFECTIVE owner: the
-    # class's own table is empty, so an own-table reading finds nothing of the user's and concludes axn answers —
-    # which inside `assert_dispatchable_names_free!` is a wrong raise against a superclass. The prepended module
-    # is what a call would actually reach.
-    it "is false for a module prepended to a class that declares nothing of its own" do
+    it "is nil for a module prepended to a class that declares nothing of its own" do
+      parent = Class.new { def call = :parent }
       mine = Module.new { def call = nil }
-      action = Class.new do
+      action = Class.new(parent) do
         include Axn
         prepend mine
       end
 
-      expect(described_class.core_definition_answers?(action, :call)).to be false
+      expect(described_class.core_shadowed_definer(action, :call)).to be_nil
     end
 
-    it "is false for a name nothing in the ancestry declares" do
-      expect(described_class.core_definition_answers?(Class.new { include Axn }, :no_such_method)).to be false
+    it "is nil for a name nothing in the ancestry declares" do
+      expect(described_class.core_shadowed_definer(Class.new { include Axn }, :no_such_method)).to be_nil
+    end
+
+    # Ruby's own is not a hierarchy axn is shadowing: every class inherits `BasicObject#initialize`, so counting
+    # it would refuse every action in every app.
+    it "is nil for Ruby's own implementation behind axn's" do
+      expect(described_class.core_shadowed_definer(Class.new { include Axn }, :initialize)).to be_nil
+    end
+
+    # The barrier, at the receiver the guard uses: the inherited declaration is there in the own table and
+    # unreachable from below, so axn's definition shadows nothing.
+    it "is nil for an inherited declaration a barrier makes unreachable" do
+      distant = Class.new { def call = :distant }
+      barrier = Class.new(distant) { undef_method :call }
+
+      expect(described_class.core_shadowed_definer(Class.new(barrier) { include Axn }, :call)).to be_nil
     end
   end
 

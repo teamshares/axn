@@ -142,7 +142,7 @@ Your `def` is what answers `fail!`, and `super` from it now reaches **axn's** im
 
 `call`, `_run` and `initialize` are not helpers. Axn dispatches those names on the action itself to run it, so it cannot step aside for an inherited one — the inherited method would simply never be called, and the action would report success for code that did not execute.
 
-Rather than let that happen silently, axn refuses. The check runs at the action's first `.call`, because only the finished class can answer it, and it raises `Axn::ContractViolation::UnsurrenderableInheritedMethod`. Unlike an exception raised inside an action, which axn settles into a result, this one propagates out to the caller — there is no action for it to settle into yet — and it does so from `.call` and `.call!` alike:
+Rather than let that happen silently, axn refuses. The check runs at `.call` rather than at load, because only the finished class can answer it, and it raises `Axn::ContractViolation::UnsurrenderableInheritedMethod`. It runs on every call, not just the first: reopen a superclass to add one of those three names and the actions beneath it start refusing from that point on, which is the same answer they would have given had the method been there all along. Unlike an exception raised inside an action, which axn settles into a result, this one propagates out to the caller — there is no action for it to settle into yet — and it does so from `.call` and `.call!` alike:
 
 ```ruby
 class ServiceBase

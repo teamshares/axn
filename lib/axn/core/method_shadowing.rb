@@ -48,9 +48,9 @@ module Axn
         _declaration_chain(base, name) do |owner|
           next if _axn_core_owned?(owner)
 
-          # Reached only once the chain holds a declaration that is not axn's own, which on the ordinary action —
-          # one whose hierarchy declares none of these names — never happens, so neither ancestry read below is
-          # paid on the path every `.call` takes. See `assert_dispatchable_names_free!`, which asks per call.
+          # Read lazily, and shared across the rest of the chain: on the ordinary action, whose hierarchy declares
+          # none of the seventeen deferrable names, the chain ends at axn's own declaration and neither ancestry
+          # read below is paid at all — seventeen times per `include Axn` being what this one answers for.
           own_side ||= _own_side(base)
           next if _same_module?(own_side, owner)
           # Ruby's own, not the user's hierarchy: `Kernel` owns `warn`, `inspect`, `hash`, `then` and `tap`, and
@@ -110,17 +110,35 @@ module Axn
       end
       private_class_method :_same_module?
 
-      # Whether AXN's own definition of `name` is the one a dispatch on `base` would reach. The effective owner
-      # rather than a re-walk of own tables: `Module#instance_method` resolves over the whole ancestry the way a
-      # call does, so a prepended module counts and an `undef_method`'d name is absent.
+      # What AXN's OWN definition of `name` is standing in front of on `base`, or nil when it is standing in front
+      # of nothing — or when it is not what answers at all. The question `assert_dispatchable_names_free!` asks of
+      # every action on every call, for a name axn cannot hand over.
       #
-      # The complement of `inherited_definer`, and needed alongside it wherever the question is whether axn is
-      # STANDING IN THE WAY rather than who it would step aside for. A definition of the user's own anywhere
-      # ahead of axn's modules — in the class body, in a module included after `include Axn`, in a prepend —
-      # answers instead, and reaches axn's with `super`.
-      def core_definition_answers?(base, name)
-        owner = Axn::Internal::NativeMethods.declared_instance_method(base, name)&.owner
-        !owner.nil? && _axn_core_owned?(owner)
+      # It is two questions, because either answer alone permits the wrong verdict: axn's definition must be the
+      # one that ANSWERS (a `def call` of the author's own takes the name over on its own terms, whether it appears
+      # in the class body, in a module included after `include Axn`, or in a prepend — and reaches axn's with
+      # `super`), and there must be a declaration behind it for it to be shadowing. Both are questions about ONE
+      # chain, so they are asked in one pass over it rather than resolving it twice per name per call.
+      #
+      # The first declaration in the chain is the one a dispatch reaches, which settles the first question. That
+      # it is axn's own then settles something for the second: `base` and its prepends declare nothing here, since
+      # either would have come first — so unlike `inherited_definer`, this needs no reading of `base`'s ancestry
+      # to tell its own side from the hierarchy above it.
+      def core_shadowed_definer(base, name)
+        answering = true
+        _declaration_chain(base, name) do |owner|
+          core = _axn_core_owned?(owner)
+          if answering
+            answering = false
+            return nil unless core
+
+            next
+          end
+          next if core
+          return nil if Axn::Internal::NativeMethods.includes_module?(::Object, owner)
+
+          return owner
+        end
       end
 
       # The first module in `ancestry` that declares `name` in its OWN table, skipping axn core's. Own table
@@ -158,12 +176,12 @@ module Axn
       # wrote.
       #
       # For `call`, `_run` or `initialize`, which side of `Axn::Core` the module sits on decides which way it
-      # fails. Ahead of it (the first four), `core_definition_answers?` answers false for that name: the
-      # unsurrenderable guard skips it and axn quietly defers to the hijacking module rather than raising, which
-      # no spec catches, because nothing fails at the guard — only whatever the hijacked method was doing fails,
-      # if anything. Behind it (`Axn`), the name is found as a foreign owner instead: every action that does not
-      # define that name in its own body raises, and for `_run`/`initialize`, which no ordinary action defines,
-      # every action raises full stop.
+      # fails. Ahead of it (the first four), it is the first declaration in the chain and not axn's own, so
+      # `core_shadowed_definer` answers nil: the unsurrenderable guard passes and axn quietly defers to the
+      # hijacking module rather than raising, which no spec catches, because nothing fails at the guard — only
+      # whatever the hijacked method was doing fails, if anything. Behind it (`Axn`), the name is found as a
+      # foreign owner instead: every action that does not define that name in its own body raises, and for
+      # `_run`/`initialize`, which no ordinary action defines, every action raises full stop.
       #
       # A fixture with its own `def call` cannot show either of those, so verify by hand before adding any of
       # the three — or any name a `SURRENDERABLE_OWNERS` module already declares — to an axn module outside

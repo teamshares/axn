@@ -490,25 +490,33 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect { action.call! }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod)
     end
 
-    # An exact count, not a ceiling: this fixture reaches `inherited_definer` once per unmemoized check (its own
-    # `call`/`initialize` are answered by `core_definition_answers?` and never get that far), so a ceiling of
-    # three would be met by a guard that re-walked on every call.
-    it "checks once per class" do
-      action = Class.new(service_base) do
+    # The verdict is not remembered between calls, because the hierarchy it is about stays mutable for as long as
+    # the process runs. Memoized after the first successful run, this class went on reporting success while a
+    # fresh subclass of the same superclass was refused.
+    it "refuses a superclass reopened to add #initialize after a successful run" do
+      parent = Class.new
+      action = Class.new(parent) do
         include Axn
-        def initialize(**) = super()
         def call = nil
       end
-      allow(Axn::Core::MethodShadowing).to receive(:inherited_definer).and_call_original
 
-      3.times { action.call }
-      expect(Axn::Core::MethodShadowing).to have_received(:inherited_definer).once
+      expect(action.call).to be_ok
+
+      parent.class_eval { def initialize(user:) = @user = user }
+
+      expect { action.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod, /#initialize/)
+      # The control the memoized version passed: a class that had not run yet answered correctly all along.
+      fresh = Class.new(parent) do
+        include Axn
+        def call = nil
+      end
+      expect { fresh.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod, /#initialize/)
     end
 
-    # The memo is a class-level ivar, which a subclass does not inherit. Pinned by instrumentation because no
-    # subclass of a PASSING action can be made to fail — the parent's own definition is inherited along with the
-    # verdict — so what needs proving is that the subclass asks the question again rather than what it answers.
-    it "re-checks a subclass, which inherits no verdict from the class it descends from" do
+    # Asked per call, so this is inherent rather than a property of a memo a subclass does not inherit — pinned by
+    # instrumentation because no subclass of a PASSING action can be made to fail: the parent's own definition is
+    # inherited along with the hierarchy that made it pass.
+    it "asks the question of a subclass too, which is a class the user wrote" do
       action = Class.new(service_base) do
         include Axn
         def initialize(**) = super()
@@ -516,10 +524,10 @@ RSpec.describe Axn::Core::InstanceDeferral do
       end
       action.call
       subclass = Class.new(action)
-      allow(Axn::Core::MethodShadowing).to receive(:core_definition_answers?).and_call_original
+      allow(Axn::Core::MethodShadowing).to receive(:core_shadowed_definer).and_call_original
 
       expect(subclass.call).to be_ok
-      expect(Axn::Core::MethodShadowing).to have_received(:core_definition_answers?).exactly(3).times
+      expect(Axn::Core::MethodShadowing).to have_received(:core_shadowed_definer).exactly(3).times
     end
 
     # The memo is set only after the loop clears, so a refused class stays refused. Set before it, every caller

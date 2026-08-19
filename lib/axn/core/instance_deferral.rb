@@ -29,7 +29,6 @@ module Axn
 
       NO_DEFERRALS = {}.freeze
 
-      CHECKED_IVAR = :@__axn_dispatchable_names_checked
       AXN_CHOSE_SUPERCLASS_IVAR = :@__axn_chose_superclass
 
       # The two declarations an author writes in the class body to say which implementation is live for a name
@@ -63,27 +62,32 @@ module Axn
       # and its own definition outranks both the inherited one and axn's, so an include-time check would refuse a
       # legal build. `Core::ClassMethods#call` is the only funnel there is; nothing reaches `_run` around it.
       #
-      # Two questions, because either answer alone permits the wrong verdict: axn must be the definition that
-      # ANSWERS (a `def call` of the author's own takes the name over on its own terms, whether it appears in the
-      # class body or in a module included after `include Axn`), and there must be an inherited declaration for it
-      # to be standing in front of.
+      # Asked on EVERY call, and deliberately not memoized. The answer is about the class's HIERARCHY, and a
+      # hierarchy stays mutable for as long as the process runs: a superclass reopened to add `#initialize` after
+      # the action's first successful call is the shape a per-class memo answered wrongly, since the verdict it
+      # froze was taken before the definition existed. That class went on reporting success while a fresh subclass
+      # of the same superclass was refused — the silent shadowing this guard exists to prevent, restored by the
+      # cache meant to make it cheap.
       #
-      # The memo is a class-level ivar, which a subclass does not inherit, so a subclass re-checks itself. That
-      # is what it needs: it may have introduced a definition of its own, or a new superclass in between.
+      # Affordable because the answer is one pass over the declaration chain per name rather than a walk over
+      # `ancestors` (see `MethodShadowing.core_shadowed_definer`). Measured end to end, against the same code
+      # memoized: +4.3us and +7 objects per `.call` — 5% of a minimal fielded action's 93us, 10% of a do-nothing
+      # action's 40us, and proportionally less for any action that does work. There is no cheaper honest option:
+      # Ruby offers no hook for "an ancestor was reopened", so a cache here can only be a verdict nothing
+      # invalidates.
+      #
+      # The ivar still consulted here is not a verdict: it records an authored fact about how the class was built,
+      # which nothing later re-derives. Same for the announcement's (see `announce_deferrals!`), which records a
+      # side effect already committed.
       def self.assert_dispatchable_names_free!(klass)
-        return if KERNEL_IVAR_GET.bind_call(klass, CHECKED_IVAR)
         return if KERNEL_IVAR_GET.bind_call(klass, AXN_CHOSE_SUPERCLASS_IVAR)
 
         Axn::Internal::NameOwnership::UNSURRENDERABLE.each do |name|
-          next unless MethodShadowing.core_definition_answers?(klass, name)
-
-          owner = MethodShadowing.inherited_definer(klass, name)
+          owner = MethodShadowing.core_shadowed_definer(klass, name)
           next if owner.nil?
 
           raise Axn::ContractViolation::UnsurrenderableInheritedMethod.new(klass:, name:, owner:)
         end
-
-        KERNEL_IVAR_SET.bind_call(klass, CHECKED_IVAR, true)
       end
 
       # The exemption the guard above consults, set by the one caller that can honestly claim it: mounting,
