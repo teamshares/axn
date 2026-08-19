@@ -64,23 +64,14 @@ module Axn
           class_name(token)
         end
 
-        # A declared class named the way axn intends it to be named. `#name` is DISPATCHED, which is the
-        # documented exception to reading a caller's class through bound implementations: axn installs a `name`
-        # of its own on the classes it builds (`ClassBuilder#configure_class_name`, `Strategies::Form`), and
-        # `Module#to_s` does not consult it — bound or dispatched, `to_s` answers `#<Class:0x…>` for a mounted
-        # axn where axn intends `AnonymousClient_2980::Axns::Inner`. Binding here would substitute an object
-        # address for prose that axn itself installed.
+        # A declared class named the way axn intends it to be named, over `Internal::RenderedInstalledName`,
+        # which owns why the name is dispatched rather than read bound and why the dispatch is absorbed.
+        # DELEGATED like the rest of this module's naming, and for the same reason.
         #
-        # The dispatch is absorbed rather than trusted, which is what lets both rules hold at once: a class
-        # whose `name` raises (or answers with something that is not a String) degrades to the bound rendering
-        # instead of replacing the validation failure being reported with its own exception. An anonymous class
-        # with no installed name answers nil and takes the same fallback.
-        def module_type_label(mod)
-          name = mod.name
-          Identity.kind?(name, ::String) ? Text.renderable(name) : module_name(mod)
-        rescue ::Exception # rubocop:disable Lint/RescueException
-          module_name(mod)
-        end
+        # Falls back to the BOUND rendering rather than to a generic word: this token is the type a validation
+        # message says the input is not, and `#<Class:0x…>` at least tells the reader which declared class was
+        # meant, where a stand-in noun would leave the message saying nothing about it at all.
+        def module_type_label(mod) = RenderedInstalledName.of(mod) { module_name(mod) }
 
         # An ACTION class named in prose, where `module_name` would name it wrongly: axn installs a `name` of
         # its own on the classes it builds, so the bound reader answers with an object address in place of the

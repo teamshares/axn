@@ -25,7 +25,8 @@ module Axn
     # for a class or module named in its own right, which `Internal::Rendering.module_name` delegates to and
     # which `UnsurrenderableInheritedMethod` below reaches directly — plus `Internal::RenderedActionName` for
     # the one receiver those two do not cover, an ACTION class, whose name axn may have installed itself and
-    # which `Internal::Rendering.action_name` delegates to. The direction is
+    # which `Internal::Rendering.action_name` delegates to — over `Internal::RenderedInstalledName`, the
+    # dispatch-and-absorb core it shares with `Internal::Rendering.module_type_label`. The direction is
     # forced: the reflection and rendering layers require THIS file, so a reference from here up into either
     # would leave a message path NameError-ing under the standalone loads
     # `spec/axn/standalone_require_spec.rb` pins. The byte half they all compose through, `Internal::Text`, has
@@ -99,38 +100,55 @@ module Axn
       def self.of(mod) = Identity.kind?(mod, ::Module) ? Text.renderable(ClassName.of_module(mod)) : RenderedText.of(mod)
     end
 
-    # An ACTION class named in prose — the one receiver whose name is read by DISPATCH rather than bound.
+    # A module's INSTALLED name — the one receiver whose name is read by DISPATCH rather than bound.
     #
     # Axn installs a `name` of its own on the classes it BUILDS (`Mountable::Helpers::ClassBuilder`,
-    # `Axn::Factory`), so on a factory-built action or a mounted axn a bound `Module#to_s` answers
+    # `Axn::Factory`, `Strategies::Form`), and `Module#to_s` does not consult it, so a bound read answers
     # `#<Class:0x…>` or `#<Class:0x…>::Axns::Inner` where axn intends `AnonymousAxn_2980` or
     # `AnonymousClient_2980::Axns::Inner`. That override is axn's own naming mechanism rather than a caller's
-    # lie, so binding past it trades the prose axn deliberately put there for an object address. Only the
-    # action class gets this treatment; an owner named alongside it is a class axn never renames, and reading
-    # THAT one bound is what keeps a foreign `self.name` out of the message.
+    # lie, so binding past it trades the prose axn deliberately put there for an object address. Only a class
+    # axn may have renamed gets this treatment; an owner or a caller's exception class named alongside it is
+    # one axn never renames, and reading THOSE bound through `RenderedModuleName` is what keeps a foreign
+    # `self.name` out of the message.
     #
-    # Anything the dispatch yields that is not a String — nil, which is what an anonymous class answers and so
-    # the common case in specs; another type; or a raise — falls back to the same `"Action"` the rest of axn
-    # spells `|| "Action"`. One fallback rather than a bound second reading: a name that cannot be had is a
-    # name that cannot be had, and the sentence reads the same either way.
-    #
-    # The bytes are still rendered, for the reason everything here is: a constant path may hold non-UTF-8 ones,
-    # and joining those to axn's UTF-8 prose raises Encoding::CompatibilityError in place of the failure being
-    # reported. `Exception` rather than `StandardError` around the dispatch on the same terms as
+    # The dispatch is ABSORBED rather than trusted, which is what lets the exception to binding hold without
+    # handing the receiver a way out of the message path. Anything it yields that is not a String — nil, which
+    # is what an anonymous class answers; another type, whose rendering would dispatch again; or a raise —
+    # takes the fallback. `Exception` rather than `StandardError` around it on the same terms as
     # `Rendering.value_rendering`: the failure being composed has to win over anything the class's own reader
-    # raises, and a `name` is not a path a signal travels through.
+    # raises, and a `name` is not a path a signal travels through. The bytes that DO arrive are still rendered,
+    # for the reason everything here is: a constant path may hold non-UTF-8 ones, and joining those to axn's
+    # UTF-8 prose raises Encoding::CompatibilityError in place of the failure being reported.
+    #
+    # What an unavailable name degrades TO is the caller's policy, not this module's — a sentence about an
+    # action and a sentence about a declared type want different words — so it arrives as a BLOCK, which also
+    # keeps a fallback that costs something off the success path. A fallback that itself raises propagates;
+    # axn's own two cannot, and a fallback is not a place to be clever.
+    #
+    # A non-Module receiver answers `RenderedText.of` exactly as `RenderedModuleName` does, since these are
+    # reached from public exception kwargs a caller fills in and a message path owes an answer about the value
+    # rather than an error about rendering it.
+    module RenderedInstalledName
+      def self.of(mod, &fallback)
+        return RenderedText.of(mod) unless Identity.kind?(mod, ::Module)
+
+        name = mod.name
+        Identity.kind?(name, ::String) ? Text.renderable(name) : fallback.call
+      rescue ::Exception # rubocop:disable Lint/RescueException
+        fallback.call
+      end
+    end
+
+    # An ACTION class named in prose, over `RenderedInstalledName`, which owns why the name is dispatched.
+    #
+    # Falls back to the same `"Action"` the rest of axn spells `|| "Action"`: an anonymous action class is the
+    # common case in specs, so a name that cannot be had is the ordinary case rather than the odd one, and the
+    # sentence reads as intended with a generic word where an object address would only be noise.
     module RenderedActionName
       DEFAULT = "Action"
       private_constant :DEFAULT
 
-      def self.of(klass)
-        return RenderedText.of(klass) unless Identity.kind?(klass, ::Module)
-
-        name = klass.name
-        Identity.kind?(name, ::String) ? Text.renderable(name) : DEFAULT
-      rescue ::Exception # rubocop:disable Lint/RescueException
-        DEFAULT
-      end
+      def self.of(klass) = RenderedInstalledName.of(klass) { DEFAULT }
     end
 
     # Internal only -- rescued before Axn::Result is returned

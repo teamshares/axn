@@ -32,6 +32,42 @@ RSpec.describe Axn::Internal::Rendering do
     end
   end
 
+  describe ".type_label" do
+    # The dispatch both name readers share: axn's own `name` is what the class means to be called, and the
+    # bound reader answers past it with an address.
+    it "names a declared class by the name it installed for itself" do
+      klass = Class.new { def self.name = "AnonymousClient_2980::Axns::Inner" }
+
+      expect(described_class.type_label(klass)).to eq("AnonymousClient_2980::Axns::Inner")
+    end
+
+    # The policy that separates this reader from `action_name`, which degrades to the generic "Action": a type
+    # label is what the message says the input is NOT, so an unnameable class degrades to the bound rendering,
+    # which still identifies WHICH declared class was meant.
+    it "falls back to the bound rendering for an anonymous class, whose name is nil" do
+      expect(described_class.type_label(Class.new)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+    end
+
+    it "falls back to the bound rendering when the class's own reader raises, on the same terms" do
+      klass = Class.new { def self.name = raise(Exception, "answered") } # rubocop:disable Lint/RaiseException
+
+      expect(described_class.type_label(klass)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+    end
+
+    it "falls back to the bound rendering for a class answering with something other than a String" do
+      klass = Class.new { def self.name = :sym }
+
+      expect(described_class.type_label(klass)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+    end
+
+    # The positive control: an ordinary class and a pseudo-type read as a validation message has always said
+    # them, so a seam that sent every token through the fallback would be caught rather than pass as safe.
+    it "leaves an ordinary class and a pseudo-type reading as they always have" do
+      expect(described_class.type_label(Integer)).to eq("Integer")
+      expect(described_class.type_label(:boolean)).to eq("boolean")
+    end
+  end
+
   describe ".action_name" do
     # The whole point of the dispatch: axn's own `name` is what the class means to be called, and the bound
     # reader `module_name` uses answers past it with an address.
