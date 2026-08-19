@@ -2242,6 +2242,7 @@ module Axn
           raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
 
           _reject_nested_map_contract!(bag)
+          _reject_unsupported_map_axis!(bag)
           _reject_map_beside_shape!(validations)
           bag.merge(container: ::Hash)
         end
@@ -2260,6 +2261,49 @@ module Axn
           return false unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
 
           Array(declared).empty?
+        end
+
+        # The pseudo-types a declared type may name beside a real class. Mirrors the branches
+        # `Axn::Validators::TypeValidator.value_matches?` answers by name, which is the authority — a token
+        # outside both sets reaches `value.is_a?(token)` and raises `TypeError: class or module required` on
+        # every call rather than at the author.
+        MAP_OF_PSEUDO_TYPES = %i[boolean uuid params].freeze
+
+        # Every axis the author SUPPLIED has to name something the runtime can hold a value to. The emptiness
+        # rule above only asks whether the bag as a whole constrains nothing, so a bag with one good axis
+        # carried the other unchecked: `of: { keys: Symbol, values: false }` declared cleanly and then raised a
+        # bare `TypeError: class or module required` from `value.is_a?(false)` on EVERY call, and
+        # `of: { keys: Symbol, values: nil }` silently constrained nothing at all. Both are the failure this
+        # option exists to refuse, arriving one axis later.
+        #
+        # Keyed on `key?` rather than on the value, so "supplied but names nothing" is refused while an axis
+        # left off stays the honest spelling of "unconstrained". Runs after the nested-contract check, so a
+        # Hash axis keeps its own "not supported yet" message instead of being reported as an unsupported type.
+        # Each offender is named through `_declared_type_label`, never its own `inspect`.
+        def _reject_unsupported_map_axis!(bag)
+          MAP_OF_AXES.each do |axis|
+            next unless Internal::ShapeGraph.carries_key?(bag, axis)
+
+            declared = bag[axis]
+            tokens = Array(declared)
+            offender = tokens.find { |token| !_supported_type_token?(token) }
+            next if !tokens.empty? && nil.equal?(offender)
+
+            named = tokens.empty? ? _declared_type_label(declared) : _declared_type_label(offender)
+            raise ArgumentError,
+                  "of: #{axis}: must name a type — a Class, a union of them, or one of " \
+                  "#{MAP_OF_PSEUDO_TYPES.map(&:inspect).join(', ')} (got #{named})"
+          end
+        end
+
+        # `Module` covers a class and a module both, tested with `case`/`when` so nothing the token defines
+        # decides whether it is one.
+        def _supported_type_token?(token)
+          case token
+          when ::Module then true
+          when ::Symbol then MAP_OF_PSEUDO_TYPES.include?(token)
+          else false
+          end
         end
 
         # An axis takes the same forms `type:` does — a class, a union of them, a `:boolean`/`:uuid`/`:params`
@@ -2306,9 +2350,25 @@ module Axn
           # author at.
           supported = allowed.reject { |key| key == :on }
           raise ArgumentError,
-                "of: does not support #{offenders.map { |key| "#{key}:" }.join(', ')} " \
+                "of: does not support #{offenders.map { |key| _of_key_label(key) }.join(', ')} " \
                 "(supported: #{supported.map { |key| "#{key}:" }.join(', ')})"
         end
+
+        # An offending key written into the message. A Symbol is named through a BOUND `Symbol#name` and keeps
+        # the `key:` spelling the supported list uses; anything else goes through the shared name seam, which
+        # answers without dispatching. `_symbol_keyed_bag` preserves a key it cannot symbolize, so an unknown
+        # one may be an arbitrary caller object — and interpolating it ran that object's own `to_s`, which
+        # replaced this declaration error with the caller's exception (outside StandardError, one that escapes
+        # every rescue meant to settle it).
+        def _of_key_label(key)
+          case key
+          when ::Symbol then "#{SYMBOL_KEY_NAME.bind_call(key)}:"
+          else Axn::Internal::Reflection::PropertyNames.inspect_field_name(key)
+          end
+        end
+
+        SYMBOL_KEY_NAME = ::Symbol.instance_method(:name)
+        private_constant :SYMBOL_KEY_NAME
 
         # `on:` inside a validator's own option bag is ActiveModel's validation CONTEXT option, and axn has no
         # validation contexts: `Validation::Fields` calls `valid?` with no context, while `validate` installs a

@@ -286,6 +286,19 @@ RSpec.describe Axn::Validators::OfValidator do
     # same terms and in the gem's own phrasing for the case (`user_facing:`, `expose_return_as:` and
     # `sensitive:` all report an off-grammar value this way). Pinned because it is the one entry whose
     # rendering differs from the list's, so a later reader can tell the wording is chosen rather than incidental.
+    # An unknown `of:` key may be an arbitrary caller object — `_symbol_keyed_bag` preserves a key it cannot
+    # symbolize — and interpolating it ran that object's own `to_s`, which replaced this declaration error
+    # with the caller's exception.
+    it "raises the whitelist error even when an unknown key's own to_s raises" do
+      hostile = Class.new do
+        def to_s = raise("boom from to_s")
+        def inspect = raise("boom from inspect")
+      end.new
+
+      expect { build_axn { expects :rows, type: Array, of: { klass: String, hostile => 1 } } }
+        .to raise_error(ArgumentError, /of: does not support a name of class /)
+    end
+
     it "names a non-class declared type by its class" do
       expect { build_axn { expects :counts, type: "Hash", of: { values: Integer } } }
         .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [a value of class String])")
@@ -345,10 +358,12 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
     end
 
-    # The other side of that rule: one axis naming nothing is only fatal when the OTHER names nothing too — an
-    # unconstrained axis is exactly what omitting it says, and spelling it out means the same thing.
-    it "accepts an empty axis beside one that names a class" do
-      expect { build_axn { expects :counts, type: Hash, of: { keys: [], values: Integer } } }.not_to raise_error
+    # Omitting an axis is the spelling of "unconstrained"; writing one that names nothing is not. An empty
+    # union constrains exactly nothing, so it is refused wherever it is supplied rather than read as an
+    # omission that happens to be typed out.
+    it "rejects an empty axis even beside one that names a class" do
+      expect { build_axn { expects :counts, type: Hash, of: { keys: [], values: Integer } } }
+        .to raise_error(ArgumentError, /of: keys: must name a type/)
     end
 
     # The map bag reaches the same context-scope guard the element bag does — `on:` is one whitelist entry for
@@ -361,6 +376,43 @@ RSpec.describe Axn::Validators::OfValidator do
     it "rejects message:, which cannot say which axis failed" do
       expect { build_axn { expects :counts, type: Hash, of: { values: Integer, message: "nope" } } }
         .to raise_error(ArgumentError, /of: does not support message:/)
+    end
+
+    # A pseudo-type is a supported spelling on either axis, exactly as it is for `type:` — pinned as the
+    # positive control for the axis-token guard below, so a guard that rejected everything but a Class would
+    # be caught rather than read as correct.
+    it "accepts a pseudo-type on an axis" do
+      expect { build_axn { expects :flags, type: Hash, of: { keys: Symbol, values: :boolean } } }.not_to raise_error
+    end
+
+    it "accepts a union mixing a class and a pseudo-type" do
+      expect { build_axn { expects :ids, type: Hash, of: { values: [String, :uuid] } } }.not_to raise_error
+    end
+
+    # An axis the author SUPPLIED has to name something the runtime can hold a value to. The emptiness rule
+    # only asks whether the bag as a whole constrains nothing, so one good axis used to carry the other
+    # unchecked: this declared cleanly and raised a bare `TypeError: class or module required` from
+    # `value.is_a?(false)` on every call.
+    it "rejects a non-class on the values axis, where a TypeError used to reach every call" do
+      expect { build_axn { expects :c, type: Hash, of: { keys: Symbol, values: false } } }
+        .to raise_error(ArgumentError, /of: values: must name a type .* \(got a value of class FalseClass\)/)
+    end
+
+    it "rejects a non-class on the keys axis on the same terms" do
+      expect { build_axn { expects :c, type: Hash, of: { keys: false, values: Integer } } }
+        .to raise_error(ArgumentError, /of: keys: must name a type .* \(got a value of class FalseClass\)/)
+    end
+
+    # Supplied-but-naming-nothing is refused rather than read as unconstrained: an axis left OFF is the honest
+    # spelling of "unconstrained", and `values: nil` beside a good `keys:` silently constrained nothing.
+    it "rejects an axis supplied as nil beside a valid one" do
+      expect { build_axn { expects :c, type: Hash, of: { keys: Symbol, values: nil } } }
+        .to raise_error(ArgumentError, /of: values: must name a type .* \(got a value of class NilClass\)/)
+    end
+
+    it "rejects an axis naming an empty union beside a valid one" do
+      expect { build_axn { expects :c, type: Hash, of: { keys: Symbol, values: [] } } }
+        .to raise_error(ArgumentError, /of: values: must name a type/)
     end
 
     it "rejects a nested contract on an axis as not yet supported" do
