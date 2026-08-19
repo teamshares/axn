@@ -223,6 +223,12 @@ module Axn
       WARNED = {} # rubocop:disable Style/MutableConstant (grown as actions run; a frozen one could record nothing)
       private_constant :WARNED
 
+      # Two classes deferring the SAME definer method are two different first runs, so the per-class
+      # `ANNOUNCED_IVAR` does not coordinate them: concurrently, both could find the record absent and both
+      # emit the line the record exists to make singular. This makes the check-and-insert one step.
+      WARNED_LOCK = Thread::Mutex.new
+      private_constant :WARNED_LOCK
+
       # Announced rather than logged at debug: a deferral the author did not intend changes which code runs, and
       # a debug line is invisible to the developer who needs to know.
       def self._warn_once(base, name, definer)
@@ -230,16 +236,31 @@ module Axn
         # emitted: the announcement runs at the execution funnel, before the action is constructed and outside
         # the executor's guards, so anything that raises here would take `.call` down over a courtesy.
         #
-        # The WHOLE of the announcement is inside, key included, because reaching the record at all dispatches
-        # the definer's `hash` — a definer being an arbitrary class or module the user wrote. (An empty Hash
-        # short-circuits `key?` without hashing, so the store is the read that always does.) Only the emission
-        # ordering has to be preserved: the record goes in BEFORE the line is written, so a logger that raises
-        # cannot leave the deferral unrecorded and let a later run announce it a second time.
+        # The WHOLE of the announcement is inside, key and lock included, because reaching the record at all
+        # dispatches the definer's `hash` — a definer being an arbitrary class or module the user wrote. (An
+        # empty Hash short-circuits `key?` without hashing, so the store is the read that always does.) The
+        # lock is in for its own reason: `Thread::Mutex#synchronize` answers a recursive lock with a
+        # ThreadError, which is a StandardError this guard swallows like any other side-channel escape.
         Axn::Extensions.best_effort("announcing an inherited-method deferral", action: base) do
           key = [definer, name]
+          # Lock-free once the record is in: after the first announcement no thread reaching this name takes
+          # the lock at all, so the mutex costs only the runs that might still be the first.
           next if WARNED.key?(key)
 
-          WARNED[key] = true
+          claimed = WARNED_LOCK.synchronize { WARNED.key?(key) ? false : WARNED[key] = true }
+          # Emitted outside the lock for two reasons. A logger that blocks — a socket, a full pipe, a lock of
+          # its own — would hold this one for as long as it blocks, and every thread whose action is still
+          # deciding whether to announce anything would queue behind an unrelated write. And a logger that
+          # itself runs an axn action which defers arrives back here from underneath its own announcement:
+          # Thread::Mutex is not reentrant, so relocking it on this thread raises ThreadError ("deadlock;
+          # recursive locking"), and where the logger hands that inner run to another thread and waits for it,
+          # the two block on each other with nothing to detect it.
+          #
+          # Which also keeps the ordering the record depends on: it is committed BEFORE the line is written,
+          # so a logger that raises cannot leave the deferral unrecorded and let a later class announce it a
+          # second time.
+          next unless claimed
+
           # The definer is a class or module the user wrote, which axn never renames, so it is read bound. The
           # ACTION is the one axn may have named itself — a factory-built or mounted class carries a `name` axn
           # installed — and reading that one bound answers with an object address instead.

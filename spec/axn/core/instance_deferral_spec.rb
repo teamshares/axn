@@ -830,6 +830,95 @@ RSpec.describe Axn::Core::InstanceDeferral do
 
       expect(warnings.size).to eq(1)
     end
+
+    # The record is process-wide, but the per-class `ANNOUNCED_IVAR` that gets a class as far as the record is
+    # not: two classes inheriting ONE definer method are two first runs, and each arrives here believing it may
+    # be the only one. So the check and the insert have to be one step.
+    describe "under concurrency" do
+      let(:count) { 8 }
+
+      # Distinct classes sharing one definer — the shape the per-class ivar cannot coordinate. Built before any
+      # thread starts, so what races is the announcement rather than `include Axn`.
+      def racing_actions
+        stub_const("ApplicationService", Class.new { def log(*) = nil })
+        Array.new(count) { Class.new(ApplicationService) { include Axn } }
+      end
+
+      # The mechanism, pinned without asking a scheduler to cooperate: on one thread, on one run, the record is
+      # written while the lock is held. Fails if the `synchronize` goes away, or if the insert moves out of it.
+      it "writes the record while holding the lock" do
+        lock = described_class.const_get(:WARNED_LOCK)
+        held = false
+        held_when_written = nil
+
+        allow(lock).to receive(:synchronize).and_wrap_original do |original, &block|
+          held = true
+          begin
+            original.call(&block)
+          ensure
+            held = false
+          end
+        end
+        allow(described_class.const_get(:WARNED)).to receive(:[]=).and_wrap_original do |original, *args|
+          held_when_written = held
+          original.call(*args)
+        end
+
+        stub_const("ApplicationService", Class.new { def log(*) = nil })
+        Class.new(ApplicationService) { include Axn }.call
+
+        expect(warnings.size).to eq(1)
+        expect(held_when_written).to be(true)
+      end
+
+      # Every thread is held where it asks whether the record is there until all of them have asked, so all of
+      # them are answered "no" — which proves the lock-free fast path is not what makes the line singular, since
+      # every thread gets past it.
+      #
+      # It does NOT discriminate the lock itself, and saying so is the point: with the `synchronize` removed
+      # this example still passes, because the claim's own read runs after the gate has closed and so sees
+      # whichever thread recorded first. The example above is the one that fails without the lock; this one
+      # covers the half of the invariant that survives an adversarial fast path.
+      #
+      # The gate releases every thread on close, and the arrival count is drained with a timeout, so a future
+      # change that stops all `count` threads reaching the check degrades this to the unstubbed example below
+      # instead of hanging the suite.
+      it "announces once even when every thread passes the lock-free check before any of them records" do
+        arrivals = Thread::Queue.new
+        gate = Thread::Queue.new
+        allow(described_class.const_get(:WARNED)).to receive(:key?).and_wrap_original do |original, *args|
+          answer = original.call(*args)
+          unless gate.closed?
+            arrivals << :arrived
+            gate.pop
+          end
+          answer
+        end
+
+        threads = racing_actions.map { |action| Thread.new { action.call } }
+        count.times { arrivals.pop(timeout: 5) }
+        gate.close
+        threads.each(&:join)
+
+        expect(warnings.size).to eq(1)
+      end
+
+      # The same race with nothing wrapped, so the property is asserted about the path that actually runs.
+      it "announces once for concurrent first calls to distinct classes sharing a definer" do
+        actions = racing_actions
+        gate = Thread::Queue.new
+        threads = actions.map do |action|
+          Thread.new do
+            gate.pop
+            action.call
+          end
+        end
+        gate.close
+        threads.each(&:join)
+
+        expect(warnings.size).to eq(1)
+      end
+    end
   end
 
   describe "prefer_axn" do
