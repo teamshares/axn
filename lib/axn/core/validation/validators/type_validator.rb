@@ -70,7 +70,14 @@ module Axn
       private
 
       def types = Array(options[:klass])
-      def msg = types.size == 1 ? "is not a #{types.first}" : "is not one of #{types.join(', ')}"
+
+      # Named through the shared seam for the reason `OfValidator#describe_mismatch` is: interpolating a
+      # declared class runs its own `to_s`, and one that raises replaces the validation failure with its
+      # exception.
+      def msg
+        labels = types.map { |type| Axn::Internal::Rendering.type_label(type) }
+        labels.size == 1 ? "is not a #{labels.first}" : "is not one of #{labels.join(', ')}"
+      end
 
       # A field that opted into coercion but is still holding a coercion-candidate value means the
       # value couldn't be parsed into any target type -- distinguish that from a plain wrong-type

@@ -332,8 +332,12 @@ module Axn
         #   - `properties`      — an object's own; the node itself
         #   - `items`           — an array element's, its own namespace (a non-object parent's subfields are not
         #                         emitted there, so nothing else can name a property beside its elements)
+        #   - `additionalProperties`
+        #                       — a map VALUE's, the same kind of namespace one axis over: a Hash's `of:` names
+        #                         what every key maps to, and a value type's own members are property names
+        #                         inside it
         #   - `anyOf`           — one branch per member of a multi-class `type:` or `of:`, each with its own
-        #                         `properties` (`single_type_for` / `single_items_schema`)
+        #                         `properties` (`single_type_for` / `single_contents_schema`)
         #   - `allOf`           — the conditional schemas `build_input` appends
         #
         # A branch is an ALTERNATIVE, not a sibling: the same name in two different `anyOf` branches describes
@@ -350,6 +354,7 @@ module Axn
           end
 
           each_emitted_node(schema[:items], [*path, ITEMS_SEGMENT], &block)
+          each_emitted_node(schema[:additionalProperties], [*path, VALUES_SEGMENT], &block)
           %i[anyOf allOf].each do |key|
             branches = schema[key]
             next unless branches.is_a?(Array)
@@ -362,6 +367,10 @@ module Axn
         # with a property.
         ITEMS_SEGMENT = :[]
         private_constant :ITEMS_SEGMENT
+
+        # A map's value node, in a path. Like ITEMS_SEGMENT, a segment no declared name can produce.
+        VALUES_SEGMENT = :"{}"
+        private_constant :VALUES_SEGMENT
 
         # Names both SOURCES, not just both spellings: with six mechanisms contributing property names, which
         # two declarations collided is not evident from the names alone.
@@ -570,13 +579,21 @@ module Axn
         end
 
         # The type whose members a structured-type property came from: the `of:` element type inside an array,
-        # the field's own declared type otherwise. Nil for a UNION (`of: [A, B]`), where the property lives in
-        # one `anyOf` branch and pinning which class contributed it would mean mapping a branch index back to a
-        # declaration — a derivation of the emitter's own ordering, for prose, on a path that only runs once a
-        # failure is certain. The message names the union collectively there instead. A nil answer means exactly
-        # that case: every other way of reaching nil contributes no type properties for a source to describe.
+        # the `of:` VALUES type inside a map, the field's own declared type otherwise — each read from the same
+        # place the emitter built that node's schema from. Nil for a UNION (`of: [A, B]`), where the property
+        # lives in one `anyOf` branch and pinning which class contributed it would mean mapping a branch index
+        # back to a declaration — a derivation of the emitter's own ordering, for prose, on a path that only runs
+        # once a failure is certain. The message names the union collectively there instead. A nil answer means
+        # exactly that case: every other way of reaching nil contributes no type properties for a source to
+        # describe.
         def shape_type_klass(config, plan)
-          source = plan.in_items? ? config.validations[:of] : config.validations[:type]
+          source = if plan.map?
+                     config.validations.dig(:of, :values)
+                   elsif plan.in_items?
+                     config.validations[:of]
+                   else
+                     config.validations[:type]
+                   end
           klass = source.is_a?(Hash) ? source[:klass] : source
           klass.is_a?(Class) ? klass : nil
         end
