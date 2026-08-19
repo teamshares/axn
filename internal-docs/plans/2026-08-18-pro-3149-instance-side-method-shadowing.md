@@ -1313,8 +1313,8 @@ Create `docs/advanced/inheritance.md`. Scope it to the author who includes Axn i
 
 1. The rule: a method your own hierarchy declares wins over axn's helper of the same name; a method Ruby declares (`warn`, `inspect`, `hash`) does not, so axn keeps those.
 2. Which names it applies to — list the 17 grouped as the spec groups them, prose-framed as "axn's convenience helpers" rather than as an API contract.
-3. A worked `ApplicationService#log` example showing the deferral, the boot warning, and `prefer_inherited :log` to confirm it.
-4. `prefer_axn :fail!`, with the reason it exists: `super` from your class body reaches the inherited version, so this is the only route back to axn's.
+3. A worked `ApplicationService#log` example showing the deferral, the warning, and `prefer_inherited :log` to confirm it. The warning fires the FIRST TIME the action runs, not at `include Axn` — a line already written to the log cannot be unsaid by a declaration later in the same class body, so silencing is only possible once the class body has finished. Say so plainly; an author who never calls an action never sees its warning.
+4. `prefer_axn :fail!`, with the reason it exists: `super` from your class body reaches the inherited version, so this is the only route back to axn's. Add the one consequence a reader would otherwise discover by accident: a class-body `def` of the same name still wins over `prefer_axn`, which turns the declaration into a redirect for that method's `super` rather than a no-op.
 5. The refusal: an inherited `call` or `initialize` raises at first `.call`, because axn dispatches those names to run the action and an inherited one would never execute. Show the error and both fixes (define it on the action, or compose instead of inherit).
 6. A short closing section on the class-method side (`description`, `input_schema`, `output_schema` — PRO-2875), which is undocumented on the site today: same principle, one receiver over.
 
@@ -1336,7 +1336,8 @@ Add one entry to `AGENTS.md`, in the same bullet list that carries "Internals ne
 - Class side: `base.singleton_class`'s ancestors, untruncated, `base` included.
 - Instance side: `base`'s ancestors, truncated at `::Object`, `base` and its prepends excluded — `Kernel` owns `warn`/`inspect`/`hash`/`then`/`tap` and sits behind `::Object`, so truncating there is what keeps them axn's; an untruncated walk would silently redirect `warn("msg")` inside every action to stderr.
 - Both skip `Axn::Core::*` owners only, so a satellite adapter's module counts as external.
-- The deferrable surface is `SURRENDERABLE_OWNERS`' public methods minus `internal_name?`; `UNSURRENDERABLE` names raise at the execution funnel instead, because only the finished class reveals whether the class defines its own.
+- The deferrable surface is `SURRENDERABLE_OWNERS`' public methods minus `internal_name?`; `UNSURRENDERABLE` names raise at the execution funnel instead, because only the finished class reveals whether the class defines its own. That refusal is TWO questions — a non-axn ancestor declares the name AND axn's own definition is what a dispatch reaches — so a class defining the name itself is never refused.
+- A declaration (`prefer_inherited`/`prefer_axn`) only ever adds a wrapper to the DECLARING class's own module; it never edits an inherited one, which is what stops a subclass changing its parent's and siblings' behaviour.
 - New user-facing sugar therefore needs no edit here; adding a whole new sugar module does.
 
 - [ ] **Step 4: CHANGELOG**
@@ -1344,7 +1345,7 @@ Add one entry to `AGENTS.md`, in the same bullet list that carries "Internals ne
 Add entries under the unreleased version heading. Confirm which heading that is first — a bumped-but-uncut version heading IS the unreleased section; verify with `git tag --list | tail -5` and the published versions on rubygems rather than assuming the top heading is released. Two entries:
 
 - `[BUGFIX]` an instance method the including class's own hierarchy owns is no longer silently shadowed by axn's helper of the same name; `prefer_inherited` / `prefer_axn` name which one is live.
-- `[BREAKING]` an inherited `call` or `initialize` now raises `Axn::ContractViolation::UnsurrenderableInheritedMethod` at first `.call`, where it previously reported success without running the inherited method.
+- `[BREAKING]` an inherited `call` or `initialize` now raises `Axn::ContractViolation::UnsurrenderableInheritedMethod` at first `.call`, where it previously reported success without running the inherited method. This reaches `Axn::Factory.build(superclass:)` too — a factory axn built over a superclass that defines `initialize` now raises where it previously ran with the parent's initializer skipped.
 
 Write what changed and what a consumer must do, not how it was built.
 
