@@ -81,6 +81,23 @@ module Axn
           _walk_shape_graph!(shape, nil, [Internal::ShapeGraph::MAX_MEMBER_PATHS, fields]).copy
         end
 
+        # The `of:` walk's entry point for a FIELD, where there is no enclosing walk to inherit a position from:
+        # depth starts at 0, and the path allowance is this declaration's own. It descends the field's OWN chain
+        # and no other — `inner_contracts` reads `:of` alone, so the chains hanging off the field's shape members
+        # are not reachable from here and are descended at the member site instead.
+        #
+        # A BLOCK-form member reaches this method too, because `_build_shape_member` parses a member exactly as a
+        # field is parsed: its chain is walked here at depth 0 and again from `_check_and_copy_shape_members!` at
+        # the member's real depth. That is the same runs-twice property `_drop_derived_of_container!` exists for,
+        # and it is the second pass that binds — the first cannot know how far down the member sits, so it
+        # under-charges depth, and under-charging only ever admits what the position-aware pass then refuses. A
+        # member supplied as a RAW `shape:` kwarg never routes through here at all, which is why the member site
+        # is where the chain is canonicalized rather than merely re-checked.
+        def _walk_declared_inner_contracts!(validations, fields)
+          _walk_inner_contracts!(validations, ShapeWalk.new(seen: nil, walked: {}.compare_by_identity, depth: 0),
+                                 [Internal::ShapeGraph::MAX_MEMBER_PATHS, fields], fields:)
+        end
+
         # Stores the copy in place of the caller's shape, and only when there is one to copy: a field that
         # declared no `shape:` must not gain the key here, and a `shape:` that is not a Hash is left exactly as
         # it came for the container check to reject.
@@ -102,6 +119,65 @@ module Axn
         # the whole of what that judgement needs (see `_walk_shape_graph!`).
         WalkedShape = Data.define(:copy, :paths, :height)
         private_constant :WalkedShape
+
+        # What one walked chain of inner contracts yields, in the same two currencies a walked shape reports —
+        # so a member's `of:` folds into the same totals its nested `shape:` does, and a subtree the memo hands
+        # back is re-judged against a height that counts both kinds of level. There is no `copy` to report: an
+        # `of:` bag is canonicalized in place onto the node that holds it (see `_walk_inner_contracts!`), where
+        # a shape is snapshotted into a new node its member then has to be pointed at.
+        WalkedContracts = Data.define(:paths, :height)
+        private_constant :WalkedContracts
+
+        NO_INNER_CONTRACTS = WalkedContracts.new(paths: 0, height: 0)
+        private_constant :NO_INNER_CONTRACTS
+
+        # THE declaration walk over a node's `of:` chain, and the seam that canonicalizes each rung of it. An
+        # `of:` bag is the other kind of child a node has, and it is bounded on exactly the terms a nested
+        # `shape:` is: one depth counter (a graph 64 `of:` deep by 64 `shape:` deep is 128 levels of walking,
+        # which two counters would admit), one path allowance (an `of:` rung charges 1, as a member does), and
+        # one cycle guard (`h[:of] = h` is reachable by hand).
+        #
+        # The walk DRIVES the canonicalization rather than following it. Canonicalizing a bag's own `of:` from
+        # inside `_canonical_array_of!` recurses over the CALLER's graph with no bound of any kind, and a
+        # self-referential bag ended that recursion in `SystemStackError` — outside StandardError, raised while
+        # the class is being defined, so no rescue in the framework settles it — before any guard here could
+        # report it. Descending one rung at a time is what puts the bounds ahead of the recursion instead of
+        # behind it.
+        #
+        # The cycle guard is keyed on the RAW child, not on the bag being descended into: every canonical rung
+        # is a fresh Hash of axn's (each is a `merge` result), so nothing in the canonical graph can ever repeat
+        # — the only object a cycle can bring back around is the caller's own, which is what sits under this
+        # bag's `:of` until the rung below it is canonicalized. Detaching a bag copies one level (see
+        # `_canonicalize_inner_contract!`), so a caller's cyclic Hash keeps resurfacing there at every turn of
+        # the loop and is caught on the second.
+        def _walk_inner_contracts!(validations, walk, allowance, fields:, via: nil, via_name: nil)
+          contracts = Internal::ShapeGraph.inner_contracts(validations)
+          return NO_INNER_CONTRACTS if contracts.empty?
+
+          paths = 0
+          height = 0
+          contracts.each do |(_position, bag)|
+            # Charged before the rung is descended, so a graph that multiplies out is rejected while the work
+            # done on it is still bounded by the allowance.
+            _spend_paths!(allowance, 1)
+            paths += 1
+            _raise_shape_too_deep!(via, via_name) if walk.depth > Internal::ShapeGraph::MAX_NESTING
+
+            raw = Internal::ShapeGraph.hash_or_nil(bag[:of])
+            walked = Axn::Internal::CycleGuard.guard(raw || bag, walk.seen, on_cycle: CYCLIC_SHAPE) do |nested|
+              _canonicalize_inner_contract!(bag, fields)
+              _walk_inner_contracts!(bag, walk.with(seen: nested, depth: walk.depth + 1), allowance, fields:, via:, via_name:)
+            end
+            _raise_cyclic_shape!(via, via_name) if CYCLIC_SHAPE.equal?(walked)
+
+            paths += walked.paths
+            # This node's height is the deepest rung's, plus the level this rung itself adds.
+            rung_height = walked.height + 1
+            height = rung_height if rung_height > height
+          end
+
+          WalkedContracts.new(paths:, height:)
+        end
 
         # The remaining allowance, and the fields to name if it runs out — a two-element Array rather than an
         # object, because it is threaded through every level of one walk and the label is only ever built on the
@@ -281,6 +357,15 @@ module Axn
               # 2^depth walks.
               _derive_raw_shape_container!(validations)
             end
+            # The member's OTHER kind of child. `_symbol_keyed_member_validations` canonicalized the member's
+            # own `of:` exactly as `_parse_field_validations` does a field's — one rung — and this is where the
+            # rest of the chain is descended, off the same walk state the nested `shape:` above used, so both
+            # edges spend one depth budget and one path allowance rather than one each. This is the pass that
+            # knows where the member SITS, and so the only one whose depth verdict is the real one (see
+            # `_walk_declared_inner_contracts!`).
+            walked_of = _walk_inner_contracts!(validations, child, allowance, fields: [key], via: member, via_name: name)
+            paths += walked_of.paths
+            height = walked_of.height if walked_of.height > height
             ShapeConfig.new(**attributes)
           end
 
@@ -556,6 +641,7 @@ module Axn
                 :_member_owner_label, :_describe_shape_member, :_raise_member_model_unsupported!,
                 :_raise_member_confirmation_unsupported!,
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
+                :_walk_inner_contracts!, :_walk_declared_inner_contracts!,
                 :_check_and_copy_shape_members!, :_raise_cyclic_shape!, :_raise_shape_too_deep!,
                 :_raise_duplicate_member!, :_raise_nameless_member!,
                 :_raise_missing_shape_members!, :_raise_member_without_validations!

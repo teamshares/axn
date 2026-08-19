@@ -725,12 +725,13 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
       end
 
-      # The required-option half of the same pair, reached through the expansion (`of: nil` expands to
+      # The constrains-nothing half of the same pair, reached through the expansion (`of: nil` expands to
       # `{ klass: nil }`): it used to declare cleanly and raise `must supply :klass` from `check_validity!` on
       # every call, which is the field path's message arriving at the wrong time and at the wrong person.
       it "rejects `of: nil` at declaration, where it used to raise on every call" do
         expect { declared_with({ type: Array, of: nil }) }
-          .to raise_error(ArgumentError, "of: must supply :klass")
+          .to raise_error(ArgumentError, "of: must constrain something — name the contents' class with " \
+                                         "`klass:`, or what is inside them with `of:`")
       end
 
       # RECORDED RESIDUE, and a field-path one rather than a member's: `of: false` is not `of: nil`, so the

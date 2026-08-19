@@ -42,9 +42,46 @@ module Axn
         value.each_with_index do |el, i|
           # allow_blank governs whether the whole field may be absent (handled above), not whether
           # individual elements may be blank — so it is intentionally not passed to the matcher.
-          valid = klasses.any? { |k| TypeValidator.value_matches?(el, klass: k) }
-          record.errors.add(attribute, "element at index #{i} #{msg}") unless valid
+          record.errors.add(attribute, "element at index #{i} #{msg}") unless matches_axis?(el, klasses)
+          # The type verdict does NOT gate the contents check: a wrong-typed element still reports what could
+          # not be read out of it, which is what the pre-recursion pairing of OfValidator and ShapeValidator
+          # did (both ran, independently) and what an author fixing a payload needs.
+          add_contents_errors(record, attribute, el, "element at index #{i}: ")
         end
+      end
+
+      # The inner contract this bag declares, as a VALIDATIONS bag. `klass:` is deliberately absent, because the
+      # type check is performed above and its message ("element at index 0 is not a String" — no colon) differs
+      # in punctuation from a delegated one, which the caller below prefixes with a colon. Nil when the bag
+      # constrains only a class, which is the overwhelmingly common case and the one that must allocate nothing.
+      def contents_validations
+        return @contents_validations if defined?(@contents_validations)
+
+        @contents_validations = options[:of] ? { of: options[:of] } : nil
+      end
+
+      # One validator class per bag, built once and reused across every element, exactly as ShapeValidator
+      # caches its per-member classes: a validator instance is built once per declaration and lives for the
+      # life of the process, so the memo is per-contract rather than per-call.
+      def contents_validator_class
+        @contents_validator_class ||=
+          Axn::Validation::ContainerContents.validator_class_for(field: :__axn_contents__, validations: contents_validations)
+      end
+
+      def add_contents_errors(record, attribute, value, prefix)
+        return if nil.equal?(contents_validations)
+
+        errors = Axn::Validation::Fields.errors_for(
+          contents_validator_class,
+          source: value,
+          validations: contents_validations,
+          action: record.send(:_action_for_validation),
+          # A shape member's own `method_call:` opt-in is honored by ShapeValidator per member; nothing at this
+          # level may re-permit dispatch on the caller's object.
+          permit_method_call: false,
+          shape_ancestry: record.send(:_shape_ancestry_for_validation),
+        )
+        errors.each { |error| record.errors.add(attribute, "#{prefix}#{error.message}") }
       end
 
       # Both axes are reported independently: a map whose keys and values are both wrong has two things to

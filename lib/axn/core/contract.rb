@@ -11,6 +11,7 @@ require "axn/core/contract/validator_class_cache"
 require "axn/core/contract/shape_declaration"
 require "axn/core/contract/subfield_contradictions"
 require "axn/core/validation/fields"
+require "axn/core/validation/container_contents"
 require "axn/core/flow/handlers/invoker"
 require "axn/internal/coercion"
 require "axn/internal/shape_graph"
@@ -1155,13 +1156,14 @@ module Axn
                                           if unless on message strict
                                         ]).freeze
 
-        # What an `of:` bag may carry. Everything else is refused rather than ignored: the bag reaches
-        # `OfValidator` as an EachValidator options hash, which reads the keys it knows and drops the rest —
-        # so an unrecognized key declares cleanly, constrains nothing, and every value passes.
+        # What an `of:` bag may carry. `of:` is the recursion (PRO-3166): a bag describes one unnamed position,
+        # and a position may hold a container of its own. Everything else is refused rather than ignored — the
+        # bag reaches `OfValidator` as an EachValidator options hash, which reads the keys it knows and drops
+        # the rest, so an unrecognized key declares cleanly, constrains nothing, and every value passes.
         #
         # `on:` is admitted here and refused by `_reject_validator_context_scope!`, which names the actual
         # problem (axn has no validation contexts) instead of reporting the key as unknown.
-        OF_OPTION_KEYS = (Set.new(%i[klass message]) | Axn::Validation::Base.shared_validation_option_keys).freeze
+        OF_OPTION_KEYS = (Set.new(%i[klass of message]) | Axn::Validation::Base.shared_validation_option_keys).freeze
 
         # The same set for the other container. A Hash's insides are two axes rather than one element position,
         # so `klass:` has no reading here and is absent: which axis it named would be a convention rather than
@@ -2180,8 +2182,15 @@ module Axn
         # `type: Array` is a type error, not a map.
         #
         # A union names no single container, which is the same situation `shape:` refuses for the same reason.
-        def _of_container!(validations)
-          declared = Array(validations.dig(:type, :klass))
+        def _of_container!(validations) = _declared_of_container!(validations.dig(:type, :klass))
+
+        # The derivation itself, over the declared class alone, because the two callers name that class with two
+        # different keys: a FIELD names it in `type:`, an inner-contract bag in `klass:` (which plays `type:`'s
+        # role inside a bag — see `_inner_of_container!`). Taking the class rather than a `validations`-shaped
+        # Hash is what keeps the one rule one function: a bag carries no `:type` at all, so the alternative was
+        # to fabricate a wrapper Hash here and have the shared code read a key that exists only to be read.
+        def _declared_of_container!(declared_klass)
+          declared = Array(declared_klass)
           container = declared.first if declared.size == 1
           # Identity, not `==`: the declared class is the caller's, and one answering `==` for its own
           # purposes would otherwise choose which grammar its bag is held to.
@@ -2222,20 +2231,82 @@ module Axn
         end
 
         # An Array holds one kind of thing, so the bare form says everything there is to say and expands into the
-        # bag `OfValidator` reads. It has to name that class: a bag without one reaches `check_validity!` and
-        # raises on every call rather than at the author who wrote it.
+        # bag `OfValidator` reads. A bag has to CONSTRAIN something: `klass:` names the element's class and `of:`
+        # names what is inside it — a bag with neither is the silent no-op this option exists to refuse.
+        #
+        # ONE rung only. A bag's own `of:` is canonicalized by the declaration walk that descends onto it
+        # (`_canonicalize_inner_contract!`, driven from `_walk_inner_contracts!`) rather than by recursing from
+        # here, because recursing from here recurses over the CALLER's graph with no bound of any kind: `h[:of]
+        # = h` is reachable by hand, and it ended this method in `SystemStackError` — outside StandardError,
+        # raised while the class is being defined — before any guard could report it.
         def _canonical_array_of!(validations, fields)
           bag = Axn::Validators::OfValidator.apply_syntactic_sugar(validations[:of], fields)
           _reject_unknown_of_keys!(bag, OF_OPTION_KEYS)
-          raise ArgumentError, "of: must supply :klass" if bag[:klass].nil?
+          _reject_unconstraining_of_bag!(bag)
 
           bag.merge(container: ::Array)
         end
 
+        # The axes a bag can constrain on. Keyed on `key?` rather than on truthiness, so a supplied-but-nil axis
+        # is caught by this check rather than passing as one that was named.
+        #
+        # `:shape` is listed because it is the third axis the grammar is headed for (PRO-3166 task 4) and this
+        # is the sentence that has to name all three; it is not yet in `OF_OPTION_KEYS`, so a bag carrying it is
+        # refused as an unknown key before this runs and the `:shape` arm is unreachable for now.
+        INNER_CONTRACT_AXES = %i[klass of shape].freeze
+
+        def _reject_unconstraining_of_bag!(bag)
+          return if INNER_CONTRACT_AXES.any? { |axis| Internal::ShapeGraph.carries_key?(bag, axis) && !bag[axis].nil? }
+
+          raise ArgumentError,
+                "of: must constrain something — name the contents' class with `klass:`, or what is inside them " \
+                "with `of:`"
+        end
+
+        # A bag's own `of:` is held to exactly the grammar a FIELD's is, with `klass:` in `type:`'s role: the
+        # class it names decides whether the inner bag is read as an Array's element or as a map's axes. One
+        # function, so a container two levels down is judged by the same rules as one at the top.
+        #
+        # Called per rung by `_walk_inner_contracts!`, which owns the depth bound, the cycle guard and the path
+        # allowance — so this canonicalizes the child of ONE bag and returns, and the walk decides whether there
+        # is a next rung to canonicalize at all. Mutates `bag`, which is always a Hash of axn's own by the time
+        # it is reached (the field-level detach copies the first rung; the line below copies each one after).
+        def _canonicalize_inner_contract!(bag, fields)
+          return unless Internal::ShapeGraph.carries_key?(bag, :of)
+
+          # The field-level detach (`ShapeGraph.detach_option_containers!`) copies one level deep, and a nested
+          # bag sits two — so the value under this bag's `:of` is still the caller's object. Detached HERE,
+          # before any key is read out of it, so every read below reads axn's own copy, a later mutation of what
+          # the caller still holds cannot change a declared contract at any depth, and
+          # `reject_defaulting_option_container!` applies at every rung rather than only the first.
+          Internal::ShapeGraph.detach_option_containers!(bag)
+          container = _inner_of_container!(bag)
+          _drop_derived_of_container!(bag, container)
+          bag[:of] = container.equal?(::Hash) ? _canonical_map_of!(bag) : _canonical_array_of!(bag, fields)
+        end
+
+        # The same derivation `_of_container!` makes for a field, reading the bag's `klass:` instead of the
+        # field's `type:`. A bag naming no class at all is refused here rather than guessed at: with no
+        # container named there is no way to tell the Array grammar from the Hash grammar, which is the same
+        # reason a union `klass:` is refused a line later.
+        def _inner_of_container!(bag)
+          unless Internal::ShapeGraph.carries_key?(bag, :klass)
+            raise ArgumentError, "of: names no container, so its own `of:` has no reading — add `klass: Array` " \
+                                 "or `klass: Hash`"
+          end
+
+          _declared_of_container!(bag[:klass])
+        end
+
         # A Hash has two things inside it, so the bare form has no honest reading: `of: Integer` would have to
         # pick an axis by convention, and which one it picked would not be visible in the declaration.
-        def _canonical_map_of!(validations)
-          bag = Internal::ShapeGraph.hash_or_nil(validations[:of])
+        #
+        # `owner` is whatever DECLARED the `of:` being canonicalized — a field's validations bag, or an
+        # inner-contract bag one rung up (PRO-3166). The two are read identically because the only keys read
+        # are `:of` and `:shape`, and both mean the same thing in either: the contract for what is inside, and
+        # the members named beside it.
+        def _canonical_map_of!(owner)
+          bag = Internal::ShapeGraph.hash_or_nil(owner[:of])
           raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if nil.equal?(bag)
 
           _reject_unknown_of_keys!(bag, MAP_OF_OPTION_KEYS)
@@ -2243,7 +2314,7 @@ module Axn
 
           _reject_nested_map_contract!(bag)
           _reject_unsupported_map_axis!(bag)
-          _reject_map_beside_shape!(validations)
+          _reject_map_beside_shape!(owner)
           bag.merge(container: ::Hash)
         end
 
@@ -2508,6 +2579,12 @@ module Axn
           _validate_coercion!(validations[:type]) if validations[:type].is_a?(Hash) && validations[:type].key?(:coerce)
 
           _canonicalize_validator_options!(validations, fields)
+          # The line above canonicalized the field's `of:` one rung deep; the rest of the chain is descended
+          # here, under the depth bound, the cycle guard and the path allowance the walk owns. Immediately
+          # after it, because every check below reads a bag that has to be final by then — and ahead of
+          # `_derive_raw_shape_container!` for the reason that comment gives, that a derivation must land on
+          # nodes which are axn's own.
+          _walk_declared_inner_contracts!(validations, fields)
 
           # Ahead of every consumer of this bag — `_validate_allow_empty!`, `_reconcile_emptiness_axis!`, the
           # tolerance push-down, `_apply_nil_skip_to_non_type_validators!` — so none of them ever judges an entry

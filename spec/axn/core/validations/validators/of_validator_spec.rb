@@ -219,16 +219,22 @@ RSpec.describe Axn::Validators::OfValidator do
       end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
     end
 
-    it "raises ArgumentError when of: is a hash with no :klass key" do
+    # A bag has to CONSTRAIN something, and `klass:` is no longer the only way to do it (PRO-3166), so the
+    # rule is stated over the axes rather than over the one option.
+    it "raises ArgumentError when of: is a hash constraining nothing" do
       expect do
         build_axn { expects :items, type: Array, of: {} }
-      end.to raise_error(ArgumentError, /must supply :klass/)
+      end.to raise_error(ArgumentError, /of: must constrain something/)
     end
 
-    it "rejects a nested of: inside the of: bag, which used to constrain nothing" do
-      expect do
-        build_axn { expects :matrix, type: Array, of: { klass: Array, of: Integer } }
-      end.to raise_error(ArgumentError, /of: does not support of:/)
+    # The refusal this replaces (PRO-3165) existed because the key declared cleanly and constrained nothing.
+    # PRO-3166 makes it constrain, which is the same hole closed from the other side.
+    it "accepts a nested of: inside the of: bag, and constrains with it" do
+      action = build_axn { expects :matrix, type: Array, of: { klass: Array, of: Integer } }
+
+      expect(action.call(matrix: [[1], [2, 3]])).to be_ok
+      expect(action.call(matrix: [[1], ["x"]]).exception.message)
+        .to include("element at index 1: element at index 0 is not a Integer")
     end
 
     it "rejects a nested shape: inside the of: bag" do
@@ -267,7 +273,7 @@ RSpec.describe Axn::Validators::OfValidator do
     it "does not advertise on: as a supported key, since nothing accepts it" do
       expect { build_axn { expects :rows, type: Array, of: { klass: String, wat: 1 } } }
         .to raise_error(ArgumentError) do |error|
-          expect(error.message).to include("(supported: klass:, message:")
+          expect(error.message).to include("(supported: klass:, of:, message:")
           expect(error.message).not_to include("on:")
         end
     end
