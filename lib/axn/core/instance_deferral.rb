@@ -379,8 +379,25 @@ module Axn
       # internal, the ambient sentinel, Ruby's own. `conflict_for` reports no owner at all for two different
       # names, an unknown one and a private helper of axn's, so the message for that branch asserts only what
       # covers both: the name is not part of the surface axn hands to anyone.
+      #
+      # The name is canonicalized through the shared rule every name-taking declaration holds
+      # (`Contract.canonical_name!`) rather than by a bare `to_sym`, and BEFORE the ownership question below,
+      # so a value that is not a name at all never reaches it: `prefer_inherited nil` is DSL misuse in the
+      # class body, and left to `to_sym` it is diagnosed as `NoMethodError: undefined method 'to_sym' for nil`,
+      # which names neither the declaration nor what was wrong with the value.
+      #
+      # The same rule holds the name's ENCODING, which matters here for a reason of its own: a wide-encoded
+      # `"log"` interns to a Symbol distinct from `:log`, so every question below is answered about a name the
+      # author never wrote, and the refusal that follows reports `#log` as no part of axn's surface — a verdict
+      # that is false of the name as written.
       def self._assert_deferrable!(klass, name, declaration)
-        name = name.to_sym
+        name = Contract.canonical_name!(
+          name,
+          option: "a name passed to `#{declaration}`",
+          names: "one of the helpers axn defines and may hand over",
+          fix: "Name the helper as a String or Symbol (e.g. `#{declaration} :log`).",
+          encoding_fix: "Name it in UTF-8 (or any other ASCII-compatible encoding).",
+        )
         return name if MethodShadowing.deferrable_names.include?(name)
 
         conflict = Axn::Internal::NameOwnership.conflict_for(klass, name)

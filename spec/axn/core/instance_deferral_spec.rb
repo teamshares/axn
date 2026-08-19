@@ -1134,5 +1134,92 @@ RSpec.describe Axn::Core::InstanceDeferral do
         end
       end.to raise_error(Axn::ContractViolation, /public instance surface/)
     end
+
+    # A value that is not a name at all is programmer error in the class body, so it is diagnosed the way every
+    # other name-taking declaration diagnoses one — naming the declaration, the offending class and the
+    # spelling that works — rather than as whatever `to_sym` happened to raise.
+    describe "a value that is not a name" do
+      {
+        "nil" => nil,
+        "an Integer" => 42,
+        "an Array" => [],
+        "a bare Object" => Object.new,
+      }.each do |label, value|
+        %i[prefer_inherited prefer_axn].each do |declaration|
+          it "refuses #{label} on #{declaration}, naming the declaration and the fix" do
+            expect do
+              Class.new do
+                include Axn
+                send(declaration, value)
+              end
+            end.to raise_error(
+              ArgumentError,
+              /a name passed to `#{declaration}` must be a String or Symbol.*#{value.class}.*`#{declaration} :log`/m,
+            )
+          end
+        end
+      end
+    end
+
+    # Reachable, and the reason the shared rule is the right seam: a wide-encoded "log" interns to a Symbol
+    # distinct from `:log`, so before the guard the declaration was refused as naming something outside axn's
+    # surface — a verdict about a name the author never wrote.
+    describe "a name in a wide encoding" do
+      %i[prefer_inherited prefer_axn].each do |declaration|
+        it "refuses it on #{declaration}, naming the encoding and the fix" do
+          wide = "log".encode("UTF-16LE")
+
+          expect do
+            Class.new do
+              include Axn
+              send(declaration, wide)
+            end
+          end.to raise_error(
+            ArgumentError,
+            /a name passed to `#{declaration}` must be written in an ASCII-compatible encoding.*UTF-16LE.*Name it in UTF-8/m,
+          )
+        end
+      end
+    end
+
+    describe "a name of a permitted type" do
+      let(:parent) { Class.new { def log(*) = "PARENT-LOG" } }
+
+      it "accepts a String on prefer_inherited" do
+        action = Class.new(parent) do
+          include Axn
+          prefer_inherited "log"
+        end
+
+        expect(action.send(:new).log).to eq("PARENT-LOG")
+      end
+
+      it "accepts a Symbol on prefer_inherited" do
+        action = Class.new(parent) do
+          include Axn
+          prefer_inherited :log
+        end
+
+        expect(action.send(:new).log).to eq("PARENT-LOG")
+      end
+
+      it "accepts a String on prefer_axn" do
+        action = Class.new(parent) do
+          include Axn
+          prefer_axn "log"
+        end
+
+        expect(described_class.definers(action)).to eq(log: Axn::Core::Logging::InstanceMethods)
+      end
+
+      it "accepts a Symbol on prefer_axn" do
+        action = Class.new(parent) do
+          include Axn
+          prefer_axn :log
+        end
+
+        expect(described_class.definers(action)).to eq(log: Axn::Core::Logging::InstanceMethods)
+      end
+    end
   end
 end
