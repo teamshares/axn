@@ -677,6 +677,11 @@ module Axn
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess: nil, sensitive:, metadata:,
                                         path_allowance:, **validations).tap do |configs|
+            # The field's own `of:` chain, walked HERE rather than beside the `shape:` walk above because only
+            # now is it canonical: `_parse_field_configs` is what expands and descends it, and what replaces
+            # every bag's caller-supplied `shape:` with the snapshot this walk is safe to read.
+            configs.each { |c| _reject_outbound_shape_user_facing_in!(c.validations) }
+
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
               raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
             end
@@ -778,7 +783,30 @@ module Axn
                     "shape member #{_describe_shape_member(member, name)} does not support user_facing: on exposes — an " \
                     "outbound failure is a dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
             end
-            _reject_outbound_shape_user_facing!(_member_shape(member))
+            # Read ONCE and used for both of this member's edges — the nested `shape:` and the `of:` chain,
+            # whose bags may carry shapes of their own (PRO-3166).
+            validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations))
+            next if nil.equal?(validations)
+
+            _reject_outbound_shape_user_facing!(Internal::ShapeGraph.shape_in(validations))
+            _reject_outbound_shape_user_facing_in!(validations)
+          end
+        end
+
+        # The same refusal at the OTHER position a shape can sit at: inside an `of:` bag, where its members
+        # describe an unnamed position (PRO-3166). A member there is held to exactly what its named twin is
+        # held to, so the option is refused at every rung rather than only at the ones that have a name — it
+        # was accepted-and-inert here, which is the silent no-op every `of:` guard exists to prevent, and
+        # before `:shape` joined the bag's grammar it was refused as an unknown key.
+        #
+        # `inner_contracts` is the one enumerator for this edge, so this walk descends exactly what the
+        # declaration walk, redaction and reflection descend. Bounded for the reason the shape walk above is:
+        # it runs over the SNAPSHOT, and the declaration walk has already refused a cyclic or over-deep graph
+        # across both edges before anything reaches here.
+        def _reject_outbound_shape_user_facing_in!(validations)
+          Internal::ShapeGraph.inner_contracts(validations).each do |(_position, bag)|
+            _reject_outbound_shape_user_facing!(Internal::ShapeGraph.shape_in(bag))
+            _reject_outbound_shape_user_facing_in!(bag)
           end
         end
 

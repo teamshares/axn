@@ -33,8 +33,12 @@ module Axn
       def validate_each(record, attribute, value)
         return if value.nil? && (options[:allow_nil] || options[:allow_blank])
 
+        # `::Array` is the RECEIVER of the identity test, never the container — a raw `shape:` kwarg may supply
+        # any object as `container:`, and `container == Array` dispatches that object's own `==`, so one
+        # answering true for both arms would pick which branch a value is validated down. Same rule, same
+        # spelling, as `Redaction#_mask_shape_value`'s dispatch on this very key.
         container = options[:container]
-        if container == Array
+        if ::Array.equal?(container)
           return unless value.is_a?(Array) # TypeValidator owns the non-Array error
 
           value.each_with_index do |element, index|

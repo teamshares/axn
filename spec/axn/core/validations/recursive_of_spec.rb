@@ -582,4 +582,70 @@ RSpec.describe "recursive of:" do
       end.to raise_error(ArgumentError, /has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths/)
     end
   end
+
+  # A member of a bag's shape is a member at an UNNAMED position, and it is held to exactly what its named
+  # twin is held to. Two things had to be carried across the `OfValidator` boundary for that to be true: the
+  # per-member classification tag `ShapeValidator` sets (dropped when the error was re-added by message
+  # alone, so the settlement path counted it as the FIELD's own error), and the outbound refusal (whose walk
+  # descended `validations[:shape]` only, so an option refused with a fix-stating message one level up
+  # declared cleanly here and did nothing).
+  describe "user_facing: on a bag-shape member" do
+    def member(**kwargs)
+      Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } }, **kwargs)
+    end
+
+    it "refuses an opted-in member on exposes, exactly as the field-level position does" do
+      shape = { members: [member(user_facing: true)] }
+
+      expect { build_axn { exposes :rows, type: Array, of: { klass: Hash, shape: } } }
+        .to raise_error(ArgumentError, /shape member `sku` does not support user_facing: on exposes/)
+    end
+
+    it "refuses one nested a container deeper" do
+      shape = { members: [member(user_facing: true)] }
+
+      expect { build_axn { exposes :m, type: Array, of: { klass: Array, of: { klass: Hash, shape: } } } }
+        .to raise_error(ArgumentError, /shape member `sku` does not support user_facing: on exposes/)
+    end
+
+    it "refuses one hanging off a field-shape member's own of: chain" do
+      inner = { members: [member(user_facing: true)] }
+      outer = { members: [Axn::Core::Contract::ShapeConfig.new(field: :rows,
+                                                               validations: { type: Array, of: { klass: Hash, shape: inner } })] }
+
+      expect { build_axn { exposes :payload, type: Hash, shape: outer } }
+        .to raise_error(ArgumentError, /shape member `sku` does not support user_facing: on exposes/)
+    end
+
+    it "leaves an un-opted member declarable on exposes" do
+      shape = { members: [member] }
+
+      expect { build_axn { exposes :rows, type: Array, of: { klass: Hash, shape: } } }.not_to raise_error
+    end
+
+    # A member that never opted in forces the whole failure dev-facing, whatever the FIELD declared — the
+    # per-member classification PRO-2925 introduced. Untagged, the member's error was counted as the field's
+    # own and inherited its `user_facing:`, publishing a message the identical field-level declaration
+    # withholds.
+    it "keeps an un-opted member dev-facing under a user_facing: field" do
+      shape = { members: [member] }
+      action = build_axn { expects :rows, type: Array, user_facing: true, of: { klass: Hash, shape: } }
+
+      expect(action.call(rows: [{ sku: 1 }]).error).to eq("Something went wrong")
+    end
+
+    it "composes an opted-in member's message, so the tag is forwarded rather than erased" do
+      shape = { members: [member(user_facing: true)] }
+      action = build_axn { expects :rows, type: Array, user_facing: true, of: { klass: Hash, shape: } }
+
+      expect(action.call(rows: [{ sku: 1 }]).error).to eq("Rows element at index 0: sku is not a String")
+    end
+
+    it "carries the deeper member's intent through two containers" do
+      shape = { members: [member] }
+      action = build_axn { expects :m, type: Array, user_facing: true, of: { klass: Array, of: { klass: Hash, shape: } } }
+
+      expect(action.call(m: [[{ sku: 1 }]]).error).to eq("Something went wrong")
+    end
+  end
 end

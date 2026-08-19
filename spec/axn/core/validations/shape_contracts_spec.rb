@@ -841,6 +841,50 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           .to raise_error(ArgumentError, /a shape block requires a single structured type:/)
       end
 
+      # The declared classes are the CALLER's, and rendering the LIST would dispatch each one's own `inspect`
+      # — so a class whose `inspect` raises would replace this declaration error with its own exception,
+      # which outside StandardError escapes every rescue meant to settle it. Named natively instead, through
+      # the same seam the `of:` container refusal uses.
+      it "raises the declaration error even when a declared type's own inspect raises" do
+        stub_const("RaisingInspectType", Class.new { def self.inspect = raise("boom from inspect") })
+
+        expect { declared_with({ type: [RaisingInspectType, Hash], shape: { members: [leaf] } }) }
+          .to raise_error(ArgumentError,
+                          "a shape block requires a single structured type: (Array, Hash, or a class) — " \
+                          "got [RaisingInspectType, Hash]")
+      end
+
+      # A token that is neither a class nor a pseudo-type has no name to read, so it is described by its own
+      # class rather than by running its `inspect` — the one place the rendering diverges from the list's.
+      it "describes a non-class token by its class instead of inspecting it" do
+        expect { declared_with({ type: ["Hash", Hash], shape: { members: [leaf] } }) }
+          .to raise_error(ArgumentError,
+                          "a shape block requires a single structured type: (Array, Hash, or a class) — " \
+                          "got [a value of class String, Hash]")
+      end
+
+      # The `container:` a raw `shape:` supplies is the CALLER's object, and `container == Array` dispatches
+      # that object's own `==` — so a container answering true takes the distributing branch and validates its
+      # members per ELEMENT instead of off the value itself. `::Array` is the receiver of the identity test,
+      # so only its own `equal?` runs, and this Array subclass is validated as the single value it declares.
+      it "does not let a container answering `==` divert the value into the per-element branch" do
+        liar = Class.new(Array) do
+          def self.==(_other) = true
+        end
+        stub_const("LyingContainer", liar)
+        value = LyingContainer.new
+        value << { leaf: 1 }
+
+        # Hoisted to a local: `build_axn` class_evals its block, so `self` there is the action class and the
+        # `leaf` helper above is out of reach.
+        member = leaf
+        action = build_axn { expects :rows, type: LyingContainer, shape: { members: [member], container: LyingContainer } }
+
+        # Read off the value itself (unreadable, since an Array answers no named key) — never "element at
+        # index 0: leaf is not a String", which is what the diverted branch reports.
+        expect(action.call(rows: value).exception.message).to eq("Rows leaf could not be read (got LyingContainer)")
+      end
+
       it "leaves an explicit nested `container:` exactly as declared" do
         klass = declared_with({ type: Hash, shape: { members: [leaf], container: Hash } })
 

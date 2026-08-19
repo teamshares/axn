@@ -15,9 +15,11 @@ module Axn
       end
 
       # A map names its axes with `keys:`/`values:`, either of which may be left off. An element bag names
-      # `klass:` only when that is what it constrains — a bag constraining by `of:` or `shape:` names no class
-      # deliberately (`of: { shape: … }` is "each element has these members, class unconstrained"), and the
-      # declaration guard has already refused a bag constraining none of the three.
+      # `klass:` only when that is what it constrains — `of: { shape: … }` is "each element has these members,
+      # class unconstrained" — and the declaration guard has already refused a bag constraining none of the
+      # three. `of:` is admitted beside `shape:` for completeness rather than because a DECLARED bag can reach
+      # it: one carrying `of:` always names a container too (`_inner_of_container!` refuses otherwise), so only
+      # a config ASSIGNED onto a class arrives here with an inner contract and no class of its own.
       def check_validity!
         return if options[:container] == ::Hash
         return if options[:of] || options[:shape]
@@ -123,7 +125,16 @@ module Axn
             permit_method_call: false,
             shape_ancestry: ancestry,
           )
-          errors.each { |error| record.errors.add(attribute, "#{prefix}#{error.message}") }
+          # The classification tags travel with the message. `ShapeValidator` tags each member error with that
+          # member's own `user_facing:` intent, and settlement classifies per tag — an UNTAGGED error is the
+          # field's own (`Executor#_own_errors`), so re-adding by message alone made a member at an unnamed
+          # position inherit the field's `user_facing:` where its named twin one level up does not: an un-opted
+          # member published the message field-level semantics withhold. Only the two classification keys are
+          # forwarded; everything else in `options` belongs to the validator that raised it.
+          errors.each do |error|
+            record.errors.add(attribute, "#{prefix}#{error.message}",
+                              **error.options.slice(:axn_shape_member, :axn_member_user_facing))
+          end
         end
       end
 
