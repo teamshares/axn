@@ -231,6 +231,42 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect(action.call).to be_ok
     end
 
+    # The removal direction of the same timing, and the one a verdict remembered from include time gets wrong in
+    # the dangerous direction: the barrier stood when the action class was defined, and the inherited `#call` is
+    # reachable again by the time the action runs. Refusing is what Ruby's own answer here demands.
+    it "refuses an inherited call a barrier stopped blocking after the include" do
+      distant = Class.new { def call = :distant }
+      barrier = Class.new(distant) { undef_method :call }
+      action = Class.new(barrier) { include Axn }
+
+      barrier.send(:define_method, :call) { :barrier_now }
+
+      expect(Class.new(barrier).new.call).to eq(:barrier_now)
+      expect { action.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod, /#call/)
+    end
+
+    # A barrier that neither the class as a whole nor any ancestor CLASS reports: the module hosting it sits
+    # behind axn's own modules, so `call` is reachable on the action either way, and the undef is written after
+    # the include. Both directions are answered off the same chain read.
+    it "runs an action whose inherited call a module behind axn's modules undefined AFTER the include" do
+      distant = Module.new { def call = :distant }
+      undeffer = Module.new { def call = :mod }
+      action = Class.new do
+        include distant
+        include undeffer
+        include Axn
+      end
+
+      undeffer.send(:undef_method, :call)
+
+      probe = Class.new do
+        include distant
+        include undeffer
+      end
+      expect { probe.new.call }.to raise_error(NoMethodError)
+      expect(action.call).to be_ok
+    end
+
     # The honest limit of that timing on a DEFERRABLE name, which the live read does not extend: `include Axn`
     # captured the implementation and installed the wrapper while the name was still reachable, so a later undef
     # cannot retract it — the same rule as "a definer reopened after the class is defined is silently ignored".
@@ -342,9 +378,9 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect { action.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod, /#initialize/)
     end
 
-    # The barrier record is taken at include time, so it says nothing about a name the chain gained afterwards —
-    # and must not: recording every name the chain could not reach would silently exempt this one, where the
-    # live walk is the honest reader and the shadowing is real.
+    # The chain is read at the moment the question is asked, so a name the hierarchy gained after the include is
+    # answered on the hierarchy as it stands. Anything remembered from include time would silently exempt this
+    # one, where the shadowing is real.
     it "still refuses a superclass reopened to add #call after the include" do
       parent = Class.new
       action = Class.new(parent) { include Axn }

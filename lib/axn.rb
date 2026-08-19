@@ -72,12 +72,6 @@ module Axn
     # down, so treat a redundant inclusion as a no-op.
     return if base < Core
 
-    # Before anything of axn's goes in, because this is the last moment the question can be asked: an
-    # `undef_method` is visible only to an effective lookup, and every module the class_eval below includes
-    # stands in front of it, so from here on the chain answers with axn's helper whether or not the class's
-    # own ancestry could reach the name at all. Both readers of the answer run after that.
-    Core::MethodShadowing.capture_barriered_names!(base)
-
     base.class_eval do
       include Core
 

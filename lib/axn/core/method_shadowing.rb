@@ -14,14 +14,7 @@ module Axn
       # includes any module patched onto Object, and one of those defining its own `self.name` would get
       # that code run during `include Axn` — a raise there takes the include down.
       KERNEL_SINGLETON_CLASS = ::Kernel.instance_method(:singleton_class)
-      # Bound for the same reason, and carrying axn's own bookkeeping on a class whose method table the user
-      # owns: an ivar has no dispatchable name for that class to answer under.
-      KERNEL_IVAR_GET = ::Kernel.instance_method(:instance_variable_get)
-      KERNEL_IVAR_SET = ::Kernel.instance_method(:instance_variable_set)
-      private_constant :KERNEL_SINGLETON_CLASS, :KERNEL_IVAR_GET, :KERNEL_IVAR_SET
-
-      BARRIERED_IVAR = :@__axn_barriered_names
-      private_constant :BARRIERED_IVAR
+      private_constant :KERNEL_SINGLETON_CLASS
 
       module_function
 
@@ -42,137 +35,80 @@ module Axn
       end
 
       # The instance-side counterpart, and the module that stands in the way rather than a boolean, because the
-      # caller both defers to it and names it in an error. Two things differ from the class-side walk above, and
-      # both are about what counts as "the user's own":
+      # caller both defers to it and names it in an error. Two things it does not count as the user's own, and
+      # both are decided below: `base`'s own side (`_own_side`) and Ruby's own (`::Object` and outward).
       #
-      # Truncated at ::Object, because everything from there outward is Ruby's — `Kernel` owns `warn`, `inspect`,
-      # `hash`, `then` and `tap`, and `::Object` merely stands in front of it, which is what makes cutting the walk
-      # there exclude them. Untruncated, axn would permanently decline to define `warn` and silently redirect every
-      # `warn("msg")` inside an action to stderr instead of the logger. `base` is an action class, so `::Object` is
-      # always in its ancestry for the truncation to find.
-      #
-      # `base` itself is excluded (along with anything prepended to it, which already outranks whatever axn
-      # installs). A `def log` in the class body is the user's own method and wins on its own terms, with `super`
-      # reaching axn's — treating it as a deferral target would point the deferral at the very method it defers.
-      #
-      # And a declaration an `undef_method` took away is not a definer either, whatever the own-table walk finds
-      # — see `capture_barriered_names!` and `_reachable_slice`.
+      # And it is read off the DECLARATION CHAIN rather than by walking `ancestors` comparing own method tables:
+      # `declared_instance_method(base, name)`, then each declaration behind it in turn
+      # (`shadowed_instance_method`), which is Ruby's own resolver answering in dispatch order. That is what makes
+      # every input to this answer readable at the moment it is asked, with nothing recorded and nothing memoized
+      # — see `_declaration_chain`.
       def inherited_definer(base, name)
-        return nil if _barriered?(base, name)
+        own_side = nil
+        _declaration_chain(base, name) do |owner|
+          next if _axn_core_owned?(owner)
 
-        _external_definer(_reachable_slice(_walked_ancestry(base), name), name)
-      end
+          # Reached only once the chain holds a declaration that is not axn's own, which on the ordinary action —
+          # one whose hierarchy declares none of these names — never happens, so neither ancestry read below is
+          # paid on the path every `.call` takes. See `assert_dispatchable_names_free!`, which asks per call.
+          own_side ||= _own_side(base)
+          next if _same_module?(own_side, owner)
+          # Ruby's own, not the user's hierarchy: `Kernel` owns `warn`, `inspect`, `hash`, `then` and `tap`, and
+          # deferring to those would silently redirect every `warn("msg")` inside an action to stderr instead of
+          # the logger.
+          return nil if Axn::Internal::NativeMethods.includes_module?(::Object, owner)
 
-      # The prefix of the walked slice a dispatch arriving from below can actually traverse for `name`.
-      #
-      # This and the barrier record below answer on DIFFERENT axes, and neither subsumes the other:
-      #
-      # WHEN. The record is taken once, ahead of every include, so it answers for barriers that were in place
-      # when `include Axn` ran and says nothing about one added afterwards. A CLASS ancestor's own lookup is
-      # never masked by the modules axn includes into the action class beneath it — measured: post-include,
-      # `instance_method_reachable?(parent, :call)` still answers for the parent's own chain alone — so this one
-      # can be read live, at any time, and sees a barrier an ancestor was reopened to add.
-      #
-      # WHERE. This one reads only CLASS ancestors, because on a Class a nil lookup is unambiguous: a class's
-      # lookup covers the whole remainder of this walk, so nothing left to visit can be reachable. On a MODULE
-      # nil says only that the module itself declares nothing, which every module the walk passes through on
-      # its way to the answer also says. The record, asked of the chain as a whole, has no such restriction and
-      # is the only reader that sees a barrier hosted in a module included into `base` ITSELF.
-      #
-      # What neither covers, therefore: a MODULE reopened to `undef_method` AFTER the include, with no Class
-      # ancestor beneath it in this slice — one included into `base` itself, or into another module. The record
-      # was taken before the undef existed, and a module cannot be read live. Reopened after the include but
-      # included into an ancestor CLASS, the undef takes the name from that class too, and this read catches it.
-      #
-      # At the unsurrenderable guard the surviving case is narrower again: that module must have been behind
-      # axn's own modules already, because anything included into `base` after `include Axn` — or an undef in
-      # its own body — sits AHEAD of them, and `core_definition_answers?` then answers no without ever asking
-      # this walk. Measured on both halves.
-      #
-      # Checked before the own-table read rather than after, so a class whose own declaration a PREPENDED module
-      # undefs ends the walk too: a dispatch from below reaches neither.
-      def _reachable_slice(ancestry, name)
-        ancestry.take_while do |mod|
-          !Axn::Internal::Identity.kind?(mod, ::Class) ||
-            Axn::Internal::NativeMethods.instance_method_reachable?(mod, name)
+          return owner
         end
       end
-      private_class_method :_reachable_slice
 
-      def _walked_ancestry(base)
+      # Every declaration of `name` the chain holds, nearest first, starting from the one a dispatch on `base`
+      # would reach. Ends at the last one, or at an `undef_method` entry — Ruby stops a `super` there, and so
+      # does this.
+      #
+      # That stop is why nothing about a barrier has to be recorded ahead of `include Axn` any more. An undef
+      # entry is invisible to every own-table read, and effective lookup reports it only for the chain AS A
+      # WHOLE — so once axn's own modules declare the name in front of the user's chain, `base` answers "yes,
+      # reachable" whether or not the user's own ancestors could reach it, which is what a record taken before
+      # the include was standing in for. Stepping the chain asks the same question from a position BEHIND axn's
+      # modules: the walk arrives at the barrier itself and ends there, wherever it is hosted — an ancestor
+      # class, a module included into one, a module included into `base` itself, or `base`'s own table — and
+      # whenever it was written, before the include or after it.
+      #
+      # It is also why no per-name state is cached anywhere in this area: every input to `inherited_definer` is
+      # readable at the moment the question is asked, so a hierarchy reopened after `include Axn` — to add a
+      # `#call`, to add a barrier, to take one away — is answered on the chain as it stands, not as it stood.
+      # The one exception left is deliberate and elsewhere: the deferral shim captures the implementation it
+      # stands in for at include time (see `InstanceDeferral._collect`), so a definer reopened afterwards does
+      # not retarget a wrapper the class already committed to.
+      def _declaration_chain(base, name)
+        method = Axn::Internal::NativeMethods.declared_instance_method(base, name)
+        until method.nil?
+          yield method.owner
+          method = Axn::Internal::NativeMethods.shadowed_instance_method(method)
+        end
+        nil
+      end
+      private_class_method :_declaration_chain
+
+      # `base` itself, and anything PREPENDED to it — the declarations the chain starts among and this walk owes
+      # nothing to. A `def log` in the class body is the user's own method and wins on its own terms, with
+      # `super` reaching axn's; treating it as a deferral target would point the deferral at the very method it
+      # defers. A prepend to `base` already outranks whatever axn installs, so it is in the same position.
+      #
+      # Everything else in the chain is fair game, INCLUDING a module `base` includes for itself: that one sits
+      # behind axn's modules, so axn's helper is what answers and the module is exactly what axn has to step
+      # aside for.
+      def _own_side(base)
         ancestry = Axn::Internal::NativeMethods.module_ancestors(base)
-        above_base = ancestry.drop_while { |mod| !Axn::Internal::Identity.same?(mod, base) }.drop(1)
-        above_base.take_while { |mod| !Axn::Internal::Identity.same?(mod, ::Object) }
+        ancestry.take_while { |mod| !Axn::Internal::Identity.same?(mod, base) } << base
       end
-      private_class_method :_walked_ancestry
+      private_class_method :_own_side
 
-      # Which of the names this area asks about the class's own chain DECLARES but cannot reach — recorded once,
-      # from `Axn.included`, before the includes below it put anything of axn's in front of that chain.
-      #
-      # `undef_method` writes an entry that no own-table read reports and that stops a lookup arriving from
-      # below, so effective lookup is the only reader that sees a barrier, and it sees one wherever the barrier
-      # is hosted — in a class or in a module, at any depth. That reader stops working the moment axn installs
-      # its helpers: `declared_instance_method(action, :log)` then answers `Axn::Core::Logging::InstanceMethods`
-      # whether or not the class's own chain could reach `log` at all. Hence a record rather than a live read,
-      # and hence its position ahead of every include.
-      #
-      # A barrier hosted in a module included into `base` ITSELF is why this cannot be folded into the walk.
-      # `base` is excluded there as a definer — a `def log` in the class body is the user's own method, not
-      # something to defer to — and that exclusion drops everything the class includes for itself along with it,
-      # so the walk never visits the module carrying the barrier.
-      #
-      # And it is why `_reachable_slice` cannot replace this either, nor this it: that one reads live and so
-      # sees a barrier added after the include, but only where a CLASS hosts the consequence. The two cover
-      # different axes — WHEN and WHERE — and dropping either reopens a measured hole (see `_reachable_slice`).
-      #
-      # DECLARES and cannot reach, rather than simply cannot reach: an unreachable name that nothing in the
-      # walked slice declares has no definer for the walk to find anyway, so recording it would buy nothing —
-      # and it would cost the one case where the two answers differ. A superclass reopened to add `#call` AFTER
-      # the subclass included Axn declares the name where the record cannot see it, and there the live walk is
-      # the honest reader: the unsurrenderable refusal still fires rather than letting axn silently answer for
-      # an inherited `#call` the author put there.
-      #
-      # Twenty names against a slice that holds only the user's own ancestors, once per `include Axn`: measured
-      # at ~5us and ~40 objects, against ~1100us and ~2100 objects for the include as a whole.
-      def capture_barriered_names!(base)
-        slice = _walked_ancestry(base)
-        barriered = _shadowable_names.select do |name|
-          !Axn::Internal::NativeMethods.instance_method_reachable?(base, name) &&
-            !_external_definer(slice, name).nil?
-        end
-        KERNEL_IVAR_SET.bind_call(base, BARRIERED_IVAR, barriered.freeze)
-        nil
+      def _same_module?(candidates, mod)
+        candidates.any? { |candidate| Axn::Internal::Identity.same?(candidate, mod) }
       end
-
-      # Read from the NEAREST record in the ancestry, because the two callers ask at different times about
-      # different classes: the deferral collection asks about the class that just included Axn, and the
-      # unsurrenderable-name refusal asks about the class being RUN, which may be a subclass that never ran
-      # `include Axn` of its own (`Axn.included` returns early for one) and inherits the chain the record was
-      # taken against.
-      #
-      # No record anywhere means no `include Axn` anywhere, and a class axn has installed nothing into still
-      # reads live what the record would have held — which is what lets this be asked of an arbitrary class, as
-      # the mounting layer asks it of a target. Unreachability alone is the whole test there: where nothing in
-      # the slice declares the name, the walk that follows answers nil on its own.
-      def _barriered?(base, name)
-        recorded = _barriered_names(base)
-        return recorded.include?(name) unless recorded.nil?
-
-        !Axn::Internal::NativeMethods.instance_method_reachable?(base, name)
-      end
-      private_class_method :_barriered?
-
-      def _barriered_names(base)
-        own = KERNEL_IVAR_GET.bind_call(base, BARRIERED_IVAR)
-        return own unless own.nil?
-
-        Axn::Internal::NativeMethods.module_ancestors(base).each do |mod|
-          recorded = KERNEL_IVAR_GET.bind_call(mod, BARRIERED_IVAR)
-          return recorded unless recorded.nil?
-        end
-        nil
-      end
-      private_class_method :_barriered_names
+      private_class_method :_same_module?
 
       # Whether AXN's own definition of `name` is the one a dispatch on `base` would reach. The effective owner
       # rather than a re-walk of own tables: `Module#instance_method` resolves over the whole ancestry the way a
@@ -191,10 +127,9 @@ module Axn
       # rather than effective lookup: the question is who would be shadowed, and a prepend elsewhere in the
       # chain does not make a declaration disappear.
       #
-      # Reachability is not this walk's question: `externally_defined?` settles it up front against the
-      # singleton, and `inherited_definer` truncates the slice it hands over (`_reachable_slice`), so what
-      # arrives here is a chain a dispatch can traverse and the first own-table declaration in it is the one
-      # that dispatch arrives at.
+      # Reachability is not this walk's question: its one caller, `externally_defined?`, settles it up front
+      # against the singleton, so what arrives here is a chain a dispatch can traverse and the first own-table
+      # declaration in it is the one that dispatch arrives at.
       def _external_definer(ancestry, name)
         ancestry.find do |mod|
           !_axn_core_owned?(mod) && Axn::Internal::NativeMethods.declares_own_instance_method?(mod, name)
@@ -260,16 +195,6 @@ module Axn
           Axn::Internal::NativeMethods.own_public_instance_methods(mod)
         end.reject { |name| Axn::Internal::NameOwnership.internal_name?(name) }.uniq.freeze
       end
-
-      # The names the instance-side questions are asked about: what axn will hand over, plus what it refuses to
-      # hand over. One set rather than two because one record answers both callers, and a name missing from it
-      # would silently fall back to the masked live read at whichever caller needed it.
-      #
-      # Same `self.` and same reason as above.
-      def self._shadowable_names
-        @_shadowable_names ||= (deferrable_names | Axn::Internal::NameOwnership::UNSURRENDERABLE.to_a).freeze
-      end
-      private_class_method :_shadowable_names
     end
   end
 end

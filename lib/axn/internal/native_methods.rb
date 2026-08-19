@@ -66,7 +66,8 @@ module Axn
       STRING_EMPTY = ::String.instance_method(:empty?)
       STRING_ENCODING = ::String.instance_method(:encoding)
       SYMBOL_ENCODING = ::Symbol.instance_method(:encoding)
-      private_constant :SYMBOL_ENCODING
+      UNBOUND_METHOD_SUPER_METHOD = ::UnboundMethod.instance_method(:super_method)
+      private_constant :SYMBOL_ENCODING, :UNBOUND_METHOD_SUPER_METHOD
       private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
                        :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS, :MODULE_METHOD_DEFINED,
@@ -314,6 +315,20 @@ module Axn
       rescue ::NameError
         nil
       end
+
+      # The declaration `method` STANDS IN FRONT OF — the one a `super` from it would reach — or nil when it
+      # stands in front of nothing. Taking it repeatedly enumerates every declaration of the name that the
+      # ancestry holds, in the order a dispatch would meet them, starting from `declared_instance_method`.
+      #
+      # Ruby's own resolver rather than a walk over `module_ancestors` comparing own tables, and the difference
+      # is not cosmetic: this reports a PREPENDED module in the position a call reaches it, and it STOPS at an
+      # `undef_method` entry — which no own-table read reports at all, and which effective lookup can only
+      # report for the class as a whole, so a module included behind another module's definition of the name
+      # cannot be asked about any other way.
+      #
+      # Bound like the readers above. `super_method` is `Method`'s and `UnboundMethod`'s, and the receiver here
+      # is always one this module's own `declared_instance_method` produced.
+      def self.shadowed_instance_method(method) = UNBOUND_METHOD_SUPER_METHOD.bind_call(method)
 
       # Whether a dispatch for `name` on an instance of `mod` would land ANYWHERE — the boolean twin of
       # `declared_instance_method`, for a caller that needs only reachability and not the implementation. Both

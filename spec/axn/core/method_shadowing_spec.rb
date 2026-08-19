@@ -61,9 +61,9 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(described_class.inherited_definer(Class.new(barrier), :log)).to be_nil
     end
 
-    # The barrier record `include Axn` takes cannot see this one: it was taken before the undef existed. An
-    # ancestor CLASS's own lookup is not masked by the modules axn includes into the action beneath it, so it
-    # is still readable live — which is what catches a barrier added afterwards.
+    # A barrier written after `include Axn` had already looked at the chain. Ruby stops a `super` at the undef
+    # entry whenever it is asked, so the answer moves with the hierarchy rather than with what it looked like
+    # when the action class was defined.
     it "stops at a barrier an ancestor class gained after the include recorded the chain" do
       distant = Class.new
       barrier = Class.new(distant)
@@ -74,6 +74,43 @@ RSpec.describe Axn::Core::MethodShadowing do
 
       expect { Class.new(barrier).new.log }.to raise_error(NoMethodError)
       expect(described_class.inherited_definer(action, :log)).to be_nil
+    end
+
+    # A barrier hosted in a MODULE that was already behind axn's own modules when the include ran, and reopened
+    # to write the undef afterwards. Nothing about the class as a whole reports it — `call` is reachable on the
+    # action, because axn's own definition answers in front of the module — so the only reader that sees it is
+    # one that resolves the chain from BEHIND axn's declaration, which is what stepping `super` does.
+    it "stops at a barrier a module behind axn's own modules gained after the include" do
+      distant = Module.new { def call = "DISTANT" }
+      undeffer = Module.new { def call = "MOD" }
+      action = Class.new do
+        include distant
+        include undeffer
+        include Axn
+      end
+
+      undeffer.send(:undef_method, :call)
+
+      probe = Class.new do
+        include distant
+        include undeffer
+      end
+      expect { probe.new.call }.to raise_error(NoMethodError)
+      expect(described_class.inherited_definer(action, :call)).to be_nil
+    end
+
+    # The removal direction, which is where anything remembered from include time goes stale in the dangerous
+    # direction: the barrier stood when the action class was defined, so a record taken then says "unreachable"
+    # forever, and axn keeps answering for a name the hierarchy has since taken back.
+    it "names a definer a barrier that stood at include time no longer blocks" do
+      distant = Class.new { def log(*) = "DISTANT" }
+      barrier = Class.new(distant) { undef_method :log }
+      action = Class.new(barrier) { include Axn }
+
+      barrier.send(:define_method, :log) { |*| "BARRIER-NOW" }
+
+      expect(Class.new(barrier).new.log).to eq("BARRIER-NOW")
+      expect(described_class.inherited_definer(action, :log)).to eq(barrier)
     end
 
     # The other direction of the same read: a barrier that a nearer class re-declares over is no barrier at all

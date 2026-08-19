@@ -145,18 +145,24 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   control kwarg `fail!`/`done!` reads ahead of exposures — so those are guarded separately, derived
   from the consumer's own output rather than hand-listed alongside it. To make a new helper
   surrenderable, add its MODULE to `SURRENDERABLE_OWNERS` — never a bare name.
-- **Whether axn may DEFINE a name is one walk asked at two receivers.** `Axn::Core::MethodShadowing`
-  answers it for the class-method DSL and for the instance helpers through a single private ancestry
-  walk (`_external_definer`): the first ancestor declaring the name in its own table, skipping
-  `Axn::Core::*` owners *only*, so a satellite adapter's module (`Axn::MCP::*`) counts as external and
-  axn steps aside for it. Three parameters differ, and only the middle one is a difference in kind.
-  Class side walks `base.singleton_class`'s ancestors, untruncated, `base` itself included — an
-  explicit `def self.x` defers. Instance side walks `base`'s ancestors, truncated at `::Object`, with
-  `base` and its prepends excluded: `Kernel` owns `warn`/`inspect`/`hash`/`then`/`tap` and sits behind
-  `::Object`, so truncating there is what keeps those axn's — an untruncated walk would silently
-  redirect `warn("msg")` inside every action to stderr — and a `def` in the class body is the user's
-  own, winning on its own terms with `super` reaching axn's, so treating it as a deferral target would
-  point the deferral at the method deferring to it. The deferrable surface is `SURRENDERABLE_OWNERS`'
+- **Whether axn may DEFINE a name is one question asked at two receivers.** `Axn::Core::MethodShadowing`
+  answers it for the class-method DSL and for the instance helpers, and both answers skip `Axn::Core::*`
+  owners *only*, so a satellite adapter's module (`Axn::MCP::*`) counts as external and axn steps aside
+  for it. Class side (`externally_defined?`) walks `base.singleton_class`'s ancestors comparing own
+  method tables, untruncated, `base` itself included — an explicit `def self.x` defers — after one live
+  reachability read, since it is asked before axn extends the name. Instance side (`inherited_definer`)
+  does not walk `ancestors` at all: it steps the DECLARATION CHAIN, `declared_instance_method(base, name)`
+  then `shadowed_instance_method` repeatedly, which is Ruby's own resolver answering in dispatch order.
+  That is load-bearing rather than stylistic — the chain stops at an `undef_method` entry, which no
+  own-table read reports and which effective lookup can only report for the class as a whole, so it is
+  the only reader that sees a barrier hosted BEHIND the modules axn included in front of it, and it sees
+  one written after `include Axn` as readily as before. Nothing in this area caches a per-name verdict as
+  a result; the one thing still captured at include time is the deferral shim's UnboundMethod, on purpose.
+  What the instance side does not count as the user's own: `base` and its prepends (a `def` in the class
+  body wins on its own terms with `super` reaching axn's, so treating it as a deferral target would point
+  the deferral at the method deferring to it), and `::Object` with its own ancestors — `Kernel` owns
+  `warn`/`inspect`/`hash`/`then`/`tap`, and deferring to those would silently redirect `warn("msg")`
+  inside every action to stderr. The deferrable surface is `SURRENDERABLE_OWNERS`'
   public instance methods minus `internal_name?`, derived exactly like the reserved names above.
   `UNSURRENDERABLE` (`call`/`_run`/`initialize`) cannot be deferred and is refused at the execution
   funnel rather than at include time, because only the finished class answers it; that refusal asks
