@@ -421,6 +421,49 @@ module Axn
       # caller-supplied member, whose `validations` reader is itself something to read without trusting.
       def self.nested_shape(owner) = shape_in(read(owner, :validations))
 
+      # The container of a `shape:` whose position names no class — an `of:` bag that constrains its
+      # contents by members alone (`of: { shape: … }`). A Module rather than a bare `nil` because
+      # ABSENCE already means something here: it is the bug signature `_derive_raw_shape_container!`
+      # exists to catch, a shape that never got a container derived and fails every call with a bare
+      # `TypeError: class or module required`. Being a Module also satisfies the "a container must be a
+      # class" guard without a special case there. `ShapeValidator` tests it by IDENTITY, with this
+      # constant as the receiver, and never with `is_a?` — nothing is an instance of it.
+      ANY_CONTAINER = ::Module.new do
+        def self.name = "Axn::Internal::ShapeGraph::ANY_CONTAINER"
+        def self.to_s = name
+      end
+
+      # Where an inner contract can sit. Logical positions, not schema path segments: reflection maps
+      # these onto its own `items`/`additionalProperties` spelling, so the declaration layer does not
+      # carry the emitter's vocabulary.
+      ELEMENT_POSITION = :[]
+      KEYS_POSITION = :keys
+      VALUES_POSITION = :values
+      MAP_POSITIONS = [KEYS_POSITION, VALUES_POSITION].freeze
+
+      EMPTY_INNER_CONTRACTS = [].freeze
+      private_constant :EMPTY_INNER_CONTRACTS
+
+      # THE one answer to "what containers sit inside this node", shared by the declaration walk, the
+      # redaction walk, the ambient walk and reflection — so no two of them can descend a different set.
+      #
+      # An ARRAY's `of:` bag IS the inner contract (one element position). A HASH's `of:` bag is the axis
+      # bag, and the inner contracts are its axis VALUES — only where an axis carries a bag, since a bare
+      # type names a class and has nothing inside it. Read through `hash_or_nil` throughout: the bag may be
+      # a config ASSIGNED onto a class rather than one this DSL canonicalized, so an `of:` that is not a
+      # Hash answers "nothing inside" rather than raising.
+      def self.inner_contracts(validations)
+        bag = hash_or_nil(validations && validations[:of])
+        return EMPTY_INNER_CONTRACTS if nil.equal?(bag)
+
+        return [[ELEMENT_POSITION, bag]] unless ::Hash.equal?(bag[:container])
+
+        MAP_POSITIONS.filter_map do |axis|
+          inner = hash_or_nil(bag[axis])
+          inner && [axis, inner]
+        end
+      end
+
       # Sentinel for "nothing on this object answers to that name", distinguishing it from a reader
       # that genuinely returned nil. A private frozen object of this module's own, and always the
       # RECEIVER of `equal?` (see `missing?`), so no caller's `equal?` is ever dispatched and nothing a
