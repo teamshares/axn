@@ -824,6 +824,16 @@ RSpec.describe "recursive of:" do
         expect { build_axn { expects :m, type: Hash, of: { values: chain } } }.not_to raise_error
       end
 
+      # Reflection descends the same chain on a counter of its own, threaded across the map rungs — so a graph
+      # the declaration walk ACCEPTS must reflect, or the two bounds disagree and a legal contract has no
+      # schema. The at-cap fixture is the only place that can catch a map rung that restarted the count.
+      it "reflects the at-cap chain rather than tripping reflection's own bound" do
+        chain = axis_chain(Axn::Internal::ShapeGraph::MAX_NESTING + 1)
+        action = build_axn { expects :m, type: Hash, of: { values: chain } }
+
+        expect { action.input_schema }.not_to raise_error
+      end
+
       it "refuses one axis rung deeper" do
         chain = axis_chain(Axn::Internal::ShapeGraph::MAX_NESTING + 2)
         expect { build_axn { expects :m, type: Hash, of: { values: chain } } }
@@ -885,40 +895,189 @@ RSpec.describe "recursive of:" do
       end
     end
 
-    # A `shape:` that is not a Hash names no members, so nothing could be read off it: it declared cleanly and
-    # then failed EVERY call with a bare `ArgumentError: must supply :members`, naming neither the field nor
-    # the option. Refused at declaration, in one guard over all three positions the bag grammar reaches.
-    describe "a shape: that is not a Hash" do
-      it "refuses one at the element position" do
-        expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: :junk } } }
-          .to raise_error(ArgumentError, /shape: inside an `of:` bag on :rows must be a Hash naming that position's members/)
+    # `keys:` takes the whole bag grammar, not just `klass:` — a key that is itself a structured value has
+    # members like any other position. It is also the newest surface here, and the one where an ordinal-only
+    # message matters most: the descent runs against the caller's KEY object.
+    describe "a bag on the keys: axis" do
+      def sku_member
+        { members: [Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })] }
       end
 
-      it "refuses one on the values axis" do
-        expect { build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: :junk } } } }
-          .to raise_error(ArgumentError, /shape: inside an `of:` bag on :m must be a Hash naming that position's members/)
+      it "validates the members of each key, located by ordinal" do
+        shape = sku_member
+        action = build_axn { expects :m, type: Hash, of: { keys: { klass: Hash, shape: } } }
+
+        expect(action.call(m: { { sku: "a" } => 1 })).to be_ok
+        expect(action.call(m: { { sku: 2 } => 1 }).exception.message).to include("key at index 0: sku is not a String")
       end
 
-      it "refuses one on the keys axis" do
-        expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Hash, shape: :junk } } } }
-          .to raise_error(ArgumentError, /shape: inside an `of:` bag on :m must be a Hash naming that position's members/)
+      it "renders no part of the key, even while descending into it" do
+        shape = sku_member
+        action = build_axn { expects :m, type: Hash, of: { keys: { klass: Hash, shape: } } }
+
+        message = action.call(m: { { sku: "secret-customer-id" } => 1, { sku: 2 } => 1 }).exception.message
+        expect(message).not_to include("secret-customer-id")
+        expect(message).to include("key at index 1: sku is not a String")
       end
 
-      it "refuses one a container deeper" do
-        expect { build_axn { expects :rows, type: Array, of: { klass: Array, of: { klass: Hash, shape: 5 } } } }
-          .to raise_error(ArgumentError, /shape: inside an `of:` bag on :rows must be a Hash naming that position's members/)
+      it "descends a container nested inside a keys bag" do
+        action = build_axn { expects :m, type: Hash, of: { keys: { klass: Array, of: Integer } } }
+
+        expect(action.call(m: { [1, 2] => :x })).to be_ok
+        expect(action.call(m: { [1, "two"] => :x }).exception.message)
+          .to include("key at index 0: element at index 1 is not a Integer")
       end
 
-      # Keyed on `key?`, so "supplied but naming nothing" is refused while a bag that simply carries no
-      # `shape:` stays the honest spelling of "no members declared".
-      it "refuses a nil shape: supplied beside a klass:" do
-        expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: nil } } }
-          .to raise_error(ArgumentError, /shape: inside an `of:` bag on :rows must be a Hash naming that position's members/)
-      end
+      it "emits nothing for a keys bag, however much it declares" do
+        shape = sku_member
+        action = build_axn { expects :m, type: Hash, of: { keys: { klass: Hash, shape: }, values: Integer } }
 
-      it "leaves a bag carrying no shape: alone" do
-        expect { build_axn { expects :rows, type: Array, of: { klass: Hash } } }.not_to raise_error
+        expect(action.input_schema.dig(:properties, :m)).not_to have_key(:propertyNames)
+        expect(action.input_schema.dig(:properties, :m, :additionalProperties)).to eq(type: "integer")
       end
+    end
+  end
+
+  # A `shape:` that is not a Hash names no members, so nothing could be read off it. Every position that can
+  # hold one classifies with `hash_or_nil` and skips what it cannot read, so it declared cleanly and then
+  # failed EVERY call with a bare `ArgumentError: must supply :members`, naming neither the declaration nor
+  # the option. FOUR positions, one refusal — and the message names which of them fired, so an author is not
+  # told to fix a slot they did not write.
+  describe "a shape: that is not a Hash" do
+    def sku_shape
+      { members: [Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })] }
+    end
+
+    it "refuses one at the field's own shape:" do
+      expect { build_axn { expects :m, type: Hash, shape: :junk } }
+        .to raise_error(ArgumentError, /\A`shape:` on :m must be a Hash naming the members it describes \(got :junk\) — /)
+    end
+
+    it "refuses one at a shape member's own shape:" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: :junk })] }
+
+      expect { build_axn { expects :m, type: Hash, shape: } }
+        .to raise_error(ArgumentError, /\A`shape:` on shape member `a` must be a Hash naming the members it describes \(got :junk\) — /)
+    end
+
+    it "refuses one at the element position" do
+      expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: :junk } } }
+        .to raise_error(ArgumentError, /\A`shape:` inside the `of:` bag on :rows must be a Hash naming the members it describes/)
+    end
+
+    it "refuses one on the values axis, named by that axis" do
+      expect { build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: :junk } } } }
+        .to raise_error(ArgumentError, /\A`shape:` inside the `of: \{ values: … \}` bag on :m must be a Hash naming/)
+    end
+
+    it "refuses one on the keys axis, named by that axis" do
+      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Hash, shape: 5 } } } }
+        .to raise_error(ArgumentError, /\A`shape:` inside the `of: \{ keys: … \}` bag on :m must be a Hash naming/)
+    end
+
+    # The bag position inside a MEMBER's chain, where the enclosing declaration is the member rather than the
+    # field — the two ingredients of the label are independent, so the pair has to be pinned.
+    it "names the member when a bag inside one carries it" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a,
+                                                               validations: { type: Array, of: { klass: Hash, shape: nil } })] }
+
+      expect { build_axn { expects :m, type: Hash, shape: } }
+        .to raise_error(ArgumentError, /\A`shape:` inside the `of:` bag on shape member `a` must be a Hash naming/)
+    end
+
+    it "refuses one a container deeper" do
+      expect { build_axn { expects :rows, type: Array, of: { klass: Array, of: { klass: Hash, shape: 5 } } } }
+        .to raise_error(ArgumentError, /`shape:` inside the `of:` bag on :rows must be a Hash naming/)
+    end
+
+    # Keyed on `key?`, so "supplied but naming nothing" is refused while a declaration that simply carries no
+    # `shape:` stays the honest spelling of "no members declared".
+    it "refuses a nil shape: supplied beside a klass:" do
+      expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: nil } } }
+        .to raise_error(ArgumentError, /must be a Hash naming the members it describes \(got a value of class NilClass\)/)
+    end
+
+    it "leaves every position that carries no shape: alone" do
+      shape = sku_shape
+      expect { build_axn { expects :rows, type: Array, of: { klass: Hash } } }.not_to raise_error
+      expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer } } } }.not_to raise_error
+      expect { build_axn { expects :m, type: Hash, shape: } }.not_to raise_error
+    end
+  end
+
+  # `on:` is admitted into a bag by the whitelist only so the context-scope guard gets to name the real
+  # problem. That guard scans the FIELD's validator entries, so it saw the field's own `of:` and nothing
+  # below it — while a bag one rung down, or on either map axis, had its shared options dropped outright
+  # (`inner_contract_validations` copies out `of:` and `shape:` only).
+  describe "on: inside an of: bag" do
+    it "is refused at the element position" do
+      expect { build_axn { expects :rows, type: Array, of: { klass: Integer, on: :create } } }
+        .to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :rows names an ActiveModel validation context/)
+    end
+
+    it "is refused on the values axis" do
+      expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, on: :create } } } }
+        .to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :m names an ActiveModel validation context/)
+    end
+
+    it "is refused on the keys axis" do
+      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, on: :create } } } }
+        .to raise_error(ArgumentError, /`on:` inside an `of:` bag on :m names an ActiveModel validation context/)
+    end
+
+    it "is refused a container deeper" do
+      expect { build_axn { expects :rows, type: Array, of: { klass: Array, of: { klass: Integer, on: :create } } } }
+        .to raise_error(ArgumentError, /`on:` inside an `of:` bag on :rows names an ActiveModel validation context/)
+    end
+
+    # The control: `on:` at the DECLARATION level is axn's subfield parent and stays legal, as does a bag
+    # carrying the shared options that actually apply to it.
+    it "leaves a declaration-level on: and an ordinary bag alone" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :rows, on: :payload, type: Array, of: { klass: Integer, message: "x", allow_nil: true }
+        end
+      end.not_to raise_error
+    end
+  end
+
+  # A `message:` replaces the type description a mismatch reports, so a bag naming no class has nothing for it
+  # to replace: `matches_axis?` waves every value through an empty class list and the mismatch branch is never
+  # reached. Reachable since `shape:` joined the bag grammar, and now at both map axes too.
+  describe "message: in a bag that names no klass:" do
+    def sku_shape
+      { members: [Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })] }
+    end
+
+    it "is refused beside a shape: at the element position" do
+      shape = sku_shape
+      expect { build_axn { expects :rows, type: Array, of: { shape:, message: "must be a record" } } }
+        .to raise_error(ArgumentError, /\Aof: message: on :rows has nothing to describe — /)
+    end
+
+    it "is refused on the values axis" do
+      shape = sku_shape
+      expect { build_axn { expects :m, type: Hash, of: { values: { shape:, message: "must be a record" } } } }
+        .to raise_error(ArgumentError, /\Aof: message: on :m has nothing to describe/)
+    end
+
+    # Emptiness is asked exactly as the runtime asks it, so an empty union is the same case as an absent
+    # `klass:` here because it is the same case there.
+    it "is refused beside an empty union klass:" do
+      expect { build_axn { expects :rows, type: Array, of: { klass: [], message: "x" } } }
+        .to raise_error(ArgumentError, /of: message: on :rows has nothing to describe/)
+    end
+
+    it "leaves a message: beside a klass: alone, which is the form that fires" do
+      action = build_axn { expects :rows, type: Array, of: { klass: Integer, message: "must be a whole number" } }
+
+      expect(action.call(rows: ["x"]).exception.message).to include("element at index 0 must be a whole number")
+    end
+
+    it "leaves a klass-less bag with no message: alone" do
+      shape = sku_shape
+      expect { build_axn { expects :rows, type: Array, of: { shape: } } }.not_to raise_error
     end
   end
 end

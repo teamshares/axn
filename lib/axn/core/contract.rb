@@ -543,7 +543,7 @@ module Axn
           # edges — the snapshot below and the `of:` chain `_parse_field_configs` descends (see
           # `_new_path_allowance`).
           path_allowance = _new_path_allowance(fields)
-          _snapshot_declared_shape!(validations, path_allowance)
+          _snapshot_declared_shape!(validations, path_allowance, fields)
 
           # `on` is nil-or-Symbol by construction here (canonicalized above), so routing asks the canonical
           # value rather than re-deciding presence on whatever the caller passed.
@@ -668,7 +668,7 @@ module Axn
           # One allowance across both of this declaration's edges, minted after the block form's per-member
           # pre-pass (see `_new_path_allowance`).
           path_allowance = _new_path_allowance(fields)
-          _snapshot_declared_shape!(validations, path_allowance)
+          _snapshot_declared_shape!(validations, path_allowance, fields)
 
           # The block form rejects a `user_facing:` member inside `_build_shape_member` (above), but a
           # raw `shape:` kwarg supplies pre-built member objects that never route through it — so walk
@@ -2339,32 +2339,53 @@ module Axn
         # The grammar EVERY inner-contract bag is held to, asked once wherever one is accepted: at an Array's
         # element position and at each of a map's two axes. One function rather than three call sequences,
         # because a bag means the same thing in all three and a check missing from one of them is a hole the
-        # other two hide — the exact shape of the defect the non-Hash `shape:` refusal below closes.
+        # other two hide.
+        #
+        # A non-Hash `shape:` is refused for the same reason and is deliberately NOT here: it can be written at
+        # two positions this function never sees (a field's own `shape:`, a shape MEMBER's), so it is one
+        # refusal at the walk that reaches all four (`ShapeDeclaration#_reject_unshaped_shape!`).
         def _check_inner_contract_bag!(bag, fields)
           _reject_unknown_of_keys!(bag, OF_OPTION_KEYS)
           _reject_unconstraining_of_bag!(bag)
-          _reject_unshaped_inner_shape!(bag, fields)
+          _reject_inner_contract_context_scope!(bag, fields)
+          _reject_unusable_of_message!(bag, fields)
         end
 
-        # A `shape:` names members, and only a Hash carries a members list — so a non-Hash `shape:` inside a bag
-        # names nothing at all. It declared cleanly and then failed EVERY call with a bare
-        # `ArgumentError: must supply :members`, naming neither the field nor the option: the whitelist admits
-        # the key, and both `_derive_inner_shape_container!` and `_snapshot_inner_shape!` classify with
-        # `hash_or_nil` and skip what they cannot read. Refused here instead, where the author is standing.
+        # `on:` inside a bag is the same dead declaration it is inside any other validator's option bag, and it
+        # reaches this position by two routes the field-level check cannot see: a bag nested inside another bag,
+        # and either axis of a map (PRO-3166). `_reject_validator_context_scope!` scans the FIELD's validator
+        # ENTRIES — it sees the field's own `of:` and nothing below it — while at runtime a nested bag's shared
+        # options are not even read (`OfValidator#inner_contract_validations` copies out `of:` and `shape:`
+        # only), so the option is dropped rather than merely gated off. Asked of the bag directly, through the
+        # same predicate the entry scan uses, so one rule decides it everywhere.
         #
-        # Keyed on `key?` rather than on the value, so `shape: nil` — supplied and naming nothing — is refused
-        # while a bag that simply carries no `shape:` stays the honest spelling of "no members declared". The
-        # offender is named through `_declared_type_label`, never its own `inspect`: it is the caller's object,
-        # and one whose `inspect` raises would replace this declaration error with its own exception.
-        def _reject_unshaped_inner_shape!(bag, fields)
-          return unless Internal::ShapeGraph.carries_key?(bag, :shape)
-          return unless nil.equal?(Internal::ShapeGraph.hash_or_nil(bag[:shape]))
+        # It fires for the field's own `of:` bag too, ahead of the entry scan, which is deliberate: one message
+        # for one defect, and this one names the bag the author wrote rather than the validator key it rode in
+        # on.
+        def _reject_inner_contract_context_scope!(bag, fields)
+          return unless Axn::Validation::Base.entry_context_scoped?(bag)
+
+          _raise_validator_context_scope!("an `of:` bag", _declared_fields_label(fields), "that check runs")
+        end
+
+        # A `message:` replaces the type description a mismatch reports, so a bag naming no class has nothing
+        # for it to replace: `OfValidator#matches_axis?` waves every value through an empty class list, the
+        # mismatch branch is never reached, and the message the author wrote is never emitted. Reachable since
+        # `shape:` joined the bag grammar — `of: { shape: S, message: "…" }` is a bag that constrains something
+        # and still names no class — and now at both map axes as well.
+        #
+        # Emptiness is asked exactly as the runtime asks it (`Array(...).empty?`), so the guard and the consumer
+        # cannot disagree about which bags have a mismatch to describe: an absent `klass:`, a nil one, and an
+        # empty union are one case here because they are one case there.
+        def _reject_unusable_of_message!(bag, fields)
+          return unless Internal::ShapeGraph.carries_key?(bag, :message)
+          return unless Array(bag[:klass]).empty?
 
           raise ArgumentError,
-                "shape: inside an `of:` bag on #{_declared_fields_label(fields)} must be a Hash naming that " \
-                "position's members (got #{_declared_type_label(bag[:shape])}) — a shape describes what is " \
-                "inside a value, so one that names no `members:` list constrains nothing and makes every call " \
-                "raise `ArgumentError: must supply :members`. Supply `shape: { members: [...] }`, or drop shape:."
+                "of: message: on #{_declared_fields_label(fields)} has nothing to describe — a `message:` " \
+                "replaces the type description a mismatch reports, and this bag names no `klass:`, so nothing " \
+                "at that position is ever a type mismatch and the message can never be emitted. Name the class " \
+                "the message is about (`klass:`), or drop message:."
         end
 
         # The field(s) a declaration error names, each through the shared name seam: a field name is the
@@ -2592,9 +2613,17 @@ module Axn
           end
           return if offenders.empty?
 
-          runs = offenders.size == 1 ? "that check runs" : "those checks run"
+          _raise_validator_context_scope!(offenders.join(" / "), where,
+                                          offenders.size == 1 ? "that check runs" : "those checks run")
+        end
+
+        # The one sentence, shared by the entry scan above and by the bag check that reaches the positions it
+        # cannot see (`_reject_inner_contract_context_scope!`). `inside` is what the `on:` was written in — a
+        # validator key, or a bag — so the message names the thing the author has to edit rather than a
+        # construct their declaration does not carry.
+        def _raise_validator_context_scope!(inside, where, runs)
           raise ArgumentError,
-                "`on:` inside #{offenders.join(' / ')} on #{where} names an ActiveModel validation context, and " \
+                "`on:` inside #{inside} on #{where} names an ActiveModel validation context, and " \
                 "axn validates with no context — so #{runs} on no call and the declaration is left unenforced. " \
                 "Axn has no validation contexts: drop `on:`, or gate the check with `if:`/`unless:`, which axn " \
                 "does support. (A DECLARATION-level `on:` is axn's subfield parent — `expects :zip, on: :address` " \

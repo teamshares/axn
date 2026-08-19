@@ -120,13 +120,18 @@ RSpec.describe "an `on:` that names a validation context" do
     }.each do |key, entry|
       it "is refused on #{key}:" do
         opts = key == :of ? { type: Array, key => entry } : { optional: true, key => entry }
+        # `of:` is named as the BAG rather than as the validator key: an `of:` bag can also sit one rung down,
+        # or on either map axis, where the entry scan below cannot reach it — so the bag is checked as a bag
+        # (`_reject_inner_contract_context_scope!`, which fires first) and one message covers every position
+        # (PRO-3166).
+        inside = key == :of ? "an `of:` bag" : "#{key}:"
         expect do
           klass = Class.new do
             include Axn
             def call = nil
           end
           klass.expects :v, **opts
-        end.to raise_error(ArgumentError, /`on:` inside #{key}:/)
+        end.to raise_error(ArgumentError, /`on:` inside #{Regexp.escape(inside)}/)
       end
     end
 

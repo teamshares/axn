@@ -114,13 +114,61 @@ module Axn
         end
 
         # Stores the copy in place of the caller's shape, and only when there is one to copy: a field that
-        # declared no `shape:` must not gain the key here, and a `shape:` that is not a Hash is left exactly as
-        # it came for the container check to reject.
-        def _snapshot_declared_shape!(validations, allowance)
+        # declared no `shape:` must not gain the key here.
+        def _snapshot_declared_shape!(validations, allowance, fields)
+          _reject_unshaped_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
           shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
           return if nil.equal?(shape)
 
           validations[:shape] = _validate_and_snapshot_shape!(shape, allowance)
+        end
+
+        # THE refusal for a `shape:` that is not a Hash, at every position one can be written: a field's own,
+        # a shape MEMBER's, and either kind of `of:` bag (an Array's element, a map's `keys:` or `values:`).
+        # One guard rather than four, because it is one defect — every one of those positions classifies with
+        # `hash_or_nil` and skips what it cannot read, so a non-Hash declared cleanly and then failed EVERY
+        # call with a bare `ArgumentError: must supply :members`, naming neither the declaration nor the
+        # option. It is the same defect, and the same closing, as the nested `container:` derivation in
+        # `_check_and_copy_shape_members!`: the check the field path already made, called from wherever the
+        # walk actually is.
+        #
+        # Only a Hash carries a `members:` list, so nothing else can name members — which is why the
+        # classification is the verdict rather than an approximation of it.
+        #
+        # Keyed on `key?` rather than on the value, so `shape: nil` — supplied and naming nothing — is refused
+        # while a declaration that simply carries no `shape:` stays the honest spelling of "no members". The
+        # offender is named through `_declared_type_label`, never its own `inspect`: it is the caller's object,
+        # and one whose `inspect` raises would replace this declaration error with its own exception (outside
+        # StandardError, one that escapes every rescue meant to settle it).
+        #
+        # `where` is built by the caller, which is the only place that knows WHICH of the four positions this
+        # is — the same reason `_raise_cyclic_graph!` is passed its `edge:` rather than inferring one. A
+        # message naming a slot the author did not write prescribes a fix their declaration has nowhere to
+        # make.
+        def _reject_unshaped_shape!(carrier, where)
+          return unless Internal::ShapeGraph.carries_key?(carrier, :shape)
+          return unless nil.equal?(Internal::ShapeGraph.hash_or_nil(carrier[:shape]))
+
+          raise ArgumentError,
+                "#{where} must be a Hash naming the members it describes (got " \
+                "#{_declared_type_label(carrier[:shape])}) — a shape describes what is inside a value, so one " \
+                "that names no `members:` list constrains nothing and makes every call raise " \
+                "`ArgumentError: must supply :members`. Supply `shape: { members: [...] }`, or drop shape:."
+        end
+
+        # Where a `shape:` hanging off an `of:` bag sits, as the phrase the refusal names it by, from the two
+        # things that locate one: which SLOT of the bag grammar it is in, and which declaration encloses it —
+        # a shape member when the walk reached it through one, else the field. Both are carried down by the
+        # walk rather than re-read here, exactly as `_raise_cyclic_graph!`'s are.
+        def _inner_shape_position_label(position, member, name, fields)
+          slot =
+            case position
+            when Internal::ShapeGraph::KEYS_POSITION then "the `of: { keys: … }` bag"
+            when Internal::ShapeGraph::VALUES_POSITION then "the `of: { values: … }` bag"
+            else "the `of:` bag"
+            end
+          owner = nil.equal?(member) ? _declared_fields_label(fields) : "shape member #{_describe_shape_member(member, name)}"
+          "`shape:` inside #{slot} on #{owner}"
         end
 
         # What one walked shape yields. The path count travels with the copy because a shape REUSED by two
@@ -171,7 +219,7 @@ module Axn
 
           paths = 0
           height = 0
-          contracts.each do |(_position, bag)|
+          contracts.each do |(position, bag)|
             # Charged before the rung is descended, so a graph that multiplies out is rejected while the work
             # done on it is still bounded by the allowance.
             _spend_paths!(allowance, 1)
@@ -184,7 +232,7 @@ module Axn
               _canonicalize_inner_contract!(bag, fields)
               # The bag's OTHER kind of child, walked off the same state — one depth budget and one path
               # allowance across both edges, exactly as a shape MEMBER's two edges share them.
-              shaped = _snapshot_inner_shape!(bag, child, allowance, via:, via_name:)
+              shaped = _snapshot_inner_shape!(bag, child, allowance, fields:, position:, via:, via_name:)
               _combine_inner_contracts(shaped, _walk_inner_contracts!(bag, child, allowance, fields:, via:, via_name:))
             end
             _raise_cyclic_graph!(via, via_name, edge: INNER_CONTRACT_EDGE) if CYCLIC_SHAPE.equal?(walked)
@@ -211,7 +259,8 @@ module Axn
         #
         # `height` is the shape's own subtree plus the level the shape node itself adds below the bag, matching
         # what a member's nested shape contributes to its node's height.
-        def _snapshot_inner_shape!(bag, walk, allowance, via:, via_name:)
+        def _snapshot_inner_shape!(bag, walk, allowance, fields:, position:, via:, via_name:)
+          _reject_unshaped_shape!(bag, _inner_shape_position_label(position, via, via_name, fields))
           shape = Internal::ShapeGraph.hash_or_nil(bag[:shape])
           return NO_INNER_CONTRACTS if nil.equal?(shape)
 
@@ -377,6 +426,7 @@ module Axn
             # Every other attribute read (and grammar-checked) BEFORE the nested walk, so a member carrying both
             # a bad `sensitive:` and an untraversable nested shape is reported as the value defect it is.
             attributes = _snapshot_member_attributes!(member, name, key, validations)
+            _reject_unshaped_shape!(validations, "`shape:` on shape member #{_describe_shape_member(member, name)}")
             nested = Internal::ShapeGraph.hash_or_nil(validations[:shape])
             unless nil.equal?(nested)
               inner = _walk_shape_graph!(nested, child, allowance, via: member, via_name: name)
@@ -720,6 +770,7 @@ module Axn
                 :_member_owner_label, :_describe_shape_member, :_raise_member_model_unsupported!,
                 :_raise_member_confirmation_unsupported!,
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
+                :_reject_unshaped_shape!, :_inner_shape_position_label,
                 :_walk_inner_contracts!, :_walk_declared_inner_contracts!, :_new_path_allowance,
                 :_snapshot_inner_shape!, :_combine_inner_contracts,
                 :_check_and_copy_shape_members!, :_raise_cyclic_graph!, :_raise_graph_too_deep!,

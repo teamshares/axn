@@ -582,7 +582,9 @@ module Axn
         # the `of:` VALUES type inside a map, the field's own declared type otherwise — each read from the same
         # place the emitter built that node's schema from. Both container branches descend through
         # `contents_type_source`, because either position may hold a BAG naming a container of its own, whose
-        # members are emitted from what is inside it rather than from the container it names. Nil for a UNION (`of: [A, B]`), where the property
+        # members are emitted from what is inside it rather than from the container it names.
+        #
+        # Nil for a UNION (`of: [A, B]`), where the property
         # lives in one `anyOf` branch and pinning which class contributed it would mean mapping a branch index
         # back to a declaration — a derivation of the emitter's own ordering, for prose, on a path that only runs
         # once a failure is certain. The message names the union collectively there instead. A nil answer means
