@@ -77,18 +77,30 @@ module Axn
       # `description`/`input_schema`/`output_schema` from an `Axn::MCP::*` module counts as external, so
       # axn won't re-extend and shadow it.
       #
-      # That narrowness is load-bearing now that `core_definition_answers?` reads this too, and what it costs
-      # depends on where the module sits. `Axn::Async::BatchEnqueue`, `Axn::Async` and `Axn::Mountable` are
-      # included AHEAD of `Axn::Core::DefaultCall`, so one of them declaring `call`, `_run` or `initialize` makes
-      # this answer false for that name: the unsurrenderable guard skips it and axn quietly defers to the
-      # hijacking module rather than raising, which no spec catches, because nothing fails at the guard — only
-      # whatever the hijacked method was doing fails, if anything.
+      # That narrowness is load-bearing at both receivers this walk serves, and the trap it sets is for axn's own
+      # maintainers: an instance name declared in an axn module OUTSIDE `Axn::Core` is external by this
+      # predicate, exactly as a user's `ApplicationService` is. A plain action's ancestry holds five such modules
+      # — `Axn::Async::BatchEnqueue`, `Axn::Async`, `Axn::Mountable` and the anonymous module
+      # `Axn::Configuration.overrides` builds, all four ahead of the `Axn::Core` modules that declare the three
+      # names below, plus `Axn` itself behind them. None of the five declares a deferrable name, or one of those
+      # three, today.
       #
-      # `Axn` itself sits BELOW `Axn::Core`, so a name declared there is found as a foreign owner instead: every
-      # action that does not define that name in its own body raises, and for `_run`/`initialize`, which no
-      # ordinary action defines, every action raises full stop. A fixture with its own `def call` cannot show
-      # either failure, so verify by hand before adding one of these three names to an axn module outside
-      # `Axn::Core` — the name either belongs under `Axn::Core` or belongs in this predicate.
+      # For one of the seventeen DEFERRABLE names, all five behave alike and the loss is total: `_collect` finds
+      # the module as a foreign definer, so every action in every app records a deferral to it, hands the name
+      # over, and warns its author at first run to declare `prefer_inherited :log` about a module they never
+      # wrote.
+      #
+      # For `call`, `_run` or `initialize`, which side of `Axn::Core` the module sits on decides which way it
+      # fails. Ahead of it (the first four), `core_definition_answers?` answers false for that name: the
+      # unsurrenderable guard skips it and axn quietly defers to the hijacking module rather than raising, which
+      # no spec catches, because nothing fails at the guard — only whatever the hijacked method was doing fails,
+      # if anything. Behind it (`Axn`), the name is found as a foreign owner instead: every action that does not
+      # define that name in its own body raises, and for `_run`/`initialize`, which no ordinary action defines,
+      # every action raises full stop.
+      #
+      # A fixture with its own `def call` cannot show either of those, so verify by hand before adding any of
+      # the three — or any name a `SURRENDERABLE_OWNERS` module already declares — to an axn module outside
+      # `Axn::Core`. The name either belongs under `Axn::Core` or belongs in this predicate.
       def _axn_core_owned?(mod)
         name = Axn::Internal::NativeMethods.declared_module_name(mod)
         return false unless name

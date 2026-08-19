@@ -164,8 +164,14 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   reaches — so a class that defines the name itself, as `Axn::Factory`-built classes do after the
   include, is never refused. A `prefer_inherited`/`prefer_axn` declaration only ever adds a wrapper to
   the DECLARING class's own module and never edits an inherited one, which is what stops a subclass
-  changing its parent's and siblings' behaviour. New user-facing sugar needs no edit here; adding a
-  whole new sugar module does.
+  changing its parent's and siblings' behaviour. That narrowness cuts against axn as well: an instance
+  name declared in an axn module OUTSIDE `Axn::Core` is external by this walk — `Axn::Async`,
+  `Axn::Async::BatchEnqueue`, `Axn::Mountable` and the anonymous `Axn::Configuration.overrides` module
+  sit ahead of `Axn::Core` in every action's ancestry, `Axn` itself behind it. One of the deferrable
+  names there makes every action in every app defer to that module and warn its author to declare
+  `prefer_inherited`; `call`/`_run`/`initialize` there either bypasses the unsurrenderable guard
+  silently (ahead) or makes every action raise (behind). Such a name belongs under `Axn::Core`, or in
+  `_axn_core_owned?`. New user-facing sugar needs no edit here; adding a whole new sugar module does.
 
 ## Errors
 
