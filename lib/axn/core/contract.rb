@@ -9,6 +9,7 @@ require "active_support/core_ext/object/blank"
 require "axn/core/contract/redaction"
 require "axn/core/contract/validator_class_cache"
 require "axn/core/contract/shape_declaration"
+require "axn/core/contract/subfield_contradictions"
 require "axn/core/validation/fields"
 require "axn/core/flow/handlers/invoker"
 require "axn/internal/coercion"
@@ -567,6 +568,19 @@ module Axn
             # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
             # a same-named subfield reader), so the resolved check runs here too rather than only where
             # subfields are declared.
+
+            # A map declared HERE can contradict a subfield declared earlier, so the map-parent check is asked
+            # from this seam as well — otherwise `expects :counts, type: Hash, of: {...}` written after
+            # `expects :n, on: :counts` reaches no check at all, and ships the schema/runtime split the check
+            # exists to refuse. Only that check, over the same candidate tree the subfield seam judges: the rest
+            # of `SubfieldContradictions` is asked where a SUBFIELD is declared, and a map `of:` is the one
+            # top-level declaration that can invalidate an existing subfield. Skipped outright where no subfield
+            # exists, which is the only shape this can fire on.
+            unless subfield_configs.empty?
+              SubfieldContradictions.check_subfields_under_map!(
+                Axn::Internal::SubfieldTree.build(retained + configs, subfield_configs),
+              )
+            end
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
@@ -1156,8 +1170,12 @@ module Axn
         # refuses — so a map's failures are described per axis by the validator itself.
         MAP_OF_OPTION_KEYS = (Set.new(%i[keys values]) | Axn::Validation::Base.shared_validation_option_keys).freeze
 
-        # Both halves of "name an axis": a bare `of: Integer` names none of them, and a bag naming neither
-        # constrains nothing at all. One message, since the fix is the same one either way.
+        # The two things inside a Hash, in the order a declaration reads them.
+        MAP_OF_AXES = %i[keys values].freeze
+
+        # Every way of failing to "name an axis": a bare `of: Integer` names none of them, a bag naming neither
+        # constrains nothing at all, and an axis holding an empty union names nothing while looking like it does.
+        # One message, since the fix is the same one every way.
         MAP_OF_REQUIRED_MESSAGE = "of: requires keys: and/or values: for a Hash — a Hash has two things inside it, " \
                                   "so name the axis you are constraining"
 
@@ -2169,14 +2187,25 @@ module Axn
           # purposes would otherwise choose which grammar its bag is held to.
           return container if container.equal?(::Array) || container.equal?(::Hash)
 
-          raise ArgumentError, "of: requires type: Array or Hash (got #{declared.inspect})"
+          # Each declared class is named through the seam that reads its name natively, never by rendering the
+          # LIST: `Array#inspect` dispatches every element's own `inspect`, so a declared class defining one
+          # that raises would replace this ArgumentError with the caller's exception — which outside
+          # StandardError escapes every rescue meant to settle it. The rendering is byte-identical to the list's
+          # for every ordinary class.
+          raise ArgumentError, "of: requires type: Array or Hash (got [#{declared.map { |k| _declared_type_label(k) }.join(', ')}])"
         end
 
         # This seam runs over a shape MEMBER's bag twice — once as the member is built like a field
         # (`_build_shape_member` → `_parse_field_configs`), and again as the declaration walk snapshots it
-        # (`ShapeDeclaration#_symbol_keyed_member_validations`), which is handed the very bag the first pass
-        # produced. `container:` is derived rather than declared, so without this the second pass reports axn's
-        # own key as one the grammar does not support and fails a well-formed declaration.
+        # (`ShapeDeclaration#_symbol_keyed_member_validations`). What the second pass receives is neither the
+        # same object as the first pass produced nor the same content: between them the tolerance push
+        # (`_parse_field_configs`'s tolerant branch and `_apply_nil_skip_to_non_type_validators!`) rebuilds every
+        # validator entry with the field's shared options merged in, so the bag arrives carrying `allow_nil:`/
+        # `allow_blank:` that no author wrote. That is why `OF_OPTION_KEYS`/`MAP_OF_OPTION_KEYS` carry
+        # `shared_validation_option_keys` — a correctness requirement rather than permissiveness, since a
+        # whitelist without them would have the second pass refuse the very keys axn itself merged in.
+        # `container:` is derived on the same terms, so without this the second pass reports axn's own key as
+        # one the grammar does not support and fails a well-formed declaration.
         #
         # Dropped rather than returned early on, so every check runs on every pass and nothing rides in on the
         # second one. And dropped ONLY when it names the container just derived: a bag naming a DIFFERENT one
@@ -2210,18 +2239,34 @@ module Axn
           raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if nil.equal?(bag)
 
           _reject_unknown_of_keys!(bag, MAP_OF_OPTION_KEYS)
-          raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if bag[:keys].nil? && bag[:values].nil?
+          raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
 
           _reject_nested_map_contract!(bag)
           _reject_map_beside_shape!(validations)
           bag.merge(container: ::Hash)
         end
 
+        # Whether an axis names any class for the runtime to hold a value to. An absent axis names none, and so
+        # does an EMPTY union: `OfValidator#matches_axis?` waves every value through a class list with nothing in
+        # it, so `of: { values: [] }` reads as a declaration and constrains exactly nothing — the silent no-op
+        # this whole option exists to refuse, and the reason `of: {}` is refused already.
+        #
+        # A Hash is NOT emptiness here whatever it holds: it is the nested-contract spelling, answered a line
+        # later by its own error rather than reported as a missing axis. Classified through
+        # `ShapeGraph.hash_or_nil` for the reason `_names_nested_contract?` is — the value is the caller's, and a
+        # Hash subclass denying its own class would otherwise pick which error it gets.
+        def _axis_names_no_class?(declared)
+          return true if nil.equal?(declared)
+          return false unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
+
+          Array(declared).empty?
+        end
+
         # An axis takes the same forms `type:` does — a class, a union of them, a `:boolean`/`:uuid`/`:params`
         # symbol — and not a contract of its own. Refused as "not supported yet" rather than as meaningless,
         # because it is the spelling a nested contract will take.
         def _reject_nested_map_contract!(bag)
-          %i[keys values].each do |axis|
+          MAP_OF_AXES.each do |axis|
             next unless _names_nested_contract?(bag[axis])
 
             raise ArgumentError, "of: #{axis}: takes a type, not a nested contract — that is not supported yet"
@@ -2255,9 +2300,14 @@ module Axn
           offenders = bag.keys.reject { |key| allowed.include?(key) }
           return if offenders.empty?
 
+          # `on:` sits in the whitelist so `_reject_validator_context_scope!` can name the real problem (axn has
+          # no validation contexts) instead of reporting it as unknown — but it is left out of what this
+          # ADVERTISES, since a key this line calls supported and the next line refuses is not one to point an
+          # author at.
+          supported = allowed.reject { |key| key == :on }
           raise ArgumentError,
                 "of: does not support #{offenders.map { |key| "#{key}:" }.join(', ')} " \
-                "(supported: #{allowed.to_a.map { |key| "#{key}:" }.join(', ')})"
+                "(supported: #{supported.map { |key| "#{key}:" }.join(', ')})"
         end
 
         # `on:` inside a validator's own option bag is ActiveModel's validation CONTEXT option, and axn has no

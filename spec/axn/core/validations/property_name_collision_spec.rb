@@ -1899,7 +1899,7 @@ RSpec.describe "declaration-time property name collisions" do
     end
 
     # Where the branches come from, checked rather than assumed: only an `of:` element type reflects as a
-    # property-bearing branch (`single_items_schema`). A multi-class `type:` maps each class through
+    # property-bearing branch (`single_contents_schema`). A multi-class `type:` maps each class through
     # `single_type_for`, which gives a Data `"string"` — no properties, so no namespace. The walk handles
     # `anyOf` wherever it appears regardless, since which sites produce one is the emitter's business to change.
     it "emits no property-bearing branch for a multi-class type:, so there is nothing to collide" do

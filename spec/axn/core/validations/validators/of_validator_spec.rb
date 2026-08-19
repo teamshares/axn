@@ -260,6 +260,27 @@ RSpec.describe Axn::Validators::OfValidator do
         build_axn { expects :rows, type: Array, of: { klass: String, on: :create } }
       end.to raise_error(ArgumentError, /validation context/)
     end
+
+    # `on:` is admitted by the whitelist only so that guard gets to speak, and every path through it refuses —
+    # so the unknown-key error does not advertise it. A key this message calls supported and the next check
+    # rejects is worse than one it never mentioned.
+    it "does not advertise on: as a supported key, since nothing accepts it" do
+      expect { build_axn { expects :rows, type: Array, of: { klass: String, wat: 1 } } }
+        .to raise_error(ArgumentError) do |error|
+          expect(error.message).to include("(supported: klass:, message:")
+          expect(error.message).not_to include("on:")
+        end
+    end
+
+    # The declared classes are the CALLER's, and rendering the list would dispatch each one's own `inspect` —
+    # so a class whose `inspect` raises would replace this declaration error with its own exception, which
+    # outside StandardError escapes every rescue meant to settle it. Each class is named natively instead.
+    it "raises the declaration error even when a declared class's own inspect raises" do
+      stub_const("RaisingInspect", Class.new(Hash) { def self.inspect = raise("boom from inspect") })
+
+      expect { build_axn { expects :counts, type: [RaisingInspect, String], of: { values: Integer } } }
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [RaisingInspect, String])")
+    end
   end
 
   # ─── Hash containers (maps) ───────────────────────────────────────────────────
@@ -297,6 +318,37 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
     end
 
+    # An axis holding an EMPTY union is `of: {}` in a costume: `matches_axis?` waves every value through a class
+    # list with nothing in it, so the declaration reads like a constraint and enforces none. Judged as an absent
+    # axis, which is what it is, so a bag whose axes all name nothing lands on the same "name an axis" refusal.
+    it "rejects a values axis naming no class at all" do
+      expect { build_axn { expects :counts, type: Hash, of: { values: [] } } }
+        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+    end
+
+    it "rejects a keys axis naming no class at all" do
+      expect { build_axn { expects :counts, type: Hash, of: { keys: [] } } }
+        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+    end
+
+    it "rejects both axes naming no class at all" do
+      expect { build_axn { expects :counts, type: Hash, of: { keys: [], values: [] } } }
+        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+    end
+
+    # The other side of that rule: one axis naming nothing is only fatal when the OTHER names nothing too — an
+    # unconstrained axis is exactly what omitting it says, and spelling it out means the same thing.
+    it "accepts an empty axis beside one that names a class" do
+      expect { build_axn { expects :counts, type: Hash, of: { keys: [], values: Integer } } }.not_to raise_error
+    end
+
+    # The map bag reaches the same context-scope guard the element bag does — `on:` is one whitelist entry for
+    # both containers, and axn has no validation contexts on either side of the line.
+    it "leaves on: to the context-scope guard here too" do
+      expect { build_axn { expects :counts, type: Hash, of: { values: Integer, on: :create } } }
+        .to raise_error(ArgumentError, /validation context/)
+    end
+
     it "rejects message:, which cannot say which axis failed" do
       expect { build_axn { expects :counts, type: Hash, of: { values: Integer, message: "nope" } } }
         .to raise_error(ArgumentError, /of: does not support message:/)
@@ -305,6 +357,13 @@ RSpec.describe Axn::Validators::OfValidator do
     it "rejects a nested contract on an axis as not yet supported" do
       expect { build_axn { expects :counts, type: Hash, of: { values: { klass: Integer } } } }
         .to raise_error(ArgumentError, /not supported yet/)
+    end
+
+    # Both axes are held to the grammar, not just the one with a JSON Schema spelling: a nested contract on
+    # `keys:` is the same unsupported declaration and gets the same refusal, named by its own axis.
+    it "rejects a nested contract on the keys axis, named as keys:" do
+      expect { build_axn { expects :counts, type: Hash, of: { keys: { klass: Symbol }, values: Integer } } }
+        .to raise_error(ArgumentError, /of: keys: takes a type, not a nested contract/)
     end
 
     it "rejects a nested contract inside a union on an axis" do
@@ -344,6 +403,36 @@ RSpec.describe Axn::Validators::OfValidator do
             expects :counts, on: :payload, type: Hash, of: { values: Integer }
           end
         end.to raise_error(ArgumentError, /not supported yet/)
+      end
+
+      # The map arriving as a TOP-LEVEL declaration, which is a different seam from the one every case above
+      # goes through: `expects` without `on:` commits its configs on its own path, so the check has to be asked
+      # there too or a map written last escapes it entirely — and emits `additionalProperties` beside a
+      # `properties` entry the runtime then refuses.
+      it "rejects a top-level map declared after a subfield it would swallow" do
+        expect do
+          build_axn do
+            expects :payload, type: Hash
+            expects :counts, on: :payload, type: Hash
+            expects :n, on: :counts, type: String
+            expects :counts, type: Hash, of: { values: Integer }
+          end
+        end.to raise_error(ArgumentError, /subfield :n \(on :counts\) names the key :n of :counts/)
+      end
+
+      # The negative control for that seam: the ONLY thing it refuses is a map. The same declarations minus the
+      # `of:` are an ordinary Hash parent with a subfield, legal in either order, and both keys still emit.
+      it "leaves a top-level Hash parent redeclared after its subfields alone" do
+        klass = nil
+        expect do
+          klass = build_axn do
+            expects :payload, type: Hash
+            expects :counts, on: :payload, type: Hash
+            expects :n, on: :counts, type: String
+            expects :counts, type: Hash
+          end
+        end.not_to raise_error
+        expect(klass.input_schema.dig(:properties, :counts, :properties, :n)).to include(type: "string")
       end
 
       it "rejects a subfield any depth below the map, through a dotted on:" do
@@ -442,9 +531,10 @@ RSpec.describe Axn::Validators::OfValidator do
 
     # A shape member's bag reaches the canonicalization seam TWICE — once as the member is built like a field
     # (`_parse_field_configs`), and again as the declaration walk snapshots it
-    # (`_symbol_keyed_member_validations`), which is handed the very bag the first pass produced. The derived
-    # `container:` is a key no caller may write, so a second pass that did not account for it would report axn's
-    # own key as unsupported and fail a declaration that is perfectly well-formed.
+    # (`_symbol_keyed_member_validations`). The second pass gets neither the same object nor the same content:
+    # the tolerance push between them rebuilds the bag with the field's shared options (`allow_nil:`/
+    # `allow_blank:`) merged in. So the whitelist has to admit the derived `container:` AND those shared keys,
+    # or the second pass refuses the very keys axn itself wrote into the bag and fails a well-formed declaration.
     it "canonicalizes a shape member's bag idempotently, though the seam runs over it twice" do
       klass = nil
       expect do
@@ -462,6 +552,13 @@ RSpec.describe Axn::Validators::OfValidator do
 
     it "refuses a container: naming something other than the declared type:" do
       expect { build_axn { expects :ids, type: Array, of: { klass: Integer, container: Hash } } }
+        .to raise_error(ArgumentError, /of: does not support container:/)
+    end
+
+    # The map grammar answers it the same way, from its own whitelist: a `container:` disagreeing with the
+    # declared `type:` did not come from the derivation, so it is refused as a key the grammar does not carry.
+    it "refuses a container: naming something other than the declared type: on a map too" do
+      expect { build_axn { expects :counts, type: Hash, of: { values: Integer, container: Array } } }
         .to raise_error(ArgumentError, /of: does not support container:/)
     end
 
