@@ -26,7 +26,7 @@ The last two are the ones that matter for tool schemas: a map of shaped records 
 
 Two claims in the ticket needed correcting before designing against them.
 
-The 25,000-property cap is **not** free. Collisions are derived from the emitted schema (`each_emitted_node`, `property_names.rb:347`, which does walk `items`/`additionalProperties`/`anyOf` generically), but the cap is a **declaration** walk — `count_emitted_properties!` (`property_names.rb:949`) descends `plan.shape`'s members and nothing else. A recursive graph would charge zero.
+The 25,000-property cap: the ticket says it is free, and **it is** — but not for the reason the ticket gives, and this spec got it wrong in an earlier draft before the Task 3 review corrected it. `count_emitted_properties!` (`property_names.rb:949`) does descend declarations for a shape's MEMBERS, so a reader checking only that path concludes a recursive graph charges zero. It does not: a declared TYPE's contribution is charged through `each_type_namespace(plan)` → `each_emitted_node(plan.type_schema)`, and `plan.type_schema` is the very Hash the emitter assigns to `prop[:items]`. Make that Hash recursive (see *Schema reflection*) and the cap follows for free, exactly as the collision rules do. Adding a declaration-side `of:` descent beside it would be a second enumerator predicting the first.
 
 The ticket's `keys:` example (`type: Hash, keys: String, of: {…}`) predates the grammar PRO-3165 actually shipped. Axes live inside the `of:` bag, so a map of shaped records is spelled `of: { values: { klass: …, shape: … } }`.
 
@@ -176,7 +176,7 @@ expects :by_region, type: Hash, of: { values: { klass: Hash, shape: { members: [
 
 Unions keep their per-branch `anyOf` and nest inside each branch, unchanged. `apply_structured_schema!`'s branches are currently mutually exclusive (`map?` / `in_items?` / `shape`); `map?` and `shape` now combine, emitting `properties` and `additionalProperties` at one node.
 
-`each_emitted_node` needs nothing: it already walks `items`, `additionalProperties` and `anyOf` generically, which is why the collision rules and the emitted-property renderers come free. `count_emitted_properties!` does need the new edge — it descends declarations, not the emitted schema, so it charges the `of:` rung under `ITEMS_SEGMENT` / `VALUES_SEGMENT` the way it already charges a member under its name.
+`each_emitted_node` needs nothing: it already walks `items`, `additionalProperties` and `anyOf` generically, which is why the collision rules and the emitted-property renderers come free. **The cap needs nothing either, and this was wrong in an earlier draft of this spec.** `count_emitted_properties!` descends declarations for a shape's MEMBERS, but it charges a declared TYPE's contribution through `each_type_namespace(plan)` → `each_emitted_node(plan.type_schema)` — and `plan.type_schema` is literally the Hash the emitter assigns to `prop[:items]`. Once the nameless-node builder makes that Hash recursive, every nested rung is charged by the enumerator that already walks it. Adding a declaration-side descent for the `of:` edge would be a second enumerator predicting the first, which `guards-and-projections.md` forbids. Verified exact at depth 1 and 2, for a nested array, a nested map and a nested union: 24,999 properties pass and 25,000 raise at every one.
 
 `property_sources_for` gains attribution through an unnamed rung, so a collision found inside `items.items` can say where it is rather than reporting a path it cannot name.
 
