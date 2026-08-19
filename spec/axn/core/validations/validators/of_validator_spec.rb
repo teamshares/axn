@@ -736,6 +736,21 @@ RSpec.describe Axn::Validators::OfValidator do
       expect(action.call(rows: [1]).exception).to be_a(Axn::InboundValidationError)
     end
 
+    # Axn installs a `name` of its own on the classes it builds, and `Module#to_s` does not consult it — so a
+    # rendering that reads the name through `to_s` (bound or dispatched) answers an object address where axn
+    # intends prose. The name is therefore read by DISPATCH, absorbed rather than trusted, which is what lets
+    # this and the raising-class case above both hold.
+    it "names an axn-built class the way axn names it, not by object address" do
+      klass = Class.new { include Axn }
+      klass.define_singleton_method(:name) { "AnonymousClient_2980::Axns::Inner" }
+      action = build_axn do
+        expects :rows, type: Array, of: klass
+        def call = nil
+      end
+
+      expect(action.call(rows: [1]).exception.message).to include("is not a AnonymousClient_2980::Axns::Inner")
+    end
+
     # The positive control: an ordinary class and a pseudo-type still read exactly as they did, so a seam that
     # rendered every token as its class would be caught rather than pass as safe.
     it "leaves an ordinary class's and a pseudo-type's wording unchanged" do

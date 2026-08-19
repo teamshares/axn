@@ -57,10 +57,28 @@ module Axn
         # always said ("is not a boolean"); the declaration-time label spells the colon, because there the token
         # is being quoted back to the author rather than described to a caller.
         def type_label(token)
-          return module_name(token) if Identity.kind?(token, ::Module)
+          return module_type_label(token) if Identity.kind?(token, ::Module)
           return Text.renderable(SYMBOL_NAME.bind_call(token)) if Identity.kind?(token, ::Symbol)
 
           class_name(token)
+        end
+
+        # A declared class named the way axn intends it to be named. `#name` is DISPATCHED, which is the
+        # documented exception to reading a caller's class through bound implementations: axn installs a `name`
+        # of its own on the classes it builds (`ClassBuilder#configure_class_name`, `Strategies::Form`), and
+        # `Module#to_s` does not consult it — bound or dispatched, `to_s` answers `#<Class:0x…>` for a mounted
+        # axn where axn intends `AnonymousClient_2980::Axns::Inner`. Binding here would substitute an object
+        # address for prose that axn itself installed.
+        #
+        # The dispatch is absorbed rather than trusted, which is what lets both rules hold at once: a class
+        # whose `name` raises (or answers with something that is not a String) degrades to the bound rendering
+        # instead of replacing the validation failure being reported with its own exception. An anonymous class
+        # with no installed name answers nil and takes the same fallback.
+        def module_type_label(mod)
+          name = mod.name
+          Identity.kind?(name, ::String) ? Text.renderable(name) : module_name(mod)
+        rescue ::Exception # rubocop:disable Lint/RescueException
+          module_name(mod)
         end
 
         # An exception's own message, as a UTF-8 String this method owns.
