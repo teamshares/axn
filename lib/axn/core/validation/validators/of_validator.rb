@@ -14,10 +14,13 @@ module Axn
         { klass: value }
       end
 
-      # A map names its axes with `keys:`/`values:`, either of which may be left off, so `klass:` is required
-      # only of the element form.
+      # A map names its axes with `keys:`/`values:`, either of which may be left off. An element bag names
+      # `klass:` only when that is what it constrains — a bag constraining by `of:` or `shape:` names no class
+      # deliberately (`of: { shape: … }` is "each element has these members, class unconstrained"), and the
+      # declaration guard has already refused a bag constraining none of the three.
       def check_validity!
         return if options[:container] == ::Hash
+        return if options[:of] || options[:shape]
 
         raise ArgumentError, "must supply :klass" if options[:klass].nil?
       end
@@ -51,14 +54,18 @@ module Axn
         end
       end
 
-      # The inner contract this bag declares, as a VALIDATIONS bag. `klass:` is deliberately absent, because the
+      # The inner contract this bag declares, as a VALIDATIONS bag — both of its edges, since a position may
+      # hold a container of its own AND have members read off it. `klass:` is deliberately absent, because the
       # type check is performed above and its message ("element at index 0 is not a String" — no colon) differs
       # in punctuation from a delegated one, which the caller below prefixes with a colon. Nil when the bag
       # constrains only a class, which is the overwhelmingly common case and the one that must allocate nothing.
       def contents_validations
         return @contents_validations if defined?(@contents_validations)
 
-        @contents_validations = options[:of] ? { of: options[:of] } : nil
+        bag = {}
+        bag[:of] = options[:of] if options[:of]
+        bag[:shape] = options[:shape] if options[:shape]
+        @contents_validations = bag.empty? ? nil : bag
       end
 
       # One validator class per bag, built once and reused across every element, exactly as ShapeValidator
@@ -93,7 +100,11 @@ module Axn
         depth = ancestry ? ancestry.depth : 0
         raise ArgumentError, Axn::Internal::ShapeGraph.inner_contract_too_deep_message if depth > Axn::Internal::ShapeGraph::MAX_NESTING
 
-        Axn::Internal::CycleGuard.guard_pair(value, options[:of], ancestry&.seen, on_cycle: nil) do |seen|
+        # The child this descent is about to validate against, which is the identity a cyclic graph brings back
+        # around: the nested `of:` bag, or the `shape:` node where that is the only edge the bag has. Never nil
+        # — a nil key would pair every shape-only position with every other, and the second would be dropped as
+        # a repeat.
+        Axn::Internal::CycleGuard.guard_pair(value, options[:of] || options[:shape], ancestry&.seen, on_cycle: nil) do |seen|
           yield Axn::Internal::CycleGuard::Ancestry.new(seen:, depth: depth + 1)
         end
       end

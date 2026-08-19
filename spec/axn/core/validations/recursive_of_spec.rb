@@ -340,4 +340,246 @@ RSpec.describe "recursive of:" do
         .to raise_error(ArgumentError, /answers a missing key from a Hash default/)
     end
   end
+
+  # The OTHER inner-contract key. A `shape:` inside a bag names the members of the value AT THAT POSITION —
+  # never "each element of it", which is the distributing reading `shape:` has only at a field under
+  # `type: Array`. So the container it is gated on is the bag's own `klass:`, and the explicit "no gate"
+  # sentinel where the bag names none.
+  describe "a shape: inside an of: bag" do
+    # A method rather than a `let`: `build_axn` `class_eval`s its block onto the action class, so `self` in
+    # there is the class and a `let` helper is unreachable from inside it. Every example hoists the shape into
+    # a LOCAL first, which the block closes over.
+    def sku_shape
+      { members: [Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })] }
+    end
+
+    it "validates each element's members" do
+      shape = sku_shape
+      action = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+
+      expect(action.call(rows: [{ sku: "a" }])).to be_ok
+      result = action.call(rows: [{ sku: 1 }])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("element at index 0: sku is not a String")
+    end
+
+    it "accepts a bag constraining by members alone, with no klass:" do
+      shape = sku_shape
+      action = build_axn { expects :rows, type: Array, of: { shape: } }
+
+      expect(action.call(rows: [{ sku: "a" }])).to be_ok
+      expect(action.call(rows: [{ sku: 1 }])).not_to be_ok
+    end
+
+    it "emits the members as items.properties" do
+      shape = sku_shape
+      action = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+
+      expect(action.input_schema.dig(:properties, :rows, :items)).to include(
+        type: "object", properties: { sku: { type: "string" } },
+      )
+    end
+
+    # A bag naming no class is the untyped-element case: on INPUT a client sends objects carrying the members,
+    # which is what the field-level "no `of:` at all" branch already says.
+    it "emits the members of a klass-less bag too" do
+      shape = sku_shape
+      action = build_axn { expects :rows, type: Array, of: { shape: } }
+
+      expect(action.input_schema.dig(:properties, :rows, :items)).to include(
+        type: "object", properties: { sku: { type: "string" } },
+      )
+    end
+
+    # OUTPUT is the opposite: nothing names a class, so nothing proves the value serializes member-keyed, and
+    # the node is left untyped rather than promising an object the serializer will not produce.
+    it "withholds a klass-less bag's members on output" do
+      shape = sku_shape
+      action = build_axn { exposes :rows, type: Array, of: { shape: } }
+
+      expect(action.output_schema.dig(:properties, :rows)).not_to have_key(:items)
+    end
+
+    it "recurses two containers deep with members at the bottom" do
+      shape = sku_shape
+      action = build_axn { expects :m, type: Array, of: { klass: Array, of: { klass: Hash, shape: } } }
+
+      result = action.call(m: [[{ sku: 1 }]])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("element at index 0: element at index 0: sku is not a String")
+    end
+
+    it "still refuses a bag that constrains none of the three axes, naming all of them" do
+      expect { build_axn { expects :rows, type: Array, of: { message: "nope" } } }
+        .to raise_error(ArgumentError, "of: must constrain something — name the contents' class with `klass:`, " \
+                                       "what is inside them with `of:`, or their members with `shape:`")
+    end
+
+    # A shape describes what is inside a STRUCTURED value, so a bag naming a scalar class has nothing for the
+    # members to be read off — held to exactly the bar a field's `type:` is held to, and named by the key the
+    # author wrote inside a bag.
+    it "refuses a shape under a scalar klass:" do
+      shape = sku_shape
+      expect { build_axn { expects :rows, type: Array, of: { klass: String, shape: } } }
+        .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: " \
+                                       "(Array, Hash, or a class) — got [String]")
+    end
+
+    it "refuses a shape under a union klass:" do
+      shape = sku_shape
+      expect { build_axn { expects :rows, type: Array, of: { klass: [Hash, Array], shape: } } }
+        .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: " \
+                                       "(Array, Hash, or a class) — got [Hash, Array]")
+    end
+
+    # The field-level combination stays refused (PRO-3166 task 6 grants it): `shape:` there names the hash's
+    # OWN members while `of:` names its values, which is a different pairing from the one inside a bag.
+    it "leaves of: beside shape: on a Hash FIELD refused" do
+      shape = sku_shape
+      expect { build_axn { expects :m, type: Hash, of: { values: Integer }, shape: } }
+        .to raise_error(ArgumentError, /of: beside shape: on a Hash is not supported yet/)
+    end
+
+    # ONE depth counter across both edges, spent at the rung a bag's own `shape:` adds. Three levels sit above
+    # the chain below — the bag's `of:` rung, the shape node it carries, and the member — so the boundary is
+    # exactly two rungs shallower than the cap. The PAIR is what pins it: drop the shape node's level and the
+    # boundary moves, so the "refuses" example is the one that catches a restarted counter and the "accepts"
+    # one is the control against an over-eager charge.
+    describe "the depth budget" do
+      def chain(depth)
+        depth.zero? ? Integer : { klass: Array, of: chain(depth - 1) }
+      end
+
+      def declared(depth)
+        member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: Array, of: chain(depth) })
+        shape = { members: [member] }
+        build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+      end
+
+      it "refuses the first chain whose deepest rung lands past the cap" do
+        expect { declared(Axn::Internal::ShapeGraph::MAX_NESTING - 1) }
+          .to raise_error(ArgumentError, /an `of:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+      end
+
+      it "leaves the one rung shallower declarable" do
+        expect { declared(Axn::Internal::ShapeGraph::MAX_NESTING - 2) }.not_to raise_error
+      end
+    end
+
+    # A bag's `shape:` is caller-supplied and is detached before axn writes the derived container into it, on
+    # the same terms `_derive_raw_shape_container!` documents — so a later mutation cannot change a declared
+    # contract, and the caller's own Hash never acquires axn's derived key.
+    it "copies the caller's shape rather than aliasing it" do
+      shape = sku_shape
+      action = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+      shape[:members] << Axn::Core::Contract::ShapeConfig.new(field: :qty, validations: { type: { klass: Integer } })
+
+      expect(shape).not_to have_key(:container)
+      expect(action.call(rows: [{ sku: "a" }])).to be_ok
+    end
+
+    # The container belongs to the POSITION, not to the node, and one walk's memo hands every reference to a
+    # shared shape the SAME copy — so the derivation has to detach before it writes, or the last position
+    # walked would decide the container for all of them.
+    it "derives a container per position for one shape reused at two of them" do
+      shape = sku_shape
+      member = ->(name, validations) { Axn::Core::Contract::ShapeConfig.new(field: name, validations:) }
+      action = build_axn do
+        expects :payload, type: Hash, shape: { members: [
+          member.call(:gated, { type: Array, of: { klass: Hash, shape: } }),
+          member.call(:open, { type: Array, of: { shape: } }),
+        ] }
+      end
+
+      containers = action.internal_field_configs.first.validations[:shape][:members]
+                         .to_h { |m| [m.field, m.validations.dig(:of, :shape, :container)] }
+      expect(containers).to eq(gated: Hash, open: Axn::Internal::ShapeGraph::ANY_CONTAINER)
+    end
+  end
+
+  # Task 1 landed the sentinel with no direct consumer; a bag constraining by members alone is the first, so
+  # this is where its behaviour is pinned.
+  describe "the no-container-gate sentinel" do
+    it "is a Module, so it satisfies the container check without a special case" do
+      expect(Axn::Internal::ShapeGraph::ANY_CONTAINER).to be_a(Module)
+    end
+
+    it "names itself in prose rather than rendering as an anonymous module" do
+      expect(Axn::Internal::ShapeGraph::ANY_CONTAINER.to_s).to eq("Axn::Internal::ShapeGraph::ANY_CONTAINER")
+    end
+
+    it "is what a klass-less bag's shape is gated on" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })] }
+      action = build_axn { expects :rows, type: Array, of: { shape: } }
+
+      stored = action.internal_field_configs.first.validations.dig(:of, :shape, :container)
+      expect(stored).to be(Axn::Internal::ShapeGraph::ANY_CONTAINER)
+    end
+
+    # No type gate under the sentinel: the members are read off whatever arrived, and `extractable?` still
+    # reports a value they cannot be read from. A Struct is neither Hash nor Array, so a real container gate
+    # would skip it entirely and the mismatch below would go unreported.
+    it "applies no type gate, so members are read off a value of any class" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })] }
+      action = build_axn { expects :rows, type: Array, of: { shape: } }
+      row = Struct.new(:sku).new(1)
+
+      result = action.call(rows: [row])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("element at index 0: sku is not a String")
+    end
+
+    # Identity is asked with the sentinel as the RECEIVER, so nothing a caller supplies can answer the
+    # question for it: a container whose own `equal?` says yes to everything is still type-gated.
+    it "cannot be impersonated by a container answering equal? for itself" do
+      liar = Class.new do
+        def self.equal?(_other) = true
+        def self.name = "Liar"
+      end
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })],
+                container: liar }
+      action = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+
+      # Gated on the liar, which the Hash below is not an instance of — so the members are never read and the
+      # `sku` mismatch goes unreported. Were the sentinel check asking the CONTAINER, it would answer yes and
+      # the gate would be skipped.
+      expect(action.call(rows: [{ sku: 1 }])).to be_ok
+    end
+  end
+
+  # ONE path allowance per field declaration, spent across BOTH edges. Two independent allowances admitted a
+  # field whose `shape:` and whose `of:` chain each sat just under the cap — twice the graph the bound exists
+  # to permit, and unexploitable only until `shape:` joined the bag's grammar and the two edges could
+  # interleave at field level.
+  describe "the member-path allowance across both field edges" do
+    def shared_sibling_shape(depth, leaf_validations)
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: leaf_validations)],
+                container: Hash }
+      depth.times do
+        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: }),
+                            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: })],
+                  container: Hash }
+      end
+      shape
+    end
+
+    # 13 levels of two-way sharing charge 24,574 paths, so either edge alone declares. Together they are
+    # 49,149 — the two graphs plus the `of:` rung between them — which one budget refuses and two admit.
+    it "leaves each edge legal on its own" do
+      field_shape = shared_sibling_shape(13, { type: String })
+      inner_shape = shared_sibling_shape(13, { type: String })
+
+      expect { build_axn { expects :m, type: Hash, shape: field_shape } }.not_to raise_error
+      expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: inner_shape } } }.not_to raise_error
+    end
+
+    it "refuses the declaration that spends both" do
+      field_shape = shared_sibling_shape(13, { type: String })
+      inner_shape = shared_sibling_shape(13, { type: String })
+
+      expect do
+        build_axn { expects :rows, type: Array, shape: field_shape, of: { klass: Hash, shape: inner_shape } }
+      end.to raise_error(ArgumentError, /has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths/)
+    end
+  end
 end

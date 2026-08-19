@@ -237,10 +237,13 @@ RSpec.describe Axn::Validators::OfValidator do
         .to include("element at index 1: element at index 0 is not a Integer")
     end
 
-    it "rejects a nested shape: inside the of: bag" do
+    # `shape:` is the bag's third constraining axis (PRO-3166): it names the members of the value at that
+    # position. Its own grammar, emission and bounds live in `recursive_of_spec`; what belongs here is that the
+    # key is no longer refused as unknown.
+    it "accepts a nested shape: inside the of: bag" do
       expect do
         build_axn { expects :rows, type: Array, of: { klass: Hash, shape: { members: [] } } }
-      end.to raise_error(ArgumentError, /of: does not support shape:/)
+      end.not_to raise_error
     end
 
     it "rejects a misspelled message: rather than dropping the custom message" do
@@ -273,7 +276,7 @@ RSpec.describe Axn::Validators::OfValidator do
     it "does not advertise on: as a supported key, since nothing accepts it" do
       expect { build_axn { expects :rows, type: Array, of: { klass: String, wat: 1 } } }
         .to raise_error(ArgumentError) do |error|
-          expect(error.message).to include("(supported: klass:, of:, message:")
+          expect(error.message).to include("(supported: klass:, of:, shape:, message:")
           expect(error.message).not_to include("on:")
         end
     end

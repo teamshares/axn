@@ -539,20 +539,24 @@ module Axn
 
           validations, metadata = _partition_field_options(fields, **)
           validations[:shape] = _build_shape(fields, validations:, &block) if block
-          _snapshot_declared_shape!(validations, fields)
+          # Minted here, after the block form's per-member pre-pass, and threaded to BOTH of this declaration's
+          # edges — the snapshot below and the `of:` chain `_parse_field_configs` descends (see
+          # `_new_path_allowance`).
+          path_allowance = _new_path_allowance(fields)
+          _snapshot_declared_shape!(validations, path_allowance)
 
           # `on` is nil-or-Symbol by construction here (canonicalized above), so routing asks the canonical
           # value rather than re-deciding presence on whatever the caller passed.
           if on
             return _expects_subfields(*fields, on:, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                               reader_names:, user_facing:, method_call:, **validations)
+                                               reader_names:, user_facing:, method_call:, path_allowance:, **validations)
           end
 
           # A `confirmation:` field declares its `<field>_confirmation` companion here, before any check
           # runs, so the companion is an ordinary member of the batch from that point on: it is judged by
           # the duplicate guard, committed with the rest, and gets its reader from the same pass.
           declared = _parse_field_configs(*fields, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess:, sensitive:, metadata:,
-                                                   reader_names:, user_facing:, **validations)
+                                                   reader_names:, user_facing:, path_allowance:, **validations)
           companions = _confirmation_companion_configs(declared, existing: internal_field_configs)
 
           (declared + companions).tap do |configs|
@@ -661,7 +665,10 @@ module Axn
           # option is reported as the naming defect it is. That ordering only governs these two walks over
           # resolved members: in the block form the option error surfaces first, raised inside
           # `_build_shape_member` while `_build_shape` above is still assembling the members.
-          _snapshot_declared_shape!(validations, fields)
+          # One allowance across both of this declaration's edges, minted after the block form's per-member
+          # pre-pass (see `_new_path_allowance`).
+          path_allowance = _new_path_allowance(fields)
+          _snapshot_declared_shape!(validations, path_allowance)
 
           # The block form rejects a `user_facing:` member inside `_build_shape_member` (above), but a
           # raw `shape:` kwarg supplies pre-built member objects that never route through it — so walk
@@ -669,7 +676,7 @@ module Axn
           _reject_outbound_shape_user_facing!(validations[:shape])
 
           _parse_field_configs(*fields, allow_blank:, allow_nil:, allow_empty:, optional:, default:, preprocess: nil, sensitive:, metadata:,
-                                        **validations).tap do |configs|
+                                        path_allowance:, **validations).tap do |configs|
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
               raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
             end
@@ -1156,14 +1163,15 @@ module Axn
                                           if unless on message strict
                                         ]).freeze
 
-        # What an `of:` bag may carry. `of:` is the recursion (PRO-3166): a bag describes one unnamed position,
-        # and a position may hold a container of its own. Everything else is refused rather than ignored — the
-        # bag reaches `OfValidator` as an EachValidator options hash, which reads the keys it knows and drops
-        # the rest, so an unrecognized key declares cleanly, constrains nothing, and every value passes.
+        # What an `of:` bag may carry. `of:` and `shape:` are the recursion (PRO-3166): a bag describes one
+        # unnamed position, and a position may hold a container of its own or be described by its members.
+        # Everything else is refused rather than ignored — the bag reaches `OfValidator` as an EachValidator
+        # options hash, which reads the keys it knows and drops the rest, so an unrecognized key declares
+        # cleanly, constrains nothing, and every value passes.
         #
         # `on:` is admitted here and refused by `_reject_validator_context_scope!`, which names the actual
         # problem (axn has no validation contexts) instead of reporting the key as unknown.
-        OF_OPTION_KEYS = (Set.new(%i[klass of message]) | Axn::Validation::Base.shared_validation_option_keys).freeze
+        OF_OPTION_KEYS = (Set.new(%i[klass of shape message]) | Axn::Validation::Base.shared_validation_option_keys).freeze
 
         # The same set for the other container. A Hash's insides are two axes rather than one element position,
         # so `klass:` has no reading here and is absent: which axis it named would be a convention rather than
@@ -1399,11 +1407,26 @@ module Axn
           # subclass denying its own class would have the whole bag read as the declared class.
           type_bag = Internal::ShapeGraph.hash_or_nil(type)
           klass = nil.equal?(type_bag) ? type : type_bag[:klass]
+          _shape_compatible_klass!(klass, requirement: "a shape block requires a single structured type:")
+        end
+
+        # The rule itself, over the declared class alone, because the two callers name that class with two
+        # different keys: a FIELD names it in `type:`, an inner-contract bag in `klass:` (PRO-3166). `requirement:`
+        # travels with it for the reason `_declared_of_container!`'s `option:` does — one rule, but a refusal
+        # naming a key the declaration does not carry prescribes a fix with nowhere to land, and there is no
+        # "shape block" to name when the shape was written inside a bag.
+        #
+        # Each declared class is named through the seam that reads its name natively rather than by rendering the
+        # LIST: `Array#inspect` dispatches every element's own `inspect`, so a declared class defining one that
+        # raises would replace this ArgumentError with the caller's exception — which outside StandardError
+        # escapes every rescue meant to settle it. Byte-identical to the list's rendering for every class and
+        # pseudo-type token.
+        def _shape_compatible_klass!(klass, requirement:)
           klasses = Array(klass)
           return klasses.first if klasses.size == 1 && SHAPE_INCOMPATIBLE_TYPES.exclude?(klasses.first)
 
           raise ArgumentError,
-                "a shape block requires a single structured type: (Array, Hash, or a class) — got #{klasses.inspect}"
+                "#{requirement} (Array, Hash, or a class) — got [#{klasses.map { |k| _declared_type_label(k) }.join(', ')}]"
         end
 
         # A raw `shape:` kwarg (as opposed to the `do…end` block, whose `_build_shape` derives
@@ -1452,6 +1475,39 @@ module Axn
           detached[:container] = _shape_compatible_type!(validations) if nil.equal?(detached[:container])
           _reject_non_class_container!(detached[:container])
           validations[:shape] = detached
+        end
+
+        # The same derivation for the OTHER position a `shape:` can sit at: inside an `of:` bag (PRO-3166), where
+        # it names the members of the value AT THAT POSITION — never "each element of it", which is the
+        # distributing reading `shape:` has only at a field under `type: Array`. So the container is the bag's
+        # own `klass:`, which plays `type:`'s role inside a bag, held to the same "single structured class" bar
+        # a field's `type:` is.
+        #
+        # A bag naming no class at all is the case a field never has: `of: { shape: … }` is "each element has
+        # these members, class unconstrained". That gets the explicit `ANY_CONTAINER` sentinel rather than a nil
+        # container, because ABSENCE already means something here — it is the bug signature
+        # `_derive_raw_shape_container!` exists to catch, a shape that never got a container derived and fails
+        # every call with a bare `TypeError: class or module required`.
+        #
+        # Detached before the write for the reason `_derive_raw_shape_container!` details, one step further: by
+        # the time this runs the node is the declaration walk's own copy, SHARED by every position reusing that
+        # shape, while the container belongs to the position — so writing in place would give one position the
+        # container derived for another. Mutates `bag`.
+        def _derive_inner_shape_container!(bag)
+          shape = Internal::ShapeGraph.hash_or_nil(bag[:shape])
+          return if nil.equal?(shape)
+
+          detached = Internal::ShapeGraph.detach_node(shape)
+          if nil.equal?(detached[:container])
+            detached[:container] =
+              if Internal::ShapeGraph.carries_key?(bag, :klass)
+                _shape_compatible_klass!(bag[:klass], requirement: "a shape inside an `of:` bag requires a single structured klass:")
+              else
+                Internal::ShapeGraph::ANY_CONTAINER
+              end
+          end
+          _reject_non_class_container!(detached[:container])
+          bag[:shape] = detached
         end
 
         # A container is what the shaped value is type-checked against (`value.is_a?(container)` in
@@ -1590,6 +1646,7 @@ module Axn
           reader_names: {},
           user_facing: false,
           method_call: false,
+          path_allowance: nil,
           **validations
         )
           # Handle optional: true by setting allow_blank: true
@@ -1600,7 +1657,7 @@ module Axn
             _reject_model_transform!(fields, on:, preprocess:, validations:)
           end
 
-          _parse_field_validations(*fields, allow_nil:, allow_blank:, allow_empty:, **validations).map do |field, parsed_validations|
+          _parse_field_validations(*fields, allow_nil:, allow_blank:, allow_empty:, path_allowance:, **validations).map do |field, parsed_validations|
             reader = reader_names[field] || field
             FieldConfig.new(field:, validations: parsed_validations, on:, default:, preprocess:, sensitive:, metadata:,
                             reader_as: reader, user_facing:, method_call:)
@@ -2254,18 +2311,14 @@ module Axn
 
         # The axes a bag can constrain on. Keyed on `key?` rather than on truthiness, so a supplied-but-nil axis
         # is caught by this check rather than passing as one that was named.
-        #
-        # `:shape` is listed because it is the third axis the grammar is headed for (PRO-3166 task 4) and this
-        # is the sentence that has to name all three; it is not yet in `OF_OPTION_KEYS`, so a bag carrying it is
-        # refused as an unknown key before this runs and the `:shape` arm is unreachable for now.
         INNER_CONTRACT_AXES = %i[klass of shape].freeze
 
         def _reject_unconstraining_of_bag!(bag)
           return if INNER_CONTRACT_AXES.any? { |axis| Internal::ShapeGraph.carries_key?(bag, axis) && !bag[axis].nil? }
 
           raise ArgumentError,
-                "of: must constrain something — name the contents' class with `klass:`, or what is inside them " \
-                "with `of:`"
+                "of: must constrain something — name the contents' class with `klass:`, what is inside them " \
+                "with `of:`, or their members with `shape:`"
         end
 
         # A bag's own `of:` is held to exactly the grammar a FIELD's is, with `klass:` in `type:`'s role: the
@@ -2563,6 +2616,7 @@ module Axn
           allow_nil: false,
           allow_blank: false,
           allow_empty: nil,
+          path_allowance: nil,
           **validations
         )
           Internal::ShapeGraph.detach_option_containers!(validations)
@@ -2589,7 +2643,7 @@ module Axn
           # after it, because every check below reads a bag that has to be final by then — and ahead of
           # `_derive_raw_shape_container!` for the reason that comment gives, that a derivation must land on
           # nodes which are axn's own.
-          _walk_declared_inner_contracts!(validations, fields)
+          _walk_declared_inner_contracts!(validations, fields, path_allowance || _new_path_allowance(fields))
 
           # Ahead of every consumer of this bag — `_validate_allow_empty!`, `_reconcile_emptiness_axis!`, the
           # tolerance push-down, `_apply_nil_skip_to_non_type_validators!` — so none of them ever judges an entry

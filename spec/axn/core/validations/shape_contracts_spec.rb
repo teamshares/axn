@@ -731,7 +731,8 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       it "rejects `of: nil` at declaration, where it used to raise on every call" do
         expect { declared_with({ type: Array, of: nil }) }
           .to raise_error(ArgumentError, "of: must constrain something — name the contents' class with " \
-                                         "`klass:`, or what is inside them with `of:`")
+                                         "`klass:`, what is inside them with `of:`, or their members with " \
+                                         "`shape:`")
       end
 
       # RECORDED RESIDUE, and a field-path one rather than a member's: `of: false` is not `of: nil`, so the

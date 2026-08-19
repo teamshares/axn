@@ -1556,12 +1556,15 @@ module Axn
         # must provably serialize to a member-keyed object (a plain Data/Struct/Hash `of:`). INPUT: the
         # elements must be object-typed (Hash/`:params`/Data/Struct) or untyped (no `of:` — the client sends
         # objects). A scalar `of:` (String/Integer/…) reads members off the scalar, so it is NOT overlaid.
+        # A bag that NAMES no class is the same case as no bag at all — untyped elements, which on input a client
+        # sends as objects carrying the shape's members (`of: { shape: … }`, PRO-3166). On OUTPUT it stays
+        # unproven, and so unemitted, for the reason any unnamed class does.
         def shape_overlay_applies?(of_validations, for_output:)
           return shaped_items_serialize_to_object?(of_validations) if for_output
           return true unless of_validations # untyped elements: client sends objects with the shape members
 
           klasses = Array(of_validations[:klass])
-          klasses.any? && klasses.all? { |k| object_typed_element?(k) }
+          klasses.empty? || klasses.all? { |k| object_typed_element?(k) }
         end
 
         # Whether an `of:` element type provably serializes to a member-keyed object (output items). Needs `of:`.
@@ -1610,9 +1613,10 @@ module Axn
         end
 
         # The schema for ONE unnamed position — an array element, a map value. The node an `of:` bag describes,
-        # built from the same ingredients a FIELD's node is: the class the bag names (`contents_schema_for`), and
-        # what that class holds in turn (the bag's own `of:`). A container sitting directly inside a container has
-        # no member name to hang the next level on, so this is the only way down to it.
+        # built from the same ingredients a FIELD's node is: the class the bag names (`contents_schema_for`), the
+        # members named off it (the bag's own `shape:`), and what that class holds in turn (the bag's own `of:`).
+        # A container sitting directly inside a container has no member name to hang the next level on, so this
+        # is the only way down to it.
         #
         # Shared with `apply_structured_schema!` through `shape_property_plan`'s `type_schema`, which is the whole
         # reason the collision rules and the projection size cap follow a recursive `of:` down: both read what the
@@ -1634,6 +1638,7 @@ module Axn
         # deliberately rather than corrected here.
         def contents_node_schema(bag, for_output: false, depth: 0)
           node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : {}
+          node = contents_member_schema(node, bag, for_output:)
           inner = Axn::Internal::ShapeGraph.hash_or_nil(bag[:of])
           return node if nil.equal?(inner)
 
@@ -1650,6 +1655,27 @@ module Axn
             contents = contents_node_schema(inner, for_output:, depth: depth + 1)
             contents.empty? ? node : node.merge(items: contents)
           end
+        end
+
+        # The `shape:` an `of:` bag carries, overlaid onto the node built from that bag's `klass:`. A bag's shape
+        # names the members of the value AT THAT POSITION, so its members are that node's `properties` — the same
+        # merge `apply_structured_schema!` makes at a field's items node, written once here so a shape one rung
+        # down emits exactly what a shape at the top emits. Its members are what the projection size cap and
+        # collision attribution then charge, since both read `plan.type_schema` and this Hash IS that schema.
+        #
+        # Gated on the same rule the field-level overlay is gated on (`shape_overlay_applies?`), asked of the bag
+        # itself because the bag's `klass:` is what its members are read off: a scalar element keeps its scalar
+        # type and validates members against it without ever emitting them, and on OUTPUT a class that is not
+        # provably member-keyed is left untyped rather than promising an object the serializer will not produce.
+        def contents_member_schema(node, bag, for_output:)
+          shape = Axn::Internal::ShapeGraph.hash_or_nil(bag[:shape])
+          return node if nil.equal?(shape)
+          return node unless shape_overlay_applies?(bag, for_output:)
+
+          member_props, required = member_properties(shape[:members], for_output:)
+          merged = node.merge(type: "object", properties: (node[:properties] || {}).merge(member_props))
+          merged[:required] = required unless required.empty?
+          merged
         end
 
         # What a map's `values:` axis contributes to the node holding it, under the key it lands at — or `{}` where
