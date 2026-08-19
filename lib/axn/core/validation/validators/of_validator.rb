@@ -198,14 +198,40 @@ module Axn
 
         keys = axis_contract(:keys)
         values = axis_contract(:values)
+        exempt = options[:shaped_keys] || Axn::Internal::ShapeGraph::NO_SHAPED_KEYS
         index = 0
 
         # Traversed through a BOUND `Hash#each` so a subclass cannot decide which entries get validated — nor,
         # since nothing here renders a key, which entries get to run their own code while being named.
         Axn::Internal::ShapeGraph.each_entry(value) do |key, entry|
-          validate_position(record, attribute, keys, key, "key at index #{index}")
-          validate_position(record, attribute, values, entry, "value at index #{index}")
+          # A key the shape beside this map names is emitted as a `properties` entry, which
+          # `additionalProperties` does not govern — so the map contract does not govern it either, on BOTH
+          # axes. The ordinal still advances: it names the entry's position in what the caller wrote, not its
+          # position among the entries this happens to check.
+          unless exempt_key?(key, exempt)
+            validate_position(record, attribute, keys, key, "key at index #{index}")
+            validate_position(record, attribute, values, entry, "value at index #{index}")
+          end
           index += 1
+        end
+      end
+
+      SYMBOL_NAME = ::Symbol.instance_method(:name)
+      STRING_EQ = ::String.instance_method(:==)
+      private_constant :SYMBOL_NAME, :STRING_EQ
+
+      # A shape member's key is matched in either form, because extraction accepts both
+      # (`FieldResolvers.extract_or_nil` reads a Hash by symbol or by string) and JSON input is string-keyed —
+      # a Symbol-only comparison would silently stop exempting for the commonest payload shape there is. Both
+      # sides are compared through BOUND base implementations, so a String subclass answering `==` for its own
+      # purposes cannot decide whether a key is governed. Anything that is neither is a key no member names.
+      def exempt_key?(key, exempt)
+        return false if exempt.empty?
+
+        case key
+        when ::Symbol then exempt.include?(key)
+        when ::String then exempt.any? { |member| STRING_EQ.bind_call(key, SYMBOL_NAME.bind_call(member)) }
+        else false
         end
       end
 

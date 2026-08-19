@@ -464,6 +464,11 @@ module Axn
       VALUES_POSITION = :values
       MAP_POSITIONS = [KEYS_POSITION, VALUES_POSITION].freeze
 
+      # The exempt set of a map that no `shape:` accompanies: every entry is governed. One frozen Array rather
+      # than a fresh one per declaration and per undeclared read, since the overwhelmingly common map has no
+      # shape beside it and the runtime asks this of every entry of every Hash it validates.
+      NO_SHAPED_KEYS = [].freeze
+
       EMPTY_INNER_CONTRACTS = [].freeze
       private_constant :EMPTY_INNER_CONTRACTS
 

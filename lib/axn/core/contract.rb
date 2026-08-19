@@ -2309,7 +2309,9 @@ module Axn
         # `shared_validation_option_keys` — a correctness requirement rather than permissiveness, since a
         # whitelist without them would have the second pass refuse the very keys axn itself merged in.
         # `container:` is derived on the same terms, so without this the second pass reports axn's own key as
-        # one the grammar does not support and fails a well-formed declaration.
+        # one the grammar does not support and fails a well-formed declaration. `shaped_keys:` (the map's
+        # exempt set — see `_derive_shaped_keys!`) is derived later in the pass but stored in the same bag, so
+        # it goes the same way: dropped here and derived again, never carried across.
         #
         # Dropped rather than returned early on, so every check runs on every pass and nothing rides in on the
         # second one. And dropped ONLY when it names the container just derived: a bag naming a DIFFERENT one
@@ -2322,7 +2324,7 @@ module Axn
           return if nil.equal?(bag)
           return unless container.equal?(bag[:container])
 
-          validations[:of] = bag.except(:container)
+          validations[:of] = bag.except(:container, :shaped_keys)
         end
 
         # An Array holds one kind of thing, so the bare form says everything there is to say and expands into the
@@ -2487,9 +2489,13 @@ module Axn
         # pick an axis by convention, and which one it picked would not be visible in the declaration.
         #
         # `owner` is whatever DECLARED the `of:` being canonicalized — a field's validations bag, or an
-        # inner-contract bag one rung up (PRO-3166). The two are read identically because the only keys read
-        # are `:of` and `:shape`, and both mean the same thing in either: the contract for what is inside, and
-        # the members named beside it.
+        # inner-contract bag one rung up (PRO-3166). The two are read identically because the only key read is
+        # `:of`, which means the same thing in either: the contract for what is inside.
+        #
+        # A `shape:` beside it is NOT read here, and the exempt set it derives is written later, by the walk
+        # (`_derive_shaped_keys!`): the shape is snapshotted AFTER this runs at two of the three positions a map
+        # can sit at, so reading it here would read the caller's members list a second time and record names the
+        # stored shape may not carry.
         def _canonical_map_of!(owner, fields)
           bag = Internal::ShapeGraph.hash_or_nil(owner[:of])
           raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if nil.equal?(bag)
@@ -2499,7 +2505,6 @@ module Axn
 
           _reject_inner_contract_context_scope!(bag, fields)
           _reject_unsupported_map_axis!(bag)
-          _reject_map_beside_shape!(owner)
           _canonicalize_map_axes!(bag, fields)
           bag.merge(container: ::Hash)
         end
@@ -2597,14 +2602,62 @@ module Axn
           end
         end
 
-        # `shape:` names a Hash's own members and `of:` names its values, so the two describe different nodes and
-        # are complements rather than rivals. Refused as "not supported yet" so granting the combination later
-        # contradicts nothing already released.
-        def _reject_map_beside_shape!(validations)
-          return if nil.equal?(Internal::ShapeGraph.hash_or_nil(validations[:shape]))
+        # `shape:` names a Hash's own members and `of:` names its values, so on a Hash — and only on a Hash —
+        # the two describe DIFFERENT nodes and are complements rather than rivals. JSON Schema settles what
+        # that means: `additionalProperties` applies only to the keys `properties` does not match, so a key the
+        # shape names is exempt from the map contract, on BOTH axes. (`keys:` emits nothing, so there is no
+        # document to contradict there — but the symmetric rule is what stops a shape member quietly acquiring
+        # the key-type requirement it never asked for.)
+        #
+        # The exempt set is derived onto the map bag here rather than beside the canonicalization, because this
+        # is where the node's shape is FINAL: a shape member's and an inner bag's `shape:` are both snapshotted
+        # after their `of:` is canonicalized. `node` is a field's/member's validations bag or an inner-contract
+        # bag; `distributed` is the shape an enclosing node contributes to this one's properties (below).
+        # Mutates `node`.
+        def _derive_shaped_keys!(node, distributed)
+          bag = Internal::ShapeGraph.hash_or_nil(node[:of])
+          return if nil.equal?(bag)
+          # Identity: the container is axn's own derived key, and a map is the only container the exemption
+          # can arise on.
+          return unless ::Hash.equal?(bag[:container])
 
-          raise ArgumentError, "of: beside shape: on a Hash is not supported yet — shape: names the hash's own " \
-                               "members while of: names its values"
+          node[:of] = bag.merge(shaped_keys: _shaped_keys(node[:shape], distributed))
+        end
+
+        # The keys the shapes covering one node name, which JSON Schema emits as that node's `properties`. Read
+        # from the emitter's own key computation (`Schema.named_members`) rather than re-derived beside it, so
+        # the runtime skips exactly the keys the document exempts — the "a guard derives from what its consumer
+        # emits" rule, whose failure mode here would be a contract stricter than the schema it publishes.
+        #
+        # Frozen, and the shared empty Array where nothing is named, because it is stored in a declared contract
+        # and read on every entry of every Hash validated against it.
+        def _shaped_keys(*declared)
+          keys = declared.flat_map do |value|
+            shape = Internal::ShapeGraph.hash_or_nil(value)
+            next [] if nil.equal?(shape)
+
+            Axn::Internal::Reflection::Schema.named_members(shape[:members]).map { |_member, name| name.to_sym }
+          end
+
+          keys.empty? ? Internal::ShapeGraph::NO_SHAPED_KEYS : keys.uniq.freeze
+        end
+
+        # The shape an enclosing node contributes to the properties of the node one rung down, which today is
+        # exactly one case: a FIELD's `shape:` beside `type: Array` distributes over the elements, so the
+        # emitter overlays its members onto the `items` node — the same node an element bag's own map `of:`
+        # lands its `additionalProperties` at. The shape therefore names properties for a bag it does not sit
+        # in, and has to be carried down to it. (PRO-3191 canonicalizes that spelling into the bag, at which
+        # point this becomes the ordinary `bag[:shape]` case and goes away.)
+        #
+        # A BAG's `shape:` never distributes — it names the members of the value at the bag's own position, and
+        # the emitter overlays it there — so only a field/member node contributes one. That is what `:type`
+        # tells apart after canonicalization: a bag names its class with `klass:` and `:type` is not a key its
+        # grammar admits, while a node whose `of:` canonicalized at all was required to declare one.
+        def _distributed_shape(node, position)
+          return nil unless position == Internal::ShapeGraph::ELEMENT_POSITION
+          return nil unless Internal::ShapeGraph.carries_key?(node, :type)
+
+          node[:shape]
         end
 
         # Every offender at once: an author who wrote two of them has one declaration to fix, not two rounds

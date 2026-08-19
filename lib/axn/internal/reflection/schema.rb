@@ -1377,8 +1377,9 @@ module Axn
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
         # `additionalProperties:` — and a `shape:`'s typed member contracts as `properties:`.
-        # Precedence: shape: enriches/overrides the of: baseline, which only ever arises on an array (a map's
-        # `of:` is refused beside a shape at declaration).
+        # Precedence: shape: enriches/overrides the of: baseline. On an ARRAY the two describe one node from two
+        # angles, so the shape's members overwrite the element type's. On a MAP they describe different keys of
+        # one object — `properties` beside `additionalProperties` — and neither displaces the other.
         def apply_structured_schema!(prop, config, for_output:)
           return unless config.validations[:of] || config.validations[:shape]
 
@@ -1390,9 +1391,18 @@ module Axn
           if plan.map?
             # A map's contents land under `additionalProperties` at this very node, so the plan's type schema is
             # merged in whole. Empty for a keys-only map, which merges nothing — `keys:` has no JSON Schema
-            # spelling worth emitting (see shape_property_plan). No shape can accompany a map's `of:`, so there
-            # is no overlay to apply and nothing here consults `plan.emitted`.
+            # spelling worth emitting (see shape_property_plan).
             prop.merge!(plan.type_schema)
+            return unless shape && plan.emitted
+
+            # A shape beside a map names the SAME node's `properties`, which is the one place the two options
+            # describe different things: `additionalProperties` governs only the keys `properties` does not
+            # match, and the runtime mirrors that by exempting them (Core::Contract#_derive_shaped_keys!).
+            # `prop[:type]` is left as `build_property` derived it from `type: Hash` — already `object`, and
+            # already carrying the `null` branch where the field admits one.
+            member_props, required = member_properties(shape[:members], for_output:)
+            prop[:properties] = plan.base_properties.merge(member_props)
+            prop[:required] = required unless required.empty?
           elsif plan.in_items?
             # The plan's own type schema, not a second `contents_schema_for` call: one build, and the plan is
             # then literally what gets emitted rather than a parallel derivation of it.
@@ -1508,12 +1518,16 @@ module Axn
           # A map's `of:` names its VALUES, which every JSON object key maps to — so the axis reflects as
           # `additionalProperties` at the field's own node. The `keys:` axis contributes nothing: every JSON
           # object key is a string, so `keys: String` would say nothing a client can act on and `keys: Symbol`
-          # would be a lie on the wire. `emitted` stays false because it answers only whether a SHAPE's members
-          # become properties here, and a map's `of:` is refused beside a `shape:` at declaration — the values
-          # schema below is the declared TYPE's contribution, which is charged and emitted regardless, exactly
-          # as an array's items are.
+          # would be a lie on the wire. The values schema is the declared TYPE's contribution, charged and
+          # emitted regardless of any shape, exactly as an array's items are.
+          #
+          # `emitted` answers only whether a SHAPE's members become properties here, and beside a map they do:
+          # the two options name different keys of one object, so both land at this node. Settled on the same
+          # rule the non-array branch settles it on — a client is always expected to send the members, and on
+          # OUTPUT they are promised only where the value provably serializes member-keyed.
           if ::Hash.equal?(container)
-            return ShapePropertyPlan.new(emitted: false, in_items:, shape:, container:,
+            return ShapePropertyPlan.new(emitted: !for_output || shape_serializes_to_object?(validations),
+                                         in_items:, shape:, container:,
                                          type_schema: map_values_schema(of, for_output:))
           end
 

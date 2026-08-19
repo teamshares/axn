@@ -464,12 +464,15 @@ RSpec.describe "recursive of:" do
                                        "(Array, Hash, or a class) — got [Hash, Array]")
     end
 
-    # The field-level combination stays refused (PRO-3166 task 6 grants it): `shape:` there names the hash's
-    # OWN members while `of:` names its values, which is a different pairing from the one inside a bag.
-    it "leaves of: beside shape: on a Hash FIELD refused" do
+    # The field-level pairing is the same complement one rung up: `shape:` names the hash's OWN members while
+    # `of:` names what is left, so the two are not rivals. Granted in full below ("shape: beside of: on a
+    # Hash"); asserted here so this section carries the contrast rather than an obsolete refusal.
+    it "accepts of: beside shape: on a Hash FIELD, exempting the member it names" do
       shape = sku_shape
-      expect { build_axn { expects :m, type: Hash, of: { values: Integer }, shape: } }
-        .to raise_error(ArgumentError, /of: beside shape: on a Hash is not supported yet/)
+      action = build_axn { expects :m, type: Hash, of: { values: Integer }, shape: }
+
+      expect(action.call(m: { sku: "a", count: 1 })).to be_ok
+      expect(action.call(m: { sku: "a", count: "one" })).not_to be_ok
     end
 
     # ONE depth counter across both edges, spent at the rung a bag's own `shape:` adds. Three levels sit above
@@ -1140,6 +1143,151 @@ RSpec.describe "recursive of:" do
     it "leaves a klass-less bag with no message: alone" do
       shape = sku_shape
       expect { build_axn { expects :rows, type: Array, of: { shape: } } }.not_to raise_error
+    end
+  end
+  # A Hash is the only container where `shape:` and `of:` name DIFFERENT nodes: the shape names specific keys,
+  # the map names what is left. That is exactly how `additionalProperties` relates to `properties` in the
+  # document this emits, so a key the shape names is exempt from the map contract — on BOTH axes.
+  describe "shape: beside of: on a Hash" do
+    subject(:action) do
+      build_axn do
+        expects :metrics, type: Hash, of: { values: Integer } do
+          field :label, type: String
+        end
+      end
+    end
+
+    it "exempts a key the shape names from the map's values axis" do
+      expect(action.call(metrics: { label: "q3", visits: 120 })).to be_ok
+    end
+
+    it "still holds an unshaped key to the values axis" do
+      result = action.call(metrics: { label: "q3", visits: "lots" })
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("value at index 1 is not a Integer")
+    end
+
+    # The emitter canonicalizes a member name with `to_sym`, but a runtime Hash arrives string-keyed for the
+    # commonest payload shape there is (JSON), and extraction reads a member under either spelling. A
+    # Symbol-only comparison would silently stop exempting for exactly those callers.
+    it "exempts a STRING-keyed occurrence of the same member" do
+      expect(action.call(metrics: { "label" => "q3", "visits" => 120 })).to be_ok
+    end
+
+    it "still validates the shape member itself" do
+      result = action.call(metrics: { label: 5 })
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("label is not a String")
+    end
+
+    it "counts an exempt key toward the ordinal, so positions name the entry the caller wrote" do
+      result = action.call(metrics: { label: "q3", visits: "lots" })
+      expect(result.exception.message).to include("index 1")
+    end
+
+    it "emits properties and additionalProperties at one node" do
+      expect(action.input_schema[:properties][:metrics]).to include(
+        type: "object",
+        properties: { label: { type: "string", minLength: 1 } },
+        required: ["label"],
+        additionalProperties: { type: "integer" },
+      )
+    end
+
+    # `keys:` emits nothing (every JSON object key is already a string), so there is no document to contradict
+    # — and the symmetric rule is what stops `field :label` quietly acquiring a symbol-key requirement it
+    # never asked for.
+    it "exempts a shaped key from the keys: axis too" do
+      keyed = build_axn do
+        expects :m, type: Hash, of: { keys: Symbol, values: Integer } do
+          field :label, type: String
+        end
+      end
+
+      expect(keyed.call(m: { "label" => "q3", visits: 1 })).to be_ok
+    end
+
+    it "leaves a map with no shape governing every entry" do
+      unshaped = build_axn { expects :m, type: Hash, of: { values: Integer } }
+
+      expect(unshaped.call(m: { label: "q3" })).not_to be_ok
+    end
+
+    # The bag's own pairing rather than the field's: `klass: Hash` names the value at a map's `values:` axis,
+    # and the shape beside it names that value's own keys.
+    it "exempts a shaped key of a map nested inside a bag" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :label, validations: { type: { klass: String } })] }
+      nested = build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape:, of: { values: Integer } } } }
+
+      expect(nested.call(m: { "acme" => { label: "q3", visits: 1 } })).to be_ok
+      result = nested.call(m: { "acme" => { label: "q3", visits: "lots" } })
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("value at index 0: value at index 1 is not a Integer")
+    end
+
+    # A shape MEMBER's bag runs through the canonicalization seam TWICE, so the derived exempt set needs the
+    # same drop-and-re-derive handling `container:` gets — without it the second pass reports axn's own key as
+    # one the grammar does not support and fails a well-formed declaration.
+    it "survives the second canonicalization pass over a shape member's bag" do
+      member = build_axn do
+        expects :payload, type: Hash do
+          field :metrics, type: Hash, of: { values: Integer } do
+            field :label, type: String
+          end
+        end
+      end
+
+      expect(member.call(payload: { metrics: { label: "q3", visits: 1 } })).to be_ok
+      expect(member.call(payload: { metrics: { label: "q3", visits: "lots" } })).not_to be_ok
+    end
+
+    # The distributing spelling: the shape sits at the FIELD while the element's own map sits inside the bag,
+    # and the emitter merges both into one `items` node — so the exemption has to reach a map whose shape
+    # lives a rung above it, or the declaration contradicts the schema it publishes.
+    describe "a shaped element that is itself a map" do
+      subject(:action) do
+        build_axn do
+          expects :rows, type: Array, of: { klass: Hash, of: { values: Integer } } do
+            field :label, type: String
+          end
+        end
+      end
+
+      it "exempts the shaped key from the element's values axis" do
+        expect(action.call(rows: [{ label: "q3", visits: 120 }])).to be_ok
+      end
+
+      it "still holds an unshaped key of the element to the values axis" do
+        result = action.call(rows: [{ label: "q3", visits: "lots" }])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to include("element at index 0: value at index 1 is not a Integer")
+      end
+
+      it "still validates the element's shape member" do
+        result = action.call(rows: [{ label: 5 }])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to include("element at index 0: label is not a String")
+      end
+
+      it "emits properties and additionalProperties at the items node" do
+        expect(action.input_schema[:properties][:rows][:items]).to include(
+          type: "object",
+          properties: { label: { type: "string", minLength: 1 } },
+          additionalProperties: { type: "integer" },
+        )
+      end
+    end
+
+    # Deliberately still refused (see the design spec's Scope section): relaxing it would make the exempt set
+    # everything the emitter puts in `properties` at that node — subfield leaves, dotted-`on:` segments,
+    # `model:`'s generated id — none of which is knowable from the shape, where the set is derived.
+    it "still refuses a subfield rooted at a map" do
+      expect do
+        build_axn do
+          expects :m, type: Hash, of: { values: Integer }
+          expects :sku, on: :m
+        end
+      end.to raise_error(ArgumentError, /not supported yet/)
     end
   end
 end

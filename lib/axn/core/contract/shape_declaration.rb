@@ -213,7 +213,15 @@ module Axn
         # bag's `:of` until the rung below it is canonicalized. Detaching a bag copies one level (see
         # `_canonicalize_inner_contract!`), so a caller's cyclic Hash keeps resurfacing there at every turn of
         # the loop and is caught on the second.
-        def _walk_inner_contracts!(validations, walk, allowance, fields:, via: nil, via_name: nil)
+        #
+        # It is also where this node's OWN map bag learns which of its keys a `shape:` beside it exempts
+        # (`_derive_shaped_keys!`). Here rather than at the canonicalization, because here the shape is final:
+        # a member's is snapshotted by the loop above and a bag's by `_snapshot_inner_shape!` below, both AFTER
+        # the `of:` beside them was canonicalized. FIRST, before the children are enumerated and ahead of the
+        # early return: it replaces the node's `of:` with an extended copy, and an enumeration taken across that
+        # write would hand the loop bags belonging to the Hash that was just replaced.
+        def _walk_inner_contracts!(validations, walk, allowance, fields:, via: nil, via_name: nil, distributed: nil)
+          _derive_shaped_keys!(validations, distributed)
           contracts = Internal::ShapeGraph.inner_contracts(validations)
           return NO_INNER_CONTRACTS if contracts.empty?
 
@@ -233,7 +241,9 @@ module Axn
               # The bag's OTHER kind of child, walked off the same state — one depth budget and one path
               # allowance across both edges, exactly as a shape MEMBER's two edges share them.
               shaped = _snapshot_inner_shape!(bag, child, allowance, fields:, position:, via:, via_name:)
-              _combine_inner_contracts(shaped, _walk_inner_contracts!(bag, child, allowance, fields:, via:, via_name:))
+              carried = _distributed_shape(validations, position)
+              inner = _walk_inner_contracts!(bag, child, allowance, fields:, via:, via_name:, distributed: carried)
+              _combine_inner_contracts(shaped, inner)
             end
             _raise_cyclic_graph!(via, via_name, edge: INNER_CONTRACT_EDGE) if CYCLIC_SHAPE.equal?(walked)
 

@@ -440,12 +440,18 @@ RSpec.describe Axn::Validators::OfValidator do
                                        ":boolean, :uuid, :params (got a value of class Hash)")
     end
 
-    it "rejects of: beside shape: on a Hash as not yet supported" do
-      expect do
-        build_axn do
-          expects :counts, type: Hash, of: { values: Integer }, shape: { members: [] }
+    # `shape:` and `of:` name DIFFERENT keys of one Hash, so the pair is a complement rather than a conflict:
+    # the shape's keys are exempt from the map contract, exactly as `additionalProperties` governs only the
+    # keys `properties` does not match. The full grammar lives in recursive_of_spec (PRO-3166).
+    it "accepts of: beside shape: on a Hash, exempting the keys the shape names" do
+      action = build_axn do
+        expects :counts, type: Hash, of: { values: Integer } do
+          field :label, type: String
         end
-      end.to raise_error(ArgumentError, /not supported yet/)
+      end
+
+      expect(action.call(counts: { label: "q3", hits: 2 })).to be_ok
+      expect(action.call(counts: { label: "q3", hits: "two" })).not_to be_ok
     end
 
     # The same rule in its second spelling. A subfield declared `on:` a map names one of that hash's members
