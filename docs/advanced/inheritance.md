@@ -34,7 +34,9 @@ These are axn's convenience helpers — the public instance methods it puts on y
 - Contract: `result`, `inputs`, `expose`, `default_error`, `default_success`, `execution_context`, `set_execution_context`, `clear_execution_context`
 - Logging: `log`, `debug`, `info`, `warn`, `error`, `fatal`
 
-Nothing else is negotiable. Axn's private internals are not on this list — they are not a surface your base class could plausibly be standing in for — and neither is `ambient_context`, which is a sentinel the subfield resolver compares against rather than a convenience. `call`, `_run` and `initialize` are a separate case entirely; see [Names axn cannot hand over](#names-axn-cannot-hand-over).
+Axn's private internals are not on this list — they are not a surface your base class could plausibly be standing in for — and `call`, `_run` and `initialize` are a separate case entirely; see [Names axn cannot hand over](#names-axn-cannot-hand-over).
+
+One public helper is missing from both that list and the refusal below, and its absence is a known gap rather than a decision in your favor: **`ambient_context`**. Axn resolves the ambient parent by binding that reader rather than by dispatching its name, so handing the name over would not redirect anything internally — which is why it is left out of the deferral. The consequence is the one thing this page otherwise says axn fixed: if your hierarchy declares `ambient_context`, axn's reader wins **silently**, with no warning, and neither declaration below will accept the name — `prefer_inherited :ambient_context` and `prefer_axn :ambient_context` both raise, naming `Axn::Core::AmbientContext` as the owner. Until that changes, don't use `ambient_context` as a method name anywhere in an action's hierarchy.
 
 ## A worked example
 
@@ -69,7 +71,7 @@ Two things about that line are worth knowing. It fires the first time an action 
 
 ## Confirming the deferral: `prefer_inherited`
 
-Add `prefer_inherited :log` to say the deferral is what you wanted. It changes no behavior — the inherited implementation was already the one running — and it silences the warning for that name on that class:
+Add `prefer_inherited :log` to say the deferral is what you wanted. On a class where axn stepped aside it changes no behavior — the inherited implementation was already the one running — and it silences the warning for that name on that class:
 
 ```ruby
 class ChargeCard < ApplicationService
@@ -83,12 +85,16 @@ end
 
 Because the warning waits for the first run rather than firing during `include Axn`, a declaration written anywhere in the class body is in time to silence it. The one thing you cannot do is silence it retroactively: reopening a class to add `prefer_inherited` after it has already executed changes nothing, since the line is already written.
 
-`prefer_inherited` raises if there is nothing to prefer — a typo, or a base class that no longer defines the method — rather than passing silently:
+`prefer_inherited` raises rather than passing silently when the deferral it names did not happen — a base class that no longer defines the method, say:
 
 ```
 `prefer_inherited :log` has nothing to prefer: axn surrendered no #log on ChargeCard, because
 nothing above it declared the name when `include Axn` ran. …
 ```
+
+A misspelled name is a different error: `prefer_inherited :logg` raises `UnpreferableName` (`#logg is not part of axn's public instance surface`), because `logg` is not one of the names axn hands over in the first place.
+
+It is not a pure annotation in every position, either. Declared on a subclass of a class that said `prefer_axn :log`, it takes the name back for the subclass — the inherited implementation runs there while the parent and its other subclasses keep axn's.
 
 ## Taking the name back: `prefer_axn`
 
@@ -136,7 +142,7 @@ Your `def` is what answers `fail!`, and `super` from it now reaches **axn's** im
 
 `call`, `_run` and `initialize` are not helpers. Axn dispatches those names on the action itself to run it, so it cannot step aside for an inherited one — the inherited method would simply never be called, and the action would report success for code that did not execute.
 
-Rather than let that happen silently, axn refuses. The check runs at the action's first `.call`, because only the finished class can answer it, and it raises `Axn::ContractViolation::UnsurrenderableInheritedMethod`:
+Rather than let that happen silently, axn refuses. The check runs at the action's first `.call`, because only the finished class can answer it, and it raises `Axn::ContractViolation::UnsurrenderableInheritedMethod`. Unlike an exception raised inside an action, which axn settles into a result, this one propagates out to the caller — there is no action for it to settle into yet — and it does so from `.call` and `.call!` alike:
 
 ```ruby
 class ServiceBase
