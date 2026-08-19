@@ -39,6 +39,15 @@ RSpec.configure do |config|
     Axn::Testing.reset!
     Axn::Tools::Registry.reset_adapters!
   end
+
+  # `Strategies.clear!` resets the registry to the built-ins in lib/axn/strategies/, dropping every strategy
+  # registered at file-load time from somewhere else — the opt-in extras, `:client` among them. Those cannot
+  # re-register themselves once their file has been required, so a spec that clears the registry takes them
+  # away from every example that runs after it, and which examples those are is the ordering seed's decision.
+  # Snapshotted once every file has loaded and put back after each example.
+  registered_strategies = nil
+  config.before(:suite) { registered_strategies = Axn::Strategies.all.dup }
+  config.after { Axn::Strategies.instance_variable_set(:@items, registered_strategies.dup) }
 end
 
 # The inbound context facade an action's field readers resolve through. It is a private implementation

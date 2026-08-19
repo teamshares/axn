@@ -93,7 +93,13 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
 - **Inferred behavior defers; explicit conflicts raise.** Anything Axn generates automatically (a
   derived reader, an applied default) yields to a same-named thing the user wrote, leaving a `debug`
   breadcrumb — it never clobbers silently. A conflict between two things the user *explicitly*
-  declared raises loudly.
+  declared raises loudly. The breadcrumb's LEVEL follows where the collision came from: `debug` when
+  both sides are in the file being read, so the author is looking at the answer already; `warn` when
+  axn declines to define something because a name is owned somewhere the author may never look — a
+  superclass in another file, an adapter base in another gem (`description` deferring to
+  `Axn::MCP::Tool`, an instance helper deferring to `ApplicationService#log`). A `debug` line nobody
+  greps for is indistinguishable from silence, and silence is the whole defect those deferrals exist
+  to remove. Keep such a warning once per colliding definition per process, never per call.
 - **Don't force false uniformity, but do fix real inconsistency.** Paths may differ when inputs
   differ (symbol-keyed kwargs vs indifferent-access nested data). But a value with a uniform
   *meaning* (`<field>_id` is always the primary key) must be honored on every path, blank/edge
@@ -145,6 +151,44 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   control kwarg `fail!`/`done!` reads ahead of exposures — so those are guarded separately, derived
   from the consumer's own output rather than hand-listed alongside it. To make a new helper
   surrenderable, add its MODULE to `SURRENDERABLE_OWNERS` — never a bare name.
+- **Whether axn may DEFINE a name is one question asked at two receivers.**
+  `Axn::Core::MethodShadowing` answers it for the class-method DSL and for the instance helpers, and
+  both answers skip `Axn::Core::*` owners *only*, so a satellite adapter's module (`Axn::MCP::*`)
+  counts as external and axn steps aside for it. Class side (`externally_defined?`) walks
+  `base.singleton_class`'s ancestors comparing own method tables, untruncated, `base` itself
+  included — an explicit `def self.x` defers — after one live reachability read, since it is asked
+  before axn extends the name. Instance side (`inherited_definer`) does not walk `ancestors` at all:
+  it steps the DECLARATION CHAIN, `declared_instance_method(base, name)` then
+  `shadowed_instance_method` repeatedly, which is Ruby's own resolver answering in dispatch order.
+  That is load-bearing rather than stylistic — the chain stops at an `undef_method` entry, which no
+  own-table read reports and which effective lookup can only report for the class as a whole, so it
+  is the only reader that sees a barrier hosted BEHIND the modules axn included in front of it, and
+  it sees one written after `include Axn` as readily as before. Nothing in this area caches a
+  per-name verdict as a result; the one thing still captured at include time is the deferral shim's
+  UnboundMethod, on purpose. What the instance side does not count as the user's own: `base` and its
+  prepends (a `def` in the class body wins on its own terms with `super` reaching axn's, so treating
+  it as a deferral target would point the deferral at the method deferring to it), and `::Object`
+  with its own ancestors — `Kernel` owns `warn`/`inspect`/`hash`/`then`/`tap`, and deferring to
+  those would silently redirect `warn("msg")` inside every action to stderr. The deferrable surface
+  is `SURRENDERABLE_OWNERS`' public instance methods minus `internal_name?`, derived exactly like
+  the reserved names above. `UNSURRENDERABLE` (`call`/`_run`/`initialize`) cannot be deferred and is
+  refused at the execution funnel rather than at include time, because only the finished class
+  answers it — and on EVERY call rather than once per class, because the hierarchy it asks about
+  stays mutable for as long as the process runs and Ruby offers no hook for "an ancestor was
+  reopened"; that refusal asks TWO questions in one pass over the chain (`core_shadowed_definer`) —
+  axn's own definition is what a dispatch reaches AND something behind it declares the name — so a
+  class that defines the name itself, as `Axn::Factory`-built classes do after the include, is never
+  refused. A `prefer_inherited`/`prefer_axn` declaration only ever adds a wrapper to the DECLARING
+  class's own module and never edits an inherited one, which is what stops a subclass changing its
+  parent's and siblings' behaviour. That narrowness cuts against axn as well: an instance name
+  declared in an axn module OUTSIDE `Axn::Core` is external by this rule — `Axn::Async`,
+  `Axn::Async::BatchEnqueue`, `Axn::Mountable` and the anonymous `Axn::Configuration.overrides`
+  module sit ahead of `Axn::Core` in every action's ancestry, `Axn` itself behind it. One of the
+  deferrable names there makes every action in every app defer to that module and warn its author to
+  declare `prefer_inherited`; `call`/`_run`/`initialize` there either bypasses the unsurrenderable
+  guard silently (ahead) or makes every action raise (behind). Such a name belongs under
+  `Axn::Core`, or in `_axn_core_owned?`. New user-facing sugar needs no edit here; adding a whole
+  new sugar module does.
 
 ## Errors
 

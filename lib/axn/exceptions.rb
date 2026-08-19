@@ -21,8 +21,12 @@ module Axn
     # renders it, and the composition has one owner per question: `Internal::RenderedClassName` just below for a
     # VALUE's class, which `Internal::Rendering.class_name` delegates to and which the message paths built ON
     # this file (`UnserializableValue#message` and `UnserializableArgument#message` below,
-    # `Internal::Reflection::Values.describe_key_classes`) reach directly; and `Internal::Rendering.module_name`
-    # for a class or module named in its own right, which only callers above this file need. The direction is
+    # `Internal::Reflection::Values.describe_key_classes`) reach directly; and `Internal::RenderedModuleName`
+    # for a class or module named in its own right, which `Internal::Rendering.module_name` delegates to and
+    # which `UnsurrenderableInheritedMethod` below reaches directly — plus `Internal::RenderedActionName` for
+    # the one receiver those two do not cover, an ACTION class, whose name axn may have installed itself and
+    # which `Internal::Rendering.action_name` delegates to — over `Internal::RenderedInstalledName`, the
+    # dispatch-and-absorb core it shares with `Internal::Rendering.module_type_label`. The direction is
     # forced: the reflection and rendering layers require THIS file, so a reference from here up into either
     # would leave a message path NameError-ing under the standalone loads
     # `spec/axn/standalone_require_spec.rb` pins. The byte half they all compose through, `Internal::Text`, has
@@ -82,6 +86,69 @@ module Axn
         else RenderedClassName.of(value)
         end
       end
+    end
+
+    # A class or module named in its OWN right — the module that declares a method, a declared `type:` — rather
+    # than a value's class. `RenderedClassName` cannot stand in for it: handed a Module, it answers with that
+    # Module's CLASS, so an owner named through it reads as "Class".
+    #
+    # `ClassName.of_module` binds `Module#to_s`, which is a TypeError on anything that is not a Module, so what
+    # arrives is type-tested first — undispatched, since a caller filling in a public exception's kwarg is
+    # exactly who might hand over something else, and a message path owes an answer rather than an error about
+    # rendering. Anything else falls through to `RenderedText`, which names it by its class.
+    module RenderedModuleName
+      def self.of(mod) = Identity.kind?(mod, ::Module) ? Text.renderable(ClassName.of_module(mod)) : RenderedText.of(mod)
+    end
+
+    # A module's INSTALLED name — the one receiver whose name is read by DISPATCH rather than bound.
+    #
+    # Axn installs a `name` of its own on the classes it BUILDS (`Mountable::Helpers::ClassBuilder`,
+    # `Axn::Factory`, `Strategies::Form`), and `Module#to_s` does not consult it, so a bound read answers
+    # `#<Class:0x…>` or `#<Class:0x…>::Axns::Inner` where axn intends `AnonymousAxn_2980` or
+    # `AnonymousClient_2980::Axns::Inner`. That override is axn's own naming mechanism rather than a caller's
+    # lie, so binding past it trades the prose axn deliberately put there for an object address. Only a class
+    # axn may have renamed gets this treatment; an owner or a caller's exception class named alongside it is
+    # one axn never renames, and reading THOSE bound through `RenderedModuleName` is what keeps a foreign
+    # `self.name` out of the message.
+    #
+    # The dispatch is ABSORBED rather than trusted, which is what lets the exception to binding hold without
+    # handing the receiver a way out of the message path. Anything it yields that is not a String — nil, which
+    # is what an anonymous class answers; another type, whose rendering would dispatch again; or a raise —
+    # takes the fallback. `Exception` rather than `StandardError` around it on the same terms as
+    # `Rendering.value_rendering`: the failure being composed has to win over anything the class's own reader
+    # raises, and a `name` is not a path a signal travels through. The bytes that DO arrive are still rendered,
+    # for the reason everything here is: a constant path may hold non-UTF-8 ones, and joining those to axn's
+    # UTF-8 prose raises Encoding::CompatibilityError in place of the failure being reported.
+    #
+    # What an unavailable name degrades TO is the caller's policy, not this module's — a sentence about an
+    # action and a sentence about a declared type want different words — so it arrives as a BLOCK, which also
+    # keeps a fallback that costs something off the success path. A fallback that itself raises propagates;
+    # axn's own two cannot, and a fallback is not a place to be clever.
+    #
+    # A non-Module receiver answers `RenderedText.of` exactly as `RenderedModuleName` does, since these are
+    # reached from public exception kwargs a caller fills in and a message path owes an answer about the value
+    # rather than an error about rendering it.
+    module RenderedInstalledName
+      def self.of(mod, &fallback)
+        return RenderedText.of(mod) unless Identity.kind?(mod, ::Module)
+
+        name = mod.name
+        Identity.kind?(name, ::String) ? Text.renderable(name) : fallback.call
+      rescue ::Exception # rubocop:disable Lint/RescueException
+        fallback.call
+      end
+    end
+
+    # An ACTION class named in prose, over `RenderedInstalledName`, which owns why the name is dispatched.
+    #
+    # Falls back to the same `"Action"` the rest of axn spells `|| "Action"`: an anonymous action class is the
+    # common case in specs, so a name that cannot be had is the ordinary case rather than the odd one, and the
+    # sentence reads as intended with a generic word where an object address would only be noise.
+    module RenderedActionName
+      DEFAULT = "Action"
+      private_constant :DEFAULT
+
+      def self.of(klass) = RenderedInstalledName.of(klass) { DEFAULT }
     end
 
     # Internal only -- rescued before Axn::Result is returned
@@ -243,6 +310,83 @@ module Axn
     class MethodCallNotPermittedError < ContractViolation; end
 
     class DuplicateFieldError < ContractViolation; end
+
+    # A name axn dispatches on the action itself — `call` from the executor, `_run` from `.call`, `initialize`
+    # from `new` — that the class's own hierarchy also declares. Unlike the helpers, this one cannot be
+    # surrendered: axn's definition must answer, so the inherited one would never run, and an action whose
+    # inherited `call` never runs reports success for code that did not execute.
+    #
+    # Every value it interpolates is rendered, for the reason every message here renders: a constant path may
+    # hold bytes with no UTF-8 rendering, and joining those would replace this failure with an
+    # Encoding::CompatibilityError out of the message path. The two classes are named in their own right but by
+    # different readers: `klass` is the ACTION, whose name axn itself may have installed, so it goes through
+    # `RenderedActionName`; `owner` is a class axn never renames, so `RenderedModuleName` reads it bound. `name`
+    # goes through `RenderedText`. All three take whatever a caller of this public class actually passes rather
+    # than only what it ought to.
+    #
+    # The two remedies are spelled out separately because they do NOT amount to the same thing, and a reader who
+    # merges them lands back on the failure being reported: defining the name on the action moves the behaviour
+    # into the action (a bare `super` from there reaches axn's own default, NOT the inherited implementation),
+    # while composing is the branch that keeps the inherited implementation running.
+    class UnsurrenderableInheritedMethod < ContractViolation
+      def initialize(klass:, name:, owner:)
+        klass = Axn::Internal::RenderedActionName.of(klass)
+        owner = Axn::Internal::RenderedModuleName.of(owner)
+        name = Axn::Internal::RenderedText.of(name)
+
+        super("#{owner} defines ##{name}, which #{klass} cannot inherit: axn must own that name to run the " \
+              "action, so the inherited definition would never be called. Either move that behaviour into " \
+              "#{klass}'s own ##{name} (`super` from there reaches axn's default, not #{owner}'s), or, to keep " \
+              "#{owner}'s ##{name} running, compose #{owner} in rather than inheriting from it.")
+      end
+    end
+
+    # A name `prefer_inherited`/`prefer_axn` cannot choose between, because axn does not hand it over: `call`
+    # and the other names axn dispatches on the action by name, an axn internal, the ambient sentinel, Ruby's
+    # own — or a name that is not part of axn's public instance surface at all, which is one verdict covering
+    # both a name nothing defines and a private helper of axn's.
+    #
+    # `belongs_to:` is the owner sentence `Internal::NameOwnership.describe` writes, composed by the caller
+    # rather than here: the ownership rules live there, and this file is loaded standalone by adapter gems, so
+    # reaching for that module from a message path would close a require cycle. nil is the no-owner branch.
+    #
+    # Every value is rendered before the join, for the reason every message here renders: a declared name is the
+    # AUTHOR's bytes, which only have to be ASCII-compatible, and joining those to axn's UTF-8 prose raw can
+    # replace the declaration error with an `Encoding::CompatibilityError` out of the message path.
+    class UnpreferableName < ContractViolation
+      def initialize(declaration:, name:, belongs_to: nil)
+        declaration = Axn::Internal::RenderedText.of(declaration)
+        name = Axn::Internal::RenderedText.of(name)
+        owned = if belongs_to.nil?
+                  "is not part of axn's public instance surface"
+                else
+                  "belongs to #{Axn::Internal::RenderedText.of(belongs_to)}"
+                end
+
+        super("`#{declaration} :#{name}` names something axn cannot choose for you: ##{name} #{owned}. " \
+              "Remove the declaration, or check the name.")
+      end
+    end
+
+    # `prefer_inherited` for a name axn never stepped aside for. The declaration names an outcome that cannot be
+    # delivered: there is no inherited implementation for axn to be standing behind, so nothing would change if
+    # the declaration were honoured.
+    #
+    # What the message can honestly assert is what the deferral record knows — that nothing above the class
+    # declared the name when `include Axn` ran. A definition made AFTER the include, in the class's own body or
+    # in a module included later, is the other way to land here, and it already wins on its own terms, so the
+    # message names that case rather than claiming no such definition exists.
+    class NothingToPrefer < ContractViolation
+      def initialize(klass:, name:)
+        klass = Axn::Internal::RenderedActionName.of(klass)
+        name = Axn::Internal::RenderedText.of(name)
+
+        super("`prefer_inherited :#{name}` has nothing to prefer: axn surrendered no ##{name} on #{klass}, " \
+              "because nothing above it declared the name when `include Axn` ran. Remove the declaration, or " \
+              "check the name — a definition made after the include, in the class's own body or in a module " \
+              "included later, already wins on its own terms.")
+      end
+    end
 
     class UnknownExposure < ContractViolation
       def initialize(key)

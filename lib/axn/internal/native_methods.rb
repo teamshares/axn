@@ -37,7 +37,7 @@ module Axn
     # question is not whether axn can copy or dispatch the name safely but whether the name HAS a single property
     # to be, since a String carries bytes as well as a rendering and three separate readers pick between them.
     module NativeMethods
-      # `#class`, `#frozen?`, `#singleton_class`, `#ancestors` and the four method-table readers are all
+      # `#class`, `#frozen?`, `#singleton_class`, `#ancestors` and the method-table readers are all
       # overridable, so each is BOUND: one that raised would replace the verdict being decided with the object's
       # own exception — and outside StandardError it escapes every rescue above. `Kernel#frozen?` reads the
       # object's frozen flag in C.
@@ -51,20 +51,41 @@ module Axn
       KERNEL_FROZEN = ::Kernel.instance_method(:frozen?)
       KERNEL_SINGLETON_CLASS = ::Kernel.instance_method(:singleton_class)
       MODULE_ANCESTORS = ::Module.instance_method(:ancestors)
+      MODULE_DEFINE_METHOD = ::Module.instance_method(:define_method)
+      MODULE_INCLUDE = ::Module.instance_method(:include)
       MODULE_INSTANCE_METHOD = ::Module.instance_method(:instance_method)
       MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
+      MODULE_METHOD_DEFINED = ::Module.instance_method(:method_defined?)
       MODULE_NAME = ::Module.instance_method(:name)
       MODULE_PREPEND = ::Module.instance_method(:prepend)
+      MODULE_PUBLIC_INSTANCE_METHODS = ::Module.instance_method(:public_instance_methods)
       MODULE_PUBLIC_METHOD_DEFINED = ::Module.instance_method(:public_method_defined?)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
+      MODULE_PRIVATE_METHOD_DEFINED = ::Module.instance_method(:private_method_defined?)
+      MODULE_PROTECTED_INSTANCE_METHODS = ::Module.instance_method(:protected_instance_methods)
       STRING_EMPTY = ::String.instance_method(:empty?)
       STRING_ENCODING = ::String.instance_method(:encoding)
       SYMBOL_ENCODING = ::Symbol.instance_method(:encoding)
-      private_constant :SYMBOL_ENCODING
+      UNBOUND_METHOD_SUPER_METHOD = ::UnboundMethod.instance_method(:super_method)
+      private_constant :SYMBOL_ENCODING, :UNBOUND_METHOD_SUPER_METHOD
       private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
-                       :MODULE_ANCESTORS, :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS,
+                       :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
+                       :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS, :MODULE_METHOD_DEFINED,
                        :MODULE_NAME, :MODULE_PREPEND,
-                       :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PUBLIC_METHOD_DEFINED
+                       :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PRIVATE_METHOD_DEFINED,
+                       :MODULE_PROTECTED_INSTANCE_METHODS,
+                       :MODULE_PUBLIC_INSTANCE_METHODS, :MODULE_PUBLIC_METHOD_DEFINED
+
+      # Keyed by the visibility they declare, so a caller reproducing a declaration passes the answer
+      # `declared_visibility` gave it straight through instead of branching on it, and `fetch` refuses anything
+      # that is not one of the three. `:public` is a no-op against a method `define_method` just defined; it is
+      # here to keep the setter total over the reader's range rather than because it changes anything today.
+      VISIBILITY_SETTERS = {
+        public: ::Module.instance_method(:public),
+        protected: ::Module.instance_method(:protected),
+        private: ::Module.instance_method(:private),
+      }.freeze
+      private_constant :VISIBILITY_SETTERS
 
       # ActiveSupport's own definition of a blank String, matched against the value's BYTES rather than asked
       # of the value (`Regexp#match?` reads a String operand's bytes in C — no `to_str`, no `=~`, and the
@@ -206,6 +227,29 @@ module Axn
           MODULE_PRIVATE_INSTANCE_METHODS.bind_call(mod, false).include?(name)
       end
 
+      # WHICH visibility a MODULE declares `name` at in its OWN table — :public, :protected or :private — or nil
+      # when it declares none. For a caller that has to REPRODUCE a declaration elsewhere, where the
+      # public/not-public boolean `public_instance_method?` answers is not enough: protected collapses into
+      # neither of the others. Made private, a protected helper stops answering `other.helper` between two
+      # instances of the same family; made public, it joins the class's outside surface, which is exactly where
+      # its author declined to put it.
+      #
+      # Three disjoint own-table reads rather than a subtraction, because `instance_methods` counts protected
+      # methods among the public ones. Own table rather than effective lookup, and the same Module precondition,
+      # for the same reasons as `declares_own_instance_method?` above.
+      def self.declared_visibility(mod, name)
+        return :public if MODULE_PUBLIC_INSTANCE_METHODS.bind_call(mod, false).include?(name)
+        return :protected if MODULE_PROTECTED_INSTANCE_METHODS.bind_call(mod, false).include?(name)
+        return :private if MODULE_PRIVATE_INSTANCE_METHODS.bind_call(mod, false).include?(name)
+
+        nil
+      end
+
+      # A module's OWN public instance methods, read natively. Same Module precondition as the readers above.
+      # Public only: a private helper is not a surface a caller dispatches, so it is not a surface axn hands to
+      # anyone else either.
+      def self.own_public_instance_methods(mod) = MODULE_PUBLIC_INSTANCE_METHODS.bind_call(mod, false)
+
       # A module's CONSTANT PATH, or nil when it is anonymous — read natively, because `Module#name` is
       # overridable like the rest and one that raises replaces the message being composed. Distinct from
       # `Rendering.module_name`, which binds `to_s` and so always answers with something: this preserves
@@ -218,6 +262,22 @@ module Axn
       # installing a GUARD, where a `prepend` that quietly declines leaves the guard uninstalled and the
       # thing it was watching for silently permitted. Absent functionality is loud; an absent guard is not.
       def self.prepend_module(mod, other) = MODULE_PREPEND.bind_call(mod, other)
+
+      # `include`, bound — for INSTALLING onto a CALLER'S class rather than asking a question. Same reasoning as
+      # `prepend_module`: a class that defines its own `include` and quietly declines would leave the module
+      # absent, and an absent deferral silently restores the shadowing it was there to remove.
+      def self.include_module(mod, other) = MODULE_INCLUDE.bind_call(mod, other)
+
+      # The method-table WRITERS, bound. Unlike the two above, these only ever target a module axn built itself,
+      # where there is no user definition to decline: binding them buys no defence, and is here so that one
+      # install path reads consistently rather than half through Ruby's own implementations and half through
+      # whatever the receiver happens to answer.
+      #
+      # `set_declared_visibility` exists because `define_method` always defines PUBLIC. A wrapper standing in for
+      # another module's method has to be declared at THAT module's visibility, or the installation publishes a
+      # method its author deliberately kept off the class's surface.
+      def self.define_own_instance_method(mod, name, &) = MODULE_DEFINE_METHOD.bind_call(mod, name, &)
+      def self.set_declared_visibility(mod, name, visibility) = VISIBILITY_SETTERS.fetch(visibility).bind_call(mod, name)
 
       # A MODULE's own singleton class, read natively — for a caller that has to INSTALL something on it
       # rather than ask a question about it. A class that answers with someone else's singleton class
@@ -254,6 +314,36 @@ module Axn
         MODULE_INSTANCE_METHOD.bind_call(mod, name)
       rescue ::NameError
         nil
+      end
+
+      # The declaration `method` STANDS IN FRONT OF — the one a `super` from it would reach — or nil when it
+      # stands in front of nothing. Taking it repeatedly enumerates every declaration of the name that the
+      # ancestry holds, in the order a dispatch would meet them, starting from `declared_instance_method`.
+      #
+      # Ruby's own resolver rather than a walk over `module_ancestors` comparing own tables, and the difference
+      # is not cosmetic: this reports a PREPENDED module in the position a call reaches it, and it STOPS at an
+      # `undef_method` entry — which no own-table read reports at all, and which effective lookup can only
+      # report for the class as a whole, so a module included behind another module's definition of the name
+      # cannot be asked about any other way.
+      #
+      # Bound like the readers above. `super_method` is `Method`'s and `UnboundMethod`'s, and the receiver here
+      # is always one this module's own `declared_instance_method` produced.
+      def self.shadowed_instance_method(method) = UNBOUND_METHOD_SUPER_METHOD.bind_call(method)
+
+      # Whether a dispatch for `name` on an instance of `mod` would land ANYWHERE — the boolean twin of
+      # `declared_instance_method`, for a caller that needs only reachability and not the implementation. Both
+      # readers resolve over the whole ancestry the way a call does, so both see a PREPENDED module's position
+      # and treat a name `undef_method` removed as absent; own-table readers report neither.
+      #
+      # Two reads because Ruby splits the range: `method_defined?` answers for public and protected,
+      # `private_method_defined?` for the rest, and a non-public definition is reached by a dispatch from
+      # inside just as a public one is from outside. Predicates rather than `declared_instance_method(...).nil?`
+      # because absence is the ordinary answer here — every name in a fixed set, asked of every class — and
+      # that reader pays a NameError for each one.
+      #
+      # Same Module precondition as the readers above.
+      def self.instance_method_reachable?(mod, name)
+        MODULE_METHOD_DEFINED.bind_call(mod, name) || MODULE_PRIVATE_METHOD_DEFINED.bind_call(mod, name)
       end
 
       # The UnboundMethod the value's METHOD TABLE declares for `name`, at any visibility, or nil when it declares

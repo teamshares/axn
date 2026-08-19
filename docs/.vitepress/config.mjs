@@ -74,6 +74,7 @@ export default defineConfig({
           { text: 'Profiling', link: '/advanced/profiling' },
           { text: 'Concurrency & Fiber Safety', link: '/advanced/concurrency' },
           { text: 'Conventions', link: '/advanced/conventions' },
+          { text: 'Inheritance & Method Conflicts', link: '/advanced/inheritance' },
           { text: 'Mountable', link: '/advanced/mountable' },
           { text: 'Internal Notes', link: '/advanced/rough' },
         ]

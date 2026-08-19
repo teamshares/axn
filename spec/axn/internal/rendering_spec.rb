@@ -23,6 +23,88 @@ RSpec.describe Axn::Internal::Rendering do
 
       expect(described_class.module_name(mod)).to match(/\A#<Class:/)
     end
+
+    # `Module#to_s` is a TypeError on anything else, and the callers are public exception kwargs: a message
+    # path owes an answer about the value rather than an error about rendering it.
+    it "names a non-Module rather than raising out of the message path" do
+      expect(described_class.module_name(:not_a_module)).to eq("not_a_module")
+      expect(described_class.module_name(42)).to eq("Integer")
+    end
+  end
+
+  describe ".type_label" do
+    # The dispatch both name readers share: axn's own `name` is what the class means to be called, and the
+    # bound reader answers past it with an address.
+    it "names a declared class by the name it installed for itself" do
+      klass = Class.new { def self.name = "AnonymousClient_2980::Axns::Inner" }
+
+      expect(described_class.type_label(klass)).to eq("AnonymousClient_2980::Axns::Inner")
+    end
+
+    # The policy that separates this reader from `action_name`, which degrades to the generic "Action": a type
+    # label is what the message says the input is NOT, so an unnameable class degrades to the bound rendering,
+    # which still identifies WHICH declared class was meant.
+    it "falls back to the bound rendering for an anonymous class, whose name is nil" do
+      expect(described_class.type_label(Class.new)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+    end
+
+    it "falls back to the bound rendering when the class's own reader raises, on the same terms" do
+      klass = Class.new { def self.name = raise(Exception, "answered") } # rubocop:disable Lint/RaiseException
+
+      expect(described_class.type_label(klass)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+    end
+
+    it "falls back to the bound rendering for a class answering with something other than a String" do
+      klass = Class.new { def self.name = :sym }
+
+      expect(described_class.type_label(klass)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+    end
+
+    # The positive control: an ordinary class and a pseudo-type read as a validation message has always said
+    # them, so a seam that sent every token through the fallback would be caught rather than pass as safe.
+    it "leaves an ordinary class and a pseudo-type reading as they always have" do
+      expect(described_class.type_label(Integer)).to eq("Integer")
+      expect(described_class.type_label(:boolean)).to eq("boolean")
+    end
+  end
+
+  describe ".action_name" do
+    # The whole point of the dispatch: axn's own `name` is what the class means to be called, and the bound
+    # reader `module_name` uses answers past it with an address.
+    it "answers with the name a class installed for itself" do
+      klass = Class.new { def self.name = "AnonymousAxn_7" }
+
+      expect(described_class.action_name(klass)).to eq("AnonymousAxn_7")
+      expect(described_class.module_name(klass)).to match(/\A#<Class:/)
+    end
+
+    it "falls back for an anonymous class, whose name is nil" do
+      expect(described_class.action_name(Class.new)).to eq("Action")
+    end
+
+    it "falls back for a class that answers with something other than a String" do
+      expect(described_class.action_name(Class.new { def self.name = :sym })).to eq("Action")
+    end
+
+    # Rendering runs while a failure is being composed, so the class's own reader must not carry anything out
+    # of it — including the raise a `rescue StandardError` would let past.
+    it "falls back rather than letting the class's own reader raise out of the message path" do
+      klass = Class.new { def self.name = raise(Exception, "answered") } # rubocop:disable Lint/RaiseException
+
+      expect(described_class.action_name(klass)).to eq("Action")
+    end
+
+    it "renders bytes that have no UTF-8 rendering, so the name can be joined to axn's prose" do
+      klass = Class.new { def self.name = "Bad\xFF".dup.force_encoding(Encoding::ASCII_8BIT) }
+
+      rendered = described_class.action_name(klass)
+      expect(rendered).to include('\xFF')
+      expect(rendered.encoding).to eq(Encoding::UTF_8)
+    end
+
+    it "names a non-Module rather than raising out of the message path" do
+      expect(described_class.action_name(:not_a_module)).to eq("not_a_module")
+    end
   end
 
   describe ".exception_message" do
