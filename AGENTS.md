@@ -182,14 +182,20 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   declare `prefer_inherited`; `call`/`_run`/`initialize` there either bypasses the unsurrenderable
   guard silently (ahead) or makes every action raise (behind). Such a name belongs under
   `Axn::Core`, or in `_axn_core_owned?`. New user-facing sugar needs no edit here; adding a whole
-  new sugar module does.  ## Errors  Reuse the hierarchy in `lib/axn/exceptions.rb`; don't invent
-  ad-hoc classes. Every `message` explains the problem **and** the fix (see `UnknownExposure`). New
-  messages meet that bar.  Before touching anything on the failure-settlement or error-reporting
-  path — `_settle_exception!`, any `Axn::Extensions` method (not just `best_effort`), a message
-  resolver, `Internal::Rendering`/`Internal::Text`/`Internal::NativeMethods`,
-  `Internal::ShapeGraph`'s option-container copy, the contract's declaration walk, any serialization
-  or reflection error path, or a `rescue` on the result path — read
-  `internal-docs/agent-notes/error-paths.md` first. The rules it backs:
+  new sugar module does.
+
+## Errors
+
+Reuse the hierarchy in `lib/axn/exceptions.rb`; don't invent ad-hoc classes. Every `message`
+explains the problem **and** the fix (see `UnknownExposure`). New messages meet that bar.
+
+Before touching anything on the failure-settlement or error-reporting path — `_settle_exception!`,
+any `Axn::Extensions` method (not just `best_effort`), a message resolver,
+`Internal::Rendering`/`Internal::Text`/`Internal::NativeMethods`, `Internal::ShapeGraph`'s
+option-container copy, the contract's declaration walk, any serialization or reflection error
+path, or a `rescue` on the result path — read `internal-docs/agent-notes/error-paths.md` first.
+The rules it backs:
+
 - `Axn::Extensions.best_effort` guards a side channel and swallows `StandardError` plus
   `SWALLOWABLE_BEYOND_STANDARD_ERROR`. Pass `standard_errors_only: true` only when no side effect is
   committed yet AND an executor boundary will settle the escape into a reported result. Apply the
