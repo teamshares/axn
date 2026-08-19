@@ -170,6 +170,8 @@ The two fixes are genuinely different, so pick deliberately:
 
 The same applies to an inherited `initialize`: axn constructs the action itself, so a parent initializer would never run and its state would never be set. `Axn::Factory.build(..., superclass: SomeBase)` is bound by the identical rule — the factory defines `call` on the class it builds, so a superclass owning `call` is fine, but one owning `initialize` raises.
 
+Actions axn builds for [mounting](/advanced/mountable) are the exception. `mount_axn` and `mount_axn_method` choose the superclass themselves — that is what `inherit:` selects, so the mounted action carries the target's hooks, callbacks and async config — and neither fix above is available on a class you did not write. So a target that defines `initialize` is not refused there. A mount that passes its own `superclass:` is refused like any other, since that inheritance is yours.
+
 ## The class-method side
 
 The same principle applies one receiver over, for the class-method DSL `include Axn` extends onto your class — `description`, `input_schema` and `output_schema`.

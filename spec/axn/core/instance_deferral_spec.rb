@@ -337,6 +337,70 @@ RSpec.describe Axn::Core::InstanceDeferral do
 
       expect(action.call).to be_ok
     end
+
+    # Mounting reaches for the target's whole hierarchy by default (`inherit: :lifecycle`) to carry its hooks,
+    # callbacks and async config, so any target with an `#initialize` — an ordinary PORO here, the Rails
+    # hierarchies in spec_rails — puts an inherited one in front of a class the user never wrote. Both remedies
+    # the refusal offers are addressed to the author of the `class X < Y`, and there is none.
+    describe "on a class axn built for mounting" do
+      let(:target) do
+        stub_const("MountTarget", Class.new do
+          def initialize(record = nil) = @record = record
+          include Axn::Mountable
+        end)
+      end
+
+      it "runs a mounted axn whose target defines initialize" do
+        target.mount_axn(:build, exposes: [:built]) { expose(:built, true) }
+
+        expect(target.build.built).to be(true)
+      end
+
+      it "runs a mounted method whose target defines initialize" do
+        target.mount_axn_method(:rename) { "renamed" }
+
+        expect(target.rename!).to eq("renamed")
+      end
+
+      # `step` defaults to `inherit: :none`, so its superclass is `Object` and the guard has nothing to find —
+      # asserted rather than assumed, since the default is what keeps steps out of this entirely. A step that
+      # opts into inheriting is built the same way as the other two and is exempt on the same grounds.
+      it "leaves a step on Object, and runs one that opts into the target's hierarchy" do
+        target.step(:check) { nil }
+        target.step(:deep, inherit: :lifecycle) { nil }
+
+        expect(target::Axns::Check.superclass).to eq(Object)
+        expect(target::Axns::Check.call).to be_ok
+        expect(target::Axns::Deep.call).to be_ok
+      end
+
+      it "still refuses a class the user wrote under the same superclass" do
+        action = Class.new(target) { include Axn }
+
+        expect { action.call }.to raise_error(
+          Axn::ContractViolation::UnsurrenderableInheritedMethod, /MountTarget defines #initialize/
+        )
+      end
+
+      # The exemption is the absence of an authored decision, so a mount that names its own `superclass:` keeps
+      # the refusal: that author chose the edge and can compose the class in instead.
+      it "still refuses a mount that names its own superclass" do
+        target.mount_axn(:build, superclass: Class.new { def initialize(*) = nil }) { nil }
+
+        expect { target.build }.to raise_error(
+          Axn::ContractViolation::UnsurrenderableInheritedMethod, /#initialize/
+        )
+      end
+
+      it "still refuses an action class the user wrote and then mounted" do
+        stub_const("PreexistingAction", Class.new(service_base) { include Axn })
+        target.mount_axn(:preexisting, PreexistingAction)
+
+        expect { target.preexisting }.to raise_error(
+          Axn::ContractViolation::UnsurrenderableInheritedMethod, /ServiceBase defines #call/
+        )
+      end
+    end
   end
 
   describe "the warning" do

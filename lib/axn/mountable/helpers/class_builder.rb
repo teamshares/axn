@@ -2,6 +2,7 @@
 
 require "axn/mountable/inherit_profiles"
 require "axn/exceptions"
+require "axn/core/instance_deferral"
 
 module Axn
   module Mountable
@@ -52,7 +53,11 @@ module Axn
           # Remove axn_klass from kwargs as it's not a valid parameter for Factory.build
           factory_kwargs = kwargs.except(:axn_klass)
 
-          unless factory_kwargs.key?(:superclass)
+          # Whether the inheritance edge below is axn's decision or the caller's, which is what the
+          # unsurrenderable-name guard is exempted on (see InstanceDeferral.axn_chose_superclass!).
+          axn_chose_superclass = !factory_kwargs.key?(:superclass)
+
+          if axn_chose_superclass
             # Get inherit configuration
             inherit_config = @descriptor.options[:inherit]
 
@@ -63,7 +68,9 @@ module Axn
           # Pass the target class through to Factory.build so it can mark the superclass
           factory_kwargs[:_creating_action_class_for] = _creating_action_class_for
 
-          Axn::Factory.build(**factory_kwargs, &block)
+          Axn::Factory.build(**factory_kwargs, &block).tap do |mounted_axn|
+            Axn::Core::InstanceDeferral.axn_chose_superclass!(mounted_axn) if axn_chose_superclass
+          end
         end
 
         def configure_class_name_and_constant(axn_klass, name, axn_namespace, target)

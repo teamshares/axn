@@ -30,6 +30,7 @@ module Axn
       NO_DEFERRALS = {}.freeze
 
       CHECKED_IVAR = :@__axn_dispatchable_names_checked
+      AXN_CHOSE_SUPERCLASS_IVAR = :@__axn_chose_superclass
 
       # The two declarations an author writes in the class body to say which implementation is live for a name
       # both axn and their own hierarchy define. Neither widens what axn permits — a `def` in the class body
@@ -71,6 +72,7 @@ module Axn
       # is what it needs: it may have introduced a definition of its own, or a new superclass in between.
       def self.assert_dispatchable_names_free!(klass)
         return if KERNEL_IVAR_GET.bind_call(klass, CHECKED_IVAR)
+        return if KERNEL_IVAR_GET.bind_call(klass, AXN_CHOSE_SUPERCLASS_IVAR)
 
         Axn::Internal::NameOwnership::UNSURRENDERABLE.each do |name|
           next unless MethodShadowing.core_definition_answers?(klass, name)
@@ -83,6 +85,28 @@ module Axn
 
         KERNEL_IVAR_SET.bind_call(klass, CHECKED_IVAR, true)
       end
+
+      # The exemption the guard above consults, set by the one caller that can honestly claim it: mounting,
+      # where `inherit:` picks the superclass to carry the target's hooks, callbacks and async config.
+      #
+      # Both remedies the refusal offers are addressed to whoever wrote the `class X < Y` — move the behaviour
+      # into X's own `#initialize`, or compose Y in rather than inheriting from it. On a mounted action nobody
+      # wrote that line: axn generated the class and picked its superclass, so the first remedy would mean
+      # reopening a class axn named, and the second names an edge that is not the author's to restructure. The
+      # target's `#initialize` was never a candidate for constructing the mounted action either, so axn owning
+      # the name is the intended outcome rather than a shadowing to report. A mount that passes its own
+      # `superclass:` is NOT marked: there the author did choose the edge, and "compose it in instead" is an
+      # answer they can act on.
+      #
+      # Per class rather than per name, because what it records is the inheritance EDGE, not which of the three
+      # names travelled along it: the same absence of an authored decision covers `_run` and `call` too. (`call`
+      # is moot in practice — a factory-built class defines its own, so the guard's first question already
+      # answers no for that name — and leaving it to that accident would make the exemption depend on a detail
+      # of how the mounted class is built.)
+      #
+      # A class-level ivar, which a subclass does not inherit: a `class Mine < SomeMountedAxn` is a class the
+      # user wrote, and it is asked the question like any other.
+      def self.axn_chose_superclass!(klass) = KERNEL_IVAR_SET.bind_call(klass, AXN_CHOSE_SUPERCLASS_IVAR, true)
 
       # What `include Axn` contributes: a wrapper for every name the class's own hierarchy already owned.
       def self.install(base)
