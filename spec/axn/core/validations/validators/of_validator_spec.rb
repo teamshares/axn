@@ -424,21 +424,20 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, /of: values: must name a type/)
     end
 
-    it "rejects a nested contract on an axis as not yet supported" do
-      expect { build_axn { expects :counts, type: Hash, of: { values: { klass: Integer } } } }
-        .to raise_error(ArgumentError, /not supported yet/)
+    # An axis holding a Hash is a contract of its own — the same inner-contract bag an Array's element takes
+    # (PRO-3166) — so it is held to the bag grammar rather than to the type grammar this section pins. What
+    # a bag declares at either axis is covered in `recursive_of_spec.rb`.
+    it "accepts a contract bag on either axis" do
+      expect { build_axn { expects :counts, type: Hash, of: { keys: { klass: Symbol }, values: { klass: Integer } } } }
+        .not_to raise_error
     end
 
-    # Both axes are held to the grammar, not just the one with a JSON Schema spelling: a nested contract on
-    # `keys:` is the same unsupported declaration and gets the same refusal, named by its own axis.
-    it "rejects a nested contract on the keys axis, named as keys:" do
-      expect { build_axn { expects :counts, type: Hash, of: { keys: { klass: Symbol }, values: Integer } } }
-        .to raise_error(ArgumentError, /of: keys: takes a type, not a nested contract/)
-    end
-
-    it "rejects a nested contract inside a union on an axis" do
+    # A bag inside a UNION is not that spelling: a union names types, so the Hash is an unsupported token
+    # rather than a nested contract.
+    it "rejects a bag inside a union on an axis" do
       expect { build_axn { expects :counts, type: Hash, of: { values: [String, { klass: Integer }] } } }
-        .to raise_error(ArgumentError, /not supported yet/)
+        .to raise_error(ArgumentError, "of: values: must name a type — a Class, a union of them, or one of " \
+                                       ":boolean, :uuid, :params (got a value of class Hash)")
     end
 
     it "rejects of: beside shape: on a Hash as not yet supported" do

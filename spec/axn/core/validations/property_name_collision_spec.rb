@@ -1980,6 +1980,18 @@ RSpec.describe "declaration-time property name collisions" do
                         /a member of the NestedValue type declared on :m.*resolve to the JSON property "m\.\[\]\.\{\}\.café"/m)
     end
 
+    # A map's values axis holding a BAG is the other way the same rung opens (PRO-3166): the axis names a
+    # container, and the members are emitted from what is inside it. Attribution has to descend that bag for
+    # the reason it descends an element's — otherwise the path is right and the class beside it declares no
+    # members at all.
+    it "names the type inside a values bag, not the container the bag names" do
+      stub_const("BagValue", Data.define(utf8_name, latin1_name))
+
+      expect { project_axn { expects :m, type: Hash, of: { values: { klass: Array, of: BagValue } }, optional: true } }
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError,
+                        /a member of the BagValue type declared on :m.*resolve to the JSON property "m\.\{\}\.\[\]\.café"/m)
+    end
+
     # A union at the inner rung answers the same way one at the outer rung does: the property lives in one
     # `anyOf` branch, and naming which class contributed it would mean mapping a branch index back to a
     # declaration. The descent must reach that verdict rather than fall back to the container it stepped over.

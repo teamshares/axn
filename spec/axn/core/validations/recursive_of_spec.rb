@@ -234,6 +234,38 @@ RSpec.describe "recursive of:" do
       expect(result.exception.message).to include("element at index 0: element at index 0 is not a Array")
     end
 
+    # The same unguarded route through a map's axis, which is the other position a bag can sit at: the runtime
+    # walk descends it under the one budget, so a self-referential axis bag cannot reach the stack either.
+    def self_referential_axis_map
+      axis = { klass: Hash, container: Hash }
+      axis[:of] = { values: axis, container: Hash }
+      { of: { values: axis, container: Hash } }
+    end
+
+    it "settles a self-referential values bag over a self-referential value" do
+      value = {}
+      value[:a] = value
+
+      result = assigned(self_referential_axis_map).call(m: value)
+
+      expect(result.exception).to be_nil
+      expect(result).to be_ok
+    end
+
+    it "still reports a real mismatch under that same axis bag" do
+      result = assigned(self_referential_axis_map).call(m: { a: { b: 1 } })
+
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("value at index 0: value at index 0 is not a Hash")
+    end
+
+    # Reflection descends the axis on the same bound rather than a restarted one, so a cyclic axis reaches the
+    # depth guard instead of the stack — exactly what an element chain of the same shape does.
+    it "refuses to reflect a cyclic values bag rather than recursing through it" do
+      expect { assigned(self_referential_axis_map).input_schema }
+        .to raise_error(ArgumentError, /an `of:` graph nests more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+    end
+
     # A chain and a value nested to the same depth, so the walk actually descends every rung rather than
     # stopping early on a value that ran out.
     def chain(rungs)
@@ -646,6 +678,247 @@ RSpec.describe "recursive of:" do
       action = build_axn { expects :m, type: Array, user_facing: true, of: { klass: Array, of: { klass: Hash, shape: } } }
 
       expect(action.call(m: [[{ sku: 1 }]]).error).to eq("Something went wrong")
+    end
+  end
+
+  # The same inner-contract bag an Array's element takes, in the other container's two positions. One grammar
+  # in three positions, so a map's values are held to exactly what an array's elements are.
+  describe "an inner contract on a map axis" do
+    # A method rather than a `let`: `build_axn` `class_eval`s its block onto the action class, so `self` in
+    # there is the class and a `let` helper is unreachable from inside it.
+    def sku_shape
+      { members: [Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })] }
+    end
+
+    it "validates each value's members, located by ordinal" do
+      shape = sku_shape
+      action = build_axn { expects :by_region, type: Hash, of: { values: { klass: Hash, shape: } } }
+
+      expect(action.call(by_region: { "acme" => { sku: "a" } })).to be_ok
+      result = action.call(by_region: { "acme" => { sku: 1 } })
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("value at index 0: sku is not a String")
+    end
+
+    # The ordinal is the only locating token at every depth, bag or no bag: a validation message settles
+    # unredacted, so rendering a key would publish exactly what a `sensitive:` declaration asks to be masked.
+    it "never renders a key, so a sensitive map's keys cannot leak" do
+      action = build_axn { expects :m, type: Hash, of: { values: { klass: Integer } } }
+
+      result = action.call(m: { "secret-customer-id" => "x" })
+      expect(result.exception.message).not_to include("secret-customer-id")
+      expect(result.exception.message).to include("value at index 0 is not a Integer")
+    end
+
+    it "takes a per-axis message:" do
+      action = build_axn { expects :m, type: Hash, of: { values: { klass: Integer, message: "must be a whole number" } } }
+
+      expect(action.call(m: { a: "x" }).exception.message).to include("value at index 0 must be a whole number")
+    end
+
+    it "takes a message: on the keys axis, named by its own position" do
+      action = build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, message: "must be a symbol" } } }
+
+      expect(action.call(m: { "a" => 1 }).exception.message).to include("key at index 0 must be a symbol")
+    end
+
+    it "validates a bag on the keys: axis, and emits nothing for it" do
+      action = build_axn { expects :m, type: Hash, of: { keys: { klass: String }, values: Integer } }
+
+      expect(action.call(m: { "a" => 1 })).to be_ok
+      expect(action.call(m: { a: 1 })).not_to be_ok
+      expect(action.input_schema.dig(:properties, :m)).not_to have_key(:propertyNames)
+    end
+
+    it "reports both axes of one entry independently" do
+      action = build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol }, values: { klass: Integer } } }
+
+      message = action.call(m: { "a" => "b" }).exception.message
+      expect(message).to include("key at index 0 is not a Symbol")
+      expect(message).to include("value at index 0 is not a Integer")
+    end
+
+    it "descends a container nested inside a values bag" do
+      action = build_axn { expects :m, type: Hash, of: { values: { klass: Array, of: Integer } } }
+
+      expect(action.call(m: { a: [1, 2] })).to be_ok
+      expect(action.call(m: { a: [1, "two"] }).exception.message)
+        .to include("value at index 0: element at index 1 is not a Integer")
+    end
+
+    it "descends a map nested inside a values bag" do
+      action = build_axn { expects :m, type: Hash, of: { values: { klass: Hash, of: { values: Integer } } } }
+
+      expect(action.call(m: { a: { b: 1 } })).to be_ok
+      expect(action.call(m: { a: { b: "one" } }).exception.message)
+        .to include("value at index 0: value at index 0 is not a Integer")
+    end
+
+    it "emits a map of shaped records as additionalProperties" do
+      shape = sku_shape
+      action = build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: } } }
+
+      expect(action.input_schema.dig(:properties, :m, :additionalProperties)).to include(
+        type: "object", properties: { sku: { type: "string" } },
+      )
+    end
+
+    it "emits a container nested inside a values bag" do
+      action = build_axn { expects :m, type: Hash, of: { values: { klass: Array, of: Integer } } }
+
+      expect(action.input_schema.dig(:properties, :m, :additionalProperties)).to include(
+        type: "array", items: { type: "integer" },
+      )
+    end
+
+    it "emits a map nested inside a values bag" do
+      action = build_axn { expects :m, type: Hash, of: { values: { klass: Hash, of: { values: Integer } } } }
+
+      expect(action.input_schema.dig(:properties, :m, :additionalProperties)).to include(
+        type: "object", additionalProperties: { type: "integer" },
+      )
+    end
+
+    it "still refuses a bag-level message:, which cannot say which axis failed" do
+      expect { build_axn { expects :m, type: Hash, of: { values: Integer, message: "x" } } }
+        .to raise_error(ArgumentError, /does not support message:/)
+    end
+
+    it "holds an axis bag to the same grammar an element bag is held to" do
+      expect { build_axn { expects :m, type: Hash, of: { values: {} } } }
+        .to raise_error(ArgumentError, "of: must constrain something — name the contents' class with `klass:`, " \
+                                       "what is inside them with `of:`, or their members with `shape:`")
+    end
+
+    it "refuses an unknown key inside an axis bag, against the element bag's own whitelist" do
+      expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, values: Integer } } } }
+        .to raise_error(ArgumentError, /of: does not support values:/)
+    end
+
+    # A bag INSIDE a union is not the nested-contract spelling — a union names types — so it keeps the
+    # unsupported-token refusal the other non-type tokens get.
+    it "still refuses a bag inside a union on an axis" do
+      expect { build_axn { expects :m, type: Hash, of: { values: [String, { klass: Integer }] } } }
+        .to raise_error(ArgumentError, /of: values: must name a type/)
+    end
+
+    it "stores a copy, so mutating the axis bag afterwards cannot change the contract" do
+      bag = { klass: Integer }
+      action = build_axn { expects :m, type: Hash, of: { values: bag } }
+      bag[:klass] = String
+
+      expect(action.call(m: { a: 1 })).to be_ok
+      expect(action.call(m: { a: "one" })).not_to be_ok
+    end
+
+    describe "the bounds, shared with the element edge" do
+      # A chain of `rungs` axis bags. A map's `of:` is the axis CONTAINER rather than a position of its own,
+      # and an axis naming a bare type is no position either, so the chain is judged over depths 0..rungs-1 —
+      # one shallower than the element bags an array's chain of the same spelling produces.
+      def axis_chain(rungs)
+        rungs.zero? ? Integer : { klass: Hash, of: { values: axis_chain(rungs - 1) } }
+      end
+
+      it "accepts a chain whose deepest axis rung lands exactly at the cap" do
+        chain = axis_chain(Axn::Internal::ShapeGraph::MAX_NESTING + 1)
+        expect { build_axn { expects :m, type: Hash, of: { values: chain } } }.not_to raise_error
+      end
+
+      it "refuses one axis rung deeper" do
+        chain = axis_chain(Axn::Internal::ShapeGraph::MAX_NESTING + 2)
+        expect { build_axn { expects :m, type: Hash, of: { values: chain } } }
+          .to raise_error(ArgumentError, /an `of:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+      end
+
+      # ONE depth counter across both edges. A chain alternating an axis rung with an element rung spends two
+      # per turn, so half the cap's worth of turns is already past it — two counters would admit it.
+      it "refuses a chain that alternates the two edges past the cap" do
+        alternating = lambda do |turns|
+          turns.zero? ? Integer : { klass: Hash, of: { values: { klass: Array, of: alternating.call(turns - 1) } } }
+        end
+        chain = alternating.call(Axn::Internal::ShapeGraph::MAX_NESTING)
+
+        expect { build_axn { expects :m, type: Hash, of: { values: chain } } }
+          .to raise_error(ArgumentError, /an `of:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+      end
+
+      it "refuses a cyclic axis bag rather than recursing until the stack gives out" do
+        axis = { klass: Hash }
+        axis[:of] = { values: axis }
+
+        expect { build_axn { expects :m, type: Hash, of: { values: axis } } }
+          .to raise_error(ArgumentError, /an `of:` graph cannot contain itself/)
+      end
+
+      def shared_sibling_shape(depth)
+        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: { type: String })],
+                  container: Hash }
+        depth.times do
+          shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: }),
+                              Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: })],
+                    container: Hash }
+        end
+        shape
+      end
+
+      # Both axes charge the ONE allowance the declaration mints: 13 levels of two-way sharing charge 24,574
+      # paths and 12 charge 12,286, so either axis declares alone and the two together do not.
+      it "leaves each axis's own graph legal on its own" do
+        keys_shape = shared_sibling_shape(13)
+        values_shape = shared_sibling_shape(12)
+
+        expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Hash, shape: keys_shape } } } }
+          .not_to raise_error
+        expect { build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: values_shape } } } }
+          .not_to raise_error
+      end
+
+      it "refuses the declaration that spends both axes" do
+        keys_shape = shared_sibling_shape(13)
+        values_shape = shared_sibling_shape(12)
+
+        expect do
+          build_axn do
+            expects :m, type: Hash, of: { keys: { klass: Hash, shape: keys_shape }, values: { klass: Hash, shape: values_shape } }
+          end
+        end.to raise_error(ArgumentError, /has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths/)
+      end
+    end
+
+    # A `shape:` that is not a Hash names no members, so nothing could be read off it: it declared cleanly and
+    # then failed EVERY call with a bare `ArgumentError: must supply :members`, naming neither the field nor
+    # the option. Refused at declaration, in one guard over all three positions the bag grammar reaches.
+    describe "a shape: that is not a Hash" do
+      it "refuses one at the element position" do
+        expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: :junk } } }
+          .to raise_error(ArgumentError, /shape: inside an `of:` bag on :rows must be a Hash naming that position's members/)
+      end
+
+      it "refuses one on the values axis" do
+        expect { build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: :junk } } } }
+          .to raise_error(ArgumentError, /shape: inside an `of:` bag on :m must be a Hash naming that position's members/)
+      end
+
+      it "refuses one on the keys axis" do
+        expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Hash, shape: :junk } } } }
+          .to raise_error(ArgumentError, /shape: inside an `of:` bag on :m must be a Hash naming that position's members/)
+      end
+
+      it "refuses one a container deeper" do
+        expect { build_axn { expects :rows, type: Array, of: { klass: Array, of: { klass: Hash, shape: 5 } } } }
+          .to raise_error(ArgumentError, /shape: inside an `of:` bag on :rows must be a Hash naming that position's members/)
+      end
+
+      # Keyed on `key?`, so "supplied but naming nothing" is refused while a bag that simply carries no
+      # `shape:` stays the honest spelling of "no members declared".
+      it "refuses a nil shape: supplied beside a klass:" do
+        expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: nil } } }
+          .to raise_error(ArgumentError, /shape: inside an `of:` bag on :rows must be a Hash naming that position's members/)
+      end
+
+      it "leaves a bag carrying no shape: alone" do
+        expect { build_axn { expects :rows, type: Array, of: { klass: Hash } } }.not_to raise_error
+      end
     end
   end
 end

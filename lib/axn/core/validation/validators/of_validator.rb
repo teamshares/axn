@@ -40,43 +40,89 @@ module Axn
       def validate_elements(record, attribute, value)
         return unless value.is_a?(::Array)
 
-        klasses = Array(options[:klass])
-        # A custom message: replaces the type description but the index is always reported —
-        # element position is the locating info that makes a per-element error actionable.
-        msg = options[:message] || describe_mismatch(klasses)
+        contract = element_contract
 
         value.each_with_index do |el, i|
-          # allow_blank governs whether the whole field may be absent (handled above), not whether
-          # individual elements may be blank — so it is intentionally not passed to the matcher.
-          record.errors.add(attribute, "element at index #{i} #{msg}") unless matches_axis?(el, klasses)
-          # The type verdict does NOT gate the contents check: a wrong-typed element still reports what could
-          # not be read out of it, which is what the pre-recursion pairing of OfValidator and ShapeValidator
-          # did (both ran, independently) and what an author fixing a payload needs.
-          add_contents_errors(record, attribute, el, "element at index #{i}: ")
+          validate_position(record, attribute, contract, el, "element at index #{i}")
         end
       end
 
-      # The inner contract this bag declares, as a VALIDATIONS bag — both of its edges, since a position may
-      # hold a container of its own AND have members read off it. `klass:` is deliberately absent, because the
-      # type check is performed above and its message ("element at index 0 is not a String" — no colon) differs
-      # in punctuation from a delegated one, which the caller below prefixes with a colon. Nil when the bag
+      # What ONE unnamed position declares, resolved once per declaration rather than once per element or
+      # entry: the classes its value is held to, the message a mismatch reports, and the inner contract it
+      # carries (with the validator class built from it). An Array's element position IS the bag `of:`
+      # canonicalized into these options, and each of a map's axes holds a bag of exactly the same grammar —
+      # so one resolver serves all three and none of them can drift from the others.
+      #
+      # `klass:` is deliberately absent from `contents`, because the type check is performed by
+      # `validate_position` and its message ("element at index 0 is not a String" — no colon) differs in
+      # punctuation from a delegated one, which is prefixed with a colon. `contents` is nil when the position
       # constrains only a class, which is the overwhelmingly common case and the one that must allocate nothing.
-      def contents_validations
-        return @contents_validations if defined?(@contents_validations)
+      PositionContract = Data.define(:klasses, :message, :contents, :validator_class, :contents_node)
+      private_constant :PositionContract
 
-        bag = {}
-        bag[:of] = options[:of] if options[:of]
-        bag[:shape] = options[:shape] if options[:shape]
-        @contents_validations = bag.empty? ? nil : bag
+      # The element position's contract, read off the validator's own options — which ARE the element bag.
+      def element_contract = @element_contract ||= position_contract(options)
+
+      # One axis of a map. Memoized per axis for the reason the element contract is: a validator instance is
+      # built once per declaration and lives for the life of the process, so a per-entry rebuild would build a
+      # validator class per entry of every Hash validated.
+      def axis_contract(axis)
+        @axis_contracts ||= {}
+        @axis_contracts[axis] ||= position_contract(options[axis])
       end
 
-      # One validator class per bag, built once and reused across every element, exactly as ShapeValidator
-      # caches its per-member classes: a validator instance is built once per declaration and lives for the
-      # life of the process, so the memo is per-contract rather than per-call.
-      def contents_validator_class
-        @contents_validator_class ||=
-          Axn::Validation::ContainerContents.validator_class_for(field: :__axn_contents__, validations: contents_validations)
+      def position_contract(declared)
+        bag = Axn::Internal::ShapeGraph.hash_or_nil(declared)
+        return bare_type_contract(declared) if nil.equal?(bag)
+
+        contents = inner_contract_validations(bag)
+        PositionContract.new(
+          klasses: Array(bag[:klass]),
+          message: bag[:message],
+          contents:,
+          # Built once here, exactly as ShapeValidator caches its per-member classes.
+          validator_class: contents && Axn::Validation::ContainerContents.validator_class_for(
+            field: :__axn_contents__, validations: contents,
+          ),
+          # The child this position's descent is about to validate against, which is the identity a cyclic
+          # graph brings back around (see `guard_contents_descent`). Never nil when `contents` is set.
+          contents_node: contents && (bag[:of] || bag[:shape]),
+        )
       end
+
+      # A position naming a bare type — or naming nothing at all, which is an undeclared axis — constrains a
+      # class and nothing else, and must allocate nothing beyond that.
+      def bare_type_contract(declared)
+        PositionContract.new(klasses: Array(declared), message: nil, contents: nil, validator_class: nil, contents_node: nil)
+      end
+
+      # Both edges of the position's inner contract, as a VALIDATIONS bag. Nil when it has neither.
+      def inner_contract_validations(bag)
+        contents = {}
+        contents[:of] = bag[:of] if bag[:of]
+        contents[:shape] = bag[:shape] if bag[:shape]
+        contents.empty? ? nil : contents
+      end
+
+      # One position of one value: its own type check, then whatever its inner contract says about what is
+      # inside it. The type verdict does NOT gate the contents check — a wrong-typed element still reports what
+      # could not be read out of it, which is what the pre-recursion pairing of OfValidator and ShapeValidator
+      # did (both ran, independently) and what an author fixing a payload needs.
+      #
+      # A custom `message:` replaces the type description but the POSITION is always reported — an ordinal is
+      # the only locating info an unnamed position has, and the thing that makes the error actionable. Built
+      # only on the failure path: `matches_axis?` is asked first, so the common case interpolates nothing.
+      #
+      # `allow_blank` governs whether the whole field may be absent (handled by `validate_each`), not whether
+      # individual elements or entries may be blank — so it is intentionally not passed to the matcher.
+      def validate_position(record, attribute, contract, value, position)
+        record.errors.add(attribute, "#{position} #{position_mismatch(contract)}") unless matches_axis?(value, contract.klasses)
+        return if nil.equal?(contract.contents)
+
+        add_contents_errors(record, attribute, contract, value, "#{position}: ")
+      end
+
+      def position_mismatch(contract) = contract.message || describe_mismatch(contract.klasses)
 
       # Descending into a position's own contents is the step that can recurse forever, so it is the step that
       # is bounded — on the two terms every walk of a graph a class merely HOLDS is bounded on, and for the
@@ -98,27 +144,25 @@ module Axn
       # rather than one level three times — the runtime mirror of the single budget the declaration walk keeps
       # across both edges. The comparison is `>`, so a graph whose deepest rung sits exactly AT the cap — which
       # declares legally — still reaches its leaf validators.
-      def guard_contents_descent(value, ancestry)
+      def guard_contents_descent(value, ancestry, contents_node)
         depth = ancestry ? ancestry.depth : 0
         raise ArgumentError, Axn::Internal::ShapeGraph.inner_contract_too_deep_message if depth > Axn::Internal::ShapeGraph::MAX_NESTING
 
-        # The child this descent is about to validate against, which is the identity a cyclic graph brings back
-        # around: the nested `of:` bag, or the `shape:` node where that is the only edge the bag has. Never nil
-        # — a nil key would pair every shape-only position with every other, and the second would be dropped as
-        # a repeat.
-        Axn::Internal::CycleGuard.guard_pair(value, options[:of] || options[:shape], ancestry&.seen, on_cycle: nil) do |seen|
+        # `contents_node` is the child this descent is about to validate against — the nested `of:` bag, or the
+        # `shape:` node where that is the only edge the position has. Never nil: a nil key would pair every
+        # shape-only position with every other, and the second would be dropped as a repeat. It is the
+        # POSITION's own child rather than this validator's, so a map's two axes cycle-guard independently.
+        Axn::Internal::CycleGuard.guard_pair(value, contents_node, ancestry&.seen, on_cycle: nil) do |seen|
           yield Axn::Internal::CycleGuard::Ancestry.new(seen:, depth: depth + 1)
         end
       end
 
-      def add_contents_errors(record, attribute, value, prefix)
-        return if nil.equal?(contents_validations)
-
-        guard_contents_descent(value, record.send(:_shape_ancestry_for_validation)) do |ancestry|
+      def add_contents_errors(record, attribute, contract, value, prefix)
+        guard_contents_descent(value, record.send(:_shape_ancestry_for_validation), contract.contents_node) do |ancestry|
           errors = Axn::Validation::Fields.errors_for(
-            contents_validator_class,
+            contract.validator_class,
             source: value,
-            validations: contents_validations,
+            validations: contract.contents,
             action: record.send(:_action_for_validation),
             # A shape member's own `method_call:` opt-in is honored by ShapeValidator per member; nothing at
             # this level may re-permit dispatch on the caller's object.
@@ -139,7 +183,9 @@ module Axn
       end
 
       # Both axes are reported independently: a map whose keys and values are both wrong has two things to
-      # fix, and the entry's position locates both. An axis left undeclared constrains nothing.
+      # fix, and the entry's position locates both. An axis left undeclared constrains nothing, and an axis
+      # holding a BAG is a contract of its own that runs through the same position machinery an Array's element
+      # does — its class check reports here, and its `of:`/`shape:` contents under a positional prefix.
       #
       # That position is the ONLY locating token the message carries, and the key deliberately is not. A
       # validation message is built here and settled unredacted: it reaches `result.exception.message` and the
@@ -150,15 +196,15 @@ module Axn
       def validate_entries(record, attribute, value)
         return unless value.is_a?(::Hash)
 
-        key_klasses = Array(options[:keys])
-        value_klasses = Array(options[:values])
+        keys = axis_contract(:keys)
+        values = axis_contract(:values)
         index = 0
 
         # Traversed through a BOUND `Hash#each` so a subclass cannot decide which entries get validated — nor,
         # since nothing here renders a key, which entries get to run their own code while being named.
         Axn::Internal::ShapeGraph.each_entry(value) do |key, entry|
-          record.errors.add(attribute, "key at index #{index} #{describe_mismatch(key_klasses)}") unless matches_axis?(key, key_klasses)
-          record.errors.add(attribute, "value at index #{index} #{describe_mismatch(value_klasses)}") unless matches_axis?(entry, value_klasses)
+          validate_position(record, attribute, keys, key, "key at index #{index}")
+          validate_position(record, attribute, values, entry, "value at index #{index}")
           index += 1
         end
       end

@@ -1650,7 +1650,7 @@ module Axn
           if ::Hash.equal?(inner[:container])
             # The object type is the bag's OWN `klass:` (a map bag is only ever reached from `klass: Hash`), exactly
             # as a field's map node takes its type from `type:` and its `additionalProperties` from the axis.
-            node.merge(map_values_schema(inner, for_output:))
+            node.merge(map_values_schema(inner, for_output:, depth: depth + 1))
           else
             contents = contents_node_schema(inner, for_output:, depth: depth + 1)
             contents.empty? ? node : node.merge(items: contents)
@@ -1687,9 +1687,24 @@ module Axn
         # emptiness themselves rather than in the shared builder. A class whose schema is untyped (an unknown type
         # on output) has nothing to state either, and both cases emit no node at all rather than an empty
         # `additionalProperties` that would read as a constraint.
-        def map_values_schema(bag, for_output:)
-          klasses = Array(bag[:values])
-          values = klasses.empty? ? {} : contents_schema_for(klasses, for_output:)
+        #
+        # An axis holding a BAG is one unnamed position exactly as an array's element is, so it is built by the
+        # node builder rather than from a class list: everything a bag can declare — its own `klass:`, the members
+        # named off it, and the container inside it — reflects at a map's value the way it reflects at an array's
+        # element. Classified through `hash_or_nil`, the same read the declaration layer classifies the axis with,
+        # so the emitter cannot read an axis under the other grammar from the one it was canonicalized under.
+        #
+        # `depth` is this node's own, threaded so a chain alternating map and array rungs is bounded on the one
+        # counter `contents_node_schema` spends rather than restarting it at every map.
+        def map_values_schema(bag, for_output:, depth: 0)
+          axis = Axn::Internal::ShapeGraph.hash_or_nil(bag[:values])
+          values =
+            if nil.equal?(axis)
+              klasses = Array(bag[:values])
+              klasses.empty? ? {} : contents_schema_for(klasses, for_output:)
+            else
+              contents_node_schema(axis, for_output:, depth:)
+            end
           values.empty? ? {} : { additionalProperties: values }
         end
 

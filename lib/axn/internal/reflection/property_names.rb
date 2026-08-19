@@ -580,7 +580,9 @@ module Axn
 
         # The type whose members a structured-type property came from: the `of:` element type inside an array,
         # the `of:` VALUES type inside a map, the field's own declared type otherwise — each read from the same
-        # place the emitter built that node's schema from. Nil for a UNION (`of: [A, B]`), where the property
+        # place the emitter built that node's schema from. Both container branches descend through
+        # `contents_type_source`, because either position may hold a BAG naming a container of its own, whose
+        # members are emitted from what is inside it rather than from the container it names. Nil for a UNION (`of: [A, B]`), where the property
         # lives in one `anyOf` branch and pinning which class contributed it would mean mapping a branch index
         # back to a declaration — a derivation of the emitter's own ordering, for prose, on a path that only runs
         # once a failure is certain. The message names the union collectively there instead. A nil answer means
@@ -588,7 +590,7 @@ module Axn
         # describe.
         def shape_type_klass(config, plan)
           source = if plan.map?
-                     config.validations.dig(:of, :values)
+                     contents_type_source(config.validations.dig(:of, :values))
                    elsif plan.in_items?
                      contents_type_source(config.validations[:of])
                    else
@@ -606,7 +608,8 @@ module Axn
         #
         # Descends exactly the rungs `Schema.contents_node_schema` descends, and stops where it stops: an array
         # rung by its `of:`, a map rung at its `values:` axis (which is where that rung's members are emitted
-        # from). So the type named is the type whose schema the emitter built the offending node out of. The
+        # from — a bag there is descended by the recursion, exactly as an element bag is). So the type named is
+        # the type whose schema the emitter built the offending node out of. The
         # emitter has already walked this same chain under its depth bound by the time attribution runs, which is
         # why there is no second bound here.
         def contents_type_source(declared)
@@ -615,7 +618,7 @@ module Axn
 
           inner = Internal::ShapeGraph.hash_or_nil(bag[:of])
           return bag if nil.equal?(inner)
-          return inner[:values] if ::Hash.equal?(inner[:container])
+          return contents_type_source(inner[:values]) if ::Hash.equal?(inner[:container])
 
           contents_type_source(inner)
         end
