@@ -590,12 +590,34 @@ module Axn
           source = if plan.map?
                      config.validations.dig(:of, :values)
                    elsif plan.in_items?
-                     config.validations[:of]
+                     contents_type_source(config.validations[:of])
                    else
                      config.validations[:type]
                    end
           klass = source.is_a?(Hash) ? source[:klass] : source
           klass.is_a?(Class) ? klass : nil
+        end
+
+        # Where the members emitted at a container's innermost rung actually come from. An `of:` bag whose own
+        # `of:` names another container declares no members of its own — the class it names is `Array` or `Hash`
+        # — so reading `klass:` off the OUTERMOST bag attributed a nested collision to a class that cannot be its
+        # source ("a member of the Array type"), while the path segment beside it was already right. The prose
+        # and the path have to name one thing.
+        #
+        # Descends exactly the rungs `Schema.contents_node_schema` descends, and stops where it stops: an array
+        # rung by its `of:`, a map rung at its `values:` axis (which is where that rung's members are emitted
+        # from). So the type named is the type whose schema the emitter built the offending node out of. The
+        # emitter has already walked this same chain under its depth bound by the time attribution runs, which is
+        # why there is no second bound here.
+        def contents_type_source(declared)
+          bag = Internal::ShapeGraph.hash_or_nil(declared)
+          return declared if nil.equal?(bag)
+
+          inner = Internal::ShapeGraph.hash_or_nil(bag[:of])
+          return bag if nil.equal?(inner)
+          return inner[:values] if ::Hash.equal?(inner[:container])
+
+          contents_type_source(inner)
         end
 
         # A declared type is named through the class-name seam: neither its own `to_s` nor its own bytes may
@@ -1006,7 +1028,7 @@ module Axn
                              :property_source, :same_property_path?, :unrenderable_name_message,
                              :raise_unrenderable_emitted_name!, :raise_foreign_rendering_name!,
                              :foreign_rendering_name_message, :property_sources_for,
-                             :shape_member_sources, :each_type_namespace, :shape_type_klass, :describe_type, :describe_config,
+                             :shape_member_sources, :each_type_namespace, :shape_type_klass, :contents_type_source, :describe_type, :describe_config,
                              :count_emitted_properties!, :raise_cyclic_shape!, :raise_shape_too_deep!, :emitted_configs,
                              :property_segment, :wire_key_segment, :surviving_configs, :input_property_path
       end

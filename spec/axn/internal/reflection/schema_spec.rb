@@ -5393,5 +5393,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         type: "object", additionalProperties: { type: "integer" },
       )
     end
+
+    # `contents_node_schema` seeds the node from `klass:` only when the bag names one, where the read it replaced
+    # took `of[:klass]` unconditionally and turned a nil into `items: { anyOf: [] }` — a schema no element can
+    # satisfy. No declaration produces a klass-less bag today (`of: {}` is refused as constraining nothing, and
+    # `of: []` names an empty union, which is truthy and still seeds), so this is a config assigned onto a class —
+    # but it is exactly the shape a `shape:`-only bag will canonicalize to, which is why the behavior is pinned
+    # rather than left to be rediscovered.
+    it "emits no items for a bag that names no class" do
+      config = Axn::Core::Contract::FieldConfig.new(field: :m, reader_as: :m,
+                                                    validations: { type: { klass: Array }, of: { container: Array } })
+
+      expect(described_class.build_input([config]).dig(:properties, :m)).not_to have_key(:items)
+    end
   end
 end

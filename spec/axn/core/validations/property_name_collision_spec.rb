@@ -1961,11 +1961,33 @@ RSpec.describe "declaration-time property name collisions" do
     # Past the bound on its own, so the example reads as "charged or not charged" with nothing else in play.
     def wide_element_type = Data.define(*Array.new(26_000) { |i| :"m#{i}" })
 
+    # Both halves of the message, because they can disagree: the PATH comes free from `each_emitted_node`
+    # walking what was emitted, while the origin TYPE is read back off the declaration — so a nested rung
+    # reported the right path beside a class that declares no members at all ("a member of the Array type").
     it "rejects a collision between two members of an element type two containers down" do
-      colliding = Data.define(utf8_name, latin1_name)
+      stub_const("NestedElement", Data.define(utf8_name, latin1_name))
 
-      expect { project_axn { expects :m, type: Array, of: { klass: Array, of: colliding }, optional: true } }
-        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /resolve to the JSON property "m\.\[\]\.\[\]\.café"/)
+      expect { project_axn { expects :m, type: Array, of: { klass: Array, of: NestedElement }, optional: true } }
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError,
+                        /a member of the NestedElement type declared on :m.*resolve to the JSON property "m\.\[\]\.\[\]\.café"/m)
+    end
+
+    it "names the values type of a map nested inside an array, not the Hash holding it" do
+      stub_const("NestedValue", Data.define(utf8_name, latin1_name))
+
+      expect { project_axn { expects :m, type: Array, of: { klass: Hash, of: { values: NestedValue } }, optional: true } }
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError,
+                        /a member of the NestedValue type declared on :m.*resolve to the JSON property "m\.\[\]\.\{\}\.café"/m)
+    end
+
+    # A union at the inner rung answers the same way one at the outer rung does: the property lives in one
+    # `anyOf` branch, and naming which class contributed it would mean mapping a branch index back to a
+    # declaration. The descent must reach that verdict rather than fall back to the container it stepped over.
+    it "names an inner-rung union collectively rather than the container above it" do
+      stub_const("Branch", Data.define(utf8_name, latin1_name))
+
+      expect { project_axn { expects :m, type: Array, of: { klass: Array, of: [Branch, Data.define(:z)] }, optional: true } }
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /a member of one of the element types declared on :m/)
     end
 
     it "charges the inner element type's members against the emitted-property bound" do

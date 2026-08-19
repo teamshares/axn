@@ -293,7 +293,10 @@ RSpec.describe "recursive of:" do
           .to raise_error(ArgumentError, /#{Regexp.escape(too_deep_message)}/)
       end
 
-      # The same boundary the runtime pair above pins, so the two walks admit exactly the same graphs.
+      # The same boundary the runtime pair above pins for a chain with nothing above it. The two counters are
+      # NOT the same once a `shape:` rung sits above one: the runtime spends one budget across both edges,
+      # while this counts only its own chain — so a member's over-cap `of:` raises on call and still reflects.
+      # Looser never rejects a legal declaration, and no DECLARED graph reaches either bound.
       it "reflects a chain that exactly fills the budget" do
         bag, = chain(Axn::Internal::ShapeGraph::MAX_NESTING + 1)
 
