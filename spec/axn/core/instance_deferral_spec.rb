@@ -217,6 +217,36 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect(Class.new(unreachable_call) { include Axn }.call).to be_ok
     end
 
+    # A barrier an ancestor gains AFTER `include Axn` is outside the record the include took, so the live read
+    # over the walked slice is the only one that sees it. Refusing here would name a `#call` no dispatch can
+    # reach and block a class Ruby itself has no complaint about.
+    it "runs an action whose inherited call an ancestor undefined AFTER the include" do
+      distant = Class.new { def call = :distant }
+      barrier = Class.new(distant)
+      action = Class.new(barrier) { include Axn }
+
+      barrier.send(:undef_method, :call)
+
+      expect { Class.new(barrier).new.call }.to raise_error(NoMethodError)
+      expect(action.call).to be_ok
+    end
+
+    # The honest limit of that timing on a DEFERRABLE name, which the live read does not extend: `include Axn`
+    # captured the implementation and installed the wrapper while the name was still reachable, so a later undef
+    # cannot retract it — the same rule as "a definer reopened after the class is defined is silently ignored".
+    # The undef takes the name away from every OTHER class below the barrier; the action keeps what it captured.
+    it "keeps the wrapper it already installed when an ancestor undefines a deferrable name AFTER the include" do
+      distant = Class.new { def log(*) = "DISTANT-LOG" }
+      barrier = Class.new(distant)
+      action = Class.new(barrier) { include Axn }
+
+      barrier.send(:undef_method, :log)
+
+      expect { Class.new(barrier).new.log }.to raise_error(NoMethodError)
+      expect(described_class.definers(action)).to eq({ log: distant })
+      expect(action.send(:new).log("x")).to eq("DISTANT-LOG")
+    end
+
     # A module hosts the barrier just as a class does, and the walk over the action's ancestry meets it either
     # way — but WHERE it is included decides whether the walk visits it at all. With a class in between, the
     # module sits above that class in the ancestry and inside the walked slice.

@@ -61,6 +61,50 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(described_class.inherited_definer(Class.new(barrier), :log)).to be_nil
     end
 
+    # The barrier record `include Axn` takes cannot see this one: it was taken before the undef existed. An
+    # ancestor CLASS's own lookup is not masked by the modules axn includes into the action beneath it, so it
+    # is still readable live — which is what catches a barrier added afterwards.
+    it "stops at a barrier an ancestor class gained after the include recorded the chain" do
+      distant = Class.new
+      barrier = Class.new(distant)
+      action = Class.new(barrier) { include Axn }
+
+      distant.class_eval { def log(*) = "DISTANT" }
+      barrier.send(:undef_method, :log)
+
+      expect { Class.new(barrier).new.log }.to raise_error(NoMethodError)
+      expect(described_class.inherited_definer(action, :log)).to be_nil
+    end
+
+    # The other direction of the same read: a barrier that a nearer class re-declares over is no barrier at all
+    # for anything below it, and ending the walk at the first unreachable-looking ancestor would drop a definer
+    # a dispatch really does arrive at.
+    it "keeps naming a definer below a barrier that a nearer class re-declared over" do
+      distant = Class.new { def log(*) = "DISTANT" }
+      barrier = Class.new(distant) { undef_method :log }
+      nearer = Class.new(barrier) { def log(*) = "NEARER" }
+
+      expect(nearer.new.log).to eq("NEARER")
+      expect(described_class.inherited_definer(Class.new(nearer), :log)).to eq(nearer)
+    end
+
+    # An own-table declaration a PREPENDED module undefs is unreachable from below just as an inherited one is,
+    # so the barrier is read before the own-table question rather than after it. Prepended after the include,
+    # where the record cannot see it and the live read is the only reader left.
+    it "stops at a barrier prepended over the declaring class's own definition" do
+      distant = Class.new { def call = "DISTANT" }
+      barrier = Class.new(distant) { def call = "OWN" }
+      action = Class.new(barrier) { include Axn }
+
+      barrier.prepend(Module.new do
+        def call = "PRE"
+        undef_method :call
+      end)
+
+      expect { Class.new(barrier).new.call }.to raise_error(NoMethodError)
+      expect(described_class.inherited_definer(action, :call)).to be_nil
+    end
+
     it "keeps naming a definer above a barrier for a name the barrier left alone" do
       distant = Class.new do
         def log(*) = "DISTANT"

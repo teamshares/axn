@@ -56,12 +56,48 @@ module Axn
       # reaching axn's — treating it as a deferral target would point the deferral at the very method it defers.
       #
       # And a declaration an `undef_method` took away is not a definer either, whatever the own-table walk finds
-      # — see `capture_barriered_names!`.
+      # — see `capture_barriered_names!` and `_reachable_slice`.
       def inherited_definer(base, name)
         return nil if _barriered?(base, name)
 
-        _external_definer(_walked_ancestry(base), name)
+        _external_definer(_reachable_slice(_walked_ancestry(base), name), name)
       end
+
+      # The prefix of the walked slice a dispatch arriving from below can actually traverse for `name`.
+      #
+      # This and the barrier record below answer on DIFFERENT axes, and neither subsumes the other:
+      #
+      # WHEN. The record is taken once, ahead of every include, so it answers for barriers that were in place
+      # when `include Axn` ran and says nothing about one added afterwards. A CLASS ancestor's own lookup is
+      # never masked by the modules axn includes into the action class beneath it — measured: post-include,
+      # `instance_method_reachable?(parent, :call)` still answers for the parent's own chain alone — so this one
+      # can be read live, at any time, and sees a barrier an ancestor was reopened to add.
+      #
+      # WHERE. This one reads only CLASS ancestors, because on a Class a nil lookup is unambiguous: a class's
+      # lookup covers the whole remainder of this walk, so nothing left to visit can be reachable. On a MODULE
+      # nil says only that the module itself declares nothing, which every module the walk passes through on
+      # its way to the answer also says. The record, asked of the chain as a whole, has no such restriction and
+      # is the only reader that sees a barrier hosted in a module included into `base` ITSELF.
+      #
+      # What neither covers, therefore: a MODULE reopened to `undef_method` AFTER the include, with no Class
+      # ancestor beneath it in this slice — one included into `base` itself, or into another module. The record
+      # was taken before the undef existed, and a module cannot be read live. Reopened after the include but
+      # included into an ancestor CLASS, the undef takes the name from that class too, and this read catches it.
+      #
+      # At the unsurrenderable guard the surviving case is narrower again: that module must have been behind
+      # axn's own modules already, because anything included into `base` after `include Axn` — or an undef in
+      # its own body — sits AHEAD of them, and `core_definition_answers?` then answers no without ever asking
+      # this walk. Measured on both halves.
+      #
+      # Checked before the own-table read rather than after, so a class whose own declaration a PREPENDED module
+      # undefs ends the walk too: a dispatch from below reaches neither.
+      def _reachable_slice(ancestry, name)
+        ancestry.take_while do |mod|
+          !Axn::Internal::Identity.kind?(mod, ::Class) ||
+            Axn::Internal::NativeMethods.instance_method_reachable?(mod, name)
+        end
+      end
+      private_class_method :_reachable_slice
 
       def _walked_ancestry(base)
         ancestry = Axn::Internal::NativeMethods.module_ancestors(base)
@@ -84,6 +120,10 @@ module Axn
       # `base` is excluded there as a definer — a `def log` in the class body is the user's own method, not
       # something to defer to — and that exclusion drops everything the class includes for itself along with it,
       # so the walk never visits the module carrying the barrier.
+      #
+      # And it is why `_reachable_slice` cannot replace this either, nor this it: that one reads live and so
+      # sees a barrier added after the include, but only where a CLASS hosts the consequence. The two cover
+      # different axes — WHEN and WHERE — and dropping either reopens a measured hole (see `_reachable_slice`).
       #
       # DECLARES and cannot reach, rather than simply cannot reach: an unreachable name that nothing in the
       # walked slice declares has no definer for the walk to find anyway, so recording it would buy nothing —
@@ -151,9 +191,10 @@ module Axn
       # rather than effective lookup: the question is who would be shadowed, and a prepend elsewhere in the
       # chain does not make a declaration disappear.
       #
-      # Reachability is settled by each caller BEFORE it walks, not here: an `undef_method` anywhere in the chain
-      # takes the name away from everything below it, so a walk that has been entered at all is walking a chain
-      # that reaches the name, and the first own-table declaration it meets is the one a dispatch arrives at.
+      # Reachability is not this walk's question: `externally_defined?` settles it up front against the
+      # singleton, and `inherited_definer` truncates the slice it hands over (`_reachable_slice`), so what
+      # arrives here is a chain a dispatch can traverse and the first own-table declaration in it is the one
+      # that dispatch arrives at.
       def _external_definer(ancestry, name)
         ancestry.find do |mod|
           !_axn_core_owned?(mod) && Axn::Internal::NativeMethods.declares_own_instance_method?(mod, name)
