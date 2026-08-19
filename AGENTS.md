@@ -145,6 +145,27 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   control kwarg `fail!`/`done!` reads ahead of exposures — so those are guarded separately, derived
   from the consumer's own output rather than hand-listed alongside it. To make a new helper
   surrenderable, add its MODULE to `SURRENDERABLE_OWNERS` — never a bare name.
+- **Whether axn may DEFINE a name is one walk asked at two receivers.** `Axn::Core::MethodShadowing`
+  answers it for the class-method DSL and for the instance helpers through a single private ancestry
+  walk (`_external_definer`): the first ancestor declaring the name in its own table, skipping
+  `Axn::Core::*` owners *only*, so a satellite adapter's module (`Axn::MCP::*`) counts as external and
+  axn steps aside for it. Three parameters differ, and only the middle one is a difference in kind.
+  Class side walks `base.singleton_class`'s ancestors, untruncated, `base` itself included — an
+  explicit `def self.x` defers. Instance side walks `base`'s ancestors, truncated at `::Object`, with
+  `base` and its prepends excluded: `Kernel` owns `warn`/`inspect`/`hash`/`then`/`tap` and sits behind
+  `::Object`, so truncating there is what keeps those axn's — an untruncated walk would silently
+  redirect `warn("msg")` inside every action to stderr — and a `def` in the class body is the user's
+  own, winning on its own terms with `super` reaching axn's, so treating it as a deferral target would
+  point the deferral at the method deferring to it. The deferrable surface is `SURRENDERABLE_OWNERS`'
+  public instance methods minus `internal_name?`, derived exactly like the reserved names above.
+  `UNSURRENDERABLE` (`call`/`_run`/`initialize`) cannot be deferred and is refused at the execution
+  funnel rather than at include time, because only the finished class answers it; that refusal asks
+  TWO questions — a non-axn ancestor declares the name AND axn's own definition is what a dispatch
+  reaches — so a class that defines the name itself, as `Axn::Factory`-built classes do after the
+  include, is never refused. A `prefer_inherited`/`prefer_axn` declaration only ever adds a wrapper to
+  the DECLARING class's own module and never edits an inherited one, which is what stops a subclass
+  changing its parent's and siblings' behaviour. New user-facing sugar needs no edit here; adding a
+  whole new sugar module does.
 
 ## Errors
 
