@@ -76,8 +76,12 @@ module Axn
         klasses.empty? || klasses.any? { |k| TypeValidator.value_matches?(value, klass: k) }
       end
 
+      # Every declared type named through the shared seam rather than interpolated: a declared class whose
+      # `to_s` raises would otherwise replace this validation failure with its own exception, settling a
+      # contract violation as an `exception` outcome and reporting bad input as an internal error.
       def describe_mismatch(klasses)
-        klasses.size == 1 ? "is not a #{klasses.first}" : "is not one of #{klasses.join(', ')}"
+        labels = klasses.map { |klass| Axn::Internal::Rendering.type_label(klass) }
+        labels.size == 1 ? "is not a #{labels.first}" : "is not one of #{labels.join(', ')}"
       end
     end
   end

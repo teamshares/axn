@@ -28,6 +28,10 @@ module Axn
 
       UNKNOWN_LOCATION = "unknown location"
 
+      # Bound so a Symbol's name is read without dispatching anything redefinable.
+      SYMBOL_NAME = ::Symbol.instance_method(:name)
+      private_constant :SYMBOL_NAME
+
       class << self
         # A value's CLASS named in prose, both halves composed: `ClassName` answers from bound base
         # implementations so nothing the value defines runs, and the constant path it answers with is
@@ -42,6 +46,22 @@ module Axn
         # A class or module named in its own right — a declared `type:`, a tool axn — rather than a value's
         # class. Same two halves.
         def module_name(mod) = Text.renderable(ClassName.of_module(mod))
+
+        # A DECLARED type written into a runtime validation message — a class, or one of the pseudo-types
+        # (`:boolean`/`:uuid`/`:params`) a contract may name instead of one. Interpolating the token ran its own
+        # `to_s`, and a declared class whose `to_s` raises replaced the validation failure with its exception:
+        # the contract violation then settled as an `exception` outcome reading "Something went wrong", and the
+        # bad input was reported through `on_exception` as though it were an internal error.
+        #
+        # A pseudo-type renders as its bare name rather than `:name`, which is what a validation message has
+        # always said ("is not a boolean"); the declaration-time label spells the colon, because there the token
+        # is being quoted back to the author rather than described to a caller.
+        def type_label(token)
+          return module_name(token) if Identity.kind?(token, ::Module)
+          return Text.renderable(SYMBOL_NAME.bind_call(token)) if Identity.kind?(token, ::Symbol)
+
+          class_name(token)
+        end
 
         # An exception's own message, as a UTF-8 String this method owns.
         def exception_message(exception) = Text.renderable(raw_exception_message(exception))

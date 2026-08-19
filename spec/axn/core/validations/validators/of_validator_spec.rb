@@ -711,6 +711,46 @@ RSpec.describe Axn::Validators::OfValidator do
 
   # ─── Hash containers (maps) ───────────────────────────────────────────────────
 
+  # Interpolating a declared type into a validation message runs that class's own `to_s`. One that raises
+  # replaced the validation failure with its exception, so a contract violation settled as an `exception`
+  # outcome and bad input was reported through `on_exception` as an internal error. Both containers share
+  # `describe_mismatch`, so both are pinned here.
+  describe "naming a declared type whose to_s raises" do
+    it "settles a map entry mismatch as a validation failure, not the class's exception" do
+      klass = Class.new { def self.to_s = raise("boom from to_s") }
+      action = build_axn do
+        expects :counts, type: Hash, of: { values: klass }
+        def call = nil
+      end
+
+      expect(action.call(counts: { a: 1 }).exception).to be_a(Axn::InboundValidationError)
+    end
+
+    it "settles an element mismatch as a validation failure on the same terms" do
+      klass = Class.new { def self.to_s = raise("boom from to_s") }
+      action = build_axn do
+        expects :rows, type: Array, of: klass
+        def call = nil
+      end
+
+      expect(action.call(rows: [1]).exception).to be_a(Axn::InboundValidationError)
+    end
+
+    # The positive control: an ordinary class and a pseudo-type still read exactly as they did, so a seam that
+    # rendered every token as its class would be caught rather than pass as safe.
+    it "leaves an ordinary class's and a pseudo-type's wording unchanged" do
+      action = build_axn do
+        expects :rows, type: Array, of: Integer
+        expects :flags, type: Hash, of: { values: :boolean }
+        def call = nil
+      end
+
+      message = action.call(rows: ["x"], flags: { a: 1 }).exception.message
+      expect(message).to include("element at index 0 is not a Integer")
+      expect(message).to include("value at index 0 is not a boolean")
+    end
+  end
+
   describe "Hash containers (maps) at runtime" do
     subject(:action) do
       build_axn do
