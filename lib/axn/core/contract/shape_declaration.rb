@@ -161,14 +161,14 @@ module Axn
             # done on it is still bounded by the allowance.
             _spend_paths!(allowance, 1)
             paths += 1
-            _raise_shape_too_deep!(via, via_name) if walk.depth > Internal::ShapeGraph::MAX_NESTING
+            _raise_graph_too_deep!(via, via_name, edge: INNER_CONTRACT_EDGE) if walk.depth > Internal::ShapeGraph::MAX_NESTING
 
             raw = Internal::ShapeGraph.hash_or_nil(bag[:of])
             walked = Axn::Internal::CycleGuard.guard(raw || bag, walk.seen, on_cycle: CYCLIC_SHAPE) do |nested|
               _canonicalize_inner_contract!(bag, fields)
               _walk_inner_contracts!(bag, walk.with(seen: nested, depth: walk.depth + 1), allowance, fields:, via:, via_name:)
             end
-            _raise_cyclic_shape!(via, via_name) if CYCLIC_SHAPE.equal?(walked)
+            _raise_cyclic_graph!(via, via_name, edge: INNER_CONTRACT_EDGE) if CYCLIC_SHAPE.equal?(walked)
 
             paths += walked.paths
             # This node's height is the deepest rung's, plus the level this rung itself adds.
@@ -225,14 +225,14 @@ module Axn
             # level lower, and no walk descends past two while the stored graph is arbitrarily deep. Judged
             # ahead of the path charge, as a shape's own depth is judged ahead of its members' charges — one memo
             # hit stands for walking this shape and everything under it.
-            _raise_shape_too_deep!(via, via_name) if walk.depth + walked.height > Internal::ShapeGraph::MAX_NESTING
+            _raise_graph_too_deep!(via, via_name, edge: SHAPE_EDGE) if walk.depth + walked.height > Internal::ShapeGraph::MAX_NESTING
             _spend_paths!(allowance, walked.paths)
             return walked
           end
 
           # The same inequality with a height not yet known: descending checks each level as it is reached, so a
           # shape walked rather than reused is judged by its own position and its subtree by theirs.
-          _raise_shape_too_deep!(via, via_name) if walk.depth > Internal::ShapeGraph::MAX_NESTING
+          _raise_graph_too_deep!(via, via_name, edge: SHAPE_EDGE) if walk.depth > Internal::ShapeGraph::MAX_NESTING
 
           # Read as SUPPLIED, so a shape that names no members is told apart from one naming an empty list.
           members = Internal::ShapeGraph.declared_members(hash)
@@ -241,7 +241,7 @@ module Axn
           walked = Axn::Internal::CycleGuard.guard(hash, walk.seen, on_cycle: CYCLIC_SHAPE) do |nested|
             _check_and_copy_shape_members!(hash, members, walk.with(seen: nested), allowance)
           end
-          _raise_cyclic_shape!(via, via_name) if CYCLIC_SHAPE.equal?(walked)
+          _raise_cyclic_graph!(via, via_name, edge: SHAPE_EDGE) if CYCLIC_SHAPE.equal?(walked)
 
           walk.walked[hash] = walked
           walked
@@ -411,30 +411,62 @@ module Axn
             method_call: Internal::ShapeGraph.read(member, :method_call) || false }
         end
 
-        # A shape graph that contains itself has no traversal at all: every walk over it — this one, the
+        # Which edge a declaration walk descended to reach an offending node: `shape:` to a node's named
+        # members, `of:` to the unnamed rung inside a container. The refusals below are written once per edge
+        # rather than once with a noun swapped, because it is the FIX that differs — a cyclic `shape:` is
+        # repaired by giving the nested shape its own members, a cyclic `of:` by giving the nested bag contents
+        # of its own — and a sentence naming the construct the author did not write prescribes a change their
+        # declaration has nowhere to make. Passed explicitly by each walk rather than defaulted, so a third edge
+        # cannot inherit the wrong vocabulary by omission; the fused walk this is headed for (PRO-3166 task 9)
+        # chooses between them for the same reason, which is why the choice lives here rather than in a walk.
+        SHAPE_EDGE = :shape
+        INNER_CONTRACT_EDGE = :of
+        private_constant :SHAPE_EDGE, :INNER_CONTRACT_EDGE
+
+        # A declaration graph that contains itself has no traversal at all: every walk over it — this one, the
         # runtime validator's, the schema's — recurses until the stack overflows, and SystemStackError is
         # outside StandardError, so it escapes every rescue in the framework rather than settling into a
         # reported failure. Rejected at declaration, where it is knowable and where the author is present.
-        def _raise_cyclic_shape!(member, name)
+        def _raise_cyclic_graph!(member, name, edge:)
           via = nil.equal?(member) ? "" : " reached from shape member #{_describe_shape_member(member, name)}"
-          raise ArgumentError,
-                "a `shape:` graph cannot contain itself — the nested shape#{via} is the same shape it is nested " \
-                "inside, so validating or reflecting it would recurse until the stack overflows. Give the nested " \
-                "shape its own members rather than reusing the shape (or the member) that encloses it."
+          raise ArgumentError, _cyclic_graph_message(via, edge)
+        end
+
+        def _cyclic_graph_message(via, edge)
+          if edge == INNER_CONTRACT_EDGE
+            return "an `of:` graph cannot contain itself — the nested `of:` bag#{via} is the same bag it is " \
+                   "nested inside, so validating or reflecting it would recurse until the stack overflows. " \
+                   "Give the nested `of:` contents of its own rather than reusing the bag that encloses it."
+          end
+
+          "a `shape:` graph cannot contain itself — the nested shape#{via} is the same shape it is nested " \
+            "inside, so validating or reflecting it would recurse until the stack overflows. Give the nested " \
+            "shape its own members rather than reusing the shape (or the member) that encloses it."
         end
 
         # The generative counterpart: no object repeats, so nothing identifies a loop, and the graph is
         # simply endless. Capped rather than walked to exhaustion, for the same reason a cycle is rejected
         # — the alternative outcome is a SystemStackError raised while the class is being defined, which
         # no rescue in the framework can settle.
-        def _raise_shape_too_deep!(member, name)
+        def _raise_graph_too_deep!(member, name, edge:)
           via = nil.equal?(member) ? "" : " at shape member #{_describe_shape_member(member, name)}"
-          raise ArgumentError,
-                "a `shape:` graph nested more than #{Internal::ShapeGraph::MAX_NESTING} levels deep#{via} is almost certainly " \
-                "generated rather than declared — no hand-written shape block reaches that depth, while a shape " \
-                "object that builds a fresh nested shape on every read is endless and would recurse until the " \
-                "stack overflows. Have the shape return the same finite nested shape each time it is read, or " \
-                "flatten the nesting."
+          raise ArgumentError, _graph_too_deep_message(via, edge)
+        end
+
+        def _graph_too_deep_message(via, edge)
+          if edge == INNER_CONTRACT_EDGE
+            return "an `of:` graph nested more than #{Internal::ShapeGraph::MAX_NESTING} levels deep#{via} is " \
+                   "almost certainly generated rather than declared — no hand-written declaration nests " \
+                   "containers that far, while a bag that builds a fresh nested bag on every read is endless " \
+                   "and would recurse until the stack overflows. Flatten the nesting, or have the declaration " \
+                   "give back the same finite nested bag each time it is read."
+          end
+
+          "a `shape:` graph nested more than #{Internal::ShapeGraph::MAX_NESTING} levels deep#{via} is almost certainly " \
+            "generated rather than declared — no hand-written shape block reaches that depth, while a shape " \
+            "object that builds a fresh nested shape on every read is endless and would recurse until the " \
+            "stack overflows. Have the shape return the same finite nested shape each time it is read, or " \
+            "flatten the nesting."
         end
 
         # A member's declared validations, canonical at every level its grammar has: the validator names, each
@@ -642,7 +674,8 @@ module Axn
                 :_raise_member_confirmation_unsupported!,
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
                 :_walk_inner_contracts!, :_walk_declared_inner_contracts!,
-                :_check_and_copy_shape_members!, :_raise_cyclic_shape!, :_raise_shape_too_deep!,
+                :_check_and_copy_shape_members!, :_raise_cyclic_graph!, :_raise_graph_too_deep!,
+                :_cyclic_graph_message, :_graph_too_deep_message,
                 :_raise_duplicate_member!, :_raise_nameless_member!,
                 :_raise_missing_shape_members!, :_raise_member_without_validations!
       end

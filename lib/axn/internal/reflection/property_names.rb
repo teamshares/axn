@@ -986,7 +986,7 @@ module Axn
         # Both read from ShapeGraph, which owns the two sentences: the same defects are reported by the ambient
         # placement check, which re-walks an already-declared graph for the same reason this does, and one text
         # keeps them from describing it two ways. Each reads as its declaration-time counterpart
-        # (Core::Contract#_raise_cyclic_shape! / #_raise_shape_too_deep!) plus the one thing only a re-walk can
+        # (Core::Contract#_raise_cyclic_graph! / #_raise_graph_too_deep!) plus the one thing only a re-walk can
         # say: the graph was traversable when the class was declared, so it changed afterwards.
         def raise_cyclic_shape!(member) = raise(ArgumentError, Internal::ShapeGraph.self_containing_message(member))
 

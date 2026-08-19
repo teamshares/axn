@@ -2182,14 +2182,19 @@ module Axn
         # `type: Array` is a type error, not a map.
         #
         # A union names no single container, which is the same situation `shape:` refuses for the same reason.
-        def _of_container!(validations) = _declared_of_container!(validations.dig(:type, :klass))
+        def _of_container!(validations) = _declared_of_container!(validations.dig(:type, :klass), option: "type:")
 
         # The derivation itself, over the declared class alone, because the two callers name that class with two
         # different keys: a FIELD names it in `type:`, an inner-contract bag in `klass:` (which plays `type:`'s
         # role inside a bag — see `_inner_of_container!`). Taking the class rather than a `validations`-shaped
         # Hash is what keeps the one rule one function: a bag carries no `:type` at all, so the alternative was
         # to fabricate a wrapper Hash here and have the shared code read a key that exists only to be read.
-        def _declared_of_container!(declared_klass)
+        #
+        # `option:` travels with it for the same reason the derivation is shared: one rule, but the option an
+        # author has to EDIT differs by where they wrote it, and a refusal naming a key the declaration does not
+        # carry prescribes a fix with nowhere to land. Supplied by the caller rather than inferred, so the two
+        # spellings cannot drift apart from the two call sites.
+        def _declared_of_container!(declared_klass, option:)
           declared = Array(declared_klass)
           container = declared.first if declared.size == 1
           # Identity, not `==`: the declared class is the caller's, and one answering `==` for its own
@@ -2201,7 +2206,7 @@ module Axn
           # that raises would replace this ArgumentError with the caller's exception — which outside
           # StandardError escapes every rescue meant to settle it. The rendering is byte-identical to the list's
           # for every ordinary class.
-          raise ArgumentError, "of: requires type: Array or Hash (got [#{declared.map { |k| _declared_type_label(k) }.join(', ')}])"
+          raise ArgumentError, "of: requires #{option} Array or Hash (got [#{declared.map { |k| _declared_type_label(k) }.join(', ')}])"
         end
 
         # This seam runs over a shape MEMBER's bag twice — once as the member is built like a field
@@ -2295,7 +2300,7 @@ module Axn
                                  "or `klass: Hash`"
           end
 
-          _declared_of_container!(bag[:klass])
+          _declared_of_container!(bag[:klass], option: "klass:")
         end
 
         # A Hash has two things inside it, so the bare form has no honest reading: `of: Integer` would have to

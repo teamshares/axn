@@ -2,6 +2,7 @@
 
 require "active_model"
 
+require "axn/internal/cycle_guard"
 require "axn/internal/shape_graph"
 
 module Axn
@@ -68,20 +69,51 @@ module Axn
           Axn::Validation::ContainerContents.validator_class_for(field: :__axn_contents__, validations: contents_validations)
       end
 
+      # Descending into a position's own contents is the step that can recurse forever, so it is the step that
+      # is bounded — on the two terms every walk of a graph a class merely HOLDS is bounded on, and for the
+      # reason `ShapeValidator#guard_descent` is bounded on them. The declaration walk refuses both a cyclic and
+      # an over-deep `of:` graph, but a field config ASSIGNED onto a class (`internal_field_configs=`) passed no
+      # declaration walk and carries whatever its author built. Measured without this guard: a self-referential
+      # bag on an assigned config, handed `a = []; a << a`, settled as an `exception` outcome carrying
+      # `SystemStackError` — outside `StandardError`, so it escapes the rescue meant to settle it.
+      #
+      # The pair is (value, bag) for the reason the shape walk's is (value, members): this recursion descends a
+      # contract and a value in lockstep, so the same value legitimately reappears under a DIFFERENT bag with
+      # its own contents still to check, and value-only ancestry would drop those verdicts. Keyed on the CHILD
+      # bag rather than on `options`, because one validator class is built per level so `options` is a fresh
+      # Hash each time, while a cyclic graph hands back the same child bag — which is the identity that repeats.
+      # A generative graph repeats nothing and falls to the depth bound instead.
+      #
+      # The depth counter is the SAME one `ShapeValidator` spends, read off and written back through the
+      # ancestry both validators thread, so an `of:` rung inside a `shape:` inside an `of:` costs three levels
+      # rather than one level three times — the runtime mirror of the single budget the declaration walk keeps
+      # across both edges. The comparison is `>`, so a graph whose deepest rung sits exactly AT the cap — which
+      # declares legally — still reaches its leaf validators.
+      def guard_contents_descent(value, ancestry)
+        depth = ancestry ? ancestry.depth : 0
+        raise ArgumentError, Axn::Internal::ShapeGraph.inner_contract_too_deep_message if depth > Axn::Internal::ShapeGraph::MAX_NESTING
+
+        Axn::Internal::CycleGuard.guard_pair(value, options[:of], ancestry&.seen, on_cycle: nil) do |seen|
+          yield Axn::Internal::CycleGuard::Ancestry.new(seen:, depth: depth + 1)
+        end
+      end
+
       def add_contents_errors(record, attribute, value, prefix)
         return if nil.equal?(contents_validations)
 
-        errors = Axn::Validation::Fields.errors_for(
-          contents_validator_class,
-          source: value,
-          validations: contents_validations,
-          action: record.send(:_action_for_validation),
-          # A shape member's own `method_call:` opt-in is honored by ShapeValidator per member; nothing at this
-          # level may re-permit dispatch on the caller's object.
-          permit_method_call: false,
-          shape_ancestry: record.send(:_shape_ancestry_for_validation),
-        )
-        errors.each { |error| record.errors.add(attribute, "#{prefix}#{error.message}") }
+        guard_contents_descent(value, record.send(:_shape_ancestry_for_validation)) do |ancestry|
+          errors = Axn::Validation::Fields.errors_for(
+            contents_validator_class,
+            source: value,
+            validations: contents_validations,
+            action: record.send(:_action_for_validation),
+            # A shape member's own `method_call:` opt-in is honored by ShapeValidator per member; nothing at
+            # this level may re-permit dispatch on the caller's object.
+            permit_method_call: false,
+            shape_ancestry: ancestry,
+          )
+          errors.each { |error| record.errors.add(attribute, "#{prefix}#{error.message}") }
+        end
       end
 
       # Both axes are reported independently: a map whose keys and values are both wrong has two things to

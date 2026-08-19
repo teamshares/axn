@@ -304,6 +304,29 @@ module Axn
           "return the same finite nested shape each time it is read, or flatten the nesting."
       end
 
+      # The same sentence for the OTHER edge a contract graph has (PRO-3166), written out rather than composed
+      # from the one above by swapping a noun: every clause names a different construct, and the fix an author
+      # can act on ("flatten the nesting" of containers, not "give the shape its own members") is the whole
+      # point of saying it. It sits beside its sibling for the reason that one is here — one text per defect,
+      # so no two layers describe it two ways.
+      #
+      # No `member` to name: an `of:` rung is an UNNAMED position, and the runtime walk that raises this
+      # (`OfValidator`) is handed a bag rather than the member that declared it. There is no cyclic counterpart
+      # either — `guard_pair` treats a repeat as valid at runtime, adding nothing the frame that opened it is
+      # not already adding.
+      INNER_CONTRACT_AFTER_DECLARATION = "An `of:` bag axn canonicalized at declaration can be neither, so " \
+                                         "this graph reached the class without being declared through " \
+                                         "`expects`/`exposes` — a field config assigned directly carries the " \
+                                         "bag exactly as you built it."
+      private_constant :INNER_CONTRACT_AFTER_DECLARATION
+
+      def self.inner_contract_too_deep_message
+        "an `of:` graph nests more than #{MAX_NESTING} levels deep, so walking it would recurse until the " \
+          "stack overflows — a bag that builds a fresh nested bag on every read is endless, and no " \
+          "hand-written declaration nests containers that far. #{INNER_CONTRACT_AFTER_DECLARATION} Flatten " \
+          "the nesting, or have the declaration give back the same finite nested bag each time it is read."
+      end
+
       # How many member PATHS a stored shape graph may have — every route from a field to a member, counting a
       # nested shape reused by two siblings twice, because every walk of the stored graph walks it twice.
       #

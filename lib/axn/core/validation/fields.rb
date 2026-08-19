@@ -74,11 +74,13 @@ module Axn
       # member passes its own `method_call:` opt-in (PRO-2907). It is deliberately independent of
       # `action:` so the two can be threaded separately.
       #
-      # `shape_ancestry:` carries a nested shape walk's position — the value/shape pairs open on the current
-      # path and how deep it has descended — across this boundary. A nested `shape:` recurses through
-      # ActiveModel rather than by calling itself, so a fresh validator is built per level and the walk state
-      # has nowhere else to live; `ShapeValidator` reads it back off the record it is handed, the same way it
-      # reads the threaded action.
+      # `shape_ancestry:` carries a nested walk's position — the (value, node) pairs open on the current path
+      # and how deep it has descended — across this boundary, as an `Internal::CycleGuard::Ancestry`. A nested
+      # `shape:` recurses through ActiveModel rather than by calling itself, so a fresh validator is built per
+      # level and the walk state has nowhere else to live; `ShapeValidator` reads it back off the record it is
+      # handed, the same way it reads the threaded action. `OfValidator` reads and advances the SAME state for
+      # a nested `of:` (PRO-3166) — the two edges interleave, so one shared position is what keeps the cycle
+      # guard and the depth bound counting a `shape:` inside an `of:` as two levels rather than one each.
       def self.errors_for(validator_class, source:, validations:, action: nil, reader: nil, config: nil, permit_method_call: false,
                           shape_ancestry: nil, confirmation: nil)
         validator = validator_class.new(source)

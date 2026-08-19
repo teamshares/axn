@@ -52,6 +52,20 @@ module Axn
         end
       end
 
+      # Where a guarded runtime walk currently IS: the pairs open on the path above it (`seen`, which
+      # `guard_pair` below pushes and pops) and how many levels it has descended (`depth`, which
+      # `ShapeGraph::MAX_NESTING` bounds). The two travel together because neither bound substitutes for the
+      # other — `seen` catches a graph that REPEATS an object, `depth` a generative one that repeats nothing —
+      # and every walk of a graph a class merely HOLDS needs both.
+      #
+      # It lives here, rather than privately inside the validator that first needed it, because it CROSSES
+      # validators: a shape member's `of:` puts `ShapeValidator` above `OfValidator` on one path and an `of:`
+      # bag's `shape:` puts them the other way round, and each recurses through ActiveModel rather than by
+      # calling itself, so the position has nowhere to live but this object threaded across the boundary
+      # (`Validation::Fields.errors_for(shape_ancestry:)`). Two same-shaped Data types would be two things to
+      # keep in step for no gain.
+      Ancestry = Data.define(:seen, :depth)
+
       # For a walk that descends TWO structures in lockstep — a shape graph and the value it describes —
       # where the position on the path is the PAIR rather than the container alone. Guards on
       # (`container`, `key`): the same value revisited under the same shape node.

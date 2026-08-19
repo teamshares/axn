@@ -27,14 +27,16 @@ RSpec.describe "recursive of:" do
         .to raise_error(ArgumentError, /names no container/)
     end
 
+    # `klass:`, not `type:` — inside a bag it is `klass:` that plays `type:`'s role, and there is no `type:` at
+    # that rung for the author to edit. The field-level spelling is unchanged (see of_validator_spec).
     it "refuses a nested of: under a scalar klass" do
       expect { build_axn { expects :m, type: Array, of: { klass: String, of: Integer } } }
-        .to raise_error(ArgumentError, /of: requires type: Array or Hash/)
+        .to raise_error(ArgumentError, "of: requires klass: Array or Hash (got [String])")
     end
 
     it "refuses a nested of: under a union klass" do
       expect { build_axn { expects :m, type: Array, of: { klass: [Array, Hash], of: Integer } } }
-        .to raise_error(ArgumentError, /of: requires type: Array or Hash/)
+        .to raise_error(ArgumentError, "of: requires klass: Array or Hash (got [Array, Hash])")
     end
   end
 
@@ -48,19 +50,19 @@ RSpec.describe "recursive of:" do
       expect { build_axn { expects :m, type: Array, of: bag } }.not_to raise_error
     end
 
-    # Both bounds are the shape walk's — one depth counter and one cycle guard across both edge types — so
-    # the sentence an over-deep or self-referential `of:` graph gets is the shape walk's own, verbatim.
+    # One depth counter and one cycle guard across both edge types, but two vocabularies: the sentence names
+    # the `of:` bag the author actually wrote, and prescribes a fix their declaration has somewhere to make.
     it "refuses a graph one level deeper" do
       bag = nested_of(Axn::Internal::ShapeGraph::MAX_NESTING + 1)
       expect { build_axn { expects :m, type: Array, of: bag } }
-        .to raise_error(ArgumentError, /nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+        .to raise_error(ArgumentError, /an `of:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
     end
 
     it "refuses an of: bag that contains itself" do
       bag = { klass: Array }
       bag[:of] = bag
       expect { build_axn { expects :m, type: Array, of: bag } }
-        .to raise_error(ArgumentError, /graph cannot contain itself/)
+        .to raise_error(ArgumentError, /an `of:` graph cannot contain itself/)
     end
 
     it "refuses an of: bag that contains itself two rungs up" do
@@ -68,7 +70,7 @@ RSpec.describe "recursive of:" do
       outer = { klass: Array, of: inner }
       inner[:of] = outer
       expect { build_axn { expects :m, type: Array, of: outer } }
-        .to raise_error(ArgumentError, /graph cannot contain itself/)
+        .to raise_error(ArgumentError, /an `of:` graph cannot contain itself/)
     end
   end
 
@@ -114,7 +116,7 @@ RSpec.describe "recursive of:" do
       bag[:of] = bag
       expect do
         build_axn { expects(:payload, type: Hash) { field :m, type: Array, of: bag } }
-      end.to raise_error(ArgumentError, /graph cannot contain itself/)
+      end.to raise_error(ArgumentError, /an `of:` graph cannot contain itself/)
     end
 
     # One depth budget across BOTH edge types: the member sits one level down, so the `of:` chain that is
@@ -124,7 +126,7 @@ RSpec.describe "recursive of:" do
       Axn::Internal::ShapeGraph::MAX_NESTING.times { bag = { klass: Array, of: bag } }
       expect do
         build_axn { expects(:payload, type: Hash) { field :m, type: Array, of: bag } }
-      end.to raise_error(ArgumentError, /nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+      end.to raise_error(ArgumentError, /an `of:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
     end
   end
 
@@ -151,14 +153,14 @@ RSpec.describe "recursive of:" do
       bag = { klass: Array }
       bag[:of] = bag
       expect { declared({ type: Array, of: bag }) }
-        .to raise_error(ArgumentError, /graph cannot contain itself/)
+        .to raise_error(ArgumentError, /an `of:` graph cannot contain itself/)
     end
 
     it "refuses a chain deeper than the shared depth budget allows from a member's position" do
       bag = { klass: Array }
       Axn::Internal::ShapeGraph::MAX_NESTING.times { bag = { klass: Array, of: bag } }
       expect { declared({ type: Array, of: bag }) }
-        .to raise_error(ArgumentError, /nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+        .to raise_error(ArgumentError, /an `of:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
     end
   end
 
@@ -192,6 +194,92 @@ RSpec.describe "recursive of:" do
       shape = shared_sibling_shape(12, { type: Array, of: { klass: Array, of: Integer } })
 
       expect { build_axn { expects :payload, type: Hash, shape: } }.not_to raise_error
+    end
+  end
+
+  # The declaration walk refuses both a cyclic and an over-deep `of:` graph, so a DECLARED contract can be
+  # neither — but a field config assigned onto a class passed no declaration walk and carries whatever its
+  # author built. That is the same reachability bar the shape bounds are justified on
+  # (`ShapeGraph::MAX_NESTING`'s own note), and the runtime walk needs its own guard for it: the alternative
+  # outcome is `SystemStackError`, outside `StandardError`, which escapes the rescue meant to settle a result
+  # and surfaces as an `exception` outcome carrying a stack overflow.
+  describe "a graph the class merely holds" do
+    def assigned(validations)
+      klass = build_axn {}
+      klass.internal_field_configs =
+        [Axn::Core::Contract::FieldConfig.new(field: :m, reader_as: :m, validations:)].freeze
+      klass
+    end
+
+    it "settles a self-referential of: bag over a self-referential value instead of overflowing the stack" do
+      bag = { klass: Array, container: Array }
+      bag[:of] = bag
+      value = []
+      value << value
+
+      result = assigned({ of: bag }).call(m: value)
+
+      expect(result.exception).to be_nil
+      expect(result).to be_ok
+    end
+
+    it "still reports a real mismatch under that same bag, so the guard skips only the repeat" do
+      bag = { klass: Array, container: Array }
+      bag[:of] = bag
+      # The bag says "an Array of Arrays, forever", so the Integer two levels in is a genuine failure the
+      # guard must not swallow — a value-only ancestry, or a guard that bailed on the bag alone, would.
+      result = assigned({ of: bag }).call(m: [[1]])
+
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("element at index 0: element at index 0 is not a Array")
+    end
+
+    # A chain and a value nested to the same depth, so the walk actually descends every rung rather than
+    # stopping early on a value that ran out.
+    def chain(rungs)
+      bag = { klass: Array, container: Array }
+      value = []
+      rungs.times do
+        bag = { klass: Array, container: Array, of: bag }
+        value = [value]
+      end
+      [bag, value]
+    end
+
+    def too_deep_message
+      "an `of:` graph nests more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep"
+    end
+
+    it "refuses a chain deeper than MAX_NESTING rather than recursing through it" do
+      bag, value = chain(Axn::Internal::ShapeGraph::MAX_NESTING + 2)
+
+      result = assigned({ of: bag }).call(m: value)
+
+      expect(result.exception).to be_a(ArgumentError)
+      expect(result.exception.message).to include(too_deep_message)
+    end
+
+    # One depth budget at runtime as at declaration. This chain is exactly at the cap on its own and one over
+    # it with a `shape:` rung above, so the pair proves the counter is SHARED rather than restarted per edge —
+    # with one counter each, 64 `of:` under 64 `shape:` would be 128 levels of live recursion.
+    context "a chain that exactly fills the budget on its own" do
+      let(:chain_at_cap) { chain(Axn::Internal::ShapeGraph::MAX_NESTING + 1) }
+
+      it "validates when nothing sits above it" do
+        bag, value = chain_at_cap
+
+        expect(assigned({ of: bag }).call(m: value).exception).to be_nil
+      end
+
+      it "is refused once a shape member's own level is spent first" do
+        bag, value = chain_at_cap
+        member = Struct.new(:field, :validations).new(:inner, { of: bag })
+
+        result = assigned({ shape: { members: [member], container: Hash } }).call(m: { inner: value })
+
+        expect(result.exception).to be_a(ArgumentError)
+        expect(result.exception.message).to include(too_deep_message)
+      end
     end
   end
 

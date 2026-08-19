@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_model"
+require "axn/internal/cycle_guard"
 require "axn/internal/shape_graph"
 
 module Axn
@@ -47,12 +48,6 @@ module Axn
 
       private
 
-      # Where the walk currently is: the value/shape pairs open on the path above it (`seen`, owned by
-      # `CycleGuard`) and how many levels it has descended. Threaded through `errors_for` because a nested
-      # `shape:` recurses through ActiveModel rather than by calling itself.
-      Ancestry = Data.define(:seen, :depth)
-      private_constant :Ancestry
-
       # Descending into `source`'s members is the step that can recurse forever, so it is the step that is
       # bounded — on the two terms every walk of a graph a class merely HOLDS is bounded on, because a
       # declared graph cannot be either (the declaration walk refuses both) while `internal_field_configs=`
@@ -85,7 +80,7 @@ module Axn
         raise ArgumentError, Axn::Internal::ShapeGraph.too_deep_message(nil) if depth > Axn::Internal::ShapeGraph::MAX_NESTING
 
         Axn::Internal::CycleGuard.guard_pair(source, options[:members], ancestry&.seen, on_cycle: nil) do |seen|
-          yield Ancestry.new(seen:, depth: depth + 1)
+          yield Axn::Internal::CycleGuard::Ancestry.new(seen:, depth: depth + 1)
         end
       end
 
