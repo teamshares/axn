@@ -224,13 +224,19 @@ module Axn
         return if WARNED.key?(key)
 
         WARNED[key] = true
-        owner = Axn::Internal::Rendering.module_name(definer)
-        klass = Axn::Internal::Rendering.module_name(base)
-        Axn.config.logger.warn(
-          "[#{klass}] axn left ##{name} to #{owner}: it already defines the name, so calls reach #{owner}'s " \
-          "version. Declare `prefer_inherited :#{name}` to confirm that, or `prefer_axn :#{name}` to use " \
-          "axn's instead.",
-        )
+        # Guarded like axn's other side-channel diagnostics, and for a reason particular to where this one is
+        # emitted: the announcement runs at the execution funnel, before the action is constructed and outside
+        # the executor's guards, so a logger that raises would take `.call` down over a courtesy — and the
+        # record above, which is what makes this once per process, is already written.
+        Axn::Extensions.best_effort("announcing an inherited-method deferral", action: base) do
+          owner = Axn::Internal::Rendering.module_name(definer)
+          klass = Axn::Internal::Rendering.module_name(base)
+          Axn.config.logger.warn(
+            "[#{klass}] axn left ##{name} to #{owner}: it already defines the name, so calls reach #{owner}'s " \
+            "version. Declare `prefer_inherited :#{name}` to confirm that, or `prefer_axn :#{name}` to use " \
+            "axn's instead.",
+          )
+        end
       end
       private_class_method :_warn_once
 

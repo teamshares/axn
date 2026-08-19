@@ -539,6 +539,16 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect(warnings).to be_empty
     end
 
+    # Announced from the execution funnel — before the action is constructed, and outside the executor's own
+    # guards — so an unguarded emission would let a broken logger take `.call` down over a courtesy.
+    it "does not let a raising logger escape .call" do
+      allow(Axn.config.logger).to receive(:warn).and_raise("logger down")
+      stub_const("ApplicationService", Class.new { def log(*) = nil })
+      action = Class.new(ApplicationService) { include Axn }
+
+      expect(action.call).to be_ok
+    end
+
     # The record is of a side effect already committed, so no reset re-arms it — including the one that
     # deliberately DOES re-arm axn's other once-per-process warning.
     it "does not re-announce a deferral after a suite-level reset" do
