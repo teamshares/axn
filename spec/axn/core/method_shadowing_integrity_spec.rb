@@ -486,4 +486,148 @@ RSpec.describe "shadowing an axn instance method" do
       Axn.config.instance_variable_set(:@on_exception, previous)
     end
   end
+
+  # The matrix above shadows each name with a `def` on the action itself. This is the other half of the same
+  # grid: the name is declared by the user's own HIERARCHY, so axn steps aside for it at include time and the
+  # action runs with a wrapper standing in front of axn's helper. Driven off `deferrable_names` rather than a
+  # list, so a helper added to a sugar module later is covered here without editing this file.
+  #
+  # Its job is the sweep the per-feature files do not do: `instance_deferral_spec.rb` proves each behaviour once,
+  # on `log` (and `info`), which cannot show a name the mechanism handles differently — a `_collect` that skips
+  # one, a `prefer_axn` that cannot find axn's definition of one, a guard that refuses one outright.
+  describe "the inherited shape of the sugar matrix" do
+    Axn::Core::MethodShadowing.deferrable_names.each do |name|
+      context "##{name}" do
+        # Anonymous and built per example, so the once-per-`(definer, name)` warning record cannot carry an
+        # announcement from one row into the next.
+        let(:parent) { Class.new { define_method(name) { |*| :parent_implementation } } }
+
+        it "hands the name to the inherited implementation" do
+          action = Class.new(parent) { include Axn }
+
+          expect(action.send(:new).public_send(name)).to eq(:parent_implementation)
+        end
+
+        # Two questions the record answers and a re-walk cannot: the deferral is scoped to the name that
+        # collided, and the shim — which is now the nearest declarer of that name — reports the module it stands
+        # in for rather than itself.
+        it "surrenders that name only, and names the definer rather than its own shim" do
+          action = Class.new(parent) { include Axn }
+
+          expect(Axn::Core::InstanceDeferral.definers(action).keys).to eq([name])
+          expect(Axn::Internal::NameOwnership.owner_of(action, name)).to eq(parent)
+        end
+
+        # Settles through the default `#call`'s auto-exposure rather than through `expose`, because `expose` is
+        # itself one of the names this loop covers: an action that has surrendered it cannot use it to produce
+        # the exposure the row checks, and the route would make that one name the odd one out for a reason
+        # unrelated to the mechanism.
+        it "still runs the action end to end" do
+          action = Class.new(parent) do
+            include Axn
+            expects :given
+            exposes :out
+            def out = given * 2
+          end
+
+          result = action.call(given: 21)
+
+          expect(result).to be_ok
+          expect(result.out).to eq(42)
+        end
+
+        # The shim is INCLUDED, so a `def` in the class body still outranks it and `super` reaches the inherited
+        # implementation through it. Prepended instead, the wrapper would answer first and the author's own
+        # method would never run; absent altogether, `super` would reach axn's helper rather than the parent's.
+        it "reaches the inherited implementation from super in the class body" do
+          action = Class.new(parent) do
+            include Axn
+            define_method(name) { |*args| [:wrapped, super(*args)] }
+          end
+
+          expect(action.send(:new).public_send(name)).to eq(%i[wrapped parent_implementation])
+        end
+
+        describe "the announcement" do
+          let(:warnings) { [] }
+
+          before do
+            logger = instance_double(Logger, info: nil, debug: nil)
+            allow(logger).to receive(:warn) { |message| warnings << message }
+            allow(Axn.config).to receive(:logger).and_return(logger)
+            Axn::Core::InstanceDeferral.send(:_reset_warned_for_specs!)
+          end
+
+          # The positive control for the two silence rows below: without it, a mechanism that announced nothing
+          # at all would read as two classes having answered the warning.
+          it "names the surrendered helper at the class's first execution" do
+            action = Class.new(parent) { include Axn }
+            expect(warnings).to be_empty
+
+            action.call
+
+            expect(warnings.size).to eq(1)
+            expect(warnings.first).to include("##{name}")
+          end
+
+          it "is silent for a class that declared prefer_inherited, which keeps the inherited implementation" do
+            action = Class.new(parent) do
+              include Axn
+              prefer_inherited name
+            end
+
+            action.call
+
+            expect(warnings).to be_empty
+            expect(action.send(:new).public_send(name)).to eq(:parent_implementation)
+          end
+
+          # `prefer_axn` has to find axn's own definition of the name to put it back, and the surrendered helpers
+          # are spread across several modules — so which module answers is a per-name question, not one `log`
+          # can stand in for.
+          it "is silent for a class that declared prefer_axn, which puts axn's implementation back in front" do
+            action = Class.new(parent) do
+              include Axn
+              prefer_axn name
+            end
+
+            action.call
+
+            expect(warnings).to be_empty
+            owner = Axn::Internal::NameOwnership.owner_of(action, name)
+            expect(Axn::Internal::NameOwnership.surrenderable?(owner)).to be true
+          end
+        end
+      end
+    end
+  end
+
+  # The walk that finds a definer stops at ::Object, so Ruby's own methods are not something axn steps aside
+  # for. Untruncated it would defer `warn` to Kernel on EVERY action — silently redirecting `warn("...")` inside
+  # an action from the logger to stderr, with no collision the author could see or answer.
+  describe "the names Ruby owns" do
+    it "defers nothing on an action whose hierarchy is Ruby's alone" do
+      # The positive control: this is only worth asserting because Kernel does declare one of the names axn
+      # hands over. If that stops being true the example is measuring nothing, and this fails rather than
+      # going quietly green.
+      kernel_owned = Axn::Core::MethodShadowing.deferrable_names.select do |name|
+        Kernel.method_defined?(name) || Kernel.private_method_defined?(name)
+      end
+      expect(kernel_owned).not_to be_empty
+
+      expect(Axn::Core::InstanceDeferral.definers(build_axn {})).to be_empty
+    end
+
+    it "keeps warn on axn's logger rather than Kernel's" do
+      messages = []
+      logger = instance_double(Logger, info: nil, debug: nil)
+      allow(logger).to receive(:warn) { |message| messages << message }
+      allow(Axn.config).to receive(:logger).and_return(logger)
+
+      action = build_axn { def call = warn("to the logger") }
+
+      expect { action.call }.not_to output.to_stderr
+      expect(messages.join).to include("to the logger")
+    end
+  end
 end
