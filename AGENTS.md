@@ -93,7 +93,13 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
 - **Inferred behavior defers; explicit conflicts raise.** Anything Axn generates automatically (a
   derived reader, an applied default) yields to a same-named thing the user wrote, leaving a `debug`
   breadcrumb — it never clobbers silently. A conflict between two things the user *explicitly*
-  declared raises loudly.
+  declared raises loudly. The breadcrumb's LEVEL follows where the collision came from: `debug` when
+  both sides are in the file being read, so the author is looking at the answer already; `warn` when
+  axn declines to define something because a name is owned somewhere the author may never look — a
+  superclass in another file, an adapter base in another gem (`description` deferring to
+  `Axn::MCP::Tool`, an instance helper deferring to `ApplicationService#log`). A `debug` line nobody
+  greps for is indistinguishable from silence, and silence is the whole defect those deferrals exist
+  to remove. Keep such a warning once per colliding definition per process, never per call.
 - **Don't force false uniformity, but do fix real inconsistency.** Paths may differ when inputs
   differ (symbol-keyed kwargs vs indifferent-access nested data). But a value with a uniform
   *meaning* (`<field>_id` is always the primary key) must be honored on every path, blank/edge
