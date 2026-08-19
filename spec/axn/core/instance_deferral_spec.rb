@@ -510,6 +510,35 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect(warnings).to be_empty
     end
 
+    # The two shapes the record cannot see: `include Axn` recorded a deferral, and a definition written after it
+    # took the name over. Both are what the docs call "not a conflict" — the author's own method wins on its own
+    # terms — so a line saying calls reach the parent's version asserts the opposite of what runs, and names two
+    # remedies that would change nothing.
+    it "says nothing for a name the class defines in its own body" do
+      stub_const("ApplicationService", Class.new { def log(*) = :from_parent })
+      action = Class.new(ApplicationService) do
+        include Axn
+        def log(*) = :from_child
+      end
+      action.call
+
+      expect(action.instance_method(:log).owner).to eq(action)
+      expect(warnings).to be_empty
+    end
+
+    it "says nothing for a name a module included after the include defines" do
+      stub_const("ApplicationService", Class.new { def log(*) = :from_parent })
+      overrides = Module.new { def log(*) = :from_module }
+      action = Class.new(ApplicationService) do
+        include Axn
+        include overrides
+      end
+      action.call
+
+      expect(action.instance_method(:log).owner).to eq(overrides)
+      expect(warnings).to be_empty
+    end
+
     # The record is of a side effect already committed, so no reset re-arms it — including the one that
     # deliberately DOES re-arm axn's other once-per-process warning.
     it "does not re-announce a deferral after a suite-level reset" do

@@ -192,6 +192,11 @@ module Axn
             # A record entry naming one of axn's own modules is a `prefer_axn`: axn's helper is what answers, so
             # there is no deferral left to announce.
             next if Axn::Internal::NameOwnership.surrenderable?(definer)
+            # The record says what `include Axn` stepped aside for; it does not say what a dispatch reaches now.
+            # A `def` in the class's own body, or a module included after `include Axn`, outranks the shim — the
+            # shape the docs call "not a conflict" — and announcing that one anyway would assert the opposite of
+            # what runs and offer two remedies that change nothing.
+            next unless Axn::Internal::Identity.same?(_live_definer(klass, name), definer)
 
             _warn_once(klass, name, definer)
           end

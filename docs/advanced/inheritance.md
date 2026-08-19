@@ -24,7 +24,7 @@ Axn steps aside instead. **A helper name your own hierarchy already declares sta
 
 "Your own hierarchy" stops at `Object`. A name Ruby declares is not yours — `Kernel` owns `warn`, `inspect`, `hash`, `then` and `tap`, and every class in Ruby inherits them, so counting those as a conflict would mean `warn("declined")` inside an action went to stderr instead of your logger. Everything from `Object` outward is Ruby's and axn keeps it; everything nearer — your superclasses, and any module they or you included *before* `include Axn` — is yours.
 
-A `def` in the action's own class body is not a conflict either. Your method wins on its own terms, whichever side of `include Axn` you write it, and `super` from it reaches whatever stands behind it: the inherited implementation if your hierarchy has one, axn's if it does not. A module you include *after* `include Axn` behaves the same way.
+A `def` in the action's own class body is not a conflict either. Your method wins on its own terms, whichever side of `include Axn` you write it, and `super` from it reaches whatever stands behind it: the inherited implementation if your hierarchy has one, axn's if it does not. A module you include *after* `include Axn` behaves the same way. Neither is announced, either: the warning below is about a name whose calls actually land on an inherited implementation, and yours do not.
 
 ## Which names
 
