@@ -204,8 +204,10 @@ module Axn
       end
 
       # Keyed to the DEFINER's method rather than to the class that inherited it: one `ApplicationService#log`
-      # under fifty actions is one line, not fifty. A definer that lies about `hash`/`eql?` gets warned
-      # about more than once, which is the right way for a courtesy to degrade.
+      # under fifty actions is one line, not fifty. Keying it that way means both reading and writing the record
+      # dispatch the definer's own `hash`/`eql?`, which is why both happen inside the guard below rather than in
+      # front of it. A definer that lies about either gets warned about more than once, and one whose `hash`
+      # raises gets no line at all — both the right way for a courtesy to degrade.
       #
       # Never cleared by any public reset. This is the record of a side effect already committed — the process
       # has announced the deferral — so a configuration reset in a test suite must not make it announce it again.
@@ -220,15 +222,20 @@ module Axn
       # Announced rather than logged at debug: a deferral the author did not intend changes which code runs, and
       # a debug line is invisible to the developer who needs to know.
       def self._warn_once(base, name, definer)
-        key = [definer, name]
-        return if WARNED.key?(key)
-
-        WARNED[key] = true
         # Guarded like axn's other side-channel diagnostics, and for a reason particular to where this one is
         # emitted: the announcement runs at the execution funnel, before the action is constructed and outside
-        # the executor's guards, so a logger that raises would take `.call` down over a courtesy — and the
-        # record above, which is what makes this once per process, is already written.
+        # the executor's guards, so anything that raises here would take `.call` down over a courtesy.
+        #
+        # The WHOLE of the announcement is inside, key included, because reaching the record at all dispatches
+        # the definer's `hash` — a definer being an arbitrary class or module the user wrote. (An empty Hash
+        # short-circuits `key?` without hashing, so the store is the read that always does.) Only the emission
+        # ordering has to be preserved: the record goes in BEFORE the line is written, so a logger that raises
+        # cannot leave the deferral unrecorded and let a later run announce it a second time.
         Axn::Extensions.best_effort("announcing an inherited-method deferral", action: base) do
+          key = [definer, name]
+          next if WARNED.key?(key)
+
+          WARNED[key] = true
           # The definer is a class or module the user wrote, which axn never renames, so it is read bound. The
           # ACTION is the one axn may have named itself — a factory-built or mounted class carries a `name` axn
           # installed — and reading that one bound answers with an object address instead.

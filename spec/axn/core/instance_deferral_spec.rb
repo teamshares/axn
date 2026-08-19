@@ -709,6 +709,38 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect(action.call).to be_ok
     end
 
+    # The once-per-definer record is KEYED to the definer, so reaching it dispatches the definer's own `hash` —
+    # and a definer is an arbitrary class or module the user wrote. Outside the guard, that turned a courtesy
+    # into the action's failure. The first deferral of a process is the case to write, because an empty Hash
+    # short-circuits `key?` without hashing and only the STORE reaches the definer.
+    it "does not let a definer whose hash raises escape .call" do
+      definer = Module.new do
+        def log(*) = nil
+        def self.hash = raise("hostile hash")
+      end
+      action = Class.new(Class.new { include definer }) { include Axn }
+
+      expect(action.call).to be_ok
+      # The announcement is abandoned rather than emitted, and reported through the ignored-exception channel
+      # like any other side-channel escape.
+      expect(warnings.grep(/prefer_inherited/)).to be_empty
+      expect(warnings.grep(/IGNORING EXCEPTION.*hostile hash/m)).not_to be_empty
+    end
+
+    # Guarding the whole announcement must not reorder it: the record still goes in before the line is written,
+    # so a logger that raises on the first action cannot leave the deferral unrecorded and let the next one
+    # inheriting the same method announce it again.
+    it "records the deferral even when the emission raises" do
+      stub_const("ApplicationService", Class.new { def log(*) = nil })
+      allow(Axn.config.logger).to receive(:warn).and_raise("logger down")
+      Class.new(ApplicationService) { include Axn }.call
+
+      allow(Axn.config.logger).to receive(:warn) { |msg| warnings << msg }
+      Class.new(ApplicationService) { include Axn }.call
+
+      expect(warnings.grep(/prefer_inherited/)).to be_empty
+    end
+
     # The record is of a side effect already committed, so no reset re-arms it — including the one that
     # deliberately DOES re-arm axn's other once-per-process warning.
     it "does not re-announce a deferral after a suite-level reset" do
