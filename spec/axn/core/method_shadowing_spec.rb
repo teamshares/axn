@@ -46,6 +46,21 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(described_class.inherited_definer(Class.new(barrier), :log)).to be_nil
     end
 
+    # A module hosts the barrier as readily as a class does, and nothing distinguishes its undef entry from the
+    # absence of a declaration in its own table — so the barrier has to be read off the chain as a whole.
+    it "stops at a barrier a module contributes" do
+      distant = Class.new { def log(*) = "DISTANT" }
+      undeffer = Module.new do
+        def log(*) = "MOD"
+        undef_method :log
+      end
+      barrier = Class.new(distant) { include undeffer }
+
+      expect { barrier.new.log }.to raise_error(NoMethodError)
+      expect(described_class.inherited_definer(barrier, :log)).to be_nil
+      expect(described_class.inherited_definer(Class.new(barrier), :log)).to be_nil
+    end
+
     it "keeps naming a definer above a barrier for a name the barrier left alone" do
       distant = Class.new do
         def log(*) = "DISTANT"
@@ -56,9 +71,9 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(described_class.inherited_definer(Class.new(barrier), :info)).to eq(distant)
     end
 
-    # The barrier is read off effective lookup, whose nil means "unreachable" on a CLASS only: a module that
-    # simply does not declare the name answers nil too, and the walk passes through those on its way to the
-    # answer. Read as a barrier, this module would end the walk before it reached the parent.
+    # The barrier is read off effective lookup on the CLASS BEING ASKED ABOUT, once, before the walk. Read
+    # per-ancestor instead, this module — which simply does not declare the name — would answer the same nil a
+    # barrier does and end the walk before it reached the parent.
     it "walks through a module that declares nothing" do
       parent = Class.new { def log(*) = "PARENT" }
       child = Class.new(parent) { include Module.new }

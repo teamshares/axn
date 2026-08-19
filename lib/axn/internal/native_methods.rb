@@ -55,11 +55,13 @@ module Axn
       MODULE_INCLUDE = ::Module.instance_method(:include)
       MODULE_INSTANCE_METHOD = ::Module.instance_method(:instance_method)
       MODULE_INSTANCE_METHODS = ::Module.instance_method(:instance_methods)
+      MODULE_METHOD_DEFINED = ::Module.instance_method(:method_defined?)
       MODULE_NAME = ::Module.instance_method(:name)
       MODULE_PREPEND = ::Module.instance_method(:prepend)
       MODULE_PUBLIC_INSTANCE_METHODS = ::Module.instance_method(:public_instance_methods)
       MODULE_PUBLIC_METHOD_DEFINED = ::Module.instance_method(:public_method_defined?)
       MODULE_PRIVATE_INSTANCE_METHODS = ::Module.instance_method(:private_instance_methods)
+      MODULE_PRIVATE_METHOD_DEFINED = ::Module.instance_method(:private_method_defined?)
       MODULE_PROTECTED_INSTANCE_METHODS = ::Module.instance_method(:protected_instance_methods)
       STRING_EMPTY = ::String.instance_method(:empty?)
       STRING_ENCODING = ::String.instance_method(:encoding)
@@ -67,9 +69,10 @@ module Axn
       private_constant :SYMBOL_ENCODING
       private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
-                       :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS,
+                       :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS, :MODULE_METHOD_DEFINED,
                        :MODULE_NAME, :MODULE_PREPEND,
-                       :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PROTECTED_INSTANCE_METHODS,
+                       :MODULE_PRIVATE_INSTANCE_METHODS, :MODULE_PRIVATE_METHOD_DEFINED,
+                       :MODULE_PROTECTED_INSTANCE_METHODS,
                        :MODULE_PUBLIC_INSTANCE_METHODS, :MODULE_PUBLIC_METHOD_DEFINED
 
       # Keyed by the visibility they declare, so a caller reproducing a declaration passes the answer
@@ -310,6 +313,22 @@ module Axn
         MODULE_INSTANCE_METHOD.bind_call(mod, name)
       rescue ::NameError
         nil
+      end
+
+      # Whether a dispatch for `name` on an instance of `mod` would land ANYWHERE — the boolean twin of
+      # `declared_instance_method`, for a caller that needs only reachability and not the implementation. Both
+      # readers resolve over the whole ancestry the way a call does, so both see a PREPENDED module's position
+      # and treat a name `undef_method` removed as absent; own-table readers report neither.
+      #
+      # Two reads because Ruby splits the range: `method_defined?` answers for public and protected,
+      # `private_method_defined?` for the rest, and a non-public definition is reached by a dispatch from
+      # inside just as a public one is from outside. Predicates rather than `declared_instance_method(...).nil?`
+      # because absence is the ordinary answer here — every name in a fixed set, asked of every class — and
+      # that reader pays a NameError for each one.
+      #
+      # Same Module precondition as the readers above.
+      def self.instance_method_reachable?(mod, name)
+        MODULE_METHOD_DEFINED.bind_call(mod, name) || MODULE_PRIVATE_METHOD_DEFINED.bind_call(mod, name)
       end
 
       # The UnboundMethod the value's METHOD TABLE declares for `name`, at any visibility, or nil when it declares

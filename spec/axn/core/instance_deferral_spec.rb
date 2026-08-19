@@ -216,6 +216,74 @@ RSpec.describe Axn::Core::InstanceDeferral do
 
       expect(Class.new(unreachable_call) { include Axn }.call).to be_ok
     end
+
+    # A module hosts the barrier just as a class does, and the walk over the action's ancestry meets it either
+    # way — but WHERE it is included decides whether the walk visits it at all. With a class in between, the
+    # module sits above that class in the ancestry and inside the walked slice.
+    it "keeps axn's helper when a module included into an ANCESTOR carries the barrier" do
+      distant = Class.new { def log(*) = "DISTANT-LOG" }
+      undeffer = Module.new do
+        def log(*) = "MOD-LOG"
+        undef_method :log
+      end
+      via_class = Class.new(distant) { include undeffer }
+
+      expect { via_class.new.log }.to raise_error(NoMethodError)
+      expect(described_class.definers(Class.new(via_class) { include Axn })).to be_empty
+    end
+
+    # Included into the action class ITSELF, the same module is inside the slice the walk excludes along with
+    # `base`, so nothing the walk can see reports the barrier — only a lookup taken before `include Axn` masks
+    # the chain with axn's own helper does.
+    it "keeps axn's helper when a module included into the class ITSELF carries the barrier" do
+      distant = Class.new { def log(*) = "DISTANT-LOG" }
+      undeffer = Module.new do
+        def log(*) = "MOD-LOG"
+        undef_method :log
+      end
+      action = Class.new(distant) do
+        include undeffer
+        include Axn
+      end
+
+      expect { Class.new(distant) { include undeffer }.new.log }.to raise_error(NoMethodError)
+      expect(described_class.definers(action)).to be_empty
+      expect(Axn::Internal::NameOwnership.owner_of(action, :log)).to eq(Axn::Core::Logging::InstanceMethods)
+    end
+
+    # Falls out of reading the barrier off the class's own chain, which sees an undef in the class body as
+    # readily as one further up. Left unaddressed before this, because the walk excludes the class itself:
+    # `include Axn` handed the name straight back to the implementation the class had just removed.
+    it "keeps axn's helper when the class's OWN body removed the inherited implementation" do
+      distant = Class.new { def log(*) = "DISTANT-LOG" }
+      action = Class.new(distant) do
+        undef_method :log
+        include Axn
+      end
+
+      # The class's own undef entry outranks everything `include Axn` adds, so it takes axn's helper away too —
+      # which is what the class asked for. What it no longer does is hand the name back to the implementation
+      # the class had just removed.
+      expect(described_class.definers(action)).to be_empty
+      expect { action.send(:new).log("x") }.to raise_error(NoMethodError)
+    end
+
+    # The unsurrenderable half of the same shape. A refusal here would name an inherited `call` the class cannot
+    # reach and block a class Ruby itself has no complaint about.
+    it "runs an action whose own included module removed the inherited call" do
+      distant = Class.new { def call = :distant }
+      undeffer = Module.new do
+        def call = :mod
+        undef_method :call
+      end
+      action = Class.new(distant) do
+        include undeffer
+        include Axn
+      end
+
+      expect { Class.new(distant) { include undeffer }.new.call }.to raise_error(NoMethodError)
+      expect(action.call).to be_ok
+    end
   end
 
   describe "a name axn cannot yield" do
@@ -242,6 +310,17 @@ RSpec.describe Axn::Core::InstanceDeferral do
       end
 
       expect { action.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod, /#initialize/)
+    end
+
+    # The barrier record is taken at include time, so it says nothing about a name the chain gained afterwards —
+    # and must not: recording every name the chain could not reach would silently exempt this one, where the
+    # live walk is the honest reader and the shadowing is real.
+    it "still refuses a superclass reopened to add #call after the include" do
+      parent = Class.new
+      action = Class.new(parent) { include Axn }
+      parent.class_eval { def call = :parent_call_ran }
+
+      expect { action.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod, /#call/)
     end
 
     it "explains the fix" do
