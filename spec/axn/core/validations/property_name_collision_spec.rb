@@ -1952,6 +1952,37 @@ RSpec.describe "declaration-time property name collisions" do
     end
   end
 
+  # A container sitting directly inside a container opens the SAME rung one level down, and the emitter reaches
+  # it by recursing over the `of:` bag (`Schema.contents_node_schema`). Both rules read what that recursion
+  # emits, so neither needs a rule of its own here; what these pin is that the walk and the charge follow the
+  # emitter down the new rung. A rung the emitter steps and the charge does not is a schema that grows without
+  # spending anything.
+  describe "properties emitted beneath a nested of:" do
+    # Past the bound on its own, so the example reads as "charged or not charged" with nothing else in play.
+    def wide_element_type = Data.define(*Array.new(26_000) { |i| :"m#{i}" })
+
+    it "rejects a collision between two members of an element type two containers down" do
+      colliding = Data.define(utf8_name, latin1_name)
+
+      expect { project_axn { expects :m, type: Array, of: { klass: Array, of: colliding }, optional: true } }
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, /resolve to the JSON property "m\.\[\]\.\[\]\.café"/)
+    end
+
+    it "charges the inner element type's members against the emitted-property bound" do
+      wide = wide_element_type
+
+      expect { build_axn { expects :m, type: Array, of: { klass: Array, of: wide }, optional: true }.input_schema }
+        .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+    end
+
+    it "names those members at the rung they are charged under" do
+      point = Data.define(:x, :y)
+      klass = build_axn { expects :m, type: Array, of: { klass: Array, of: point }, optional: true }
+
+      expect(klass.input_schema.dig(:properties, :m, :items, :items, :properties).keys).to eq(%i[x y])
+    end
+  end
+
   # Derivation is only as good as the seam's agreement on WHICH members exist. The declaration guard and the
   # runtime validator capture a member list with `each`; reflection used `Array(...)` and then dispatched
   # `filter_map`, which an Array subclass can answer differently — so the three walks saw two different answers.

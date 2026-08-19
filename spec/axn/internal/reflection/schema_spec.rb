@@ -5364,4 +5364,34 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
     expect(schema.dig(:properties, :payload, :required)).to eq(schema.dig(:properties, :payload, :properties).keys.map(&:to_s))
   end
+
+  # A container sitting directly inside a container has no member name to hang the next level on, so the
+  # emitter reaches it by recursing over the `of:` bag itself (`contents_node_schema`) rather than through
+  # `shape:`'s named members. These pin the three shapes that recursion can produce at the inner rung.
+  describe "a recursive of:" do
+    it "emits items inside items" do
+      action = build_axn { expects :matrix, type: Array, of: { klass: Array, of: Integer } }
+
+      expect(action.input_schema[:properties][:matrix]).to include(
+        type: "array",
+        items: { type: "array", items: { type: "integer" } },
+      )
+    end
+
+    it "emits a union at the inner rung as anyOf" do
+      action = build_axn { expects :m, type: Array, of: { klass: Array, of: [String, Integer] } }
+
+      expect(action.input_schema.dig(:properties, :m, :items, :items)).to eq(
+        anyOf: [{ type: "string" }, { type: "integer" }],
+      )
+    end
+
+    it "emits a map nested inside an array" do
+      action = build_axn { expects :m, type: Array, of: { klass: Hash, of: { values: Integer } } }
+
+      expect(action.input_schema.dig(:properties, :m, :items)).to include(
+        type: "object", additionalProperties: { type: "integer" },
+      )
+    end
+  end
 end

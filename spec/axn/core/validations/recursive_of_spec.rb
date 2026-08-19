@@ -281,6 +281,33 @@ RSpec.describe "recursive of:" do
         expect(result.exception.message).to include(too_deep_message)
       end
     end
+
+    # REFLECTION descends the same edge, one `items:` per rung, so it needs the same bound and reports it with the
+    # same sentence — the alternative is a `SystemStackError` raised out of `input_schema`, which no rescue settles.
+    # The declared cap is what keeps this unreachable for anything `expects` accepted.
+    describe "reflecting one" do
+      it "refuses a chain deeper than MAX_NESTING rather than overflowing the stack" do
+        bag, = chain(Axn::Internal::ShapeGraph::MAX_NESTING + 2)
+
+        expect { assigned({ type: { klass: Array }, of: bag }).input_schema }
+          .to raise_error(ArgumentError, /#{Regexp.escape(too_deep_message)}/)
+      end
+
+      # The same boundary the runtime pair above pins, so the two walks admit exactly the same graphs.
+      it "reflects a chain that exactly fills the budget" do
+        bag, = chain(Axn::Internal::ShapeGraph::MAX_NESTING + 1)
+
+        expect { assigned({ type: { klass: Array }, of: bag }).input_schema }.not_to raise_error
+      end
+
+      it "nests one items: per rung all the way down" do
+        bag, = chain(3)
+
+        items = assigned({ type: { klass: Array }, of: bag }).input_schema.dig(:properties, :m, :items)
+
+        expect(items).to eq(type: "array", items: { type: "array", items: { type: "array", items: { type: "array" } } })
+      end
+    end
   end
 
   describe "the caller's bag is copied, not aliased" do

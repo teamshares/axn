@@ -1499,9 +1499,10 @@ module Axn
           if in_items
             # Overlay the shape's object properties onto items only when the ELEMENTS are objects.
             emitted = shape_overlay_applies?(of, for_output:)
-            # `contents_schema_for` seeds an element type's own members whenever there is an `of:`, shape or not.
+            # `contents_node_schema` seeds an element type's own members whenever there is an `of:`, shape or not —
+            # and, where the element is itself a container, everything inside it too.
             return ShapePropertyPlan.new(emitted:, in_items:, shape:, container:,
-                                         type_schema: of ? contents_schema_for(of[:klass], for_output:) : {})
+                                         type_schema: of ? contents_node_schema(of, for_output:) : {})
           end
 
           # A map's `of:` names its VALUES, which every JSON object key maps to — so the axis reflects as
@@ -1512,15 +1513,8 @@ module Axn
           # schema below is the declared TYPE's contribution, which is charged and emitted regardless, exactly
           # as an array's items are.
           if ::Hash.equal?(container)
-            # A values axis naming no class constrains nothing at runtime — `matches_axis?` waves every value
-            # through, where an array's element axis instead rejects every element, which is why the two
-            # containers settle emptiness themselves rather than in the shared builder. A class whose schema is
-            # untyped (an unknown type on output) has nothing to state either, and both cases emit no node at
-            # all rather than an empty `additionalProperties` that would read as a constraint.
-            klasses = Array(of[:values])
-            values = klasses.empty? ? {} : contents_schema_for(klasses, for_output:)
             return ShapePropertyPlan.new(emitted: false, in_items:, shape:, container:,
-                                         type_schema: values.empty? ? {} : { additionalProperties: values })
+                                         type_schema: map_values_schema(of, for_output:))
           end
 
           # Only the `elsif shape` branch emits object properties for a non-array, non-map field: `of:` without a
@@ -1613,6 +1607,64 @@ module Axn
           else
             { anyOf: klasses.map { |k| single_contents_schema(k, for_output:) } }
           end
+        end
+
+        # The schema for ONE unnamed position — an array element, a map value. The node an `of:` bag describes,
+        # built from the same ingredients a FIELD's node is: the class the bag names (`contents_schema_for`), and
+        # what that class holds in turn (the bag's own `of:`). A container sitting directly inside a container has
+        # no member name to hang the next level on, so this is the only way down to it.
+        #
+        # Shared with `apply_structured_schema!` through `shape_property_plan`'s `type_schema`, which is the whole
+        # reason the collision rules and the projection size cap follow a recursive `of:` down: both read what the
+        # emitter emits (`each_emitted_node` walks `items`/`additionalProperties`/`anyOf` generically), so neither
+        # needs a rung-by-rung rule of its own and neither can drift from what is emitted.
+        #
+        # Bounded on the same term, with the same sentence, as the runtime walk of this very edge
+        # (`OfValidator#guard_contents_descent`): the declaration walk refuses a cyclic or over-deep `of:` graph, so
+        # a DECLARED contract can be neither — but a field config assigned onto a class (`internal_field_configs=`)
+        # passed no declaration walk and carries whatever its author built, and descending one without a bound ends
+        # in `SystemStackError`, outside `StandardError`, escaping every rescue meant to settle it. A cycle needs no
+        # guard of its own here for the reason it needs none there: each turn of it spends a rung, so it reaches the
+        # depth bound rather than the stack. The counter is this chain's own rather than the shape walk's shared
+        # one — a declared graph is capped across BOTH edges, so no declared chain can reach this, and the two
+        # bounded recursions only ever stack additively.
+        #
+        # A union `klass:` keeps the merge order `apply_structured_schema!` has always used — the structural keys
+        # land beside the `anyOf` at this node rather than inside each branch. Existing behavior, preserved
+        # deliberately rather than corrected here.
+        def contents_node_schema(bag, for_output: false, depth: 0)
+          node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : {}
+          inner = Axn::Internal::ShapeGraph.hash_or_nil(bag[:of])
+          return node if nil.equal?(inner)
+
+          raise ArgumentError, Axn::Internal::ShapeGraph.inner_contract_too_deep_message if depth > Axn::Internal::ShapeGraph::MAX_NESTING
+
+          # Which grammar the inner bag was canonicalized under, told apart exactly as `of_container` tells them
+          # apart at a field: a map's bag names its axes and lands under `additionalProperties`, an array's names
+          # one element type and lands under `items`.
+          if ::Hash.equal?(inner[:container])
+            # The object type is the bag's OWN `klass:` (a map bag is only ever reached from `klass: Hash`), exactly
+            # as a field's map node takes its type from `type:` and its `additionalProperties` from the axis.
+            node.merge(map_values_schema(inner, for_output:))
+          else
+            contents = contents_node_schema(inner, for_output:, depth: depth + 1)
+            contents.empty? ? node : node.merge(items: contents)
+          end
+        end
+
+        # What a map's `values:` axis contributes to the node holding it, under the key it lands at — or `{}` where
+        # the axis has nothing to state. ONE derivation, so a map at a FIELD (`shape_property_plan`) and a map
+        # nested inside another container (`contents_node_schema`) cannot describe the same axis two ways.
+        #
+        # A values axis naming no class constrains nothing at runtime — `matches_axis?` waves every value through,
+        # where an array's element axis instead rejects every element, which is why the two containers settle
+        # emptiness themselves rather than in the shared builder. A class whose schema is untyped (an unknown type
+        # on output) has nothing to state either, and both cases emit no node at all rather than an empty
+        # `additionalProperties` that would read as a constraint.
+        def map_values_schema(bag, for_output:)
+          klasses = Array(bag[:values])
+          values = klasses.empty? ? {} : contents_schema_for(klasses, for_output:)
+          values.empty? ? {} : { additionalProperties: values }
         end
 
         def single_contents_schema(klass, for_output: false)
