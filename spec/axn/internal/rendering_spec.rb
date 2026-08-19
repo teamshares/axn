@@ -32,6 +32,45 @@ RSpec.describe Axn::Internal::Rendering do
     end
   end
 
+  describe ".action_name" do
+    # The whole point of the dispatch: axn's own `name` is what the class means to be called, and the bound
+    # reader `module_name` uses answers past it with an address.
+    it "answers with the name a class installed for itself" do
+      klass = Class.new { def self.name = "AnonymousAxn_7" }
+
+      expect(described_class.action_name(klass)).to eq("AnonymousAxn_7")
+      expect(described_class.module_name(klass)).to match(/\A#<Class:/)
+    end
+
+    it "falls back for an anonymous class, whose name is nil" do
+      expect(described_class.action_name(Class.new)).to eq("Action")
+    end
+
+    it "falls back for a class that answers with something other than a String" do
+      expect(described_class.action_name(Class.new { def self.name = :sym })).to eq("Action")
+    end
+
+    # Rendering runs while a failure is being composed, so the class's own reader must not carry anything out
+    # of it — including the raise a `rescue StandardError` would let past.
+    it "falls back rather than letting the class's own reader raise out of the message path" do
+      klass = Class.new { def self.name = raise(Exception, "answered") } # rubocop:disable Lint/RaiseException
+
+      expect(described_class.action_name(klass)).to eq("Action")
+    end
+
+    it "renders bytes that have no UTF-8 rendering, so the name can be joined to axn's prose" do
+      klass = Class.new { def self.name = "Bad\xFF".dup.force_encoding(Encoding::ASCII_8BIT) }
+
+      rendered = described_class.action_name(klass)
+      expect(rendered).to include('\xFF')
+      expect(rendered.encoding).to eq(Encoding::UTF_8)
+    end
+
+    it "names a non-Module rather than raising out of the message path" do
+      expect(described_class.action_name(:not_a_module)).to eq("not_a_module")
+    end
+  end
+
   describe ".exception_message" do
     it "returns an ordinary message verbatim" do
       expect(described_class.exception_message(ArgumentError.new("bad input"))).to eq("bad input")

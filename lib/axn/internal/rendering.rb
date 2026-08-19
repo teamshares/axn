@@ -82,6 +82,11 @@ module Axn
           module_name(mod)
         end
 
+        # An ACTION class named in prose, where `module_name` would name it wrongly: axn installs a `name` of
+        # its own on the classes it builds, so the bound reader answers with an object address in place of the
+        # name axn put there. DELEGATED like the other two, and for the same reason.
+        def action_name(klass) = RenderedActionName.of(klass)
+
         # An exception's own message, as a UTF-8 String this method owns.
         def exception_message(exception) = Text.renderable(raw_exception_message(exception))
 

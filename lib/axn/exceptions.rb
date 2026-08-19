@@ -23,7 +23,9 @@ module Axn
     # this file (`UnserializableValue#message` and `UnserializableArgument#message` below,
     # `Internal::Reflection::Values.describe_key_classes`) reach directly; and `Internal::RenderedModuleName`
     # for a class or module named in its own right, which `Internal::Rendering.module_name` delegates to and
-    # which `UnsurrenderableInheritedMethod` below reaches directly. The direction is
+    # which `UnsurrenderableInheritedMethod` below reaches directly — plus `Internal::RenderedActionName` for
+    # the one receiver those two do not cover, an ACTION class, whose name axn may have installed itself and
+    # which `Internal::Rendering.action_name` delegates to. The direction is
     # forced: the reflection and rendering layers require THIS file, so a reference from here up into either
     # would leave a message path NameError-ing under the standalone loads
     # `spec/axn/standalone_require_spec.rb` pins. The byte half they all compose through, `Internal::Text`, has
@@ -95,6 +97,40 @@ module Axn
     # rendering. Anything else falls through to `RenderedText`, which names it by its class.
     module RenderedModuleName
       def self.of(mod) = Identity.kind?(mod, ::Module) ? Text.renderable(ClassName.of_module(mod)) : RenderedText.of(mod)
+    end
+
+    # An ACTION class named in prose — the one receiver whose name is read by DISPATCH rather than bound.
+    #
+    # Axn installs a `name` of its own on the classes it BUILDS (`Mountable::Helpers::ClassBuilder`,
+    # `Axn::Factory`), so on a factory-built action or a mounted axn a bound `Module#to_s` answers
+    # `#<Class:0x…>` or `#<Class:0x…>::Axns::Inner` where axn intends `AnonymousAxn_2980` or
+    # `AnonymousClient_2980::Axns::Inner`. That override is axn's own naming mechanism rather than a caller's
+    # lie, so binding past it trades the prose axn deliberately put there for an object address. Only the
+    # action class gets this treatment; an owner named alongside it is a class axn never renames, and reading
+    # THAT one bound is what keeps a foreign `self.name` out of the message.
+    #
+    # Anything the dispatch yields that is not a String — nil, which is what an anonymous class answers and so
+    # the common case in specs; another type; or a raise — falls back to the same `"Action"` the rest of axn
+    # spells `|| "Action"`. One fallback rather than a bound second reading: a name that cannot be had is a
+    # name that cannot be had, and the sentence reads the same either way.
+    #
+    # The bytes are still rendered, for the reason everything here is: a constant path may hold non-UTF-8 ones,
+    # and joining those to axn's UTF-8 prose raises Encoding::CompatibilityError in place of the failure being
+    # reported. `Exception` rather than `StandardError` around the dispatch on the same terms as
+    # `Rendering.value_rendering`: the failure being composed has to win over anything the class's own reader
+    # raises, and a `name` is not a path a signal travels through.
+    module RenderedActionName
+      DEFAULT = "Action"
+      private_constant :DEFAULT
+
+      def self.of(klass)
+        return RenderedText.of(klass) unless Identity.kind?(klass, ::Module)
+
+        name = klass.name
+        Identity.kind?(name, ::String) ? Text.renderable(name) : DEFAULT
+      rescue ::Exception # rubocop:disable Lint/RescueException
+        DEFAULT
+      end
     end
 
     # Internal only -- rescued before Axn::Result is returned
@@ -264,9 +300,11 @@ module Axn
     #
     # Every value it interpolates is rendered, for the reason every message here renders: a constant path may
     # hold bytes with no UTF-8 rendering, and joining those would replace this failure with an
-    # Encoding::CompatibilityError out of the message path. `klass` and `owner` are named in their own right, so
-    # `RenderedModuleName` is their reader; `name` goes through `RenderedText`. Both take whatever a caller of
-    # this public class actually passes rather than only what it ought to.
+    # Encoding::CompatibilityError out of the message path. The two classes are named in their own right but by
+    # different readers: `klass` is the ACTION, whose name axn itself may have installed, so it goes through
+    # `RenderedActionName`; `owner` is a class axn never renames, so `RenderedModuleName` reads it bound. `name`
+    # goes through `RenderedText`. All three take whatever a caller of this public class actually passes rather
+    # than only what it ought to.
     #
     # The two remedies are spelled out separately because they do NOT amount to the same thing, and a reader who
     # merges them lands back on the failure being reported: defining the name on the action moves the behaviour
@@ -274,7 +312,7 @@ module Axn
     # while composing is the branch that keeps the inherited implementation running.
     class UnsurrenderableInheritedMethod < ContractViolation
       def initialize(klass:, name:, owner:)
-        klass = Axn::Internal::RenderedModuleName.of(klass)
+        klass = Axn::Internal::RenderedActionName.of(klass)
         owner = Axn::Internal::RenderedModuleName.of(owner)
         name = Axn::Internal::RenderedText.of(name)
 
@@ -322,7 +360,7 @@ module Axn
     # message names that case rather than claiming no such definition exists.
     class NothingToPrefer < ContractViolation
       def initialize(klass:, name:)
-        klass = Axn::Internal::RenderedModuleName.of(klass)
+        klass = Axn::Internal::RenderedActionName.of(klass)
         name = Axn::Internal::RenderedText.of(name)
 
         super("`prefer_inherited :#{name}` has nothing to prefer: axn surrendered no ##{name} on #{klass}, " \

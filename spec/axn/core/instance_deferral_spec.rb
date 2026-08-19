@@ -224,6 +224,38 @@ RSpec.describe Axn::Core::InstanceDeferral do
       expect { action.call }.to raise_error(/compose|define .*in this class|rename/i)
     end
 
+    # The ACTION is the one class in this message read by DISPATCH. Axn installs a `name` of its own on the
+    # classes it builds, so the bound reader that keeps a foreign `to_s` out of the OWNER's slot answers here
+    # with the object address axn's own name was put there to replace.
+    it "names a factory-built action as axn named it" do
+      built = Axn::Factory.build(superclass: service_base) { nil }
+
+      expect { built.call }.to raise_error(Axn::ContractViolation::UnsurrenderableInheritedMethod) do |error|
+        expect(error.message).to include(built.name)
+        expect(error.message).not_to include("#<Class:0x")
+      end
+    end
+
+    it "names a class the user wrote by its own constant" do
+      stub_const("ChargeCard", Class.new(service_base) { include Axn })
+
+      expect { ChargeCard.call }.to raise_error(/which ChargeCard cannot inherit/)
+    end
+
+    # Dispatching the name runs the class's own code while the refusal is being composed, and the refusal is
+    # what the caller has to end up with. `Exception` rather than a StandardError because that is the raise a
+    # narrower guard would let through, carrying the class's answer out in place of this failure. Stubbed for
+    # the example rather than defined on the class, so the reader is back to normal by the time anything else
+    # asks this class its name.
+    it "falls back rather than letting the class's own name reader replace the refusal" do
+      action = Class.new(service_base) { include Axn }
+      allow(action).to receive(:name).and_raise(Exception, "the class answered")
+
+      expect { action.call }.to raise_error(
+        Axn::ContractViolation::UnsurrenderableInheritedMethod, /which Action cannot inherit/
+      )
+    end
+
     # The two remedies are not interchangeable, and a message that blurs them sends the reader back to the bug:
     # `def call = super` on the action reaches axn's default, not the parent's, and reports success exactly as
     # before. So the message has to say which branch keeps the parent's implementation running.
@@ -437,6 +469,29 @@ RSpec.describe Axn::Core::InstanceDeferral do
 
       action.call
       expect(warnings.size).to eq(1)
+    end
+
+    # The class the line is addressed TO is named by dispatch, for the reason the refusal names it that way:
+    # a mounted axn's name is one axn installed, and the bound reader answers with its host's object address
+    # instead. The DEFINER stays bound — it is a class the user wrote, and axn never renames those.
+    it "names a mounted axn as axn named it, rather than by its anonymous host's address" do
+      host = Class.new do
+        def log(*) = nil
+        include Axn::Mountable
+      end
+      host.mount_axn(:build) { nil }
+      host.build
+
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to start_with("[#{host::Axns::Build.name}]")
+    end
+
+    it "names a factory-built action as axn named it" do
+      built = Axn::Factory.build(superclass: Class.new { def log(*) = nil }) { nil }
+      built.call
+
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to start_with("[#{built.name}]")
     end
 
     it "warns once per definer method however many classes inherit it" do
@@ -715,6 +770,17 @@ RSpec.describe Axn::Core::InstanceDeferral do
           prefer_inherited :log
         end
       end.to raise_error(Axn::ContractViolation, /nothing to prefer/)
+    end
+
+    # Named on the same terms as the refusal above: dispatched, so a class axn named answers with that name,
+    # and an anonymous one — the common case in a spec — with the fallback rather than with its address.
+    it "names an anonymous class by the fallback rather than by its object address" do
+      expect do
+        Class.new do
+          include Axn
+          prefer_inherited :log
+        end
+      end.to raise_error(/surrendered no #log on Action/)
     end
 
     # The declarations are a pair, so the second one wins rather than reporting the first as an obstacle.
