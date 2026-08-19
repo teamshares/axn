@@ -1030,6 +1030,14 @@ RSpec.describe "recursive of:" do
         .to raise_error(ArgumentError, /`on:` inside an `of:` bag on :rows names an ActiveModel validation context/)
     end
 
+    # The map's own `of:` bag is a bag too. It was reached by the ENTRY scan instead, so one defect read two
+    # ways depending on which container the author wrote — `on:` inside of: on ["m"] here, `on:` inside an
+    # `of:` bag on :rows one line up.
+    it "is refused on a map's own of: bag, in the same words the array form uses" do
+      expect { build_axn { expects :m, type: Hash, of: { values: Integer, on: :create } } }
+        .to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :m names an ActiveModel validation context/)
+    end
+
     # The control: `on:` at the DECLARATION level is axn's subfield parent and stays legal, as does a bag
     # carrying the shared options that actually apply to it.
     it "leaves a declaration-level on: and an ordinary bag alone" do
@@ -1039,6 +1047,60 @@ RSpec.describe "recursive of:" do
           expects :rows, on: :payload, type: Array, of: { klass: Integer, message: "x", allow_nil: true }
         end
       end.not_to raise_error
+    end
+  end
+
+  # The other shared ActiveModel options split by POSITION rather than being uniformly live or uniformly dead,
+  # which is why only one position refuses them. Where the bag is an ActiveModel validator ENTRY — the field's
+  # own `of:`, and a nested element bag, which `inner_contract_validations` hands to the next level verbatim —
+  # AM reads them and they work. An axis bag is never an entry, so they are dropped.
+  describe "the shared validation options inside a bag" do
+    it "are live at the field's own of: bag" do
+      action = build_axn { expects :m, type: Array, of: { klass: Integer, if: -> { false } } }
+
+      expect(action.call(m: ["x"])).to be_ok
+    end
+
+    it "are live at a nested element bag, which becomes the next level's validator entry" do
+      action = build_axn { expects :m, type: Array, of: { klass: Array, of: { klass: Integer, if: -> { false } } } }
+
+      expect(action.call(m: [["x"]])).to be_ok
+      # The control, so the example above is a gate firing rather than a check that never ran.
+      ungated = build_axn { expects :m, type: Array, of: { klass: Array, of: { klass: Integer } } }
+      expect(ungated.call(m: [["x"]])).not_to be_ok
+    end
+
+    # An axis is the one position that is never handed to ActiveModel, so admitting these would be admitting
+    # an option nothing reads — the silent no-op the whole `of:` whitelist exists to refuse.
+    it "are refused on the values axis, where nothing would read them" do
+      expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, if: :flag } } } }
+        .to raise_error(ArgumentError, /\Aof: values: does not support if: on :m — an axis is the one position/)
+    end
+
+    it "are refused on the keys axis, naming every offender at once" do
+      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, allow_nil: true, strict: true } } } }
+        .to raise_error(ArgumentError, /\Aof: keys: does not support allow_nil:, strict: on :m/)
+    end
+
+    it "leaves on: to the context-scope guard, which names a different problem" do
+      expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, on: :create } } } }
+        .to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :m names an ActiveModel validation context/)
+    end
+
+    # The reason the ban is axis-only rather than bag-wide: axn's own tolerance push-down writes
+    # `allow_blank:`/`allow_nil:` into a validator entry, and a bag IS one at every other position. It never
+    # writes them into an axis, which is what makes the narrow ban safe.
+    it "still accepts the tolerance keys axn itself writes into a bag" do
+      expect { build_axn { expects :rows, type: Array, of: Integer, optional: true } }.not_to raise_error
+      expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer } }, optional: true } }.not_to raise_error
+    end
+
+    it "writes the tolerance pair onto the map bag and never into an axis" do
+      action = build_axn { expects :m, type: Hash, of: { values: { klass: Integer } }, optional: true }
+      bag = action.internal_field_configs.first.validations[:of]
+
+      expect(bag).to include(allow_blank: true, allow_nil: false)
+      expect(bag[:values]).to eq(klass: Integer)
     end
   end
 

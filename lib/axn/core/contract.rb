@@ -1197,8 +1197,13 @@ module Axn
         # options hash, which reads the keys it knows and drops the rest, so an unrecognized key declares
         # cleanly, constrains nothing, and every value passes.
         #
-        # `on:` is admitted here and refused by `_reject_validator_context_scope!`, which names the actual
-        # problem (axn has no validation contexts) instead of reporting the key as unknown.
+        # `on:` is admitted here and refused by `_reject_inner_contract_context_scope!` — the bag-level twin of
+        # the field's `_reject_validator_context_scope!`, and the one that reaches a bag at every position —
+        # which names the actual problem (axn has no validation contexts) instead of reporting the key as
+        # unknown. The other shared options stay admitted because axn WRITES two of them here: the tolerance
+        # push-down merges `allow_blank:`/`allow_nil:` into every validator entry, this bag included, so a
+        # whitelist without them would refuse `of: Integer, optional: true`. Whether they then do anything
+        # depends on the position, which is `AXIS_INERT_OPTION_KEYS` below.
         OF_OPTION_KEYS = (Set.new(%i[klass of shape message]) | Axn::Validation::Base.shared_validation_option_keys).freeze
 
         # The same set for the other container. A Hash's insides are two axes rather than one element position,
@@ -2352,16 +2357,20 @@ module Axn
         end
 
         # `on:` inside a bag is the same dead declaration it is inside any other validator's option bag, and it
-        # reaches this position by two routes the field-level check cannot see: a bag nested inside another bag,
-        # and either axis of a map (PRO-3166). `_reject_validator_context_scope!` scans the FIELD's validator
-        # ENTRIES — it sees the field's own `of:` and nothing below it — while at runtime a nested bag's shared
-        # options are not even read (`OfValidator#inner_contract_validations` copies out `of:` and `shape:`
-        # only), so the option is dropped rather than merely gated off. Asked of the bag directly, through the
-        # same predicate the entry scan uses, so one rule decides it everywhere.
+        # reaches positions the field-level check cannot see: a bag nested inside another bag, and either axis
+        # of a map (PRO-3166). `_reject_validator_context_scope!` scans the FIELD's validator ENTRIES, so it
+        # sees the field's own `of:` and nothing below it. Asked of the bag directly here, through the same
+        # predicate that scan uses, so one rule decides it at every position.
         #
-        # It fires for the field's own `of:` bag too, ahead of the entry scan, which is deliberate: one message
-        # for one defect, and this one names the bag the author wrote rather than the validator key it rode in
-        # on.
+        # Unlike the other shared options, `on:` is dead at ALL of those positions rather than only some — see
+        # `AXIS_INERT_OPTION_KEYS` for the split. Where ActiveModel does read the bag, `validate` installs a
+        # gate of `!(Array(options[:on]) & Array(validation_context)).empty?`, and axn calls `valid?` with no
+        # context, so the intersection is empty on every call; where it does not, the key is simply dropped.
+        # One defect, one message.
+        #
+        # It fires for the field's own `of:` bag and for a map's `of:` bag as well, ahead of the entry scan,
+        # which is deliberate: this message names the bag the author wrote rather than the validator key it
+        # rode in on, and one spelling of one defect should not read two ways.
         def _reject_inner_contract_context_scope!(bag, fields)
           return unless Axn::Validation::Base.entry_context_scoped?(bag)
 
@@ -2386,6 +2395,41 @@ module Axn
                 "replaces the type description a mismatch reports, and this bag names no `klass:`, so nothing " \
                 "at that position is ever a type mismatch and the message can never be emitted. Name the class " \
                 "the message is about (`klass:`), or drop message:."
+        end
+
+        # The shared ActiveModel options an AXIS bag cannot honour, and so may not carry. Every OTHER position a
+        # bag sits at is an ActiveModel validator entry, where AM reads these and they are live: the field's own
+        # `of:` bag is an entry on the field, and a nested ELEMENT bag becomes one on the next level's
+        # `ContainerContents` validator, since `OfValidator#inner_contract_validations` hands it over verbatim
+        # under `:of`. An axis bag is never handed to AM at all — `OfValidator#axis_contract` reads `klass:`,
+        # `message:`, `of:` and `shape:` and nothing else — so anything else written there is dropped rather
+        # than applied, and the axis constrains less than its declaration says. Measured:
+        # `of: { klass: Array, of: { klass: Integer, if: -> { false } } }` lets `[["x"]]` through, while
+        # `of: { values: { klass: Integer, if: -> { false } } }` still rejects `{a: "x"}`.
+        #
+        # Refused only at the axis, for the same reason `OF_OPTION_KEYS` admits them at all: axn's own tolerance
+        # push-down writes `allow_blank:`/`allow_nil:` into a validator entry, so banning them everywhere would
+        # refuse `of: Integer, optional: true`. It never writes them into an AXIS, which is what makes the
+        # narrower ban safe — verified against the stored config, where `optional: true` on a map lands the pair
+        # on the map bag and leaves the axis untouched.
+        #
+        # `on:` is left out because `_check_inner_contract_bag!` has already refused it a step earlier, naming
+        # the real problem: axn has no validation contexts, which is true at every position rather than at this
+        # one. Listing it here would offer "drop it" where the message above offers `if:`/`unless:` instead.
+        AXIS_INERT_OPTION_KEYS = (Axn::Validation::Base.shared_validation_option_keys - %i[on]).freeze
+
+        # Every offender at once: an author who wrote two of them has one declaration to fix. The keys are
+        # axn's own frozen Symbols, so naming them runs nothing of the caller's.
+        def _reject_inert_axis_options!(bag, axis, fields)
+          offenders = AXIS_INERT_OPTION_KEYS.select { |key| Internal::ShapeGraph.carries_key?(bag, key) }
+          return if offenders.empty?
+
+          raise ArgumentError,
+                "of: #{axis}: does not support #{offenders.map { |key| "#{key}:" }.join(', ')} on " \
+                "#{_declared_fields_label(fields)} — an axis is the one position an `of:` bag is never handed " \
+                "to ActiveModel as a validator entry, so those options are read by nothing and the axis would " \
+                "constrain less than it says. Drop them. A gate deciding whether the `of:` runs at all belongs " \
+                "on the field's own declaration, where ActiveModel does read it."
         end
 
         # The field(s) a declaration error names, each through the shared name seam: a field name is the
@@ -2453,6 +2497,7 @@ module Axn
           _reject_unknown_of_keys!(bag, MAP_OF_OPTION_KEYS)
           raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
 
+          _reject_inner_contract_context_scope!(bag, fields)
           _reject_unsupported_map_axis!(bag)
           _reject_map_beside_shape!(owner)
           _canonicalize_map_axes!(bag, fields)
@@ -2482,6 +2527,7 @@ module Axn
             next if nil.equal?(inner)
 
             _check_inner_contract_bag!(inner, fields)
+            _reject_inert_axis_options!(inner, axis, fields)
           end
         end
 

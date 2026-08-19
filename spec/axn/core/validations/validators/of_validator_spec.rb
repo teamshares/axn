@@ -375,11 +375,11 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, /of: keys: must name a type/)
     end
 
-    # The map bag reaches the same context-scope guard the element bag does — `on:` is one whitelist entry for
-    # both containers, and axn has no validation contexts on either side of the line.
+    # The map bag reaches the same context-scope guard the element bag does, in the same words — `on:` is one
+    # whitelist entry for both containers, and axn has no validation contexts on either side of the line.
     it "leaves on: to the context-scope guard here too" do
       expect { build_axn { expects :counts, type: Hash, of: { values: Integer, on: :create } } }
-        .to raise_error(ArgumentError, /validation context/)
+        .to raise_error(ArgumentError, /`on:` inside an `of:` bag on :counts .* validation context/)
     end
 
     it "rejects message:, which cannot say which axis failed" do
