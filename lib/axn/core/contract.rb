@@ -2199,7 +2199,7 @@ module Axn
         # (`_build_shape_member` → `_parse_field_configs`), and again as the declaration walk snapshots it
         # (`ShapeDeclaration#_symbol_keyed_member_validations`). What the second pass receives is neither the
         # same object as the first pass produced nor the same content: between them the tolerance push
-        # (`_parse_field_configs`'s tolerant branch and `_apply_nil_skip_to_non_type_validators!`) rebuilds every
+        # (`_parse_field_validations`'s tolerant branch and `_apply_nil_skip_to_non_type_validators!`) rebuilds every
         # validator entry with the field's shared options merged in, so the bag arrives carrying `allow_nil:`/
         # `allow_blank:` that no author wrote. That is why `OF_OPTION_KEYS`/`MAP_OF_OPTION_KEYS` carry
         # `shared_validation_option_keys` — a correctness requirement rather than permissiveness, since a

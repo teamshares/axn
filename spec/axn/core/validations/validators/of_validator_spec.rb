@@ -281,6 +281,15 @@ RSpec.describe Axn::Validators::OfValidator do
       expect { build_axn { expects :counts, type: [RaisingInspect, String], of: { values: Integer } } }
         .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [RaisingInspect, String])")
     end
+
+    # A declared `type:` that is not a class at all is named by ITS class rather than by its own bytes, on the
+    # same terms and in the gem's own phrasing for the case (`user_facing:`, `expose_return_as:` and
+    # `sensitive:` all report an off-grammar value this way). Pinned because it is the one entry whose
+    # rendering differs from the list's, so a later reader can tell the wording is chosen rather than incidental.
+    it "names a non-class declared type by its class" do
+      expect { build_axn { expects :counts, type: "Hash", of: { values: Integer } } }
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [a value of class String])")
+    end
   end
 
   # ─── Hash containers (maps) ───────────────────────────────────────────────────
