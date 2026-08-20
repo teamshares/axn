@@ -548,8 +548,10 @@ module Axn
           # position — and so what its members are read off — actually settles.
           _derive_raw_shape_container!(validations)
           # The levels this member's shape adds below the member: the shape node itself, plus the `of:` rung the
-          # fold puts above it where the shape distributes.
-          WalkedContracts.new(paths: inner.paths, height: inner.height + 1 + (depth - walk.depth),
+          # fold puts above it where the shape distributes. Asked of the node rather than read back out of the
+          # two depths, so it cannot silently follow a change to `_distributing_shape_depth`'s offset.
+          rungs = _distributing_shape?(validations) ? 2 : 1
+          WalkedContracts.new(paths: inner.paths, height: inner.height + rungs,
                               edge: inner.height.zero? ? SHAPE_EDGE : inner.edge)
         end
 

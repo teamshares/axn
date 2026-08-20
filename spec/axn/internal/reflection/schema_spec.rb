@@ -5386,6 +5386,40 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       )
     end
 
+    # A bag hands its `of:`/`shape:` to the next level as ActiveModel entries verbatim
+    # (`OfValidator#inner_contract_validations`), so a per-validator gate written on one really can skip that
+    # level on a given call. OUTPUT therefore drops it, exactly as `effective_validations` drops a gated entry
+    # at a field — an output schema must not promise what a closed gate may not enforce. INPUT keeps it, for
+    # the same reason `effective_validations` leaves input untouched: static-maximal is the safe direction
+    # there, since a gate can only relax enforcement at runtime.
+    describe "a gate on an inner rung" do
+      let(:action) do
+        build_axn do
+          exposes :rows, type: Array, of: { klass: Array, of: { klass: Integer, if: :flag } }, allow_blank: true
+          def call = nil
+        end
+      end
+
+      it "drops the gated rung from the OUTPUT schema" do
+        expect(action.output_schema.dig(:properties, :rows, :items)).to eq({ type: "array" })
+      end
+
+      it "keeps it on INPUT" do
+        inbound = build_axn { expects :rows, type: Array, of: { klass: Array, of: { klass: Integer, if: :flag } } }
+
+        expect(inbound.input_schema.dig(:properties, :rows, :items)).to eq({ type: "array", items: { type: "integer" } })
+      end
+
+      it "keeps an UNgated rung on output" do
+        ungated = build_axn do
+          exposes :rows, type: Array, of: { klass: Array, of: Integer }, allow_blank: true
+          def call = nil
+        end
+
+        expect(ungated.output_schema.dig(:properties, :rows, :items)).to eq({ type: "array", items: { type: "integer" } })
+      end
+    end
+
     it "emits a map nested inside an array" do
       action = build_axn { expects :m, type: Array, of: { klass: Hash, of: { values: Integer } } }
 

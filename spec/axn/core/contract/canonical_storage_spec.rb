@@ -117,6 +117,28 @@ RSpec.describe "canonical storage of a container's contents" do
     expect(action.input_schema.dig(:properties, :codes, :items)).to eq({ type: "string" })
   end
 
+  # `container: Array` on a shape is not a gate — `ShapeValidator` reads it as "distribute over the elements"
+  # — so the fold cannot store it for `of: Array` however readable the members are off an Array. There is no
+  # spelling for "read members off this Array element" while that reading holds, and inventing one here would
+  # read the members a level too deep and reject `[%w[a b]]`, naming a position the author never declared. The
+  # position stays ungated, which is what the distributing spelling always meant at the element anyway.
+  it "leaves an Array element's position ungated rather than reading its members one level too deep" do
+    action = build_axn do
+      expects :rows, type: Array, of: Array do
+        field :first, type: String, method_call: true
+      end
+    end
+    v = validations_for(action)
+
+    expect(v.dig(:of, :klass)).to eq(Array)
+    expect(v.dig(:of, :shape, :container)).to eq(Axn::Internal::ShapeGraph::ANY_CONTAINER)
+    expect(action.call(rows: [%w[a b]])).to be_ok
+    expect(action.call(rows: [[1, 2]]).exception.message).to include("element at index 0: first is not a String")
+    # Emission is settled by the bag's `klass:`, never by the shape's container, so it is untouched: an Array
+    # element is not an object, so the members are validated and never emitted as properties.
+    expect(action.input_schema.dig(:properties, :rows, :items)).to eq({ type: "array" })
+  end
+
   it "unions a distributing shape with the bag's own shape" do
     inner = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: String } })
     action = build_axn do
@@ -202,6 +224,10 @@ RSpec.describe "the flat spelling and the bag it canonicalizes into share every 
     { members: [member(:"m#{depth}", { type: { klass: Array }, of: { klass: Hash, shape: bagged(depth - 1) } })] }
   end
 
+  def of_chain(depth) = depth.zero? ? Integer : { klass: Array, of: of_chain(depth - 1) }
+
+  def array_chain(depth) = depth.zero? ? 1 : [array_chain(depth - 1)]
+
   def value(depth)
     return { leaf: "x" } if depth.zero?
 
@@ -239,6 +265,22 @@ RSpec.describe "the flat spelling and the bag it canonicalizes into share every 
         .to include("leaf is not a String")
     end
   end
+  # A graph EXACTLY at the cap declares and then validates — the pairing the whole depth offset exists to keep
+  # true. Reached along an `of:` chain rather than a chain of distributing shapes, because the runtime shape
+  # walk is exponential in the number of shape links (measured: ~2.3s at 24) while an `of:` chain is linear:
+  # this construction spends the field's `of:` rung, the folded shape node and then 62 `of:` rungs, which is
+  # the cap, and it costs milliseconds. The pair is what pins it — drop the fold's rung and the "refuses" side
+  # moves, charge it twice and the "validates" side does.
+  it "declares AND validates a folded graph that lands exactly on the cap" do
+    at_cap = { members: [member(:m, { type: Array, of: of_chain(Axn::Internal::ShapeGraph::MAX_NESTING - 2) })] }
+    one_deeper = { members: [member(:m, { type: Array, of: of_chain(Axn::Internal::ShapeGraph::MAX_NESTING - 1) })] }
+    action = build_axn { expects :rows, type: Array, shape: at_cap }
+
+    expect(action.call(rows: [{ m: array_chain(Axn::Internal::ShapeGraph::MAX_NESTING - 1) }])).to be_ok
+    expect { build_axn { expects :rows, type: Array, shape: one_deeper } }
+      .to raise_error(ArgumentError, /an `of:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+  end
+
   # The memo-hit re-judge names the edge the reused subtree's own deepest rung sits on, not the edge the
   # reference reached it by. A shape reused at a deep position is walked once and judged again wherever it is
   # used, with only its recorded height left to judge by — so a shape whose height is an `of:` chain used to be

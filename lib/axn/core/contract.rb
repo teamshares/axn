@@ -2683,10 +2683,21 @@ module Axn
         # SURFACE still accepts, and this canonicalization changes storage, not the surface. Ungated is also
         # what the flat spelling always meant at this position: it named `Array` for the FIELD and never named
         # anything for the element.
+        #
+        # `::Array` is the one class this cannot store even though a shape reads perfectly well off one, because
+        # `container: Array` is not a gate at that key: `ShapeValidator` reads it as "distribute over the
+        # elements" (`shape_validator.rb:41`), so storing it for `of: Array` would read the members one level
+        # too deep and reject `rows: [%w[a b]]` naming a position the author never declared. There is no
+        # spelling for "read members off this Array element" while that reading holds, so the position stays
+        # ungated — which is the pre-flip verdict exactly, since the distributing shape never gated the element
+        # either. (The hand-written twin, `of: { klass: Array, shape: … }`, reaches the same ambiguity through
+        # `_derive_inner_shape_container!` and is PRO-3192's to settle: there the author NAMED the class, so the
+        # answer is a rule about that spelling rather than a fallback.)
         def _folded_element_container(bag)
           return Internal::ShapeGraph::ANY_CONTAINER unless _shape_compatible_klass?(bag[:klass])
 
-          Array(bag[:klass]).first
+          klass = Array(bag[:klass]).first
+          ::Array.equal?(klass) ? Internal::ShapeGraph::ANY_CONTAINER : klass
         end
 
         # Whether this node's `shape:` describes its value's ELEMENTS rather than the value itself — the one
@@ -2755,8 +2766,8 @@ module Axn
         #
         # Frozen, and the shared empty Array where nothing is named, because it is stored in a declared contract
         # and read on every entry of every Hash validated against it.
-        def _shaped_keys(declared)
-          shape = Internal::ShapeGraph.hash_or_nil(declared)
+        def _shaped_keys(declared_shape)
+          shape = Internal::ShapeGraph.hash_or_nil(declared_shape)
           return Internal::ShapeGraph::NO_SHAPED_KEYS if nil.equal?(shape)
 
           keys = Axn::Internal::Reflection::Schema.named_members(shape[:members]).map { |_member, name| name.to_sym }
