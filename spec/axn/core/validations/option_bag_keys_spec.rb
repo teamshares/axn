@@ -116,6 +116,163 @@ RSpec.describe "option bag keys" do
       .to raise_error(ArgumentError, /the `inclusion:` option bag declares :in twice.*Declare the option once/m)
   end
 
+  # An INNER contract is the one thing below a bag that is still axn's own grammar rather than caller data: the
+  # same `klass:`/`of:`/`shape:`/`message:` bag, written at an Array's element, at a map's `keys:` axis, and at
+  # its `values:` axis. The field-level pass canonicalizes one rung and stopped there, so the identical bag
+  # DECLARED at the first rung and was REFUSED at the second — `of: { "klass" => String }` stored
+  # `{ klass: String, container: Array }` while `of: { klass: Array, of: { "klass" => Integer } }` raised
+  # `of: does not support "klass"`. One spelling, one meaning, every position.
+  describe "an inner contract's own grammar" do
+    it "canonicalizes an element bag one rung down" do
+      inner = string_keyed(klass: Integer)
+      klass = build_axn { expects :m, type: Array, of: { klass: Array, of: inner } }
+
+      expect(klass.call(m: [[1]])).to be_ok
+      expect(klass.call(m: [["x"]])).not_to be_ok
+      expect(klass.input_schema.dig(:properties, :m, :items, :items)).to eq(type: "integer")
+    end
+
+    it "canonicalizes an element bag two rungs down" do
+      inner = { klass: Array, of: string_keyed(klass: Integer) }
+      klass = build_axn { expects :m, type: Array, of: { klass: Array, of: inner } }
+
+      expect(klass.call(m: [[[1]]])).to be_ok
+      expect(klass.call(m: [[["x"]]])).not_to be_ok
+    end
+
+    it "canonicalizes the indifferent-access form a Rails author hands in" do
+      klass = build_axn { expects :m, type: Array, of: { klass: Array, of: { klass: Integer }.with_indifferent_access } }
+
+      expect(klass.call(m: [[1]])).to be_ok
+      expect(klass.call(m: [["x"]])).not_to be_ok
+    end
+
+    it "canonicalizes a map's values: axis bag" do
+      axis = string_keyed(klass: Integer)
+      klass = build_axn { expects :m, type: Hash, of: { values: axis } }
+
+      expect(klass.call(m: { a: 1 })).to be_ok
+      expect(klass.call(m: { a: "x" })).not_to be_ok
+    end
+
+    it "canonicalizes a map's keys: axis bag" do
+      axis = string_keyed(klass: Symbol)
+      klass = build_axn { expects :m, type: Hash, of: { keys: axis, values: Integer } }
+
+      expect(klass.call(m: { a: 1 })).to be_ok
+      expect(klass.call(m: { "a" => 1 })).not_to be_ok
+    end
+
+    it "canonicalizes an indifferent-access axis bag" do
+      klass = build_axn { expects :m, type: Hash, of: { values: { klass: Integer }.with_indifferent_access } }
+
+      expect(klass.call(m: { a: 1 })).to be_ok
+      expect(klass.call(m: { a: "x" })).not_to be_ok
+    end
+
+    # The MAP bag itself — the one naming the axes — is a third spelling of the same position, reached only one
+    # rung down (a field's own is canonicalized by the field pass).
+    it "canonicalizes a nested map bag's own axis names" do
+      map = string_keyed(values: Integer)
+      klass = build_axn { expects :m, type: Array, of: { klass: Hash, of: map } }
+
+      expect(klass.call(m: [{ a: 1 }])).to be_ok
+      expect(klass.call(m: [{ a: "x" }])).not_to be_ok
+    end
+
+    # An axis bag's OWN inner contract: the position furthest from the field pass, and the one a fix applied at
+    # only the element edge would still leave refused.
+    it "canonicalizes a bag nested inside an axis bag" do
+      inner = string_keyed(klass: Integer)
+      klass = build_axn { expects :m, type: Hash, of: { values: { klass: Array, of: inner } } }
+
+      expect(klass.call(m: { a: [1] })).to be_ok
+      expect(klass.call(m: { a: ["x"] })).not_to be_ok
+    end
+
+    # Canonicalizing keys must not disarm the grammar those keys are held to — every guard below reads the bag
+    # by Symbol, and each one had a String spelling that reached it for the first time here.
+    describe "the grammar the canonical bag is then held to" do
+      it "still refuses an unrecognized key, naming its canonical spelling" do
+        inner = string_keyed(klass: Integer, bogus: 1)
+
+        expect { build_axn { expects :m, type: Array, of: { klass: Array, of: inner } } }
+          .to raise_error(ArgumentError, /of: does not support bogus:/)
+      end
+
+      it "still refuses an unrecognized key on an axis" do
+        axis = string_keyed(klass: Integer, bogus: 1)
+
+        expect { build_axn { expects :m, type: Hash, of: { values: axis } } }
+          .to raise_error(ArgumentError, /of: does not support bogus:/)
+      end
+
+      # `_symbol_keyed_bag` converts Strings and leaves anything else exactly as it came, so the offender is
+      # still named through the seam that reads it without dispatching to it.
+      it "still names a key it cannot symbolize by class rather than running its own to_s" do
+        expect { build_axn { expects :m, type: Array, of: { klass: Array, of: { 7 => 1, "klass" => Integer } } } }
+          .to raise_error(ArgumentError, /of: does not support a name of class Integer/)
+      end
+
+      it "still refuses a nested bag's `on:`" do
+        inner = string_keyed(klass: Integer, on: :create)
+
+        expect { build_axn { expects :m, type: Array, of: { klass: Array, of: inner } } }
+          .to raise_error(ArgumentError, /`on:` inside an `of:` bag/)
+      end
+
+      it "still refuses an option an axis bag cannot honour" do
+        axis = string_keyed(klass: Integer, allow_nil: true)
+
+        expect { build_axn { expects :m, type: Hash, of: { values: axis } } }
+          .to raise_error(ArgumentError, /of: values: does not support allow_nil:/)
+      end
+
+      it "still refuses a nested bag that constrains nothing" do
+        inner = string_keyed(klass: [])
+
+        expect { build_axn { expects :m, type: Array, of: { klass: Array, of: inner } } }
+          .to raise_error(ArgumentError, /of: klass: names an empty union/)
+      end
+
+      it "still refuses a nested message: with nothing to describe" do
+        bag = string_keyed(shape: { members: [], container: Hash }, message: "nope")
+
+        expect { build_axn { expects :m, type: Array, of: { klass: Array, of: bag } } }
+          .to raise_error(ArgumentError, /of: message: on :m has nothing to describe/)
+      end
+
+      it "reports one option declared under both spellings, naming the nested bag" do
+        expect { build_axn { expects :m, type: Array, of: { klass: Array, of: { "klass" => Integer, :klass => String } } } }
+          .to raise_error(ArgumentError, /the `of:` option bag declares :klass twice/)
+      end
+
+      it "reports one option declared under both spellings, naming the axis" do
+        expect { build_axn { expects :m, type: Hash, of: { values: { "klass" => Integer, :klass => String } } } }
+          .to raise_error(ArgumentError, /#{Regexp.escape('the `of: { values: … }` option bag declares :klass twice')}/)
+      end
+
+      # The defaulting-container refusal is judged ahead of the canonicalization at every rung, for the reason
+      # it is judged ahead of it at the first: canonicalizing REPLACES the bag with a plain Hash of its
+      # entries, which has no default left for the check to see.
+      it "still refuses a nested bag that answers a missing key from a Hash default" do
+        bag = Hash.new(String)
+        bag["klass"] = Integer
+
+        expect { build_axn { expects :m, type: Array, of: { klass: Array, of: bag } } }
+          .to raise_error(ArgumentError, /answers a missing key from a Hash default/)
+      end
+
+      it "still refuses a defaulting axis bag" do
+        bag = Hash.new(String)
+        bag["klass"] = Integer
+
+        expect { build_axn { expects :m, type: Hash, of: { values: bag } } }
+          .to raise_error(ArgumentError, /answers a missing key from a Hash default/)
+      end
+    end
+  end
+
   # A raw `shape:` member bypasses `expects`' option handling entirely, and the copy taken at declaration turns
   # an indifferent-access Hash into a plain one — so a member declared this way validated nothing at all.
   describe "a shape member's own grammar" do

@@ -2539,9 +2539,39 @@ module Axn
           # the caller still holds cannot change a declared contract at any depth, and
           # `reject_defaulting_option_container!` applies at every rung rather than only the first.
           Internal::ShapeGraph.detach_option_containers!(bag)
+          # And canonical before any key is read out of it, for the reason the detach above is taken here: one
+          # rung down is exactly as far as the field-level pass reaches. AFTER the detach, so the defaulting-bag
+          # refusal still judges the container the author wrote rather than the plain copy canonicalizing
+          # produces — the same order, and the same reason for it, as `_symbolize_option_bags!`'s own carve-out.
+          _symbolize_inner_bag!(bag, :of) { "the `of:` option bag" }
           container = _inner_of_container!(bag)
           _drop_derived_of_container!(bag, container)
           bag[:of] = container.equal?(::Hash) ? _canonical_map_of!(bag, fields) : _canonical_array_of!(bag, fields)
+        end
+
+        # ONE inner-contract bag, canonicalized in place under the key that holds it. `_symbolize_option_bags!`
+        # runs over a FIELD's (or a shape member's) own validator bags and stops there — it is entry-wise over
+        # one Hash, and everything below a bag is the caller's data, whose meaning is not axn's to reinterpret.
+        # An inner contract is the exception the recursion creates: a bag nested inside a bag, and either axis of
+        # a map, are axn's own grammar again rather than caller data, so they are held to the same one-spelling
+        # rule the outer bag is. Without it the identical bag declared at the first rung and was refused at the
+        # second — `of: { "klass" => String }` stored `{klass: String, container: Array}`, while
+        # `of: { klass: Array, of: { "klass" => Integer } }` raised `of: does not support "klass"` — which is the
+        # "a value with a uniform meaning must be honored on every path" rule read backwards.
+        #
+        # `_symbol_keyed_bag` is the one symbolizer, reused rather than mirrored: it reads through the bound
+        # `each` seam (never asking an indifferent-access bag to convert itself), preserves a key it cannot
+        # symbolize so `_reject_unknown_of_keys!` still names it, and refuses one option declared under both
+        # spellings. It answers nil when there is nothing to change, so a Symbol-keyed declaration — every one
+        # the DSL writes for itself, and every rung of the second pass over a shape member — allocates nothing.
+        #
+        # The label is yielded through, so naming the position costs nothing until there is an error to name.
+        def _symbolize_inner_bag!(owner, key, &)
+          bag = Internal::ShapeGraph.hash_or_nil(owner[key])
+          return if nil.equal?(bag)
+
+          symbolized = _symbol_keyed_bag(bag, &)
+          owner[key] = symbolized unless nil.equal?(symbolized)
         end
 
         # The same derivation `_of_container!` makes for a field, reading the bag's `klass:` instead of the
@@ -2600,6 +2630,10 @@ module Axn
           Internal::ShapeGraph.detach_option_containers!(bag)
 
           MAP_OF_AXES.each do |axis|
+            # Canonical before its grammar is checked, on the same terms and in the same order as a nested
+            # element bag (see `_symbolize_inner_bag!`): an axis is the third position one inner-contract bag
+            # sits at, and a spelling accepted at the other two has to be accepted here.
+            _symbolize_inner_bag!(bag, axis) { "the `of: { #{axis}: … }` option bag" }
             inner = Internal::ShapeGraph.hash_or_nil(bag[axis])
             next if nil.equal?(inner)
 

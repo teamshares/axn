@@ -398,11 +398,13 @@ RSpec.describe "recursive of:" do
       expect(result.exception.message).to include("value at index 0: value at index 0 is not a Hash")
     end
 
-    # Reflection descends the axis on the same bound rather than a restarted one, so a cyclic axis reaches the
-    # depth guard instead of the stack — exactly what an element chain of the same shape does.
+    # Reflection descends the axis under the same guard rather than a restarted one, so a cyclic axis is
+    # reported as the cycle it is instead of reaching the stack — exactly what an element chain of the same
+    # shape does, and the defect the author can act on: reporting a cycle as depth exhaustion 64 rungs later
+    # sends them looking for nesting that is not there.
     it "refuses to reflect a cyclic values bag rather than recursing through it" do
       expect { assigned(self_referential_axis_map).input_schema }
-        .to raise_error(ArgumentError, /an `of:` graph nests more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+        .to raise_error(ArgumentError, /an `of:` bag contains itself/)
     end
 
     # A chain and a value nested to the same depth, so the walk actually descends every rung rather than
@@ -464,14 +466,59 @@ RSpec.describe "recursive of:" do
           .to raise_error(ArgumentError, /#{Regexp.escape(too_deep_message)}/)
       end
 
-      # The same boundary the runtime pair above pins for a chain with nothing above it. The two counters are
-      # NOT the same once a `shape:` rung sits above one: the runtime spends one budget across both edges,
-      # while this counts only its own chain — so a member's over-cap `of:` raises on call and still reflects.
-      # Looser never rejects a legal declaration, and no DECLARED graph reaches either bound.
+      # The same boundary the runtime pair above pins for a chain with nothing above it: reflection spends no
+      # rung entering a field's own first bag where the declaration walk does, so it sits exactly one rung
+      # looser — which is the safe direction, since looser never refuses to reflect a contract `expects`
+      # accepted.
       it "reflects a chain that exactly fills the budget" do
         bag, = chain(Axn::Internal::ShapeGraph::MAX_NESTING + 1)
 
         expect { assigned({ type: { klass: Array }, of: bag }).input_schema }.not_to raise_error
+      end
+
+      # One counter across BOTH edges here as at declaration and at runtime, which a per-chain counter is not:
+      # a member's own `of:` re-enters the contents builder through `build_property`, so a graph alternating
+      # the two edges spent no rung on any single counter and reached the stack instead of the cap. Pinned in
+      # both directions — the at-cap graph still emits, the first one past it is refused — because an
+      # over-eager charge here would refuse to reflect a contract the declaration walk accepts.
+      describe "a graph alternating the of: and shape-member edges" do
+        # One link: a bag whose `shape:` names a member whose own `of:` is the next link. `klass: Hash` is what
+        # opens the overlay at all (`Schema.shape_overlay_applies?`) — with `klass: Array` the members never
+        # emit and the alternation never happens.
+        def alternating(links)
+          return nil if links.zero?
+
+          inner = alternating(links - 1)
+          validations = { type: { klass: Array } }
+          validations[:of] = inner if inner
+          member = Struct.new(:field, :validations).new(:child, validations)
+          { klass: Hash, container: Array, shape: { container: Hash, members: [member] } }
+        end
+
+        it "reflects an alternating chain that exactly fills the budget" do
+          bag = alternating(Axn::Internal::ShapeGraph::MAX_NESTING + 1)
+
+          expect { assigned({ type: { klass: Array }, of: bag }).input_schema }.not_to raise_error
+        end
+
+        it "refuses one link deeper rather than overflowing the stack" do
+          bag = alternating(Axn::Internal::ShapeGraph::MAX_NESTING + 2)
+
+          expect { assigned({ type: { klass: Array }, of: bag }).input_schema }
+            .to raise_error(ArgumentError, /a `shape:` graph nests more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+        end
+
+        # The cycle the alternation closes: a bag whose shape member points its `of:` back at that bag. Nothing
+        # repeats within either edge's own chain, so a per-edge counter never accumulated and `input_schema`
+        # raised `SystemStackError` — outside StandardError, escaping every rescue meant to settle it.
+        it "reports a cycle closed across the hop instead of reaching the stack" do
+          member = Struct.new(:field, :validations)
+          bag = { klass: Hash, container: Array }
+          bag[:shape] = { container: Hash, members: [member.new(:child, { type: { klass: Array }, of: bag })] }
+
+          expect { assigned({ type: { klass: Array }, of: bag }).input_schema }
+            .to raise_error(ArgumentError, /a `shape:` graph contains itself/)
+        end
       end
 
       it "nests one items: per rung all the way down" do
@@ -698,6 +745,12 @@ RSpec.describe "recursive of:" do
 
       it "leaves the one rung shallower declarable" do
         expect { declared(Axn::Internal::ShapeGraph::MAX_NESTING - 2) }.not_to raise_error
+      end
+
+      # Reflection spends its own bound across the same two edges, so the deepest graph `expects` ACCEPTS is
+      # the control against charging one rung too many there: a schema is not optional for a declared contract.
+      it "reflects the deepest graph the declaration walk accepts" do
+        expect { declared(Axn::Internal::ShapeGraph::MAX_NESTING - 2).input_schema }.not_to raise_error
       end
     end
 
