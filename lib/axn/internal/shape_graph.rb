@@ -310,10 +310,8 @@ module Axn
       # point of saying it. It sits beside its sibling for the reason that one is here — one text per defect,
       # so no two layers describe it two ways.
       #
-      # No `member` to name: an `of:` rung is an UNNAMED position, and the runtime walk that raises this
-      # (`OfValidator`) is handed a bag rather than the member that declared it. There is no cyclic counterpart
-      # either — `guard_pair` treats a repeat as valid at runtime, adding nothing the frame that opened it is
-      # not already adding.
+      # No `member` to name: an `of:` rung is an UNNAMED position, and a walk that raises either of these is
+      # handed a bag rather than the member that declared it.
       INNER_CONTRACT_AFTER_DECLARATION = "An `of:` bag axn canonicalized at declaration can be neither, so " \
                                          "this graph reached the class without being declared through " \
                                          "`expects`/`exposes` — a field config assigned directly carries the " \
@@ -325,6 +323,17 @@ module Axn
           "stack overflows — a bag that builds a fresh nested bag on every read is endless, and no " \
           "hand-written declaration nests containers that far. #{INNER_CONTRACT_AFTER_DECLARATION} Flatten " \
           "the nesting, or have the declaration give back the same finite nested bag each time it is read."
+      end
+
+      # The cyclic half of the same pair, for a re-walk that REPORTS what it meets. `OfValidator` needs none —
+      # `guard_pair` treats a runtime repeat as valid, adding nothing the frame that opened it is not already
+      # adding — but a walk that raises has to tell the two defects apart: a cycle is fixed by not nesting a bag
+      # inside itself, an endless graph by returning the same nested bag each read, and reporting a cycle as
+      # depth exhaustion 64 rungs later sends the author looking for nesting that is not there.
+      def self.inner_contract_self_containing_message
+        "an `of:` bag contains itself, so walking it would recurse until the stack overflows. " \
+          "#{INNER_CONTRACT_AFTER_DECLARATION} Give the nested `of:` contents of its own rather than reusing " \
+          "the bag that encloses it."
       end
 
       # How many member PATHS a stored shape graph may have — every route from a field to a member, counting a
