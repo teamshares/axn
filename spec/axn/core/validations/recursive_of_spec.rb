@@ -21,6 +21,24 @@ RSpec.describe "recursive of:" do
     end
   end
 
+  # `OfValidator#guard_contents_descent`'s cycle guard is keyed on the (value, contents_node) PAIR and pops
+  # between siblings (mirroring `CycleGuard.guard`'s own ancestry semantics) — so the identical sub-array
+  # reused BY REFERENCE at two sibling elements is a legitimate diamond, not a cycle, and each occurrence must
+  # still validate its own contents rather than have the second silently skipped because the pair "looked"
+  # already visited.
+  describe "the same element value reused by reference at two sibling positions" do
+    it "still validates the second occurrence's own contents, not just the first" do
+      action = build_axn { expects :m, type: Array, of: { klass: Array, of: { klass: Array, of: Integer } } }
+      shared = ["x"]
+
+      result = action.call(m: [[shared, shared]])
+
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("element at index 0: element at index 0: element at index 0 is not a Integer")
+      expect(result.exception.message).to include("element at index 0: element at index 1: element at index 0 is not a Integer")
+    end
+  end
+
   describe "declaration-time refusals" do
     it "refuses an of: bag naming no container but carrying of:" do
       expect { build_axn { expects :m, type: Array, of: { of: Integer } } }
@@ -194,6 +212,42 @@ RSpec.describe "recursive of:" do
       shape = shared_sibling_shape(12, { type: Array, of: { klass: Array, of: Integer } })
 
       expect { build_axn { expects :payload, type: Hash, shape: } }.not_to raise_error
+    end
+  end
+
+  # The tests above multiply out through a REUSED shape, which pays its `of:` rungs once (the first walk) and
+  # then re-charges the recorded total at every later reference (the memo-hit re-judge in `_walk_shape_graph!`)
+  # — so removing the direct per-rung charge (`_spend_paths!(allowance, 1)` inside `_walk_inner_contracts!`)
+  # never moves any of THOSE totals enough to matter; only the LAST reference of a shared shape ever skips its
+  # own direct charge, and that is a rounding error against tens of thousands of paths. A raw `of:` BAG shared
+  # directly has no memo of its own, so every reference pays this exact line — the only construction that can
+  # tell its removal from its presence.
+  #
+  # `keys:` and `values:` legitimately share the identical bag object below — a diamond, not a cycle
+  # (`CycleGuard.guard` pops the ancestry between them) — so this is also the control for the `of:`-edge cycle
+  # guard beside it: an over-eager guard that never released a visited bag between siblings would refuse this
+  # declaration outright rather than merely mis-charge it.
+  describe "sibling reuse of a raw of: bag, with no shared shape to backfill the charge" do
+    # No memo for a raw `of:` bag, so each `keys:`/`values:` pair doubles the walk below it: total paths charged
+    # is 2^(depth+1) - 2 (measured), comfortably under MAX_MEMBER_PATHS at 13 levels and over it at 14.
+    def axis_value(depth)
+      depth.zero? ? Integer : { klass: Hash, of: map_bag(depth - 1) }
+    end
+
+    def map_bag(depth)
+      v = axis_value(depth)
+      { keys: v, values: v }
+    end
+
+    it "accepts 13 levels of sibling reuse" do
+      bag = map_bag(13)
+      expect { build_axn { expects :m, type: Hash, of: bag } }.not_to raise_error
+    end
+
+    it "refuses the same sharing one level deeper" do
+      bag = map_bag(14)
+      expect { build_axn { expects :m, type: Hash, of: bag } }
+        .to raise_error(ArgumentError, /has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths/)
     end
   end
 

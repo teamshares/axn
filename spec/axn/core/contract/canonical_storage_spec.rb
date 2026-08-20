@@ -299,4 +299,58 @@ RSpec.describe "the flat spelling and the bag it canonicalizes into share every 
     expect { build_axn { expects :payload, type: Hash, shape: outer } }
       .to raise_error(ArgumentError, /an `of:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
   end
+
+  # A distributing MEMBER shape (`type: Array` + `shape:`) costs the same two rungs a field's own does
+  # (`_snapshot_member_shape!`'s `rungs`) — but a chain built at one depth pays that charge just once either
+  # way, so only a REUSED member shape, judged again by its recorded height at the memo-hit above, exposes
+  # whether the two-rung distributing cost (and the one-rung non-distributing cost beside it) is actually
+  # charged rather than assumed.
+  describe "a member's own nested shape, reused deep enough for the memo to matter" do
+    def wrap(depth, shared)
+      return shared if depth.zero?
+
+      { members: [member(:"w#{depth}", { type: { klass: Hash }, shape: wrap(depth - 1, shared) })] }
+    end
+
+    def reused(depth, shared)
+      { container: Hash, members: [
+        member(:s, { type: { klass: Hash }, shape: shared }),
+        member(:d, { type: { klass: Hash }, shape: wrap(depth, shared) }),
+      ] }
+    end
+
+    it "charges a reused DISTRIBUTING member shape its two rungs" do
+      shared = { members: [member(:x, { type: { klass: Array }, shape: leaf })] }
+      at_cap = reused(Axn::Internal::ShapeGraph::MAX_NESTING - 3, shared)
+      one_deeper = reused(Axn::Internal::ShapeGraph::MAX_NESTING - 2, shared)
+
+      expect { build_axn { expects :payload, type: Hash, shape: at_cap } }.not_to raise_error
+      expect { build_axn { expects :payload, type: Hash, shape: one_deeper } }
+        .to raise_error(ArgumentError, /a `shape:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+    end
+
+    it "does not charge a reused NON-distributing member shape a second rung" do
+      shared = { members: [member(:x, { type: { klass: Hash }, shape: leaf })] }
+      at_cap = reused(Axn::Internal::ShapeGraph::MAX_NESTING - 2, shared)
+
+      expect { build_axn { expects :payload, type: Hash, shape: at_cap } }.not_to raise_error
+    end
+  end
+
+  # The memo-hit re-judge above only ever exercises an `of:`-sourced height (see the two tests before it, and
+  # the one above this). A shape reused with no `of:` anywhere in it — pure shape-in-shape nesting — has to
+  # attribute its own too-deep message to `shape:` rather than default (or invert) to `of:`.
+  it "attributes a reused PURE-shape subtree's depth to shape:, not of:" do
+    shape_chain = ->(n) { n.zero? ? leaf : { members: [member(:"c#{n}", { type: { klass: Hash }, shape: shape_chain.call(n - 1) })] } }
+    shared = shape_chain.call(3)
+    deep = ->(d) { d.zero? ? shared : { members: [member(:"m#{d}", { type: { klass: Hash }, shape: deep.call(d - 1) })] } }
+
+    outer = { container: Hash, members: [
+      member(:s, { type: { klass: Hash }, shape: shared }),
+      member(:d, { type: { klass: Hash }, shape: deep.call(Axn::Internal::ShapeGraph::MAX_NESTING - 3) }),
+    ] }
+
+    expect { build_axn { expects :payload, type: Hash, shape: outer } }
+      .to raise_error(ArgumentError, /a `shape:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
+  end
 end
