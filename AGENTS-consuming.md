@@ -66,7 +66,7 @@ Common options (same for `expects` and `exposes`):
 | `allow_nil:` / `allow_blank:` | Finer-grained than `optional:`. |
 | `default:` | Used when the field is missing or explicitly `nil` (**not** for blank values). |
 | `sensitive: true` | Filter the value in logs / error reports / `inspect`. Accepts a proc/symbol for runtime decisions. |
-| `of:` | For `type: Array` **only** — validates each element's class (`of: String`, `of: [String, Numeric]`). Errors report the failing index. |
+| `of:` | Names what is INSIDE a container. `type: Array`: each element's class (`of: String`, `of: [String, Numeric]`), errors reporting the failing index. `type: Hash`: a map (`of: { keys: Symbol, values: Integer }`) — either axis may be omitted to leave it unconstrained, and a failing entry is reported by its ordinal, never its key. Refused on any other type, a union `type: [Array, Hash]` included. It **nests**: an element or an axis may take an inner-contract bag carrying `klass:`/`of:`/`shape:`/`message:` — `of: { klass: Array, of: Integer }` (an array of arrays), `of: { values: { klass: Hash, shape: … } }` (a map of shaped records; members at an axis must be objects answering `field`/`validations`, e.g. a `Struct.new(:field, :validations)`, since no block form reaches an axis). On a Hash, `of:` may sit beside a `shape:` or a block, which names specific keys: those keys are **exempt** from the map contract, exactly as JSON Schema's `additionalProperties` applies only to keys `properties` does not match. |
 | `validate:` | Custom: `validate: ->(v) { "must be > 10" unless v > 10 }` — return a string (or raise) to fail. |
 | any ActiveModel validation | e.g. `length:`, `format:`, `numericality:` — passed through as if to `validates`. |
 

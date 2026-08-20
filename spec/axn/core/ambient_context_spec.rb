@@ -597,6 +597,175 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
     end
   end
 
+  # A container's contents are declared in its `of:` bag, at an UNNAMED position — there is no member name one
+  # level up to hang them off — so the ambient walk reaches a member declared there only by descending that
+  # edge. A member there is held to exactly what its named twin is held to (PRO-3166).
+  describe "of: on ambient subfields (a container's contents)" do
+    # Local rather than a `let`: `build_axn` class_evals its block, so `self` inside it is the action class and
+    # nothing defined on the example group is reachable from there.
+    def sku_member(**opts)
+      Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } }, **opts)
+    end
+
+    def user_facing_shape = { members: [sku_member(user_facing: "bad")] }
+
+    it "rejects user_facing: on a shape member inside an of: bag" do
+      shape = user_facing_shape
+
+      expect do
+        build_axn { expects :items, on: :ambient_context, type: Array, of: { klass: Hash, shape: } }
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+    end
+
+    it "reaches a member two containers deep" do
+      shape = user_facing_shape
+
+      expect do
+        build_axn { expects :matrix, on: :ambient_context, type: Array, of: { klass: Array, of: { klass: Hash, shape: } } }
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+    end
+
+    it "reaches a member under a map's values: axis" do
+      shape = user_facing_shape
+
+      expect do
+        build_axn { expects :by_region, on: :ambient_context, type: Hash, of: { values: { klass: Hash, shape: } } }
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+    end
+
+    # The two edges interleave: a shape MEMBER can itself declare a container, whose bag carries the next shape.
+    it "reaches a member inside a container declared by a shape member" do
+      inner = user_facing_shape
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :items,
+                                                               validations: { type: { klass: Array },
+                                                                              of: { klass: Hash, shape: inner } })] }
+
+      expect do
+        build_axn { expects :request, on: :ambient_context, type: Hash, shape: }
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+    end
+
+    # `_check_ambient_shape_placement!` keys on a top-level `shape:` ALONE, on the stated premise that an
+    # `of:` bag describes what is INSIDE the value and the ambient filter therefore copies or rebuilds that
+    # value as one thing rather than member by member. That premise holds only because a node declaring `of:`
+    # can never also have subfield children — refused by the map rule for a Hash and by unanswerability for an
+    # Array. Both are pinned here, because relaxing either silently turns the placement rule into a hole: the
+    # filter would rebuild such a node from its subfield children and drop the contents the `of:` describes.
+    it "still refuses a subfield rooted at an ambient map" do
+      expect do
+        build_axn do
+          expects :m, on: :ambient_context, type: Hash, of: { values: Integer }
+          expects :foo, on: :m
+        end
+      end.to raise_error(ArgumentError, /\Asubfield :foo \(on :m\) names the key :foo of :m, which declares `of:` on a Hash/)
+    end
+
+    it "still refuses a subfield rooted at an ambient Array, which cannot answer one" do
+      expect do
+        build_axn do
+          expects :m, on: :ambient_context, type: Array, of: Integer
+          expects :foo, on: :m
+        end
+      end.to raise_error(ArgumentError, /\Asubfield :foo \(on :m\) can never resolve: segment :foo is read from :m, declared Array/)
+    end
+
+    # The descent adds a refusal, never a rejection of what already declared: a bag's shape with nothing to
+    # refuse still declares, still filters through as a leaf copy, and still validates its contents.
+    it "leaves an of:-bag shape declaring and validating" do
+      shape = { members: [sku_member] }
+      klass = build_axn do
+        expects :items, on: :ambient_context, type: Array, of: { klass: Hash, shape: }
+        exposes :first_sku
+        def call = expose(first_sku: items.first[:sku])
+      end
+
+      ok = with_ambient_context(items: [{ sku: "abc" }]) { klass.call }
+      expect(ok).to be_ok
+      expect(ok.first_sku).to eq("abc")
+
+      bad = with_ambient_context(items: [{ sku: 1 }]) { klass.call }
+      expect(bad).not_to be_ok
+    end
+
+    # Control for the widened config selection: the top-level `shape:` path is what it was — a leaf's shape
+    # still validates against the copied value, and its own members are still refused a `user_facing:`.
+    it "leaves the top-level shape: path unchanged" do
+      klass = build_axn do
+        expects :request, on: :ambient_context, type: Hash do
+          field :ip, type: String
+        end
+        exposes :ip_val
+        def call = expose(ip_val: request[:ip])
+      end
+      expect(with_ambient_context(request: { ip: "1.2.3.4" }) { klass.call }).to be_ok
+      expect(with_ambient_context(request: { ip: 9 }) { klass.call }).not_to be_ok
+
+      shape = user_facing_shape
+      expect do
+        build_axn { expects :request, on: :ambient_context, type: Hash, shape: }
+      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+    end
+
+    # Declaring a LATER ambient subfield rebuilds the tree over every ambient config, so the walk re-reads a
+    # graph the class merely HOLDS — one assigned via `subfield_configs=` passed no declaration walk and carries
+    # whatever its author built. Both bounds are needed there, and they are ONE budget across the two edges: an
+    # `of:` rung is a level exactly as a shape rung is.
+    describe "the bounds, on a graph the class holds rather than declared" do
+      def of_chain(rungs, leaf_shape: nil)
+        bag = { klass: Hash }
+        bag[:shape] = leaf_shape if leaf_shape
+        (rungs - 1).times { bag = { klass: Array, of: bag } }
+        bag
+      end
+
+      def holding(of_bag)
+        klass = build_axn { expects :request, on: :ambient_context, type: Hash }
+        config = Axn::Core::Contract::FieldConfig.new(
+          field: :items, reader_as: :items, on: :ambient_context,
+          validations: { type: { klass: Array }, of: of_bag }
+        )
+        klass.subfield_configs = [config].freeze
+        klass
+      end
+
+      def rewalk(klass) = klass.class_eval { expects :other, on: :ambient_context, type: Hash }
+
+      # The cap is the depth the DECLARATION walk accepts, so the two cannot disagree about what is traversable:
+      # a leaf shape 64 rungs down declares, and this walk reaches the member sitting in it.
+      it "reaches the member at the deepest rung a declaration can reach" do
+        at_cap = of_chain(64, leaf_shape: { members: [sku_member] })
+        expect { build_axn { expects :m, type: Array, of: at_cap } }.not_to raise_error
+
+        klass = holding(of_chain(64, leaf_shape: user_facing_shape))
+        expect { rewalk(klass) }.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+      end
+
+      it "rejects a shape one rung past the cap" do
+        klass = holding(of_chain(65, leaf_shape: user_facing_shape))
+
+        expect { rewalk(klass) }
+          .to raise_error(ArgumentError, %r{`shape:` graph nests more than 64 levels deep.*without being declared through `expects`/`exposes`}m)
+      end
+
+      it "accepts a bare container chain at the cap and rejects one past it" do
+        expect { rewalk(holding(of_chain(65))) }.not_to raise_error
+
+        expect { rewalk(holding(of_chain(66))) }
+          .to raise_error(ArgumentError, %r{`of:` graph nests more than 64 levels deep.*without being declared through `expects`/`exposes`}m)
+      end
+
+      # Reported as a cycle rather than as depth exhaustion 64 rungs later: the two defects have different
+      # fixes, and naming the wrong one sends the author looking for nesting that is not there.
+      it "reports a self-referential of: bag as a cycle" do
+        bag = { klass: Array }
+        bag[:of] = bag
+
+        expect { rewalk(holding(bag)) }
+          .to raise_error(ArgumentError, %r{`of:` bag contains itself.*without being declared through `expects`/`exposes`}m)
+      end
+    end
+  end
+
   describe "contradiction checks run for the ambient subtree (parity with non-ambient)" do
     it "rejects a nested ambient contract whose parent type can never answer a required child" do
       expect do

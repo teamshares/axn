@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_model"
+require "axn/internal/cycle_guard"
 require "axn/internal/shape_graph"
 
 module Axn
@@ -32,26 +33,29 @@ module Axn
       def validate_each(record, attribute, value)
         return if value.nil? && (options[:allow_nil] || options[:allow_blank])
 
-        if options[:container] == Array
+        # `::Array` is the RECEIVER of the identity test, never the container — a raw `shape:` kwarg may supply
+        # any object as `container:`, and `container == Array` dispatches that object's own `==`, so one
+        # answering true for both arms would pick which branch a value is validated down. Same rule, same
+        # spelling, as `Redaction#_mask_shape_value`'s dispatch on this very key.
+        container = options[:container]
+        if ::Array.equal?(container)
           return unless value.is_a?(Array) # TypeValidator owns the non-Array error
 
           value.each_with_index do |element, index|
             validate_members(record, attribute, element, prefix: "element at index #{index}: ")
           end
         else
-          return unless value.is_a?(options[:container]) # TypeValidator owns the type mismatch
+          # ANY_CONTAINER: the enclosing `of:` bag named no class, so there is no type to gate on and the
+          # members are read off whatever arrived — `extractable?` still reports a value they cannot be read
+          # from. Identity with the sentinel as the RECEIVER, so nothing a caller supplied answers the question.
+          # Otherwise TypeValidator owns the type mismatch and this validator has nothing to say about it.
+          return unless Axn::Internal::ShapeGraph::ANY_CONTAINER.equal?(container) || value.is_a?(container)
 
           validate_members(record, attribute, value, prefix: "")
         end
       end
 
       private
-
-      # Where the walk currently is: the value/shape pairs open on the path above it (`seen`, owned by
-      # `CycleGuard`) and how many levels it has descended. Threaded through `errors_for` because a nested
-      # `shape:` recurses through ActiveModel rather than by calling itself.
-      Ancestry = Data.define(:seen, :depth)
-      private_constant :Ancestry
 
       # Descending into `source`'s members is the step that can recurse forever, so it is the step that is
       # bounded — on the two terms every walk of a graph a class merely HOLDS is bounded on, because a
@@ -85,7 +89,7 @@ module Axn
         raise ArgumentError, Axn::Internal::ShapeGraph.too_deep_message(nil) if depth > Axn::Internal::ShapeGraph::MAX_NESTING
 
         Axn::Internal::CycleGuard.guard_pair(source, options[:members], ancestry&.seen, on_cycle: nil) do |seen|
-          yield Ancestry.new(seen:, depth: depth + 1)
+          yield Axn::Internal::CycleGuard::Ancestry.new(seen:, depth: depth + 1)
         end
       end
 

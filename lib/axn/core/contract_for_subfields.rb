@@ -570,6 +570,7 @@ module Axn
           reader_names: {},
           user_facing: false,
           method_call: false,
+          path_allowance: nil,
           **validations
         )
           # `on:` arrives canonicalized (a Symbol — see `expects`), so every read of it here and downstream is
@@ -615,7 +616,7 @@ module Axn
           # companion is an ordinary member of the batch, judged and committed with the rest, exactly as on
           # the top-level route.
           declared = _parse_subfield_configs(*fields, on:, allow_blank:, allow_nil:, allow_empty:, optional:, preprocess:, sensitive:, default:,
-                                                      metadata:, reader_names:, user_facing:, method_call:, **validations)
+                                                      metadata:, reader_names:, user_facing:, method_call:, path_allowance:, **validations)
 
           (declared + _confirmation_companion_configs(declared, existing: subfield_configs)).tap do |configs|
             # An explicit declaration of a name an earlier `confirmation:` generated implicitly REPLACES that
@@ -696,12 +697,13 @@ module Axn
           reader_names: {},
           user_facing: false,
           method_call: false,
+          path_allowance: nil,
           **validations
         )
           # A subfield is the on:-carrying case of the shared top-level config builder; with the ambient
           # coerce/shape guards and the dotted-name model guard gone, no per-config post-check remains.
           _parse_field_configs(*fields, on:, allow_blank:, allow_nil:, allow_empty:, optional:, preprocess:, sensitive:, default:,
-                                        metadata:, reader_names:, user_facing:, method_call:, **validations)
+                                        metadata:, reader_names:, user_facing:, method_call:, path_allowance:, **validations)
         end
 
         # Reader-name uniqueness across the prospective batch and everything already defined — a pure

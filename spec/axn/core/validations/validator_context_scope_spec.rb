@@ -120,14 +120,34 @@ RSpec.describe "an `on:` that names a validation context" do
     }.each do |key, entry|
       it "is refused on #{key}:" do
         opts = key == :of ? { type: Array, key => entry } : { optional: true, key => entry }
+        # `of:` is named as the BAG rather than as the validator key, and is the one row here that no longer
+        # reaches the entry scan at all: an `of:` bag can also sit one rung down, or on either map axis, where
+        # the entry scan cannot see it — so it is checked as a bag (`_reject_inner_contract_context_scope!`,
+        # which runs during canonicalization, ahead of the scan) and one message covers every position
+        # (PRO-3166). The scan's own coverage rests on the other six rows, which is where it belongs: the scan
+        # is generic over entries and has no `of:`-specific branch.
+        inside = key == :of ? "an `of:` bag" : "#{key}:"
         expect do
           klass = Class.new do
             include Axn
             def call = nil
           end
           klass.expects :v, **opts
-        end.to raise_error(ArgumentError, /`on:` inside #{key}:/)
+        end.to raise_error(ArgumentError, /`on:` inside #{Regexp.escape(inside)}/)
       end
+    end
+
+    # The row above covers the ARRAY spelling of an `of:` bag. Both spellings are answered by the bag check
+    # now, in one wording — the map bag used to reach the entry scan and read `on:` inside of: on ["v"] while
+    # its array twin read `on:` inside an `of:` bag, which is one defect described two ways.
+    it "is refused on a map's of: bag, in the same words the array spelling uses" do
+      expect do
+        Class.new do
+          include Axn
+          expects :v, type: Hash, of: { values: Integer, on: :create }
+          def call = nil
+        end
+      end.to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :v names an ActiveModel validation context/)
     end
 
     # A raw `shape:` bag is itself a validator entry, so it is caught here — and the check sits ahead of

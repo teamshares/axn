@@ -580,7 +580,11 @@ module Axn
 
         # The type whose members a structured-type property came from: the `of:` element type inside an array,
         # the `of:` VALUES type inside a map, the field's own declared type otherwise — each read from the same
-        # place the emitter built that node's schema from. Nil for a UNION (`of: [A, B]`), where the property
+        # place the emitter built that node's schema from. Both container branches descend through
+        # `contents_type_source`, because either position may hold a BAG naming a container of its own, whose
+        # members are emitted from what is inside it rather than from the container it names.
+        #
+        # Nil for a UNION (`of: [A, B]`), where the property
         # lives in one `anyOf` branch and pinning which class contributed it would mean mapping a branch index
         # back to a declaration — a derivation of the emitter's own ordering, for prose, on a path that only runs
         # once a failure is certain. The message names the union collectively there instead. A nil answer means
@@ -588,14 +592,37 @@ module Axn
         # describe.
         def shape_type_klass(config, plan)
           source = if plan.map?
-                     config.validations.dig(:of, :values)
+                     contents_type_source(config.validations.dig(:of, :values))
                    elsif plan.in_items?
-                     config.validations[:of]
+                     contents_type_source(config.validations[:of])
                    else
                      config.validations[:type]
                    end
           klass = source.is_a?(Hash) ? source[:klass] : source
           klass.is_a?(Class) ? klass : nil
+        end
+
+        # Where the members emitted at a container's innermost rung actually come from. An `of:` bag whose own
+        # `of:` names another container declares no members of its own — the class it names is `Array` or `Hash`
+        # — so reading `klass:` off the OUTERMOST bag attributed a nested collision to a class that cannot be its
+        # source ("a member of the Array type"), while the path segment beside it was already right. The prose
+        # and the path have to name one thing.
+        #
+        # Descends exactly the rungs `Schema.contents_node_schema` descends, and stops where it stops: an array
+        # rung by its `of:`, a map rung at its `values:` axis (which is where that rung's members are emitted
+        # from — a bag there is descended by the recursion, exactly as an element bag is). So the type named is
+        # the type whose schema the emitter built the offending node out of. The
+        # emitter has already walked this same chain under its depth bound by the time attribution runs, which is
+        # why there is no second bound here.
+        def contents_type_source(declared)
+          bag = Internal::ShapeGraph.hash_or_nil(declared)
+          return declared if nil.equal?(bag)
+
+          inner = Internal::ShapeGraph.hash_or_nil(bag[:of])
+          return bag if nil.equal?(inner)
+          return contents_type_source(inner[:values]) if Internal::ShapeGraph.map_bag?(inner)
+
+          contents_type_source(inner)
         end
 
         # A declared type is named through the class-name seam: neither its own `to_s` nor its own bytes may
@@ -986,7 +1013,7 @@ module Axn
         # Both read from ShapeGraph, which owns the two sentences: the same defects are reported by the ambient
         # placement check, which re-walks an already-declared graph for the same reason this does, and one text
         # keeps them from describing it two ways. Each reads as its declaration-time counterpart
-        # (Core::Contract#_raise_cyclic_shape! / #_raise_shape_too_deep!) plus the one thing only a re-walk can
+        # (Core::Contract#_raise_cyclic_graph! / #_raise_graph_too_deep!) plus the one thing only a re-walk can
         # say: the graph was traversable when the class was declared, so it changed afterwards.
         def raise_cyclic_shape!(member) = raise(ArgumentError, Internal::ShapeGraph.self_containing_message(member))
 
@@ -1006,7 +1033,7 @@ module Axn
                              :property_source, :same_property_path?, :unrenderable_name_message,
                              :raise_unrenderable_emitted_name!, :raise_foreign_rendering_name!,
                              :foreign_rendering_name_message, :property_sources_for,
-                             :shape_member_sources, :each_type_namespace, :shape_type_klass, :describe_type, :describe_config,
+                             :shape_member_sources, :each_type_namespace, :shape_type_klass, :contents_type_source, :describe_type, :describe_config,
                              :count_emitted_properties!, :raise_cyclic_shape!, :raise_shape_too_deep!, :emitted_configs,
                              :property_segment, :wire_key_segment, :surviving_configs, :input_property_path
       end

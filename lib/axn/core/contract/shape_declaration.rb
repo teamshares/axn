@@ -77,19 +77,124 @@ module Axn
         # decline the first one — the declaration is not knowable without it — so a list that raises on being
         # read raises at declaration, which is the intended outcome and the right one: the author is standing
         # there, rather than the failure landing on whoever first reflects the class.
-        def _validate_and_snapshot_shape!(shape, fields)
-          _walk_shape_graph!(shape, nil, [Internal::ShapeGraph::MAX_MEMBER_PATHS, fields]).copy
+        def _validate_and_snapshot_shape!(shape, allowance, depth)
+          _walk_shape_graph!(shape, ShapeWalk.new(seen: nil, walked: {}.compare_by_identity, depth:), allowance).copy
+        end
+
+        # ONE path allowance per field DECLARATION, threaded to both of that declaration's edges: the `shape:`
+        # snapshot `expects`/`exposes` takes, and the `of:` chain `_parse_field_validations` descends after it.
+        # Minting one per edge charged the same field two independent budgets — twice the graph the bound
+        # permits — which was unexploitable only while the two edges could not interleave at field level, i.e.
+        # only until `:shape` joined `OF_OPTION_KEYS` (PRO-3166 task 4).
+        #
+        # A block-form MEMBER's pre-pass (`_build_shape_member` → `_parse_field_configs`) deliberately mints its
+        # own: it walks the member's chain a second time, at depth 0, and the real charge is made by the walk
+        # that knows where the member sits. Sharing there would charge those rungs twice, and an over-charge
+        # rejects a legal declaration.
+        #
+        # A two-element Array rather than an object, because it is threaded through every level of one walk and
+        # the label is only ever built on the failure path.
+        def _new_path_allowance(fields) = [Internal::ShapeGraph::MAX_MEMBER_PATHS, fields]
+
+        # The `of:` walk's entry point for a FIELD, where there is no enclosing walk to inherit a position from:
+        # depth starts at 0, and the path allowance is this declaration's own. It descends the field's OWN chain
+        # and no other — `inner_contracts` reads `:of` alone, so the chains hanging off the field's shape members
+        # are not reachable from here and are descended at the member site instead.
+        #
+        # A BLOCK-form member reaches this method too, because `_build_shape_member` parses a member exactly as a
+        # field is parsed: its chain is walked here at depth 0 and again from `_check_and_copy_shape_members!` at
+        # the member's real depth. That is the same runs-twice property `_drop_derived_of_container!` exists for,
+        # and it is the second pass that binds — the first cannot know how far down the member sits, so it
+        # under-charges depth, and under-charging only ever admits what the position-aware pass then refuses. A
+        # member supplied as a RAW `shape:` kwarg never routes through here at all, which is why the member site
+        # is where the chain is canonicalized rather than merely re-checked.
+        def _walk_declared_inner_contracts!(validations, fields, allowance)
+          _walk_inner_contracts!(validations, ShapeWalk.new(seen: nil, walked: {}.compare_by_identity, depth: 0),
+                                 allowance, fields:)
         end
 
         # Stores the copy in place of the caller's shape, and only when there is one to copy: a field that
-        # declared no `shape:` must not gain the key here, and a `shape:` that is not a Hash is left exactly as
-        # it came for the container check to reject.
-        def _snapshot_declared_shape!(validations, fields)
+        # declared no `shape:` must not gain the key here.
+        def _snapshot_declared_shape!(validations, allowance, fields)
+          _reject_unshaped_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
           shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
           return if nil.equal?(shape)
 
-          validations[:shape] = _validate_and_snapshot_shape!(shape, fields)
+          validations[:shape] = _validate_and_snapshot_shape!(shape, allowance, _distributing_shape_depth(validations, 0))
         end
+
+        # Where a shape SITS, which is what its whole subtree is judged against. A DISTRIBUTING `shape:` sits one
+        # level lower than it is written: canonicalization folds it into the `of:` bag naming the elements it
+        # describes (`_fold_distributing_shape!`), so the rung that reaches it is the container's, and its
+        # members are read off an ELEMENT rather than off the declared value itself.
+        #
+        # That extra level is not bookkeeping — it is what keeps the declaration bound and the runtime bound the
+        # SAME bound. A value walked against this contract spends two rungs per link: `OfValidator` descends the
+        # container to the element, then `ShapeValidator` descends the element to its members. Judging the shape
+        # where it was WRITTEN spent one, so a chain that declared legally at 64 links raised `a shape: graph
+        # nests more than 64 levels deep` on every call from link 33 — declared clean, failed always, which is
+        # exactly the split two bounds over one graph exist to prevent.
+        def _distributing_shape_depth(node, depth) = _distributing_shape?(node) ? depth + 1 : depth
+
+        # THE refusal for a `shape:` that is not a Hash, at every position one can be written: a field's own,
+        # a shape MEMBER's, and either kind of `of:` bag (an Array's element, a map's `keys:` or `values:`).
+        # One guard rather than four, because it is one defect — every one of those positions classifies with
+        # `hash_or_nil` and skips what it cannot read, so a non-Hash declared cleanly and then failed EVERY
+        # call with a bare `ArgumentError: must supply :members`, naming neither the declaration nor the
+        # option. It is the same defect, and the same closing, as the nested `container:` derivation in
+        # `_check_and_copy_shape_members!`: the check the field path already made, called from wherever the
+        # walk actually is.
+        #
+        # Only a Hash carries a `members:` list, so nothing else can name members — which is why the
+        # classification is the verdict rather than an approximation of it.
+        #
+        # Keyed on `key?` rather than on the value, so `shape: nil` — supplied and naming nothing — is refused
+        # while a declaration that simply carries no `shape:` stays the honest spelling of "no members". The
+        # offender is named through `_declared_type_label`, never its own `inspect`: it is the caller's object,
+        # and one whose `inspect` raises would replace this declaration error with its own exception (outside
+        # StandardError, one that escapes every rescue meant to settle it).
+        #
+        # `where` is built by the caller, which is the only place that knows WHICH of the four positions this
+        # is — the same reason `_raise_cyclic_graph!` is passed its `edge:` rather than inferring one. A
+        # message naming a slot the author did not write prescribes a fix their declaration has nowhere to
+        # make.
+        def _reject_unshaped_shape!(carrier, where)
+          return unless Internal::ShapeGraph.carries_key?(carrier, :shape)
+          return unless nil.equal?(Internal::ShapeGraph.hash_or_nil(carrier[:shape]))
+
+          raise ArgumentError,
+                "#{where} must be a Hash naming the members it describes (got " \
+                "#{_declared_type_label(carrier[:shape])}) — a shape describes what is inside a value, so one " \
+                "that names no `members:` list constrains nothing and makes every call raise " \
+                "`ArgumentError: must supply :members`. Supply `shape: { members: [...] }`, or drop shape:."
+        end
+
+        # Where a `shape:` hanging off an `of:` bag sits, as the phrase the refusal names it by, from the two
+        # things that locate one: which SLOT of the bag grammar it is in, and which declaration encloses it —
+        # a shape member when the walk reached it through one, else the field. Both are carried down by the
+        # walk rather than re-read here, exactly as `_raise_cyclic_graph!`'s are.
+        def _inner_shape_position_label(position, member, name, fields)
+          slot =
+            case position
+            when Internal::ShapeGraph::KEYS_POSITION then "the `of: { keys: … }` bag"
+            when Internal::ShapeGraph::VALUES_POSITION then "the `of: { values: … }` bag"
+            else "the `of:` bag"
+            end
+          owner = nil.equal?(member) ? _declared_fields_label(fields) : "shape member #{_describe_shape_member(member, name)}"
+          "`shape:` inside #{slot} on #{owner}"
+        end
+
+        # Which edge a declaration walk descended to reach an offending node: `shape:` to a node's named
+        # members, `of:` to the unnamed rung inside a container. The refusals further down are written once per
+        # edge rather than once with a noun swapped, because it is the FIX that differs — a cyclic `shape:` is
+        # repaired by giving the nested shape its own members, a cyclic `of:` by giving the nested bag contents
+        # of its own — and a sentence naming the construct the author did not write prescribes a change their
+        # declaration has nowhere to make. Passed explicitly by each walk rather than defaulted, so a third edge
+        # cannot inherit the wrong vocabulary by omission, and carried on the two walk results below for the
+        # same reason: a memo hit is re-judged with the subtree gone, so the answer has to travel with it.
+        SHAPE_EDGE = :shape
+        INNER_CONTRACT_EDGE = :of
+        private_constant :SHAPE_EDGE, :INNER_CONTRACT_EDGE
 
         # What one walked shape yields. The path count travels with the copy because a shape REUSED by two
         # members is walked (and copied) once but COUNTED twice: sharing is exactly how a graph multiplies out,
@@ -100,37 +205,189 @@ module Axn
         # a property of a shape at all, it is a property of a shape at a POSITION. A subtree already walked needs
         # no walking again, but it does need re-judging against the bound wherever it is reused, and its height is
         # the whole of what that judgement needs (see `_walk_shape_graph!`).
-        WalkedShape = Data.define(:copy, :paths, :height)
+        #
+        # `edge` names which KIND of rung that deepest level is, and travels for the reason `height` does: the
+        # re-judgement happens at a memo hit, where the only thing left of the subtree is this record, and the
+        # too-deep message differs by edge because the FIX differs. A shape whose height comes mostly from an
+        # `of:` chain would otherwise be reported as a `shape:` graph and told to flatten a nesting it has not got.
+        WalkedShape = Data.define(:copy, :paths, :height, :edge)
         private_constant :WalkedShape
+
+        # What one walked chain of inner contracts yields, in the same currencies a walked shape reports — so a
+        # member's `of:` folds into the same totals its nested `shape:` does, and a subtree the memo hands back
+        # is re-judged against a height that counts both kinds of level, attributed to whichever kind is deepest.
+        # There is no `copy` to report: an `of:` bag is canonicalized in place onto the node that holds it (see
+        # `_walk_inner_contracts!`), where a shape is snapshotted into a new node its member then has to be
+        # pointed at.
+        WalkedContracts = Data.define(:paths, :height, :edge)
+        private_constant :WalkedContracts
+
+        # Height 0 means nothing below, so the edge is inert; named rather than left nil so no reader has to
+        # decide what an absent edge means.
+        NO_INNER_CONTRACTS = WalkedContracts.new(paths: 0, height: 0, edge: INNER_CONTRACT_EDGE)
+        private_constant :NO_INNER_CONTRACTS
+
+        # THE declaration walk over a node's `of:` chain, and the seam that canonicalizes each rung of it. An
+        # `of:` bag is the other kind of child a node has, and it is bounded on exactly the terms a nested
+        # `shape:` is: one depth counter (a graph 64 `of:` deep by 64 `shape:` deep is 128 levels of walking,
+        # which two counters would admit), one path allowance (an `of:` rung charges 1, as a member does), and
+        # one cycle guard (`h[:of] = h` is reachable by hand).
+        #
+        # The walk DRIVES the canonicalization rather than following it. Canonicalizing a bag's own `of:` from
+        # inside `_canonical_array_of!` recurses over the CALLER's graph with no bound of any kind, and a
+        # self-referential bag ended that recursion in `SystemStackError` — outside StandardError, raised while
+        # the class is being defined, so no rescue in the framework settles it — before any guard here could
+        # report it. Descending one rung at a time is what puts the bounds ahead of the recursion instead of
+        # behind it.
+        #
+        # The cycle guard is keyed on the RAW child, not on the bag being descended into: every canonical rung
+        # is a fresh Hash of axn's (each is a `merge` result), so nothing in the canonical graph can ever repeat
+        # — the only object a cycle can bring back around is the caller's own, which is what sits under this
+        # bag's `:of` until the rung below it is canonicalized. Detaching a bag copies one level (see
+        # `_canonicalize_inner_contract!`), so a caller's cyclic Hash keeps resurfacing there at every turn of
+        # the loop and is caught on the second.
+        #
+        # It is also where a distributing `shape:` is FOLDED into the bag that names the elements it describes
+        # (`_fold_distributing_shape!`), which is the canonicalization PRO-3166 exists for — the walk is the
+        # only place that has both the node and its bag in hand with each of their shapes already final.
+        #
+        # It is also where this node's OWN map bag learns which of its keys a `shape:` beside it exempts
+        # (`_derive_shaped_keys!`). Here rather than at the canonicalization, because here the shape is final:
+        # a member's is snapshotted by the loop above and a bag's by `_snapshot_inner_shape!` below, both AFTER
+        # the `of:` beside them was canonicalized. FIRST, before the children are enumerated and ahead of the
+        # early return: it replaces the node's `of:` with an extended copy, and an enumeration taken across that
+        # write would hand the loop bags belonging to the Hash that was just replaced.
+        def _walk_inner_contracts!(validations, walk, allowance, fields:, via: nil, via_name: nil)
+          # BEFORE the enumeration, because a node whose `shape:` distributes over its elements and which named
+          # no `of:` at all has no rung yet for that shape to be folded into (`expects :rows, type: Array do …
+          # end`). The bag this mints is what gives the fold below somewhere to land.
+          _open_distributing_bag!(validations)
+          _derive_shaped_keys!(validations)
+          contracts = Internal::ShapeGraph.inner_contracts(validations)
+          return NO_INNER_CONTRACTS if contracts.empty?
+
+          paths = 0
+          height = 0
+          # Which kind of rung the deepest level below this node is (see `WalkedShape`); inert while height is 0.
+          edge = INNER_CONTRACT_EDGE
+          contracts.each do |(position, bag)|
+            # Charged before the rung is descended, so a graph that multiplies out is rejected while the work
+            # done on it is still bounded by the allowance.
+            _spend_paths!(allowance, 1, INNER_CONTRACT_EDGE)
+            paths += 1
+            _raise_graph_too_deep!(via, via_name, edge: INNER_CONTRACT_EDGE) if walk.depth > Internal::ShapeGraph::MAX_NESTING
+
+            raw = Internal::ShapeGraph.hash_or_nil(bag[:of])
+            walked = Axn::Internal::CycleGuard.guard(raw || bag, walk.seen, on_cycle: CYCLIC_SHAPE) do |nested|
+              child = walk.with(seen: nested, depth: walk.depth + 1)
+              _canonicalize_inner_contract!(bag, fields)
+              # The bag's OTHER kind of child, walked off the same state — one depth budget and one path
+              # allowance across both edges, exactly as a shape MEMBER's two edges share them.
+              shaped = _snapshot_inner_shape!(bag, child, allowance, fields:, position:, via:, via_name:)
+              # Between the two, and never beside them: the enclosing node's distributing `shape:` describes
+              # THIS bag's contents, so it is merged into the bag once the bag's own shape is final and before
+              # the descent that reads the merged result (`_derive_shaped_keys!` at the rung below).
+              _fold_distributing_shape!(validations, bag, position, fields)
+              inner = _walk_inner_contracts!(bag, child, allowance, fields:, via:, via_name:)
+              _combine_inner_contracts(shaped, inner)
+            end
+            _raise_cyclic_graph!(via, via_name, edge: INNER_CONTRACT_EDGE) if CYCLIC_SHAPE.equal?(walked)
+
+            paths += walked.paths
+            # This node's height is the deepest rung's, plus the level this rung itself adds. The level ADDED
+            # here is the `of:` rung; anything below it keeps the edge that subtree reported.
+            rung_height = walked.height + 1
+            if rung_height > height
+              height = rung_height
+              edge = walked.height.zero? ? INNER_CONTRACT_EDGE : walked.edge
+            end
+          end
+
+          WalkedContracts.new(paths:, height:, edge:)
+        end
+
+        # The `shape:` hanging off an `of:` bag: walked by the SAME walk a nested shape at a member is walked
+        # by, off the state the enclosing rung is descending with, so the two edges of a bag share one depth
+        # counter, one path allowance, one cycle ancestry and one memo of walked sub-shapes. Anything else and
+        # a graph 64 `of:` deep by 64 `shape:` deep would be declarable.
+        #
+        # Copy first, then derive — the member site's own order (`_check_and_copy_shape_members!`), and
+        # load-bearing for the same reason: the walk's memo hands two positions reusing one shape the SAME copy,
+        # and `_derive_inner_shape_container!` detaches before it writes, so a shape reused under `klass: Hash`
+        # and under a klass-less bag stores the right container in each place rather than the last one walked.
+        # Deriving first would defeat that memo outright, since a fresh detached node is a fresh identity.
+        #
+        # `height` is the shape's own subtree plus the level the shape node itself adds below the bag, matching
+        # what a member's nested shape contributes to its node's height.
+        def _snapshot_inner_shape!(bag, walk, allowance, fields:, position:, via:, via_name:)
+          _reject_unshaped_shape!(bag, _inner_shape_position_label(position, via, via_name, fields))
+          shape = Internal::ShapeGraph.hash_or_nil(bag[:shape])
+          return NO_INNER_CONTRACTS if nil.equal?(shape)
+
+          walked = _walk_shape_graph!(shape, walk, allowance, via:, via_name:)
+          bag[:shape] = walked.copy
+          _derive_inner_shape_container!(bag, fields)
+          # The level added here is the SHAPE node the bag carries; below it, the subtree's own answer stands.
+          WalkedContracts.new(paths: walked.paths, height: walked.height + 1,
+                              edge: walked.height.zero? ? SHAPE_EDGE : walked.edge)
+        end
+
+        # Two children of one bag folded into the one total the rung reports: paths add, height is the deeper.
+        def _combine_inner_contracts(left, right)
+          deeper = right.height > left.height ? right : left
+          WalkedContracts.new(paths: left.paths + right.paths, height: deeper.height, edge: deeper.edge)
+        end
 
         # The remaining allowance, and the fields to name if it runs out — a two-element Array rather than an
         # object, because it is threaded through every level of one walk and the label is only ever built on the
         # failure path.
-        def _spend_paths!(allowance, paths)
+        #
+        # `edge` is which kind of rung this charge is for, threaded so the refusal describes the graph the
+        # author wrote — the same reason `_raise_cyclic_graph!` and `_raise_graph_too_deep!` are passed theirs.
+        # One allowance is spent across both edges (PRO-3166), so a pure `of:` graph can exhaust it with no
+        # shape and no members anywhere in it, and telling that author to "give each member its own nested
+        # shape" prescribes a fix their declaration has nowhere to make.
+        def _spend_paths!(allowance, paths, edge)
           allowance[0] -= paths
           return unless allowance[0].negative?
 
-          _raise_too_many_member_paths!(allowance[1])
+          _raise_too_many_member_paths!(allowance[1], edge)
         end
 
-        def _raise_too_many_member_paths!(fields)
-          raise ArgumentError,
-                "the shape on #{_inspect_field_name(fields.first)} has more than " \
-                "#{Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths — a nested shape object reused by " \
-                "sibling members multiplies out, so N levels of two-way sharing are 2^N distinct paths, and " \
-                "every walk of the stored graph pays one step per path: runtime validation walks it on each " \
-                "call, and redaction re-walks it per logged call whenever a `sensitive:` resolves against the " \
-                "action (measured: 786,000 paths cost about 1.3 seconds per log line, and about two seconds " \
-                "for the one derivation any contract makes on its first). Give each member its own nested " \
-                "shape, or flatten the nesting. This is a bound on the graph, not on what a schema emits — an " \
-                "oversized SCHEMA is reported separately, when a projection is first built."
+        def _raise_too_many_member_paths!(fields, edge)
+          raise ArgumentError, _too_many_member_paths_message(_inspect_field_name(fields.first), edge)
+        end
+
+        # The cost sentence is shared because the cost is: every walk of the stored graph pays one step per
+        # path whichever edge the paths came from. Only what MULTIPLIES and what to do about it differ.
+        def _too_many_member_paths_message(field, edge)
+          subject, wording =
+            if edge == INNER_CONTRACT_EDGE
+              ["the `of:` graph on #{field}",
+               ["a nested `of:` bag reused at sibling positions multiplies out, so N levels of two-way sharing " \
+                "are 2^N distinct paths",
+                "Give each nested bag contents of its own, or flatten the nesting."]]
+            else
+              ["the `shape:` graph on #{field}",
+               ["a nested shape object reused by sibling members multiplies out, so N levels of two-way " \
+                "sharing are 2^N distinct paths",
+                "Give each member its own nested shape, or flatten the nesting."]]
+            end
+
+          "#{subject} has more than #{Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths — #{wording.first}, " \
+            "and every walk of the stored graph pays one step per path: runtime validation walks it on each " \
+            "call, and redaction re-walks it per logged call whenever a `sensitive:` resolves against the " \
+            "action (measured: 786,000 paths cost about 1.3 seconds per log line, and about two seconds for " \
+            "the one derivation any contract makes on its first). #{wording.last} This is a bound on the graph, " \
+            "not on what a schema emits — an oversized SCHEMA is reported separately, when a projection is " \
+            "first built."
         end
 
         def _walk_shape_graph!(shape, walk, allowance, via: nil, via_name: nil)
           hash = Internal::ShapeGraph.hash_or_nil(shape)
           # Not a shape, so it has no members to walk and nothing to copy — returned as it came, for the
           # container check downstream to reject.
-          return WalkedShape.new(copy: shape, paths: 0, height: 0) if nil.equal?(hash)
+          return WalkedShape.new(copy: shape, paths: 0, height: 0, edge: SHAPE_EDGE) if nil.equal?(hash)
 
           # Ahead of "does it supply members?", because a shape whose `members:` comes from a default supplies
           # them to this walk and not to the snapshot it produces — the reverse mismatch of the one below, and
@@ -149,14 +406,23 @@ module Axn
             # level lower, and no walk descends past two while the stored graph is arbitrarily deep. Judged
             # ahead of the path charge, as a shape's own depth is judged ahead of its members' charges — one memo
             # hit stands for walking this shape and everything under it.
-            _raise_shape_too_deep!(via, via_name) if walk.depth + walked.height > Internal::ShapeGraph::MAX_NESTING
-            _spend_paths!(allowance, walked.paths)
+            # Attributed to the edge the reused subtree's own deepest rung sits on, not to the reference that
+            # reached it: a shape whose height is mostly an `of:` chain is an `of:` graph to flatten.
+            if walk.depth + walked.height > Internal::ShapeGraph::MAX_NESTING
+              _raise_graph_too_deep!(via, via_name, edge: walked.height.zero? ? SHAPE_EDGE : walked.edge)
+            end
+            # SHAPE_EDGE unconditionally, where the depth check a line above attributes to the reused
+            # subtree's own deepest rung. The two ask different questions: depth is a property of the subtree,
+            # while what MULTIPLIES here is the REFERENCE — a shape object named by two sibling members —
+            # whatever edges its interior is built from. So the fix this prescribes is the one the author can
+            # make, at the reference rather than inside the thing referenced.
+            _spend_paths!(allowance, walked.paths, SHAPE_EDGE)
             return walked
           end
 
           # The same inequality with a height not yet known: descending checks each level as it is reached, so a
           # shape walked rather than reused is judged by its own position and its subtree by theirs.
-          _raise_shape_too_deep!(via, via_name) if walk.depth > Internal::ShapeGraph::MAX_NESTING
+          _raise_graph_too_deep!(via, via_name, edge: SHAPE_EDGE) if walk.depth > Internal::ShapeGraph::MAX_NESTING
 
           # Read as SUPPLIED, so a shape that names no members is told apart from one naming an empty list.
           members = Internal::ShapeGraph.declared_members(hash)
@@ -165,7 +431,7 @@ module Axn
           walked = Axn::Internal::CycleGuard.guard(hash, walk.seen, on_cycle: CYCLIC_SHAPE) do |nested|
             _check_and_copy_shape_members!(hash, members, walk.with(seen: nested), allowance)
           end
-          _raise_cyclic_shape!(via, via_name) if CYCLIC_SHAPE.equal?(walked)
+          _raise_cyclic_graph!(via, via_name, edge: SHAPE_EDGE) if CYCLIC_SHAPE.equal?(walked)
 
           walk.walked[hash] = walked
           walked
@@ -242,10 +508,11 @@ module Axn
           child = walk.with(depth: walk.depth + 1)
           paths = 0
           height = 0
+          edge = SHAPE_EDGE
           copied = keyed.map do |member, name, key|
             # Charged BEFORE this member is snapshotted, and before its nested shape is walked, so a graph that
             # multiplies out is rejected while the work done on it is still bounded by the allowance.
-            _spend_paths!(allowance, 1)
+            _spend_paths!(allowance, 1, SHAPE_EDGE)
             paths += 1
             # `validations` is read ONCE and threaded to every use — the nested shape to walk, and the snapshot
             # of this member. A second read is a second answer the caller can give.
@@ -254,37 +521,65 @@ module Axn
             # Every other attribute read (and grammar-checked) BEFORE the nested walk, so a member carrying both
             # a bad `sensitive:` and an untraversable nested shape is reported as the value defect it is.
             attributes = _snapshot_member_attributes!(member, name, key, validations)
-            nested = Internal::ShapeGraph.hash_or_nil(validations[:shape])
-            unless nil.equal?(nested)
-              inner = _walk_shape_graph!(nested, child, allowance, via: member, via_name: name)
-              paths += inner.paths
-              # This node's height is the deepest member's, plus the level that member's shape adds.
-              nested_height = inner.height + 1
-              height = nested_height if nested_height > height
-              validations[:shape] = inner.copy
-              # The field path's own derivation and check, called from where the walk already is, so a NESTED
-              # shape is held to exactly what a field's `shape:` is held to — at every level, since this runs on
-              # each member the walk descends through. Without it a hand-written nested `shape:` (the natural
-              # spelling for a raw member) reached ShapeValidator with a nil container and failed EVERY call with
-              # a bare `TypeError: class or module required`, naming neither the member nor the option, while the
-              # block form derived one and worked; a nested `container:` that is not a class did the same.
-              #
-              # AFTER the walk, matching the field path's own order (`expects` snapshots the graph, then
-              # `_parse_field_validations` derives), and after the copy is stored so what is derived onto is
-              # axn's own node. A container belongs to the POSITION rather than to the node — it comes from the
-              # enclosing member's `type:`, exactly as a field's comes from the field's — so it is resolved per
-              # REFERENCE: the walk's memo hands two members sharing one nested shape the same copy, and
-              # `_derive_raw_shape_container!` detaches before it writes, so a shape reused under `type: Hash`
-              # and under `type: Array` stores the right container in each place rather than the last one
-              # walked. Deriving BEFORE the walk instead would defeat that memo outright (a fresh detached node
-              # per reference is a fresh identity), which is what keeps a shared sub-shape from costing
-              # 2^depth walks.
-              _derive_raw_shape_container!(validations)
+            shaped = _snapshot_member_shape!(validations, member, name, child, allowance)
+            # The member's OTHER kind of child. `_symbol_keyed_member_validations` canonicalized the member's
+            # own `of:` exactly as `_parse_field_validations` does a field's — one rung — and this is where the
+            # rest of the chain is descended, off the same walk state the nested `shape:` above used, so both
+            # edges spend one depth budget and one path allowance rather than one each. This is the pass that
+            # knows where the member SITS, and so the only one whose depth verdict is the real one (see
+            # `_walk_declared_inner_contracts!`).
+            walked_of = _walk_inner_contracts!(validations, child, allowance, fields: [key], via: member, via_name: name)
+            both = _combine_inner_contracts(shaped, walked_of)
+            paths += both.paths
+            if both.height > height
+              height = both.height
+              edge = both.edge
             end
             ShapeConfig.new(**attributes)
           end
 
-          WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), paths:, height:)
+          WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), paths:, height:, edge:)
+        end
+
+        # A shape MEMBER's own nested `shape:`, walked and snapshotted — the member-position twin of
+        # `_snapshot_inner_shape!`, reporting in the same currencies so a member's two edges fold into one total
+        # exactly as a bag's two do.
+        def _snapshot_member_shape!(validations, member, name, walk, allowance)
+          _reject_unshaped_shape!(validations, "`shape:` on shape member #{_describe_shape_member(member, name)}")
+          nested = Internal::ShapeGraph.hash_or_nil(validations[:shape])
+          return NO_INNER_CONTRACTS if nil.equal?(nested)
+
+          # A DISTRIBUTING member's shape is judged one level lower than the member, for the reason
+          # `_distributing_shape_depth` gives — the same offset the field path applies to its own, and the
+          # levels below it are what that offset has to reach.
+          depth = _distributing_shape_depth(validations, walk.depth)
+          inner = _walk_shape_graph!(nested, walk.with(depth:), allowance, via: member, via_name: name)
+          validations[:shape] = inner.copy
+          # The field path's own derivation and check, called from where the walk already is, so a NESTED shape
+          # is held to exactly what a field's `shape:` is held to — at every level, since this runs on each
+          # member the walk descends through. Without it a hand-written nested `shape:` (the natural spelling
+          # for a raw member) reached ShapeValidator with a nil container and failed EVERY call with a bare
+          # `TypeError: class or module required`, naming neither the member nor the option, while the block
+          # form derived one and worked; a nested `container:` that is not a class did the same.
+          #
+          # AFTER the walk, matching the field path's own order (`expects` snapshots the graph, then
+          # `_parse_field_validations` derives), and after the copy is stored so what is derived onto is axn's
+          # own node. A container belongs to the POSITION rather than to the node — it comes from the enclosing
+          # member's `type:`, exactly as a field's comes from the field's — so it is resolved per REFERENCE: the
+          # walk's memo hands two members sharing one nested shape the same copy, and
+          # `_derive_raw_shape_container!` detaches before it writes, so a shape reused under `type: Hash` and
+          # under `type: Array` stores the right container in each place rather than the last one walked.
+          # Deriving BEFORE the walk instead would defeat that memo outright (a fresh detached node per
+          # reference is a fresh identity), which is what keeps a shared sub-shape from costing 2^depth walks.
+          # A DISTRIBUTING member's container is derived here and derived again by the fold, which is where its
+          # position — and so what its members are read off — actually settles.
+          _derive_raw_shape_container!(validations)
+          # The levels this member's shape adds below the member: the shape node itself, plus the `of:` rung the
+          # fold puts above it where the shape distributes. Asked of the node rather than read back out of the
+          # two depths, so it cannot silently follow a change to `_distributing_shape_depth`'s offset.
+          rungs = _distributing_shape?(validations) ? 2 : 1
+          WalkedContracts.new(paths: inner.paths, height: inner.height + rungs,
+                              edge: inner.height.zero? ? SHAPE_EDGE : inner.edge)
         end
 
         # Everything a stored member carries, read off the caller's object exactly ONCE and held to its grammar
@@ -326,30 +621,50 @@ module Axn
             method_call: Internal::ShapeGraph.read(member, :method_call) || false }
         end
 
-        # A shape graph that contains itself has no traversal at all: every walk over it — this one, the
+        # A declaration graph that contains itself has no traversal at all: every walk over it — this one, the
         # runtime validator's, the schema's — recurses until the stack overflows, and SystemStackError is
         # outside StandardError, so it escapes every rescue in the framework rather than settling into a
         # reported failure. Rejected at declaration, where it is knowable and where the author is present.
-        def _raise_cyclic_shape!(member, name)
+        def _raise_cyclic_graph!(member, name, edge:)
           via = nil.equal?(member) ? "" : " reached from shape member #{_describe_shape_member(member, name)}"
-          raise ArgumentError,
-                "a `shape:` graph cannot contain itself — the nested shape#{via} is the same shape it is nested " \
-                "inside, so validating or reflecting it would recurse until the stack overflows. Give the nested " \
-                "shape its own members rather than reusing the shape (or the member) that encloses it."
+          raise ArgumentError, _cyclic_graph_message(via, edge)
+        end
+
+        def _cyclic_graph_message(via, edge)
+          if edge == INNER_CONTRACT_EDGE
+            return "an `of:` graph cannot contain itself — the nested `of:` bag#{via} is the same bag it is " \
+                   "nested inside, so validating or reflecting it would recurse until the stack overflows. " \
+                   "Give the nested `of:` contents of its own rather than reusing the bag that encloses it."
+          end
+
+          "a `shape:` graph cannot contain itself — the nested shape#{via} is the same shape it is nested " \
+            "inside, so validating or reflecting it would recurse until the stack overflows. Give the nested " \
+            "shape its own members rather than reusing the shape (or the member) that encloses it."
         end
 
         # The generative counterpart: no object repeats, so nothing identifies a loop, and the graph is
         # simply endless. Capped rather than walked to exhaustion, for the same reason a cycle is rejected
         # — the alternative outcome is a SystemStackError raised while the class is being defined, which
         # no rescue in the framework can settle.
-        def _raise_shape_too_deep!(member, name)
+        def _raise_graph_too_deep!(member, name, edge:)
           via = nil.equal?(member) ? "" : " at shape member #{_describe_shape_member(member, name)}"
-          raise ArgumentError,
-                "a `shape:` graph nested more than #{Internal::ShapeGraph::MAX_NESTING} levels deep#{via} is almost certainly " \
-                "generated rather than declared — no hand-written shape block reaches that depth, while a shape " \
-                "object that builds a fresh nested shape on every read is endless and would recurse until the " \
-                "stack overflows. Have the shape return the same finite nested shape each time it is read, or " \
-                "flatten the nesting."
+          raise ArgumentError, _graph_too_deep_message(via, edge)
+        end
+
+        def _graph_too_deep_message(via, edge)
+          if edge == INNER_CONTRACT_EDGE
+            return "an `of:` graph nested more than #{Internal::ShapeGraph::MAX_NESTING} levels deep#{via} is " \
+                   "almost certainly generated rather than declared — no hand-written declaration nests " \
+                   "containers that far, while a bag that builds a fresh nested bag on every read is endless " \
+                   "and would recurse until the stack overflows. Flatten the nesting, or have the declaration " \
+                   "give back the same finite nested bag each time it is read."
+          end
+
+          "a `shape:` graph nested more than #{Internal::ShapeGraph::MAX_NESTING} levels deep#{via} is almost certainly " \
+            "generated rather than declared — no hand-written shape block reaches that depth, while a shape " \
+            "object that builds a fresh nested shape on every read is endless and would recurse until the " \
+            "stack overflows. Have the shape return the same finite nested shape each time it is read, or " \
+            "flatten the nesting."
         end
 
         # A member's declared validations, canonical at every level its grammar has: the validator names, each
@@ -551,12 +866,18 @@ module Axn
         # on it from a different file (`_resolved_subfields`, `_declared_fields`, `_context_slice`, …) plus the
         # `class_attribute` accessors, whose class-level reader ActiveSupport's own generated instance reader
         # calls as `self.class.<name>` — hiding it would break that.
-        private :_spend_paths!, :_raise_too_many_member_paths!, :_symbol_keyed_member_validations,
+        private :_spend_paths!, :_raise_too_many_member_paths!, :_too_many_member_paths_message,
+                :_symbol_keyed_member_validations,
                 :_symbol_keyed_member_metadata, :_snapshot_member_attributes!,
                 :_member_owner_label, :_describe_shape_member, :_raise_member_model_unsupported!,
                 :_raise_member_confirmation_unsupported!,
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
-                :_check_and_copy_shape_members!, :_raise_cyclic_shape!, :_raise_shape_too_deep!,
+                :_distributing_shape_depth,
+                :_reject_unshaped_shape!, :_inner_shape_position_label,
+                :_walk_inner_contracts!, :_walk_declared_inner_contracts!, :_new_path_allowance,
+                :_snapshot_inner_shape!, :_snapshot_member_shape!, :_combine_inner_contracts,
+                :_check_and_copy_shape_members!, :_raise_cyclic_graph!, :_raise_graph_too_deep!,
+                :_cyclic_graph_message, :_graph_too_deep_message,
                 :_raise_duplicate_member!, :_raise_nameless_member!,
                 :_raise_missing_shape_members!, :_raise_member_without_validations!
       end

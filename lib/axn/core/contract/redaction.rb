@@ -70,6 +70,7 @@ module Axn
             # and identity is the right question anyway: the stored graph is the one axn snapshotted.
             @nested_members = {}.compare_by_identity
             @member_names = {}.compare_by_identity
+            @inner_contracts = {}.compare_by_identity
           end
 
           def current?(internals, externals, subfields)
@@ -79,6 +80,8 @@ module Axn
           def nested_members_for(shape, &derive) = @nested_members.fetch(shape) { @nested_members[shape] = derive.call }
 
           def member_names_for(config, &derive) = @member_names.fetch(config) { @member_names[config] = derive.call }
+
+          def inner_contracts_for(node, &derive) = @inner_contracts.fetch(node) { @inner_contracts[node] = derive.call }
         end
         private_constant :ContractRedaction
 
@@ -92,10 +95,10 @@ module Axn
         end
 
         # Every config whose `sensitive:` participates in redaction: the declared inbound/outbound fields
-        # and subfields, plus (recursively) the members of any shape block they carry. Shape members live
-        # in validations[:shape][:members] at every depth, so the walk is uniform — a sensitive member at
-        # any nesting level contributes its name to the ParameterFilter set (which redacts by key name at
-        # any depth, array elements included). Single-sources the traversal for all three collectors.
+        # and subfields, plus (recursively) the members of any shape block they carry AND the members
+        # inside any container that sits inside them. A sensitive member at any nesting level contributes
+        # its name to the ParameterFilter set (which redacts by key name at any depth, array elements
+        # included). Single-sources the traversal for all three collectors.
         # Derived from the arrays the memo is KEYED on, never re-read from the class: a table that answered
         # from a newer contract than the one it is keyed to would be a stale answer wearing a valid key.
         def _sensitive_candidate_configs
@@ -105,27 +108,45 @@ module Axn
         end
 
         def _flatten_sensitive_candidates(config, seen = nil, depth = 0)
+          [config, *_flatten_sensitive_contents(_member_validations(config), seen, depth)]
+        end
+
+        # The configs reachable from one declared node: the members of its `shape:`, and everything inside
+        # each container that sits inside it. Two edges, ONE depth budget — an `of:` rung is a level exactly
+        # as a shape rung is, so a graph cannot be MAX_NESTING deep on each edge separately.
+        #
+        # Bounded BOTH ways, because the configs this walks need not have been DECLARED: the declaration walk
+        # rejects an untraversable graph and snapshots what it accepts, but `internal_field_configs` and friends
+        # are writable, so a config assigned onto a class carries whatever shape its author built — pointed back
+        # at itself (which `CycleGuard` sees) or minting a fresh nested shape on every read (which nothing sees
+        # but depth). This runs while a log line or an exception report is being built — once per contract, or
+        # per logged call for a `sensitive:` that resolves against the action — and the alternative is
+        # SystemStackError from a log line, a side channel taking down the call it observes.
+        #
+        # Nothing is lost by stopping at a cycle: it re-reaches members an enclosing frame is already
+        # collecting. Past the depth bound there IS no honest answer, and the wholesale mask does the work —
+        # `_declares_sensitive_content?` answers true there, so the whole value is redacted rather than
+        # filtered per member.
+        def _flatten_sensitive_contents(validations, seen, depth)
+          node = Internal::ShapeGraph.hash_or_nil(validations)
+          return [] if nil.equal?(node) || depth > Internal::ShapeGraph::MAX_NESTING
+
           # Through the shared seam: a member list that hides itself from `flat_map` would drop a
           # `sensitive:` member from the redaction set, which leaks rather than merely disagreeing.
-          shape = Internal::ShapeGraph.shape_in(config.validations)
-          # Bounded BOTH ways, because the configs this walks need not have been DECLARED: the declaration walk
-          # rejects an untraversable graph and snapshots what it accepts, but `internal_field_configs` and friends
-          # are writable, so a config assigned onto a class carries whatever shape its author built — pointed back
-          # at itself (which `CycleGuard` sees) or minting a fresh nested shape on every read (which nothing sees
-          # but depth). This runs while a log line or an exception report is being built — once per contract, or
-          # per logged call for a `sensitive:` that resolves against the action — and the alternative is
-          # SystemStackError from a log line, a side channel taking down the call it observes.
-          #
-          # Nothing is lost by stopping at a cycle: it re-reaches members an enclosing frame is already
-          # collecting. Past the depth bound there IS no honest answer, and the wholesale mask does the work —
-          # `_shape_has_sensitive_member?` answers true there, so the whole value is redacted rather than
-          # filtered per member.
-          return [config] if nil.equal?(shape) || depth > Internal::ShapeGraph::MAX_NESTING
+          shape = Internal::ShapeGraph.shape_in(node)
+          found = if nil.equal?(shape)
+                    []
+                  else
+                    Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: []) do |open|
+                      Internal::ShapeGraph.members(shape).flat_map { |member| _flatten_sensitive_candidates(member, open, depth + 1) }
+                    end
+                  end
 
-          nested = Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: []) do |open|
-            Internal::ShapeGraph.members(shape).flat_map { |member| _flatten_sensitive_candidates(member, open, depth + 1) }
+          Internal::ShapeGraph.inner_contracts(node).each_with_object(found) do |(_position, bag), all|
+            all.concat(Axn::Internal::CycleGuard.guard(bag, seen, on_cycle: []) do |open|
+              _flatten_sensitive_contents(bag, open, depth + 1)
+            end)
           end
-          [config, *nested]
         end
 
         def _static_sensitive_fields
@@ -339,10 +360,15 @@ module Axn
           _mask_unfilterable_shapes({ field => value }, _sensitive_shape_paths(action_instance), action_instance)[field]
         end
 
-        # `[(wire_path, shape)]` for every field/subfield whose shape carries a sensitive member. A
+        # `[(wire_path, validations)]` for every field/subfield that declares a sensitive member somewhere
+        # inside its value — in its own `shape:`, or in the contents of a container inside it. A
         # top-level field's path is `[field]`; a subfield's is its resolved wire path (from the
         # SubfieldTree cache), so a shape declared on a subfield — `expects :person, on: :payload, …
         # do … end` — is masked at `payload[:person]`, not just where a top-level shape lives.
+        #
+        # The pair carries the whole VALIDATIONS bag rather than the shape alone, because a container's
+        # contents live in its `of:` bag and a field can carry both (`type: Hash, of: {values: …}` beside a
+        # shape). `_mask_declared_value` is the one place that decides what a node declares about its value.
         # Memoized unless a `sensitive:` resolves against the action (`_has_dynamic_sensitive_fields?`), which
         # is what keeps a logged call from paying for the whole stored graph. A contract that DOES need the
         # instance still derives per call — correctness requires it, and a memo ignoring the instance would
@@ -359,13 +385,12 @@ module Axn
         def _derive_sensitive_shape_paths(action_instance)
           memo = _contract_redaction
           (memo.internals + memo.externals + memo.subfields).filter_map do |config|
-            shape = Internal::ShapeGraph.shape_in(config.validations)
-            next unless shape && _shape_has_sensitive_member?(shape, action_instance)
+            next unless _declares_sensitive_content?(config.validations, action_instance)
 
             wire_path = config.subfield? ? _resolved_subfields.index[config]&.wire_path : [config.field]
             next unless wire_path
 
-            [wire_path, shape]
+            [wire_path, config.validations]
           end
         end
 
@@ -385,10 +410,9 @@ module Axn
 
         def _derive_sensitive_ambient_shape_paths(action_instance)
           _ambient_subfield_tree.index.filter_map do |config, path|
-            shape = Internal::ShapeGraph.shape_in(config.validations)
-            next unless shape && _shape_has_sensitive_member?(shape, action_instance)
+            next unless _declares_sensitive_content?(config.validations, action_instance)
 
-            [path.wire_path.drop(1), shape]
+            [path.wire_path.drop(1), config.validations]
           end
         end
 
@@ -404,18 +428,18 @@ module Axn
         # blows. A revisited array masks wholesale (not the `[...]` placeholder, which would be a
         # placeholder String masquerading as data) — the same over-redact-rather-than-leak call as
         # `_mask_opaque_or_preserve`, since we cannot descend to redact the sensitive member inside.
-        def _mask_value_at_path(value, wire_path, shape, action_instance, seen = nil)
-          return _mask_shape_value(value, shape, action_instance) if wire_path.empty?
+        def _mask_value_at_path(value, wire_path, declaration, action_instance, seen = nil)
+          return _mask_declared_value(value, declaration, action_instance) if wire_path.empty?
 
           if value.is_a?(Array)
             return Axn::Internal::CycleGuard.guard(value, seen, on_cycle: SENSITIVE_FILTERED_MASK) do |nested|
-              value.map { |element| _mask_value_at_path(element, wire_path, shape, action_instance, nested) }
+              value.map { |element| _mask_value_at_path(element, wire_path, declaration, action_instance, nested) }
             end
           end
           return _mask_opaque_or_preserve(value) unless value.is_a?(Hash)
 
           _present_key_variants(value, wire_path.first).reduce(value) do |acc, key|
-            acc.merge(key => _mask_value_at_path(acc[key], wire_path.drop(1), shape, action_instance, seen))
+            acc.merge(key => _mask_value_at_path(acc[key], wire_path.drop(1), declaration, action_instance, seen))
           end
         end
 
@@ -456,7 +480,32 @@ module Axn
           Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: false) do |open|
             Internal::ShapeGraph.members(shape).any? do |member|
               _member_sensitive?(member, action_instance) ||
-                (_member_shape(member) && _shape_has_sensitive_member?(_member_shape(member), action_instance, open, depth + 1))
+                _declares_sensitive_content?(_member_validations(member), action_instance, open, depth + 1)
+            end
+          end
+        end
+
+        # Whether anything INSIDE a declared value is `sensitive:` — the members of the node's own `shape:`,
+        # and the contents of every container that sits inside it (`of:`, at each of its positions). The
+        # question `_shape_has_sensitive_member?` asks about a shape, asked about a whole declaration, since
+        # a container's contents no longer hang off a member name.
+        #
+        # Bounded on the same terms and for the same reasons as the shape half, with which it shares one
+        # depth budget: an `of:` rung counts as a level, so the two edges cannot each spend MAX_NESTING. A
+        # cycle answers false (a cyclic branch re-reaches what the enclosing frame is already testing);
+        # past the depth bound it answers TRUE, so the value is masked wholesale rather than logged clear.
+        def _declares_sensitive_content?(validations, action_instance, seen = nil, depth = 0)
+          return true if depth > Internal::ShapeGraph::MAX_NESTING
+
+          node = Internal::ShapeGraph.hash_or_nil(validations)
+          return false if nil.equal?(node)
+
+          shape = Internal::ShapeGraph.shape_in(node)
+          return true if shape && _shape_has_sensitive_member?(shape, action_instance, seen, depth)
+
+          Internal::ShapeGraph.inner_contracts(node).any? do |_position, bag|
+            Axn::Internal::CycleGuard.guard(bag, seen, on_cycle: false) do |open|
+              _declares_sensitive_content?(bag, action_instance, open, depth + 1)
             end
           end
         end
@@ -468,11 +517,163 @@ module Axn
           _resolve_sensitive_value(sensitive, action_instance, field: member.field)
         end
 
-        # The shape a config or member carries, or nil when it carries none — read without dispatching
+        # The validations bag a member carries, or nil when it carries none — read without dispatching
         # anything a raw `shape:` kwarg's objects can define (see Internal::ShapeGraph), so a member
-        # lying about its type or its readers cannot hide a nested shape from a walk that reflection,
-        # validation and redaction all still descend into.
-        def _member_shape(member) = Internal::ShapeGraph.nested_shape(member)
+        # lying about its type or its readers cannot hide a nested shape (or a nested container) from a
+        # walk that reflection, validation and redaction all still descend into. The whole bag rather than
+        # just its shape, because both edges hang off it and reading it twice would ask a caller's object
+        # the same question twice.
+        #
+        # Read by every walk that reaches a member, including the two collectors: they now recurse into
+        # members that live inside an `of:` bag, and a DECLARED graph is snapshotted into `ShapeConfig`s of
+        # axn's own, so what this protects is the same graph-assigned-onto-the-class route every other bound
+        # in this file exists for — where a plain `.validations` raises `NoMethodError` out of a log line
+        # for a member that declares the reader privately.
+        def _member_validations(member) = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations))
+
+        # The leaf of a sensitive path: one declared value, masked against everything the node says lives
+        # inside it. A `shape:` names members; an `of:` bag names contents with no member name at all, and a
+        # node can carry both (a map with `shape:` beside `of:`). Both passes run, in that order, so a value
+        # whose members are masked precisely still has its unnamed contents descended.
+        #
+        # The contents pass is handed the ORIGINAL alongside the shape pass's output, and every rung below
+        # keeps that pairing: the shape pass ends in `element.dup`, so a guard keyed on what it returns is
+        # keyed on an object axn made a moment ago and can never match anything the walk meets again.
+        def _mask_declared_value(value, validations, action_instance, seen = nil)
+          shape = Internal::ShapeGraph.shape_in(validations)
+          masked = nil.equal?(shape) ? value : _mask_shape_value(value, shape, action_instance, seen)
+          _mask_inner_contents(masked, value, validations, action_instance, seen)
+        end
+
+        # Distribute the mask over a container's CONTENTS — every element of an Array, every key or value of
+        # a map — for each inner contract that carries a `sensitive:` member. A no-op for the ordinary
+        # declaration with no `of:`, and deliberately allocation-free there: `_sensitive_inner_contracts`
+        # answers from a memo keyed by the node's identity, so the flat path costs one Hash lookup.
+        #
+        # Cycle-guarded on `source` — the value as the CALLER supplied it — rather than on `masked`, which
+        # is what the shape pass handed back. That distinction is the whole guard: `_mask_shape_element`
+        # returns `element.dup`, so guarding the masked object registers a fresh Hash while every value the
+        # walk then descends into is the original, breaking the ancestry chain so nothing is ever recognised
+        # as revisited. Termination then came only from the declaration graph running out, which embedded
+        # the caller's own cyclic Hash in what redaction handed the logger and recursed unboundedly for a
+        # graph assigned onto the class. Guarding the source is safe beside `_mask_shape_element`'s own
+        # guard because the two run in SEQUENCE over one rung, never nested: that one is popped (`ensure`)
+        # before this one opens.
+        #
+        # The rest of the reasoning is `_mask_shape_element`'s: every step moves to a strictly contained
+        # value, so a finite acyclic value terminates the walk however the declaration is built, while
+        # guarding the declaration would refuse to descend a bag legitimately shared by two positions.
+        # Guarded here rather than only on a Hash, because nested containers make a cycle that closes
+        # through Arrays alone (`a = []; a << a` under `of: {klass: Array, of: …}`) — which is exactly what
+        # the shape walk could rule out and this one cannot. A revisited value masks WHOLESALE: we cannot
+        # descend to redact the sensitive member inside it.
+        def _mask_inner_contents(masked, source, validations, action_instance, seen = nil)
+          contracts = _sensitive_inner_contracts(validations, action_instance)
+          return masked if contracts.empty?
+          return _mask_opaque_or_preserve(masked) unless masked.is_a?(Array) || masked.is_a?(Hash)
+
+          Axn::Internal::CycleGuard.guard(source, seen, on_cycle: SENSITIVE_FILTERED_MASK) do |open|
+            contracts.reduce(masked) { |acc, (position, bag)| _mask_contents(acc, source, position, bag, action_instance, open) }
+          end
+        end
+
+        # One inner contract's position. A value whose type doesn't match the position's container is
+        # malformed (and reaches logging before validation rejects it), so it is masked wholesale rather
+        # than left to print — the same call `_mask_shape_value` makes for a container mismatch.
+        #
+        # Two things this deliberately does NOT do, both of them over-redaction rather than leakage:
+        #
+        # A sensitive member on the `keys:` axis masks the WHOLE MAP, answered ahead of the dispatch below
+        # because it is the one position with nothing to distribute over. `_mask_shape_element` leaves a Hash's
+        # own keys for `ParameterFilter` to redact by name, and a ParameterFilter only ever reads a key to
+        # decide about its VALUE — it never descends into the key itself — so a member sitting inside a key
+        # has nothing behind this walk to catch it. Masking key by key instead would be worse than
+        # over-redacting: distinct keys mask to the same thing and collapse into one entry, silently
+        # dropping the other entries' values, so the log would lie about the data rather than admit it
+        # cannot show it. The axis is exotic (a shaped Hash used AS a map key) and always over-redacts here.
+        #
+        # A key the node's own `shape:` names is EXEMPT from the map contract at runtime
+        # (`OfValidator#exempt_key?`, since `additionalProperties` does not govern a `properties` key), and
+        # this walk does not reproduce that exemption — such a key is masked along with the governed ones.
+        # Reproducing it means a second copy of that method's symbol-or-string matching, which is the
+        # duplicated-rule defect one shared enumerator exists to prevent; extracting the matcher to a shared
+        # home is the honest fix if the over-redaction ever matters. Pinned in
+        # `sensitive_shape_members_spec.rb` so that extraction is a deliberate change rather than a silent one.
+        def _mask_contents(masked, source, position, bag, action_instance, seen)
+          # The `keys:` axis, per the paragraph above: nothing behind this walk redacts inside a key, and
+          # masking key by key collapses distinct entries, so the map goes whole.
+          return _mask_opaque_or_preserve(masked) if Internal::ShapeGraph::KEYS_POSITION.equal?(position)
+
+          case position
+          when Internal::ShapeGraph::ELEMENT_POSITION
+            return _mask_opaque_or_preserve(masked) unless masked.is_a?(Array)
+
+            sources = _content_sources(source, masked)
+            masked.each_with_index.map { |element, index| _mask_one_content(element, sources[index], bag, action_instance, seen) }
+          when Internal::ShapeGraph::VALUES_POSITION
+            return _mask_opaque_or_preserve(masked) unless masked.is_a?(Hash)
+
+            sources = _content_sources(source, masked)
+            masked.each_with_object(masked.dup) do |(key, entry), out|
+              out[key] = _mask_one_content(entry, sources.fetch(key, entry), bag, action_instance, seen)
+            end
+          else
+            # `inner_contracts` emits no position but those two and the `keys:` axis handled above; a fourth
+            # could only come from a config assigned onto the class, and the fail-safe answer is to show nothing.
+            _mask_opaque_or_preserve(masked)
+          end
+        end
+
+        # The pre-mask container each content's guard keys on. `masked` is either the caller's own object or
+        # a copy of it that preserves position and keys (`_mask_shape_value`'s element map,
+        # `_mask_shape_element`'s `dup`), so the two line up entry for entry and the original is reachable
+        # beside every masked child. Falls back to the masked container when they do not line up: nothing
+        # produces such a pair today, and pairing a child with the wrong object would guard the wrong
+        # ancestry, which is worse than guarding a copy and merely failing to detect.
+        def _content_sources(source, masked)
+          matched = (masked.is_a?(Array) && source.is_a?(Array)) || (masked.is_a?(Hash) && source.is_a?(Hash))
+          matched && source.length == masked.length ? source : masked
+        end
+
+        # ONE of a container's contents, masked against the bag that declares it, paired with that content as
+        # the CALLER supplied it (see `_mask_inner_contents` for why the pair travels).
+        #
+        # `_mask_shape_value` is reused rather than mirrored: a bag's shape carries a real container whenever
+        # the bag names `klass:`, and which container it is decides what the members describe — `Hash` means
+        # they are read off the content, `Array` means they are distributed over the content's own elements,
+        # a `Data`/`Struct`/PORO means an object `ParameterFilter` cannot descend. That dispatch already
+        # exists there. `ANY_CONTAINER` is the one container it cannot dispatch: it is the sentinel for a bag
+        # that constrains by `shape:` alone, so it would fall through to wholesale masking, and it means
+        # exactly "read the members off this content" — which is `_mask_shape_element`. Compared with
+        # `ANY_CONTAINER` as the RECEIVER of `equal?`, on the same terms as `_mask_shape_value`'s own
+        # container test: a raw shape may put any object in that slot.
+        def _mask_one_content(content, source, bag, action_instance, seen)
+          shape = Internal::ShapeGraph.shape_in(bag)
+          masked = if nil.equal?(shape)
+                     content
+                   elsif Internal::ShapeGraph::ANY_CONTAINER.equal?(shape[:container])
+                     _mask_shape_element(content, shape, action_instance, seen)
+                   else
+                     _mask_shape_value(content, shape, action_instance, seen)
+                   end
+          _mask_inner_contents(masked, source, bag, action_instance, seen)
+        end
+
+        # The `[(position, bag)]` inner contracts a mask has to descend into: those whose contents carry a
+        # sensitive member. Memoized per node (by identity) on the same condition as `_sensitive_nested_members`
+        # — no `sensitive:` resolving against the action — because for the ordinary declaration with no `of:`
+        # the answer is EMPTY, and this is asked for every value masked on every logged call.
+        def _sensitive_inner_contracts(validations, action_instance)
+          return _derive_sensitive_inner_contracts(validations, action_instance) if _has_dynamic_sensitive_fields?
+
+          _contract_redaction.inner_contracts_for(validations) { _derive_sensitive_inner_contracts(validations, nil) }
+        end
+
+        def _derive_sensitive_inner_contracts(validations, action_instance)
+          Internal::ShapeGraph.inner_contracts(validations).select do |_position, bag|
+            _declares_sensitive_content?(bag, action_instance)
+          end
+        end
 
         # Dispatch on the shape's container — the value must match it, or it's malformed (and reaches
         # logging before validation rejects it, so its arbitrary contents could leak). An `Array` shape
@@ -533,16 +734,17 @@ module Axn
           Axn::Internal::CycleGuard.guard(element, seen, on_cycle: SENSITIVE_FILTERED_MASK) do |open|
             descendable.each_with_object(element.dup) do |(member, nested), masked|
               _present_key_variants(masked, member.field).each do |key|
-                masked[key] = _mask_shape_value(masked[key], nested, action_instance, open)
+                masked[key] = _mask_declared_value(masked[key], nested, action_instance, open)
               end
             end
           end
         end
 
-        # The `[(member, nested_shape)]` pairs a mask has to descend into: the members of `shape` whose OWN
-        # nested shape carries a sensitive member. Memoized per shape (by identity) on the same condition as
+        # The `[(member, validations)]` pairs a mask has to descend into: the members of `shape` that declare
+        # a sensitive member somewhere inside their own value — in a nested shape, or inside a container they
+        # declare. Memoized per shape (by identity) on the same condition as
         # `_sensitive_shape_paths` — no `sensitive:` resolving against the action — because for the ordinary
-        # flat shape the answer is EMPTY, and finding that out cost a `nested_shape` read (a bound-Method
+        # flat shape the answer is EMPTY, and finding that out cost a `validations` read (a bound-Method
         # allocation each) for every member of the shape, on every value masked.
         def _sensitive_nested_members(shape, action_instance)
           return _derive_sensitive_nested_members(shape, action_instance) if _has_dynamic_sensitive_fields?
@@ -552,8 +754,8 @@ module Axn
 
         def _derive_sensitive_nested_members(shape, action_instance)
           Internal::ShapeGraph.members(shape).filter_map do |member|
-            nested = _member_shape(member)
-            next unless nested && _shape_has_sensitive_member?(nested, action_instance)
+            nested = _member_validations(member)
+            next unless nested && _declares_sensitive_content?(nested, action_instance)
 
             [member, nested]
           end
@@ -586,11 +788,28 @@ module Axn
         # value it describes is masked wholesale by then anyway (`_shape_has_sensitive_member?` answers true
         # past the same bound), so `inspect` shows a redacted value rather than a leaked one.
         def _derive_sensitive_member_names(config, action_instance, seen = nil, depth = 0)
-          shape = Internal::ShapeGraph.shape_in(config.validations)
-          return [] if nil.equal?(shape) || depth > Internal::ShapeGraph::MAX_NESTING
+          _derive_sensitive_content_names(_member_validations(config), action_instance, seen, depth)
+        end
 
+        # Both edges of one declared node, on one depth budget — see `_flatten_sensitive_contents`, which
+        # walks the same two edges to collect the configs themselves.
+        def _derive_sensitive_content_names(validations, action_instance, seen, depth)
+          node = Internal::ShapeGraph.hash_or_nil(validations)
+          return [] if nil.equal?(node) || depth > Internal::ShapeGraph::MAX_NESTING
+
+          shape = Internal::ShapeGraph.shape_in(node)
+          found = nil.equal?(shape) ? [] : _sensitive_member_names_in(shape, action_instance, seen, depth)
+
+          Internal::ShapeGraph.inner_contracts(node).each_with_object(found) do |(_position, bag), all|
+            all.concat(Axn::Internal::CycleGuard.guard(bag, seen, on_cycle: []) do |open|
+              _derive_sensitive_content_names(bag, action_instance, open, depth + 1)
+            end)
+          end
+        end
+
+        def _sensitive_member_names_in(shape, action_instance, seen, depth)
           Axn::Internal::CycleGuard.guard(shape, seen, on_cycle: []) do |open|
-            # Through the shared seam, for the reason _flatten_sensitive_candidates gives: a list hiding
+            # Through the shared seam, for the reason _flatten_sensitive_contents gives: a list hiding
             # itself from `flat_map` would drop a sensitive member from the redaction set.
             Internal::ShapeGraph.members(shape).flat_map do |member|
               names = _derive_sensitive_member_names(member, action_instance, open, depth + 1)
@@ -612,13 +831,18 @@ module Axn
         # stay public: a cross-layer call needs a public method, and hiding one behind a `send` at the call site
         # would say private while meaning public, which is less honest than the `_` prefix alone.
         private :_contract_redaction, :_sensitive_candidate_configs, :_flatten_sensitive_candidates,
+                :_flatten_sensitive_contents,
                 :_static_sensitive_fields, :_resolve_sensitive_fields, :_config_sensitive, :_sensitive_field_keys,
                 :_warn_sensitive_resolution_failure, :_describe_sensitive_rule,
                 :_filter_tolerating_cycles, :_sensitive_shape_paths, :_derive_sensitive_shape_paths,
                 :_derive_sensitive_ambient_shape_paths, :_mask_value_at_path, :_mask_opaque_or_preserve,
-                :_present_key_variants, :_shape_has_sensitive_member?, :_member_sensitive?, :_member_shape,
+                :_present_key_variants, :_shape_has_sensitive_member?, :_declares_sensitive_content?,
+                :_member_sensitive?, :_member_validations,
+                :_mask_declared_value, :_mask_inner_contents, :_mask_contents, :_mask_one_content,
+                :_sensitive_inner_contracts, :_derive_sensitive_inner_contracts, :_content_sources,
                 :_mask_shape_value, :_mask_shape_element, :_sensitive_nested_members,
-                :_derive_sensitive_nested_members, :_derive_sensitive_member_names
+                :_derive_sensitive_nested_members, :_derive_sensitive_member_names, :_derive_sensitive_content_names,
+                :_sensitive_member_names_in
       end
     end
   end

@@ -725,25 +725,27 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
       end
 
-      # The required-option half of the same pair, reached through the expansion (`of: nil` expands to
+      # The constrains-nothing half of the same pair, reached through the expansion (`of: nil` expands to
       # `{ klass: nil }`): it used to declare cleanly and raise `must supply :klass` from `check_validity!` on
       # every call, which is the field path's message arriving at the wrong time and at the wrong person.
       it "rejects `of: nil` at declaration, where it used to raise on every call" do
         expect { declared_with({ type: Array, of: nil }) }
-          .to raise_error(ArgumentError, "of: must supply :klass")
+          .to raise_error(ArgumentError, "of: must constrain something — name the contents' class with " \
+                                         "`klass:`, what is inside them with `of:`, or their members with " \
+                                         "`shape:`")
       end
 
-      # RECORDED RESIDUE, and a field-path one rather than a member's: `of: false` is not `of: nil`, so the
-      # required-option check passes it through and `TypeValidator.value_matches?(el, klass: false)` raises a bare
-      # `TypeError: class or module required` on the first call carrying a non-empty Array. Asserted because it is
-      # the boundary of what the shared guard covers — and because the two routes agreeing about it, both of them
-      # wrong identically, is exactly what "a member reaches the field's own guards" means.
-      it "leaves `of: false` as inert on a member as it is on a field" do
-        member = declared_with({ type: Array, of: false })
-        field = build_axn { expects :m, type: Array, of: false }
+      # `of: false` is not `of: nil`: it expands to `{ klass: false }`, which NAMES something, so the
+      # constrains-nothing check above passes it and `TypeValidator.value_matches?(el, klass: false)` used to
+      # raise a bare `TypeError: class or module required` on the first call carrying a non-empty Array. It is
+      # the bag grammar's own question — is this a type the runtime can hold a value to? — so it is refused
+      # where every bag is judged, and both routes reach it because a member is held to what a field is.
+      it "rejects `of: false` at declaration on a member exactly as on a field" do
+        message = "of: klass: must name a type — a Class, a union of them, or one of " \
+                  ":boolean, :uuid, :params (got a value of class FalseClass)"
 
-        expect(member.call(payload: { m: [1] }).exception).to be_a(TypeError)
-        expect(field.call(m: [1]).exception).to be_a(TypeError)
+        expect { declared_with({ type: Array, of: false }) }.to raise_error(ArgumentError, message)
+        expect { build_axn { expects :m, type: Array, of: false } }.to raise_error(ArgumentError, message)
       end
 
       # A bare `type:` naming a LIST is expanded around a copy of that list, since the detach pass runs first —
@@ -802,11 +804,19 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         expect(nested(raw)[:members].map(&:to_h)).to eq(nested(via_block)[:members].map(&:to_h))
       end
 
-      it "derives an Array container for an Array-typed member, as the field path does" do
+      # An Array-typed member's `shape:` distributes over its ELEMENTS, so it is canonicalized into the
+      # member's own `of:` bag (PRO-3166) rather than staying at the member. The bag names no element class,
+      # so the shape it carries gates on nothing — the ANY_CONTAINER sentinel — and its members are read off
+      # each element exactly as the distributing spelling read them.
+      it "folds an Array-typed member's shape into its of: bag, gating on nothing" do
         klass = declared_with({ type: Array, shape: { members: [leaf] } })
+        member = klass.internal_field_configs.first.validations[:shape][:members].first
 
-        expect(nested(klass)[:container]).to eq(Array)
+        expect(member.validations[:shape]).to be_nil
+        expect(member.validations.dig(:of, :container)).to eq(Array)
+        expect(member.validations.dig(:of, :shape, :container)).to eq(Axn::Internal::ShapeGraph::ANY_CONTAINER)
         expect(klass.call(payload: { m: [{ leaf: "x" }] })).to be_ok
+        expect(klass.call(payload: { m: [{ leaf: 1 }] })).not_to be_ok
       end
 
       # The walk recurses, so every level is a member of some shape and gets the same treatment: a two-level
@@ -839,6 +849,50 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           .to raise_error(ArgumentError, /a shape block requires a single structured type:/)
       end
 
+      # The declared classes are the CALLER's, and rendering the LIST would dispatch each one's own `inspect`
+      # — so a class whose `inspect` raises would replace this declaration error with its own exception,
+      # which outside StandardError escapes every rescue meant to settle it. Named natively instead, through
+      # the same seam the `of:` container refusal uses.
+      it "raises the declaration error even when a declared type's own inspect raises" do
+        stub_const("RaisingInspectType", Class.new { def self.inspect = raise("boom from inspect") })
+
+        expect { declared_with({ type: [RaisingInspectType, Hash], shape: { members: [leaf] } }) }
+          .to raise_error(ArgumentError,
+                          "a shape block requires a single structured type: (Array, Hash, or a class) — " \
+                          "got [RaisingInspectType, Hash]")
+      end
+
+      # A token that is neither a class nor a pseudo-type has no name to read, so it is described by its own
+      # class rather than by running its `inspect` — the one place the rendering diverges from the list's.
+      it "describes a non-class token by its class instead of inspecting it" do
+        expect { declared_with({ type: ["Hash", Hash], shape: { members: [leaf] } }) }
+          .to raise_error(ArgumentError,
+                          "a shape block requires a single structured type: (Array, Hash, or a class) — " \
+                          "got [a value of class String, Hash]")
+      end
+
+      # The `container:` a raw `shape:` supplies is the CALLER's object, and `container == Array` dispatches
+      # that object's own `==` — so a container answering true takes the distributing branch and validates its
+      # members per ELEMENT instead of off the value itself. `::Array` is the receiver of the identity test,
+      # so only its own `equal?` runs, and this Array subclass is validated as the single value it declares.
+      it "does not let a container answering `==` divert the value into the per-element branch" do
+        liar = Class.new(Array) do
+          def self.==(_other) = true
+        end
+        stub_const("LyingContainer", liar)
+        value = LyingContainer.new
+        value << { leaf: 1 }
+
+        # Hoisted to a local: `build_axn` class_evals its block, so `self` there is the action class and the
+        # `leaf` helper above is out of reach.
+        member = leaf
+        action = build_axn { expects :rows, type: LyingContainer, shape: { members: [member], container: LyingContainer } }
+
+        # Read off the value itself (unreadable, since an Array answers no named key) — never "element at
+        # index 0: leaf is not a String", which is what the diverted branch reports.
+        expect(action.call(rows: value).exception.message).to eq("Rows leaf could not be read (got LyingContainer)")
+      end
+
       it "leaves an explicit nested `container:` exactly as declared" do
         klass = declared_with({ type: Hash, shape: { members: [leaf], container: Hash } })
 
@@ -859,8 +913,12 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           ] }
         end
         members = klass.internal_field_configs.first.validations[:shape][:members]
+        # The Array-typed position's copy is folded into its `of:` bag, where the container it calls for is
+        # the element's rather than the member's — so the two positions still hold ONE shared node to two
+        # different containers, which is what the detach-before-write buys.
+        containers = members.map { |m| (m.validations[:shape] || m.validations.dig(:of, :shape))[:container] }
 
-        expect(members.map { |m| m.validations[:shape][:container] }).to eq([Hash, Array])
+        expect(containers).to eq([Hash, Axn::Internal::ShapeGraph::ANY_CONTAINER])
         expect(shared.key?(:container)).to be(false)
         expect(klass.call(payload: { a: { leaf: "x" }, b: [{ leaf: "y" }] })).to be_ok
       end

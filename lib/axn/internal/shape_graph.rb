@@ -304,6 +304,38 @@ module Axn
           "return the same finite nested shape each time it is read, or flatten the nesting."
       end
 
+      # The same sentence for the OTHER edge a contract graph has (PRO-3166), written out rather than composed
+      # from the one above by swapping a noun: every clause names a different construct, and the fix an author
+      # can act on ("flatten the nesting" of containers, not "give the shape its own members") is the whole
+      # point of saying it. It sits beside its sibling for the reason that one is here — one text per defect,
+      # so no two layers describe it two ways.
+      #
+      # No `member` to name: an `of:` rung is an UNNAMED position, and a walk that raises either of these is
+      # handed a bag rather than the member that declared it.
+      INNER_CONTRACT_AFTER_DECLARATION = "An `of:` bag axn canonicalized at declaration can be neither, so " \
+                                         "this graph reached the class without being declared through " \
+                                         "`expects`/`exposes` — a field config assigned directly carries the " \
+                                         "bag exactly as you built it."
+      private_constant :INNER_CONTRACT_AFTER_DECLARATION
+
+      def self.inner_contract_too_deep_message
+        "an `of:` graph nests more than #{MAX_NESTING} levels deep, so walking it would recurse until the " \
+          "stack overflows — a bag that builds a fresh nested bag on every read is endless, and no " \
+          "hand-written declaration nests containers that far. #{INNER_CONTRACT_AFTER_DECLARATION} Flatten " \
+          "the nesting, or have the declaration give back the same finite nested bag each time it is read."
+      end
+
+      # The cyclic half of the same pair, for a re-walk that REPORTS what it meets. `OfValidator` needs none —
+      # `guard_pair` treats a runtime repeat as valid, adding nothing the frame that opened it is not already
+      # adding — but a walk that raises has to tell the two defects apart: a cycle is fixed by not nesting a bag
+      # inside itself, an endless graph by returning the same nested bag each read, and reporting a cycle as
+      # depth exhaustion 64 rungs later sends the author looking for nesting that is not there.
+      def self.inner_contract_self_containing_message
+        "an `of:` bag contains itself, so walking it would recurse until the stack overflows. " \
+          "#{INNER_CONTRACT_AFTER_DECLARATION} Give the nested `of:` contents of its own rather than reusing " \
+          "the bag that encloses it."
+      end
+
       # How many member PATHS a stored shape graph may have — every route from a field to a member, counting a
       # nested shape reused by two siblings twice, because every walk of the stored graph walks it twice.
       #
@@ -420,6 +452,66 @@ module Axn
       # none — so a member too minimal to declare `validations` is skipped rather than raising. For a
       # caller-supplied member, whose `validations` reader is itself something to read without trusting.
       def self.nested_shape(owner) = shape_in(read(owner, :validations))
+
+      # The container of a `shape:` whose position names no class — an `of:` bag that constrains its
+      # contents by members alone (`of: { shape: … }`). A Module rather than a bare `nil` because
+      # ABSENCE already means something here: it is the bug signature `_derive_raw_shape_container!`
+      # exists to catch, a shape that never got a container derived and fails every call with a bare
+      # `TypeError: class or module required`. Being a Module also satisfies the "a container must be a
+      # class" guard without a special case there. `ShapeValidator` tests it by IDENTITY, with this
+      # constant as the receiver, and never with `is_a?` — nothing is an instance of it.
+      ANY_CONTAINER = ::Module.new do
+        def self.name = "Axn::Internal::ShapeGraph::ANY_CONTAINER"
+        def self.to_s = name
+      end
+
+      # Where an inner contract can sit. Logical positions, not schema path segments: reflection maps
+      # these onto its own `items`/`additionalProperties` spelling, so the declaration layer does not
+      # carry the emitter's vocabulary.
+      ELEMENT_POSITION = :[]
+      KEYS_POSITION = :keys
+      VALUES_POSITION = :values
+      MAP_POSITIONS = [KEYS_POSITION, VALUES_POSITION].freeze
+
+      # The exempt set of a map that no `shape:` accompanies: every entry is governed. One frozen Array rather
+      # than a fresh one per declaration and per undeclared read, since the overwhelmingly common map has no
+      # shape beside it and the runtime asks this of every entry of every Hash it validates.
+      NO_SHAPED_KEYS = [].freeze
+
+      EMPTY_INNER_CONTRACTS = [].freeze
+      private_constant :EMPTY_INNER_CONTRACTS
+
+      # THE one answer to "what containers sit inside this node", shared by the declaration walk, the
+      # redaction walk, the ambient walk and reflection — so no two of them can descend a different set.
+      #
+      # An ARRAY's `of:` bag IS the inner contract (one element position). A HASH's `of:` bag is the axis
+      # bag, and the inner contracts are its axis VALUES — only where an axis carries a bag, since a bare
+      # type names a class and has nothing inside it. Read through `hash_or_nil` throughout: the bag may be
+      # a config ASSIGNED onto a class rather than one this DSL canonicalized, so an `of:` that is not a
+      # Hash answers "nothing inside" rather than raising.
+      # Which GRAMMAR a canonicalized `of:` bag was read under: a map bag names axes, an element bag names one
+      # position. Derived from the `container:` key axn writes at canonicalization, by IDENTITY with `::Hash` as
+      # the receiver — the key holds the caller's declared class, and one answering `==` for its own purposes
+      # would otherwise choose which grammar its bag is read under. One predicate rather than the four
+      # open-coded copies this replaces (the declaration walk's shaped-key derivation, the emitter's nested-node
+      # dispatch, collision attribution's descent, and the enumerator below), because the four have to agree
+      # about it and four copies of one question is the drift a shared seam exists to prevent.
+      #
+      # `bag` must already be a Hash — every caller classifies it with `hash_or_nil` first, and there is no
+      # honest answer for a value that is not a bag at all.
+      def self.map_bag?(bag) = ::Hash.equal?(bag[:container])
+
+      def self.inner_contracts(validations)
+        bag = hash_or_nil(validations && validations[:of])
+        return EMPTY_INNER_CONTRACTS if nil.equal?(bag)
+
+        return [[ELEMENT_POSITION, bag]] unless map_bag?(bag)
+
+        MAP_POSITIONS.filter_map do |axis|
+          inner = hash_or_nil(bag[axis])
+          inner && [axis, inner]
+        end
+      end
 
       # Sentinel for "nothing on this object answers to that name", distinguishing it from a reader
       # that genuinely returned nil. A private frozen object of this module's own, and always the

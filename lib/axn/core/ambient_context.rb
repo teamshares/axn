@@ -90,16 +90,25 @@ module Axn
           # `roots[PARENT]` is guaranteed present: `ambient` is non-empty (checked above), and every
           # config in it roots at `PARENT`, so `SubfieldTree.build` always creates that root node.
           _each_ambient_node(tree.roots[PARENT]) do |node|
-            # A merged wire node (two routes converging via a dotted `on:` plus a reader-anchored route)
-            # can carry more than one shape-bearing config, so check EVERY one — not just the first.
-            shape_configs = node.configs.select { |c| c.validations.is_a?(Hash) && c.validations.key?(:shape) }
-            next if shape_configs.empty?
-
             # An ambient value is framework-supplied, not caller input — so a violation can never be
             # user-facing, at any depth. The subfield's own `user_facing:` is already rejected upstream;
             # extend the same rule to shape members (which carry their own `user_facing:` since PRO-2925),
             # so an ambient shape can't smuggle a user-facing member classification.
-            shape_configs.each { |sc| _reject_ambient_shape_user_facing_members!(sc) }
+            #
+            # Over EVERY config on the node, not only the shape-bearing ones: a merged wire node (two routes
+            # converging via a dotted `on:` plus a reader-anchored route) carries more than one, and a config
+            # whose members live only inside an `of:` bag carries no `:shape` key at all — selecting on that
+            # key would filter it out before any descent happened (PRO-3166).
+            node.configs.each { |c| _reject_ambient_shape_user_facing_members!(c) }
+
+            # The placement rule below is about the node's OWN named members, so it keys on a top-level
+            # `shape:` alone: an `of:` bag describes what is INSIDE the value (elements, map entries), which
+            # the filter copies or rebuilds as one value rather than member by member.
+            shape_configs = node.configs.select do |c|
+              validations = Internal::ShapeGraph.hash_or_nil(c.validations)
+              validations && Internal::ShapeGraph.carries_key?(validations, :shape)
+            end
+            next if shape_configs.empty?
 
             # Only a filter-leaf shape validates against the copied value; a non-`model:` node WITH subfield
             # children is rebuilt from those children alone, dropping shape-only members.
@@ -114,10 +123,11 @@ module Axn
           end
         end
 
-        # Reject `user_facing:` on any member of an ambient subfield's shape, recursing into nested shapes.
-        # A duck-typed member without `#user_facing` (a raw `shape: { members: [...] }`) defaults to none.
-        def _reject_ambient_shape_user_facing_members!(shape_config)
-          _each_shape_member(Internal::ShapeGraph.shape_in(shape_config.validations)) do |member|
+        # Reject `user_facing:` on any member an ambient subfield declares, at any depth on either edge of the
+        # contract graph. A duck-typed member without `#user_facing` (a raw `shape: { members: [...] }`)
+        # defaults to none.
+        def _reject_ambient_shape_user_facing_members!(config)
+          _each_contract_member(config.validations) do |member|
             next unless Internal::ShapeGraph.read(member, :user_facing)
 
             raise ArgumentError,
@@ -126,37 +136,72 @@ module Axn
           end
         end
 
-        # Yield every member of `shape`, recursing into each member's own nested shape. Every read goes
+        # Yield every member one declared node reaches, on BOTH edges a contract graph has: the members of the
+        # node's own `shape:`, and — recursively — those of every container that sits inside it. A container's
+        # contents are declared in its `of:` bag at an UNNAMED position, so a member there has no member name
+        # one level up to be reached through, and it is held to exactly what its named twin is held to
+        # (PRO-3166). `inner_contracts` is the one enumerator for that edge, shared with the declaration walk,
+        # redaction and reflection, so no two of them descend a different set.
+        #
+        # ONE depth budget and one cycle-ancestry across both edges: an `of:` rung is a level exactly as a
+        # shape rung is, and two counters would admit a graph MAX_NESTING deep on each edge separately. The
+        # rung's bound is spent by the node that HOLDS the bag, matching where the declaration walk spends it
+        # (`_walk_inner_contracts!`) — the two walks must agree about what is traversable, or a re-walk would
+        # reject a graph that declared.
+        def _each_contract_member(validations, seen = nil, depth = 0, via = nil, &block)
+          node = Internal::ShapeGraph.hash_or_nil(validations)
+          return if nil.equal?(node)
+
+          _each_shape_member(Internal::ShapeGraph.shape_in(node), seen, depth, via, &block)
+
+          contracts = Internal::ShapeGraph.inner_contracts(node)
+          return if contracts.empty?
+
+          raise ArgumentError, Internal::ShapeGraph.inner_contract_too_deep_message if depth > Internal::ShapeGraph::MAX_NESTING
+
+          contracts.each do |(_position, bag)|
+            outcome = Axn::Internal::CycleGuard.guard(bag, seen, on_cycle: CYCLIC_AMBIENT_GRAPH) do |nested|
+              _each_contract_member(bag, nested, depth + 1, via, &block)
+            end
+            raise ArgumentError, Internal::ShapeGraph.inner_contract_self_containing_message if CYCLIC_AMBIENT_GRAPH.equal?(outcome)
+          end
+        end
+
+        # Yield every member of `shape`, recursing into everything each member itself declares. Every read goes
         # through Internal::ShapeGraph, so a member supplied by a raw `shape:` kwarg cannot deny a reader
         # it defines and slip past the checks this walk feeds.
         #
         # Bounded both ways, and not because a DECLARED graph can be untraversable — `_validate_and_snapshot_shape!`
         # rejects that ahead of this walk, and snapshots what it accepts. This walk re-walks whatever the class
         # HOLDS: declaring a second ambient subfield rebuilds the tree over every ambient config, and a config
-        # assigned onto the class rather than declared (`subfield_configs=`) carries a shape no walk has traversed
+        # assigned onto the class rather than declared (`subfield_configs=`) carries a graph no walk has traversed
         # — one that may contain itself, or mint a fresh nested shape on every read. Either overflows the stack
-        # while the class is being defined, which no rescue in the framework can settle. Same two bounds, same two
-        # messages, as the projection walk that re-walks for its own reasons
-        # (Internal::Reflection::PropertyNames#count_shape_members!).
+        # while the class is being defined, which no rescue in the framework can settle. Same two bounds, and the
+        # message pair belonging to this edge, as the projection walk that re-walks for its own reasons
+        # (Internal::Reflection::PropertyNames#count_shape_members!); the container edge carries its own pair,
+        # so a defect is never reported as the one the other edge has.
         def _each_shape_member(shape, seen = nil, depth = 0, via = nil, &block)
           hash = Internal::ShapeGraph.hash_or_nil(shape)
           return if nil.equal?(hash)
 
           raise ArgumentError, Internal::ShapeGraph.too_deep_message(via) if depth > Internal::ShapeGraph::MAX_NESTING
 
-          outcome = Axn::Internal::CycleGuard.guard(hash, seen, on_cycle: CYCLIC_AMBIENT_SHAPE) do |nested|
+          outcome = Axn::Internal::CycleGuard.guard(hash, seen, on_cycle: CYCLIC_AMBIENT_GRAPH) do |nested|
             Internal::ShapeGraph.members(hash).each do |member|
               yield member
-              _each_shape_member(Internal::ShapeGraph.nested_shape(member), nested, depth + 1, member, &block)
+              # The member's `validations` read ONCE and descended on both of its edges — the nested `shape:`
+              # and the containers its `of:` chain declares — so a member cannot answer the two walks
+              # differently.
+              _each_contract_member(Internal::ShapeGraph.read(member, :validations), nested, depth + 1, member, &block)
             end
           end
-          raise ArgumentError, Internal::ShapeGraph.self_containing_message(via) if CYCLIC_AMBIENT_SHAPE.equal?(outcome)
+          raise ArgumentError, Internal::ShapeGraph.self_containing_message(via) if CYCLIC_AMBIENT_GRAPH.equal?(outcome)
         end
 
         # A private object of this module's own, always the RECEIVER of `equal?`, so nothing a declaration can
         # produce is mistaken for it.
-        CYCLIC_AMBIENT_SHAPE = Object.new.freeze
-        private_constant :CYCLIC_AMBIENT_SHAPE
+        CYCLIC_AMBIENT_GRAPH = Object.new.freeze
+        private_constant :CYCLIC_AMBIENT_GRAPH
 
         # Depth-first walk of `node` and all its declared descendants, yielding each node.
         def _each_ambient_node(node, &block)

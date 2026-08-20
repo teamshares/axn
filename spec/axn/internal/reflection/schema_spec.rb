@@ -5364,4 +5364,81 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
     expect(schema.dig(:properties, :payload, :required)).to eq(schema.dig(:properties, :payload, :properties).keys.map(&:to_s))
   end
+
+  # A container sitting directly inside a container has no member name to hang the next level on, so the
+  # emitter reaches it by recursing over the `of:` bag itself (`contents_node_schema`) rather than through
+  # `shape:`'s named members. These pin the three shapes that recursion can produce at the inner rung.
+  describe "a recursive of:" do
+    it "emits items inside items" do
+      action = build_axn { expects :matrix, type: Array, of: { klass: Array, of: Integer } }
+
+      expect(action.input_schema[:properties][:matrix]).to include(
+        type: "array",
+        items: { type: "array", items: { type: "integer" } },
+      )
+    end
+
+    it "emits a union at the inner rung as anyOf" do
+      action = build_axn { expects :m, type: Array, of: { klass: Array, of: [String, Integer] } }
+
+      expect(action.input_schema.dig(:properties, :m, :items, :items)).to eq(
+        anyOf: [{ type: "string" }, { type: "integer" }],
+      )
+    end
+
+    # A bag hands its `of:`/`shape:` to the next level as ActiveModel entries verbatim
+    # (`OfValidator#inner_contract_validations`), so a per-validator gate written on one really can skip that
+    # level on a given call. OUTPUT therefore drops it, exactly as `effective_validations` drops a gated entry
+    # at a field — an output schema must not promise what a closed gate may not enforce. INPUT keeps it, for
+    # the same reason `effective_validations` leaves input untouched: static-maximal is the safe direction
+    # there, since a gate can only relax enforcement at runtime.
+    describe "a gate on an inner rung" do
+      let(:action) do
+        build_axn do
+          exposes :rows, type: Array, of: { klass: Array, of: { klass: Integer, if: :flag } }, allow_blank: true
+          def call = nil
+        end
+      end
+
+      it "drops the gated rung from the OUTPUT schema" do
+        expect(action.output_schema.dig(:properties, :rows, :items)).to eq({ type: "array" })
+      end
+
+      it "keeps it on INPUT" do
+        inbound = build_axn { expects :rows, type: Array, of: { klass: Array, of: { klass: Integer, if: :flag } } }
+
+        expect(inbound.input_schema.dig(:properties, :rows, :items)).to eq({ type: "array", items: { type: "integer" } })
+      end
+
+      it "keeps an UNgated rung on output" do
+        ungated = build_axn do
+          exposes :rows, type: Array, of: { klass: Array, of: Integer }, allow_blank: true
+          def call = nil
+        end
+
+        expect(ungated.output_schema.dig(:properties, :rows, :items)).to eq({ type: "array", items: { type: "integer" } })
+      end
+    end
+
+    it "emits a map nested inside an array" do
+      action = build_axn { expects :m, type: Array, of: { klass: Hash, of: { values: Integer } } }
+
+      expect(action.input_schema.dig(:properties, :m, :items)).to include(
+        type: "object", additionalProperties: { type: "integer" },
+      )
+    end
+
+    # `contents_node_schema` seeds the node from `klass:` only when the bag names one, where the read it replaced
+    # took `of[:klass]` unconditionally and turned a nil into `items: { anyOf: [] }` — a schema no element can
+    # satisfy. No declaration produces a klass-less bag today (`of: {}` and `of: []` are both refused as
+    # constraining nothing), so this is a config assigned onto a class —
+    # but it is exactly the shape a `shape:`-only bag will canonicalize to, which is why the behavior is pinned
+    # rather than left to be rediscovered.
+    it "emits no items for a bag that names no class" do
+      config = Axn::Core::Contract::FieldConfig.new(field: :m, reader_as: :m,
+                                                    validations: { type: { klass: Array }, of: { container: Array } })
+
+      expect(described_class.build_input([config]).dig(:properties, :m)).not_to have_key(:items)
+    end
+  end
 end

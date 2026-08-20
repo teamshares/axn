@@ -219,22 +219,31 @@ RSpec.describe Axn::Validators::OfValidator do
       end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
     end
 
-    it "raises ArgumentError when of: is a hash with no :klass key" do
+    # A bag has to CONSTRAIN something, and `klass:` is no longer the only way to do it (PRO-3166), so the
+    # rule is stated over the axes rather than over the one option.
+    it "raises ArgumentError when of: is a hash constraining nothing" do
       expect do
         build_axn { expects :items, type: Array, of: {} }
-      end.to raise_error(ArgumentError, /must supply :klass/)
+      end.to raise_error(ArgumentError, /of: must constrain something/)
     end
 
-    it "rejects a nested of: inside the of: bag, which used to constrain nothing" do
-      expect do
-        build_axn { expects :matrix, type: Array, of: { klass: Array, of: Integer } }
-      end.to raise_error(ArgumentError, /of: does not support of:/)
+    # The refusal this replaces (PRO-3165) existed because the key declared cleanly and constrained nothing.
+    # PRO-3166 makes it constrain, which is the same hole closed from the other side.
+    it "accepts a nested of: inside the of: bag, and constrains with it" do
+      action = build_axn { expects :matrix, type: Array, of: { klass: Array, of: Integer } }
+
+      expect(action.call(matrix: [[1], [2, 3]])).to be_ok
+      expect(action.call(matrix: [[1], ["x"]]).exception.message)
+        .to include("element at index 1: element at index 0 is not a Integer")
     end
 
-    it "rejects a nested shape: inside the of: bag" do
+    # `shape:` is the bag's third constraining axis (PRO-3166): it names the members of the value at that
+    # position. Its own grammar, emission and bounds live in `recursive_of_spec`; what belongs here is that the
+    # key is no longer refused as unknown.
+    it "accepts a nested shape: inside the of: bag" do
       expect do
         build_axn { expects :rows, type: Array, of: { klass: Hash, shape: { members: [] } } }
-      end.to raise_error(ArgumentError, /of: does not support shape:/)
+      end.not_to raise_error
     end
 
     it "rejects a misspelled message: rather than dropping the custom message" do
@@ -267,7 +276,7 @@ RSpec.describe Axn::Validators::OfValidator do
     it "does not advertise on: as a supported key, since nothing accepts it" do
       expect { build_axn { expects :rows, type: Array, of: { klass: String, wat: 1 } } }
         .to raise_error(ArgumentError) do |error|
-          expect(error.message).to include("(supported: klass:, message:")
+          expect(error.message).to include("(supported: klass:, of:, shape:, message:")
           expect(error.message).not_to include("on:")
         end
     end
@@ -366,11 +375,11 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, /of: keys: must name a type/)
     end
 
-    # The map bag reaches the same context-scope guard the element bag does — `on:` is one whitelist entry for
-    # both containers, and axn has no validation contexts on either side of the line.
+    # The map bag reaches the same context-scope guard the element bag does, in the same words — `on:` is one
+    # whitelist entry for both containers, and axn has no validation contexts on either side of the line.
     it "leaves on: to the context-scope guard here too" do
       expect { build_axn { expects :counts, type: Hash, of: { values: Integer, on: :create } } }
-        .to raise_error(ArgumentError, /validation context/)
+        .to raise_error(ArgumentError, /`on:` inside an `of:` bag on :counts .* validation context/)
     end
 
     it "rejects message:, which cannot say which axis failed" do
@@ -415,29 +424,47 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, /of: values: must name a type/)
     end
 
-    it "rejects a nested contract on an axis as not yet supported" do
-      expect { build_axn { expects :counts, type: Hash, of: { values: { klass: Integer } } } }
-        .to raise_error(ArgumentError, /not supported yet/)
+    # `nil` INSIDE a union is the one unsupported token a `find`-based search cannot report: the answer for
+    # "found nil" and for "found nothing" is the same object, so this passed the axis guard and raised the
+    # bare `TypeError: class or module required` on every call. Searched by INDEX now.
+    it "rejects a union carrying nil, which reads as no offender to a find" do
+      expect { build_axn { expects :c, type: Hash, of: { values: [String, nil] } } }
+        .to raise_error(ArgumentError, /of: values: must name a type .* \(got a value of class NilClass\)/)
     end
 
-    # Both axes are held to the grammar, not just the one with a JSON Schema spelling: a nested contract on
-    # `keys:` is the same unsupported declaration and gets the same refusal, named by its own axis.
-    it "rejects a nested contract on the keys axis, named as keys:" do
-      expect { build_axn { expects :counts, type: Hash, of: { keys: { klass: Symbol }, values: Integer } } }
-        .to raise_error(ArgumentError, /of: keys: takes a type, not a nested contract/)
+    it "rejects a union of nothing but nil on the keys axis" do
+      expect { build_axn { expects :c, type: Hash, of: { keys: [nil] } } }
+        .to raise_error(ArgumentError, /of: keys: must name a type .* \(got a value of class NilClass\)/)
     end
 
-    it "rejects a nested contract inside a union on an axis" do
+    # An axis holding a Hash is a contract of its own — the same inner-contract bag an Array's element takes
+    # (PRO-3166) — so it is held to the bag grammar rather than to the type grammar this section pins. What
+    # a bag declares at either axis is covered in `recursive_of_spec.rb`.
+    it "accepts a contract bag on either axis" do
+      expect { build_axn { expects :counts, type: Hash, of: { keys: { klass: Symbol }, values: { klass: Integer } } } }
+        .not_to raise_error
+    end
+
+    # A bag inside a UNION is not that spelling: a union names types, so the Hash is an unsupported token
+    # rather than a nested contract.
+    it "rejects a bag inside a union on an axis" do
       expect { build_axn { expects :counts, type: Hash, of: { values: [String, { klass: Integer }] } } }
-        .to raise_error(ArgumentError, /not supported yet/)
+        .to raise_error(ArgumentError, "of: values: must name a type — a Class, a union of them, or one of " \
+                                       ":boolean, :uuid, :params (got a value of class Hash)")
     end
 
-    it "rejects of: beside shape: on a Hash as not yet supported" do
-      expect do
-        build_axn do
-          expects :counts, type: Hash, of: { values: Integer }, shape: { members: [] }
+    # `shape:` and `of:` name DIFFERENT keys of one Hash, so the pair is a complement rather than a conflict:
+    # the shape's keys are exempt from the map contract, exactly as `additionalProperties` governs only the
+    # keys `properties` does not match. The full grammar lives in recursive_of_spec (PRO-3166).
+    it "accepts of: beside shape: on a Hash, exempting the keys the shape names" do
+      action = build_axn do
+        expects :counts, type: Hash, of: { values: Integer } do
+          field :label, type: String
         end
-      end.to raise_error(ArgumentError, /not supported yet/)
+      end
+
+      expect(action.call(counts: { label: "q3", hits: 2 })).to be_ok
+      expect(action.call(counts: { label: "q3", hits: "two" })).not_to be_ok
     end
 
     # The same rule in its second spelling. A subfield declared `on:` a map names one of that hash's members

@@ -14,6 +14,10 @@ require "axn/internal/reflection/values"
 require "axn/internal/field_config"
 require "axn/internal/shape_graph"
 
+# The graph this builder walks is one the class merely HOLDS, so the builder cannot load without the two
+# bounds every such walk needs (see `guard_contents_descent`).
+require "axn/internal/cycle_guard"
+
 module Axn
   module Internal
     module Reflection
@@ -1231,7 +1235,7 @@ module Axn
           values if values.instance_of?(Array)
         end
 
-        def build_property(config, for_output: false, subfield: false)
+        def build_property(config, for_output: false, subfield: false, ancestry: nil)
           prop = {}
           # `#description` is beyond the documented member contract (see declared_attribute).
           description = declared_attribute(config, :description)
@@ -1272,7 +1276,7 @@ module Axn
             prop[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values
           end
 
-          apply_structured_schema!(prop, config, for_output:)
+          apply_structured_schema!(prop, config, for_output:, ancestry:)
 
           # LAST, because the floor's KEY is chosen from the property's type (`minItems`/`minProperties`/
           # `minLength`) and a shape block is what establishes that type: a custom class or module carrying one
@@ -1377,12 +1381,13 @@ module Axn
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
         # `additionalProperties:` — and a `shape:`'s typed member contracts as `properties:`.
-        # Precedence: shape: enriches/overrides the of: baseline, which only ever arises on an array (a map's
-        # `of:` is refused beside a shape at declaration).
-        def apply_structured_schema!(prop, config, for_output:)
+        # Precedence: shape: enriches/overrides the of: baseline. On an ARRAY the two describe one node from two
+        # angles, so the shape's members overwrite the element type's. On a MAP they describe different keys of
+        # one object — `properties` beside `additionalProperties` — and neither displaces the other.
+        def apply_structured_schema!(prop, config, for_output:, ancestry: nil)
           return unless config.validations[:of] || config.validations[:shape]
 
-          plan = shape_property_plan(config, for_output:)
+          plan = shape_property_plan(config, for_output:, ancestry:)
           # The shape the PLAN carries, never a second read of the config: one answer to which members are
           # emitted here, so a rule charged against the plan and this emission cannot walk different lists.
           shape = plan.shape
@@ -1390,15 +1395,24 @@ module Axn
           if plan.map?
             # A map's contents land under `additionalProperties` at this very node, so the plan's type schema is
             # merged in whole. Empty for a keys-only map, which merges nothing — `keys:` has no JSON Schema
-            # spelling worth emitting (see shape_property_plan). No shape can accompany a map's `of:`, so there
-            # is no overlay to apply and nothing here consults `plan.emitted`.
+            # spelling worth emitting (see shape_property_plan).
             prop.merge!(plan.type_schema)
+            return unless shape && plan.emitted
+
+            # A shape beside a map names the SAME node's `properties`, which is the one place the two options
+            # describe different things: `additionalProperties` governs only the keys `properties` does not
+            # match, and the runtime mirrors that by exempting them (Core::Contract#_derive_shaped_keys!).
+            # `prop[:type]` is left as `build_property` derived it from `type: Hash` — already `object`, and
+            # already carrying the `null` branch where the field admits one.
+            member_props, required = member_properties(shape[:members], for_output:, ancestry:)
+            prop[:properties] = plan.base_properties.merge(member_props)
+            prop[:required] = required unless required.empty?
           elsif plan.in_items?
             # The plan's own type schema, not a second `contents_schema_for` call: one build, and the plan is
             # then literally what gets emitted rather than a parallel derivation of it.
             items = plan.type_schema
             if shape && plan.emitted
-              member_props, required = member_properties(shape[:members], for_output:)
+              member_props, required = member_properties(shape[:members], for_output:, ancestry:)
               items = items.merge(type: "object", properties: plan.base_properties.merge(member_props))
               items[:required] = required unless required.empty?
             end
@@ -1408,7 +1422,7 @@ module Axn
 
             prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
             prop.delete(:format)
-            member_props, required = member_properties(shape[:members], for_output:)
+            member_props, required = member_properties(shape[:members], for_output:, ancestry:)
             prop[:properties] = plan.base_properties.merge(member_props)
             prop[:required] = required unless required.empty?
           end
@@ -1471,7 +1485,7 @@ module Axn
           def base_properties = type_schema[:properties] || {}
         end
 
-        def shape_property_plan(config, for_output:)
+        def shape_property_plan(config, for_output:, ancestry: nil)
           # THE reason the charge and the emitter cannot start from different configs: the effective derivation
           # happens HERE, on the way in, so no caller can hand this a config the emitter would not have used.
           # `build_property` applies the same derivation before it emits, which makes the one here idempotent
@@ -1499,28 +1513,26 @@ module Axn
           if in_items
             # Overlay the shape's object properties onto items only when the ELEMENTS are objects.
             emitted = shape_overlay_applies?(of, for_output:)
-            # `contents_schema_for` seeds an element type's own members whenever there is an `of:`, shape or not.
+            # `contents_node_schema` seeds an element type's own members whenever there is an `of:`, shape or not —
+            # and, where the element is itself a container, everything inside it too.
             return ShapePropertyPlan.new(emitted:, in_items:, shape:, container:,
-                                         type_schema: of ? contents_schema_for(of[:klass], for_output:) : {})
+                                         type_schema: of ? contents_node_schema(of, for_output:, ancestry:) : {})
           end
 
           # A map's `of:` names its VALUES, which every JSON object key maps to — so the axis reflects as
           # `additionalProperties` at the field's own node. The `keys:` axis contributes nothing: every JSON
           # object key is a string, so `keys: String` would say nothing a client can act on and `keys: Symbol`
-          # would be a lie on the wire. `emitted` stays false because it answers only whether a SHAPE's members
-          # become properties here, and a map's `of:` is refused beside a `shape:` at declaration — the values
-          # schema below is the declared TYPE's contribution, which is charged and emitted regardless, exactly
-          # as an array's items are.
+          # would be a lie on the wire. The values schema is the declared TYPE's contribution, charged and
+          # emitted regardless of any shape, exactly as an array's items are.
+          #
+          # `emitted` answers only whether a SHAPE's members become properties here, and beside a map they do:
+          # the two options name different keys of one object, so both land at this node. Settled on the same
+          # rule the non-array branch settles it on — a client is always expected to send the members, and on
+          # OUTPUT they are promised only where the value provably serializes member-keyed.
           if ::Hash.equal?(container)
-            # A values axis naming no class constrains nothing at runtime — `matches_axis?` waves every value
-            # through, where an array's element axis instead rejects every element, which is why the two
-            # containers settle emptiness themselves rather than in the shared builder. A class whose schema is
-            # untyped (an unknown type on output) has nothing to state either, and both cases emit no node at
-            # all rather than an empty `additionalProperties` that would read as a constraint.
-            klasses = Array(of[:values])
-            values = klasses.empty? ? {} : contents_schema_for(klasses, for_output:)
-            return ShapePropertyPlan.new(emitted: false, in_items:, shape:, container:,
-                                         type_schema: values.empty? ? {} : { additionalProperties: values })
+            return ShapePropertyPlan.new(emitted: !for_output || shape_serializes_to_object?(validations),
+                                         in_items:, shape:, container:,
+                                         type_schema: map_values_schema(of, for_output:, ancestry:))
           end
 
           # Only the `elsif shape` branch emits object properties for a non-array, non-map field: `of:` without a
@@ -1562,12 +1574,15 @@ module Axn
         # must provably serialize to a member-keyed object (a plain Data/Struct/Hash `of:`). INPUT: the
         # elements must be object-typed (Hash/`:params`/Data/Struct) or untyped (no `of:` — the client sends
         # objects). A scalar `of:` (String/Integer/…) reads members off the scalar, so it is NOT overlaid.
+        # A bag that NAMES no class is the same case as no bag at all — untyped elements, which on input a client
+        # sends as objects carrying the shape's members (`of: { shape: … }`, PRO-3166). On OUTPUT it stays
+        # unproven, and so unemitted, for the reason any unnamed class does.
         def shape_overlay_applies?(of_validations, for_output:)
           return shaped_items_serialize_to_object?(of_validations) if for_output
           return true unless of_validations # untyped elements: client sends objects with the shape members
 
           klasses = Array(of_validations[:klass])
-          klasses.any? && klasses.all? { |k| object_typed_element?(k) }
+          klasses.empty? || klasses.all? { |k| object_typed_element?(k) }
         end
 
         # Whether an `of:` element type provably serializes to a member-keyed object (output items). Needs `of:`.
@@ -1603,9 +1618,10 @@ module Axn
         # The schema for what is INSIDE a container, from the classes an `of:` axis names — an Array's elements
         # (`klass:`) and a Hash's values (`values:`) alike. One builder for both, because the two describe the
         # same thing at different nodes: a union reflects as `anyOf` branches either way, and each branch
-        # carries its own type's members. What an axis naming NO class means is the containers' own business
-        # and is settled by each caller (see the map branch of `shape_property_plan`), because the two runtimes
-        # read it oppositely.
+        # carries its own type's members. An axis naming NO class cannot reach here at all: a bag has to
+        # constrain something, and `_of_axis_constrains?` asks that of `klass:` with the same emptiness test
+        # `OfValidator#matches_axis?` uses, so `of: []` and `of: { values: { klass: [] } }` are refused at
+        # declaration rather than arriving as a position that matches everything and emits `anyOf: []`.
         def contents_schema_for(klasses, for_output: false)
           klasses = Array(klasses)
           if klasses.size == 1
@@ -1613,6 +1629,186 @@ module Axn
           else
             { anyOf: klasses.map { |k| single_contents_schema(k, for_output:) } }
           end
+        end
+
+        # The schema for ONE unnamed position — an array element, a map value. The node an `of:` bag describes,
+        # built from the same ingredients a FIELD's node is: the class the bag names (`contents_schema_for`), the
+        # members named off it (the bag's own `shape:`), and what that class holds in turn (the bag's own `of:`).
+        # A container sitting directly inside a container has no member name to hang the next level on, so this
+        # is the only way down to it.
+        #
+        # Shared with `apply_structured_schema!` through `shape_property_plan`'s `type_schema`, which is the whole
+        # reason the collision rules and the projection size cap follow a recursive `of:` down: both read what the
+        # emitter emits (`each_emitted_node` walks `items`/`additionalProperties`/`anyOf` generically), so neither
+        # needs a rung-by-rung rule of its own and neither can drift from what is emitted.
+        #
+        # Bounded on the same terms, with the same sentences, as the runtime walk of this very edge
+        # (`OfValidator#guard_contents_descent`): the declaration walk refuses a cyclic or over-deep `of:` graph, so
+        # a DECLARED contract can be neither — but a field config assigned onto a class (`internal_field_configs=`)
+        # passed no declaration walk and carries whatever its author built, and descending one without a bound ends
+        # in `SystemStackError`, outside `StandardError`, escaping every rescue meant to settle it.
+        #
+        # The bound is spent on ONE counter across BOTH edges of the graph — the `of:` rung below a bag, and the
+        # shape-MEMBER rung `contents_member_schema` takes through `member_properties` — threaded as the
+        # `CycleGuard::Ancestry` every other walk of a held graph threads. A per-chain counter is not a bound at
+        # all here, because the two edges alternate: a member's own `of:` re-enters this builder through
+        # `build_property` → `shape_property_plan`, which starts a chain of its own, so a graph looping
+        # `of:` → shape member → `of:` spends no rung on any single counter and reaches the stack rather than the
+        # cap. (Measured: a bag whose `shape:` member points its `of:` back at that bag raised `SystemStackError`
+        # out of `input_schema`.) Sharing one counter across both edges is what the declaration walk, the runtime
+        # pair and the ambient walk each do over this same graph, and the reason is the same in all four: a graph
+        # 64 `of:` deep by 64 `shape:` deep is 128 levels of live recursion, which two counters would admit.
+        #
+        # The comparison is `>`, so a graph whose deepest rung sits exactly AT the cap still emits — and the
+        # charge stays one rung LOOSER than the declaration walk's (which spends a rung entering a field's own
+        # first bag, where this one does not). Looser is the only safe direction: reflection refusing what
+        # `expects` accepted would leave a legal contract with no schema at all.
+        #
+        # A union `klass:` keeps the merge order `apply_structured_schema!` has always used — the structural keys
+        # land beside the `anyOf` at this node rather than inside each branch. Existing behavior, preserved
+        # deliberately rather than corrected here.
+        def contents_node_schema(bag, for_output: false, ancestry: nil)
+          node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : {}
+          node = contents_member_schema(node, bag, for_output:, ancestry:)
+          inner = emitted_contents_edge(bag, :of, for_output:)
+          return node if nil.equal?(inner)
+
+          guard_contents_descent(inner, ancestry, edge: INNER_CONTRACT_EDGE) do |child|
+            # Which grammar the inner bag was canonicalized under, asked through the one predicate every seam asks
+            # it with: a map's bag names its axes and lands under `additionalProperties`, an array's names one
+            # element type and lands under `items`.
+            if Axn::Internal::ShapeGraph.map_bag?(inner)
+              # The object type is the bag's OWN `klass:` (a map bag is only ever reached from `klass: Hash`), exactly
+              # as a field's map node takes its type from `type:` and its `additionalProperties` from the axis.
+              node.merge(map_values_schema(inner, for_output:, ancestry: child))
+            else
+              contents = contents_node_schema(inner, for_output:, ancestry: child)
+              contents.empty? ? node : node.merge(items: contents)
+            end
+          end
+        end
+
+        # Which edge a descent is taking, which decides only the SENTENCE a refusal carries: the fix for a cyclic
+        # `of:` is to give the nested bag contents of its own, and for a cyclic `shape:` to give the nested shape
+        # its own members, so a message naming the construct the author did not write prescribes a change their
+        # declaration has nowhere to make. Same split, same reason, as the declaration walk's `SHAPE_EDGE` /
+        # `INNER_CONTRACT_EDGE`.
+        INNER_CONTRACT_EDGE = :of
+        SHAPE_EDGE = :shape
+        private_constant :INNER_CONTRACT_EDGE, :SHAPE_EDGE
+
+        # A private object of this module's own, and always the RECEIVER of `equal?`, so nothing a declaration can
+        # produce is mistaken for it.
+        CYCLIC_CONTRACT = ::Object.new.freeze
+        private_constant :CYCLIC_CONTRACT
+
+        # ONE rung of the graph a class merely HOLDS, descended under the two bounds every such walk needs, and
+        # the one seam both of this builder's edges take — so the counter cannot restart at a hop.
+        #
+        # `child` is what the descent is ABOUT to walk (the nested bag, or the members list a shape names), which
+        # is the identity a cyclic graph brings back around; keying on the parent instead would let one turn of a
+        # two-node cycle pass unseen. Ancestry-scoped, so a bag or a members list reused by SIBLING positions
+        # still emits in full and only genuine self-containment is a cycle. `depth` catches the other half a
+        # cycle guard cannot see: a GENERATIVE graph, minting a fresh bag or shape on every read, repeats no
+        # object and is endless rather than cyclic.
+        def guard_contents_descent(child, ancestry, edge:)
+          depth = ancestry ? ancestry.depth : 0
+          raise ArgumentError, contents_too_deep_message(edge) if depth > Axn::Internal::ShapeGraph::MAX_NESTING
+
+          outcome = Axn::Internal::CycleGuard.guard(child, ancestry&.seen, on_cycle: CYCLIC_CONTRACT) do |seen|
+            yield Axn::Internal::CycleGuard::Ancestry.new(seen:, depth: depth + 1)
+          end
+          raise ArgumentError, contents_self_containing_message(edge) if CYCLIC_CONTRACT.equal?(outcome)
+
+          outcome
+        end
+
+        # Both texts come from `ShapeGraph`, which owns one sentence per defect per edge — the same four the
+        # declaration walk, the runtime validators and the ambient walk report, so no two layers describe one
+        # defect two ways. The shape pair names no member: a bag's `shape:` hangs off an UNNAMED position, and
+        # what this walk holds at the point of refusing is the bag rather than anything that declared it.
+        def contents_too_deep_message(edge)
+          return Axn::Internal::ShapeGraph.inner_contract_too_deep_message if edge == INNER_CONTRACT_EDGE
+
+          Axn::Internal::ShapeGraph.too_deep_message(nil)
+        end
+
+        def contents_self_containing_message(edge)
+          return Axn::Internal::ShapeGraph.inner_contract_self_containing_message if edge == INNER_CONTRACT_EDGE
+
+          Axn::Internal::ShapeGraph.self_containing_message(nil)
+        end
+
+        # The `shape:` an `of:` bag carries, overlaid onto the node built from that bag's `klass:`. A bag's shape
+        # names the members of the value AT THAT POSITION, so its members are that node's `properties` — the same
+        # merge `apply_structured_schema!` makes at a field's items node, written once here so a shape one rung
+        # down emits exactly what a shape at the top emits. Its members are what the projection size cap and
+        # collision attribution then charge, since both read `plan.type_schema` and this Hash IS that schema.
+        #
+        # Gated on the same rule the field-level overlay is gated on (`shape_overlay_applies?`), asked of the bag
+        # itself because the bag's `klass:` is what its members are read off: a scalar element keeps its scalar
+        # type and validates members against it without ever emitting them, and on OUTPUT a class that is not
+        # provably member-keyed is left untyped rather than promising an object the serializer will not produce.
+        def contents_member_schema(node, bag, for_output:, ancestry: nil)
+          shape = emitted_contents_edge(bag, :shape, for_output:)
+          return node if nil.equal?(shape)
+          return node unless shape_overlay_applies?(bag, for_output:)
+
+          member_props, required = member_properties(shape[:members], for_output:, ancestry:)
+          merged = node.merge(type: "object", properties: (node[:properties] || {}).merge(member_props))
+          merged[:required] = required unless required.empty?
+          merged
+        end
+
+        # One edge of a bag, reduced on OUTPUT exactly as a field's entries are (`effective_validations`): an
+        # entry carrying a per-validator gate of its own can be skipped on any given call, so what it
+        # constrains cannot be promised outbound and the schema must not describe it. A bag's `of:`/`shape:`
+        # ARE the next level's ActiveModel entries — `OfValidator#inner_contract_validations` hands them over
+        # verbatim — so a gate written on one gates it exactly as the same gate at a field does. Asked here
+        # rather than only at the top level because a distributing `shape:` is canonicalized INTO a bag
+        # (PRO-3166), so the gated node the field-level reduction used to drop now arrives one rung down.
+        #
+        # INPUT is untouched, for the reason `effective_validations` leaves it untouched: static-maximal is the
+        # safe direction there, since a gate can only relax enforcement at runtime.
+        def emitted_contents_edge(bag, key, for_output:)
+          edge = Axn::Internal::ShapeGraph.hash_or_nil(bag[key])
+          return nil if !nil.equal?(edge) && for_output && entry_self_gated?(edge)
+
+          edge
+        end
+
+        # What a map's `values:` axis contributes to the node holding it, under the key it lands at — or `{}` where
+        # the axis has nothing to state. ONE derivation, so a map at a FIELD (`shape_property_plan`) and a map
+        # nested inside another container (`contents_node_schema`) cannot describe the same axis two ways.
+        #
+        # A values axis naming no class constrains nothing at runtime — `matches_axis?` waves every value through
+        # — and emits nothing here, so the document and the runtime agree that the axis is unconstrained. An
+        # array's element position cannot reach this state at all: a bag naming an empty class union is refused
+        # at declaration (`_reject_unconstraining_of_bag!`), which is what keeps the emitted `items` from
+        # claiming a constraint the runtime does not enforce. So the two containers settle emptiness themselves
+        # rather than in the shared builder. A class whose schema is untyped (an unknown type
+        # on output) has nothing to state either, and both cases emit no node at all rather than an empty
+        # `additionalProperties` that would read as a constraint.
+        #
+        # An axis holding a BAG is one unnamed position exactly as an array's element is, so it is built by the
+        # node builder rather than from a class list: everything a bag can declare — its own `klass:`, the members
+        # named off it, and the container inside it — reflects at a map's value the way it reflects at an array's
+        # element. Classified through `hash_or_nil`, the same read the declaration layer classifies the axis with,
+        # so the emitter cannot read an axis under the other grammar from the one it was canonicalized under.
+        #
+        # `ancestry` is where the walk already is, threaded so a chain alternating map and array rungs is bounded
+        # on the one counter `contents_node_schema` spends rather than restarting it at every map. The axis
+        # itself spends no further rung: reaching the map bag was the rung, and the axis is where that rung lands.
+        def map_values_schema(bag, for_output:, ancestry: nil)
+          axis = Axn::Internal::ShapeGraph.hash_or_nil(bag[:values])
+          values =
+            if nil.equal?(axis)
+              klasses = Array(bag[:values])
+              klasses.empty? ? {} : contents_schema_for(klasses, for_output:)
+            else
+              contents_node_schema(axis, for_output:, ancestry:)
+            end
+          values.empty? ? {} : { additionalProperties: values }
         end
 
         def single_contents_schema(klass, for_output: false)
@@ -1637,12 +1833,25 @@ module Axn
         # `required` renders the SAME Symbol rather than converting the name a second time: two conversions of
         # one caller object are two answers it can give, and a name that gave them differently would list a
         # required property this method never emitted.
-        def member_properties(members, for_output:)
+        #
+        # THE shape-member hop, and so the one place a shape rung is charged against the shared counter (see
+        # `guard_contents_descent`). Every route into a shape's members runs through here — the field's own
+        # `shape:`, a nested member's, and the `shape:` an `of:` bag carries — so a graph alternating the two
+        # edges spends a rung on each turn wherever it entered. Guarded on the MEMBERS list rather than on the
+        # shape node, because that is the object this hop descends and the identity a self-containing shape
+        # brings back around.
+        def member_properties(members, for_output:, ancestry: nil)
+          guard_contents_descent(members, ancestry, edge: SHAPE_EDGE) do |child|
+            build_member_properties(members, for_output:, ancestry: child)
+          end
+        end
+
+        def build_member_properties(members, for_output:, ancestry:)
           props = {}
           required = []
           named_members(members).each do |m, name|
             key = name.to_sym
-            props[key] = build_property(m, for_output:).compact
+            props[key] = build_property(m, for_output:, ancestry:).compact
             # On OUTPUT, a member whose presence obligation can be gated off — either wholesale by a
             # declaration-level gate, or because every nil-rejecting entry is nil-tolerant or covered by a
             # per-validator (nested) gate — can legitimately be skipped or emitted without a value by a
