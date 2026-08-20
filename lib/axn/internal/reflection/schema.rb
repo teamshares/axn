@@ -1614,9 +1614,10 @@ module Axn
         # The schema for what is INSIDE a container, from the classes an `of:` axis names — an Array's elements
         # (`klass:`) and a Hash's values (`values:`) alike. One builder for both, because the two describe the
         # same thing at different nodes: a union reflects as `anyOf` branches either way, and each branch
-        # carries its own type's members. What an axis naming NO class means is the containers' own business
-        # and is settled by each caller (see the map branch of `shape_property_plan`), because the two runtimes
-        # read it oppositely.
+        # carries its own type's members. An axis naming NO class cannot reach here at all: a bag has to
+        # constrain something, and `_of_axis_constrains?` asks that of `klass:` with the same emptiness test
+        # `OfValidator#matches_axis?` uses, so `of: []` and `of: { values: { klass: [] } }` are refused at
+        # declaration rather than arriving as a position that matches everything and emits `anyOf: []`.
         def contents_schema_for(klasses, for_output: false)
           klasses = Array(klasses)
           if klasses.size == 1
