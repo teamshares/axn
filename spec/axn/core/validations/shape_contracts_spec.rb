@@ -804,11 +804,19 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         expect(nested(raw)[:members].map(&:to_h)).to eq(nested(via_block)[:members].map(&:to_h))
       end
 
-      it "derives an Array container for an Array-typed member, as the field path does" do
+      # An Array-typed member's `shape:` distributes over its ELEMENTS, so it is canonicalized into the
+      # member's own `of:` bag (PRO-3166) rather than staying at the member. The bag names no element class,
+      # so the shape it carries gates on nothing — the ANY_CONTAINER sentinel — and its members are read off
+      # each element exactly as the distributing spelling read them.
+      it "folds an Array-typed member's shape into its of: bag, gating on nothing" do
         klass = declared_with({ type: Array, shape: { members: [leaf] } })
+        member = klass.internal_field_configs.first.validations[:shape][:members].first
 
-        expect(nested(klass)[:container]).to eq(Array)
+        expect(member.validations[:shape]).to be_nil
+        expect(member.validations.dig(:of, :container)).to eq(Array)
+        expect(member.validations.dig(:of, :shape, :container)).to eq(Axn::Internal::ShapeGraph::ANY_CONTAINER)
         expect(klass.call(payload: { m: [{ leaf: "x" }] })).to be_ok
+        expect(klass.call(payload: { m: [{ leaf: 1 }] })).not_to be_ok
       end
 
       # The walk recurses, so every level is a member of some shape and gets the same treatment: a two-level
@@ -905,8 +913,12 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           ] }
         end
         members = klass.internal_field_configs.first.validations[:shape][:members]
+        # The Array-typed position's copy is folded into its `of:` bag, where the container it calls for is
+        # the element's rather than the member's — so the two positions still hold ONE shared node to two
+        # different containers, which is what the detach-before-write buys.
+        containers = members.map { |m| (m.validations[:shape] || m.validations.dig(:of, :shape))[:container] }
 
-        expect(members.map { |m| m.validations[:shape][:container] }).to eq([Hash, Array])
+        expect(containers).to eq([Hash, Axn::Internal::ShapeGraph::ANY_CONTAINER])
         expect(shared.key?(:container)).to be(false)
         expect(klass.call(payload: { a: { leaf: "x" }, b: [{ leaf: "y" }] })).to be_ok
       end

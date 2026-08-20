@@ -1653,7 +1653,7 @@ module Axn
         def contents_node_schema(bag, for_output: false, depth: 0)
           node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : {}
           node = contents_member_schema(node, bag, for_output:)
-          inner = Axn::Internal::ShapeGraph.hash_or_nil(bag[:of])
+          inner = emitted_contents_edge(bag, :of, for_output:)
           return node if nil.equal?(inner)
 
           raise ArgumentError, Axn::Internal::ShapeGraph.inner_contract_too_deep_message if depth > Axn::Internal::ShapeGraph::MAX_NESTING
@@ -1682,7 +1682,7 @@ module Axn
         # type and validates members against it without ever emitting them, and on OUTPUT a class that is not
         # provably member-keyed is left untyped rather than promising an object the serializer will not produce.
         def contents_member_schema(node, bag, for_output:)
-          shape = Axn::Internal::ShapeGraph.hash_or_nil(bag[:shape])
+          shape = emitted_contents_edge(bag, :shape, for_output:)
           return node if nil.equal?(shape)
           return node unless shape_overlay_applies?(bag, for_output:)
 
@@ -1690,6 +1690,23 @@ module Axn
           merged = node.merge(type: "object", properties: (node[:properties] || {}).merge(member_props))
           merged[:required] = required unless required.empty?
           merged
+        end
+
+        # One edge of a bag, reduced on OUTPUT exactly as a field's entries are (`effective_validations`): an
+        # entry carrying a per-validator gate of its own can be skipped on any given call, so what it
+        # constrains cannot be promised outbound and the schema must not describe it. A bag's `of:`/`shape:`
+        # ARE the next level's ActiveModel entries — `OfValidator#inner_contract_validations` hands them over
+        # verbatim — so a gate written on one gates it exactly as the same gate at a field does. Asked here
+        # rather than only at the top level because a distributing `shape:` is canonicalized INTO a bag
+        # (PRO-3166), so the gated node the field-level reduction used to drop now arrives one rung down.
+        #
+        # INPUT is untouched, for the reason `effective_validations` leaves it untouched: static-maximal is the
+        # safe direction there, since a gate can only relax enforcement at runtime.
+        def emitted_contents_edge(bag, key, for_output:)
+          edge = Axn::Internal::ShapeGraph.hash_or_nil(bag[key])
+          return nil if !nil.equal?(edge) && for_output && entry_self_gated?(edge)
+
+          edge
         end
 
         # What a map's `values:` axis contributes to the node holding it, under the key it lands at — or `{}` where

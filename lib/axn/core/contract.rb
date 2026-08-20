@@ -1435,12 +1435,18 @@ module Axn
         # A shape block requires a single, structured type:. Mirrors the of: guard's strictness.
         # Returns the structured klass (Array, Hash, or a member-bearing class).
         def _shape_compatible_type!(validations)
+          _shape_compatible_klass!(_declared_type_klass(validations), requirement: "a shape block requires a single structured type:")
+        end
+
+        # The class a declaration's `type:` names, in either spelling: the shorthand (`type: Hash`) or the bag
+        # the canonicalization expands it into (`type: { klass: Hash }`). ONE read, shared by every caller that
+        # asks what a shape hangs off, so none of them has to know whether it runs before or after the
+        # expansion. `case`/`when` (via ShapeGraph) rather than `is_a?`: `type:` is a caller-supplied bag, and a
+        # Hash subclass denying its own class would have the whole bag read as the declared class.
+        def _declared_type_klass(validations)
           type = validations&.dig(:type)
-          # `case`/`when` (via ShapeGraph) rather than `is_a?`: `type:` is a caller-supplied bag, and a Hash
-          # subclass denying its own class would have the whole bag read as the declared class.
           type_bag = Internal::ShapeGraph.hash_or_nil(type)
-          klass = nil.equal?(type_bag) ? type : type_bag[:klass]
-          _shape_compatible_klass!(klass, requirement: "a shape block requires a single structured type:")
+          nil.equal?(type_bag) ? type : type_bag[:klass]
         end
 
         # The rule itself, over the declared class alone, because the two callers name that class with two
@@ -1456,10 +1462,18 @@ module Axn
         # pseudo-type token.
         def _shape_compatible_klass!(klass, requirement:)
           klasses = Array(klass)
-          return klasses.first if klasses.size == 1 && SHAPE_INCOMPATIBLE_TYPES.exclude?(klasses.first)
+          return klasses.first if _shape_compatible_klass?(klass)
 
           raise ArgumentError,
                 "#{requirement} (Array, Hash, or a class) — got [#{klasses.map { |k| _declared_type_label(k) }.join(', ')}]"
+        end
+
+        # The same rule as a question rather than a demand, for the one caller that must not refuse what it
+        # cannot gate on (`_fold_distributing_shape!`). Split out rather than restated, so "a shape can be read
+        # off this class" has one definition and the refusal above cannot drift from the fallback below.
+        def _shape_compatible_klass?(klass)
+          klasses = Array(klass)
+          klasses.size == 1 && SHAPE_INCOMPATIBLE_TYPES.exclude?(klasses.first)
         end
 
         # A raw `shape:` kwarg (as opposed to the `do…end` block, whose `_build_shape` derives
@@ -2602,6 +2616,114 @@ module Axn
           end
         end
 
+        # THE canonicalization this ticket is for. `shape:` under `type: Array` means "each ELEMENT's members" —
+        # the one position where a shape reaches THROUGH a value instead of describing it, and the only reason
+        # it ever had to was that an Array's contents had no other word. `of:` is that word now, so the
+        # declaration is folded into the bag at declaration time and the stored graph carries ONE contract
+        # shape: a container's contents live in its `of:` bag at every depth, and no consumer has two places
+        # to look. The SURFACE is unchanged — both spellings still declare — which is what PRO-3191 removes.
+        #
+        # Called from the declaration walk, per rung, AFTER the bag's own `shape:` has been snapshotted and
+        # BEFORE the walk descends onto the bag: after, because the two shapes describe one node and are merged
+        # into the bag's one slot; before, because the descent is what derives the bag's exempt key set from
+        # the shape now sitting in it (`_derive_shaped_keys!`).
+        #
+        # Both shapes are already walked, checked, copied and bounded by the time this runs — the node's by the
+        # snapshot its declaration took, the bag's by `_snapshot_inner_shape!` a line earlier — so this MOVES a
+        # finished node rather than re-reading a caller's graph, and charges nothing beyond the `of:` rung the
+        # walk already charged.
+        #
+        # The members are UNIONED rather than one displacing the other, because both applied before this
+        # canonicalization: an author who wrote `type: Array, of: { klass: Hash, shape: A }` beside a block
+        # declaring B had every element held to A and to B, by two validators over one node. One slot, one
+        # union, same verdicts.
+        def _fold_distributing_shape!(node, bag, position)
+          # A node whose declared type is Array has exactly one inner position, so this is a belt-and-braces
+          # guard against a config ASSIGNED onto the class (`internal_field_configs=`) pairing `type: Array`
+          # with a map bag, where folding an element contract onto an axis would be a contract nobody wrote.
+          return unless Internal::ShapeGraph::ELEMENT_POSITION.equal?(position)
+          return unless _distributing_shape?(node)
+
+          distributed = Internal::ShapeGraph.hash_or_nil(node[:shape])
+          return if nil.equal?(distributed)
+
+          node.delete(:shape)
+
+          existing = Internal::ShapeGraph.hash_or_nil(bag[:shape])
+          # Detached before the write for the reason `_derive_raw_shape_container!` gives: the walk's memo hands
+          # every position reusing one shape the SAME copy, so writing this position's members (and, below, its
+          # container) in place would carry one position's derived contract into the other.
+          folded = Internal::ShapeGraph.detach_node(nil.equal?(existing) ? distributed : existing)
+          folded[:members] = nil.equal?(existing) ? distributed[:members] : existing[:members] + distributed[:members]
+          folded[:container] = _folded_element_container(bag) if _derived_distributing_container?(folded[:container])
+          # An explicit `container:` that was never the distributing marker survives the move and is held to
+          # exactly the bar it always was, rather than being silently discarded by the derivation above.
+          _reject_non_class_container!(folded[:container])
+          bag[:shape] = folded
+        end
+
+        # Whether the container the folded shape arrives with is one the fold OWNS. A container belongs to the
+        # POSITION, and the fold is a change of position: `::Array` is the marker that said "distribute over the
+        # elements" (written by `_build_shape` from the field's `type:`), and `nil` is a raw `shape:` kwarg whose
+        # container has not been derived yet — both are the enclosing position's answer, and neither is the
+        # element's. Identity with the receiver on axn's side, on the same terms as every other read of this key:
+        # a raw shape may put any object in that slot.
+        def _derived_distributing_container?(container) = ::Array.equal?(container) || nil.equal?(container)
+
+        # The container the ELEMENT position gates on once a distributing `shape:` has been folded onto it: the
+        # single class the bag names, where a shape can be read off one — otherwise `ANY_CONTAINER`, the
+        # sentinel for a position deliberately left ungated.
+        #
+        # Deliberately non-raising, which is what separates it from `_derive_inner_shape_container!`'s
+        # derivation for a bag's OWN `shape:`. That one refuses a scalar or union `klass:`, because an author
+        # who wrote `of: { klass: String, shape: … }` named a class a shape cannot be read off and wants to
+        # know. This one is handed a declaration that is legal today — `type: Array, of: String` beside a shape
+        # reads members off each scalar element, and the emitter deliberately validates them without emitting
+        # them (`Schema.shape_overlay_applies?`) — so refusing it here would reject at declaration what the
+        # SURFACE still accepts, and this canonicalization changes storage, not the surface. Ungated is also
+        # what the flat spelling always meant at this position: it named `Array` for the FIELD and never named
+        # anything for the element.
+        def _folded_element_container(bag)
+          return Internal::ShapeGraph::ANY_CONTAINER unless _shape_compatible_klass?(bag[:klass])
+
+          Array(bag[:klass]).first
+        end
+
+        # Whether this node's `shape:` describes its value's ELEMENTS rather than the value itself — the one
+        # reading `shape:` has under `type: Array`, and the one the fold above removes.
+        #
+        # Derived from the declared `type:` through `_declared_type_klass`, the same read `_shape_compatible_type!`
+        # makes, so the question "which class does this shape hang off" has one answer wherever it is asked —
+        # and, because that read is tolerant of the shorthand, one that does not depend on whether the caller
+        # reaches this before or after `_canonicalize_validator_options!` expanded it. Both orders occur: the
+        # declaration snapshots a field's shape before its options are canonicalized and a member's after.
+        #
+        # By IDENTITY for the reason `_declared_of_container!` is: the declared class is the caller's, and one
+        # answering `==` for its own purposes would otherwise choose whether its shape distributes. It cannot
+        # simply CALL that method, which raises for every type that is not a container — and `type: Hash`,
+        # `type: SomeData` and a plain class all carry a perfectly legal non-distributing `shape:`.
+        def _distributing_shape?(node)
+          return false unless Internal::ShapeGraph.carries_key?(node, :shape)
+
+          declared = Array(_declared_type_klass(node))
+          declared.size == 1 && ::Array.equal?(declared.first)
+        end
+
+        # The bag a distributing `shape:` is folded into when the declaration named no `of:` at all
+        # (`expects :rows, type: Array do … end`): there is no element class, so the bag constrains its
+        # contents by members alone and the walk has a rung to descend. Minted by the walk rather than by
+        # `_canonicalize_validator_options!` because there is no caller bag to hold to the bag grammar here —
+        # what this builds is axn's own, and it constrains something by construction (the fold puts the shape
+        # in it a moment later), which is the one rule that grammar exists to enforce. Mutates `node`.
+        def _open_distributing_bag!(node)
+          return unless _distributing_shape?(node)
+          # Key presence, not the value: a declaration that named `of:` owns that slot, and the canonicalization
+          # above has already held whatever it named to the bag grammar.
+          return if Internal::ShapeGraph.carries_key?(node, :of)
+
+          node[:of] = { container: ::Array }
+        end
+
         # `shape:` names a Hash's own members and `of:` names its values, so on a Hash — and only on a Hash —
         # the two describe DIFFERENT nodes and are complements rather than rivals. JSON Schema settles what
         # that means: `additionalProperties` applies only to the keys `properties` does not match, so a key the
@@ -2611,53 +2733,34 @@ module Axn
         #
         # The exempt set is derived onto the map bag here rather than beside the canonicalization, because this
         # is where the node's shape is FINAL: a shape member's and an inner bag's `shape:` are both snapshotted
-        # after their `of:` is canonicalized. `node` is a field's/member's validations bag or an inner-contract
-        # bag; `distributed` is the shape an enclosing node contributes to this one's properties (below).
-        # Mutates `node`.
-        def _derive_shaped_keys!(node, distributed)
+        # after their `of:` is canonicalized, and a distributing `shape:` has been folded into the bag it
+        # describes before the walk descends onto that bag. `node` is a field's/member's validations bag or an
+        # inner-contract bag, and its OWN `shape:` is the whole of what names its properties — which is what
+        # the fold buys: the exempt set no longer has to be carried down from an enclosing node that named
+        # properties for a bag it did not sit in. Mutates `node`.
+        def _derive_shaped_keys!(node)
           bag = Internal::ShapeGraph.hash_or_nil(node[:of])
           return if nil.equal?(bag)
           # Identity: the container is axn's own derived key, and a map is the only container the exemption
           # can arise on.
           return unless ::Hash.equal?(bag[:container])
 
-          node[:of] = bag.merge(shaped_keys: _shaped_keys(node[:shape], distributed))
+          node[:of] = bag.merge(shaped_keys: _shaped_keys(node[:shape]))
         end
 
-        # The keys the shapes covering one node name, which JSON Schema emits as that node's `properties`. Read
+        # The keys the shape covering one node names, which JSON Schema emits as that node's `properties`. Read
         # from the emitter's own key computation (`Schema.named_members`) rather than re-derived beside it, so
         # the runtime skips exactly the keys the document exempts — the "a guard derives from what its consumer
         # emits" rule, whose failure mode here would be a contract stricter than the schema it publishes.
         #
         # Frozen, and the shared empty Array where nothing is named, because it is stored in a declared contract
         # and read on every entry of every Hash validated against it.
-        def _shaped_keys(*declared)
-          keys = declared.flat_map do |value|
-            shape = Internal::ShapeGraph.hash_or_nil(value)
-            next [] if nil.equal?(shape)
+        def _shaped_keys(declared)
+          shape = Internal::ShapeGraph.hash_or_nil(declared)
+          return Internal::ShapeGraph::NO_SHAPED_KEYS if nil.equal?(shape)
 
-            Axn::Internal::Reflection::Schema.named_members(shape[:members]).map { |_member, name| name.to_sym }
-          end
-
+          keys = Axn::Internal::Reflection::Schema.named_members(shape[:members]).map { |_member, name| name.to_sym }
           keys.empty? ? Internal::ShapeGraph::NO_SHAPED_KEYS : keys.uniq.freeze
-        end
-
-        # The shape an enclosing node contributes to the properties of the node one rung down, which today is
-        # exactly one case: a FIELD's `shape:` beside `type: Array` distributes over the elements, so the
-        # emitter overlays its members onto the `items` node — the same node an element bag's own map `of:`
-        # lands its `additionalProperties` at. The shape therefore names properties for a bag it does not sit
-        # in, and has to be carried down to it. (PRO-3191 canonicalizes that spelling into the bag, at which
-        # point this becomes the ordinary `bag[:shape]` case and goes away.)
-        #
-        # A BAG's `shape:` never distributes — it names the members of the value at the bag's own position, and
-        # the emitter overlays it there — so only a field/member node contributes one. That is what `:type`
-        # tells apart after canonicalization: a bag names its class with `klass:` and `:type` is not a key its
-        # grammar admits, while a node whose `of:` canonicalized at all was required to declare one.
-        def _distributed_shape(node, position)
-          return nil unless position == Internal::ShapeGraph::ELEMENT_POSITION
-          return nil unless Internal::ShapeGraph.carries_key?(node, :type)
-
-          node[:shape]
         end
 
         # Every offender at once: an author who wrote two of them has one declaration to fix, not two rounds

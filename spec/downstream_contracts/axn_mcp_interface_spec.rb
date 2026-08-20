@@ -669,18 +669,33 @@ RSpec.describe "Axn-MCP interface contract" do
     end
   end
 
-  describe "shape contracts — axn-mcp reads config.validations[:shape][:members]" do
-    # A structured field declared with a block exposes its member contracts at
-    # config.validations[:shape][:members]. Each member responds to #field, #validations,
-    # #metadata, and #description — the same surface as a FieldConfig — so axn-mcp can build
-    # nested properties (items.properties for Array, properties for Hash/class). Nested `required`
-    # comes from core's own `.input_schema`/`.output_schema`, not a hand-rolled walk over each
-    # member's own #optional?. Nesting recurses through the same member.validations[:shape][:members]
-    # path.
+  describe "shape contracts — axn-mcp reads a declaration's member contracts" do
+    # A structured field declared with a block exposes its member contracts as a shape whose #members
+    # each respond to #field, #validations, #metadata and #description — the same surface as a
+    # FieldConfig — so axn-mcp can build nested properties (items.properties for Array, properties for
+    # Hash/class). Nested `required` comes from core's own `.input_schema`/`.output_schema`, not a
+    # hand-rolled walk over each member's own #optional?.
+    #
+    # WHERE that shape sits depends on the CONTAINER, and this moved in PRO-3166 — axn-mcp needs the
+    # corresponding update:
+    #
+    #   Hash / Data / plain class : config.validations[:shape]
+    #   Array                     : config.validations[:of][:shape]   (was config.validations[:shape])
+    #
+    # An Array's contents have no member name to hang them on, so they live in the `of:` bag that names
+    # them, at every depth — one place to look rather than two, which is what lets a container nested
+    # directly inside a container be spelled at all. The bag also carries the element's own class
+    # (`[:klass]`) and, for a shape at that position, its own container: `Hash` where the elements are
+    # objects, `Axn::Internal::ShapeGraph::ANY_CONTAINER` where the declaration named no element class.
+    # Nesting recurses through the same pair of paths, one rung at a time.
     #
     # NOTE: schema "enrich" — deriving bare property names from a Data.define's .members for
     # members the block did NOT annotate — is axn-mcp's responsibility, using
     # config.validations[:of][:klass]. axn only stores the explicitly-declared members here.
+
+    # The one read, written once: a container's contents live in its `of:` bag, everything else's at
+    # the declaration itself.
+    def shape_for(config) = config.validations[:shape] || config.validations.dig(:of, :shape)
 
     it "exposes block-declared members on exposes (external_field_configs)" do
       action = Class.new do
@@ -694,7 +709,7 @@ RSpec.describe "Axn-MCP interface contract" do
       end
 
       config = action.external_field_configs.find { |c| c.field == :integrations }
-      members = config.validations[:shape][:members]
+      members = shape_for(config)[:members]
 
       expect(members.map(&:field)).to eq(%i[source status])
 
@@ -714,7 +729,7 @@ RSpec.describe "Axn-MCP interface contract" do
       end
 
       config = action.internal_field_configs.find { |c| c.field == :rows }
-      expect(config.validations[:shape][:members].first.validations[:type][:klass]).to eq(Integer)
+      expect(shape_for(config)[:members].first.validations[:type][:klass]).to eq(Integer)
     end
 
     it "exposes the declared container so axn-mcp can choose items.properties vs properties" do
@@ -732,8 +747,10 @@ RSpec.describe "Axn-MCP interface contract" do
 
       rows = action.external_field_configs.find { |c| c.field == :rows }
       meta = action.external_field_configs.find { |c| c.field == :meta }
-      expect(rows.validations[:shape][:container]).to eq(Array)
-      expect(meta.validations[:shape][:container]).to eq(Hash)
+      # An Array's contents sit in the bag that names them; the bag itself is what says `Array`.
+      expect(rows.validations.dig(:of, :container)).to eq(Array)
+      expect(shape_for(rows)[:container]).to eq(Axn::Internal::ShapeGraph::ANY_CONTAINER)
+      expect(shape_for(meta)[:container]).to eq(Hash)
     end
 
     it "exposes required vs optional per member via member#optional?" do
@@ -747,7 +764,7 @@ RSpec.describe "Axn-MCP interface contract" do
         def call; end
       end
 
-      members = action.external_field_configs.find { |c| c.field == :rows }.validations[:shape][:members]
+      members = shape_for(action.external_field_configs.find { |c| c.field == :rows })[:members]
       id = members.find { |m| m.field == :id }
       note = members.find { |m| m.field == :note }
       expect(id.optional?).to be false
@@ -767,8 +784,8 @@ RSpec.describe "Axn-MCP interface contract" do
       end
 
       rows = action.external_field_configs.find { |c| c.field == :rows }
-      config_member = rows.validations[:shape][:members].find { |m| m.field == :config }
-      nested = config_member.validations[:shape][:members]
+      config_member = shape_for(rows)[:members].find { |m| m.field == :config }
+      nested = shape_for(config_member)[:members]
       expect(nested.map(&:field)).to eq(%i[region])
       expect(nested.first.validations[:type][:klass]).to eq(String)
     end
@@ -783,7 +800,7 @@ RSpec.describe "Axn-MCP interface contract" do
         def call; end
       end
 
-      member = action.external_field_configs.find { |c| c.field == :rows }.validations[:shape][:members].first
+      member = shape_for(action.external_field_configs.find { |c| c.field == :rows })[:members].first
       expect(member.description).to eq("normalized connection status")
     end
   end

@@ -79,8 +79,14 @@ RSpec.describe "self-referential values" do
       expect(log_messages.first).to include("[...]").and include("[FILTERED]")
     end
 
-    # A cycle passing through a nested shaped member reaches the same filter.
-    it "renders a cycle that runs through a nested shaped member" do
+    # A cycle passing through a nested shaped member is caught by redaction's OWN guard rather than by
+    # `inspect`'s cycle rendering, and masks wholesale — the over-redact-rather-than-leak call every revisit
+    # on this walk makes. It reads differently from the flat case above because a shaped member is the one
+    # place redaction descends: an ARRAY-typed member's contents are declared in its `of:` bag (PRO-3166), so
+    # the container walk's guard sees the array reappear beneath itself and stops there. Before that
+    # canonicalization the innermost rung returned `element.dup` ahead of its own guard, which put the
+    # caller's own cyclic Array back into what redaction handed the logger and left `inspect` to render it.
+    it "masks a cycle that runs through a nested shaped member" do
       action = build_axn do
         expects :items, type: Array do
           field :children, type: Array do
@@ -96,7 +102,7 @@ RSpec.describe "self-referential values" do
       items << { children: items }
 
       expect(action.call(items:)).to be_ok
-      expect(log_messages.first).to include("[...]")
+      expect(log_messages.first).to include("[FILTERED]")
     end
 
     # Ruby renders `x = [1]; [x, x].inspect` as "[[1], [1]]": only ancestry is a cycle.
