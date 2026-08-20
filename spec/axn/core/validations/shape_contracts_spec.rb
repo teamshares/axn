@@ -735,17 +735,17 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
                                          "`shape:`")
       end
 
-      # RECORDED RESIDUE, and a field-path one rather than a member's: `of: false` is not `of: nil`, so the
-      # required-option check passes it through and `TypeValidator.value_matches?(el, klass: false)` raises a bare
-      # `TypeError: class or module required` on the first call carrying a non-empty Array. Asserted because it is
-      # the boundary of what the shared guard covers — and because the two routes agreeing about it, both of them
-      # wrong identically, is exactly what "a member reaches the field's own guards" means.
-      it "leaves `of: false` as inert on a member as it is on a field" do
-        member = declared_with({ type: Array, of: false })
-        field = build_axn { expects :m, type: Array, of: false }
+      # `of: false` is not `of: nil`: it expands to `{ klass: false }`, which NAMES something, so the
+      # constrains-nothing check above passes it and `TypeValidator.value_matches?(el, klass: false)` used to
+      # raise a bare `TypeError: class or module required` on the first call carrying a non-empty Array. It is
+      # the bag grammar's own question — is this a type the runtime can hold a value to? — so it is refused
+      # where every bag is judged, and both routes reach it because a member is held to what a field is.
+      it "rejects `of: false` at declaration on a member exactly as on a field" do
+        message = "of: klass: must name a type — a Class, a union of them, or one of " \
+                  ":boolean, :uuid, :params (got a value of class FalseClass)"
 
-        expect(member.call(payload: { m: [1] }).exception).to be_a(TypeError)
-        expect(field.call(m: [1]).exception).to be_a(TypeError)
+        expect { declared_with({ type: Array, of: false }) }.to raise_error(ArgumentError, message)
+        expect { build_axn { expects :m, type: Array, of: false } }.to raise_error(ArgumentError, message)
       end
 
       # A bare `type:` naming a LIST is expanded around a copy of that list, since the detach pass runs first —

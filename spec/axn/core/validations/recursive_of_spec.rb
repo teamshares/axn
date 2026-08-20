@@ -103,6 +103,126 @@ RSpec.describe "recursive of:" do
         expect(action.call(a: [1.5])).not_to be_ok
       end
     end
+
+    # A bag's `klass:` is held to the same grammar a map's bare axis is, and for the same reason: a token
+    # outside it reaches `value.is_a?(token)` and raises a bare `TypeError: class or module required` on
+    # EVERY call, naming neither the field nor the option. The bare-axis spelling was refused at declaration
+    # already (PRO-3165); every BAG spelling of it declared cleanly and failed at runtime.
+    #
+    # `klass:`, not the axis, is what the message names: an author who wrote `of: { values: { klass: false } }`
+    # has nothing to fix on `values:`, and the same bag written at an Array's element has no axis at all.
+    describe "an unsupported class token in a bag" do
+      def unsupported(named)
+        "of: klass: must name a type — a Class, a union of them, or one of :boolean, :uuid, :params (got #{named})"
+      end
+
+      it "refuses one on a map's values: axis" do
+        expect { build_axn { expects :m, type: Hash, of: { values: { klass: false } } } }
+          .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+      end
+
+      it "refuses one on a map's keys: axis" do
+        expect { build_axn { expects :m, type: Hash, of: { keys: { klass: 5 } } } }
+          .to raise_error(ArgumentError, unsupported("a value of class Integer"))
+      end
+
+      it "refuses one at an Array's element" do
+        expect { build_axn { expects :m, type: Array, of: { klass: false } } }
+          .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+      end
+
+      it "refuses one at an element bag nested inside another" do
+        expect { build_axn { expects :m, type: Array, of: { klass: Array, of: { klass: 5 } } } }
+          .to raise_error(ArgumentError, unsupported("a value of class Integer"))
+      end
+
+      it "refuses one on an axis nested under an element bag" do
+        expect { build_axn { expects :m, type: Array, of: { klass: Hash, of: { values: { klass: false } } } } }
+          .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+      end
+
+      # The sixth position: a bag written under a shape MEMBER's own `of:`. It reaches the same one refusal
+      # because a member is built like a field, so this needs nothing of its own — it is here as the proof
+      # that the guard sits where every position passes rather than at the three the ticket named.
+      it "refuses one inside a shape member's of: bag" do
+        member = Axn::Core::Contract::ShapeConfig.new(
+          field: :n, validations: { type: { klass: Array }, of: { klass: false } },
+        )
+        expect { build_axn { expects :m, type: Hash, shape: { members: [member] } } }
+          .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+      end
+
+      # A union names types, so each member is judged as one and the OFFENDER is what gets named — not the
+      # list, whose `inspect` would run every member's own.
+      it "refuses a union carrying one, naming the offending member" do
+        expect { build_axn { expects :m, type: Array, of: { klass: [String, false] } } }
+          .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+      end
+
+      # `nil` is an unsupported token like any other, and the one that hides from a `find`-based search: the
+      # answer for "found nil" and for "found nothing" is the same object. Searched by INDEX for that reason.
+      it "refuses a union carrying nil" do
+        expect { build_axn { expects :m, type: Array, of: { klass: [String, nil] } } }
+          .to raise_error(ArgumentError, unsupported("a value of class NilClass"))
+      end
+
+      # A Hash is a nested contract at an AXIS and a type token here, so it is refused rather than skipped —
+      # and named as the Hash the author wrote, which needs the bare form answered before `Array()` reaches
+      # it as its entry pairs and reports "a value of class Array".
+      it "refuses a bag written where the class belongs" do
+        expect { build_axn { expects :m, type: Array, of: { klass: { klass: Integer } } } }
+          .to raise_error(ArgumentError, unsupported("a value of class Hash"))
+      end
+
+      # A bag naming its own `of:` is held to the strictly narrower container rule, which refuses every token
+      # this guard would AND names the two classes that are legal there. Deferred to rather than preempted,
+      # so the author gets the fix that lands in one edit instead of two.
+      it "leaves a bag carrying of: to the container refusal, which prescribes the narrower fix" do
+        expect { build_axn { expects :m, type: Array, of: { klass: false, of: Integer } } }
+          .to raise_error(ArgumentError, "of: requires klass: Array or Hash (got [a value of class FalseClass])")
+      end
+
+      describe "controls" do
+        it "leaves a class alone" do
+          action = build_axn { expects :m, type: Hash, of: { values: { klass: Integer } } }
+
+          expect(action.call(m: { a: 1 })).to be_ok
+          expect(action.call(m: { a: "x" })).not_to be_ok
+        end
+
+        it "leaves a pseudo-type alone" do
+          action = build_axn { expects :m, type: Hash, of: { values: { klass: :boolean } } }
+
+          expect(action.call(m: { a: true })).to be_ok
+          expect(action.call(m: { a: "x" })).not_to be_ok
+        end
+
+        it "leaves a union of a class and a pseudo-type alone" do
+          action = build_axn { expects :m, type: Array, of: { klass: [String, :uuid] } }
+
+          expect(action.call(m: ["x"])).to be_ok
+        end
+
+        it "leaves a MODULE alone, which is as much a type as a class" do
+          action = build_axn { expects :m, type: Array, of: { klass: Comparable } }
+
+          expect(action.call(m: [1])).to be_ok
+          expect(action.call(m: [Object.new])).not_to be_ok
+        end
+
+        # The bag grammar's other two axes constrain without naming a class at all, so a guard keyed on
+        # "there is no usable token" rather than on one the author SUPPLIED would refuse both.
+        it "leaves a bag naming no klass: at all alone" do
+          member = Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })
+          expect { build_axn { expects :m, type: Array, of: { shape: { members: [member] } } } }.not_to raise_error
+        end
+
+        it "leaves the empty union to the message that names it" do
+          expect { build_axn { expects :m, type: Array, of: { klass: [] } } }
+            .to raise_error(ArgumentError, /names an empty union/)
+        end
+      end
+    end
   end
 
   describe "bounds" do

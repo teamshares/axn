@@ -424,6 +424,19 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, /of: values: must name a type/)
     end
 
+    # `nil` INSIDE a union is the one unsupported token a `find`-based search cannot report: the answer for
+    # "found nil" and for "found nothing" is the same object, so this passed the axis guard and raised the
+    # bare `TypeError: class or module required` on every call. Searched by INDEX now.
+    it "rejects a union carrying nil, which reads as no offender to a find" do
+      expect { build_axn { expects :c, type: Hash, of: { values: [String, nil] } } }
+        .to raise_error(ArgumentError, /of: values: must name a type .* \(got a value of class NilClass\)/)
+    end
+
+    it "rejects a union of nothing but nil on the keys axis" do
+      expect { build_axn { expects :c, type: Hash, of: { keys: [nil] } } }
+        .to raise_error(ArgumentError, /of: keys: must name a type .* \(got a value of class NilClass\)/)
+    end
+
     # An axis holding a Hash is a contract of its own — the same inner-contract bag an Array's element takes
     # (PRO-3166) — so it is held to the bag grammar rather than to the type grammar this section pins. What
     # a bag declares at either axis is covered in `recursive_of_spec.rb`.

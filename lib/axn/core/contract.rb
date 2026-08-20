@@ -2397,8 +2397,35 @@ module Axn
         def _check_inner_contract_bag!(bag, fields)
           _reject_unknown_of_keys!(bag, OF_OPTION_KEYS)
           _reject_unconstraining_of_bag!(bag)
+          _reject_unsupported_of_klass!(bag)
           _reject_inner_contract_context_scope!(bag, fields)
           _reject_unusable_of_message!(bag, fields)
+        end
+
+        # A bag's `klass:` is held to exactly the grammar a map's BARE axis is, by the same predicate: it plays
+        # `type:`'s role inside a bag, so a token outside that grammar reaches `value.is_a?(token)` and raises a
+        # bare `TypeError: class or module required` on every call, naming neither the field nor the option.
+        # Asked here rather than beside each of the positions a bag sits at, because the bare-axis refusal
+        # deliberately SKIPS a Hash-valued axis (that axis is a bag, judged by this function) — so without this
+        # every bag spelling of the defect the axis guard exists to refuse declared cleanly: at an Array's
+        # element, at either axis of a map, inside a bag nested in either, and inside a shape member's own `of:`.
+        #
+        # Emptiness is NOT asked here. An absent `klass:`, a nil one and an empty union are one case for
+        # `_reject_unconstraining_of_bag!` a line earlier, which owns the message that names it — and the other
+        # two axes constrain without naming a class at all, so a guard keyed on "no usable token" rather than on
+        # one the author SUPPLIED would refuse `of: { shape: … }`.
+        #
+        # A bag naming its own `of:` is skipped, and deferred to rather than preempted: `_inner_of_container!`
+        # holds that `klass:` to the strictly narrower rule (Array or Hash, since the class it names is what
+        # decides how the nested bag reads), so it refuses every token this would AND names the two classes that
+        # are legal there. Firing first would prescribe the weaker fix and cost the author a second edit. Keyed
+        # on `_of_axis_constrains?` rather than on the key's presence, so a bag carrying `of: nil` — which that
+        # rule reaches by a path of its own — is still judged here.
+        def _reject_unsupported_of_klass!(bag)
+          return if _of_axis_constrains?(bag, :of)
+          return unless Internal::ShapeGraph.carries_key?(bag, :klass)
+
+          _reject_unsupported_type_token!(_declared_type_tokens(bag[:klass]), "klass:")
         end
 
         # `on:` inside a bag is the same dead declaration it is inside any other validator's option bag, and it
@@ -2688,14 +2715,50 @@ module Axn
             next unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
 
             tokens = Array(declared)
-            offender = tokens.find { |token| !_supported_type_token?(token) }
-            next if !tokens.empty? && nil.equal?(offender)
+            # An axis SUPPLIED and naming nothing (`nil`, `[]`) has no token to name, so the refusal names the
+            # value written instead. Unlike a bag's `klass:`, an axis has no second way to constrain, so there
+            # is no other guard for this to defer to.
+            raise ArgumentError, _unsupported_type_token_message("#{axis}:", declared) if tokens.empty?
 
-            named = tokens.empty? ? _declared_type_label(declared) : _declared_type_label(offender)
-            raise ArgumentError,
-                  "of: #{axis}: must name a type — a Class, a union of them, or one of " \
-                  "#{MAP_OF_PSEUDO_TYPES.map(&:inspect).join(', ')} (got #{named})"
+            _reject_unsupported_type_token!(tokens, "#{axis}:")
           end
+        end
+
+        # The type tokens a declared value names, with the bare-Hash spelling answered BEFORE the union is
+        # unwrapped: `Array()` reaches a Hash as its entry pairs, so a Hash written where a type belongs would
+        # be searched as a list of two-element Arrays and named as one. Classified through `hash_or_nil` — the
+        # value is the caller's, and a Hash subclass denying its own class would otherwise pick how it is read.
+        # A caller that reads a Hash as something else entirely (an axis holding an inner contract) answers that
+        # on its own terms first and never reaches this.
+        def _declared_type_tokens(declared)
+          return [declared] unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
+
+          Array(declared)
+        end
+
+        # The one search for a token the runtime cannot hold a value to, shared by the bare-axis grammar and the
+        # bag's `klass:` so the two cannot drift about what a type is. Answers the INDEX rather than the token:
+        # `nil` is itself an unsupported token, and `find` gives the same answer for "found nil" as for "found
+        # nothing" — which is how `of: { values: [String, nil] }` declared cleanly and raised the bare TypeError
+        # on every call.
+        #
+        # Emptiness is each caller's own question, because the two positions spell the answer differently — see
+        # `_reject_unsupported_of_klass!`.
+        def _reject_unsupported_type_token!(tokens, option)
+          index = tokens.find_index { |token| !_supported_type_token?(token) }
+          return if nil.equal?(index)
+
+          raise ArgumentError, _unsupported_type_token_message(option, tokens[index])
+        end
+
+        # `option:` travels with the message for the reason `_declared_of_container!`'s does: one rule, but the
+        # key an author has to EDIT is `keys:`/`values:` at a bare axis and `klass:` inside a bag, and a refusal
+        # naming a key the declaration does not carry prescribes a fix with nowhere to land. The offender is
+        # named through `_declared_type_label`, never its own `inspect`: it is the caller's object, and one
+        # raising from `to_s` while this message is built would replace the ArgumentError with its exception.
+        def _unsupported_type_token_message(option, declared)
+          "of: #{option} must name a type — a Class, a union of them, or one of " \
+            "#{MAP_OF_PSEUDO_TYPES.map(&:inspect).join(', ')} (got #{_declared_type_label(declared)})"
         end
 
         # `Module` covers a class and a module both, tested with `case`/`when` so nothing the token defines
