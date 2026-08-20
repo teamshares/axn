@@ -273,7 +273,7 @@ module Axn
           contracts.each do |(position, bag)|
             # Charged before the rung is descended, so a graph that multiplies out is rejected while the work
             # done on it is still bounded by the allowance.
-            _spend_paths!(allowance, 1)
+            _spend_paths!(allowance, 1, INNER_CONTRACT_EDGE)
             paths += 1
             _raise_graph_too_deep!(via, via_name, edge: INNER_CONTRACT_EDGE) if walk.depth > Internal::ShapeGraph::MAX_NESTING
 
@@ -287,7 +287,7 @@ module Axn
               # Between the two, and never beside them: the enclosing node's distributing `shape:` describes
               # THIS bag's contents, so it is merged into the bag once the bag's own shape is final and before
               # the descent that reads the merged result (`_derive_shaped_keys!` at the rung below).
-              _fold_distributing_shape!(validations, bag, position)
+              _fold_distributing_shape!(validations, bag, position, fields)
               inner = _walk_inner_contracts!(bag, child, allowance, fields:, via:, via_name:)
               _combine_inner_contracts(shaped, inner)
             end
@@ -326,7 +326,7 @@ module Axn
 
           walked = _walk_shape_graph!(shape, walk, allowance, via:, via_name:)
           bag[:shape] = walked.copy
-          _derive_inner_shape_container!(bag)
+          _derive_inner_shape_container!(bag, fields)
           # The level added here is the SHAPE node the bag carries; below it, the subtree's own answer stands.
           WalkedContracts.new(paths: walked.paths, height: walked.height + 1,
                               edge: walked.height.zero? ? SHAPE_EDGE : walked.edge)
@@ -341,24 +341,46 @@ module Axn
         # The remaining allowance, and the fields to name if it runs out — a two-element Array rather than an
         # object, because it is threaded through every level of one walk and the label is only ever built on the
         # failure path.
-        def _spend_paths!(allowance, paths)
+        #
+        # `edge` is which kind of rung this charge is for, threaded so the refusal describes the graph the
+        # author wrote — the same reason `_raise_cyclic_graph!` and `_raise_graph_too_deep!` are passed theirs.
+        # One allowance is spent across both edges (PRO-3166), so a pure `of:` graph can exhaust it with no
+        # shape and no members anywhere in it, and telling that author to "give each member its own nested
+        # shape" prescribes a fix their declaration has nowhere to make.
+        def _spend_paths!(allowance, paths, edge)
           allowance[0] -= paths
           return unless allowance[0].negative?
 
-          _raise_too_many_member_paths!(allowance[1])
+          _raise_too_many_member_paths!(allowance[1], edge)
         end
 
-        def _raise_too_many_member_paths!(fields)
-          raise ArgumentError,
-                "the shape on #{_inspect_field_name(fields.first)} has more than " \
-                "#{Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths — a nested shape object reused by " \
-                "sibling members multiplies out, so N levels of two-way sharing are 2^N distinct paths, and " \
-                "every walk of the stored graph pays one step per path: runtime validation walks it on each " \
-                "call, and redaction re-walks it per logged call whenever a `sensitive:` resolves against the " \
-                "action (measured: 786,000 paths cost about 1.3 seconds per log line, and about two seconds " \
-                "for the one derivation any contract makes on its first). Give each member its own nested " \
-                "shape, or flatten the nesting. This is a bound on the graph, not on what a schema emits — an " \
-                "oversized SCHEMA is reported separately, when a projection is first built."
+        def _raise_too_many_member_paths!(fields, edge)
+          raise ArgumentError, _too_many_member_paths_message(_inspect_field_name(fields.first), edge)
+        end
+
+        # The cost sentence is shared because the cost is: every walk of the stored graph pays one step per
+        # path whichever edge the paths came from. Only what MULTIPLIES and what to do about it differ.
+        def _too_many_member_paths_message(field, edge)
+          subject, wording =
+            if edge == INNER_CONTRACT_EDGE
+              ["the `of:` graph on #{field}",
+               ["a nested `of:` bag reused at sibling positions multiplies out, so N levels of two-way sharing " \
+                "are 2^N distinct paths",
+                "Give each nested bag contents of its own, or flatten the nesting."]]
+            else
+              ["the `shape:` graph on #{field}",
+               ["a nested shape object reused by sibling members multiplies out, so N levels of two-way " \
+                "sharing are 2^N distinct paths",
+                "Give each member its own nested shape, or flatten the nesting."]]
+            end
+
+          "#{subject} has more than #{Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths — #{wording.first}, " \
+            "and every walk of the stored graph pays one step per path: runtime validation walks it on each " \
+            "call, and redaction re-walks it per logged call whenever a `sensitive:` resolves against the " \
+            "action (measured: 786,000 paths cost about 1.3 seconds per log line, and about two seconds for " \
+            "the one derivation any contract makes on its first). #{wording.last} This is a bound on the graph, " \
+            "not on what a schema emits — an oversized SCHEMA is reported separately, when a projection is " \
+            "first built."
         end
 
         def _walk_shape_graph!(shape, walk, allowance, via: nil, via_name: nil)
@@ -389,7 +411,12 @@ module Axn
             if walk.depth + walked.height > Internal::ShapeGraph::MAX_NESTING
               _raise_graph_too_deep!(via, via_name, edge: walked.height.zero? ? SHAPE_EDGE : walked.edge)
             end
-            _spend_paths!(allowance, walked.paths)
+            # SHAPE_EDGE unconditionally, where the depth check a line above attributes to the reused
+            # subtree's own deepest rung. The two ask different questions: depth is a property of the subtree,
+            # while what MULTIPLIES here is the REFERENCE — a shape object named by two sibling members —
+            # whatever edges its interior is built from. So the fix this prescribes is the one the author can
+            # make, at the reference rather than inside the thing referenced.
+            _spend_paths!(allowance, walked.paths, SHAPE_EDGE)
             return walked
           end
 
@@ -485,7 +512,7 @@ module Axn
           copied = keyed.map do |member, name, key|
             # Charged BEFORE this member is snapshotted, and before its nested shape is walked, so a graph that
             # multiplies out is rejected while the work done on it is still bounded by the allowance.
-            _spend_paths!(allowance, 1)
+            _spend_paths!(allowance, 1, SHAPE_EDGE)
             paths += 1
             # `validations` is read ONCE and threaded to every use — the nested shape to walk, and the snapshot
             # of this member. A second read is a second answer the caller can give.
@@ -839,7 +866,8 @@ module Axn
         # on it from a different file (`_resolved_subfields`, `_declared_fields`, `_context_slice`, …) plus the
         # `class_attribute` accessors, whose class-level reader ActiveSupport's own generated instance reader
         # calls as `self.class.<name>` — hiding it would break that.
-        private :_spend_paths!, :_raise_too_many_member_paths!, :_symbol_keyed_member_validations,
+        private :_spend_paths!, :_raise_too_many_member_paths!, :_too_many_member_paths_message,
+                :_symbol_keyed_member_validations,
                 :_symbol_keyed_member_metadata, :_snapshot_member_attributes!,
                 :_member_owner_label, :_describe_shape_member, :_raise_member_model_unsupported!,
                 :_raise_member_confirmation_unsupported!,

@@ -620,7 +620,7 @@ module Axn
 
           inner = Internal::ShapeGraph.hash_or_nil(bag[:of])
           return bag if nil.equal?(inner)
-          return contents_type_source(inner[:values]) if ::Hash.equal?(inner[:container])
+          return contents_type_source(inner[:values]) if Internal::ShapeGraph.map_bag?(inner)
 
           contents_type_source(inner)
         end

@@ -1540,7 +1540,7 @@ module Axn
         # the time this runs the node is the declaration walk's own copy, SHARED by every position reusing that
         # shape, while the container belongs to the position — so writing in place would give one position the
         # container derived for another. Mutates `bag`.
-        def _derive_inner_shape_container!(bag)
+        def _derive_inner_shape_container!(bag, fields)
           shape = Internal::ShapeGraph.hash_or_nil(bag[:shape])
           return if nil.equal?(shape)
 
@@ -1553,8 +1553,37 @@ module Axn
                 Internal::ShapeGraph::ANY_CONTAINER
               end
           end
+          _reject_distributing_inner_shape!(detached[:container], fields)
           _reject_non_class_container!(detached[:container])
           bag[:shape] = detached
+        end
+
+        # `::Array` is the one class a shape reads perfectly well off and still may not be stored at a BAG
+        # position, because `container: Array` is not a gate at that key: `ShapeValidator` reads it as
+        # "distribute over the elements" (see `_folded_element_container`, which sidesteps the same reading by
+        # storing `ANY_CONTAINER`). So a bag arriving here with it declares one thing and means another, both
+        # ways of arriving at it, and each produces a contract no reader of the declaration could predict —
+        # `of: { klass: Array, shape: … }` validates the members against `rows[i][j]` while emitting
+        # `items: { type: "array" }` and publishing none of them, and an explicit `container: Array` beside
+        # `klass: Hash` enforces nothing at all (a Hash element distributes to no elements) while the schema
+        # promises the members as `items.properties`. Refused rather than assigned a reading, because the
+        # recursion this ticket adds already spells the level below (`of: { klass: Array, of: { shape: … } }`)
+        # and emits it correctly — and because a spelling refused today can be granted a meaning later
+        # (PRO-3192) without contradicting anything released.
+        #
+        # Identity on axn's side, as every other read of this key is: a shape may put any object in that slot.
+        def _reject_distributing_inner_shape!(container, fields)
+          return unless ::Array.equal?(container)
+
+          raise ArgumentError,
+                "a `shape:` inside an `of:` bag cannot sit at `container: Array` (on " \
+                "#{_declared_fields_label(fields)}) — `ShapeValidator` reads that container as \"distribute " \
+                "over the elements\" rather than as a gate, so the members describe what is inside each " \
+                "element instead of the element itself, and the emitted schema and the runtime disagree about " \
+                "which value carries them. Where the members belong to the level below, write it as the " \
+                "nesting it is (`of: { klass: Array, of: { shape: ... } }`), which emits " \
+                "`items.items.properties`; where they belong to this level, name the class they are read off " \
+                "(`klass: Hash`, or the object's own class) and leave the shape's `container:` to be derived."
         end
 
         # A container is what the shaped value is type-checked against (`value.is_a?(container)` in
@@ -2401,7 +2430,11 @@ module Axn
         #
         # Emptiness is asked exactly as the runtime asks it (`Array(...).empty?`), so the guard and the consumer
         # cannot disagree about which bags have a mismatch to describe: an absent `klass:`, a nil one, and an
-        # empty union are one case here because they are one case there.
+        # empty union are one case here because they are one case there. `_reject_unconstraining_of_bag!` asks
+        # the same question a step earlier and refuses the empty union outright, so what reaches this in a
+        # DECLARED contract is a bag constraining by `of:` or `shape:` and naming no class — but the question is
+        # still asked the same way, because a third spelling of "names no class" is the drift these two exist
+        # to prevent.
         def _reject_unusable_of_message!(bag, fields)
           return unless Internal::ShapeGraph.carries_key?(bag, :message)
           return unless Array(bag[:klass]).empty?
@@ -2456,8 +2489,33 @@ module Axn
         # is caught by this check rather than passing as one that was named.
         INNER_CONTRACT_AXES = %i[klass of shape].freeze
 
+        # Whether one axis of a bag actually constrains. `klass:` asks EMPTINESS rather than presence, because
+        # a class union is what `OfValidator#matches_axis?` iterates and an empty one holds a value to nothing:
+        # `of: []` (sugar for `of: { klass: [] }`) declared cleanly, waved every element through, and emitted
+        # `items: { anyOf: [] }` — a schema no element satisfies — so document and runtime disagreed in the
+        # LOOSENING direction. Asked with `Array(...).empty?`, which is exactly how the runtime asks it and
+        # exactly how `_reject_unusable_of_message!` asks it, so no two of the three can disagree about which
+        # bags name a class. The other two axes are Hashes rather than lists, so presence is all there is.
+        def _of_axis_constrains?(bag, axis)
+          return false unless Internal::ShapeGraph.carries_key?(bag, axis)
+          return !Array(bag[axis]).empty? if axis == :klass
+
+          !bag[axis].nil?
+        end
+
         def _reject_unconstraining_of_bag!(bag)
-          return if INNER_CONTRACT_AXES.any? { |axis| Internal::ShapeGraph.carries_key?(bag, axis) && !bag[axis].nil? }
+          return if INNER_CONTRACT_AXES.any? { |axis| _of_axis_constrains?(bag, axis) }
+
+          # A bag that NAMED `klass:` and named nothing with it gets the defect it actually has: "name the
+          # contents' class with `klass:`" is no help to an author looking at the `klass:` they wrote.
+          if Internal::ShapeGraph.carries_key?(bag, :klass) && !bag[:klass].nil?
+            raise ArgumentError,
+                  "of: klass: names an empty union, so this bag constrains nothing — a value held to every " \
+                  "class in an empty list is held to none, so every value at that position passes while the " \
+                  "schema emits `anyOf: []`, which nothing satisfies. Name the class(es) the contents must be, " \
+                  "or drop the empty klass: and constrain them with `of:` or `shape:`. (`of: []` is sugar for " \
+                  "`of: { klass: [] }`.)"
+          end
 
           raise ArgumentError,
                 "of: must constrain something — name the contents' class with `klass:`, what is inside them " \
@@ -2637,7 +2695,7 @@ module Axn
         # canonicalization: an author who wrote `type: Array, of: { klass: Hash, shape: A }` beside a block
         # declaring B had every element held to A and to B, by two validators over one node. One slot, one
         # union, same verdicts.
-        def _fold_distributing_shape!(node, bag, position)
+        def _fold_distributing_shape!(node, bag, position, fields)
           # A node whose declared type is Array has exactly one inner position, so this is a belt-and-braces
           # guard against a config ASSIGNED onto the class (`internal_field_configs=`) pairing `type: Array`
           # with a map bag, where folding an element contract onto an axis would be a contract nobody wrote.
@@ -2655,11 +2713,46 @@ module Axn
           # container) in place would carry one position's derived contract into the other.
           folded = Internal::ShapeGraph.detach_node(nil.equal?(existing) ? distributed : existing)
           folded[:members] = nil.equal?(existing) ? distributed[:members] : existing[:members] + distributed[:members]
+          _reject_folded_duplicate_members!(folded[:members], fields) unless nil.equal?(existing)
           folded[:container] = _folded_element_container(bag) if _derived_distributing_container?(folded[:container])
           # An explicit `container:` that was never the distributing marker survives the move and is held to
           # exactly the bar it always was, rather than being silently discarded by the derivation above.
           _reject_non_class_container!(folded[:container])
           bag[:shape] = folded
+        end
+
+        # Two members of one shape may not share a key, and the union above is the one construction that can
+        # build such a list out of two lists each already checked: `_check_and_copy_shape_members!` judges each
+        # block in isolation, and neither can see the other. Left unchecked the merged list declared cleanly and
+        # produced exactly what that refusal exists to prevent — `required:` naming the key twice (JSON Schema
+        # requires those to be unique), one `properties` entry for it, and one of the two declarations silently
+        # unenforced, since `ShapeValidator#member_validator_classes` keys members by `field` and a duplicate
+        # collapses.
+        #
+        # Only reached when BOTH lists exist, since a single list arrives already judged. The names are the
+        # canonical Symbols the member walk captured and stored (`_snapshot_member_attributes!`), so this
+        # compares what the schema keys on and canonicalizes nothing a second time — and nothing of the
+        # caller's runs to reach the verdict.
+        def _reject_folded_duplicate_members!(members, fields)
+          seen = {}
+          members.each do |member|
+            name = Internal::ShapeGraph.read(member, :field)
+            _raise_folded_duplicate_member!(name, fields) if seen.key?(name)
+
+            seen[name] = true
+          end
+        end
+
+        # Names both spellings, because the author wrote the key in two places and the fold is why they met:
+        # a message naming only the key would send them to a shape that looks perfectly legal on its own.
+        def _raise_folded_duplicate_member!(name, fields)
+          label = _declared_fields_label(fields)
+          raise Axn::ContractViolation::DuplicateFieldError,
+                "Duplicate shape member declared: #{_inspect_field_name(name)} — the `shape:` inside the `of:` " \
+                "bag on #{label} and the shape distributed over its elements both declare it, and the two " \
+                "member lists are unioned into one. The reflected schema would name it twice in `required:` " \
+                "while emitting one property for it, and only one of the two declarations would validate. " \
+                "Declare #{_inspect_field_name(name)} in one of the two."
         end
 
         # Whether the container the folded shape arrives with is one the fold OWNS. A container belongs to the
@@ -2691,8 +2784,10 @@ module Axn
         # spelling for "read members off this Array element" while that reading holds, so the position stays
         # ungated — which is the pre-flip verdict exactly, since the distributing shape never gated the element
         # either. (The hand-written twin, `of: { klass: Array, shape: … }`, reaches the same ambiguity through
-        # `_derive_inner_shape_container!` and is PRO-3192's to settle: there the author NAMED the class, so the
-        # answer is a rule about that spelling rather than a fallback.)
+        # `_derive_inner_shape_container!` and is REFUSED there rather than given a fallback: the author named
+        # the class, so the answer is a rule about what they wrote, and a spelling refused today can be granted
+        # a meaning by PRO-3192 without contradicting anything released. This spelling has no such option — it
+        # declares legally today, so a refusal here would reject at declaration what the surface still accepts.)
         def _folded_element_container(bag)
           return Internal::ShapeGraph::ANY_CONTAINER unless _shape_compatible_klass?(bag[:klass])
 
@@ -2752,9 +2847,9 @@ module Axn
         def _derive_shaped_keys!(node)
           bag = Internal::ShapeGraph.hash_or_nil(node[:of])
           return if nil.equal?(bag)
-          # Identity: the container is axn's own derived key, and a map is the only container the exemption
-          # can arise on.
-          return unless ::Hash.equal?(bag[:container])
+          # A map is the only container the exemption can arise on, asked through the one predicate that tells
+          # the two bag grammars apart.
+          return unless Internal::ShapeGraph.map_bag?(bag)
 
           node[:of] = bag.merge(shaped_keys: _shaped_keys(node[:shape]))
         end

@@ -56,6 +56,53 @@ RSpec.describe "recursive of:" do
       expect { build_axn { expects :m, type: Array, of: { klass: [Array, Hash], of: Integer } } }
         .to raise_error(ArgumentError, "of: requires klass: Array or Hash (got [Array, Hash])")
     end
+
+    # An empty class union is the silent no-op this option exists to refuse, arriving through `klass:` rather
+    # than through an absent axis: `matches_axis?` holds a value to every class in the list, and an empty list
+    # holds it to none. Emptiness is asked here exactly as the runtime asks it (`Array(...).empty?`), which is
+    # also how `_reject_unusable_of_message!` asks it — one question, one answer, at every position a bag sits
+    # at.
+    describe "an empty klass: union" do
+      empty_union_message =
+        "of: klass: names an empty union, so this bag constrains nothing — a value held to every " \
+        "class in an empty list is held to none, so every value at that position passes while the " \
+        "schema emits `anyOf: []`, which nothing satisfies. Name the class(es) the contents must be, " \
+        "or drop the empty klass: and constrain them with `of:` or `shape:`. (`of: []` is sugar for " \
+        "`of: { klass: [] }`.)"
+
+      it "refuses the bare `of: []` spelling, which is sugar for it" do
+        expect { build_axn { expects :a, type: Array, of: [] } }
+          .to raise_error(ArgumentError, empty_union_message)
+      end
+
+      it "refuses the explicit `of: { klass: [] }` spelling" do
+        expect { build_axn { expects :a, type: Array, of: { klass: [] } } }
+          .to raise_error(ArgumentError, empty_union_message)
+      end
+
+      it "refuses it on a map's values: axis, where the sibling `of: { values: [] }` is refused already" do
+        expect { build_axn { expects :a, type: Hash, of: { values: { klass: [] } } } }
+          .to raise_error(ArgumentError, empty_union_message)
+      end
+
+      it "refuses it on a map's keys: axis" do
+        expect { build_axn { expects :a, type: Hash, of: { keys: { klass: [] } } } }
+          .to raise_error(ArgumentError, empty_union_message)
+      end
+
+      it "refuses it one container down" do
+        expect { build_axn { expects :a, type: Array, of: { klass: Array, of: { klass: [] } } } }
+          .to raise_error(ArgumentError, empty_union_message)
+      end
+
+      # The control: a union with something in it still constrains, and still declares.
+      it "leaves a union naming at least one class alone" do
+        action = build_axn { expects :a, type: Array, of: [Integer, String] }
+
+        expect(action.call(a: [1, "x"])).to be_ok
+        expect(action.call(a: [1.5])).not_to be_ok
+      end
+    end
   end
 
   describe "bounds" do
@@ -248,6 +295,44 @@ RSpec.describe "recursive of:" do
       bag = map_bag(14)
       expect { build_axn { expects :m, type: Hash, of: bag } }
         .to raise_error(ArgumentError, /has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths/)
+    end
+
+    # The allowance is spent across both edges, so its message is parametrized on the edge the charge sits on
+    # — exactly as the cycle and depth refusals beside it are. A graph with no shape and no members anywhere
+    # was told "the shape on :m … Give each member its own nested shape", prescribing a fix its declaration
+    # has nowhere to make.
+    it "names the of: edge, not a shape, when nothing in the graph is a shape" do
+      bag = map_bag(14)
+      message = begin
+        build_axn { expects :m, type: Hash, of: bag }
+        nil
+      rescue ArgumentError => e
+        e.message
+      end
+
+      expect(message).to start_with("the `of:` graph on :m has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths — " \
+                                    "a nested `of:` bag reused at sibling positions multiplies out")
+      expect(message).to include("Give each nested bag contents of its own, or flatten the nesting.")
+    end
+
+    # The control: a graph that multiplies out through SHARED SHAPES keeps the shape wording, so the
+    # parametrization did not simply rename one message.
+    it "still names the shape edge when the sharing is a shape's" do
+      shape = shared_sibling_shape(13, { type: Array, of: { klass: Array, of: Integer } })
+
+      expect { build_axn { expects :payload, type: Hash, shape: } }
+        .to raise_error(ArgumentError, /\Athe `shape:` graph on :payload has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths/)
+    end
+
+    def shared_sibling_shape(depth, leaf_validations)
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: leaf_validations)],
+                container: Hash }
+      depth.times do
+        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: }),
+                            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: })],
+                  container: Hash }
+      end
+      shape
     end
   end
 
@@ -516,6 +601,67 @@ RSpec.describe "recursive of:" do
       expect { build_axn { expects :rows, type: Array, of: { klass: [Hash, Array], shape: } } }
         .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: " \
                                        "(Array, Hash, or a class) — got [Hash, Array]")
+    end
+
+    # `container: Array` is the one class a shape reads perfectly well off and still may not be stored at a bag
+    # position: `ShapeValidator` reads that key as "distribute over the elements" rather than as a gate. Both
+    # ways of arriving at it are refused, because both produce a contract nobody could read off the
+    # declaration — a `klass: Array` derivation validates the members one level below where they are written
+    # while emitting `items: { type: "array" }` and publishing none of them, and an explicit `container: Array`
+    # beside `klass: Hash` enforces nothing at all while the schema promises the members as `items.properties`.
+    describe "an Array container on a bag's shape" do
+      distributing_message =
+        "a `shape:` inside an `of:` bag cannot sit at `container: Array` (on :rows) — `ShapeValidator` reads " \
+        "that container as \"distribute over the elements\" rather than as a gate, so the members describe what " \
+        "is inside each element instead of the element itself, and the emitted schema and the runtime disagree " \
+        "about which value carries them. Where the members belong to the level below, write it as the nesting " \
+        "it is (`of: { klass: Array, of: { shape: ... } }`), which emits `items.items.properties`; where they " \
+        "belong to this level, name the class they are read off (`klass: Hash`, or the object's own class) and " \
+        "leave the shape's `container:` to be derived."
+
+      it "refuses a shape derived onto it by klass: Array" do
+        shape = sku_shape
+        expect { build_axn { expects :rows, type: Array, of: { klass: Array, shape: } } }
+          .to raise_error(ArgumentError, distributing_message)
+      end
+
+      it "refuses one the shape names for itself" do
+        shape = sku_shape.merge(container: Array)
+        expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } } }
+          .to raise_error(ArgumentError, distributing_message)
+      end
+
+      it "refuses one the shape names for itself where the bag names no class" do
+        shape = sku_shape.merge(container: Array)
+        expect { build_axn { expects :rows, type: Array, of: { shape: } } }
+          .to raise_error(ArgumentError, distributing_message)
+      end
+
+      # The recursion this branch adds says the refused thing, and says it in the document too.
+      it "accepts the nesting the message points at, and emits the members there" do
+        shape = sku_shape
+        action = build_axn { expects :rows, type: Array, of: { klass: Array, of: { shape: } } }
+
+        expect(action.input_schema.dig(:properties, :rows, :items, :items)).to include(
+          type: "object", properties: { sku: { type: "string" } }, required: ["sku"],
+        )
+        expect(action.call(rows: [[{ sku: "a" }]])).to be_ok
+        expect(action.call(rows: [[{ sku: 1 }]]).exception.message)
+          .to include("element at index 0: element at index 0: sku is not a String")
+      end
+
+      # The control: the fold's own ungated element position is untouched — `type: Array, of: Array` beside a
+      # block never names a container at a bag position, so it still declares and still validates.
+      it "leaves the folded Array element alone, which names no container of its own" do
+        action = build_axn do
+          expects :rows, type: Array, of: Array do
+            field :first, type: String, method_call: true
+          end
+        end
+
+        expect(action.call(rows: [%w[a b]])).to be_ok
+        expect(action.call(rows: [[1, 2]]).exception.message).to include("element at index 0: first is not a String")
+      end
     end
 
     # The field-level pairing is the same complement one rung up: `shape:` names the hash's OWN members while
@@ -1181,11 +1327,13 @@ RSpec.describe "recursive of:" do
         .to raise_error(ArgumentError, /\Aof: message: on :m has nothing to describe/)
     end
 
-    # Emptiness is asked exactly as the runtime asks it, so an empty union is the same case as an absent
-    # `klass:` here because it is the same case there.
-    it "is refused beside an empty union klass:" do
+    # Emptiness is asked exactly as the runtime asks it, and `_reject_unconstraining_of_bag!` asks the same
+    # question a step earlier — so an empty union never reaches THIS guard: the bag constrains nothing at all,
+    # which is the larger defect and the one reported. Pinned so the two guards cannot drift into disagreeing
+    # about which bags name a class.
+    it "yields to the unconstraining refusal beside an empty union klass:" do
       expect { build_axn { expects :rows, type: Array, of: { klass: [], message: "x" } } }
-        .to raise_error(ArgumentError, /of: message: on :rows has nothing to describe/)
+        .to raise_error(ArgumentError, /\Aof: klass: names an empty union/)
     end
 
     it "leaves a message: beside a klass: alone, which is the form that fires" do

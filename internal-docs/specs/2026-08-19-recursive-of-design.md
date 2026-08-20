@@ -81,8 +81,9 @@ An **Array**'s `of:`:
 | `of: String` | unchanged — sugar for `{ klass: String }` |
 | `of: [String, Numeric]` | unchanged — union |
 | `of: { klass: String, message: "…" }` | unchanged |
-| `of: { klass: String, shape: {…} }` | unchanged — a scalar element with members read off it; validated, never emitted as properties |
+| `of: { klass: String, shape: {…} }` | **raise** — new; a shape cannot be read off a scalar class, so the bag names one it has no members to hang on. (The *folded* twin, `type: Array, of: String` + a block, still declares and still validates the members against each scalar element without emitting them — that spelling names `Array` for the FIELD and nothing for the element.) |
 | `of: { klass: Array, of: Integer }` | **new** |
+| `of: { klass: Array, shape: {…} }` | **raise** — new; `container: Array` on a shape means "distribute over the elements" to `ShapeValidator`, so the members would land one level below where they are written and the schema would publish none of them. Write the nesting: `of: { klass: Array, of: { shape: {…} } }` |
 | `of: { klass: Hash, of: { values: Integer } }` | **new** — an element that is itself a map |
 | `of: { klass: Hash, shape: {…} }` | **new** — what `type: Array, of: Hash` + a block canonicalizes to |
 | `of: { shape: {…} }` | **new** — element class unconstrained; what `type: Array` + a block canonicalizes to |
@@ -90,6 +91,7 @@ An **Array**'s `of:`:
 | `of: { klass: String, of: Integer }` | **raise** — a String has nothing inside it |
 | `of: { klass: [Array, Hash], of: … }` | **raise** — a union names no single container |
 | `of: {}`, `of: { message: "…" }` | **raise** — constrains nothing |
+| `of: []`, `of: { klass: [] }` | **raise** — new; an empty class union holds a value to no class, so the position is unconstrained while the schema emits `anyOf: []` |
 | `of: { values: String }` | **raise** — unchanged; `of:` names an Array's elements, use `klass:` |
 | `of: { klass: String, mesage: "…" }` | **raise** — unchanged; unknown key |
 
@@ -205,7 +207,7 @@ One budget per hazard, not one per edge type.
 
 ## Consumers: the four seams
 
-Each gets one new branch, and all four call one shared child-enumerator so that "what is inside this node" has exactly one answer.
+Each gets one new branch, and all four call one shared child-enumerator (`ShapeGraph.inner_contracts`) so that "what is inside this node" has exactly one answer. The question underneath it — which grammar a canonicalized bag was read under — is one predicate too (`ShapeGraph.map_bag?`), called by the enumerator and by each seam that has to tell a map bag from an element bag on its own.
 
 **The declaration walk**, as above. The bulk of the work, and it sits in the most invariant-dense code in the repo.
 
@@ -218,6 +220,8 @@ Each gets one new branch, and all four call one shared child-enumerator so that 
 ## Scope
 
 **PRO-3165's refusal of a subfield rooted at a map stays.** Granting `shape:` beside `of:` makes relaxing it tempting — a subfield's key becomes a `properties` key, so the exemption covers it and the original hazard dissolves. It is not taken here, because the exempt set would then have to be derived from everything the emitter puts in `properties` at that node (subfield leaves, the nested keys a dotted `on:` introduces, `model:`'s generated `<field>_id`), none of which is knowable from the shape at declaration where the set is derived. Keeping the refusal keeps the exempt set equal to the shape's member keys. PRO-3165's "not supported yet" wording still stands, so relaxing it later contradicts nothing released.
+
+**`of: { klass: Array, shape: … }` is refused rather than given a reading.** `container: Array` on a shape is what `ShapeValidator` reads as "distribute over the elements", so at a bag position the spelling has two candidate meanings — members of the element, or members of what is inside the element — and nothing in the declaration tells them apart. Left un-refused it silently took the second and emitted neither: `items: { type: "array" }`, with the members enforced at `rows[i][j]` and published nowhere. It raises at declaration, pointing at `of: { klass: Array, of: { shape: … } }`, which says the deeper reading and emits `items.items.properties`. The same refusal covers a shape that names `container: Array` for itself at a bag position, however the bag's `klass:` reads. Granting the spelling a meaning is PRO-3192's, and contradicts nothing released: it raises at the branch base too, as an unknown `shape:` key.
 
 **The inner bag stays containers-only.** `klass:` / `of:` / `shape:` / `message:` plus the shared options; every other validator remains an unknown key. Widening it is PRO-3193, which is blocked on PRO-3192 because pushing `enum` / `pattern` / `minimum` into `items` while the field-level meaning of those same keywords is undefined would produce two rules for one keyword.
 
@@ -255,9 +259,21 @@ Forward canonicalization changes what `internal_field_configs` holds for an `Arr
 
 The user-visible surface is **additive except for four changes the flip forces**, each ratified deliberately:
 
-1. **A wrong-typed element under `type: Array, of: Hash` + a shape now reports the type error alone.** It previously also reported `element at index 0: sku could not be read`. The storage table above mandates `container: Hash` for row 1, and `ShapeValidator` gates its non-Array branch on that container, so a String element never reaches member validation. This CONVERGES the flat spelling on what `of: { klass: Hash, shape: … }` has always reported — the two spellings now agree, which is the point of the flip. Rows whose shape sits at an `ANY_CONTAINER` position still report both lines — `of: { klass: String, shape: … }` and `of: { klass: Array, shape: … }` each pair an element type error with the member line. (`of: { shape: … }` names no class at all, so it has no type error to pair with; it reports the member line alone.)
+1. **A wrong-typed element under `type: Array, of: Hash` + a shape now reports the type error alone.** It previously also reported `element at index 0: sku could not be read`. The storage table above mandates `container: Hash` for row 1, and `ShapeValidator` gates its non-Array branch on that container, so a String element never reaches member validation. This CONVERGES the flat spelling on what `of: { klass: Hash, shape: … }` has always reported — the two spellings now agree, which is the point of the flip. The FOLDED spellings whose element position stays at `ANY_CONTAINER` still report both lines: `type: Array, of: String` + a block gives `element at index 0 is not a String and element at index 0: sku could not be read (got Integer)`, and `type: Array, of: Array` + a block gives the same pair against `Array` — measured on both. (`of: { shape: … }` names no class at all, so it has no type error to pair with; it reports the member line alone.)
+
+Stated as a rule rather than row by row, for the three classes a `klass:` can name — this is the end state, with the `klass: Array` refusal from *Scope* in place:
+
+| `klass:` | bag spelling | folded spelling (`type: Array, of: X` + a block) |
+| -- | -- | -- |
+| `Hash` | element type error alone | element type error alone — **converged**, and the point of the flip |
+| `String` | **raises at declaration** — a shape cannot be read off a scalar | declares; pairs the type error with the member line |
+| `Array` | **raises at declaration** — `container: Array` means "distribute" at a bag position | declares; pairs the type error with the member line, gating nothing |
+
+Where the two diverge they now diverge as a REFUSAL rather than as two silent readings of one declaration: the bag spelling names the class explicitly, so it can be told it named one the members cannot hang off, while the folded spelling named `Array` for the FIELD and nothing for the element and still means what it always meant. Both refusals are PRO-3192's to grant a meaning to, which contradicts nothing released because neither spelling declares at the branch base.
 2. **The distributing spelling's declared depth drops from 64 links to 32.** The fold makes each distributing level cost two rungs of the single 64-rung budget where it used to cost one. This is a plain narrowing: measured at the branch base and at the released tag, a 33-to-65-link contract declared **and validated correctly, end to end**, in linear time (about 10ms at 65 levels with auto-logging off). An earlier draft of this section claimed it "failed every call" — that was wrong, and so was a controller measurement that appeared to show exponential validation: the exponential is the automatic before-execute LOG line (`Internal::CallLogger.format_object` renders each rung to a String its parent then re-inspects, doubling escape length per level), which costs the same 23s at 29 levels with **no contract at all**. Validation itself was always linear. Measured identical for the raw, bag and block-form spellings; a Hash chain is unaffected at 65.
 3. **Not a compatibility change after all:** an output schema does not emit a self-gated nested `of:`'s inner `items`. `effective_validations`' reduction reaches a bag's `of:` as well as its `shape:` — doctrine-consistent, static-maximal on input, never promise outbound what a gate may skip. It is listed here only because an earlier draft called it a break. It is not: every nested-`of:` spelling RAISES at the branch base, so no user could observe the old emission, and the pre-existing single-level self-gated case is byte-identical on both trees. It is a property of the new grammar, documented with the feature.
 4. **A cycle through a nested shaped member logs `[FILTERED]` rather than `[...]`.** Over-redaction, the safe direction.
+
+One further narrowing, not forced by the flip and taken on its own merits: **`of: []` and `of: { klass: [] }` now raise at declaration.** An empty class union holds a value to no class, so `matches_axis?` waved every element through while the schema emitted `items: { anyOf: [] }`, which nothing satisfies — the document and the runtime disagreeing in the loosening direction. At the branch base the element path rejected every element instead, so the declaration failed 100% of calls and nobody can be running it; the recursion rewrote that path onto the axis-shaped `matches_axis?` and inherited its "an omitted axis is unconstrained" early-true. The bag-emptiness guard now asks `klass:` the way the runtime asks it (`Array(...).empty?`), which also refuses `of: { values: { klass: [] } }` — the axis spelling `of: { values: [] }` was already refused on exactly these grounds.
 
 Everything else is additive: the new grammar occupies spellings that raise today.

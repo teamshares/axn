@@ -1658,10 +1658,10 @@ module Axn
 
           raise ArgumentError, Axn::Internal::ShapeGraph.inner_contract_too_deep_message if depth > Axn::Internal::ShapeGraph::MAX_NESTING
 
-          # Which grammar the inner bag was canonicalized under, told apart exactly as `of_container` tells them
-          # apart at a field: a map's bag names its axes and lands under `additionalProperties`, an array's names
-          # one element type and lands under `items`.
-          if ::Hash.equal?(inner[:container])
+          # Which grammar the inner bag was canonicalized under, asked through the one predicate every seam asks
+          # it with: a map's bag names its axes and lands under `additionalProperties`, an array's names one
+          # element type and lands under `items`.
+          if Axn::Internal::ShapeGraph.map_bag?(inner)
             # The object type is the bag's OWN `klass:` (a map bag is only ever reached from `klass: Hash`), exactly
             # as a field's map node takes its type from `type:` and its `additionalProperties` from the axis.
             node.merge(map_values_schema(inner, for_output:, depth: depth + 1))
@@ -1713,9 +1713,12 @@ module Axn
         # the axis has nothing to state. ONE derivation, so a map at a FIELD (`shape_property_plan`) and a map
         # nested inside another container (`contents_node_schema`) cannot describe the same axis two ways.
         #
-        # A values axis naming no class constrains nothing at runtime — `matches_axis?` waves every value through,
-        # where an array's element axis instead rejects every element, which is why the two containers settle
-        # emptiness themselves rather than in the shared builder. A class whose schema is untyped (an unknown type
+        # A values axis naming no class constrains nothing at runtime — `matches_axis?` waves every value through
+        # — and emits nothing here, so the document and the runtime agree that the axis is unconstrained. An
+        # array's element position cannot reach this state at all: a bag naming an empty class union is refused
+        # at declaration (`_reject_unconstraining_of_bag!`), which is what keeps the emitted `items` from
+        # claiming a constraint the runtime does not enforce. So the two containers settle emptiness themselves
+        # rather than in the shared builder. A class whose schema is untyped (an unknown type
         # on output) has nothing to state either, and both cases emit no node at all rather than an empty
         # `additionalProperties` that would read as a constraint.
         #

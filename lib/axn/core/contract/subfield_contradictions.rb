@@ -35,10 +35,15 @@ module Axn
         # `properties` does not match, so emitting the pair says a key named by a subfield is exempt from the
         # `of:` the runtime enforces on it: a document the schema calls valid and the contract rejects.
         #
-        # This is `Core::Contract#_reject_map_beside_shape!` in its second spelling — a `shape:` member and an
-        # `on:` subfield are two ways to name a hash's own member — and it carries that guard's "not supported
-        # yet" wording for the same reason: granting the combination later must contradict nothing shipped.
-        # Refusing one spelling while permitting the other left the rule half-closed.
+        # The `shape:` spelling of the same pairing IS permitted (PRO-3166's Hash exemption: a key the shape
+        # names is emitted as a `properties` entry, which `additionalProperties` does not govern, so the
+        # document and the runtime agree that the key is exempt). What separates the two is not the spelling
+        # but whether the exempt set is KNOWABLE where it is derived. A shape's is: its member keys are final
+        # at the node that carries it. A subfield's is not — the emitter puts more than subfield leaves in that
+        # node's `properties` (the nested keys a dotted `on:` introduces, `model:`'s generated `<field>_id`),
+        # and none of that is visible from the shape at declaration, where `_derive_shaped_keys!` runs. So the
+        # refusal stays, and stays worded "not supported yet": relaxing it later — once the exempt set can be
+        # derived from what the emitter actually emits at that node — must contradict nothing shipped.
         #
         # Judged over the whole candidate tree, like every check here, so neither declaration order gets through:
         # the map may be declared before the subfield or after it, and every ancestor of the subfield is asked,

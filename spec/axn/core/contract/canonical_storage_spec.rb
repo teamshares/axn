@@ -152,6 +152,38 @@ RSpec.describe "canonical storage of a container's contents" do
     expect(v.dig(:of, :shape, :container)).to eq(Hash)
     expect(v.dig(:of, :shape, :members).map(&:field)).to contain_exactly(:a, :sku)
   end
+
+  # The union is a MERGE of two member lists into one shape, so it can build what a single shape may never
+  # hold: the same key twice. Written inside one block that raises already; arriving by the fold it declared
+  # cleanly and produced exactly the consequences that refusal names — `required: ["sku", "sku"]` (which JSON
+  # Schema requires to be unique), one `properties.sku`, and one of the two declarations silently unenforced,
+  # because `ShapeValidator#member_validator_classes` keys members by `field` and a duplicate collapses.
+  it "refuses a folded union that declares one member twice, naming both spellings" do
+    inner = Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })
+
+    expect do
+      build_axn do
+        expects :rows, type: Array, of: { klass: Hash, shape: { members: [inner] } } do
+          field :sku, type: Integer
+        end
+      end
+    end.to raise_error(Axn::ContractViolation::DuplicateFieldError,
+                       "Duplicate shape member declared: :sku — the `shape:` inside the `of:` bag on :rows and " \
+                       "the shape distributed over its elements both declare it, and the two member lists are " \
+                       "unioned into one. The reflected schema would name it twice in `required:` while emitting " \
+                       "one property for it, and only one of the two declarations would validate. Declare :sku " \
+                       "in one of the two.")
+  end
+
+  # A member declared twice under one bag shape is the ordinary case and still raises where it always did, so
+  # the fold's check adds a spelling rather than replacing one.
+  it "still refuses a duplicate declared twice inside the bag's own shape" do
+    members = [Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } }),
+               Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: Integer } })]
+
+    expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: { members: } } } }
+      .to raise_error(Axn::ContractViolation::DuplicateFieldError, /\ADuplicate shape member declared: :sku — two members of one shape/)
+  end
 end
 
 # Canonicalization changes WHO produces each of the two message shapes — `OfValidator`'s own

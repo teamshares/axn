@@ -860,18 +860,35 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(masked).to eq({ ssn: "[FILTERED]", self: "[FILTERED]" })
     end
 
+    # An Array-container bag shape is refused at DECLARATION (`_reject_distributing_inner_shape!`: at a bag
+    # position `container: Array` means "distribute over the elements" to `ShapeValidator`, which is a
+    # contract nobody could read off the declaration) — but a config assigned onto the class passed no
+    # declaration walk and carries whatever its author built, which is the reachability bar every other bound
+    # in this file is justified on. The mask's Array branch is live for exactly those, so both cases below
+    # hold their graph rather than declaring it.
+    def held(field, validations)
+      action = build_axn { expects field, optional: true }
+      action.internal_field_configs = [
+        Axn::Core::Contract::FieldConfig.new(field:, reader_as: field, validations:),
+      ].freeze
+      action
+    end
+
+    def array_container_shape = sensitive_shape.merge(container: Array)
+
+    def hash_container_shape = sensitive_shape.merge(container: Hash)
+
     # The same guard one rung deeper, where the pre-mask value is the only thing that can carry it. An
     # Array-container bag shape REPLACES each element with a copy (`_mask_shape_value` maps
     # `_mask_shape_element` over them), so the rung below it is the one place where the masked child is not
     # the caller's own object — and pairing the child with the copy rather than the original delays cycle
     # detection by a rung, expanding the caller's cyclic Hash one extra level into the log.
     it "keeps the cycle guard on the caller's object below an Array-container bag shape" do
-      shape = sensitive_shape
-      terminal = { klass: Hash, shape: }
-      third = { klass: Hash, shape:, of: { values: terminal } }
-      second = { klass: Hash, shape:, of: { values: third } }
-      first = { klass: Array, shape:, of: second }
-      action = build_axn { expects :m, type: Array, of: first }
+      terminal = { klass: Hash, container: Hash, shape: hash_container_shape }
+      third = { klass: Hash, container: Hash, shape: hash_container_shape, of: { values: terminal, container: Hash } }
+      second = { klass: Hash, container: Array, shape: hash_container_shape, of: { values: third, container: Hash } }
+      first = { klass: Array, container: Array, shape: array_container_shape, of: second }
+      action = held(:m, { type: { klass: Array }, of: first })
 
       cyclic = { ssn: "111-22-3333", name: "Ada" }
       cyclic[:self] = cyclic
@@ -882,13 +899,13 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(masked[:self]).to eq("[FILTERED]")
     end
 
-    # `of: { klass: Array, shape: S }` is legal and means "members read off each element of that inner
-    # Array" — `ShapeValidator` distributes them exactly as it does for a field-level Array shape. The
-    # content is an Array, so masking it as if it were a member-bearing Hash over-redacts a whole rung that
-    # `_mask_shape_value` already knows how to distribute.
+    # `container: Array` on a bag's shape means "members read off each element of that inner Array" —
+    # `ShapeValidator` distributes them exactly as it does for a field-level Array shape, and the mask has to
+    # distribute with it. The content is an Array, so masking it as if it were a member-bearing Hash
+    # over-redacts a whole rung that `_mask_shape_value` already knows how to descend.
     it "distributes a bag shape whose container is Array rather than masking the element wholesale" do
-      shape = sensitive_shape
-      action = build_axn { expects :rows, type: Array, of: { klass: Array, shape: } }
+      action = held(:rows, { type: { klass: Array },
+                             of: { klass: Array, container: Array, shape: array_container_shape } })
 
       inputs = action.send(:new, rows: [[{ ssn: "111-22-3333", name: "Ada" }]]).send(:inputs_for_logging)
 

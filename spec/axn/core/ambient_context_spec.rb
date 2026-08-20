@@ -645,6 +645,30 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
       end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
     end
 
+    # `_check_ambient_shape_placement!` keys on a top-level `shape:` ALONE, on the stated premise that an
+    # `of:` bag describes what is INSIDE the value and the ambient filter therefore copies or rebuilds that
+    # value as one thing rather than member by member. That premise holds only because a node declaring `of:`
+    # can never also have subfield children — refused by the map rule for a Hash and by unanswerability for an
+    # Array. Both are pinned here, because relaxing either silently turns the placement rule into a hole: the
+    # filter would rebuild such a node from its subfield children and drop the contents the `of:` describes.
+    it "still refuses a subfield rooted at an ambient map" do
+      expect do
+        build_axn do
+          expects :m, on: :ambient_context, type: Hash, of: { values: Integer }
+          expects :foo, on: :m
+        end
+      end.to raise_error(ArgumentError, /\Asubfield :foo \(on :m\) names the key :foo of :m, which declares `of:` on a Hash/)
+    end
+
+    it "still refuses a subfield rooted at an ambient Array, which cannot answer one" do
+      expect do
+        build_axn do
+          expects :m, on: :ambient_context, type: Array, of: Integer
+          expects :foo, on: :m
+        end
+      end.to raise_error(ArgumentError, /\Asubfield :foo \(on :m\) can never resolve: segment :foo is read from :m, declared Array/)
+    end
+
     # The descent adds a refusal, never a rejection of what already declared: a bag's shape with nothing to
     # refuse still declares, still filters through as a leaf copy, and still validates its contents.
     it "leaves an of:-bag shape declaring and validating" do

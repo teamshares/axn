@@ -489,11 +489,23 @@ module Axn
       # type names a class and has nothing inside it. Read through `hash_or_nil` throughout: the bag may be
       # a config ASSIGNED onto a class rather than one this DSL canonicalized, so an `of:` that is not a
       # Hash answers "nothing inside" rather than raising.
+      # Which GRAMMAR a canonicalized `of:` bag was read under: a map bag names axes, an element bag names one
+      # position. Derived from the `container:` key axn writes at canonicalization, by IDENTITY with `::Hash` as
+      # the receiver — the key holds the caller's declared class, and one answering `==` for its own purposes
+      # would otherwise choose which grammar its bag is read under. One predicate rather than the four
+      # open-coded copies this replaces (the declaration walk's shaped-key derivation, the emitter's nested-node
+      # dispatch, collision attribution's descent, and the enumerator below), because the four have to agree
+      # about it and four copies of one question is the drift a shared seam exists to prevent.
+      #
+      # `bag` must already be a Hash — every caller classifies it with `hash_or_nil` first, and there is no
+      # honest answer for a value that is not a bag at all.
+      def self.map_bag?(bag) = ::Hash.equal?(bag[:container])
+
       def self.inner_contracts(validations)
         bag = hash_or_nil(validations && validations[:of])
         return EMPTY_INNER_CONTRACTS if nil.equal?(bag)
 
-        return [[ELEMENT_POSITION, bag]] unless ::Hash.equal?(bag[:container])
+        return [[ELEMENT_POSITION, bag]] unless map_bag?(bag)
 
         MAP_POSITIONS.filter_map do |axis|
           inner = hash_or_nil(bag[axis])
