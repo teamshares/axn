@@ -251,4 +251,11 @@ Everything lives under `spec/` — nothing here touches ActiveRecord or Rails. E
 
 Forward canonicalization changes what `internal_field_configs` holds for an `Array`-typed field with a shape. That is internal structure rather than documented API — what a consuming gem reflects with is `input_schema` / `output_schema` and `Extensions::Serialization.render`, none of which change shape — but a gem reading `config.validations[:shape]` directly would break. Sweep the siblings with `rake downstream:check` before landing, and check os-app, axn-mcp, axn-ruby_llm, data_shifter and slack_sender.
 
-The user-visible surface is otherwise **additive**: every declaration legal today stays legal and validates and reflects identically, and the new grammar occupies spellings that raise today.
+The user-visible surface is **additive except for four changes the flip forces**, each ratified deliberately:
+
+1. **A wrong-typed element under `type: Array, of: Hash` + a shape now reports the type error alone.** It previously also reported `element at index 0: sku could not be read`. The storage table above mandates `container: Hash` for row 1, and `ShapeValidator` gates its non-Array branch on that container, so a String element never reaches member validation. This CONVERGES the flat spelling on what `of: { klass: Hash, shape: … }` has always reported — the two spellings now agree, which is the point of the flip. The class-unconstrained row (`of: { shape: … }`, container `ANY_CONTAINER`) still reports both.
+2. **The distributing spelling's declared depth drops from 64 links to 32.** The fold makes each distributing level cost two rungs, and the runtime counter already charged both — so pre-flip a 33-64 link contract declared clean and then failed EVERY call. Refusing at declaration is the house rule and the alternative was declare-clean/fail-always, but it does narrow a contract that previously ran. Measured identical for the raw, bag and block-form spellings; a Hash chain is unaffected at 64.
+3. **An output schema no longer emits a self-gated nested `of:`'s inner `items`.** `effective_validations`' reduction now reaches a bag's `of:` as well as its `shape:`. Doctrine-consistent — static-maximal on input, never promise outbound what a gate may skip — and input is unchanged.
+4. **A cycle through a nested shaped member logs `[FILTERED]` rather than `[...]`.** Over-redaction, the safe direction.
+
+Everything else is additive: the new grammar occupies spellings that raise today.
