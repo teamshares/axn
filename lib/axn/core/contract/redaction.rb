@@ -108,7 +108,7 @@ module Axn
         end
 
         def _flatten_sensitive_candidates(config, seen = nil, depth = 0)
-          [config, *_flatten_sensitive_contents(config.validations, seen, depth)]
+          [config, *_flatten_sensitive_contents(_member_validations(config), seen, depth)]
         end
 
         # The configs reachable from one declared node: the members of its `shape:`, and everything inside
@@ -523,16 +523,26 @@ module Axn
         # walk that reflection, validation and redaction all still descend into. The whole bag rather than
         # just its shape, because both edges hang off it and reading it twice would ask a caller's object
         # the same question twice.
+        #
+        # Read by every walk that reaches a member, including the two collectors: they now recurse into
+        # members that live inside an `of:` bag, and a DECLARED graph is snapshotted into `ShapeConfig`s of
+        # axn's own, so what this protects is the same graph-assigned-onto-the-class route every other bound
+        # in this file exists for — where a plain `.validations` raises `NoMethodError` out of a log line
+        # for a member that declares the reader privately.
         def _member_validations(member) = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations))
 
         # The leaf of a sensitive path: one declared value, masked against everything the node says lives
         # inside it. A `shape:` names members; an `of:` bag names contents with no member name at all, and a
         # node can carry both (a map with `shape:` beside `of:`). Both passes run, in that order, so a value
         # whose members are masked precisely still has its unnamed contents descended.
+        #
+        # The contents pass is handed the ORIGINAL alongside the shape pass's output, and every rung below
+        # keeps that pairing: the shape pass ends in `element.dup`, so a guard keyed on what it returns is
+        # keyed on an object axn made a moment ago and can never match anything the walk meets again.
         def _mask_declared_value(value, validations, action_instance, seen = nil)
           shape = Internal::ShapeGraph.shape_in(validations)
           masked = nil.equal?(shape) ? value : _mask_shape_value(value, shape, action_instance, seen)
-          _mask_inner_contents(masked, validations, action_instance, seen)
+          _mask_inner_contents(masked, value, validations, action_instance, seen)
         end
 
         # Distribute the mask over a container's CONTENTS — every element of an Array, every key or value of
@@ -540,20 +550,30 @@ module Axn
         # declaration with no `of:`, and deliberately allocation-free there: `_sensitive_inner_contracts`
         # answers from a memo keyed by the node's identity, so the flat path costs one Hash lookup.
         #
-        # Cycle-guarded on the VALUE, for the reason `_mask_shape_element` documents at length: every step
-        # moves to a strictly contained value, so a finite acyclic value terminates the walk however the
-        # declaration is built, while guarding the declaration would refuse to descend a bag legitimately
-        # shared by two positions. Guarded here rather than only on a Hash, because nested containers make a
-        # cycle that closes through Arrays alone (`a = []; a << a` under `of: {klass: Array, of: …}`) — which
-        # is exactly what the shape walk could rule out and this one cannot. A revisited value masks
-        # WHOLESALE: we cannot descend to redact the sensitive member inside it.
-        def _mask_inner_contents(value, validations, action_instance, seen = nil)
+        # Cycle-guarded on `source` — the value as the CALLER supplied it — rather than on `masked`, which
+        # is what the shape pass handed back. That distinction is the whole guard: `_mask_shape_element`
+        # returns `element.dup`, so guarding the masked object registers a fresh Hash while every value the
+        # walk then descends into is the original, breaking the ancestry chain so nothing is ever recognised
+        # as revisited. Termination then came only from the declaration graph running out, which embedded
+        # the caller's own cyclic Hash in what redaction handed the logger and recursed unboundedly for a
+        # graph assigned onto the class. Guarding the source is safe beside `_mask_shape_element`'s own
+        # guard because the two run in SEQUENCE over one rung, never nested: that one is popped (`ensure`)
+        # before this one opens.
+        #
+        # The rest of the reasoning is `_mask_shape_element`'s: every step moves to a strictly contained
+        # value, so a finite acyclic value terminates the walk however the declaration is built, while
+        # guarding the declaration would refuse to descend a bag legitimately shared by two positions.
+        # Guarded here rather than only on a Hash, because nested containers make a cycle that closes
+        # through Arrays alone (`a = []; a << a` under `of: {klass: Array, of: …}`) — which is exactly what
+        # the shape walk could rule out and this one cannot. A revisited value masks WHOLESALE: we cannot
+        # descend to redact the sensitive member inside it.
+        def _mask_inner_contents(masked, source, validations, action_instance, seen = nil)
           contracts = _sensitive_inner_contracts(validations, action_instance)
-          return value if contracts.empty?
-          return _mask_opaque_or_preserve(value) unless value.is_a?(Array) || value.is_a?(Hash)
+          return masked if contracts.empty?
+          return _mask_opaque_or_preserve(masked) unless masked.is_a?(Array) || masked.is_a?(Hash)
 
-          Axn::Internal::CycleGuard.guard(value, seen, on_cycle: SENSITIVE_FILTERED_MASK) do |open|
-            contracts.reduce(value) { |acc, (position, bag)| _mask_contents(acc, position, bag, action_instance, open) }
+          Axn::Internal::CycleGuard.guard(source, seen, on_cycle: SENSITIVE_FILTERED_MASK) do |open|
+            contracts.reduce(masked) { |acc, (position, bag)| _mask_contents(acc, source, position, bag, action_instance, open) }
           end
         end
 
@@ -561,39 +581,82 @@ module Axn
         # malformed (and reaches logging before validation rejects it), so it is masked wholesale rather
         # than left to print — the same call `_mask_shape_value` makes for a container mismatch.
         #
-        # A sensitive member on the `keys:` axis masks the WHOLE MAP. `_mask_shape_element` leaves a Hash's
+        # Two things this deliberately does NOT do, both of them over-redaction rather than leakage:
+        #
+        # A sensitive member on the `keys:` axis masks the WHOLE MAP, answered ahead of the dispatch below
+        # because it is the one position with nothing to distribute over. `_mask_shape_element` leaves a Hash's
         # own keys for `ParameterFilter` to redact by name, and a ParameterFilter only ever reads a key to
         # decide about its VALUE — it never descends into the key itself — so a member sitting inside a key
         # has nothing behind this walk to catch it. Masking key by key instead would be worse than
         # over-redacting: distinct keys mask to the same thing and collapse into one entry, silently
         # dropping the other entries' values, so the log would lie about the data rather than admit it
         # cannot show it. The axis is exotic (a shaped Hash used AS a map key) and always over-redacts here.
-        def _mask_contents(value, position, bag, action_instance, seen)
+        #
+        # A key the node's own `shape:` names is EXEMPT from the map contract at runtime
+        # (`OfValidator#exempt_key?`, since `additionalProperties` does not govern a `properties` key), and
+        # this walk does not reproduce that exemption — such a key is masked along with the governed ones.
+        # Reproducing it means a second copy of that method's symbol-or-string matching, which is the
+        # duplicated-rule defect one shared enumerator exists to prevent; extracting the matcher to a shared
+        # home is the honest fix if the over-redaction ever matters. Pinned in
+        # `sensitive_shape_members_spec.rb` so that extraction is a deliberate change rather than a silent one.
+        def _mask_contents(masked, source, position, bag, action_instance, seen)
+          # The `keys:` axis, per the paragraph above: nothing behind this walk redacts inside a key, and
+          # masking key by key collapses distinct entries, so the map goes whole.
+          return _mask_opaque_or_preserve(masked) if Internal::ShapeGraph::KEYS_POSITION.equal?(position)
+
           case position
           when Internal::ShapeGraph::ELEMENT_POSITION
-            return _mask_opaque_or_preserve(value) unless value.is_a?(Array)
+            return _mask_opaque_or_preserve(masked) unless masked.is_a?(Array)
 
-            value.map { |element| _mask_one_content(element, bag, action_instance, seen) }
+            sources = _content_sources(source, masked)
+            masked.each_with_index.map { |element, index| _mask_one_content(element, sources[index], bag, action_instance, seen) }
           when Internal::ShapeGraph::VALUES_POSITION
-            return _mask_opaque_or_preserve(value) unless value.is_a?(Hash)
+            return _mask_opaque_or_preserve(masked) unless masked.is_a?(Hash)
 
-            value.each_with_object(value.dup) { |(key, entry), masked| masked[key] = _mask_one_content(entry, bag, action_instance, seen) }
+            sources = _content_sources(source, masked)
+            masked.each_with_object(masked.dup) do |(key, entry), out|
+              out[key] = _mask_one_content(entry, sources.fetch(key, entry), bag, action_instance, seen)
+            end
           else
-            # `inner_contracts` emits only the three positions above; a fourth could only come from a config
-            # assigned onto the class, and the fail-safe answer for redaction is to show nothing.
-            _mask_opaque_or_preserve(value)
+            # `inner_contracts` emits no position but those two and the `keys:` axis handled above; a fourth
+            # could only come from a config assigned onto the class, and the fail-safe answer is to show nothing.
+            _mask_opaque_or_preserve(masked)
           end
         end
 
-        # ONE of a container's contents, masked against the bag that declares it. `_mask_shape_element` is
-        # reused rather than mirrored: it already answers "mask this one value against this shape, descending
-        # only where a sensitive member lives", which is the same question one rung down — and it is the
-        # right half of the pair here, since a bag's shape may carry the no-container-gate sentinel
-        # (`ShapeGraph::ANY_CONTAINER`), which `_mask_shape_value`'s container dispatch would mask wholesale.
-        def _mask_one_content(content, bag, action_instance, seen)
+        # The pre-mask container each content's guard keys on. `masked` is either the caller's own object or
+        # a copy of it that preserves position and keys (`_mask_shape_value`'s element map,
+        # `_mask_shape_element`'s `dup`), so the two line up entry for entry and the original is reachable
+        # beside every masked child. Falls back to the masked container when they do not line up: nothing
+        # produces such a pair today, and pairing a child with the wrong object would guard the wrong
+        # ancestry, which is worse than guarding a copy and merely failing to detect.
+        def _content_sources(source, masked)
+          matched = (masked.is_a?(Array) && source.is_a?(Array)) || (masked.is_a?(Hash) && source.is_a?(Hash))
+          matched && source.length == masked.length ? source : masked
+        end
+
+        # ONE of a container's contents, masked against the bag that declares it, paired with that content as
+        # the CALLER supplied it (see `_mask_inner_contents` for why the pair travels).
+        #
+        # `_mask_shape_value` is reused rather than mirrored: a bag's shape carries a real container whenever
+        # the bag names `klass:`, and which container it is decides what the members describe — `Hash` means
+        # they are read off the content, `Array` means they are distributed over the content's own elements,
+        # a `Data`/`Struct`/PORO means an object `ParameterFilter` cannot descend. That dispatch already
+        # exists there. `ANY_CONTAINER` is the one container it cannot dispatch: it is the sentinel for a bag
+        # that constrains by `shape:` alone, so it would fall through to wholesale masking, and it means
+        # exactly "read the members off this content" — which is `_mask_shape_element`. Compared with
+        # `ANY_CONTAINER` as the RECEIVER of `equal?`, on the same terms as `_mask_shape_value`'s own
+        # container test: a raw shape may put any object in that slot.
+        def _mask_one_content(content, source, bag, action_instance, seen)
           shape = Internal::ShapeGraph.shape_in(bag)
-          masked = nil.equal?(shape) ? content : _mask_shape_element(content, shape, action_instance, seen)
-          _mask_inner_contents(masked, bag, action_instance, seen)
+          masked = if nil.equal?(shape)
+                     content
+                   elsif Internal::ShapeGraph::ANY_CONTAINER.equal?(shape[:container])
+                     _mask_shape_element(content, shape, action_instance, seen)
+                   else
+                     _mask_shape_value(content, shape, action_instance, seen)
+                   end
+          _mask_inner_contents(masked, source, bag, action_instance, seen)
         end
 
         # The `[(position, bag)]` inner contracts a mask has to descend into: those whose contents carry a
@@ -725,7 +788,7 @@ module Axn
         # value it describes is masked wholesale by then anyway (`_shape_has_sensitive_member?` answers true
         # past the same bound), so `inspect` shows a redacted value rather than a leaked one.
         def _derive_sensitive_member_names(config, action_instance, seen = nil, depth = 0)
-          _derive_sensitive_content_names(config.validations, action_instance, seen, depth)
+          _derive_sensitive_content_names(_member_validations(config), action_instance, seen, depth)
         end
 
         # Both edges of one declared node, on one depth budget — see `_flatten_sensitive_contents`, which
@@ -776,7 +839,7 @@ module Axn
                 :_present_key_variants, :_shape_has_sensitive_member?, :_declares_sensitive_content?,
                 :_member_sensitive?, :_member_validations,
                 :_mask_declared_value, :_mask_inner_contents, :_mask_contents, :_mask_one_content,
-                :_sensitive_inner_contracts, :_derive_sensitive_inner_contracts,
+                :_sensitive_inner_contracts, :_derive_sensitive_inner_contracts, :_content_sources,
                 :_mask_shape_value, :_mask_shape_element, :_sensitive_nested_members,
                 :_derive_sensitive_nested_members, :_derive_sensitive_member_names, :_derive_sensitive_content_names,
                 :_sensitive_member_names_in

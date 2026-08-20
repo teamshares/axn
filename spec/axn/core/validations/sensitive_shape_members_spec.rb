@@ -838,6 +838,113 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       expect(masked.first).to eq([{ ssn: "[FILTERED]", name: "Ada" }])
     end
 
+    # The mask composes a shape pass with a contents pass, and the shape pass hands the contents pass a
+    # COPY (`_mask_shape_element` returns `element.dup`). Guarding that copy is guarding a fresh object, so
+    # the ancestry chain breaks and nothing is ever recognised as revisited — the walk then terminates only
+    # when the DECLARATION runs out, embedding the caller's still-cyclic Hash in what redaction hands the
+    # logger. The guard has to key on the caller's own object at every rung.
+    it "masks a cycle wholesale under a bag that also carries a shape:" do
+      inner = { klass: Hash, shape: sensitive_shape }
+      middle = { klass: Hash, shape: sensitive_shape, of: { values: inner } }
+      outer = { klass: Hash, shape: sensitive_shape, of: { values: middle } }
+      action = build_axn { expects :m, type: Hash, of: { values: outer } }
+
+      cyclic = { ssn: "111-22-3333" }
+      cyclic[:self] = cyclic
+
+      masked = action.send(:new, m: { "a" => cyclic }).send(:inputs_for_logging)[:m]["a"]
+
+      # By class first: an unguarded walk leaves the caller's own cyclic Hash here, and handing that to the
+      # `eq` differ is what turns a regression into a hang.
+      expect(masked[:self]).to be_a(String)
+      expect(masked).to eq({ ssn: "[FILTERED]", self: "[FILTERED]" })
+    end
+
+    # The same guard one rung deeper, where the pre-mask value is the only thing that can carry it. An
+    # Array-container bag shape REPLACES each element with a copy (`_mask_shape_value` maps
+    # `_mask_shape_element` over them), so the rung below it is the one place where the masked child is not
+    # the caller's own object — and pairing the child with the copy rather than the original delays cycle
+    # detection by a rung, expanding the caller's cyclic Hash one extra level into the log.
+    it "keeps the cycle guard on the caller's object below an Array-container bag shape" do
+      shape = sensitive_shape
+      terminal = { klass: Hash, shape: }
+      third = { klass: Hash, shape:, of: { values: terminal } }
+      second = { klass: Hash, shape:, of: { values: third } }
+      first = { klass: Array, shape:, of: second }
+      action = build_axn { expects :m, type: Array, of: first }
+
+      cyclic = { ssn: "111-22-3333", name: "Ada" }
+      cyclic[:self] = cyclic
+
+      masked = action.send(:new, m: [[cyclic]]).send(:inputs_for_logging)[:m][0][0]
+
+      expect(masked[:self]).to be_a(String)
+      expect(masked[:self]).to eq("[FILTERED]")
+    end
+
+    # `of: { klass: Array, shape: S }` is legal and means "members read off each element of that inner
+    # Array" — `ShapeValidator` distributes them exactly as it does for a field-level Array shape. The
+    # content is an Array, so masking it as if it were a member-bearing Hash over-redacts a whole rung that
+    # `_mask_shape_value` already knows how to distribute.
+    it "distributes a bag shape whose container is Array rather than masking the element wholesale" do
+      shape = sensitive_shape
+      action = build_axn { expects :rows, type: Array, of: { klass: Array, shape: } }
+
+      inputs = action.send(:new, rows: [[{ ssn: "111-22-3333", name: "Ada" }]]).send(:inputs_for_logging)
+
+      expect(inputs[:rows]).to eq([[{ ssn: "[FILTERED]", name: "Ada" }]])
+    end
+
+    # Task 6 exempts a key the shape names from the map contract (`additionalProperties` does not govern a
+    # `properties` key), and this walk does not reproduce that exemption — matching it here would mean a
+    # second copy of `OfValidator#exempt_key?`'s symbol/string matching, which is the duplication this
+    # design exists to prevent. Pinned so that extracting the matcher later is a deliberate change.
+    it "over-redacts a shape-named key that the map contract exempts" do
+      values = { klass: Hash, shape: { members: [Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: {}, sensitive: true)] } }
+      action = build_axn do
+        expects :metrics, type: Hash, of: { values: } do
+          field :label, type: String
+        end
+      end
+
+      inputs = action.send(:new, metrics: { label: "q3", visits: { ssn: "111-22-3333" } }).send(:inputs_for_logging)
+
+      expect(inputs[:metrics]).to eq({ label: "[FILTERED]", visits: { ssn: "[FILTERED]" } })
+    end
+
+    # The collectors now recurse into members living inside an `of:` bag — members they never reached
+    # before — so they read a member's `validations` on the terms every other read of a caller-supplied
+    # member uses. A DECLARED graph is snapshotted into axn's own `ShapeConfig`s, so this only bites a
+    # config assigned onto the class; that is the same route every other bound in this file exists for.
+    it "reads a bagged member's validations without dispatching, so a hidden reader cannot skip the walk" do
+      hidden = Class.new do
+        def field = :inner
+
+        def sensitive = false
+
+        private
+
+        def validations
+          { type: { klass: Hash },
+            shape: { container: Hash,
+                     members: [Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: {}, sensitive: true)] } }
+        end
+      end.new
+
+      action = build_axn
+      action.internal_field_configs = [
+        Axn::Core::Contract::FieldConfig.new(
+          field: :rows, reader_as: :rows,
+          validations: { type: { klass: Array },
+                         of: { klass: Hash, container: Array,
+                               shape: { container: Hash, members: [hidden] } } }
+        ),
+      ].freeze
+
+      expect(action.sensitive_fields).to include(:ssn)
+      expect(action._sensitive_member_names(action.internal_field_configs.first, nil)).to include(:ssn)
+    end
+
     it "resolves a dynamic sensitive: inside a bag against the instance" do
       shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: { type: { klass: String } },
                                                                sensitive: -> { redact })] }
