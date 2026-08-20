@@ -670,4 +670,186 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
       end.to raise_error(ArgumentError, /does not support model:/)
     end
   end
+
+  # PRO-3166: a container's contents now live in the `of:` bag, so a `sensitive:` member declared inside a
+  # bag's `shape:` sits on an edge the redaction walks did not descend — the declaration was accepted and the
+  # value printed in the clear. Every walk that reaches a shape member reaches this one too.
+  describe "a sensitive member inside a container's contents (of:)" do
+    def sensitive_shape
+      { members: [Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: { type: { klass: String } }, sensitive: true),
+                  Axn::Core::Contract::ShapeConfig.new(field: :name, validations: { type: { klass: String } })] }
+    end
+
+    # The regression this task exists for: the bag-shape spelling below and the field-level `shape:` spelling
+    # beside it declare the same sensitive member, so they must log the same masked line.
+    it "masks a sensitive member declared in an Array element's bag, exactly as a field-level shape does" do
+      shape = sensitive_shape
+      bagged = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+      field_level = build_axn do
+        expects :row, type: Hash do
+          field :ssn, type: String, sensitive: true
+          field :name, type: String
+        end
+      end
+
+      bag_inputs = bagged.send(:new, rows: [{ ssn: "111-22-3333", name: "Ada" }]).send(:inputs_for_logging)
+      field_inputs = field_level.send(:new, row: { ssn: "111-22-3333", name: "Ada" }).send(:inputs_for_logging)
+
+      expect(field_inputs[:row]).to eq({ ssn: "[FILTERED]", name: "Ada" })
+      expect(bag_inputs[:rows]).to eq([{ ssn: "[FILTERED]", name: "Ada" }])
+    end
+
+    it "contributes the bagged member's name to sensitive_fields (and not its sibling)" do
+      shape = sensitive_shape
+      action = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+
+      expect(action.sensitive_fields).to include(:ssn)
+      expect(action.sensitive_fields).not_to include(:name)
+    end
+
+    it "masks the bagged member in inspect too" do
+      shape = sensitive_shape
+      action = build_axn do
+        expects :rows, type: Array, of: { klass: Hash, shape: }
+
+        def call; end
+      end
+
+      inspected = inbound_facade(action.call(rows: [{ ssn: "111-22-3333", name: "Ada" }]).__action__).inspect
+
+      expect(inspected).not_to include("111-22-3333")
+      expect(inspected).to include("[FILTERED]")
+      expect(inspected).to include("Ada")
+    end
+
+    it "masks the member two containers down and leaves its sibling readable" do
+      shape = sensitive_shape
+      action = build_axn { expects :m, type: Array, of: { klass: Array, of: { klass: Hash, shape: } } }
+
+      inputs = action.send(:new, m: [[{ ssn: "123-45-6789", name: "Ada" }]]).send(:inputs_for_logging)
+
+      expect(inputs[:m]).to eq([[{ ssn: "[FILTERED]", name: "Ada" }]])
+    end
+
+    it "masks a sensitive member inside a map's values" do
+      shape = sensitive_shape
+      action = build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: } } }
+
+      inputs = action.send(:new, m: { "acme" => { ssn: "123-45-6789", name: "Ada" } }).send(:inputs_for_logging)
+
+      expect(inputs[:m]).to eq({ "acme" => { ssn: "[FILTERED]", name: "Ada" } })
+    end
+
+    # A member inside a map KEY is unreachable by name: a ParameterFilter reads a key only to decide about
+    # its value and never descends into the key itself, so nothing behind this walk would catch it. The whole
+    # map is masked rather than key-by-key, since distinct keys mask to the same thing and would collapse.
+    it "masks the whole map when a sensitive member sits inside its keys" do
+      shape = sensitive_shape
+      action = build_axn { expects :m, type: Hash, of: { keys: { klass: Hash, shape: }, values: Integer } }
+
+      inputs = action.send(:new, m: { { ssn: "123-45-6789", name: "Ada" } => 1 }).send(:inputs_for_logging)
+
+      expect(inputs[:m]).to eq("[FILTERED]")
+    end
+
+    # A shape MEMBER that is itself a container: the walk has to descend the member's own `of:` edge, not
+    # only its `shape:`.
+    it "masks a sensitive member inside a container declared on a shape member" do
+      shape = sensitive_shape
+      action = build_axn do
+        expects :order, type: Hash do
+          field :rows, type: Array, of: { klass: Hash, shape: }
+          field :label, type: String
+        end
+      end
+
+      inputs = action.send(:new, order: { rows: [{ ssn: "111-22-3333", name: "Ada" }], label: "q3" })
+                     .send(:inputs_for_logging)
+
+      expect(inputs[:order]).to eq({ rows: [{ ssn: "[FILTERED]", name: "Ada" }], label: "q3" })
+    end
+
+    # Opaque to ParameterFilter (it only descends Hashes), so the element is masked wholesale rather than
+    # leaking the member nested inside it — the same over-redact-rather-than-leak call an object-backed
+    # field-level shape gets.
+    it "masks an element that is not a Hash wholesale, leaving valid siblings filtered per member" do
+      shape = sensitive_shape
+      person = Data.define(:name, :ssn)
+      action = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+
+      inputs = action.send(:new, rows: [{ ssn: "111-22-3333", name: "Ada" }, person.new(name: "Bob", ssn: "222-22-2222")])
+                     .send(:inputs_for_logging)
+
+      expect(inputs[:rows]).to eq([{ ssn: "[FILTERED]", name: "Ada" }, "[FILTERED]"])
+    end
+
+    it "preserves a nil element (valid absent data) rather than masking it" do
+      shape = sensitive_shape
+      action = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+
+      inputs = action.send(:new, rows: [nil, { ssn: "111-22-3333", name: "Ada" }]).send(:inputs_for_logging)
+
+      expect(inputs[:rows]).to eq([nil, { ssn: "[FILTERED]", name: "Ada" }])
+    end
+
+    # The flat distributing spelling stores the shape at the FIELD and an `of:` bag beside it; the bag
+    # carries no contents of its own, so the new descent must leave this path exactly as it was. (Task 9
+    # canonicalizes the pair into the bag; this stays green either way, which is the point.)
+    it "leaves the flat distributing shape beside a bare of: unchanged" do
+      action = build_axn do
+        expects :items, type: Array, of: Hash do
+          field :ssn, type: String, sensitive: true
+          field :name, type: String
+        end
+      end
+
+      inputs = action.send(:new, items: [{ ssn: "111-22-3333", name: "Ada" }]).send(:inputs_for_logging)
+
+      expect(inputs[:items]).to eq([{ ssn: "[FILTERED]", name: "Ada" }])
+    end
+
+    # The control that catches over-masking: a bag whose shape carries no `sensitive:` must not make the
+    # mask descend at all.
+    it "does not mask a bag shape with no sensitive member" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: { type: { klass: String } }),
+                          Axn::Core::Contract::ShapeConfig.new(field: :name, validations: { type: { klass: String } })] }
+      action = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+
+      inputs = action.send(:new, rows: [{ ssn: "111-22-3333", name: "Ada" }]).send(:inputs_for_logging)
+
+      expect(inputs[:rows]).to eq([{ ssn: "111-22-3333", name: "Ada" }])
+    end
+
+    # A cycle cannot close through Arrays alone under a field-level shape (an element only recurses by being
+    # a Hash), but nested containers make one: an Array of Arrays. The revisited container masks wholesale.
+    it "masks a self-referential Array of Arrays wholesale rather than recursing" do
+      shape = sensitive_shape
+      action = build_axn { expects :m, type: Array, of: { klass: Array, of: { klass: Hash, shape: } } }
+
+      cyclic = [[{ ssn: "111-22-3333", name: "Ada" }]]
+      cyclic << cyclic
+
+      masked = action.send(:new, m: cyclic).send(:inputs_for_logging)[:m]
+
+      # Asserted element-wise, and the revisited one by class first: handing a still-cyclic actual to the
+      # `eq` differ is what makes a regression here hang the suite rather than report it.
+      expect(masked.last).to be_a(String)
+      expect(masked.last).to eq("[FILTERED]")
+      expect(masked.first).to eq([{ ssn: "[FILTERED]", name: "Ada" }])
+    end
+
+    it "resolves a dynamic sensitive: inside a bag against the instance" do
+      shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :ssn, validations: { type: { klass: String } },
+                                                               sensitive: -> { redact })] }
+      action = build_axn do
+        expects :redact, type: :boolean, default: false
+        expects :rows, type: Array, of: { klass: Hash, shape: }
+      end
+
+      expect(action.send(:new, redact: true, rows: [{ ssn: "111-22-3333" }]).send(:inputs_for_logging)[:rows])
+        .to eq([{ ssn: "[FILTERED]" }])
+      expect(action.send(:new, redact: false, rows: [{ ssn: "111-22-3333" }]).send(:inputs_for_logging)[:rows])
+        .to eq([{ ssn: "111-22-3333" }])
+    end
+  end
 end
