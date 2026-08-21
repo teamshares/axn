@@ -7,6 +7,7 @@ require "axn/internal/cycle_guard"
 require "axn/internal/identity"
 require "axn/internal/reflection/property_names"
 require "axn/internal/rendering"
+require "axn/internal/text"
 require "axn/extensions"
 require "axn/core/tagging"
 
@@ -153,32 +154,55 @@ module Axn
             # NOTE: slightly more manual in order to avoid quotes around ActiveRecord objects' <Class#id> formatting
             # Keys are rendered through the shared label rather than interpolated: caller data can carry keys in
             # two different non-ASCII encodings, and joining those raised Encoding::CompatibilityError from the
-            # log line itself — which the side channel then swallowed, losing the line entirely.
+            # log line itself — which the side channel then swallowed, losing the line entirely. Values carry
+            # the same risk and are guarded the same way, at their source below — see the `else` branch.
             "{#{data.map { |k, v| "#{Axn::Internal::Reflection::PropertyNames.renderable_label(k)}: #{format_object(v, nested)}" }.join(', ')}}"
           end
         when Array
           CycleGuard.guard(data, seen, on_cycle: CycleGuard::ARRAY_PLACEHOLDER) do |nested|
-            data.map { |v| format_object(v, nested) }
+            # Composed into a String here, like the Hash branch above — NOT left as an Array for the
+            # parent to interpolate. An Array handed to `#{}` renders via Array#to_s (== #inspect),
+            # which re-inspects each already-formatted child String, escaping its quotes/backslashes
+            # again. Left uncomposed, that re-escaping compounds once per nesting level, making both
+            # the render cost and the emitted line's length exponential in nesting depth (PRO-3203).
+            "[#{data.map { |v| format_object(v, nested) }.join(', ')}]"
           end
         else
           # The conversion walks and rebuilds the structure itself, so a cycle nested inside raises
-          # before the guard above could see the repeated container — attempt it and fall back.
+          # before the guard above could see the repeated container — attempt it and fall back. Returned
+          # RAW (a Hash, not a String): every other branch below ends in a String that a Hash/Array
+          # ancestor's `.join` above may compose with a sibling, so each of THOSE is rendered through the
+          # shared UTF-8-safe renderer; this one embeds by the caller's `#{}`/`to_s`, and `Hash#inspect`
+          # already escapes non-ASCII bytes in each of its own values, same as `String#inspect` does.
           is_params = defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
           return CycleGuard.converted_or_placeholder { data.to_unsafe_h } if is_params
-          return "<#{data.class.name}##{data.to_param.presence || 'unpersisted'}>" if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
+
+          if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
+            id = Axn::Internal::Text.renderable(data.to_param.presence || "unpersisted")
+            return "<#{Axn::Internal::Rendering.class_name(data)}##{id}>"
+          end
 
           # A RELATION is named rather than inspected, for the same reason `facade_inspector` names one:
           # `Relation#inspect` runs the query. The difference is what it costs here — that inspector only runs
           # when something asks for one, while this runs on EVERY logged call, so an action exposing a
           # relation issued a SELECT per call purely to build its log line.
           #
-          # Named through `Rendering.class_name` (i.e. `Module#to_s`), because ActiveRecord overrides
-          # `Class#name` on the generated relation class to answer `"ActiveRecord::Relation"` — so
-          # `data.class.name`, the spelling the AR::Base branch above uses, would lose the model.
+          # `Rendering.class_name` is UTF-8-safe on its own (it delegates to `RenderedClassName`, which
+          # renders a foreign constant path through the same shared renderer used below) — the AR::Base
+          # branch above uses it too, rather than `data.class.name`, for the same reason: ActiveRecord
+          # overrides `Class#name` on a relation's generated class to answer `"ActiveRecord::Relation"`,
+          # which would lose the model.
           is_relation = defined?(ActiveRecord::Relation) && Axn::Internal::Identity.kind?(data, ActiveRecord::Relation)
           return Axn::Internal::Rendering.class_name(data) if is_relation
 
-          data.inspect
+          # Through the shared renderer, not the raw `inspect`: a leaf can be any caller object, and one
+          # whose own `#inspect` returns non-ASCII bytes in a foreign encoding would otherwise sit in this
+          # value unguarded until a sibling leaf elsewhere in the same structure turns up a SECOND foreign
+          # encoding for a `.join` above to collide with — raising Encoding::CompatibilityError out of the
+          # log line itself (or losing it entirely, swallowed by the best_effort boundary around this whole
+          # call). Renders byte-identical for ASCII/valid-UTF-8 (the overwhelming case), transcodes a
+          # legible foreign encoding, and escapes only bytes with no UTF-8 rendering at all.
+          Axn::Internal::Text.renderable(data.inspect)
         end
       end
     end

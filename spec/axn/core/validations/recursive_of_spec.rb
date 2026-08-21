@@ -996,12 +996,16 @@ RSpec.describe "recursive of:" do
       expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: inner_shape } } }.not_to raise_error
     end
 
+    # A Hash is the only container whose OWN `shape:` can sit beside an `of:` bag at all (PRO-3166's Hash
+    # exemption) — a distributing `shape:` beside `type: Array` is refused outright (PRO-3191), so a Hash
+    # field naming a `values:` shape of its own is the one remaining spelling that spends both edges from a
+    # single declaration.
     it "refuses the declaration that spends both" do
       field_shape = shared_sibling_shape(13, { type: String })
       inner_shape = shared_sibling_shape(13, { type: String })
 
       expect do
-        build_axn { expects :rows, type: Array, shape: field_shape, of: { klass: Hash, shape: inner_shape } }
+        build_axn { expects :m, type: Hash, shape: field_shape, of: { values: { klass: Hash, shape: inner_shape } } }
       end.to raise_error(ArgumentError, /has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths/)
     end
   end

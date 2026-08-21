@@ -804,12 +804,23 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         expect(nested(raw)[:members].map(&:to_h)).to eq(nested(via_block)[:members].map(&:to_h))
       end
 
-      # An Array-typed member's `shape:` distributes over its ELEMENTS, so it is canonicalized into the
-      # member's own `of:` bag (PRO-3166) rather than staying at the member. The bag names no element class,
-      # so the shape it carries gates on nothing — the ANY_CONTAINER sentinel — and its members are read off
-      # each element exactly as the distributing spelling read them.
-      it "folds an Array-typed member's shape into its of: bag, gating on nothing" do
-        klass = declared_with({ type: Array, shape: { members: [leaf] } })
+      # A raw `shape:` kwarg naming an Array-typed member's distributing reading is refused outright
+      # (PRO-3191) — the same rule the field level is held to, applied to a duck-typed member position.
+      it "refuses a distributing shape: kwarg at a member position" do
+        expect { declared_with({ type: Array, shape: { members: [leaf] } }) }
+          .to raise_error(ArgumentError, /`shape:` on shape member `m` distributes over an Array's elements/)
+      end
+
+      # The BLOCK form still distributes over an Array-typed member's ELEMENTS, and is still canonicalized
+      # into the member's own `of:` bag (PRO-3166) rather than staying at the member. The bag names no
+      # element class, so the shape it carries gates on nothing — the ANY_CONTAINER sentinel — and its
+      # members are read off each element exactly as the distributing spelling read them.
+      it "still folds an Array-typed member's block into its of: bag, gating on nothing" do
+        klass = build_axn do
+          expects(:payload, type: Hash) do
+            field(:m, type: Array) { field :leaf, type: String }
+          end
+        end
         member = klass.internal_field_configs.first.validations[:shape][:members].first
 
         expect(member.validations[:shape]).to be_nil
@@ -904,27 +915,28 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         expect(klass.call(payload: { m: { leaf: "x" } })).to be_ok
       end
 
-      # A container comes from the ENCLOSING member's `type:`, so it belongs to the position rather than to the
-      # node: one nested shape object reused by two members with different types needs a different container in
-      # each place. The walk's memo hands both members one copy, so the derivation detaches before it writes.
+      # A container comes from the ENCLOSING position's `type:`/`klass:`, so it belongs to the position rather
+      # than to the node: one nested shape object reused by a direct member and by a bag's own `shape:` needs
+      # a different container in each place. The walk's memo hands both positions one copy, so the derivation
+      # detaches before it writes. (A raw `shape:` naming an Array-typed member's DISTRIBUTING reading — the
+      # other route that used to reach this same detach — is refused outright now; PRO-3191.)
       it "gives one shared nested shape the container each position calls for" do
         shared = { members: [leaf] }
+        other = Data.define(:leaf)
         klass = build_axn do
           node = shared
+          other_klass = other
           expects :payload, type: Hash, shape: { container: Hash, members: [
             Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Hash, shape: node }),
-            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { type: Array, shape: node }),
+            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { type: Array, of: { klass: other_klass, shape: node } }),
           ] }
         end
         members = klass.internal_field_configs.first.validations[:shape][:members]
-        # The Array-typed position's copy is folded into its `of:` bag, where the container it calls for is
-        # the element's rather than the member's — so the two positions still hold ONE shared node to two
-        # different containers, which is what the detach-before-write buys.
         containers = members.map { |m| (m.validations[:shape] || m.validations.dig(:of, :shape))[:container] }
 
-        expect(containers).to eq([Hash, Axn::Internal::ShapeGraph::ANY_CONTAINER])
+        expect(containers).to eq([Hash, other])
         expect(shared.key?(:container)).to be(false)
-        expect(klass.call(payload: { a: { leaf: "x" }, b: [{ leaf: "y" }] })).to be_ok
+        expect(klass.call(payload: { a: { leaf: "x" }, b: [other.new(leaf: "y")] })).to be_ok
       end
 
       it "derives on the outbound route too" do
@@ -1115,14 +1127,14 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         raw_member = Struct.new(:field, :validations).new(:status, { type: { klass: String } })
         action = build_axn do
           member = raw_member
-          expects :items, type: Array, shape: { members: [member], container: Array }
+          expects :items, type: Hash, shape: { members: [member] }
         end
 
         # A Hash-key member read (safe path) succeeds — proves the member was validated without the
         # missing #method_call raising.
-        expect(action.call(items: [{ status: "ok" }])).to be_ok
+        expect(action.call(items: { status: "ok" })).to be_ok
 
-        result = action.call(items: [{ status: 123 }])
+        result = action.call(items: { status: 123 })
         expect(result).not_to be_ok
         expect(result.exception.message).to match(/status/)
       end
@@ -1161,6 +1173,117 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         result = action.call(items: [{ point: poro_class.new(123) }])
         expect(result).not_to be_ok
         expect(result.exception.message).to match(/status/)
+      end
+    end
+  end
+
+  # `shape:` had one exception to "names the members of this value": on `type: Array` it distributed over
+  # the elements instead, an accident of `of:` once being unable to name an element's own members. PRO-3166
+  # gave `of:` that word (recursively), which made the exception redundant; this retires the raw kwarg
+  # surface that relied on it. The block form is unaffected — an Array has no members of its own, so it has
+  # exactly one honest reading regardless (see the "method_call:" and "array element members" describes
+  # above, all still block-form and all still passing).
+  describe "retiring the distributing shape: (PRO-3191)" do
+    def member = Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: String })
+
+    describe "a raw shape: kwarg beside type: Array" do
+      it "refuses shape: beside type: Array, of: Hash" do
+        sku = member
+        expect { build_axn { expects :rows, type: Array, of: Hash, shape: { members: [sku] } } }
+          .to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
+      end
+
+      it "refuses shape: beside type: Array with no of: at all" do
+        sku = member
+        expect { build_axn { expects :rows, type: Array, shape: { members: [sku] } } }
+          .to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
+      end
+
+      it "refuses shape: beside a scalar of:" do
+        sku = member
+        expect { build_axn { expects :rows, type: Array, of: String, shape: { members: [sku] } } }
+          .to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
+      end
+
+      it "refuses shape: beside an of: bag" do
+        sku = member
+        expect { build_axn { expects :rows, type: Array, of: { klass: Hash }, shape: { members: [sku] } } }
+          .to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
+      end
+
+      it "refuses it on exposes too" do
+        sku = member
+        expect { build_axn { exposes :rows, type: Array, of: Hash, shape: { members: [sku] } } }
+          .to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
+      end
+
+      it "refuses a block-declared member's own raw shape: kwarg" do
+        sku = member
+        expect do
+          build_axn do
+            expects(:row, type: Hash) { field :rows, type: Array, shape: { members: [sku] } }
+          end
+        end.to raise_error(ArgumentError, /`shape:` on shape member `rows` distributes over an Array's elements/)
+      end
+
+      it "no longer silently drops the raw kwarg when a block is also given" do
+        sku = member
+        expect do
+          build_axn do
+            expects(:rows, type: Array, shape: { members: [sku] }) { field :sku, type: String }
+          end
+        end.to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
+      end
+    end
+
+    # `container: Array` hand-written on a raw shape is never legitimate once the spelling above is refused
+    # — the block form is the only remaining producer of it, and a block never reaches this check. Before
+    # this rule it was a live divergence: the declared member's type was published in the schema and never
+    # enforced (`ShapeValidator`'s Array branch never reaches member validation for a non-Array container).
+    describe "a hand-written container: Array on a raw shape" do
+      it "refuses it beside type: Hash" do
+        sku = member
+        expect { build_axn { expects :row, type: Hash, shape: { container: Array, members: [sku] } } }
+          .to raise_error(ArgumentError, /`shape:` on :row names `container: Array`/)
+      end
+
+      it "refuses it beside a plain class" do
+        sku = member
+        point = Struct.new(:sku)
+        expect { build_axn { expects :row, type: point, shape: { container: Array, members: [sku] } } }
+          .to raise_error(ArgumentError, /`shape:` on :row names `container: Array`/)
+      end
+
+      it "refuses it on a raw member's own nested shape" do
+        outer = Axn::Core::Contract::ShapeConfig.new(
+          field: :inner, validations: { type: Hash, shape: { container: Array, members: [member] } },
+        )
+        expect { build_axn { expects :row, type: Hash, shape: { members: [outer] } } }
+          .to raise_error(ArgumentError, /`shape:` on shape member `inner` names `container: Array`/)
+      end
+    end
+
+    # The bag it canonicalizes into, and the block form, are unaffected — a positive control alongside the
+    # refusals above, so the guard is proven not to over-fire on the surviving spellings.
+    describe "what still declares" do
+      it "still accepts the bag spelling" do
+        sku = member
+        klass = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: { members: [sku] } } }
+
+        expect(klass.call(rows: [{ sku: "x" }])).to be_ok
+      end
+
+      it "still accepts the block spelling" do
+        klass = build_axn { expects(:rows, type: Array, of: Hash) { field :sku, type: String } }
+
+        expect(klass.call(rows: [{ sku: "x" }])).to be_ok
+      end
+
+      it "still accepts a non-Array shape: with no container: at all" do
+        sku = member
+        klass = build_axn { expects :row, type: Hash, shape: { members: [sku] } }
+
+        expect(klass.call(row: { sku: "x" })).to be_ok
       end
     end
   end

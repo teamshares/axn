@@ -1620,11 +1620,17 @@ RSpec.describe "declaration-time property name collisions" do
       # A scalar `of:` reads members off the element (`String#length`), which stays a string — the members are
       # validated but never become properties, so two of them cannot collapse.
       it "does not reject colliding member names under a scalar of:" do
-        members = [Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: {}),
-                   Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: {})]
+        utf8 = utf8_name
+        latin1 = latin1_name
 
-        expect { build_axn { expects :list, type: Array, of: String, shape: { members:, container: Array } } }
-          .not_to raise_error
+        expect do
+          build_axn do
+            expects(:list, type: Array, of: String) do
+              field utf8
+              field latin1
+            end
+          end
+        end.not_to raise_error
       end
     end
 
@@ -1641,7 +1647,7 @@ RSpec.describe "declaration-time property name collisions" do
         shaped = Data.define(:café)
         members = [Axn::Core::Contract::ShapeConfig.new(field: latin1_name, validations: { type: String })]
 
-        expect { project_axn { expects :list, type: Array, of: shaped, shape: { members:, container: Array } } }
+        expect { project_axn { expects :list, type: Array, of: { klass: shaped, shape: { members: } } } }
           .to raise_error(Axn::ContractViolation::DuplicateFieldError, /both resolve to the JSON property "list\.\[\]\.café"/)
       end
 
@@ -1649,7 +1655,7 @@ RSpec.describe "declaration-time property name collisions" do
         shaped = Data.define(:café)
         members = [Axn::Core::Contract::ShapeConfig.new(field: utf8_name, validations: { type: String })]
 
-        klass = build_axn { expects :list, type: Array, of: shaped, shape: { members:, container: Array } }
+        klass = build_axn { expects :list, type: Array, of: { klass: shaped, shape: { members: } } }
 
         expect(element_props(klass)).to eq(["café"])
       end
@@ -1663,7 +1669,7 @@ RSpec.describe "declaration-time property name collisions" do
 
         klass = build_axn do
           expects :list, type: Array, of: shaped, optional: true
-          expects :other, type: Array, shape: { members: latin1_members, container: Array }, optional: true
+          expects :other, type: Array, of: { shape: { members: latin1_members } }, optional: true
         end
 
         other_props = klass.input_schema.dig(:properties, :other, :items, :properties).keys
@@ -2816,7 +2822,10 @@ RSpec.describe "declaration-time property name collisions" do
       end
 
       it "does not charge members the schema never emits" do
-        klass = wide_contract(per_field: 1_000, type: Array, of: String, container: Array)
+        klass = build_axn do
+          declaration = proc { 1_000.times { |i| field :"m#{i}" } }
+          26.times { |f| expects(:"f#{f}", type: Array, of: String, &declaration) }
+        end
 
         expect(klass.input_schema.dig(:properties, :f0)).to eq({ type: "array", items: { type: "string" }, minItems: 1 })
       end
@@ -2981,8 +2990,8 @@ RSpec.describe "declaration-time property name collisions" do
         def gated_overlay_axn(per_field)
           members = Array.new(per_field) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
           build_axn do
-            exposes :x, optional: true, type: Array, of: Hash, shape: { members:, container: Array, if: :flag }
-            exposes :y, optional: true, type: Array, of: Hash, shape: { members:, container: Array, if: :flag }
+            exposes :x, optional: true, type: Array, of: { klass: Hash, shape: { members:, if: :flag } }
+            exposes :y, optional: true, type: Array, of: { klass: Hash, shape: { members:, if: :flag } }
           end
         end
 
@@ -2995,8 +3004,8 @@ RSpec.describe "declaration-time property name collisions" do
 
           expect do
             build_axn do
-              exposes :x, optional: true, type: Array, of: Hash, shape: { members:, container: Array }
-              exposes :y, optional: true, type: Array, of: Hash, shape: { members:, container: Array }
+              exposes :x, optional: true, type: Array, of: { klass: Hash, shape: { members: } }
+              exposes :y, optional: true, type: Array, of: { klass: Hash, shape: { members: } }
             end.output_schema
           end.to raise_error(ArgumentError, /names more than 25000 JSON properties/)
         end
@@ -3231,7 +3240,7 @@ RSpec.describe "declaration-time property name collisions" do
 
       it "counts it as a namespace for a shape overlay too" do
         members = Array.new(24_999) { |i| Axn::Core::Contract::ShapeConfig.new(field: :"m#{i}", validations: {}) }
-        klass = build_axn { expects :items, type: Array, optional: true, of: Hash, shape: { members:, container: Array } }
+        klass = build_axn { expects :items, type: Array, optional: true, of: { klass: Hash, shape: { members: } } }
 
         expect(klass.input_schema.dig(:properties, :items, :items, :properties).size).to eq(24_999)
       end

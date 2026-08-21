@@ -216,7 +216,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     it "does not raise from sensitive_fields for a member lacking #sensitive" do
       member = raw_member
       action = build_axn do
-        expects :items, type: Array, shape: { members: [member], container: Array }
+        expects :items, type: Hash, shape: { members: [member] }
       end
 
       expect { action.sensitive_fields }.not_to raise_error
@@ -226,12 +226,12 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
     it "does not raise from inspect for a member lacking #sensitive" do
       member = raw_member
       action = build_axn do
-        expects :items, type: Array, shape: { members: [member], container: Array }
+        expects :items, type: Hash, shape: { members: [member] }
 
         def call; end
       end
 
-      result = action.call(items: [{ name: "Alice" }])
+      result = action.call(items: { name: "Alice" })
       expect { inbound_facade(result.__action__).inspect }.not_to raise_error
     end
 
