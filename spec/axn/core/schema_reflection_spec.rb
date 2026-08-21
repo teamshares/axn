@@ -133,7 +133,7 @@ RSpec.describe "Axn class-level schema reflection" do
       "an accept set resolved per call, which nothing here can read" =>
         [{ presence: false, acceptance: { accept: -> { [nil] }, allow_nil: false } }, false],
       "an accept set containing nil alongside a type that rejects nil" =>
-        [{ type: String, acceptance: { accept: [nil], allow_nil: false } }, false],
+        [{ type: String, acceptance: { accept: [nil, "1"], allow_nil: false } }, false],
     }.each do |label, (opts, omissible)|
       it "reads #{label} the way the runtime treats an omitted value" do
         klass = Class.new do

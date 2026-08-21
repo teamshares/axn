@@ -19,9 +19,11 @@ RSpec.describe "a validator at a container position" do
     end
 
     it "does not distribute the set over an Array's elements" do
-      action = build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] } }
+      # A mixed set: one member is the array that should match whole-value, one is the String an element-wise
+      # reading would have matched. The second assertion is what fails under a distributing reading.
+      action = build_axn { expects :tags, type: Array, inclusion: { in: [%w[a b], "a"] } }
 
-      expect(action.call(tags: %w[a b]).ok?).to be(false)
+      expect(action.call(tags: %w[a b]).ok?).to be(true)
       expect(action.call(tags: %w[a]).ok?).to be(false)
     end
 
@@ -219,6 +221,179 @@ RSpec.describe "a validator at a container position" do
       expect { build_axn { expects :tags, type: Array, length: { maximum: 2 } } }.not_to raise_error
       expect { build_axn { expects :tags, type: Array, presence: true } }.not_to raise_error
       expect { build_axn { expects :tags, type: Array, of: String } }.not_to raise_error
+    end
+  end
+
+  describe "an inclusion: set no value of the declared type can satisfy is refused" do
+    it "refuses the element-wise spelling on an Array field, naming the position" do
+      expect { build_axn { expects :tags, type: Array, of: String, inclusion: { in: %w[a b] } } }
+        .to raise_error(ArgumentError, /inclusion: on :tags can never match.*of:/m)
+    end
+
+    it "refuses the bare-Array shorthand identically" do
+      expect { build_axn { expects :tags, type: Array, inclusion: %w[a b] } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    it "refuses an empty literal set, which nothing can satisfy at any type" do
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: [] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    it "refuses on a Hash field too" do
+      expect { build_axn { expects :meta, type: Hash, inclusion: { in: %w[a b] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    # NOT container-only: the defect is the same shape on every type, and scoping to containers would leave a
+    # structurally identical hole open everywhere else.
+    it "refuses a scalar declaration whose set matches no value of the declared type" do
+      expect { build_axn { expects :n, type: Integer, inclusion: { in: %w[1 2] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    it "admits a set whose members ARE of the declared type" do
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: [%w[a b]] } } }.not_to raise_error
+      expect { build_axn { expects :n, type: Integer, inclusion: { in: [1, 2] } } }.not_to raise_error
+    end
+
+    it "admits a set where only one member matches — one passing value is enough" do
+      expect { build_axn { expects :n, type: Integer, inclusion: { in: ["1", 2] } } }.not_to raise_error
+    end
+
+    it "admits a union type any member of which matches" do
+      expect { build_axn { expects :f, type: [String, Array], inclusion: { in: %w[a b] } } }.not_to raise_error
+    end
+
+    it "stands down on a dynamically-sourced set, which reflection may not read" do
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: :allowed_tags } } }.not_to raise_error
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: -> { [] } } } }.not_to raise_error
+    end
+
+    it "stands down on an Array-subclass set, judged by the same exact-class rule reflection uses" do
+      subclass = Class.new(Array)
+      set = subclass.new
+      set << "a"
+
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: set } } }.not_to raise_error
+    end
+
+    it "stands down on a Range set at a scalar position, where cross-type comparison really works" do
+      # `(1.0..5.0).cover?(3)` is true, so judging a Range's bounds against a scalar type would falsely refuse.
+      expect { build_axn { expects :n, type: Integer, inclusion: { in: 1..5 } } }.not_to raise_error
+      expect { build_axn { expects :n, type: Integer, inclusion: { in: 1.0..5.0 } } }.not_to raise_error
+    end
+
+    it "refuses a Range set at a container position, where nothing can be a member" do
+      # `<=>` is nil across unrelated classes, so `(1..5).cover?([1, 2])` is false however the array is spelled.
+      # Before the positional rule this declaration accepted `[1, 2]` element-wise while emitting no constraint
+      # at all — the schema said nothing and the runtime rejected everything.
+      expect { build_axn { expects :nums, type: Array, of: Integer, inclusion: { in: 1..5 } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+      expect { build_axn { expects :m, type: Hash, inclusion: { in: 1..5 } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    it "admits a Range whose bounds ARE the declared container, which can genuinely match" do
+      # `(["a"]..["z"]).cover?(["b"])` is true, so the bounds decide rather than the Range-ness.
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: ["a"]..["z"] } } }.not_to raise_error
+    end
+
+    it "stands down on an undeclared type and on a pseudo-type token" do
+      expect { build_axn { expects :f, inclusion: { in: %w[a b] } } }.not_to raise_error
+      expect { build_axn { expects :f, type: :params, inclusion: { in: %w[a b] } } }.not_to raise_error
+    end
+
+    it "stands down under tolerance, where nil is a passing value" do
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] }, optional: true } }.not_to raise_error
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] }, allow_nil: true } }.not_to raise_error
+    end
+
+    it "refuses a gated entry too — a gate removes the check, it does not give the set a reading" do
+      # Reflection is static-maximal (it treats every gate as open), so a gated can-never-match set still
+      # emits `{type: "array", enum: ["a","b"]}` — the unsatisfiable node the corollary forbids. Closed the
+      # check enforces nothing; open it rejects everything. Incoherent either way.
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b], if: :flag? } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] }, if: :flag? } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    it "leaves the tolerance case satisfiable on both sides, which is why tolerance stands the guard down" do
+      action = build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] }, optional: true }
+      prop = action.input_schema[:properties][:tags]
+
+      # The emitted node admits exactly `null`; the runtime admits exactly nil. Both sides agree, and the node
+      # is satisfiable — the contract is pointless, not broken, so it is not this guard's business.
+      expect(prop[:type]).to eq(%w[array null])
+      expect(prop[:enum]).to include(nil)
+      expect(action.call.ok?).to be(true)
+      expect(action.call(tags: %w[a b]).ok?).to be(false)
+    end
+  end
+
+  describe "comparison: and acceptance: are judged by their literals, not refused by key" do
+    it "refuses a comparison bound of the wrong type" do
+      # `["a"] > 1` raises NoMethodError on every call today, so refusing it at declaration is a strict
+      # improvement over the status quo.
+      expect { build_axn { expects :tags, type: Array, comparison: { greater_than: 1 } } }
+        .to raise_error(ArgumentError, /comparison:/)
+    end
+
+    it "admits a comparison bound that IS the declared container, which really works" do
+      action = build_axn { expects :tags, type: Array, comparison: { equal_to: ["a"] } }
+
+      expect(action.call(tags: ["a"]).ok?).to be(true)
+      expect(action.call(tags: ["b"]).ok?).to be(false)
+    end
+
+    it "admits a Hash bound, which compares by subset" do
+      action = build_axn { expects :meta, type: Hash, comparison: { greater_than_or_equal_to: { "read" => true } } }
+
+      expect(action.call(meta: { "read" => true, "w" => 1 }).ok?).to be(true)
+    end
+
+    it "stands down on a Symbol or Proc bound, which ActiveModel resolves per call" do
+      expect { build_axn { expects :tags, type: Array, comparison: { equal_to: :allowed } } }.not_to raise_error
+      expect { build_axn { expects :tags, type: Array, comparison: { equal_to: ->(_r) { ["a"] } } } }.not_to raise_error
+    end
+
+    it "refuses acceptance: whose effective set holds nothing of the declared type" do
+      # `acceptance: true` compares against ActiveModel's own ["1", true].
+      expect { build_axn { expects :tags, type: Array, acceptance: true } }
+        .to raise_error(ArgumentError, /acceptance:/)
+      expect { build_axn { expects :n, type: Integer, acceptance: true } }
+        .to raise_error(ArgumentError, /acceptance:/)
+    end
+
+    it "admits acceptance: whose accept set names the declared container" do
+      action = build_axn { expects :tags, type: Array, acceptance: { accept: [["a"]] } }
+
+      expect(action.call(tags: ["a"]).ok?).to be(true)
+    end
+
+    it "admits acceptance: true on a String, where \"1\" is a member of the default set" do
+      expect { build_axn { expects :flag, type: String, acceptance: true } }.not_to raise_error
+    end
+  end
+
+  describe "Validation::Base.literal_set_members" do
+    it "reads the hash long form, both keys, and the bare shorthand" do
+      expect(Axn::Validation::Base.literal_set_members({ in: %w[a b] })).to eq(%w[a b])
+      expect(Axn::Validation::Base.literal_set_members({ within: %w[a b] })).to eq(%w[a b])
+      expect(Axn::Validation::Base.literal_set_members(%w[a b])).to eq(%w[a b])
+    end
+
+    it "reads a Set, and a Hash's keys" do
+      expect(Axn::Validation::Base.literal_set_members({ in: Set.new(%w[a]) })).to eq(Set.new(%w[a]))
+      expect(Axn::Validation::Base.literal_set_members({ in: { "a" => 1 } })).to eq(%w[a])
+    end
+
+    it "answers nil for a set it may not read" do
+      expect(Axn::Validation::Base.literal_set_members({ in: :dynamic })).to be_nil
+      expect(Axn::Validation::Base.literal_set_members({ in: -> { [] } })).to be_nil
+      expect(Axn::Validation::Base.literal_set_members({ in: 1..5 })).to be_nil
+      expect(Axn::Validation::Base.literal_set_members({ in: Class.new(Array).new })).to be_nil
     end
   end
 end

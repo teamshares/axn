@@ -1231,7 +1231,7 @@ module Axn
         # type inference downstream depend on, and reflection must never run user code — a subclass set (or a
         # dynamic Symbol/Proc source) simply reflects no enum (returns nil).
         def inclusion_enum_values(inclusion)
-          values = inclusion.is_a?(Hash) ? (inclusion[:in] || inclusion[:within]) : inclusion
+          values = Axn::Validation::Base.declared_set_collection(inclusion)
           values if values.instance_of?(Array)
         end
 

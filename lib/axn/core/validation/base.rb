@@ -201,6 +201,38 @@ module Axn
         true
       end
 
+      # WHERE a clusivity set lives, for one validator entry: under one of `keys:` in the hash long form
+      # (`in:`/`within:` for inclusion/exclusion, `accept:` for acceptance), or the bare collection itself in
+      # the shorthand (`inclusion: %w[a b]`). The two enforce the same set at runtime, so every consumer reads
+      # them identically. THE single definition of that location, shared by the nil-membership judgment below,
+      # the declaration-time satisfiability guard (contract.rb `_reject_unsatisfiable_value_constraints!`), and schema
+      # reflection's `enum` (`Schema.inclusion_enum_values`), so no two can disagree about which collection one
+      # entry names.
+      def self.declared_set_collection(opt, keys: %i[in within])
+        return keys.filter_map { |key| opt[key] }.first if opt.is_a?(Hash)
+
+        opt
+      end
+
+      # The MEMBERS of a clusivity set, when they are members axn may read: a literal in-memory Array or Set, or
+      # a Hash (whose `include?` tests KEYS, so the keys are the members). Nil — "can't tell" — for everything
+      # else, because a judgment on a set must stay side-effect-free: a dynamic collection (a Symbol or Proc
+      # resolved against the record at validation time, an `ActiveRecord::Relation` whose `include?` would query
+      # the database) is never read, and neither is an Array SUBCLASS, which could override the traversal.
+      # Exact-class throughout (`instance_of?`), for the reason reflection's own read is (PRO-2944).
+      #
+      # THE single definition of "which members can be judged", shared by the nil-membership judgment below and
+      # by the declaration-time satisfiability guard, so the two cannot read one declaration differently.
+      def self.literal_set_members(opt, keys: %i[in within])
+        collection = declared_set_collection(opt, keys:)
+        members = collection.instance_of?(Hash) ? collection.keys : collection
+        return nil unless members.instance_of?(Array) || (defined?(Set) && members.instance_of?(Set))
+
+        members
+      rescue StandardError
+        nil
+      end
+
       # Tri-state: nil = can't tell; true/false = nil's membership in the set. Only inspected for in-memory
       # literal collections: reflection must stay side-effect-free, so a dynamic collection (e.g. an
       # ActiveRecord::Relation, whose `include?` would query the database) is treated as unknown (nil).
@@ -212,16 +244,10 @@ module Axn
       # compares a value against a literal set — `in:`/`within:` for inclusion/exclusion, `accept:` for
       # acceptance.
       def self.set_includes_nil?(opt, keys: %i[in within])
-        # The set is the collection under one of `keys` (hash long form) or the bare collection itself
-        # (shorthand — inclusion: %w[a b], exclusion: [nil, "x"]); the two are equivalent at runtime, so
-        # nil-membership is judged the same for both.
-        collection = opt.is_a?(Hash) ? keys.filter_map { |key| opt[key] }.first : opt
-        return false if collection.is_a?(Range)
+        return false if declared_set_collection(opt, keys:).is_a?(Range)
 
-        # A Hash is a collection ActiveModel accepts, and its `include?` tests KEYS — so the keys are the
-        # members whose nil-membership is asked, judged by the same identity rule as any other set.
-        members = collection.instance_of?(Hash) ? collection.keys : collection
-        return nil unless members.instance_of?(Array) || (defined?(Set) && members.instance_of?(Set))
+        members = literal_set_members(opt, keys:)
+        return nil if members.nil?
 
         members.any? { |element| element.equal?(nil) }
       rescue StandardError
