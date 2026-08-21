@@ -145,6 +145,27 @@ RSpec.describe "an unsupported type: token" do
       expect { build_axn { expects :v, type: [Array, nil], of: Integer } }
         .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [Array, a value of class NilClass])")
     end
+
+    # The container derivation this defers to (`_declared_of_container!`) reads `type:`'s klass through the
+    # same safe `_declared_type_tokens` classifier this guard does — never `Kernel#Array()` — so a token
+    # whose `to_ary` lies about naming the container directly, or raises, cannot slip past the deferral
+    # (found by Codex review, round 4: the deferral bypassed the round-3 fix entirely, since it routes into
+    # a DIFFERENT function that had its own separate, unfixed `Array()` call).
+    it "still refuses a token whose to_ary lies about naming the container, even though of: is present" do
+      liar = Object.new
+      liar.define_singleton_method(:to_ary) { [Array] }
+
+      expect { build_axn { expects :v, type: liar, of: Integer } }
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [a value of class Object])")
+    end
+
+    it "reports the declaration error rather than a raising to_ary's own exception, even though of: is present" do
+      hostile = Object.new
+      hostile.define_singleton_method(:to_ary) { raise("to_ary ran") }
+
+      expect { build_axn { expects :v, type: hostile, of: Integer } }
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [a value of class Object])")
+    end
   end
 
   # `shape:` is NOT deferred to, unlike `of:` — deliberately. `shape:`'s own container check (via
@@ -384,13 +405,36 @@ RSpec.describe "an unsupported model: token" do
       expect { build_axn { expects :v, model: mod } }.not_to raise_error
     end
 
-    # Existing, unrelated to this guard: a falsy `klass:` is swallowed by `apply_syntactic_sugar`'s
-    # `||=` fallback (`false`/`nil` are both falsy in Ruby) and reclassified from the field name, so it
-    # already raises at declaration — just via `NameError` rather than this guard's `ArgumentError`, since
-    # the fallback runs before this guard ever sees the original value.
-    it "leaves the pre-existing false/nil declaration failure alone" do
-      expect { build_axn { expects :v, model: false } }.to raise_error(NameError, /uninitialized constant/)
-      expect { build_axn { expects :v, model: nil } }.to raise_error(NameError, /uninitialized constant/)
+    # `false`/`nil` are both falsy in Ruby, so `apply_syntactic_sugar`'s `options[:klass] ||= fields.first
+    # .to_s.classify` fallback used to swallow them into the SAME "please infer" path `model: true` takes —
+    # meaning `model: false` either raised a confusing `NameError: uninitialized constant User` (no such
+    # constant) or silently, successfully resolved through `User` (one happens to exist), depending on
+    # unrelated global state (found by Codex review, round 4). `_reject_falsy_model_klass!` now catches this
+    # before the sugar ever runs, regardless of what else the app defines.
+    it "rejects a falsy klass: outright, regardless of whether the inferred constant happens to exist" do
+      stub_const("V", Class.new { def self.find(_id) = new })
+
+      message = "model: klass: false/nil is not a type to resolve a record through — pass `model: true` " \
+                "(or omit klass: entirely) to infer the class from the field name, or name the class explicitly."
+      expect { build_axn { expects :v, model: false } }.to raise_error(ArgumentError, message)
+      expect { build_axn { expects :v, model: nil } }.to raise_error(ArgumentError, message)
+      expect { build_axn { expects :v, model: { klass: false } } }.to raise_error(ArgumentError, message)
+      expect { build_axn { expects :v, model: { klass: nil } } }.to raise_error(ArgumentError, message)
+    end
+
+    it "leaves model: true alone, the one falsy-adjacent spelling that means please infer" do
+      stub_const("V", Class.new { def self.find(_id) = new })
+
+      expect { build_axn { expects :v, model: true } }.not_to raise_error
+    end
+
+    # `model: { finder: ... }` with no `klass:` at all infers the class exactly as `model: true` does,
+    # only overriding the finder — a documented, spec-covered spelling (`reader_alias_spec.rb`) this guard
+    # must not treat as "explicitly falsy": an ABSENT key is not the same state as one written as `nil`.
+    it "leaves a klass:-less bag alone" do
+      stub_const("V", Class.new { def self.find(_id) = new })
+
+      expect { build_axn { expects :v, model: { finder: :find } } }.not_to raise_error
     end
   end
 end

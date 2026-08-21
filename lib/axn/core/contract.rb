@@ -2301,6 +2301,7 @@ module Axn
         def _canonicalize_validator_options!(validations, fields)
           validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
           _reject_unsupported_type_klass!(validations)
+          _reject_falsy_model_klass!(validations)
           validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
           _reject_unsupported_model_klass!(validations)
           validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
@@ -2330,7 +2331,12 @@ module Axn
         # carry prescribes a fix with nowhere to land. Supplied by the caller rather than inferred, so the two
         # spellings cannot drift apart from the two call sites.
         def _declared_of_container!(declared_klass, option:)
-          declared = Array(declared_klass)
+          # `_declared_type_tokens`, not `Array(declared_klass)`: the latter tries the value's own `to_ary`
+          # (then `to_a`) before wrapping it, so a caller-supplied klass defining either decided how it got
+          # read here — a `to_ary` returning `[Array]` would wave a genuinely unsupported `type:` through as
+          # though it named the container directly, and one that raises would replace this declaration error
+          # with whatever it threw (PRO-3207, Codex review round 4).
+          declared = _declared_type_tokens(declared_klass)
           container = declared.first if declared.size == 1
           # Identity, not `==`: the declared class is the caller's, and one answering `==` for its own
           # purposes would otherwise choose which grammar its bag is held to.
@@ -2472,6 +2478,48 @@ module Axn
           _reject_unsupported_type_token!(tokens, "type:")
         end
 
+        # `ModelValidator.apply_syntactic_sugar`'s `options[:klass] ||= fields.first.to_s.classify` treats
+        # EVERY falsy `klass:` — not just the `true`/absent spellings that mean "please infer" — as a request
+        # to infer: `model: false` and `model: {klass: nil}` fall into the same `||=` as `model: true` and
+        # silently become "please infer" too, an accident of `||=` treating `false` and `nil` as
+        # indistinguishable from "not yet set" (PRO-3207, Codex review round 4). That makes the SAME
+        # declaration mean two different things depending on unrelated global state: `model: false` raises
+        # `NameError: uninitialized constant User` when no such constant exists, and silently, successfully
+        # resolves through `User` when one happens to — an author's boolean typo (`false` for `true`) either
+        # blows up or quietly works depending on what else the app happens to define.
+        #
+        # Never documented as a spelling (`model: true`/`model: TheModelClass`/`model: { klass:, finder: }`
+        # are the only ones `docs/reference/class.md` and `AGENTS-consuming.md` show), so nothing legitimate
+        # is given up by refusing it outright — but it must run BEFORE the sugar's `||=` erases the
+        # distinction between "explicitly false/nil" and "not supplied at all", which is why this is a
+        # separate guard rather than folded into `_reject_unsupported_model_klass!` below (that one runs
+        # AFTER sugar, once the erasure has already happened). Keyed on `carries_key?`, not mere nil-ness, so
+        # an absent `klass:` — the legitimate `model: { finder: :find_by_slug }`, which infers the class and
+        # only overrides the finder — is untouched; only a `klass:` the author WROTE, and wrote as `false`
+        # or `nil`, is refused. `true` is excluded on the same terms: it is the one falsy-adjacent value that
+        # unambiguously means "please infer", checked by identity (`.equal?`) so a caller's own `==` never
+        # decides whether its object reads as `true`.
+        def _reject_falsy_model_klass!(validations)
+          return unless validations.key?(:model)
+
+          raw = validations[:model]
+          bag = Internal::ShapeGraph.hash_or_nil(raw)
+
+          if nil.equal?(bag)
+            klass = raw
+          else
+            return unless Internal::ShapeGraph.carries_key?(bag, :klass)
+
+            klass = bag[:klass]
+          end
+
+          return unless false.equal?(klass) || nil.equal?(klass)
+
+          raise ArgumentError,
+                "model: klass: false/nil is not a type to resolve a record through — pass `model: true` (or " \
+                "omit klass: entirely) to infer the class from the field name, or name the class explicitly."
+        end
+
         # `model:`'s `klass:` has the identical hole `_reject_unsupported_type_klass!` closes for `type:` —
         # `ModelValidator#validate_each` builds a `TypeValidator` over the same bag and delegates, so a token
         # outside its grammar reaches the same `value.is_a?(token)` and raises the same bare
@@ -2487,9 +2535,9 @@ module Axn
         # legitimate use to preserve (no spec, doc, or downstream consumer declares `model:` with a union or
         # a pseudo-type).
         #
-        # `ModelValidator.apply_syntactic_sugar` already guarantees `klass:` is never nil/false/a String by
-        # the time this runs — a falsy value falls back to the field name classified, and a String is
-        # `constantize`d — so what survives to here either is already a real Class/Module or is a value
+        # `_reject_falsy_model_klass!` (above) already refused the one falsy `klass:` that `apply_syntactic_sugar`
+        # would otherwise silently reinterpret as "please infer" — so by the time this runs, whatever
+        # survived is either a real Class/Module (or a String already `constantize`d into one) or a value
         # nothing upstream could make sense of either.
         def _reject_unsupported_model_klass!(validations)
           return unless validations.key?(:model)
@@ -2818,12 +2866,17 @@ module Axn
         # StandardError escapes every rescue meant to settle it. Every consumer of a declared `type:`/`of:`
         # token goes through this one function, so fixing the coercion here closes it at the bare axis, a
         # bag's `klass:`, and a field's own `type:` at once.
+        #
+        # `nil` is the one value `Array()` special-cases (`Array(nil) == []`) rather than wrapping — kept
+        # identical here (`nil.equal?`, an identity check `nil` itself answers rather than the declared
+        # value) so "no type: at all" still renders the empty-list message every caller already has, instead
+        # of a one-token list naming `NilClass`.
         def _declared_type_tokens(declared)
           return [declared] unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
 
           case declared
           when ::Array then declared
-          else [declared]
+          else nil.equal?(declared) ? [] : [declared]
           end
         end
 
