@@ -278,9 +278,12 @@ RSpec.describe "nil and empty axes" do
         impostor.define_singleton_method(:public_method_defined?) { |*| true }
 
         # Declared inside the type bag, since the bare-`type:` sugar asks a value `is_a?(Hash)` before this
-        # guard is ever reached.
+        # guard is ever reached. The verdict itself now belongs to `_reject_unsupported_type_klass!`
+        # (PRO-3207), which runs first and is also immune to a lying `is_a?`: it classifies through
+        # `case`/`when ::Module`, so the impostor is refused as an unsupported `type:` token before
+        # `allow_empty:`'s own guard ever asks it a question.
         expect { build(type: { klass: impostor }, allow_empty: true) }
-          .to raise_error(ArgumentError, /allow_empty:.*cannot be empty/)
+          .to raise_error(ArgumentError, /type: must name a type.*got a value of class Object/)
       end
     end
 

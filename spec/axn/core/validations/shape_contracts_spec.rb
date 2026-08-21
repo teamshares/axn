@@ -874,12 +874,16 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
 
       # A token that is neither a class nor a pseudo-type has no name to read, so it is described by its own
-      # class rather than by running its `inspect` — the one place the rendering diverges from the list's.
+      # class rather than by running its `inspect`. The verdict itself now belongs to
+      # `_reject_unsupported_type_klass!` (PRO-3207), which checks a member's `type:` unconditionally
+      # whenever it is declared — including beside a `shape:` — rather than deferring to this shape's own
+      # container derivation and risking a token that is a real class elsewhere in the union (`Hash`) hiding
+      # a non-class one (`"Hash"`, the String) from a check that only asks "is there exactly one class".
       it "describes a non-class token by its class instead of inspecting it" do
         expect { declared_with({ type: ["Hash", Hash], shape: { members: [leaf] } }) }
           .to raise_error(ArgumentError,
-                          "a shape block requires a single structured type: (Array, Hash, or a class) — " \
-                          "got [a value of class String, Hash]")
+                          "type: must name a type — a Class, a union of them, or one of :boolean, :uuid, :params " \
+                          "(got a value of class String)")
       end
 
       # The `container:` a raw `shape:` supplies is the CALLER's object, and `container == Array` dispatches
