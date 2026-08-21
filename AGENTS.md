@@ -170,8 +170,12 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   it as a deferral target would point the deferral at the method deferring to it), and `::Object`
   with its own ancestors — `Kernel` owns `warn`/`inspect`/`hash`/`then`/`tap`, and deferring to
   those would silently redirect `warn("msg")` inside every action to stderr. The deferrable surface
-  is `SURRENDERABLE_OWNERS`' public instance methods minus `internal_name?`, derived exactly like
-  the reserved names above. `UNSURRENDERABLE` (`call`/`_run`/`initialize`) cannot be deferred and is
+  is `DEFERRAL_SOURCES`' public instance methods minus `internal_name?`, derived exactly like
+  the reserved names above. `DEFERRAL_SOURCES` is `SURRENDERABLE_OWNERS` plus
+  `Axn::Core::AmbientContext` alone — deferring an inherited `ambient_context` costs axn nothing
+  (internals bind that reader rather than dispatch it), which is a different question from whether a
+  *field* may take the name, so the two lists diverge for that one module on purpose. Nowhere else
+  should they. `UNSURRENDERABLE` (`call`/`_run`/`initialize`) cannot be deferred and is
   refused at the execution funnel rather than at include time, because only the finished class
   answers it — and on EVERY call rather than once per class, because the hierarchy it asks about
   stays mutable for as long as the process runs and Ruby offers no hook for "an ancestor was

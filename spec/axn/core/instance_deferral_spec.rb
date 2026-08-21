@@ -1177,15 +1177,6 @@ RSpec.describe Axn::Core::InstanceDeferral do
       end
     end
 
-    it "refuses ambient_context, a sentinel rather than a convenience" do
-      expect do
-        Class.new do
-          include Axn
-          prefer_axn :ambient_context
-        end
-      end.to raise_error(Axn::ContractViolation, /AmbientContext/)
-    end
-
     it "refuses a Ruby-owned name" do
       expect do
         Class.new do
@@ -1309,6 +1300,80 @@ RSpec.describe Axn::Core::InstanceDeferral do
 
         expect(described_class.definers(action)).to eq(log: Axn::Core::Logging::InstanceMethods)
       end
+    end
+  end
+
+  # `ambient_context` is deferrable like the other seventeen sugar names (see
+  # `Axn::Internal::NameOwnership::DEFERRAL_SOURCES`) even though it stays excluded from
+  # `SURRENDERABLE_OWNERS` and so remains refused to a field declaration — deferral and declaration are
+  # different questions, and this is the one name they answer differently for.
+  describe "the ambient_context deferral" do
+    let(:parent) { Class.new { def ambient_context = "PARENT-AMBIENT" } }
+
+    it "hands an inherited ambient_context to the parent, like any other sugar name" do
+      action = Class.new(parent) { include Axn }
+
+      expect(action.send(:new).ambient_context).to eq("PARENT-AMBIENT")
+      expect(described_class.definers(action)).to eq(ambient_context: parent)
+    end
+
+    it "still resolves ambient subfields internally, bypassing the deferral entirely" do
+      action = Class.new(parent) do
+        include Axn
+        expects :company_id, on: :ambient_context, type: Integer
+        exposes :cid
+        def call = expose(cid: company_id)
+      end
+
+      result = action.call(ambient_context: { company_id: 42 })
+
+      expect(result).to be_ok
+      expect(result.cid).to eq(42)
+    end
+
+    it "warns once, the same way every other deferred name does" do
+      logger = instance_double(Logger, info: nil, debug: nil)
+      warnings = []
+      allow(logger).to receive(:warn) { |msg| warnings << msg }
+      allow(Axn.config).to receive(:logger).and_return(logger)
+      described_class.send(:_reset_warned_for_specs!)
+
+      action = Class.new(parent) { include Axn }
+      action.call
+
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to include("#ambient_context", "prefer_inherited", "prefer_axn")
+    end
+
+    it "accepts prefer_inherited, confirming the deferral" do
+      action = Class.new(parent) do
+        include Axn
+        prefer_inherited :ambient_context
+      end
+
+      expect(action.send(:new).ambient_context).to eq("PARENT-AMBIENT")
+    end
+
+    it "accepts prefer_axn, putting axn's own implementation back in front" do
+      action = Class.new(parent) do
+        include Axn
+        prefer_axn :ambient_context
+      end
+
+      expect(action.send(:new).ambient_context).to eq({})
+      owner = Axn::Internal::NameOwnership.owner_of(action, :ambient_context)
+      expect(owner).to eq(Axn::Core::AmbientContext)
+    end
+
+    # The declaration-time refusal is untouched: `ambient_context` is a sentinel a field can never
+    # take, whatever the deferral surface now permits.
+    it "still refuses a field declaration named ambient_context" do
+      expect do
+        Class.new do
+          include Axn
+          expects :ambient_context
+        end
+      end.to raise_error(Axn::ContractViolation, /AmbientContext/)
     end
   end
 end

@@ -49,8 +49,8 @@ module Axn
           next if _axn_core_owned?(owner)
 
           # Read lazily, and shared across the rest of the chain: on the ordinary action, whose hierarchy declares
-          # none of the seventeen deferrable names, the chain ends at axn's own declaration and neither ancestry
-          # read below is paid at all — seventeen times per `include Axn` being what this one answers for.
+          # none of the eighteen deferrable names, the chain ends at axn's own declaration and neither ancestry
+          # read below is paid at all — eighteen times per `include Axn` being what this one answers for.
           own_side ||= _own_side(base)
           next if _same_module?(own_side, owner)
           # Ruby's own, not the user's hierarchy: `Kernel` owns `warn`, `inspect`, `hash`, `then` and `tap`, and
@@ -170,7 +170,7 @@ module Axn
       # names below, plus `Axn` itself behind them. None of the five declares a deferrable name, or one of those
       # three, today.
       #
-      # For one of the seventeen DEFERRABLE names, all five behave alike and the loss is total: `_collect` finds
+      # For one of the eighteen DEFERRABLE names, all five behave alike and the loss is total: `_collect` finds
       # the module as a foreign definer, so every action in every app records a deferral to it, hands the name
       # over, and warns its author at first run to declare `prefer_inherited :log` about a module they never
       # wrote.
@@ -195,10 +195,16 @@ module Axn
       # `module_function` already made the instance copy private; this makes the module-level one match.
       private_class_method :_axn_core_owned?
 
-      # The instance-side names axn will hand to a user's own hierarchy: the public helpers its surrenderable
-      # modules own, minus the internals a leading underscore marks. Which modules and which underscores are
-      # NameOwnership's answers rather than a second opinion, so the set of sugar axn is willing to lose cannot
-      # drift from the set a declaration is allowed to take.
+      # The instance-side names axn will hand to a user's own hierarchy: the public helpers its
+      # deferral-source modules own, minus the internals a leading underscore marks. Which modules and
+      # which underscores are NameOwnership's answers rather than a second opinion, so the set of sugar
+      # axn is willing to lose cannot drift from the set a declaration is allowed to take.
+      #
+      # `DEFERRAL_SOURCES` rather than `SURRENDERABLE_OWNERS`: the two are almost the same list, but not
+      # quite — `Axn::Core::AmbientContext` is excluded from the latter (a field declaration may never
+      # take `ambient_context`, see that constant's comment) while included in the former (an inherited
+      # `ambient_context` may still be silently deferred to, exactly like any other sugar name, since
+      # internals reach the ambient reader by binding it rather than dispatching on the action).
       #
       # PUBLIC only, which is where this set is narrower than `conflict_for`: that guard counts a private helper,
       # because a reader defined on the action shadows one as completely as a public one, but a private helper is
@@ -209,7 +215,7 @@ module Axn
       # Defined with an explicit `self.` receiver rather than inside the `module_function` block above, which
       # would also stamp a private instance copy onto every action and land the memo on the action instead of here.
       def self.deferrable_names
-        @deferrable_names ||= Axn::Internal::NameOwnership::SURRENDERABLE_OWNERS.flat_map do |mod|
+        @deferrable_names ||= Axn::Internal::NameOwnership::DEFERRAL_SOURCES.flat_map do |mod|
           Axn::Internal::NativeMethods.own_public_instance_methods(mod)
         end.reject { |name| Axn::Internal::NameOwnership.internal_name?(name) }.uniq.freeze
       end

@@ -52,7 +52,12 @@ RSpec.shared_examples "a registry" do
 
     it "initializes items if not already done" do
       described_class.clear!
-      expect(described_class).to receive(:all).and_call_original
+      # `at_least(:once)` rather than the implicit exactly-once: axn's own suite restores
+      # `Axn::Strategies`' registered set through this same public reader after every example (see
+      # `spec/spec_helper.rb`), which is a second, unrelated call to `.all` a host app's spec suite
+      # would never make. The property this asserts — `register` calls `all` at all, rather than
+      # reading `@items` around it — holds either way.
+      expect(described_class).to receive(:all).at_least(:once).and_call_original
       described_class.register(:custom, custom_item)
     end
   end

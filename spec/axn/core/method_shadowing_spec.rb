@@ -296,16 +296,17 @@ RSpec.describe Axn::Core::MethodShadowing do
   describe ".deferrable_names" do
     subject(:names) { described_class.deferrable_names }
 
-    it "is every public helper axn's surrenderable modules own" do
+    it "is every public helper axn's deferral-source modules own" do
       expect(names).to include(:fail!, :done!, :forward!)
       expect(names).to include(:result, :inputs, :expose, :default_error, :default_success)
       expect(names).to include(:execution_context, :set_execution_context, :clear_execution_context)
       expect(names).to include(:log, :debug, :info, :warn, :error, :fatal)
-      expect(names.size).to eq(17)
+      expect(names).to include(:ambient_context)
+      expect(names.size).to eq(18)
     end
 
-    it "is derived from SURRENDERABLE_OWNERS rather than listed" do
-      derived = Axn::Internal::NameOwnership::SURRENDERABLE_OWNERS.flat_map do |mod|
+    it "is derived from DEFERRAL_SOURCES rather than listed" do
+      derived = Axn::Internal::NameOwnership::DEFERRAL_SOURCES.flat_map do |mod|
         Axn::Internal::NativeMethods.own_public_instance_methods(mod)
       end
       expect(names).to match_array(derived.reject { |n| n.to_s.start_with?("_") }.uniq)
@@ -316,8 +317,14 @@ RSpec.describe Axn::Core::MethodShadowing do
       expect(names).not_to include(:_forward_to_class, :_propagate_sub_result_outcome!)
     end
 
-    it "excludes ambient_context, which is a sentinel rather than a convenience" do
-      expect(names).not_to include(:ambient_context)
+    # The canary against the two lists re-merging: `ambient_context` is deferrable (an inherited
+    # method by that name may be silently handed over, see DEFERRAL_SOURCES) but NOT surrenderable (a
+    # field declaration may never take the name, see SURRENDERABLE_OWNERS) — two different questions
+    # this module is deliberately allowed to answer differently for this one name alone.
+    it "includes ambient_context here, but NameOwnership still refuses it to a declaration" do
+      expect(names).to include(:ambient_context)
+      expect(Axn::Internal::NameOwnership.surrenderable?(Axn::Core::AmbientContext)).to be false
+      expect(Axn::Internal::NameOwnership.deferral_source?(Axn::Core::AmbientContext)).to be true
     end
 
     it "excludes private helpers, which are not a surface a user calls" do
