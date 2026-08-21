@@ -101,19 +101,31 @@ RSpec.describe "a validator at a container position" do
   end
 
   describe "nil membership is unaffected" do
-    # A nil was never an Array, so it never took Clusivity's Array branch — the nil-tolerance judgment that
-    # drives requiredness and nullability read the whole value before this change and still does.
-    it "keeps a field optional when its inclusion set contains nil" do
-      action = build_axn { expects :tags, type: Array, inclusion: { in: [nil, %w[a]] } }
-
-      expect(action.input_schema[:required]).not_to include("tags")
-      expect(action.call.ok?).to be(true)
+    # A nil was never an Array, so it never took Clusivity's Array branch — the judgment that drives
+    # requiredness and nullability read the whole value before this change and still does. Asserted on the
+    # judgment itself, because a field's requiredness is decided by its OTHER validators too: `expects` applies
+    # a default `presence: true`, which rejects nil whatever the inclusion set holds.
+    it "still reads nil's membership in a literal set" do
+      expect(Axn::Validation::Base.set_includes_nil?({ in: [nil, ["a"]] })).to be(true)
+      expect(Axn::Validation::Base.set_includes_nil?({ in: [["a"]] })).to be(false)
+      expect(Axn::Validation::Base.set_includes_nil?([nil, ["a"]])).to be(true)
     end
 
-    it "keeps a field required when its inclusion set does not contain nil" do
-      action = build_axn { expects :tags, type: Array, inclusion: { in: [%w[a]] } }
+    it "admits nil under explicit tolerance while matching the rest of the set whole-value" do
+      action = build_axn { expects :tags, type: Array, inclusion: { in: [nil, ["a"]] }, optional: true }
 
-      expect(action.input_schema[:required]).to include("tags")
+      expect(action.call.ok?).to be(true)
+      expect(action.call(tags: ["a"]).ok?).to be(true)
+      expect(action.call(tags: ["b"]).ok?).to be(false)
+    end
+
+    it "reflects the nullable pair and the nil-bearing enum together" do
+      prop = build_axn do
+        expects :tags, type: Array, inclusion: { in: [nil, ["a"]] }, optional: true
+      end.input_schema[:properties][:tags]
+
+      expect(prop[:type]).to eq(%w[array null])
+      expect(prop[:enum]).to eq([nil, ["a"]])
     end
   end
 end
