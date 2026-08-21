@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/testing/spec_helpers"
+require "bigdecimal" # non-Rails specs don't autoload it
 
 # One positional rule: a validator constrains the value AT THE POSITION IT IS DECLARED AT. `of:` is how a
 # declaration descends a level. ActiveModel's Clusivity#include? special-cases an Array VALUE
@@ -230,6 +231,11 @@ RSpec.describe "a validator at a container position" do
         .to raise_error(ArgumentError, /inclusion: on :tags can never match.*of:/m)
     end
 
+    it "names the declared type in the message, not the field name" do
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] } } }
+        .to raise_error(ArgumentError, /inclusion: on :tags can never match — nothing it compares against is a Array/)
+    end
+
     it "refuses the bare-Array shorthand identically" do
       expect { build_axn { expects :tags, type: Array, inclusion: %w[a b] } }
         .to raise_error(ArgumentError, /inclusion:/)
@@ -294,8 +300,10 @@ RSpec.describe "a validator at a container position" do
         .to raise_error(ArgumentError, /inclusion:/)
     end
 
-    it "admits a Range whose bounds ARE the declared container, which can genuinely match" do
-      # `(["a"]..["z"]).cover?(["b"])` is true, so the bounds decide rather than the Range-ness.
+    it "stands down on a Range whose bounds are the declared container, rather than certifying it" do
+      # Clusivity picks `include?` for a Range whose begin is not Numeric/Time, and
+      # `(["a"]..["z"]).include?(["b"])` raises TypeError — so this fails every call. Standing down leaves that
+      # ActiveModel behavior exactly as it is; refusing would be this guard claiming knowledge it does not have.
       expect { build_axn { expects :tags, type: Array, inclusion: { in: ["a"]..["z"] } } }.not_to raise_error
     end
 
@@ -305,8 +313,50 @@ RSpec.describe "a validator at a container position" do
     end
 
     it "stands down under tolerance, where nil is a passing value" do
-      expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] }, optional: true } }.not_to raise_error
+      action = build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] }, optional: true }
+      expect(action.call.ok?).to be(true)
+
       expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] }, allow_nil: true } }.not_to raise_error
+    end
+
+    it "stands down on a comparison bound in the same numeric family as the declared type" do
+      # `1.5 > 0`, `3 > 1.5`, and BigDecimal compares with either — none of these bounds is the declared
+      # type, but every one of them really does compare, so refusing them would be over-restriction.
+      expect { build_axn { expects :n, type: Float, comparison: { greater_than: 0 } } }.not_to raise_error
+      expect { build_axn { expects :n, type: Integer, comparison: { greater_than: 1.5 } } }.not_to raise_error
+      expect { build_axn { expects :n, type: BigDecimal, comparison: { greater_than: 0 } } }.not_to raise_error
+    end
+
+    it "admits a passing value at runtime under that cross-family comparison bound" do
+      action = build_axn { expects :n, type: Float, comparison: { greater_than: 0 } }
+      expect(action.call(n: 1.5).ok?).to be(true)
+    end
+
+    it "stands down on a date/time bound against a declared type from the same family" do
+      expect { build_axn { expects :d, type: Date, comparison: { greater_than: Time.now } } }.not_to raise_error
+    end
+
+    it "stands down on an inclusion set whose numeric literal matches across the family" do
+      # `[0].include?(0.0)` is true, so an Integer literal in the set is a real match for a Float field.
+      expect { build_axn { expects :n, type: Float, inclusion: { in: [0, 1] } } }.not_to raise_error
+    end
+
+    it "admits the cross-family numeric member at runtime, not just at declaration" do
+      action = build_axn { expects :n, type: Float, inclusion: { in: [0, 1] } }
+      expect(action.call(n: 0.0).ok?).to be(true)
+    end
+
+    it "stands down when the declared type descends from the literal's class" do
+      # `Array#==` compares contents, so an instance of an Array subclass can equal a plain-Array literal.
+      subclass = Class.new(Array)
+      expect { build_axn { expects :tags, type: subclass, inclusion: { in: [%w[a b]] } } }.not_to raise_error
+    end
+
+    it "still refuses unrelated classes on both sides — the catch this guard exists for" do
+      expect { build_axn { expects :n, type: Integer, inclusion: { in: %w[1 2] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
     end
 
     it "refuses a gated entry too — a gate removes the check, it does not give the set a reading" do
@@ -358,6 +408,21 @@ RSpec.describe "a validator at a container position" do
       expect { build_axn { expects :tags, type: Array, comparison: { equal_to: ->(_r) { ["a"] } } } }.not_to raise_error
     end
 
+    it "admits a value the resolved Symbol/Proc bound really accepts at call time" do
+      action = build_axn do
+        expects :tags, type: Array, comparison: { equal_to: :allowed }
+        def allowed = ["a"]
+      end
+      expect(action.call(tags: ["a"]).ok?).to be(true)
+    end
+
+    it "declares other_than: with a wrong-type bound, because an inverted operator is vacuous, not unsatisfiable" do
+      # A wrong-type `other_than:` bound makes the check always PASS (`["a"] != 1` is true), the opposite of
+      # unsatisfiable, so this must NOT be refused.
+      action = build_axn { expects :tags, type: Array, comparison: { other_than: 1 } }
+      expect(action.call(tags: ["a"]).ok?).to be(true)
+    end
+
     it "refuses acceptance: whose effective set holds nothing of the declared type" do
       # `acceptance: true` compares against ActiveModel's own ["1", true].
       expect { build_axn { expects :tags, type: Array, acceptance: true } }
@@ -374,6 +439,14 @@ RSpec.describe "a validator at a container position" do
 
     it "admits acceptance: true on a String, where \"1\" is a member of the default set" do
       expect { build_axn { expects :flag, type: String, acceptance: true } }.not_to raise_error
+    end
+
+    it "stands down on a Hash accept set, which AcceptanceValidator reads as pairs, not keys" do
+      # `Array({"a" => 1})` is `[["a", 1]]` — pairs, not keys — so the shared set reader's "a Hash's members
+      # are its keys" rule (right for `inclusion:`) would misjudge this. Measured: `accept: { "a" => 1 }`
+      # accepts `["a", 1]` and rejects `"a"`.
+      action = build_axn { expects :tags, type: Array, acceptance: { accept: { "a" => 1 } } }
+      expect(action.call(tags: ["a", 1]).ok?).to be(true)
     end
   end
 

@@ -3052,8 +3052,9 @@ module Axn
         # `TO_S_TARGETED_VALIDATOR_KEYS` for the measurements that took them back out.)
         #
         # Gates do NOT rescue one. This is a judgment about what the validator can MEAN at this position, and a
-        # closed `if:` skips a check rather than giving it a reading; the satisfiability guard below is the one
-        # that stands down for a gate, because there the gate genuinely leaves a passing value.
+        # closed `if:` skips a check rather than giving it a reading. The satisfiability guard below refuses
+        # through a gate too, for a different reason: reflection is static-maximal, so a gated can-never-match
+        # set still emits an unsatisfiable node.
         #
         # Every offender is named at once: an author who wrote two has one declaration to fix.
         def _reject_container_position_validators!(validations, fields:)
@@ -3084,10 +3085,11 @@ module Axn
         # and is as broken, so scoping this to containers would leave the identical hole open on every other
         # type.
         #
-        # Membership is judged by the runtime's own matcher (`TypeValidator.value_matches?`), so the guard cannot
-        # disagree with the check it is predicting — the guard/projection rule in AGENTS.md. It stands down
-        # wherever a passing value survives the check as written: a set it may not read, a type it cannot judge,
-        # or a tolerance flag, under which nil passes and the emitted node stays satisfiable (`type:
+        # Membership starts from the runtime's own matcher (`TypeValidator.value_matches?`), so the guard cannot
+        # disagree with the check it is predicting — the guard/projection rule in AGENTS.md — and widens from
+        # there only where a cross-class comparison genuinely passes (see `_literal_may_satisfy?`). It stands
+        # down wherever a passing value survives the check as written: a set it may not read, a type it cannot
+        # judge, or a tolerance flag, under which nil passes and the emitted node stays satisfiable (`type:
         # ["array","null"]` with nil in the enum).
         #
         # An `if:`/`unless:` gate does NOT stand it down, and that asymmetry is the point: reflection is
@@ -3095,12 +3097,15 @@ module Axn
         # the unsatisfiable node the corollary forbids. A gate removes the check rather than giving the set a
         # reading: closed it enforces nothing, open it rejects everything.
         # The option keys each value-comparing validator reads its literals from. One judgment serves all three
-        # because they break the same way. Comparison's six are ActiveModel's own (activemodel 7.2.2.2,
-        # comparison.rb COMPARE_CHECKS).
+        # because they break the same way. `other_than` is deliberately ABSENT from comparison's list: it is an
+        # inverted operator, so a wrong-type bound makes the check always PASS rather than never — measured,
+        # `comparison: { other_than: 1 }` accepts `["a"]` — which is vacuous rather than unsatisfiable, the same
+        # reason `exclusion:` is not judged here either. The remaining five are ActiveModel's own non-inverted
+        # checks (activemodel 7.2.2.2, comparison.rb COMPARE_CHECKS).
         VALUE_CONSTRAINT_KEYS = {
           inclusion: %i[in within],
           acceptance: %i[accept],
-          comparison: %i[equal_to other_than greater_than greater_than_or_equal_to less_than less_than_or_equal_to],
+          comparison: %i[equal_to greater_than greater_than_or_equal_to less_than less_than_or_equal_to],
         }.freeze
 
         # AcceptanceValidator's own default set, used when an entry names none (`acceptance: true`) — so
@@ -3124,15 +3129,39 @@ module Axn
 
             literals = _judgeable_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?
-            next if literals.any? { |literal| klasses.any? { |klass| Validators::TypeValidator.value_matches?(literal, klass:) } }
+            next if literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
 
             raise ArgumentError,
                   "#{key}: on #{_declared_fields_label(fields)} can never match — nothing it compares against " \
-                  "is a #{klasses.map { |klass| _inspect_field_name(klass) }.join(' or ')}, so every value is " \
+                  "is a #{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so every value is " \
                   "rejected. A validator constrains the value at the position it is declared at: compare " \
                   "against literals of the declared type, and for a constraint on a container's CONTENTS " \
                   "express it as `validate: ->(value) { ... }` (a per-element spelling inside `of:` is not " \
                   "supported yet — PRO-3193)."
+          end
+        end
+
+        # Classes whose instances compare and equate ACROSS the family, so a literal of one can satisfy a
+        # declaration naming another: every Numeric with every other (`1 == 1.0`, `3 > 1.5`,
+        # `[1.0].include?(1)`), and the date/time trio, which Rails code mixes routinely. UNRELATED classes do
+        # not (`["1"].include?(1)` is false), which is what keeps judging them safe.
+        CROSS_COMPARABLE_FAMILIES = [[::Numeric], [::Date, ::Time, ::DateTime]].freeze
+
+        # Whether ONE literal could satisfy a constraint on a value of ONE declared klass. The runtime's own
+        # matcher answers first, so the guard cannot disagree with the type check about the same pair. The two
+        # further chances are what keep this from refusing ordinary declarations: a declared type DESCENDING
+        # from the literal's class can equal it (`==` on most values ignores class), and a literal in the same
+        # cross-comparable family can compare with it — `type: Float, comparison: { greater_than: 0 }` is an
+        # Integer bound on a Float field and compares perfectly well.
+        #
+        # Read through `Internal::Identity` so neither side's own methods decide a declaration.
+        def _literal_may_satisfy?(literal, klass)
+          return true if Validators::TypeValidator.value_matches?(literal, klass:)
+          return false unless klass.is_a?(::Module)
+          return true if klass <= Internal::Identity.class_of(literal)
+
+          CROSS_COMPARABLE_FAMILIES.any? do |family|
+            family.any? { |root| klass <= root } && family.any? { |root| Internal::Identity.kind?(literal, root) }
           end
         end
 
@@ -3145,7 +3174,11 @@ module Axn
         # read by `key?` rather than truthiness, since `equal_to: false` is a real bound.
         #
         # `acceptance:` names a set under `accept:`, defaulting to ActiveModel's own when absent. A bare scalar
-        # (`accept: "yes"`) is not a literal set the shared reader will read, so it stands down.
+        # (`accept: "yes"`) is not a literal set the shared reader will read, so it stands down. The shared set
+        # reader is NOT reused here: `AcceptanceValidator` tests `Array(accept).include?(value)`, and `Array()`
+        # on a Hash yields its `[key, value]` PAIRS rather than its keys — measured, `accept: { "a" => 1 }`
+        # accepts `["a", 1]` and rejects `"a"` — so `literal_set_members`'s "a Hash's members are its keys"
+        # rule (right for `inclusion:`, whose `include?` tests keys) is wrong for this validator.
         #
         # `inclusion:` delegates to the set reader, which also judges a Range's bounds at a container position.
         def _judgeable_constraint_literals(key, entry, option_keys, klasses)
@@ -3153,9 +3186,14 @@ module Axn
 
           opts = Axn::Validation::Base.validator_entry_options(entry)
           if key == :acceptance
-            return DEFAULT_ACCEPTANCE_SET.dup unless Internal::ShapeGraph.carries_key?(opts, :accept)
+            return DEFAULT_ACCEPTANCE_SET unless Internal::ShapeGraph.carries_key?(opts, :accept)
 
-            return Axn::Validation::Base.literal_set_members(opts, keys: %i[accept])
+            # Judge only the shapes `Array()` leaves alone (an Array or a Set); a Hash or a bare scalar stands
+            # the guard down rather than being read through the wrong rule.
+            accept = opts[:accept]
+            return nil unless accept.instance_of?(::Array) || (defined?(Set) && accept.instance_of?(::Set))
+
+            return accept
           end
 
           bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
@@ -3182,20 +3220,24 @@ module Axn
         # a dynamic source, since judging one would run the caller's own traversal.
         #
         # A RANGE is the one non-literal set that can still be judged, and only at a container position: a Range
-        # decides membership with `<=>`, which is nil across unrelated classes, so `(1..5).cover?([1, 2])` is
-        # false however the array is spelled — while `(["a"]..["z"]).cover?(["b"])` is TRUE, because Arrays
-        # compare with Arrays. So the BOUNDS are what decide, not the Range-ness, and they are exactly what the
+        # decides membership with `<=>`, which is nil across unrelated classes, so `(1..5).include?([1, 2])` is
+        # false however the array is spelled — while `(["a"]..["z"]).include?(["b"])` would need `<=>` between
+        # Arrays, which exists. So the BOUNDS are what decide, not the Range-ness, and they are exactly what the
         # membership test wants. Deliberately not extended past a container position: `(1.0..5.0).cover?(3)` is
         # true, so a Float-bounded Range on `type: Integer` is satisfiable and judging its bounds would falsely
         # refuse it. A beginless-and-endless Range yields no bounds and stands the guard down.
         def _judgeable_set_members(entry, klasses)
           collection = Axn::Validation::Base.declared_set_collection(entry)
           return Axn::Validation::Base.literal_set_members(entry) unless collection.is_a?(::Range)
-          return nil unless klasses.all? { |klass| CONTAINER_TYPE_TOKENS.any? { |container| container.equal?(klass) } }
+          return nil unless _all_container_tokens?(klasses)
 
           bounds = [collection.begin, collection.end].compact
           bounds.empty? ? nil : bounds
         end
+
+        # Whether every token names a container whose cross-class comparison is reliably false. THE single
+        # definition, shared by the to_s-targeted refusal and the Range judgment.
+        def _all_container_tokens?(tokens) = tokens.all? { |token| CONTAINER_TYPE_TOKENS.any? { |container| container.equal?(token) } }
 
         # Whether every type this declaration names is a container whose `to_s` is an inspect form. Answers
         # false for an undeclared type, a union carrying one non-container, and a pseudo-type token — each a
@@ -3209,7 +3251,7 @@ module Axn
           tokens = _declared_type_tokens_in(declared)
           return false if tokens.empty?
 
-          tokens.all? { |token| CONTAINER_TYPE_TOKENS.any? { |container| container.equal?(token) } }
+          _all_container_tokens?(tokens)
         end
 
         # The type tokens a FIELD declaration names, reading a `type:` bag's `klass:` where a bag was declared
