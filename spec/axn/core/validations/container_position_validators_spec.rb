@@ -352,6 +352,31 @@ RSpec.describe "a validator at a container position" do
       expect { build_axn { expects :tags, type: subclass, inclusion: { in: [%w[a b]] } } }.not_to raise_error
     end
 
+    it "admits a content-comparing subclass against a literal of its root" do
+      subclass = Class.new(Array)
+      action = build_axn { expects :tags, type: subclass, inclusion: { in: [[1]] } }
+
+      expect(action.call(tags: subclass.new([1])).ok?).to be(true)
+    end
+
+    it "refuses a literal whose class is merely an ancestor, where == is identity" do
+      base = Class.new
+      sub = Class.new(base)
+      literal = base.new
+
+      expect { build_axn { expects :f, type: sub, inclusion: { in: [literal] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    it "refuses a bare Object literal, which is an ancestor-instance of every declared type" do
+      literal = Object.new
+
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: [literal] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+      expect { build_axn { expects :name, type: String, comparison: { equal_to: literal } } }
+        .to raise_error(ArgumentError, /comparison:/)
+    end
+
     it "still refuses unrelated classes on both sides — the catch this guard exists for" do
       expect { build_axn { expects :n, type: Integer, inclusion: { in: %w[1 2] } } }
         .to raise_error(ArgumentError, /inclusion:/)

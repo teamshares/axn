@@ -3145,12 +3145,25 @@ module Axn
         # declaration naming another: every Numeric with every other (`1 == 1.0`, `3 > 1.5`,
         # `[1.0].include?(1)`), and the date/time trio, which Rails code mixes routinely. UNRELATED classes do
         # not (`["1"].include?(1)` is false), which is what keeps judging them safe.
+        #
+        # Deliberately not narrowed further: `type: Date, comparison: { greater_than: Time.now }` raises on
+        # every call outside Rails (bare `Date`/`Time` do not compare) but is legal once ActiveSupport's
+        # Date/Time extensions are loaded, and a `Complex` bound stands down here too. A declaration's
+        # legality must not depend on what happens to be loaded, so both stay admitted — the under-restricting
+        # direction, which this guard must prefer over refusing a declaration that can genuinely work.
         CROSS_COMPARABLE_FAMILIES = [[::Numeric], [::Date, ::Time, ::DateTime]].freeze
+
+        # Classes whose `==` compares CONTENTS rather than identity, so an instance of a subclass can equal a
+        # literal of the root (`SubArray.new([1]) == [1]` is true — measured). The subclass branch below is
+        # gated on these because `==` for an arbitrary ancestor is identity: without the gate, a literal of ANY
+        # ancestor disarms the guard, and a bare `Object.new` — an ancestor-instance of every declared type —
+        # disarms it universally.
+        VALUE_SEMANTICS_ROOTS = [::Array, ::Hash, ::String, (defined?(Set) ? ::Set : nil)].compact.freeze
 
         # Whether ONE literal could satisfy a constraint on a value of ONE declared klass. The runtime's own
         # matcher answers first, so the guard cannot disagree with the type check about the same pair. The two
-        # further chances are what keep this from refusing ordinary declarations: a declared type DESCENDING
-        # from the literal's class can equal it (`==` on most values ignores class), and a literal in the same
+        # further chances are what keep this from refusing ordinary declarations: a declared type descending
+        # from a content-comparing ROOT the literal's class IS can equal it, and a literal in the same
         # cross-comparable family can compare with it — `type: Float, comparison: { greater_than: 0 }` is an
         # Integer bound on a Float field and compares perfectly well.
         #
@@ -3158,10 +3171,22 @@ module Axn
         def _literal_may_satisfy?(literal, klass)
           return true if Validators::TypeValidator.value_matches?(literal, klass:)
           return false unless klass.is_a?(::Module)
-          return true if klass <= Internal::Identity.class_of(literal)
+          return true if _literal_shares_value_semantics_root?(literal, klass)
 
           CROSS_COMPARABLE_FAMILIES.any? do |family|
             family.any? { |root| klass <= root } && family.any? { |root| Internal::Identity.kind?(literal, root) }
+          end
+        end
+
+        # Whether the literal's class and the declared klass meet at ONE content-comparing root — the literal's
+        # class IS that root, and the declared klass descends from THAT SAME root. Both halves bind to one root
+        # deliberately: testing them against the list independently would pair a String literal with an Array
+        # subclass and stand the guard down for a declaration nothing can satisfy.
+        def _literal_shares_value_semantics_root?(literal, klass)
+          literal_class = Internal::Identity.class_of(literal)
+
+          VALUE_SEMANTICS_ROOTS.any? do |root|
+            literal_class.equal?(root) && (klass <= root)
           end
         end
 
