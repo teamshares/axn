@@ -19,6 +19,14 @@ module Axn
       ShapeValidator = Validators::ShapeValidator
       NonEmptinessValidator = Validators::NonEmptinessValidator
 
+      # ActiveModel's own two, subclassed for the positional reading (see WholeValueClusivity). Listed here for
+      # the same reason the axn-only validators are: `validates` resolves a validator by `const_get` from the
+      # class being declared on, so a constant here shadows `ActiveModel::Validations::InclusionValidator` for
+      # axn's one-off validator classes — top-level field, subfield, shape member and ContainerContents alike —
+      # and for nothing else the consuming app declares.
+      InclusionValidator = Validators::InclusionValidator
+      ExclusionValidator = Validators::ExclusionValidator
+
       # Normalize a scalar validator value the way ActiveModel's own `validates` does, so the tolerance
       # push-down (contract.rb `_parse_field_validations`) can layer allow_blank:/allow_nil: onto the
       # SAME options hash `validates` would build — the terse spelling (`numericality: true`,
