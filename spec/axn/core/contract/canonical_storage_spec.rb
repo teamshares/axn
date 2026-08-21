@@ -67,18 +67,16 @@ RSpec.describe "canonical storage of a container's contents" do
     expect(v[:of]).to include(values: Integer, container: Hash)
   end
 
-  it "canonicalizes the flat form at a nested position too" do
+  it "refuses the flat form at a nested position too" do
     sku = Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })
-    action = build_axn do
-      expects :outer, type: Hash do
-        field :rows, type: Array, of: Hash, shape: { members: [sku] }
-      end
-    end
-    rows = validations_for(action).dig(:shape, :members).first.validations
 
-    expect(rows[:shape]).to be_nil
-    expect(rows.dig(:of, :shape, :container)).to eq(Hash)
-    expect(rows.dig(:of, :shape, :members).map(&:field)).to eq([:sku])
+    expect do
+      build_axn do
+        expects :outer, type: Hash do
+          field :rows, type: Array, of: Hash, shape: { members: [sku] }
+        end
+      end
+    end.to raise_error(ArgumentError, /`shape:` on shape member `rows` distributes over an Array's elements/)
   end
 
   it "keeps a map's shape: beside its of: at the field" do
@@ -232,21 +230,25 @@ RSpec.describe "message parity across the canonicalization" do
   end
 end
 
-# The two spellings are ONE contract after canonicalization, so every bound has to charge them alike. The
-# depth budget is where that is load-bearing rather than tidy: a value walked against either spelling spends
-# two rungs per link — `OfValidator` descends the container to the element, then `ShapeValidator` descends
-# the element to its members — so a declaration walk that charged the flat spelling one rung per link would
-# accept a chain that raises `ArgumentError: a shape: graph nests more than 64 levels deep` on every call.
-RSpec.describe "the flat spelling and the bag it canonicalizes into share every bound" do
+# The block form and the bag it canonicalizes a raw distributing shape into are ONE contract after
+# canonicalization, so every bound has to charge them alike. The depth budget is where that is load-bearing
+# rather than tidy: a value walked against either spelling spends two rungs per link — `OfValidator` descends
+# the container to the element, then `ShapeValidator` descends the element to its members — so a declaration
+# walk that charged the block spelling one rung per link would accept a chain that raises `ArgumentError: a
+# shape: graph nests more than 64 levels deep` on every call.
+RSpec.describe "the block form and the bag it canonicalizes into share every bound" do
   def member(field, validations) = Axn::Core::Contract::ShapeConfig.new(field:, validations:)
 
   def leaf = { members: [member(:leaf, { type: { klass: String } })] }
 
-  # `type: Array` + a distributing `shape:`, chained.
-  def flat(depth)
-    return leaf if depth.zero?
+  # `type: Array` + a distributing block, chained — a raw `shape:` kwarg naming the same distributing
+  # structure is refused outright (PRO-3191), so a block is the only remaining spelling to compare the bag
+  # against.
+  def block_chain(depth)
+    return proc { field :leaf, type: String } if depth.zero?
 
-    { members: [member(:"m#{depth}", { type: { klass: Array }, shape: flat(depth - 1) })] }
+    inner = block_chain(depth - 1)
+    proc { field :"m#{depth}", type: Array, &inner }
   end
 
   # The same contract written the way canonicalization stores it.
@@ -266,6 +268,14 @@ RSpec.describe "the flat spelling and the bag it canonicalizes into share every 
     { "m#{depth}": [value(depth - 1)] }
   end
 
+  def declarable_block?(depth)
+    chain = block_chain(depth)
+    build_axn { expects(:payload, type: Hash, &chain) }
+    true
+  rescue ArgumentError
+    false
+  end
+
   def declarable?(shape)
     build_axn { expects :payload, type: Hash, shape: }
     true
@@ -273,28 +283,42 @@ RSpec.describe "the flat spelling and the bag it canonicalizes into share every 
     false
   end
 
+  def deepest_declarable_block
+    (1..Axn::Internal::ShapeGraph::MAX_NESTING).find { |d| !declarable_block?(d) } - 1
+  end
+
   def deepest_declarable(builder)
     (1..Axn::Internal::ShapeGraph::MAX_NESTING).find { |d| !declarable?(builder.call(d)) } - 1
   end
 
-  it "declares to exactly the same depth in either spelling" do
-    flat_depth = deepest_declarable(method(:flat))
-    expect(flat_depth).to eq(deepest_declarable(method(:bagged)))
+  it "refuses the flat spelling this bag canonicalizes, at any nesting depth" do
+    flat = { members: [member(:m3, { type: { klass: Array }, shape: { members: [member(:m2, { type: { klass: Array }, shape: leaf })] } })] }
+
+    expect { build_axn { expects :payload, type: Hash, shape: flat } }
+      .to raise_error(ArgumentError, /`shape:` on shape member `m3` distributes over an Array's elements/)
+  end
+
+  it "declares to exactly the same depth via a block chain as via the bag it canonicalizes into" do
+    block_depth = deepest_declarable_block
+    expect(block_depth).to eq(deepest_declarable(method(:bagged)))
     # Two rungs per link — the `of:` rung and the shape node below it — so half the budget, stated as
     # arithmetic rather than a literal so a change to it is a deliberate one rather than a drifting number.
-    expect(flat_depth).to eq(Axn::Internal::ShapeGraph::MAX_NESTING / 2)
+    expect(block_depth).to eq(Axn::Internal::ShapeGraph::MAX_NESTING / 2)
   end
 
   # The runtime half, at a depth the validator's per-link cost can actually reach — the walk is exponential in
   # the number of links, which is why this pins agreement rather than the cap itself.
-  it "validates identically in either spelling" do
-    [method(:flat), method(:bagged)].each do |builder|
-      shape = builder.call(6)
-      action = build_axn { expects :payload, type: Hash, shape: }
+  it "validates identically via a block chain as via the bag it canonicalizes into" do
+    chain = block_chain(6)
+    bag_shape = bagged(6)
+    block_action = build_axn { expects(:payload, type: Hash, &chain) }
+    bag_action = build_axn { expects :payload, type: Hash, shape: bag_shape }
 
+    [block_action, bag_action].each do |action|
       expect(action.call(payload: value(6))).to be_ok
-      expect(action.call(payload: value(6).tap { |v| v[:m6][0][:m5][0][:m4][0][:m3][0][:m2][0][:m1] = [{ leaf: 1 }] }).exception.message)
-        .to include("leaf is not a String")
+      corrupted = value(6)
+      corrupted[:m6][0][:m5][0][:m4][0][:m3][0][:m2][0][:m1] = [{ leaf: 1 }]
+      expect(action.call(payload: corrupted).exception.message).to include("leaf is not a String")
     end
   end
   # A graph EXACTLY at the cap declares and then validates — the pairing the whole depth offset exists to keep
@@ -304,12 +328,12 @@ RSpec.describe "the flat spelling and the bag it canonicalizes into share every 
   # the cap, and it costs milliseconds. The pair is what pins it — drop the fold's rung and the "refuses" side
   # moves, charge it twice and the "validates" side does.
   it "declares AND validates a folded graph that lands exactly on the cap" do
-    at_cap = { members: [member(:m, { type: Array, of: of_chain(Axn::Internal::ShapeGraph::MAX_NESTING - 2) })] }
-    one_deeper = { members: [member(:m, { type: Array, of: of_chain(Axn::Internal::ShapeGraph::MAX_NESTING - 1) })] }
-    action = build_axn { expects :rows, type: Array, shape: at_cap }
+    at_cap = of_chain(Axn::Internal::ShapeGraph::MAX_NESTING - 2)
+    one_deeper = of_chain(Axn::Internal::ShapeGraph::MAX_NESTING - 1)
+    action = build_axn { expects(:rows, type: Array) { field :m, type: Array, of: at_cap } }
 
     expect(action.call(rows: [{ m: array_chain(Axn::Internal::ShapeGraph::MAX_NESTING - 1) }])).to be_ok
-    expect { build_axn { expects :rows, type: Array, shape: one_deeper } }
+    expect { build_axn { expects(:rows, type: Array) { field :m, type: Array, of: one_deeper } } }
       .to raise_error(ArgumentError, /an `of:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
   end
 
@@ -332,11 +356,11 @@ RSpec.describe "the flat spelling and the bag it canonicalizes into share every 
       .to raise_error(ArgumentError, /an `of:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
   end
 
-  # A distributing MEMBER shape (`type: Array` + `shape:`) costs the same two rungs a field's own does
-  # (`_snapshot_member_shape!`'s `rungs`) — but a chain built at one depth pays that charge just once either
-  # way, so only a REUSED member shape, judged again by its recorded height at the memo-hit above, exposes
-  # whether the two-rung distributing cost (and the one-rung non-distributing cost beside it) is actually
-  # charged rather than assumed.
+  # A REUSED member shape, judged again by its recorded height at the memo-hit above, exposes whether the
+  # one-rung member-shape cost is actually charged rather than assumed. There is no distributing counterpart
+  # to this test: a distributing member shape can no longer be reused by IDENTITY at all — the raw `shape:`
+  # spelling that could name one is refused (PRO-3191), and a block always builds a fresh Hash per
+  # declaration site, so no two positions can ever share the same object.
   describe "a member's own nested shape, reused deep enough for the memo to matter" do
     def wrap(depth, shared)
       return shared if depth.zero?
@@ -349,16 +373,6 @@ RSpec.describe "the flat spelling and the bag it canonicalizes into share every 
         member(:s, { type: { klass: Hash }, shape: shared }),
         member(:d, { type: { klass: Hash }, shape: wrap(depth, shared) }),
       ] }
-    end
-
-    it "charges a reused DISTRIBUTING member shape its two rungs" do
-      shared = { members: [member(:x, { type: { klass: Array }, shape: leaf })] }
-      at_cap = reused(Axn::Internal::ShapeGraph::MAX_NESTING - 3, shared)
-      one_deeper = reused(Axn::Internal::ShapeGraph::MAX_NESTING - 2, shared)
-
-      expect { build_axn { expects :payload, type: Hash, shape: at_cap } }.not_to raise_error
-      expect { build_axn { expects :payload, type: Hash, shape: one_deeper } }
-        .to raise_error(ArgumentError, /a `shape:` graph nested more than #{Axn::Internal::ShapeGraph::MAX_NESTING} levels deep/)
     end
 
     it "does not charge a reused NON-distributing member shape a second rung" do
