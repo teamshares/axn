@@ -158,7 +158,12 @@ module Axn
           end
         when Array
           CycleGuard.guard(data, seen, on_cycle: CycleGuard::ARRAY_PLACEHOLDER) do |nested|
-            data.map { |v| format_object(v, nested) }
+            # Composed into a String here, like the Hash branch above — NOT left as an Array for the
+            # parent to interpolate. An Array handed to `#{}` renders via Array#to_s (== #inspect),
+            # which re-inspects each already-formatted child String, escaping its quotes/backslashes
+            # again. Left uncomposed, that re-escaping compounds once per nesting level, making both
+            # the render cost and the emitted line's length exponential in nesting depth (PRO-3203).
+            "[#{data.map { |v| format_object(v, nested) }.join(', ')}]"
           end
         else
           # The conversion walks and rebuilds the structure itself, so a cycle nested inside raises
