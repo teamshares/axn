@@ -7,6 +7,7 @@ require "axn/internal/cycle_guard"
 require "axn/internal/identity"
 require "axn/internal/reflection/property_names"
 require "axn/internal/rendering"
+require "axn/internal/text"
 require "axn/extensions"
 require "axn/core/tagging"
 
@@ -183,7 +184,14 @@ module Axn
           is_relation = defined?(ActiveRecord::Relation) && Axn::Internal::Identity.kind?(data, ActiveRecord::Relation)
           return Axn::Internal::Rendering.class_name(data) if is_relation
 
-          data.inspect
+          # Through the shared renderer, not the raw `inspect`: a leaf can be any caller object, and one
+          # whose own `#inspect` returns non-ASCII bytes in a foreign encoding would otherwise sit in this
+          # value unguarded until a sibling leaf elsewhere in the same structure turns up a SECOND foreign
+          # encoding for the composing `.join` to collide with — raising Encoding::CompatibilityError out of
+          # the log line itself (or losing it entirely, swallowed by the best_effort boundary around this
+          # whole call). Renders byte-identical for ASCII/valid-UTF-8 (the overwhelming case), transcodes a
+          # legible foreign encoding, and escapes only bytes with no UTF-8 rendering at all.
+          Axn::Internal::Text.renderable(data.inspect)
         end
       end
     end

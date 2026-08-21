@@ -27,6 +27,38 @@ RSpec.describe Axn::Internal::CallLogger do
         described_class.send(:format_object, deeply_nested)
       end
     end
+
+    def be_readable_utf8
+      satisfy("be readable UTF-8") { |s| s.encoding == Encoding::UTF_8 && s.valid_encoding? }
+    end
+
+    # A leaf can be any caller object, and a custom `#inspect` that interpolates a foreign-encoded
+    # attribute directly (rather than calling `.inspect` on it) hands back non-ASCII bytes in that
+    # attribute's own encoding, unescaped — an ordinary pattern for a domain object's inspect string.
+    # Composing the Array/Hash branch's rendered children with `.join` raises
+    # `Encoding::CompatibilityError` once two SIBLING leaves disagree on a non-ASCII encoding, which
+    # `best_effort` then swallows, losing the log line entirely — unless each leaf is first run through
+    # the shared UTF-8-safe renderer.
+    def foreign_named(encoded_name)
+      Struct.new(:name) { def inspect = "#<Person name=#{name}>" }.new(encoded_name)
+    end
+
+    let(:latin1_leaf) { foreign_named("caf\xE9".dup.force_encoding("ISO-8859-1")) }
+    let(:utf8_leaf) { foreign_named("café") }
+
+    it "renders array elements whose #inspect disagrees on non-ASCII encoding, rather than raising" do
+      formatted = described_class.send(:format_object, [latin1_leaf, utf8_leaf])
+
+      expect(formatted).to be_readable_utf8
+      expect(formatted.scan("café").length).to eq(2)
+    end
+
+    it "renders hash values whose #inspect disagrees on non-ASCII encoding, rather than raising" do
+      formatted = described_class.send(:format_object, { a: latin1_leaf, b: utf8_leaf })
+
+      expect(formatted).to be_readable_utf8
+      expect(formatted.scan("café").length).to eq(2)
+    end
   end
 
   describe "#would_log?" do
