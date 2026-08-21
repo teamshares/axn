@@ -2441,65 +2441,35 @@ module Axn
         # not the bag one, and fold into this guard exactly as `_reject_unsupported_map_axis!` folds them into
         # itself rather than deferring.
         #
-        # Deferred when `of:` is also declared, or when a `shape:` is present and its container is one
-        # something ELSE is still going to check `type:` against: both hold `type:` to a STRICTLY NARROWER
-        # rule (Array or Hash only, since that class decides how the sibling option reads) and refuse every
-        # token this would, naming the classes that are actually legal there — see `_declared_of_container!`
-        # and `_shape_compatible_type!`/`_reject_non_class_container!`, which own those refusals. Firing here
-        # first would prescribe the weaker fix and cost the author a second edit.
+        # Deferred when `of:` is also declared: `_declared_of_container!` runs UNCONDITIONALLY whenever `:of`
+        # is present, no matter what it contains, and holds `type:` to a strictly narrower rule (Array or
+        # Hash only, since that class decides how `of:` reads) — naming the classes that are actually legal
+        # there. Firing here first would prescribe the weaker fix and cost the author a second edit.
         #
-        # `of:` defers UNCONDITIONALLY — `_of_container!`/`_declared_of_container!` runs whenever `:of` is
-        # present, no matter what it contains. A `shape:` is more subtle, because `_derive_raw_shape_container!`
-        # asks two DIFFERENT questions depending on what the author wrote, and only one of them is actually
-        # about `type:`:
-        #
-        # - No `container:` supplied (the block form, and a raw `shape:` that omits it): the container is
-        #   DERIVED from `type:` via `_shape_compatible_type!`, so a `type:` outside the narrower shape
-        #   grammar is refused there (or, for a scalar VALUE outside that grammar's class-keyed exclusion
-        #   list — e.g. `type: false` — passed through as the derived container and caught a line later by
-        #   the unconditional `_reject_non_class_container!` instead, since a derived container always
-        #   equals the value `type:` supplied). Either way `type:` is judged. Safe to defer.
-        # - An EXPLICIT `container:` supplied that is already a valid Module: derivation is skipped
-        #   entirely (the container is not nil), so `_shape_compatible_type!` never runs — and
-        #   `_reject_non_class_container!` passes, since the container itself is fine. `type:` is never
-        #   independently asked about AT ALL: `expects :v, type: false, shape: { members: [], container:
-        #   Hash }` declared cleanly and reached `value.is_a?(false)` on every call, the identical bare
-        #   `TypeError` this guard exists to close. NOT safe to defer — this is the one case this guard has
-        #   to catch itself.
-        #
-        # An explicit `container:` that is present but NOT a valid Module needs no special case: whatever it
-        # is, `_reject_non_class_container!` still raises on it unconditionally, same as the no-container
-        # path — so deferring is still safe there too, and the check below is only false for the one
-        # dangerous combination above.
+        # Deliberately NOT deferred to `shape:`, even though a shape's own container check often ALSO judges
+        # `type:` (`_shape_compatible_type!` derives the container from it when the shape supplies none) —
+        # unlike `of:`, that path is not unconditional: a shape supplying its own already-valid `container:`
+        # skips derivation entirely, and the container check that runs instead judges the CONTAINER, not
+        # `type:`. Detecting which of those two states applies means reading the shape's own `container:` —
+        # a caller-suppliable value — a second time independent of whatever the container-derivation code
+        # reads it as, and a `[]` that answers differently between the two reads (a hostile object, never an
+        # ordinary Hash) could make each side see a different verdict and let a bad `type:` through neither
+        # check. Checking `type:` here UNCONDITIONALLY whenever `shape:` is present removes the need to
+        # predict the other path's behavior at all — this guard's own verdict never depends on a second read
+        # of anything. The cost is one changed message: a bad `type:` beside a `shape:` now reports this
+        # guard's `type:`-specific wording (which the previous per-position spec pinned as the SHAPE's own
+        # "container: must be a class" message) instead — still an `ArgumentError` at declaration, and
+        # arguably the more directly useful one, since `container:` is often not a key the author wrote at
+        # all.
         def _reject_unsupported_type_klass!(validations)
           return unless validations.key?(:type)
           return if validations.key?(:of)
-          return if validations.key?(:shape) && !_shape_container_already_settled?(validations)
 
           declared = _declared_type_klass(validations)
           tokens = _declared_type_tokens(declared)
           raise ArgumentError, _unsupported_type_token_message("type:", declared) if tokens.empty?
 
           _reject_unsupported_type_token!(tokens, "type:")
-        end
-
-        # Whether a declared `shape:` already carries a `container:` that `_reject_non_class_container!` will
-        # wave through untouched — the one state in which nothing downstream is still going to look at
-        # `type:` at all (see the comment above). Classified through `hash_or_nil`/`case`/`when ::Module`,
-        # never the shape's own `key?`/`nil?`/`is_a?`, for the same reason every other read of a
-        # caller-supplied shape node is: one answering any of them on its own terms would pick whether this
-        # guard runs.
-        def _shape_container_already_settled?(validations)
-          shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
-          return false if nil.equal?(shape)
-
-          container = shape[:container]
-          return false if nil.equal?(container)
-
-          case container
-          when ::Module then true
-          else false
-          end
         end
 
         # `model:`'s `klass:` has the identical hole `_reject_unsupported_type_klass!` closes for `type:` —

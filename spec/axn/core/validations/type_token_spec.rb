@@ -131,11 +131,11 @@ RSpec.describe "an unsupported type: token" do
     end
   end
 
-  # `of:` and `shape:` both hold `type:` to a STRICTLY NARROWER rule (Array or Hash only, since that class
-  # decides how the sibling option reads) and refuse every token this guard would, naming the classes that
-  # are actually legal there. This guard defers entirely rather than firing first and prescribing the
-  # weaker fix.
-  describe "deferred to the narrower container refusal" do
+  # `of:` holds `type:` to a STRICTLY NARROWER rule (Array or Hash only, since that class decides how `of:`
+  # reads) and refuses every token this guard would, naming the classes that are actually legal there. This
+  # guard defers to it entirely rather than firing first and prescribing the weaker fix — `_declared_of_container!`
+  # runs unconditionally whenever `:of` is present, so deferring is always safe.
+  describe "deferred to the of: container refusal" do
     it "leaves a non-class type: beside of: to the container message" do
       expect { build_axn { expects :v, type: false, of: Integer } }
         .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [a value of class FalseClass])")
@@ -145,34 +145,66 @@ RSpec.describe "an unsupported type: token" do
       expect { build_axn { expects :v, type: [Array, nil], of: Integer } }
         .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [Array, a value of class NilClass])")
     end
+  end
 
-    it "leaves a non-class type: on a shape block to the shape message" do
+  # `shape:` is NOT deferred to, unlike `of:` — deliberately. `shape:`'s own container check (via
+  # `_shape_compatible_type!`/`_reject_non_class_container!`) often ALSO judges `type:`, but only when the
+  # shape supplies no `container:` of its own; a shape carrying its own already-valid one skips that
+  # derivation entirely, leaving `type:` unjudged by anything. Detecting which state applies would mean
+  # reading the shape's own `container:` a second time, independent of whatever the container-derivation
+  # code reads — and a hostile `[]` that answers differently between the two reads could let a bad `type:`
+  # slip through both checks (found by Codex review, round 2, on a raw shape MEMBER whose nested `shape:`
+  # was a Hash subclass with a stateful `[]`). Checking `type:` here UNCONDITIONALLY whenever `shape:` is
+  # present sidesteps the whole question — this guard's verdict never depends on reading anything twice.
+  describe "not deferred to shape:, even when a container check there would also catch it" do
+    it "still catches a non-class type: on a block-form shape" do
       expect { build_axn { expects(:v, type: false) { field :a, type: String } } }
-        .to raise_error(ArgumentError, /container.*must be a class/)
+        .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
     end
 
-    it "leaves a non-class union on a raw shape: to the shape message" do
+    it "still catches a non-class union on a raw shape:" do
       expect { build_axn { expects :v, type: ["Hash", Hash], shape: { members: [] } } }
-        .to raise_error(ArgumentError, "a shape block requires a single structured type: (Array, Hash, or a class) — " \
-                                       "got [a value of class String, Hash]")
+        .to raise_error(ArgumentError, unsupported("a value of class String"))
     end
 
-    # A raw `shape:` that supplies its OWN, already-valid `container:` never asks `_shape_compatible_type!`
-    # to derive one from `type:` — derivation is skipped whenever `container:` is present — and
-    # `_reject_non_class_container!` passes the explicit `Hash` through untouched, so nothing downstream
-    # ever independently checks `type:` at all. Deferring unconditionally on `shape:`'s mere presence left
-    # exactly this combination unguarded: it declared cleanly and reached `value.is_a?(false)` on every
-    # call, same as every other position this ticket closes.
+    # The exact combination Codex's round-1 finding named: a raw `shape:` supplying its own already-valid
+    # `container:` skips the shape's own derivation entirely, so this guard is the only thing that catches
+    # `type: false` here at all.
     it "still catches a non-class type: when the shape: supplies its own valid container:" do
       expect { build_axn { expects :v, type: false, shape: { members: [], container: Hash } } }
         .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
     end
 
-    # The container derived from `type:` and an explicit one are held to the same class-ness bar either
-    # way, so a BAD explicit container (rather than a bad `type:`) still gets the shape's own message,
-    # unaffected by this guard.
-    it "leaves a bad explicit container: to the shape message, independent of a bad type:" do
-      expect { build_axn { expects :v, type: false, shape: { members: [], container: 5 } } }
+    # The exact combination Codex's round-2 finding named: a raw shape MEMBER whose nested `shape:` is a
+    # Hash subclass with a stateful `[]` — answering `nil` the first time `:container` is read and a valid
+    # class the second — so a guard that reads it once to decide whether to defer, and trusts a LATER,
+    # independent read elsewhere to actually validate `type:`, can be fooled into checking nothing at all.
+    # This guard has no such gap: it never reads the shape's container, so there is nothing to fool.
+    it "still catches a non-class type: on a member whose nested shape: has a lying container reader" do
+      lying_shape = Class.new(Hash) do
+        def initialize(*)
+          super
+          @reads = 0
+        end
+
+        def [](key)
+          return super unless key == :container
+
+          @reads += 1
+          @reads == 1 ? nil : Hash
+        end
+      end.new
+      lying_shape[:members] = []
+      member = Axn::Core::Contract::ShapeConfig.new(field: :n, validations: { type: false, shape: lying_shape })
+
+      expect { build_axn { expects :m, type: Array, shape: { members: [member] } } }
+        .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+    end
+
+    # A GOOD `type:` still leaves a genuinely bad explicit `container:` to the shape's own message — this
+    # guard only ever speaks about `type:` itself, never about `container:`.
+    it "leaves a bad explicit container: (with a good type:) to the shape message" do
+      expect { build_axn { expects :v, type: Array, shape: { members: [], container: 5 } } }
         .to raise_error(ArgumentError, /container.*must be a class.*Integer/)
     end
   end
