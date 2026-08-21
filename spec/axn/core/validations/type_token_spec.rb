@@ -126,7 +126,7 @@ RSpec.describe "an unsupported type: token" do
 
     it "refuses one on a raw ShapeConfig member" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :n, validations: { type: false })
-      expect { build_axn { expects :m, type: Array, shape: { members: [member] } } }
+      expect { build_axn { expects :m, type: Hash, shape: { members: [member] } } }
         .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
     end
   end
@@ -218,14 +218,14 @@ RSpec.describe "an unsupported type: token" do
       lying_shape[:members] = []
       member = Axn::Core::Contract::ShapeConfig.new(field: :n, validations: { type: false, shape: lying_shape })
 
-      expect { build_axn { expects :m, type: Array, shape: { members: [member] } } }
+      expect { build_axn { expects :m, type: Hash, shape: { members: [member] } } }
         .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
     end
 
     # A GOOD `type:` still leaves a genuinely bad explicit `container:` to the shape's own message — this
     # guard only ever speaks about `type:` itself, never about `container:`.
     it "leaves a bad explicit container: (with a good type:) to the shape message" do
-      expect { build_axn { expects :v, type: Array, shape: { members: [], container: 5 } } }
+      expect { build_axn { expects :v, type: Hash, shape: { members: [], container: 5 } } }
         .to raise_error(ArgumentError, /container.*must be a class.*Integer/)
     end
   end
