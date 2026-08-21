@@ -538,6 +538,10 @@ module Axn
           _validate_reader_names!(reader_names)
 
           validations, metadata = _partition_field_options(fields, **)
+          # Ahead of the block form's own write to this slot (a block legitimately builds a distributing
+          # shape; a raw kwarg no longer may) — reads the caller's own `shape:`, not what a block would replace
+          # it with, so a field declaring BOTH no longer has the raw one silently discarded (see PRO-3191).
+          _reject_distributing_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
           validations[:shape] = _build_shape(fields, validations:, &block) if block
           # Minted here, after the block form's per-member pre-pass, and threaded to BOTH of this declaration's
           # edges — the snapshot below and the `of:` chain `_parse_field_configs` descends (see
@@ -659,6 +663,9 @@ module Axn
                   "`expects` if the confirmation is an input."
           end
 
+          # Same refusal as `expects`, and for the same ordering reason: reads the caller's own `shape:` ahead
+          # of the block form's write to the slot (see PRO-3191).
+          _reject_distributing_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
           # Ahead of the `user_facing:` walk below so a member carrying both an unusable name and a rejected
@@ -1421,6 +1428,9 @@ module Axn
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
 
+          # Same refusal, same ordering reason, at the member's own slot: a `field :rows, type: Array, shape:
+          # {...} do ... end` no longer has its raw `shape:` silently replaced by the subblock's (see PRO-3191).
+          _reject_distributing_shape!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`")
           field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
@@ -2867,11 +2877,13 @@ module Axn
         # Deliberately non-raising, which is what separates it from `_derive_inner_shape_container!`'s
         # derivation for a bag's OWN `shape:`. That one refuses a scalar or union `klass:`, because an author
         # who wrote `of: { klass: String, shape: … }` named a class a shape cannot be read off and wants to
-        # know. This one is handed a declaration that is legal today — `type: Array, of: String` beside a shape
-        # reads members off each scalar element, and the emitter deliberately validates them without emitting
-        # them (`Schema.shape_overlay_applies?`) — so refusing it here would reject at declaration what the
-        # SURFACE still accepts, and this canonicalization changes storage, not the surface. Ungated is also
-        # what the flat spelling always meant at this position: it named `Array` for the FIELD and never named
+        # know. This one is handed a declaration that is legal today — `type: Array, of: String` beside a
+        # distributing block reads members off each scalar element, and the emitter deliberately validates
+        # them without emitting them (`Schema.shape_overlay_applies?`) — so refusing it here would reject at
+        # declaration what the block form still accepts, and this canonicalization changes storage, not what
+        # the block form declares. (The raw `shape:` kwarg this once also covered is refused before reaching
+        # here at all — PRO-3191 — so the only caller left is the block form's own fold.) Ungated is also what
+        # the block spelling always means at this position: it names `Array` for the FIELD and never names
         # anything for the element.
         #
         # `::Array` is the one class this cannot store even though a shape reads perfectly well off one, because

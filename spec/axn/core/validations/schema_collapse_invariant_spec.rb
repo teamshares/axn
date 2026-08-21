@@ -107,8 +107,7 @@ RSpec.describe "a collision verdict and the schema it is about" do
         end
       },
       "an of: element type's members beside a shape member" => proc {
-        expects :list, type: Array, of: shaped,
-                       shape: { members: [member.call(latin1, type: String)], container: Array }
+        expects :list, type: Array, of: { klass: shaped, shape: { members: [member.call(latin1, type: String)] } }
       },
       "a subfield leaf beside a shape member of its parent" => proc {
         expects(:payload, type: Hash) { field utf8, type: String }
@@ -128,8 +127,10 @@ RSpec.describe "a collision verdict and the schema it is about" do
         exposes(:thing, type: untyped) { field latin1, type: String }
       },
       "a scalar of: whose members never become properties" => proc {
-        expects :list, type: Array, of: String,
-                       shape: { members: [member.call(utf8), member.call(latin1)], container: Array }
+        expects(:list, type: Array, of: String) do
+          field utf8
+          field latin1
+        end
       },
       "the legal merge: a member and a same-named subfield" => proc {
         expects(:payload, type: Hash) { field utf8, type: String }
