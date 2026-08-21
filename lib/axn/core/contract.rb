@@ -1235,12 +1235,20 @@ module Axn
         # inspect form exactly as the other two are.
         CONTAINER_TYPE_TOKENS = [::Array, ::Hash, ::Set].freeze
 
-        # Validators ActiveModel implements against `value.to_s` or a numeric coercion of it: FormatValidator
-        # matches `value.to_s` (so on an Array it constrains `["a"].inspect`), while Numericality, Comparison and
-        # Acceptance accept no container value at all — probed against every shape an Array and a Hash can take,
-        # and nothing passes. Under the positional rule the constraint belongs at the position holding the scalar,
-        # so a container position is refused rather than left enforcing something no rule states.
-        TO_S_TARGETED_VALIDATOR_KEYS = %i[format numericality comparison acceptance].freeze
+        # Validators ActiveModel implements against `value.to_s` or a numeric coercion of it, so no container
+        # value can satisfy them WHATEVER the options say: FormatValidator matches `value.to_s` (on an Array it
+        # constrains `["a"].inspect` — measured: `format: { with: /\A\["a"\]\z/ }` really does accept `["a"]`),
+        # and NumericalityValidator parses a numeric coercion, which no container has (measured against `["1"]`,
+        # `[1]` and `{"a"=>1}`, with `only_integer:` and `greater_than:` alike).
+        #
+        # `comparison:` and `acceptance:` deliberately do NOT belong here, though an earlier draft had them:
+        # their options can name a CONTAINER, and then they work. `comparison: { equal_to: ["a"] }` accepts
+        # `["a"]`, `{ greater_than_or_equal_to: { "read" => true } }` accepts a Hash superset (Hash#>=),
+        # `{ greater_than: Set["a"] }` accepts a Set superset (Set#>), and `acceptance: { accept: [["a"]] }`
+        # accepts `["a"]` — all measured in bare ActiveModel. What is broken about them is a bound or set of the
+        # WRONG type, which is the satisfiability question Task 3 answers with the runtime's own matcher, not a
+        # blanket refusal by key.
+        TO_S_TARGETED_VALIDATOR_KEYS = %i[format numericality].freeze
 
         # Field-level options a shape member supports (beyond validations + metadata). `sensitive:` is
         # one of them: a member's name is added to the ParameterFilter set by the sensitive-name
@@ -3037,9 +3045,11 @@ module Axn
         end
 
         # A validator whose ActiveModel implementation can only reach the declared value through its Ruby string
-        # form, on a field whose every declared type is a container. Refused at declaration: `format:` there
-        # constrains `["a"].inspect` — satisfiable, meaningless, and unexpressible in JSON Schema, where
-        # `pattern` applies to strings — and the other three accept no container value at all.
+        # form or a numeric coercion of it, on a field whose every declared type is a container. Refused at
+        # declaration: `format:` there constrains `["a"].inspect` — satisfiable, meaningless, and unexpressible
+        # in JSON Schema, where `pattern` applies to strings — and `numericality:` accepts no container value at
+        # all, whatever its options say. (`comparison:` and `acceptance:` are NOT here — see
+        # `TO_S_TARGETED_VALIDATOR_KEYS` for the measurements that took them back out.)
         #
         # Gates do NOT rescue one. This is a judgment about what the validator can MEAN at this position, and a
         # closed `if:` skips a check rather than giving it a reading; the satisfiability guard below is the one
@@ -3056,20 +3066,22 @@ module Axn
 
           raise ArgumentError,
                 "#{offenders.map { |key| "#{key}:" }.join(' / ')} on #{_declared_fields_label(fields)} cannot " \
-                "constrain a container: `format:` matches the value's Ruby string form (`[\"a\"].to_s`), and " \
-                "`numericality:`/`comparison:`/`acceptance:` accept no container value at all — so the check " \
-                "either constrains punctuation or can never pass. A validator constrains the value at the " \
-                "position it is declared at: constrain the contents at their own position (`of:`), express it " \
-                "as `validate: ->(value) { ... }`, or drop it."
+                "constrain a container: ActiveModel reads #{offenders.length == 1 ? 'it' : 'them'} off the " \
+                "value's Ruby string form (`format:` matches `[\"a\"].to_s`) or off a numeric coercion of it " \
+                "(`numericality:`), and a container has neither — so the check constrains punctuation or can " \
+                "never pass. A validator constrains the value at the position it is declared at. Express a " \
+                "constraint on the contents as `validate: ->(value) { ... }` — a per-element spelling inside " \
+                "`of:` is not supported yet (PRO-3193) — or drop the option."
         end
 
         # Whether every type this declaration names is a container whose `to_s` is an inspect form. Answers
         # false for an undeclared type, a union carrying one non-container, and a pseudo-type token — each a
         # declaration the guard above must stand down on, since a value it can constrain is still possible.
         #
-        # The `type:` bag's `klass:` is read where a bag was declared, so `type: { klass: Array, coerce: true }`
-        # is judged as the `Array` it is. Compared with `equal?` and classified through `hash_or_nil`, because a
-        # guard that dispatches `==`/`is_a?` on a caller's class is one the caller can switch off.
+        # The `type:` bag's `klass:` is read where a bag was declared, so axn's own canonicalized
+        # `type: { klass: Array }` is judged as the `Array` it is. Compared with `equal?` and classified through
+        # `hash_or_nil`, because a guard that dispatches `==`/`is_a?` on a caller's class is one the caller can
+        # switch off.
         def _declares_container_type_only?(declared)
           tokens = _declared_type_tokens_in(declared)
           return false if tokens.empty?
@@ -3078,11 +3090,19 @@ module Axn
         end
 
         # The type tokens a FIELD declaration names, reading a `type:` bag's `klass:` where a bag was declared
-        # (`type: { klass: Array, coerce: true }` names `Array`) and the bare spelling otherwise. One read
-        # serving every guard that asks something about the declared type, so two guards cannot disagree about
-        # which tokens one declaration names. Classified through `hash_or_nil`, never by dispatching to the
-        # value: the bag is the caller's, and a Hash subclass denying its own class would otherwise pick how it
-        # is read.
+        # and the bare spelling otherwise. Deliberately NOT the same answer as `_declared_type_tokens`, which
+        # this wraps: that one exists to read an AXIS or `of:` position, where a bare Hash written in place of a
+        # type is searched as a list of two-element Arrays, so it must answer `[declared]` rather than unwrap
+        # it. A field's `type:` has no such axis — a bag there is always axn's own — so this unwraps it via
+        # `bag[:klass]` first and only falls through to the wrapped reader for the union/bare-token case. Two
+        # different questions, both legitimate; a caller that wants the axis answer keeps using
+        # `_declared_type_tokens` directly.
+        #
+        # Reads `bag[:klass]` on the assumption that any Hash-valued entry here is already axn's own plain Hash
+        # — true because this runs downstream of `ShapeGraph.detach_option_containers!` (`:1651`), which is
+        # what makes that read safe rather than a dispatch onto a caller-supplied object. Classified through
+        # `hash_or_nil`, never by dispatching to the value: the bag is the caller's, and a Hash subclass denying
+        # its own class would otherwise pick how it is read.
         def _declared_type_tokens_in(declared)
           bag = Internal::ShapeGraph.hash_or_nil(declared)
 
@@ -3231,9 +3251,10 @@ module Axn
           # dispatching to the bag.
           _reject_validator_context_scope!(validations, where: fields.map(&:to_s).inspect)
 
-          # Beside the context-scope refusal, and for the same reason it sits here: both refuse a validator that
-          # cannot do what the declaration says, ahead of every consumer of this bag and ahead of the tolerance
-          # push-down, so the message quotes the author's own spelling rather than one carrying axn's merged keys.
+          # Beside the context-scope refusal: both refuse a validator that cannot do what the declaration says,
+          # ahead of every consumer of this bag. Placement ahead of the tolerance push-down is not load-bearing
+          # for THIS message — it carries only key names and the field label, both push-down-invariant — but it
+          # is for the satisfiability guard Task 3 adds here next, whose message quotes the declared set.
           _reject_container_position_validators!(validations, fields:)
 
           _derive_raw_shape_container!(validations)

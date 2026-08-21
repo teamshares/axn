@@ -159,10 +159,8 @@ RSpec.describe "a validator at a container position" do
         .to raise_error(ArgumentError, /format:/)
     end
 
-    it "refuses numericality:, comparison: and acceptance: on a container" do
+    it "refuses numericality: on a container" do
       expect { build_axn { expects :tags, type: Array, numericality: true } }.to raise_error(ArgumentError, /numericality:/)
-      expect { build_axn { expects :tags, type: Array, comparison: { greater_than: 1 } } }.to raise_error(ArgumentError, /comparison:/)
-      expect { build_axn { expects :tags, type: Array, acceptance: true } }.to raise_error(ArgumentError, /acceptance:/)
     end
 
     it "names every offender at once, so one declaration is one fix" do
@@ -178,6 +176,21 @@ RSpec.describe "a validator at a container position" do
     it "refuses on a Set, whose to_s is an inspect form like the other two" do
       expect { build_axn { expects :tags, type: Set, format: { with: /a/ } } }
         .to raise_error(ArgumentError, /format:/)
+    end
+
+    it "refuses regardless of tolerance — a tolerated nil does not give the check a reading" do
+      expect { build_axn { expects :tags, type: Array, format: { with: /a/ }, optional: true } }
+        .to raise_error(ArgumentError, /format:/)
+    end
+
+    it "refuses under a declaration-level gate as well as an entry-level one" do
+      expect { build_axn { expects :tags, type: Array, format: { with: /a/ }, if: :flag? } }
+        .to raise_error(ArgumentError, /format:/)
+    end
+
+    it "names the field labels of a multi-field declaration" do
+      expect { build_axn { expects :tags, :labels, type: Array, format: { with: /a/ } } }
+        .to raise_error(ArgumentError, /:tags, :labels/)
     end
 
     # The stand-downs. Each is a declaration the guard must NOT reject: over-restriction rejects legal work,
