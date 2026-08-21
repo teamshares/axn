@@ -2300,7 +2300,9 @@ module Axn
         # raised on every call instead of at the author.
         def _canonicalize_validator_options!(validations, fields)
           validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
+          _reject_unsupported_type_klass!(validations)
           validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
+          _reject_unsupported_model_klass!(validations)
           validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
           return unless validations.key?(:of)
 
@@ -2425,7 +2427,68 @@ module Axn
           return if _of_axis_constrains?(bag, :of)
           return unless Internal::ShapeGraph.carries_key?(bag, :klass)
 
-          _reject_unsupported_type_token!(_declared_type_tokens(bag[:klass]), "klass:")
+          _reject_unsupported_type_token!(_declared_type_tokens(bag[:klass]), "of: klass:")
+        end
+
+        # The field-level half of the rule `_reject_unsupported_of_klass!` holds a bag's `klass:` to (PRO-3207):
+        # a `type:` naming a token the runtime cannot hold a value to reaches `value.is_a?(token)` and raises a
+        # bare `TypeError: class or module required` on every call, naming neither the field nor the option.
+        # This is the last position of the defect PRO-3165/PRO-3166 closed everywhere else — it isn't an `of:`
+        # bag position, so neither of those guards ever saw it.
+        #
+        # Emptiness IS asked here, unlike the bag's `klass:` — a field's `type:` has no second option left to
+        # constrain it (a bag also has `of:`/`shape:`), so `type: nil` / `type: []` are the bare-axis situation,
+        # not the bag one, and fold into this guard exactly as `_reject_unsupported_map_axis!` folds them into
+        # itself rather than deferring.
+        #
+        # Deferred entirely when `of:` or `shape:` is also declared: both hold `type:` to a STRICTLY NARROWER
+        # rule (Array or Hash only, since that class decides how the sibling option reads) and refuse every
+        # token this would, naming the classes that are actually legal there — see `_declared_of_container!`
+        # and `_shape_compatible_type!`, which run after this returns and own those refusals. Firing here first
+        # would prescribe the weaker fix and cost the author a second edit.
+        def _reject_unsupported_type_klass!(validations)
+          return unless validations.key?(:type)
+          return if validations.key?(:of) || validations.key?(:shape)
+
+          declared = _declared_type_klass(validations)
+          tokens = _declared_type_tokens(declared)
+          raise ArgumentError, _unsupported_type_token_message("type:", declared) if tokens.empty?
+
+          _reject_unsupported_type_token!(tokens, "type:")
+        end
+
+        # `model:`'s `klass:` has the identical hole `_reject_unsupported_type_klass!` closes for `type:` —
+        # `ModelValidator#validate_each` builds a `TypeValidator` over the same bag and delegates, so a token
+        # outside its grammar reaches the same `value.is_a?(token)` and raises the same bare
+        # `TypeError: class or module required` on every call (PRO-3207).
+        #
+        # The grammar is narrower than `type:`'s, deliberately not `_reject_unsupported_type_token!`: a model
+        # field resolves a record by calling a finder method ON its `klass:` (`FieldResolvers::Model`), never
+        # by asking a value `is_a?` of it, so there is nothing for a union or a pseudo-type Symbol to
+        # dispatch through — one class or module, never a list of them. A union additionally passed
+        # `TypeValidator`'s own check (which iterates a union happily) only for the resolver to call
+        # `Array#find` instead of the class's own finder, silently resolving to the wrong thing under
+        # `best_effort` rather than raising at all — this closes that too, since neither hole has a
+        # legitimate use to preserve (no spec, doc, or downstream consumer declares `model:` with a union or
+        # a pseudo-type).
+        #
+        # `ModelValidator.apply_syntactic_sugar` already guarantees `klass:` is never nil/false/a String by
+        # the time this runs — a falsy value falls back to the field name classified, and a String is
+        # `constantize`d — so what survives to here either is already a real Class/Module or is a value
+        # nothing upstream could make sense of either.
+        def _reject_unsupported_model_klass!(validations)
+          return unless validations.key?(:model)
+
+          klass = validations[:model][:klass]
+
+          case klass
+          when ::Module then return
+          end
+
+          raise ArgumentError,
+                "model: klass: must name a single Class or Module (got #{_declared_type_label(klass)}) — a " \
+                "model field resolves a record by calling a finder method on this class, so a union or a " \
+                "pseudo-type has nothing to dispatch through."
         end
 
         # `on:` inside a bag is the same dead declaration it is inside any other validator's option bag, and it
@@ -2685,11 +2748,12 @@ module Axn
           Array(declared).empty?
         end
 
-        # The pseudo-types a declared type may name beside a real class. Mirrors the branches
-        # `Axn::Validators::TypeValidator.value_matches?` answers by name, which is the authority — a token
-        # outside both sets reaches `value.is_a?(token)` and raises `TypeError: class or module required` on
-        # every call rather than at the author.
-        MAP_OF_PSEUDO_TYPES = %i[boolean uuid params].freeze
+        # The pseudo-types a declared type may name beside a real class — shared by a field's own `type:`
+        # and every `of:` position (a bare axis, a bag's `klass:`), so the three cannot drift about what a
+        # type is. Mirrors the branches `Axn::Validators::TypeValidator.value_matches?` answers by name, which
+        # is the authority — a token outside both sets reaches `value.is_a?(token)` and raises
+        # `TypeError: class or module required` on every call rather than at the author.
+        TYPE_TOKEN_PSEUDO_TYPES = %i[boolean uuid params].freeze
 
         # Every axis the author SUPPLIED has to name something the runtime can hold a value to. The emptiness
         # rule above only asks whether the bag as a whole constrains nothing, so a bag with one good axis
@@ -2718,9 +2782,9 @@ module Axn
             # An axis SUPPLIED and naming nothing (`nil`, `[]`) has no token to name, so the refusal names the
             # value written instead. Unlike a bag's `klass:`, an axis has no second way to constrain, so there
             # is no other guard for this to defer to.
-            raise ArgumentError, _unsupported_type_token_message("#{axis}:", declared) if tokens.empty?
+            raise ArgumentError, _unsupported_type_token_message("of: #{axis}:", declared) if tokens.empty?
 
-            _reject_unsupported_type_token!(tokens, "#{axis}:")
+            _reject_unsupported_type_token!(tokens, "of: #{axis}:")
           end
         end
 
@@ -2736,14 +2800,14 @@ module Axn
           Array(declared)
         end
 
-        # The one search for a token the runtime cannot hold a value to, shared by the bare-axis grammar and the
-        # bag's `klass:` so the two cannot drift about what a type is. Answers the INDEX rather than the token:
-        # `nil` is itself an unsupported token, and `find` gives the same answer for "found nil" as for "found
-        # nothing" — which is how `of: { values: [String, nil] }` declared cleanly and raised the bare TypeError
-        # on every call.
+        # The one search for a token the runtime cannot hold a value to, shared by a field's own `type:`, the
+        # bare-axis grammar and the bag's `klass:` so none of the three can drift about what a type is. Answers
+        # the INDEX rather than the token: `nil` is itself an unsupported token, and `find` gives the same
+        # answer for "found nil" as for "found nothing" — which is how `of: { values: [String, nil] }` declared
+        # cleanly and raised the bare TypeError on every call.
         #
-        # Emptiness is each caller's own question, because the two positions spell the answer differently — see
-        # `_reject_unsupported_of_klass!`.
+        # Emptiness is each caller's own question, because the three positions spell the answer differently —
+        # see `_reject_unsupported_of_klass!` and `_reject_unsupported_type_klass!`.
         def _reject_unsupported_type_token!(tokens, option)
           index = tokens.find_index { |token| !_supported_type_token?(token) }
           return if nil.equal?(index)
@@ -2752,13 +2816,15 @@ module Axn
         end
 
         # `option:` travels with the message for the reason `_declared_of_container!`'s does: one rule, but the
-        # key an author has to EDIT is `keys:`/`values:` at a bare axis and `klass:` inside a bag, and a refusal
-        # naming a key the declaration does not carry prescribes a fix with nowhere to land. The offender is
-        # named through `_declared_type_label`, never its own `inspect`: it is the caller's object, and one
-        # raising from `to_s` while this message is built would replace the ArgumentError with its exception.
+        # key an author has to EDIT is `type:` at a field, `keys:`/`values:` at a bare axis, and `klass:` inside
+        # a bag — each caller passes its own full spelling (`"type:"`, `"of: values:"`, `"of: klass:"`) rather
+        # than a bare option name, so a refusal naming a key the declaration does not carry never prescribes a
+        # fix with nowhere to land. The offender is named through `_declared_type_label`, never its own
+        # `inspect`: it is the caller's object, and one raising from `to_s` while this message is built would
+        # replace the ArgumentError with its exception.
         def _unsupported_type_token_message(option, declared)
-          "of: #{option} must name a type — a Class, a union of them, or one of " \
-            "#{MAP_OF_PSEUDO_TYPES.map(&:inspect).join(', ')} (got #{_declared_type_label(declared)})"
+          "#{option} must name a type — a Class, a union of them, or one of " \
+            "#{TYPE_TOKEN_PSEUDO_TYPES.map(&:inspect).join(', ')} (got #{_declared_type_label(declared)})"
         end
 
         # `Module` covers a class and a module both, tested with `case`/`when` so nothing the token defines
@@ -2766,7 +2832,7 @@ module Axn
         def _supported_type_token?(token)
           case token
           when ::Module then true
-          when ::Symbol then MAP_OF_PSEUDO_TYPES.include?(token)
+          when ::Symbol then TYPE_TOKEN_PSEUDO_TYPES.include?(token)
           else false
           end
         end
