@@ -1228,6 +1228,20 @@ module Axn
                                     Date, Time, DateTime,
                                     :boolean, :uuid, :params].freeze
 
+        # The classes whose `to_s` is a Ruby inspect form rather than a rendering of the value — so a validator
+        # matching or coercing `value.to_s` reaches punctuation rather than data. Deliberately NOT "every
+        # structured type": a `Data` class or a PORO may render itself meaningfully (`URI::HTTP#to_s`), and
+        # refusing `format:` there would reject a legal declaration. `Set` is listed because its `to_s` is an
+        # inspect form exactly as the other two are.
+        CONTAINER_TYPE_TOKENS = [::Array, ::Hash, ::Set].freeze
+
+        # Validators ActiveModel implements against `value.to_s` or a numeric coercion of it: FormatValidator
+        # matches `value.to_s` (so on an Array it constrains `["a"].inspect`), while Numericality, Comparison and
+        # Acceptance accept no container value at all — probed against every shape an Array and a Hash can take,
+        # and nothing passes. Under the positional rule the constraint belongs at the position holding the scalar,
+        # so a container position is refused rather than left enforcing something no rule states.
+        TO_S_TARGETED_VALIDATOR_KEYS = %i[format numericality comparison acceptance].freeze
+
         # Field-level options a shape member supports (beyond validations + metadata). `sensitive:` is
         # one of them: a member's name is added to the ParameterFilter set by the sensitive-name
         # collectors, which descend into shape members via `_sensitive_candidate_configs`, and
@@ -3022,6 +3036,59 @@ module Axn
                                           offenders.size == 1 ? "that check runs" : "those checks run")
         end
 
+        # A validator whose ActiveModel implementation can only reach the declared value through its Ruby string
+        # form, on a field whose every declared type is a container. Refused at declaration: `format:` there
+        # constrains `["a"].inspect` — satisfiable, meaningless, and unexpressible in JSON Schema, where
+        # `pattern` applies to strings — and the other three accept no container value at all.
+        #
+        # Gates do NOT rescue one. This is a judgment about what the validator can MEAN at this position, and a
+        # closed `if:` skips a check rather than giving it a reading; the satisfiability guard below is the one
+        # that stands down for a gate, because there the gate genuinely leaves a passing value.
+        #
+        # Every offender is named at once: an author who wrote two has one declaration to fix.
+        def _reject_container_position_validators!(validations, fields:)
+          return unless _declares_container_type_only?(validations[:type])
+
+          entries = Axn::Validation::Base.validator_entries(validations)
+          # A falsy entry is a disabled validator ActiveModel skips, so it constrains nothing and names nothing.
+          offenders = TO_S_TARGETED_VALIDATOR_KEYS.select { |key| entries[key] }
+          return if offenders.empty?
+
+          raise ArgumentError,
+                "#{offenders.map { |key| "#{key}:" }.join(' / ')} on #{_declared_fields_label(fields)} cannot " \
+                "constrain a container: `format:` matches the value's Ruby string form (`[\"a\"].to_s`), and " \
+                "`numericality:`/`comparison:`/`acceptance:` accept no container value at all — so the check " \
+                "either constrains punctuation or can never pass. A validator constrains the value at the " \
+                "position it is declared at: constrain the contents at their own position (`of:`), express it " \
+                "as `validate: ->(value) { ... }`, or drop it."
+        end
+
+        # Whether every type this declaration names is a container whose `to_s` is an inspect form. Answers
+        # false for an undeclared type, a union carrying one non-container, and a pseudo-type token — each a
+        # declaration the guard above must stand down on, since a value it can constrain is still possible.
+        #
+        # The `type:` bag's `klass:` is read where a bag was declared, so `type: { klass: Array, coerce: true }`
+        # is judged as the `Array` it is. Compared with `equal?` and classified through `hash_or_nil`, because a
+        # guard that dispatches `==`/`is_a?` on a caller's class is one the caller can switch off.
+        def _declares_container_type_only?(declared)
+          tokens = _declared_type_tokens_in(declared)
+          return false if tokens.empty?
+
+          tokens.all? { |token| CONTAINER_TYPE_TOKENS.any? { |container| container.equal?(token) } }
+        end
+
+        # The type tokens a FIELD declaration names, reading a `type:` bag's `klass:` where a bag was declared
+        # (`type: { klass: Array, coerce: true }` names `Array`) and the bare spelling otherwise. One read
+        # serving every guard that asks something about the declared type, so two guards cannot disagree about
+        # which tokens one declaration names. Classified through `hash_or_nil`, never by dispatching to the
+        # value: the bag is the caller's, and a Hash subclass denying its own class would otherwise pick how it
+        # is read.
+        def _declared_type_tokens_in(declared)
+          bag = Internal::ShapeGraph.hash_or_nil(declared)
+
+          _declared_type_tokens(nil.equal?(bag) ? declared : bag[:klass])
+        end
+
         # The one sentence, shared by the entry scan above and by the bag check that reaches the positions it
         # cannot see (`_reject_inner_contract_context_scope!`). `inside` is what the `on:` was written in — a
         # validator key, or a bag — so the message names the thing the author has to edit rather than a
@@ -3163,6 +3230,11 @@ module Axn
           # one entry that seam skips, which is why the predicate classifies and reads its key without
           # dispatching to the bag.
           _reject_validator_context_scope!(validations, where: fields.map(&:to_s).inspect)
+
+          # Beside the context-scope refusal, and for the same reason it sits here: both refuse a validator that
+          # cannot do what the declaration says, ahead of every consumer of this bag and ahead of the tolerance
+          # push-down, so the message quotes the author's own spelling rather than one carrying axn's merged keys.
+          _reject_container_position_validators!(validations, fields:)
 
           _derive_raw_shape_container!(validations)
 

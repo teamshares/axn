@@ -147,4 +147,65 @@ RSpec.describe "a validator at a container position" do
       expect(prop[:enum]).to eq([nil, ["a"]])
     end
   end
+
+  describe "validators that can only reach a container through its to_s are refused at declaration" do
+    it "refuses format: on an Array-typed field" do
+      expect { build_axn { expects :tags, type: Array, of: String, format: { with: /\A[A-Z]+\z/ } } }
+        .to raise_error(ArgumentError, /format:.*:tags.*position/m)
+    end
+
+    it "refuses format: on a Hash-typed field" do
+      expect { build_axn { expects :meta, type: Hash, format: { with: /k/ } } }
+        .to raise_error(ArgumentError, /format:/)
+    end
+
+    it "refuses numericality:, comparison: and acceptance: on a container" do
+      expect { build_axn { expects :tags, type: Array, numericality: true } }.to raise_error(ArgumentError, /numericality:/)
+      expect { build_axn { expects :tags, type: Array, comparison: { greater_than: 1 } } }.to raise_error(ArgumentError, /comparison:/)
+      expect { build_axn { expects :tags, type: Array, acceptance: true } }.to raise_error(ArgumentError, /acceptance:/)
+    end
+
+    it "names every offender at once, so one declaration is one fix" do
+      expect { build_axn { expects :tags, type: Array, format: { with: /a/ }, numericality: true } }
+        .to raise_error(ArgumentError, %r{format: / numericality:})
+    end
+
+    it "refuses a gated one too — a gate can skip a check, not give it a reading" do
+      expect { build_axn { expects :tags, type: Array, format: { with: /a/, if: :never? } } }
+        .to raise_error(ArgumentError, /format:/)
+    end
+
+    it "refuses on a Set, whose to_s is an inspect form like the other two" do
+      expect { build_axn { expects :tags, type: Set, format: { with: /a/ } } }
+        .to raise_error(ArgumentError, /format:/)
+    end
+
+    # The stand-downs. Each is a declaration the guard must NOT reject: over-restriction rejects legal work,
+    # under-restriction only defers the diagnosis to the value that triggers it.
+    it "admits a union type carrying a scalar, where the validator has something to constrain" do
+      expect { build_axn { expects :f, type: [String, Array], format: { with: /a/ } } }.not_to raise_error
+    end
+
+    it "admits an undeclared type, which says nothing about what the value will be" do
+      expect { build_axn { expects :f, format: { with: /a/ } } }.not_to raise_error
+    end
+
+    it "admits a pseudo-type token" do
+      expect { build_axn { expects :f, type: :params, format: { with: /a/ } } }.not_to raise_error
+    end
+
+    it "admits a scalar container-ish type whose to_s is a real rendering" do
+      expect { build_axn { expects :f, type: String, format: { with: /a/ } } }.not_to raise_error
+    end
+
+    it "admits a disabled entry, which ActiveModel skips outright" do
+      expect { build_axn { expects :tags, type: Array, format: false } }.not_to raise_error
+    end
+
+    it "admits the validators that DO have a reading on a container" do
+      expect { build_axn { expects :tags, type: Array, length: { maximum: 2 } } }.not_to raise_error
+      expect { build_axn { expects :tags, type: Array, presence: true } }.not_to raise_error
+      expect { build_axn { expects :tags, type: Array, of: String } }.not_to raise_error
+    end
+  end
 end
