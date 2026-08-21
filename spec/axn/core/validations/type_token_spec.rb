@@ -269,6 +269,28 @@ RSpec.describe "an unsupported type: token" do
       expect { build_axn { expects :v, type: { klass: impostor } } }
         .to raise_error(ArgumentError, unsupported("a value of class Object"))
     end
+
+    # `_declared_type_tokens` classifies the union-or-single-token split through `case`/`when ::Array`,
+    # never `Kernel#Array()` — `Array()` tries `to_ary` (then `to_a`) before wrapping, and both are the
+    # caller's own methods: one defining `to_ary` decides how it gets read (returning `[String]` would wave
+    # a genuinely unsupported token through as if it were a union naming a real class), and one whose
+    # `to_ary` raises replaces this guard's actionable `ArgumentError` with whatever it throws (found by
+    # Codex review, round 3).
+    it "is immune to a token whose to_ary lies about being a union of real classes" do
+      liar = Object.new
+      liar.define_singleton_method(:to_ary) { [String] }
+
+      expect { build_axn { expects :v, type: liar } }
+        .to raise_error(ArgumentError, unsupported("a value of class Object"))
+    end
+
+    it "reports the declaration error rather than a raising to_ary's own exception" do
+      hostile = Object.new
+      hostile.define_singleton_method(:to_ary) { raise("to_ary ran") }
+
+      expect { build_axn { expects :v, type: hostile } }
+        .to raise_error(ArgumentError, unsupported("a value of class Object"))
+    end
   end
 end
 

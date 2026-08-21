@@ -2793,7 +2793,7 @@ module Axn
             declared = bag[axis]
             next unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
 
-            tokens = Array(declared)
+            tokens = _declared_type_tokens(declared)
             # An axis SUPPLIED and naming nothing (`nil`, `[]`) has no token to name, so the refusal names the
             # value written instead. Unlike a bag's `klass:`, an axis has no second way to constrain, so there
             # is no other guard for this to defer to.
@@ -2804,15 +2804,27 @@ module Axn
         end
 
         # The type tokens a declared value names, with the bare-Hash spelling answered BEFORE the union is
-        # unwrapped: `Array()` reaches a Hash as its entry pairs, so a Hash written where a type belongs would
-        # be searched as a list of two-element Arrays and named as one. Classified through `hash_or_nil` — the
-        # value is the caller's, and a Hash subclass denying its own class would otherwise pick how it is read.
-        # A caller that reads a Hash as something else entirely (an axis holding an inner contract) answers that
-        # on its own terms first and never reaches this.
+        # unwrapped: a Hash written where a type belongs would otherwise be searched as a list of
+        # two-element Arrays and named as one. Classified through `hash_or_nil` — the value is the caller's,
+        # and a Hash subclass denying its own class would otherwise pick how it is read. A caller that reads
+        # a Hash as something else entirely (an axis holding an inner contract) answers that on its own terms
+        # first and never reaches this.
+        #
+        # The union-or-single-token split is `case`/`when ::Array`, never `Kernel#Array()`: `Array()` tries
+        # `to_ary` and then `to_a` before wrapping, and BOTH are the caller's own methods — an object
+        # defining one decides how it gets read (its `to_ary` returning `[String]` waves a genuinely
+        # unsupported token through as a "union" of a real class), and one that raises replaces this
+        # declaration's actionable `ArgumentError` with whatever the caller's method throws, which outside
+        # StandardError escapes every rescue meant to settle it. Every consumer of a declared `type:`/`of:`
+        # token goes through this one function, so fixing the coercion here closes it at the bare axis, a
+        # bag's `klass:`, and a field's own `type:` at once.
         def _declared_type_tokens(declared)
           return [declared] unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
 
-          Array(declared)
+          case declared
+          when ::Array then declared
+          else [declared]
+          end
         end
 
         # The one search for a token the runtime cannot hold a value to, shared by a field's own `type:`, the
