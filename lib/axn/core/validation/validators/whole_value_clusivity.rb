@@ -5,7 +5,7 @@ require "active_model"
 module Axn
   module Validators
     # ActiveModel's `Clusivity#include?` special-cases an Array VALUE — `value.all? { |v| members.include?(v) }`
-    # (activemodel-8.1.3.1, clusivity.rb:24) — so an inclusion set distributes over an array's elements while
+    # (activemodel 7.2.2.2, clusivity.rb:24) — so an inclusion set distributes over an array's elements while
     # every other validator on the same field constrains the field's own value. Axn's rule is positional: a
     # validator constrains the value at the position it is declared at, and `of:` is how a declaration descends
     # a level. So the branch goes, and one reading holds everywhere.

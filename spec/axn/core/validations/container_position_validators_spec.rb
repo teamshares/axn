@@ -4,7 +4,7 @@ require "axn/testing/spec_helpers"
 
 # One positional rule: a validator constrains the value AT THE POSITION IT IS DECLARED AT. `of:` is how a
 # declaration descends a level. ActiveModel's Clusivity#include? special-cases an Array VALUE
-# (activemodel-8.1.3.1 clusivity.rb:24) and distributes the set over its elements, which no rule states, which
+# (activemodel 7.2.2.2, clusivity.rb:24) and distributes the set over its elements, which no rule states, which
 # emits as `enum` on the array node, and which inverts to nonsense under exclusion's negating caller. See
 # internal-docs/specs/2026-08-21-container-field-validators-design.md.
 RSpec.describe "a validator at a container position" do
@@ -55,12 +55,14 @@ RSpec.describe "a validator at a container position" do
       expect(action.call(tags: %w[ok]).ok?).to be(true)
     end
 
-    it "no longer passes an array carrying one forbidden element among legal ones" do
-      # The old reading was `all?` under a negating caller: reject only when EVERY element is forbidden.
+    it "treats the array as the value, so an array of forbidden strings is not itself forbidden" do
       action = build_axn { expects :tags, type: Array, exclusion: { in: %w[bad] } }
 
-      expect(action.call(tags: %w[ok bad]).ok?).to be(true)  # no element-wise reading at all now
-      expect(action.call(tags: %w[bad]).ok?).to be(true)     # the array is not the String "bad"
+      # THIS is the behavior change: element-wise, every element was forbidden, so the array was rejected.
+      # Whole-value, the array is not the String "bad", so it passes.
+      expect(action.call(tags: %w[bad]).ok?).to be(true)
+      # Unchanged, and named so nobody mistakes it for evidence: the old `all?` reading passed this too.
+      expect(action.call(tags: %w[ok bad]).ok?).to be(true)
     end
 
     it "is unchanged at a scalar position" do
@@ -97,6 +99,23 @@ RSpec.describe "a validator at a container position" do
       expect(Axn::Validation::Base::InclusionValidator).to be(Axn::Validators::InclusionValidator)
       expect(Axn::Validation::Base::ExclusionValidator).to be(Axn::Validators::ExclusionValidator)
       expect(Axn::Validators::InclusionValidator.ancestors).to include(Axn::Validators::WholeValueClusivity)
+    end
+
+    it "leaves a plain ActiveModel model on ActiveModel's own validator" do
+      plain = Class.new do
+        include ActiveModel::Validations
+        def self.name = "PlainModel"
+        attr_accessor :tags
+
+        validates :tags, inclusion: { in: %w[a b] }
+      end
+
+      expect(plain.validators_on(:tags).first.class).to be(ActiveModel::Validations::InclusionValidator)
+
+      # Still element-wise there — a consuming app's own validators are untouched by axn's constants.
+      model = plain.new
+      model.tags = %w[a b]
+      expect(model.valid?).to be(true)
     end
   end
 
