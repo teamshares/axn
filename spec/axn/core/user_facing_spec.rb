@@ -464,7 +464,7 @@ RSpec.describe "expects ..., user_facing:" do
 
       expect do
         copy = original.with(user_facing: 123)
-        build_axn { expects :items, type: Array, shape: { members: [copy], container: Array } }
+        build_axn { expects :items, type: Hash, shape: { members: [copy] } }
       end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
     end
 
