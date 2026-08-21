@@ -156,6 +156,25 @@ RSpec.describe "an unsupported type: token" do
         .to raise_error(ArgumentError, "a shape block requires a single structured type: (Array, Hash, or a class) — " \
                                        "got [a value of class String, Hash]")
     end
+
+    # A raw `shape:` that supplies its OWN, already-valid `container:` never asks `_shape_compatible_type!`
+    # to derive one from `type:` — derivation is skipped whenever `container:` is present — and
+    # `_reject_non_class_container!` passes the explicit `Hash` through untouched, so nothing downstream
+    # ever independently checks `type:` at all. Deferring unconditionally on `shape:`'s mere presence left
+    # exactly this combination unguarded: it declared cleanly and reached `value.is_a?(false)` on every
+    # call, same as every other position this ticket closes.
+    it "still catches a non-class type: when the shape: supplies its own valid container:" do
+      expect { build_axn { expects :v, type: false, shape: { members: [], container: Hash } } }
+        .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+    end
+
+    # The container derived from `type:` and an explicit one are held to the same class-ness bar either
+    # way, so a BAD explicit container (rather than a bad `type:`) still gets the shape's own message,
+    # unaffected by this guard.
+    it "leaves a bad explicit container: to the shape message, independent of a bad type:" do
+      expect { build_axn { expects :v, type: false, shape: { members: [], container: 5 } } }
+        .to raise_error(ArgumentError, /container.*must be a class.*Integer/)
+    end
   end
 
   describe "controls" do
