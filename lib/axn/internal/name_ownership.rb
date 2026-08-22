@@ -18,16 +18,30 @@ module Axn
       # Axn's user-facing sugar — the surface a declaration may take over. Modules, not names: a helper
       # added to one of these is covered without editing anything here.
       #
-      # Axn::Core::AmbientContext is deliberately absent. `ambient_context` is not a convenience but a
-      # sentinel: the subfield resolver decides whether a parent is the ambient hash by comparing the
-      # route's root against AmbientContext::PARENT, so a field that took the name would be answered by
-      # the ambient branch and hand back the ambient context instead of the declared value — a wrong
-      # answer rather than a lost helper.
+      # Axn::Core::AmbientContext is deliberately absent HERE. `ambient_context` is not a convenience
+      # but a sentinel: the subfield resolver decides whether a parent is the ambient hash by comparing
+      # the route's root against AmbientContext::PARENT, so a field that took the name would be
+      # answered by the ambient branch and hand back the ambient context instead of the declared value
+      # — a wrong answer rather than a lost helper. That is a DECLARATION-time reason, and it has
+      # nothing to say about whether axn may DEFER to an inherited `ambient_context` — see
+      # `DEFERRAL_SOURCES` below, which answers that different question and includes it. Don't fold the
+      # two back into one list: a declaration and a deferral ask different questions of this module, and
+      # this is the one place they are allowed to answer differently, on purpose.
       SURRENDERABLE_OWNERS = [
         Axn::Core,
         Axn::Core::Contract::InstanceMethods,
         Axn::Core::Logging::InstanceMethods,
       ].freeze
+
+      # The instance names axn may DEFER an inherited implementation for — a strict superset of
+      # `SURRENDERABLE_OWNERS`. `Axn::Core::AmbientContext` sits here alone: nothing stops an inherited
+      # METHOD named `ambient_context` from being handed over the way `log` or `fail!` are, since
+      # internals reach the ambient reader by binding it (`Internal::ActionState.ambient_context`)
+      # rather than by dispatching its name on the action — the sentinel concern above governs
+      # declarations, not deferral. Read by `MethodShadowing.deferrable_names` (which module's public
+      # instance methods are up for deferral) and by `InstanceDeferral._axn_definer`/
+      # `.announce_deferrals!` (which module counts as "axn's own" once something is deferred to).
+      DEFERRAL_SOURCES = (SURRENDERABLE_OWNERS + [Axn::Core::AmbientContext]).freeze
 
       # Dispatched on the object by name from outside the module that defines them, where an
       # UnboundMethod cannot stand in: Ruby invokes `initialize` from `new`, the executor invokes the
@@ -88,6 +102,11 @@ module Axn
       end
 
       def surrenderable?(owner) = SURRENDERABLE_OWNERS.include?(owner)
+
+      # The deferral-side counterpart to `surrenderable?` above: whether `owner` is one of axn's own
+      # modules for the purpose of handing an inherited method over (or taking it back with
+      # `prefer_axn`), not for the purpose of a field declaration taking the name. See `DEFERRAL_SOURCES`.
+      def deferral_source?(owner) = DEFERRAL_SOURCES.include?(owner)
 
       # A leading underscore is how axn marks its own internals, and those sit in the same modules as
       # the sugar. They are not part of the surface a declaration may take: axn's own code reaches them

@@ -111,23 +111,22 @@ RSpec.describe "shadowing an axn instance method" do
   end
 
   describe "the sugar matrix" do
-    # Every name `include Axn` puts on the instance. `expose` is handled on its own below, because an
-    # action that has lost it cannot use it to produce the exposure the other examples check.
-    shadowable_by_def = %i[
-      result inputs log debug info warn error fatal
-      execution_context ambient_context default_error default_success
-      fail! done! forward! internal_context
-    ].freeze
+    # Every name `include Axn` puts on the instance — `MethodShadowing.deferrable_names` plus
+    # `internal_context`, which is private (so it's outside that public-only list by design) but is
+    # still guarded by `NameOwnership` exactly like the public sugar (see its comment there). `expose`
+    # is excluded and handled on its own below, because an action that has lost it cannot use it to
+    # produce the exposure the other examples check.
+    shadowable_by_def = (Axn::Core::MethodShadowing.deferrable_names + [:internal_context] - [:expose]).freeze
 
     # The subset a field declaration can take. The rest are rejected by `expects`: `ambient_context` is
-    # a sentinel the subfield resolver compares roots against rather than a convenience, and
-    # `default_error`/`default_success`/`fail!` are owned by the inbound facade the value is read from
-    # (InternalContext's own two, and ContextFacade#fail!).
+    # a sentinel the subfield resolver compares roots against rather than a convenience (deferrable,
+    # per DEFERRAL_SOURCES, but not surrenderable to a declaration), and `default_error`/
+    # `default_success`/`fail!` are owned by the inbound facade the value is read from (InternalContext's
+    # own two, and ContextFacade#fail!).
     # `done!` is declarable too, but it is exercised on its own below: the generic rows settle through
     # `done!`, so an action that has surrendered it cannot produce the exposure they check.
-    shadowable_by_declaration = %i[
-      result inputs expose log debug info warn error fatal execution_context internal_context forward!
-    ].freeze
+    shadowable_by_declaration = (Axn::Core::MethodShadowing.deferrable_names + [:internal_context] -
+                                  %i[ambient_context default_error default_success fail! done!]).freeze
 
     def shadowing(name, &declaration)
       build_axn(&declaration).tap do |klass|
@@ -595,7 +594,11 @@ RSpec.describe "shadowing an axn instance method" do
 
             expect(warnings).to be_empty
             owner = Axn::Internal::NameOwnership.owner_of(action, name)
-            expect(Axn::Internal::NameOwnership.surrenderable?(owner)).to be true
+            # `deferral_source?` rather than `surrenderable?`: `ambient_context` is one of the eighteen
+            # `deferrable_names` this loop runs over, but it is deliberately excluded from
+            # `SURRENDERABLE_OWNERS` (a field declaration may never take that name) — `surrenderable?`
+            # would wrongly fail for that one row.
+            expect(Axn::Internal::NameOwnership.deferral_source?(owner)).to be true
           end
         end
       end

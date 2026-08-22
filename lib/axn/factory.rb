@@ -4,6 +4,12 @@ module Axn
   class Factory
     NOT_PROVIDED = :__not_provided__
 
+    # Bound rather than dispatched, and read here once: `_build_axn_class` defines a singleton `new`
+    # directly on every class it builds that calls THIS, bypassing whatever a `superclass:` ancestor's
+    # own `self.new` would otherwise do — see the comment there for why.
+    CLASS_NEW = ::Class.instance_method(:new)
+    private_constant :CLASS_NEW
+
     class << self
       # rubocop:disable Metrics/AbcSize, Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity, Metrics/ParameterLists
       def build(
@@ -315,6 +321,20 @@ module Axn
 
         Class.new(superclass || Object) do
           include Axn unless self < Axn
+
+          # A `superclass:` whose own singleton chain overrides `.new` with a signature axn's
+          # kwargs-only `#initialize(**)` can't take — `ActiveRecord::Base.new(attributes = nil)`,
+          # forwarded via a bare `super`, is the case this was written for — would otherwise answer
+          # ahead of axn's own construction path: an `extend`ed module (like `Axn::Core::ClassMethods`)
+          # ranks above the superclass chain in singleton dispatch, but a `def self.new` written
+          # directly on an ancestor CLASS is part of that chain, and axn extends no `new` of its own to
+          # stand in front of it. Defined directly on THIS class's own singleton table instead, which
+          # always outranks anything reached through `extend` or the superclass chain, however either
+          # is reopened afterwards. `include Axn`'s own `private_class_method :new` (in `Core.included`)
+          # already ran above and would otherwise have captured that flawed inherited behavior as a
+          # private copy; this definition — and re-privatizing it — replaces that capture.
+          singleton_class.send(:define_method, :new) { |**kwargs| CLASS_NEW.bind_call(self, **kwargs) }
+          private_class_method :new
 
           Array(include).each { |mod| include mod }
           Array(extend).each { |mod| extend mod }

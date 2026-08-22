@@ -790,6 +790,19 @@ end
 
 If no async configuration is specified, the action will use the default configuration set via `Axn.config.set_default_async`. If no default is set, async execution is disabled.
 
+## `prefer_inherited` and `prefer_axn`
+
+`prefer_inherited(*names)` and `prefer_axn(*names)` say which implementation is live for an
+instance-side sugar name (`log`, `fail!`, `result`, …) that both axn and your own class hierarchy
+define — `include Axn` steps aside for your hierarchy's version by default, and these two
+declarations make that explicit (`prefer_inherited`, silencing the one-time deferral warning) or
+override it (`prefer_axn`, putting axn's own implementation back in front, since a bare `super`
+from your own `def` reaches the inherited version either way). Both raise at declaration for a name
+axn does not hand over to anyone (`call`, an axn internal, a Ruby method). Scoped to the class that
+writes them — a subclass may choose differently from its parent without changing the parent's or a
+sibling's behavior. See [Inheritance & Method Conflicts](/advanced/inheritance) for the full
+explanation and worked examples.
+
 ## Callbacks
 
 In addition to the [global exception handler](/reference/configuration#on-exception), a number of custom callback are available for you as well, if you want to take specific actions when a given Axn succeeds or fails.

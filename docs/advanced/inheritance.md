@@ -31,12 +31,12 @@ A `def` in the action's own class body is not a conflict either. Your method win
 These are axn's convenience helpers — the public instance methods it puts on your class for you to call from `call`:
 
 - Flow control: `fail!`, `done!`, `forward!`
-- Contract: `result`, `inputs`, `expose`, `default_error`, `default_success`, `execution_context`, `set_execution_context`, `clear_execution_context`
+- Contract: `result`, `inputs`, `expose`, `default_error`, `default_success`, `execution_context`, `set_execution_context`, `clear_execution_context`, `ambient_context`
 - Logging: `log`, `debug`, `info`, `warn`, `error`, `fatal`
 
 Axn's private internals are not on this list — they are not a surface your base class could plausibly be standing in for — and `call`, `_run` and `initialize` are a separate case entirely; see [Names axn cannot hand over](#names-axn-cannot-hand-over).
 
-One public helper is missing from both that list and the refusal below, and its absence is a known gap rather than a decision in your favor: **`ambient_context`**. Axn resolves the ambient parent by binding that reader rather than by dispatching its name, so handing the name over would not redirect anything internally — which is why it is left out of the deferral. The consequence is the one thing this page otherwise says axn fixed: if your hierarchy declares `ambient_context`, axn's reader wins **silently**, with no warning, and neither declaration below will accept the name — `prefer_inherited :ambient_context` and `prefer_axn :ambient_context` both raise, naming `Axn::Core::AmbientContext` as the owner. Until that changes, don't use `ambient_context` as a method name anywhere in an action's hierarchy.
+`ambient_context` defers exactly like the rest of this list, but it is not a name a **field declaration** can ever take: `expects :ambient_context` raises naming `Axn::Core::AmbientContext` as the owner, because that name is a sentinel the subfield resolver compares against, not a convenience. Those are different questions — deferring an inherited *method* costs axn nothing, since internals reach the ambient reader by binding it rather than by dispatching its name, while a *field* of that name would be answered by the ambient branch instead of the declared value. So don't declare a field called `ambient_context`, but a method of that name on your own hierarchy is deferred to, warned about, and confirmable/overridable with `prefer_inherited`/`prefer_axn` like any other helper here.
 
 ## A worked example
 

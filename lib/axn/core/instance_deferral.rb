@@ -194,8 +194,11 @@ module Axn
             settled[name] = true
             next if acknowledged.include?(name)
             # A record entry naming one of axn's own modules is a `prefer_axn`: axn's helper is what answers, so
-            # there is no deferral left to announce.
-            next if Axn::Internal::NameOwnership.surrenderable?(definer)
+            # there is no deferral left to announce. `deferral_source?` rather than `surrenderable?`: the latter
+            # is the declaration-time question and excludes `Axn::Core::AmbientContext` on purpose, but a
+            # `prefer_axn :ambient_context` puts that module's own implementation back in front just like any
+            # other deferral source, and there is equally nothing to announce for it.
+            next if Axn::Internal::NameOwnership.deferral_source?(definer)
             # The record says what `include Axn` stepped aside for; it does not say what a dispatch reaches now.
             # A `def` in the class's own body, or a module included after `include Axn`, outranks the shim — the
             # shape the docs call "not a conflict" — and announcing that one anyway would assert the opposite of
@@ -373,11 +376,16 @@ module Axn
       private_class_method :_captured_deferral
 
       # Which of axn's own modules would answer the name if nothing stood in front of it. Read off the class's
-      # ancestry rather than off the list of surrenderable owners, so that where two of axn's modules declared
+      # ancestry rather than off the list of deferral sources, so that where two of axn's modules declared
       # one name the answer would be the one Ruby itself would resolve to.
+      #
+      # `deferral_source?` rather than `surrenderable?`: `_assert_deferrable!`'s fast path admits any of
+      # `MethodShadowing.deferrable_names`, which now includes `ambient_context`, so this search must
+      # recognize `Axn::Core::AmbientContext` as one of axn's own too, or `prefer_axn :ambient_context`
+      # would find no definer here despite having already been let through above.
       def self._axn_definer(klass, name)
         Axn::Internal::NativeMethods.module_ancestors(klass).find do |mod|
-          Axn::Internal::NameOwnership.surrenderable?(mod) &&
+          Axn::Internal::NameOwnership.deferral_source?(mod) &&
             Axn::Internal::NativeMethods.declares_own_instance_method?(mod, name)
         end
       end
