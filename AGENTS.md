@@ -108,7 +108,7 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   value; `of:` descends a level (an Array's element, a map's `keys:`/`values:` axis); each rung of a nested
   bag names its own. So `inclusion:` on a `type: Array` field constrains the ARRAY, and a constraint on the
   elements goes in `of:`. ActiveModel's `Clusivity` special-cases an Array value and distributes the set over
-  its elements; axn's own `Inclusion`/`ExclusionValidator` (constants on `Validation::Base`) drop that branch,
+  its elements; axn's own `InclusionValidator`/`ExclusionValidator` (constants on `Validation::Base`) drop that branch,
   because the distributing reading has no schema spelling, inverts to nonsense under exclusion, and stops at
   depth 1. A validator with no reading at a container position is refused at declaration
   (`_reject_container_position_validators!`), never left enforcing something no rule states. The rule governs

@@ -498,8 +498,8 @@ RSpec.describe "a validator at a container position" do
 
   describe "validate:'s misuse guard does not advise a fix that is itself refused" do
     it "does not promise a bare inclusion: as the fix for a container" do
-      # `validate: { inclusion: ... }` enforces nothing, so it is refused — but its advice used to be "declare
-      # inclusion: directly", which at a container position now raises on its own.
+      # `validate: { inclusion: ... }` enforces nothing, so it is refused, and the fix it advises —
+      # declaring `inclusion:` directly — must not be one that itself raises at a container position.
       expect { build_axn { expects :tags, type: Array, validate: { inclusion: { in: %w[a b] } } } }
         .to raise_error(ArgumentError, /constrains the value at that position/)
     end
