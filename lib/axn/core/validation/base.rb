@@ -226,11 +226,20 @@ module Axn
       def self.literal_set_members(opt, keys: %i[in within])
         collection = declared_set_collection(opt, keys:)
         members = collection.instance_of?(Hash) ? collection.keys : collection
-        return nil unless members.instance_of?(Array) || (defined?(Set) && members.instance_of?(Set))
+        return nil unless literal_set_collection?(members)
 
         members
       rescue StandardError
         nil
+      end
+
+      # Whether a collection is one axn may read its members out of directly: an in-memory Array or Set, and
+      # exactly those classes rather than any descendant, since a subclass could override the traversal. THE
+      # single definition of that admissibility test, shared by the reader above and by the satisfiability
+      # guard's `acceptance:` branch (contract.rb), which reads its set under a different rule
+      # (`AcceptanceValidator` tests `Array(accept).include?(value)`) but admits exactly the same shapes.
+      def self.literal_set_collection?(collection)
+        collection.instance_of?(::Array) || (defined?(Set) && collection.instance_of?(::Set))
       end
 
       # Tri-state: nil = can't tell; true/false = nil's membership in the set. Only inspected for in-memory

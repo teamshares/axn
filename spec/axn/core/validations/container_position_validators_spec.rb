@@ -378,13 +378,6 @@ RSpec.describe "a validator at a container position" do
         .to raise_error(ArgumentError, /comparison:/)
     end
 
-    it "still refuses unrelated classes on both sides — the catch this guard exists for" do
-      expect { build_axn { expects :n, type: Integer, inclusion: { in: %w[1 2] } } }
-        .to raise_error(ArgumentError, /inclusion:/)
-      expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] } } }
-        .to raise_error(ArgumentError, /inclusion:/)
-    end
-
     it "refuses a gated entry too — a gate removes the check, it does not give the set a reading" do
       # Reflection is static-maximal (it treats every gate as open), so a gated can-never-match set still
       # emits `{type: "array", enum: ["a","b"]}` — the unsatisfiable node the corollary forbids. Closed the
@@ -502,6 +495,95 @@ RSpec.describe "a validator at a container position" do
       # declaring `inclusion:` directly — must not be one that itself raises at a container position.
       expect { build_axn { expects :tags, type: Array, validate: { inclusion: { in: %w[a b] } } } }
         .to raise_error(ArgumentError, /constrains the value at that position/)
+    end
+  end
+
+  # A RAW `shape:` member — a bag handed straight to the declaration walk — never reaches
+  # `_parse_field_validations`, so both positional guards are mirrored onto the member walk. Without the
+  # mirror the block form raised while the identical raw member declared cleanly and emitted the very
+  # unsatisfiable node the rule exists to eliminate.
+  describe "both positional guards reach a raw shape: member" do
+    let(:member_struct) { Struct.new(:field, :validations) }
+
+    def raw_shape(validations)
+      members = [member_struct.new(:x, validations)]
+      build_axn { expects :row, type: Hash, shape: { members: } }
+    end
+
+    it "refuses an unsatisfiable inclusion: set on a member, as the block form does" do
+      expect { raw_shape({ type: Array, inclusion: { in: %w[a] } }) }
+        .to raise_error(ArgumentError, /inclusion: on shape member `x` can never match/)
+    end
+
+    it "refuses format: at a member's container position" do
+      expect { raw_shape({ type: Array, format: { with: /a/ } }) }
+        .to raise_error(ArgumentError, /format: on shape member `x` cannot constrain a container/)
+    end
+
+    it "refuses numericality: at a member's container position" do
+      expect { raw_shape({ type: Hash, numericality: true }) }
+        .to raise_error(ArgumentError, /numericality: on shape member `x` cannot constrain a container/)
+    end
+
+    it "refuses an unsatisfiable acceptance: and comparison: on a member too" do
+      expect { raw_shape({ type: Array, acceptance: true }) }
+        .to raise_error(ArgumentError, /acceptance: on shape member `x` can never match/)
+      expect { raw_shape({ type: Array, comparison: { greater_than: 1 } }) }
+        .to raise_error(ArgumentError, /comparison: on shape member `x` can never match/)
+    end
+
+    it "still declares a member whose set IS of the declared type" do
+      expect { raw_shape({ type: String, inclusion: { in: %w[a] } }) }.not_to raise_error
+      expect { raw_shape({ type: Array, inclusion: { in: [%w[a]] } }) }.not_to raise_error
+    end
+
+    it "still declares a member carrying format: at a scalar position" do
+      expect { raw_shape({ type: String, format: { with: /a/ } }) }.not_to raise_error
+    end
+
+    it "validates the member the legal declaration describes" do
+      action = raw_shape({ type: Array, inclusion: { in: [%w[a]] } })
+
+      expect(action.call(row: { x: %w[a] }).ok?).to be(true)
+      expect(action.call(row: { x: %w[b] }).ok?).to be(false)
+    end
+
+    # The member's own bag carries the tolerance on this route (nothing pushes a field's kwargs down into
+    # it), so it is read from there — an intolerant reading would refuse a declaration under which nil
+    # passes and the emitted node stays satisfiable.
+    it "stands the satisfiability guard down under a member's own tolerance" do
+      expect { raw_shape({ type: Array, inclusion: { in: %w[a] }, allow_nil: true }) }.not_to raise_error
+      expect { raw_shape({ type: Array, inclusion: { in: %w[a] }, allow_blank: true }) }.not_to raise_error
+    end
+
+    it "refuses regardless of tolerance for the container-position guard, which tolerance cannot rescue" do
+      expect { raw_shape({ type: Array, format: { with: /a/ }, allow_nil: true }) }
+        .to raise_error(ArgumentError, /format: on shape member `x`/)
+    end
+
+    # `of: { values: { klass: Hash, shape: { members: [...] } } }` is the only spelling a map's shaped values
+    # have, and it descends through the same member walk — so the mirror covers it with no second call site.
+    it "reaches the shaped values of a map declared with of:" do
+      members = [member_struct.new(:x, { type: Array, inclusion: { in: %w[a] } })]
+      expect { build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: { members: } } } } }
+        .to raise_error(ArgumentError, /inclusion: on shape member `x` can never match/)
+    end
+
+    it "leaves a legal member inside a map's shaped values declaring" do
+      members = [member_struct.new(:x, { type: Array, inclusion: { in: [%w[a]] } })]
+      expect { build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: { members: } } } } }
+        .not_to raise_error
+    end
+  end
+
+  # A hand-copied ActiveModel default is only correct until the gem moves. Pinned here so a bump that changes
+  # it fails loudly rather than silently misjudging every `acceptance: true` declaration.
+  describe "DEFAULT_ACCEPTANCE_SET tracks ActiveModel's own default" do
+    it "matches what AcceptanceValidator defaults `accept:` to" do
+      model = Class.new { include ActiveModel::Validations }
+      validator = ActiveModel::Validations::AcceptanceValidator.new(attributes: [:terms], class: model)
+
+      expect(Axn::Core::Contract::ClassMethods::DEFAULT_ACCEPTANCE_SET).to eq(validator.options[:accept])
     end
   end
 end

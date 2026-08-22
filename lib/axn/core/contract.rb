@@ -3057,7 +3057,7 @@ module Axn
         # set still emits an unsatisfiable node.
         #
         # Every offender is named at once: an author who wrote two has one declaration to fix.
-        def _reject_container_position_validators!(validations, fields:)
+        def _reject_container_position_validators!(validations, where:)
           return unless _declares_container_type_only?(validations[:type])
 
           entries = Axn::Validation::Base.validator_entries(validations)
@@ -3066,7 +3066,7 @@ module Axn
           return if offenders.empty?
 
           raise ArgumentError,
-                "#{offenders.map { |key| "#{key}:" }.join(' / ')} on #{_declared_fields_label(fields)} cannot " \
+                "#{offenders.map { |key| "#{key}:" }.join(' / ')} on #{where} cannot " \
                 "constrain a container: ActiveModel reads #{offenders.length == 1 ? 'it' : 'them'} off the " \
                 "value's Ruby string form (`format:` matches `[\"a\"].to_s`) or off a numeric coercion of it " \
                 "(`numericality:`), and a container has neither — so the check constrains punctuation or can " \
@@ -3113,7 +3113,7 @@ module Axn
         # while `type: String, acceptance: true` stands down, because `"1"` is a String.
         DEFAULT_ACCEPTANCE_SET = ["1", true].freeze
 
-        def _reject_unsatisfiable_value_constraints!(validations, fields:, tolerant:)
+        def _reject_unsatisfiable_value_constraints!(validations, where:, tolerant:)
           return if tolerant
 
           klasses = _judgeable_type_klasses(validations[:type])
@@ -3132,7 +3132,7 @@ module Axn
             next if literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
 
             raise ArgumentError,
-                  "#{key}: on #{_declared_fields_label(fields)} can never match — nothing it compares against " \
+                  "#{key}: on #{where} can never match — nothing it compares against " \
                   "is of type #{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so every " \
                   "value is rejected. A validator constrains the value at the position it is declared at: compare " \
                   "against literals of the declared type, and for a constraint on a container's CONTENTS " \
@@ -3167,10 +3167,11 @@ module Axn
         # cross-comparable family can compare with it — `type: Float, comparison: { greater_than: 0 }` is an
         # Integer bound on a Float field and compares perfectly well.
         #
-        # Read through `Internal::Identity` so neither side's own methods decide a declaration.
+        # `klass` is always a real Module — `_judgeable_type_klasses` stands the whole guard down unless every
+        # declared token is one — so nothing here asks a caller-supplied token what it is. The LITERAL is read
+        # through `Internal::Identity`, so neither side's own methods decide a declaration.
         def _literal_may_satisfy?(literal, klass)
           return true if Validators::TypeValidator.value_matches?(literal, klass:)
-          return false unless klass.is_a?(::Module)
           return true if _literal_shares_value_semantics_root?(literal, klass)
 
           CROSS_COMPARABLE_FAMILIES.any? do |family|
@@ -3199,8 +3200,9 @@ module Axn
         # read by `key?` rather than truthiness, since `equal_to: false` is a real bound.
         #
         # `acceptance:` names a set under `accept:`, defaulting to ActiveModel's own when absent. A bare scalar
-        # (`accept: "yes"`) is not a literal set the shared reader will read, so it stands down. The shared set
-        # reader is NOT reused here: `AcceptanceValidator` tests `Array(accept).include?(value)`, and `Array()`
+        # (`accept: "yes"`) is not a literal set the shared reader will read, so it stands down. Only that
+        # reader's admissibility TEST is shared; its member-reading rule is not, because
+        # `AcceptanceValidator` tests `Array(accept).include?(value)`, and `Array()`
         # on a Hash yields its `[key, value]` PAIRS rather than its keys — measured, `accept: { "a" => 1 }`
         # accepts `["a", 1]` and rejects `"a"` — so `literal_set_members`'s "a Hash's members are its keys"
         # rule (right for `inclusion:`, whose `include?` tests keys) is wrong for this validator.
@@ -3214,9 +3216,10 @@ module Axn
             return DEFAULT_ACCEPTANCE_SET unless Internal::ShapeGraph.carries_key?(opts, :accept)
 
             # Judge only the shapes `Array()` leaves alone (an Array or a Set); a Hash or a bare scalar stands
-            # the guard down rather than being read through the wrong rule.
+            # the guard down rather than being read through the wrong rule. Which shapes those are is the set
+            # reader's own question, asked through its definition rather than respelled here.
             accept = opts[:accept]
-            return nil unless accept.instance_of?(::Array) || (defined?(Set) && accept.instance_of?(::Set))
+            return nil unless Axn::Validation::Base.literal_set_collection?(accept)
 
             return accept
           end
@@ -3445,12 +3448,13 @@ module Axn
           # ahead of every consumer of this bag. Placement ahead of the tolerance push-down is not load-bearing
           # for THIS message — it carries only key names and the field label, both push-down-invariant — but it
           # is for the satisfiability guard Task 3 adds here next, whose message quotes the declared set.
-          _reject_container_position_validators!(validations, fields:)
+          _reject_container_position_validators!(validations, where: _declared_fields_label(fields))
 
           # `tolerant` is computed further down for the push-down; it is passed here explicitly rather than read
           # off the entries, because the tolerance flags are declaration KWARGS at this point and the push-down
           # that writes them into each entry has not run yet.
-          _reject_unsatisfiable_value_constraints!(validations, fields:, tolerant: allow_blank || allow_nil)
+          _reject_unsatisfiable_value_constraints!(validations, where: _declared_fields_label(fields),
+                                                                tolerant: allow_blank || allow_nil)
 
           _derive_raw_shape_container!(validations)
 
