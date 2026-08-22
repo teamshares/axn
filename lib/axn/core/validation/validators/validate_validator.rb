@@ -20,7 +20,9 @@ module Axn
                   "`validate:` expects a callable — `validate: ->(value) { ... }` or " \
                   "`validate: { with: <callable>, message: \"...\" }` — but got a Hash with no `:with` key " \
                   "(keys: #{value.keys.inspect}). If you meant a standard validation such as an " \
-                  "allowed-value set, declare it directly (e.g. `inclusion: { in: [...] }`), not under `validate:`."
+                  "allowed-value set, declare it directly (e.g. `inclusion: { in: [...] }`), which constrains " \
+                  "the value at that position — on a container-typed field that is the container itself, not " \
+                  "its contents."
           end
 
           return value
@@ -37,7 +39,8 @@ module Axn
         raise ArgumentError,
               "`validate:` requires a callable under `:with` (`validate: { with: <callable> }`) or the bare form " \
               "`validate: ->(value) { ... }`. For a standard validation such as an allowed-value set, use the " \
-              "validator directly (e.g. `inclusion: { in: [...] }`), not `validate:`."
+              "validator directly (e.g. `inclusion: { in: [...] }`), which constrains the value at that " \
+              "position — on a container-typed field that is the container itself, not its contents."
       end
 
       def validate_each(record, attribute, value)

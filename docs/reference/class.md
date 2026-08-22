@@ -20,7 +20,7 @@ Both `expects` and `exposes` support the same core options:
 | `allow_empty` | `expects :ids, type: Array, allow_empty: true` | Speaks to **emptiness only**, leaving nullability to the options above: `true` accepts an empty value while the field stays required and non-nil; `false` rejects an empty one (pair it with `optional:` for "may be omitted, but not empty"). Requires a `type:` whose values can be empty, and accepts only `true`/`false`/`nil`. See [the four requiredness contracts](#requiredness-is-two-questions)
 | `if` / `unless` | `expects :coupon, type: String, if: :promo_enabled?` | Conditionally validate: gates **every** check in this declaration (including the implicit presence check) on an action method (Symbol) or Proc. See [Conditional validation](#conditional-validation-if-unless)
 | `type` | `expects :foo, type: String` | Custom type validation -- fail unless `name.is_a?(String)`
-| anything else | `expects :foo, inclusion: { in: [:apple, :peach] }` | Any other arguments will be processed [as ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html) (i.e. as if passed to `validates :foo, <...>` on an ActiveRecord model) — with one exception, `confirmation:`, which axn extends past ActiveModel's own behavior (see below)
+| anything else | `expects :foo, inclusion: { in: [:apple, :peach] }` | Any other arguments will be processed [as ActiveModel validations](https://guides.rubyonrails.org/active_record_validations.html) (i.e. as if passed to `validates :foo, <...>` on an ActiveRecord model) — with three exceptions. `confirmation:` axn extends past ActiveModel's own behavior (see below). `inclusion:`/`exclusion:` constrain the value at the position they are declared at, where ActiveModel distributes a set over an `Array` value's elements (see [Where a validator applies](#where-a-validator-applies)). And `format:`/`numericality:`/`comparison:`/`acceptance:` are refused at declaration on a container-typed field rather than silently constraining the container's `to_s`. An `Axn::FormObject` is an ActiveModel model rather than an axn contract, so `validates` there keeps ActiveModel's own readings throughout
 
 ### Dynamic `sensitive` fields
 
@@ -166,6 +166,18 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
 * `confirmation: true` - declares a companion input, `<field>_confirmation`, and fails unless it matches the field's actual value
   * Note this departs from ActiveModel, which lets an omitted confirmation pass. See [Confirmation pairs](#confirmation) for the details.
 
+#### Where a validator applies {#where-a-validator-applies}
+
+A validator constrains the value at the position it is declared at.
+
+On the `expects` that is the field's own value, so `inclusion:` on a `type: Array` field asks whether the ARRAY is a member of the set (`inclusion: { in: [["a", "b"], ["c"]] }`), and `length:` measures the array's size.
+
+A constraint on the *contents* belongs at the contents' own position — inside `of:` — and until that bag accepts value validators, a `validate: ->(value) { ... }` callable expresses it.
+
+Four validators have no reading at a container position at all and are refused at declaration: `format:` (which ActiveModel matches against `value.to_s`, so on an `Array` it would constrain the Ruby inspect form), `numericality:`, `comparison:` and `acceptance:` (which accept no container value).
+
+An `inclusion:` set no value of the declared `type:` could belong to is refused on the same terms, at every type — `type: Array, inclusion: { in: ["a", "b"] }` and `type: Integer, inclusion: { in: ["1", "2"] }` alike — since it rejects every input while looking like a constraint.
+
 #### Describing the shape of structured fields (block syntax) {#shape-blocks}
 
 For a structured field — `type: Array`, `type: Hash`, or a class such as a `Data.define` — you can pass a block to declare per-member contracts (types, enums, descriptions, nesting). This works on both `expects` and `exposes`:
@@ -232,7 +244,7 @@ Requiredness is really two independent questions — may the value be `nil` (or 
 
 `Set` is listed above because a `Set` has an empty state at *runtime*, and the runtime rules are exactly the four rows. Reflection is the caveat: `Set` has no JSON Schema mapping, so a `type: Set` field falls back to the permissive `{ type: "string" }` hint — and a `Set` that rejects empty therefore advertises `minLength: 1`, a string-shaped floor over a value that is not a string. Treat a reflected `Set` as a hint, not a contract.
 
-A field that rejects empty reflects that into its schema as `minItems` / `minProperties` / `minLength`.
+A field that rejects empty reflects that into its schema as `minItems` / `minProperties` / `minLength`, and a declared `length:` ceiling reflects as `maxItems` / `maxProperties` / `maxLength` (an exact `length: { is: 2 }` emitting both). A bound ActiveModel resolves per call (a Symbol or Proc) and an infinite one emit nothing, since no fixed number expresses them.
 
 Only one thing may answer the emptiness question per declaration. An explicit `presence:` occupies the very check `allow_empty:` governs, so the two must agree — `presence: false, allow_empty: false` and `presence: true, allow_empty: true` each raise at declaration, naming both spellings. An author-declared `length:` is a different matter: it is your own size constraint, so `allow_empty: false` defers to a `length:` floor of 1 or more (and makes it fire on the empty value even under `optional:`, which would otherwise tolerate blank), adds its own floor alongside a `length:` that only caps the size, and raises for one that explicitly admits an empty value (`minimum: 0`, `is: 0`, `maximum: 0`, a range starting at 0, or its own `allow_blank: true`). `allow_empty: true` asks for nothing to be enforced, so it never conflicts with a `length:`.
 

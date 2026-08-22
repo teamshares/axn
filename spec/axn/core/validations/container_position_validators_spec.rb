@@ -233,7 +233,8 @@ RSpec.describe "a validator at a container position" do
 
     it "names the declared type in the message, not the field name" do
       expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] } } }
-        .to raise_error(ArgumentError, /inclusion: on :tags can never match — nothing it compares against is a Array/)
+        .to raise_error(ArgumentError,
+                        /inclusion: on :tags can never match — nothing it compares against is of type Array/)
     end
 
     it "refuses the bare-Array shorthand identically" do
@@ -492,6 +493,15 @@ RSpec.describe "a validator at a container position" do
       expect(Axn::Validation::Base.literal_set_members({ in: -> { [] } })).to be_nil
       expect(Axn::Validation::Base.literal_set_members({ in: 1..5 })).to be_nil
       expect(Axn::Validation::Base.literal_set_members({ in: Class.new(Array).new })).to be_nil
+    end
+  end
+
+  describe "validate:'s misuse guard does not advise a fix that is itself refused" do
+    it "does not promise a bare inclusion: as the fix for a container" do
+      # `validate: { inclusion: ... }` enforces nothing, so it is refused — but its advice used to be "declare
+      # inclusion: directly", which at a container position now raises on its own.
+      expect { build_axn { expects :tags, type: Array, validate: { inclusion: { in: %w[a b] } } } }
+        .to raise_error(ArgumentError, /constrains the value at that position/)
     end
   end
 end

@@ -1348,8 +1348,12 @@ module Axn
         # with no size, which is what keeps a bound off an `integer` branch and off `"null"`.
         def size_bounds_for(type, minimum, maximum)
           bounds = {}
-          bounds[size_constraint_key_for(type)] = minimum if minimum && size_constraint_key_for(type)
-          bounds[size_ceiling_key_for(type)] = maximum if maximum && size_ceiling_key_for(type)
+          if minimum && (floor_key = size_constraint_key_for(type))
+            bounds[floor_key] = minimum
+          end
+          if maximum && (ceiling_key = size_ceiling_key_for(type))
+            bounds[ceiling_key] = maximum
+          end
           bounds
         end
 

@@ -3133,8 +3133,8 @@ module Axn
 
             raise ArgumentError,
                   "#{key}: on #{_declared_fields_label(fields)} can never match — nothing it compares against " \
-                  "is a #{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so every value is " \
-                  "rejected. A validator constrains the value at the position it is declared at: compare " \
+                  "is of type #{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so every " \
+                  "value is rejected. A validator constrains the value at the position it is declared at: compare " \
                   "against literals of the declared type, and for a constraint on a container's CONTENTS " \
                   "express it as `validate: ->(value) { ... }` (a per-element spelling inside `of:` is not " \
                   "supported yet — PRO-3193)."
