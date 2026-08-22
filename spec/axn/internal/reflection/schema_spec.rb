@@ -5441,4 +5441,111 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(described_class.build_input([config]).dig(:properties, :m)).not_to have_key(:items)
     end
   end
+
+  # The ceiling twin of the emptiness floor. Emitting it only shrinks the schema-valid set, so it preserves the
+  # documented direction (docs/reference/class.md:270 — stricter than the runtime, never looser) by construction.
+  describe "size ceilings" do
+    it "emits maxItems for an Array length maximum" do
+      action = build_axn { expects :tags, type: Array, of: String, length: { maximum: 2 } }
+
+      expect(action.input_schema[:properties][:tags][:maxItems]).to eq(2)
+    end
+
+    it "emits maxProperties for a Hash length maximum" do
+      action = build_axn { expects :meta, type: Hash, length: { maximum: 3 } }
+
+      expect(action.input_schema[:properties][:meta][:maxProperties]).to eq(3)
+    end
+
+    it "emits maxLength for a String length maximum" do
+      action = build_axn { expects :name, type: String, length: { maximum: 5 } }
+
+      expect(action.input_schema[:properties][:name][:maxLength]).to eq(5)
+    end
+
+    it "emits both bounds from a range" do
+      prop = build_axn { expects :tags, type: Array, length: { in: 2..4 } }.input_schema[:properties][:tags]
+
+      expect(prop[:minItems]).to eq(2)
+      expect(prop[:maxItems]).to eq(4)
+    end
+
+    it "counts one less for an exclusive range end, as ActiveModel does" do
+      prop = build_axn { expects :tags, type: Array, length: { in: 2...4 } }.input_schema[:properties][:tags]
+
+      expect(prop[:maxItems]).to eq(3)
+    end
+
+    it "emits both bounds from an exact length" do
+      prop = build_axn { expects :tags, type: Array, length: { is: 2 } }.input_schema[:properties][:tags]
+
+      expect(prop[:minItems]).to eq(2)
+      expect(prop[:maxItems]).to eq(2)
+    end
+
+    it "emits a zero ceiling, which names size 0 as the only admissible size" do
+      prop = build_axn { expects :tags, type: Array, length: { maximum: 0 }, allow_empty: true }.input_schema[:properties][:tags]
+
+      expect(prop[:maxItems]).to eq(0)
+    end
+
+    it "emits the ceiling on every size-bearing branch of a union" do
+      prop = build_axn { expects :f, type: [String, Array], length: { maximum: 2 } }.input_schema[:properties][:f]
+
+      expect(prop[:anyOf]).to include(a_hash_including(type: "string", maxLength: 2))
+      expect(prop[:anyOf]).to include(a_hash_including(type: "array", maxItems: 2))
+    end
+
+    it "emits no ceiling for a per-call bound ActiveModel resolves against the record" do
+      prop = build_axn { expects :tags, type: Array, length: { maximum: :max_tags } }.input_schema[:properties][:tags]
+
+      expect(prop).not_to have_key(:maxItems)
+    end
+
+    it "emits no ceiling for an infinite one, which no finite number expresses" do
+      prop = build_axn { expects :tags, type: Array, length: { maximum: Float::INFINITY } }.input_schema[:properties][:tags]
+
+      expect(prop).not_to have_key(:maxItems)
+    end
+
+    it "emits no ceiling for a type with no size" do
+      prop = build_axn { expects :n, type: Integer, length: { maximum: 2 } }.input_schema[:properties][:n]
+
+      expect(prop).not_to have_key(:maxItems)
+      expect(prop).not_to have_key(:maxLength)
+    end
+
+    it "emits no ceiling where the declaration names none" do
+      prop = build_axn { expects :tags, type: Array, of: String }.input_schema[:properties][:tags]
+
+      expect(prop).not_to have_key(:maxItems)
+      expect(prop[:minItems]).to eq(1)
+    end
+  end
+
+  describe "Validation::Base.declared_length_ceiling" do
+    it "reads a maximum, an exact length, and a range end" do
+      expect(Axn::Validation::Base.declared_length_ceiling({ maximum: 2 })).to eq(2)
+      expect(Axn::Validation::Base.declared_length_ceiling({ is: 3 })).to eq(3)
+      expect(Axn::Validation::Base.declared_length_ceiling({ in: 1..4 })).to eq(4)
+    end
+
+    it "answers nil where the ceiling is open" do
+      expect(Axn::Validation::Base.declared_length_ceiling({ minimum: 2 })).to be_nil
+      expect(Axn::Validation::Base.declared_length_ceiling({})).to be_nil
+    end
+
+    it "answers :unverifiable for a bound ActiveModel resolves per call" do
+      expect(Axn::Validation::Base.declared_length_ceiling({ maximum: :max })).to eq(:unverifiable)
+    end
+
+    it "admits only a non-negative Integer as emittable" do
+      expect(Axn::Validation::Base.emittable_length_ceiling?(0)).to be(true)
+      expect(Axn::Validation::Base.emittable_length_ceiling?(2)).to be(true)
+      expect(Axn::Validation::Base.emittable_length_ceiling?(Float::INFINITY)).to be(false)
+      expect(Axn::Validation::Base.emittable_length_ceiling?(2.5)).to be(false)
+      expect(Axn::Validation::Base.emittable_length_ceiling?(:unverifiable)).to be(false)
+      expect(Axn::Validation::Base.emittable_length_ceiling?(nil)).to be(false)
+    end
+  end
 end

@@ -66,6 +66,13 @@ module Axn
           "string" => :minLength,
         }.freeze
 
+        # The ceiling half of the same mapping. A type absent here has no size to bound.
+        SIZE_CEILING_KEYS = {
+          "array" => :maxItems,
+          "object" => :maxProperties,
+          "string" => :maxLength,
+        }.freeze
+
         EXCLUDED_FROM_INPUT_SCHEMA = %i[ambient_context].freeze
 
         # Per-node result of the single bottom-up derivation pass (derive_annotations): `required` means
@@ -1316,30 +1323,46 @@ module Axn
         # `minLength` cannot express, so the emitted constraint stays a floor rather than an exact mirror.
         def apply_size_constraints!(prop, config)
           minimum = declared_size_minimum(config)
-          return unless minimum
+          maximum = declared_size_maximum(config)
+          return if minimum.nil? && maximum.nil?
 
           if prop[:anyOf]
-            prop[:anyOf] = apply_member_size_constraints(prop[:anyOf], minimum)
-          elsif (key = size_constraint_key_for(prop[:type]))
-            prop[key] = minimum
+            prop[:anyOf] = apply_member_size_constraints(prop[:anyOf], minimum, maximum)
+          else
+            prop.merge!(size_bounds_for(prop[:type], minimum, maximum))
           end
         end
 
-        # A union emits one branch per member type instead of a single `type:`, and the validators reject empty
-        # whichever branch the value takes — so the floor belongs on every branch that could hold an empty
-        # value. A branch with no empty state (an `integer` member) and the nullability branch carry none,
-        # decided by the same size-bearing test the single-type path uses, applied per branch.
-        def apply_member_size_constraints(members, minimum)
+        # A union emits one branch per member type instead of a single `type:`, and the validators reject an
+        # out-of-bounds value whichever branch it takes — so each bound belongs on every branch that can carry
+        # it. A branch with no size (an `integer` member) and the nullability branch carry none, decided by the
+        # same per-type key lookup the single-type path uses.
+        def apply_member_size_constraints(members, minimum, maximum)
           members.map do |member|
-            key = size_constraint_key_for(member[:type])
-            key ? member.merge(key => minimum) : member
+            bounds = size_bounds_for(member[:type], minimum, maximum)
+            bounds.empty? ? member : member.merge(bounds)
           end
+        end
+
+        # The size keywords one emitted type can carry, for the bounds this field declares. Empty for a type
+        # with no size, which is what keeps a bound off an `integer` branch and off `"null"`.
+        def size_bounds_for(type, minimum, maximum)
+          bounds = {}
+          bounds[size_constraint_key_for(type)] = minimum if minimum && size_constraint_key_for(type)
+          bounds[size_ceiling_key_for(type)] = maximum if maximum && size_ceiling_key_for(type)
+          bounds
         end
 
         # The JSON Schema floor key for an emitted type, or nil for a type with no empty state. Reads the
         # single-type String and the `[T, "null"]` nullable pair alike; `"null"` is never size-bearing.
         def size_constraint_key_for(type)
           Array(type).filter_map { |t| SIZE_CONSTRAINT_KEYS[t] }.first
+        end
+
+        # The JSON Schema ceiling key for an emitted type, or nil for a type with no size. Reads the single-type
+        # String and the `[T, "null"]` nullable pair alike, exactly as the floor's own key lookup does.
+        def size_ceiling_key_for(type)
+          Array(type).filter_map { |t| SIZE_CEILING_KEYS[t] }.first
         end
 
         # The smallest size this field's validators admit, or nil when they admit an empty value. An explicit
@@ -1377,6 +1400,18 @@ module Axn
           end
 
           rejects_empty ? 1 : nil
+        end
+
+        # The largest size this field's validators admit, or nil when they bound it nowhere. Simpler than the
+        # floor in two ways, both because a ceiling has no interaction with emptiness: only `length:` can name
+        # one (presence and the emptiness axis impose floors, never ceilings), and blank-tolerance cannot
+        # loosen one (an empty value measures 0, which every emittable ceiling admits). A GATED entry is counted
+        # as if its gate were open, the static-maximal policy every constraint here follows.
+        def declared_size_maximum(config)
+          length = effective_entry_options(config.validations[:length], shared_validation_options(config))
+          declared = Axn::Validation::Base.declared_length_ceiling(length)
+
+          declared if Axn::Validation::Base.emittable_length_ceiling?(declared)
         end
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's

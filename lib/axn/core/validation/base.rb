@@ -361,6 +361,34 @@ module Axn
         floor
       end
 
+      # The largest size a `length:` entry admits, read from the checks it runs — the twin of the floor above,
+      # off the same `declared_length_checks`, so an `in:`/`within:` range (exclusive end counted one less) and
+      # an `is:` (which names both bounds) resolve identically for both. Returns nil when the entry leaves the
+      # ceiling open (a `minimum:` alone, or no size key at all), and `:unverifiable` for a ceiling ActiveModel
+      # resolves per call (a Symbol/Proc).
+      #
+      # Blank-tolerance is not consulted, and the floor's careful reasoning about it does not transfer: a
+      # tolerated empty value measures 0, which every non-negative ceiling already admits, so a ceiling is exact
+      # whether or not an empty value stands the entry aside.
+      #
+      # THE single definition of "how large may this length: entry be", read by schema reflection's
+      # `maxItems`/`maxProperties`/`maxLength` emission.
+      def self.declared_length_ceiling(entry_opts)
+        checks = declared_length_checks(entry_opts)
+
+        ceiling = checks[:is] || checks[:maximum]
+        return :unverifiable unless ceiling.nil? || ceiling.is_a?(Numeric)
+
+        ceiling
+      end
+
+      # Whether a ceiling read above is one a JSON Schema `maxItems`/`maxProperties`/`maxLength` can carry: a
+      # non-negative Integer. `0` counts — it names size 0 as the only admissible size, which is a constraint a
+      # caller can act on. `Float::INFINITY` (ActiveModel's spelling for "no ceiling") and a fractional bound
+      # (which its LengthValidator refuses outright at validation time) are both uncarryable, exactly as they
+      # are for the floor.
+      def self.emittable_length_ceiling?(ceiling) = ceiling.is_a?(Integer) && !ceiling.negative?
+
       # Whether a `format:` ENTRY would let a nil through. FormatValidator tests `value.to_s` against the
       # pattern (activemodel 7.2.2.2), so a nil is tested as the empty string and the pattern decides — with
       # the polarity flipped by key: `with:` records an error UNLESS the pattern matches, so it tolerates a nil
