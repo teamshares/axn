@@ -507,6 +507,17 @@ RSpec.describe "a validator at a container position" do
       expect(action.call(f: Money.new(1)).ok?).to be(true)
     end
 
+    it "requires ONE union branch to satisfy every bound, not one branch per bound" do
+      # A runtime value takes exactly one branch, so bounds satisfiable on DIFFERENT branches satisfy nothing:
+      # no value is both `== []` and `> {}`.
+      expect { build_axn { expects :f, type: [Array, Hash], comparison: { equal_to: [], greater_than: {} } } }
+        .to raise_error(ArgumentError, /comparison:/)
+
+      # A union where one branch carries every bound still declares.
+      expect { build_axn { expects :f, type: [Array, Hash], comparison: { equal_to: [], greater_than_or_equal_to: [] } } }
+        .not_to raise_error
+    end
+
     it "refuses an entry whose bounds are conjunctively unsatisfiable, not just wholly so" do
       # ActiveModel applies EVERY operator in one entry, so a single unsatisfiable bound sinks the entry —
       # even alongside one whose literal is of the declared type.

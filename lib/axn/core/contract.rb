@@ -3396,13 +3396,15 @@ module Axn
         # (`comparison: { equal_to: ["a"], greater_than: 1 }` on a `type: Array` field admits nothing, though its
         # equality literal is an Array).
         #
-        # For a union, each bound is judged against the klasses as a group rather than per branch, which
-        # under-restricts a declaration whose bounds are individually satisfiable on DIFFERENT branches. That is
-        # the safe direction, and it is unreachable at the only position comparison bounds are judged at.
+        # The nesting of the two quantifiers matters as much as which one each takes, because a union declares
+        # several branches and a single runtime value takes exactly ONE of them. For `comparison:`, some ONE
+        # branch must satisfy EVERY bound: `type: [Array, Hash], comparison: { equal_to: [], greater_than: {} }`
+        # has an Array-satisfiable bound and a Hash-satisfiable bound and admits nothing, because no value is
+        # both. For a SET, one branch and one member is all a value needs, so either order reads the same.
         def _constraint_satisfiable?(key, literals, klasses)
-          predicate = ->(literal) { klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
+          return klasses.any? { |klass| literals.all? { |literal| _literal_may_satisfy?(literal, klass) } } if key == :comparison
 
-          key == :comparison ? literals.all?(&predicate) : literals.any?(&predicate)
+          literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
         end
 
         def _judgeable_constraint_literals(key, entry, option_keys, klasses)
