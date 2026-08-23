@@ -375,6 +375,28 @@ RSpec.describe "a validator at a container position" do
       expect { build_axn { expects :tags, type: subclass, inclusion: { in: [%w[a b]] } } }.not_to raise_error
     end
 
+    it "admits SIBLING subclasses of one content-comparing root, whose == compares contents" do
+      left = Class.new(Array)
+      right = Class.new(Array)
+      stub_const("Left", left)
+      stub_const("Right", right)
+
+      expect(Left.new([1]) == Right.new([1])).to be(true) # the runtime truth the guard must not contradict
+
+      action = build_axn { expects :f, type: Right, inclusion: { in: [Left.new([1])] } }
+      expect(action.call(f: Right.new([1])).ok?).to be(true)
+    end
+
+    it "still refuses two classes rooted differently, which do not cross-equate" do
+      stub_const("RightArr", Class.new(Array))
+      stub_const("SubStr", Class.new(String))
+
+      expect { build_axn { expects :f, type: RightArr, inclusion: { in: ["a"] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+      expect { build_axn { expects :f, type: SubStr, inclusion: { in: [[1]] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
     it "admits a content-comparing subclass against a literal of its root" do
       subclass = Class.new(Array)
       action = build_axn { expects :tags, type: subclass, inclusion: { in: [[1]] } }

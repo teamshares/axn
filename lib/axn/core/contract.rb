@@ -3344,15 +3344,22 @@ module Axn
           end
         end
 
-        # Whether the literal's class and the declared klass meet at ONE content-comparing root — the literal's
-        # class IS that root, and the declared klass descends from THAT SAME root. Both halves bind to one root
-        # deliberately: testing them against the list independently would pair a String literal with an Array
-        # subclass and stand the guard down for a declaration nothing can satisfy.
+        # Whether the literal's class and the declared klass meet at ONE content-comparing root — BOTH descend
+        # from the same root, which is what makes their `==` compare contents rather than identity. Sibling
+        # subclasses qualify and must: with `Left < Array` and `Right < Array`, `Left.new([1]) == Right.new([1])`
+        # is true, so `type: Right, inclusion: [Left.new([1])]` has a passing value.
+        #
+        # Both halves bind to the SAME root deliberately: testing them against the list independently would pair
+        # a String literal with an Array subclass and stand the guard down for a declaration nothing can satisfy.
+        # And descent from a root is the whole test — an ancestor that is not itself rooted there does not
+        # qualify, which is what keeps a bare `Object.new` literal (an ancestor-instance of every declared type)
+        # from disarming the guard universally.
         def _literal_shares_value_semantics_root?(literal, klass)
           literal_class = Internal::Identity.class_of(literal)
 
           VALUE_SEMANTICS_ROOTS.any? do |root|
-            literal_class.equal?(root) && Internal::NativeMethods.includes_module?(klass, root)
+            Internal::NativeMethods.includes_module?(literal_class, root) &&
+              Internal::NativeMethods.includes_module?(klass, root)
           end
         end
 
