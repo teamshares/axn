@@ -19,6 +19,15 @@ module Axn
       ShapeValidator = Validators::ShapeValidator
       NonEmptinessValidator = Validators::NonEmptinessValidator
 
+      # ActiveModel's own two, subclassed for the positional reading (see WholeValueClusivity). Listed here for
+      # the same reason the axn-only validators are: `validates` resolves a validator by `const_get` from the
+      # class being declared on, so a constant here shadows `ActiveModel::Validations::InclusionValidator` for
+      # axn's one-off validator classes — top-level field, subfield and shape member; an `of:` position cannot
+      # carry one today, since the bag's whitelist refuses `inclusion:` (PRO-3193 is where that changes) — and
+      # for nothing else the consuming app declares.
+      InclusionValidator = Validators::InclusionValidator
+      ExclusionValidator = Validators::ExclusionValidator
+
       # Normalize a scalar validator value the way ActiveModel's own `validates` does, so the tolerance
       # push-down (contract.rb `_parse_field_validations`) can layer allow_blank:/allow_nil: onto the
       # SAME options hash `validates` would build — the terse spelling (`numericality: true`,
@@ -192,6 +201,47 @@ module Axn
         true
       end
 
+      # WHERE a clusivity set lives, for one validator entry: under one of `keys:` in the hash long form
+      # (`in:`/`within:` for inclusion/exclusion, `accept:` for acceptance), or the bare collection itself in
+      # the shorthand (`inclusion: %w[a b]`). The two enforce the same set at runtime, so every consumer reads
+      # them identically. THE single definition of that location, shared by the nil-membership judgment below,
+      # the declaration-time satisfiability guard (contract.rb `_reject_unsatisfiable_value_constraints!`), and schema
+      # reflection's `enum` (`Schema.inclusion_enum_values`), so no two can disagree about which collection one
+      # entry names.
+      def self.declared_set_collection(opt, keys: %i[in within])
+        return keys.filter_map { |key| opt[key] }.first if opt.is_a?(Hash)
+
+        opt
+      end
+
+      # The MEMBERS of a clusivity set, when they are members axn may read: a literal in-memory Array or Set, or
+      # a Hash (whose `include?` tests KEYS, so the keys are the members). Nil — "can't tell" — for everything
+      # else, because a judgment on a set must stay side-effect-free: a dynamic collection (a Symbol or Proc
+      # resolved against the record at validation time, an `ActiveRecord::Relation` whose `include?` would query
+      # the database) is never read, and neither is an Array SUBCLASS, which could override the traversal.
+      # Exact-class throughout (`instance_of?`), for the reason reflection's own read is (PRO-2944).
+      #
+      # THE single definition of "which members can be judged", shared by the nil-membership judgment below and
+      # by the declaration-time satisfiability guard, so the two cannot read one declaration differently.
+      def self.literal_set_members(opt, keys: %i[in within])
+        collection = declared_set_collection(opt, keys:)
+        members = collection.instance_of?(Hash) ? collection.keys : collection
+        return nil unless literal_set_collection?(members)
+
+        members
+      rescue StandardError
+        nil
+      end
+
+      # Whether a collection is one axn may read its members out of directly: an in-memory Array or Set, and
+      # exactly those classes rather than any descendant, since a subclass could override the traversal. THE
+      # single definition of that admissibility test, shared by the reader above and by the satisfiability
+      # guard's `acceptance:` branch (contract.rb), which reads its set under a different rule
+      # (`AcceptanceValidator` tests `Array(accept).include?(value)`) but admits exactly the same shapes.
+      def self.literal_set_collection?(collection)
+        collection.instance_of?(::Array) || (defined?(Set) && collection.instance_of?(::Set))
+      end
+
       # Tri-state: nil = can't tell; true/false = nil's membership in the set. Only inspected for in-memory
       # literal collections: reflection must stay side-effect-free, so a dynamic collection (e.g. an
       # ActiveRecord::Relation, whose `include?` would query the database) is treated as unknown (nil).
@@ -203,16 +253,10 @@ module Axn
       # compares a value against a literal set — `in:`/`within:` for inclusion/exclusion, `accept:` for
       # acceptance.
       def self.set_includes_nil?(opt, keys: %i[in within])
-        # The set is the collection under one of `keys` (hash long form) or the bare collection itself
-        # (shorthand — inclusion: %w[a b], exclusion: [nil, "x"]); the two are equivalent at runtime, so
-        # nil-membership is judged the same for both.
-        collection = opt.is_a?(Hash) ? keys.filter_map { |key| opt[key] }.first : opt
-        return false if collection.is_a?(Range)
+        return false if declared_set_collection(opt, keys:).is_a?(Range)
 
-        # A Hash is a collection ActiveModel accepts, and its `include?` tests KEYS — so the keys are the
-        # members whose nil-membership is asked, judged by the same identity rule as any other set.
-        members = collection.instance_of?(Hash) ? collection.keys : collection
-        return nil unless members.instance_of?(Array) || (defined?(Set) && members.instance_of?(Set))
+        members = literal_set_members(opt, keys:)
+        return nil if members.nil?
 
         members.any? { |element| element.equal?(nil) }
       rescue StandardError
@@ -325,6 +369,34 @@ module Axn
 
         floor
       end
+
+      # The largest size a `length:` entry admits, read from the checks it runs — the twin of the floor above,
+      # off the same `declared_length_checks`, so an `in:`/`within:` range (exclusive end counted one less) and
+      # an `is:` (which names both bounds) resolve identically for both. Returns nil when the entry leaves the
+      # ceiling open (a `minimum:` alone, or no size key at all), and `:unverifiable` for a ceiling ActiveModel
+      # resolves per call (a Symbol/Proc).
+      #
+      # Blank-tolerance is not consulted, and the floor's careful reasoning about it does not transfer: a
+      # tolerated empty value measures 0, which every non-negative ceiling already admits, so a ceiling is exact
+      # whether or not an empty value stands the entry aside.
+      #
+      # THE single definition of "how large may this length: entry be", read by schema reflection's
+      # `maxItems`/`maxProperties`/`maxLength` emission.
+      def self.declared_length_ceiling(entry_opts)
+        checks = declared_length_checks(entry_opts)
+
+        ceiling = checks[:is] || checks[:maximum]
+        return :unverifiable unless ceiling.nil? || ceiling.is_a?(Numeric)
+
+        ceiling
+      end
+
+      # Whether a ceiling read above is one a JSON Schema `maxItems`/`maxProperties`/`maxLength` can carry: a
+      # non-negative Integer. `0` counts — it names size 0 as the only admissible size, which is a constraint a
+      # caller can act on. `Float::INFINITY` (ActiveModel's spelling for "no ceiling") and a fractional bound
+      # (which its LengthValidator refuses outright at validation time) are both uncarryable, exactly as they
+      # are for the floor.
+      def self.emittable_length_ceiling?(ceiling) = ceiling.is_a?(Integer) && !ceiling.negative?
 
       # Whether a `format:` ENTRY would let a nil through. FormatValidator tests `value.to_s` against the
       # pattern (activemodel 7.2.2.2), so a nil is tested as the empty string and the pattern decides — with

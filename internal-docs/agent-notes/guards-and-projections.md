@@ -60,3 +60,21 @@ answers from either is not detached by being copied, it is silently changed. (Th
 `dup`/singleton-class mechanic detailed in `error-paths.md`'s "don't build a guard that depends on
 foreign behaviour being honest" — the container copy there and this aliasing rule are two sides of
 the same fact about `dup`.)
+
+## An unsatisfiable projection satisfies a directional invariant vacuously
+
+Reflection is documented as biased STRICTER than the runtime — schema-valid ⇒ runtime-valid
+(`docs/reference/class.md`, `docs/recipes/authoring-tool-adapters.md`), with two documented looser exceptions.
+A directional rule alone does not catch the worst kind of divergence, because a node admitting NO value is
+maximally strict and therefore trivially "not looser".
+
+`inclusion: { in: %w[a b] }` on a `type: Array` field emitted `{type: "array", enum: ["a","b"]}` — nothing is
+both an array and the string `"a"` — while the runtime accepted `["a","b"]` by distributing the set over the
+elements (ActiveModel's `Clusivity`). Every value the runtime accepted, the document rejected; the invariant
+as written did not name it, because the schema was strict rather than loose.
+
+So the invariant has a corollary: the projection of a satisfiable contract must itself be satisfiable. And the
+fix ran the other way from the schema — the runtime moved to meet the document (PRO-3192's positional rule),
+after which the emitted `enum` needed no change at all, and the spelling that produced the unsatisfiable node
+is refused at declaration before any projection exists. When a node cannot be satisfied, suspect the two sides
+disagree about what the validator TARGETS, not about how strict to be.

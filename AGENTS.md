@@ -104,6 +104,17 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   differ (symbol-keyed kwargs vs indifferent-access nested data). But a value with a uniform
   *meaning* (`<field>_id` is always the primary key) must be honored on every path, blank/edge
   inputs included.
+- **A validator constrains the value at the position it is declared at.** `expects` names the field's own
+  value; `of:` descends a level (an Array's element, a map's `keys:`/`values:` axis); each rung of a nested
+  bag names its own. So `inclusion:` on a `type: Array` field constrains the ARRAY, and a constraint on the
+  elements goes in `of:`. ActiveModel's `Clusivity` special-cases an Array value and distributes the set over
+  its elements; axn's own `InclusionValidator`/`ExclusionValidator` (constants on `Validation::Base`) drop that branch,
+  because the distributing reading has no schema spelling, inverts to nonsense under exclusion, and stops at
+  depth 1. A validator with no reading at a container position is refused at declaration
+  (`_reject_container_position_validators!`), never left enforcing something no rule states. The rule governs
+  axn CONTRACTS: a consuming app's own `validates` is untouched, and so is `Axn::FormObject`, which is an
+  ActiveModel model whose `validates` axn only wraps to auto-add `attr_accessor`s — the same boundary, stated
+  because the class ships with axn and the difference would otherwise be discovered rather than read.
 - **A guard derives from what its consumer emits; it never predicts it.** When a check must agree
   with a projection, read the consumer's own output or call its own decision
   (`Schema.shape_property_plan`, `Schema.build_input_for`) rather than re-deriving the answer beside
@@ -113,6 +124,10 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   legitimately fire later than declaration — "before anything can consume it," not "at
   declaration" — if only the emitted schema reveals the problem. Before writing a guard or size
   budget against a projection, read `internal-docs/agent-notes/guards-and-projections.md` first.
+  The projection of a satisfiable contract must itself be satisfiable: "biased stricter" (see
+  `docs/reference/class.md`) licenses a node admitting FEWER values, never one admitting NONE — an
+  unsatisfiable node is the signature of the runtime and the emitter disagreeing about what a validator
+  targets, and it satisfies a directional invariant vacuously.
 - **Canonicalizing a value obliges you to re-audit every guard that read the raw form.** Symbolizing
   keys, defaulting an absent list to `[]`, normalizing a name — each silently disarms any downstream
   check that distinguished what you just erased. Enumerate the consumers of both forms in the same

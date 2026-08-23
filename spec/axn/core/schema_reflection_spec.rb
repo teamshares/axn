@@ -133,7 +133,7 @@ RSpec.describe "Axn class-level schema reflection" do
       "an accept set resolved per call, which nothing here can read" =>
         [{ presence: false, acceptance: { accept: -> { [nil] }, allow_nil: false } }, false],
       "an accept set containing nil alongside a type that rejects nil" =>
-        [{ type: String, acceptance: { accept: [nil], allow_nil: false } }, false],
+        [{ type: String, acceptance: { accept: [nil, "1"], allow_nil: false } }, false],
     }.each do |label, (opts, omissible)|
       it "reads #{label} the way the runtime treats an omitted value" do
         klass = Class.new do
@@ -656,7 +656,7 @@ RSpec.describe "Axn class-level schema reflection" do
         expect(klass.call(v: "")).not_to be_ok
         expect(klass.call(v: "a")).not_to be_ok
         expect(klass.call(v: "ab")).to be_ok
-        expect(schema_for(**opts)).to eq(type: %w[string null], minLength: 2)
+        expect(schema_for(**opts)).to eq(type: %w[string null], minLength: 2, maxLength: 5)
       end
 
       it "carries no floor for a bare shorthand that names none, as ActiveModel names none either" do
@@ -852,7 +852,7 @@ RSpec.describe "Axn class-level schema reflection" do
     describe "alongside an author-declared length: under a nil-tolerance" do
       it "floors a length: that only caps the size" do
         expect(schema_for(type: Array, optional: true, allow_empty: false, length: { maximum: 3 }))
-          .to eq(type: %w[array null], minItems: 1)
+          .to eq(type: %w[array null], minItems: 1, maxItems: 3)
       end
 
       it "floors an explicitly disabled length:" do

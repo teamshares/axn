@@ -1235,6 +1235,28 @@ module Axn
                                     Date, Time, DateTime,
                                     :boolean, :uuid, :params].freeze
 
+        # The classes whose `to_s` is a Ruby inspect form rather than a rendering of the value — so a validator
+        # matching or coercing `value.to_s` reaches punctuation rather than data. Deliberately NOT "every
+        # structured type": a `Data` class or a PORO may render itself meaningfully (`URI::HTTP#to_s`), and
+        # refusing `format:` there would reject a legal declaration. `Set` is listed because its `to_s` is an
+        # inspect form exactly as the other two are.
+        CONTAINER_TYPE_TOKENS = [::Array, ::Hash, ::Set].freeze
+
+        # Validators ActiveModel implements against `value.to_s` or a numeric coercion of it, so no container
+        # value can satisfy them WHATEVER the options say: FormatValidator matches `value.to_s` (on an Array it
+        # constrains `["a"].inspect` — measured: `format: { with: /\A\["a"\]\z/ }` really does accept `["a"]`),
+        # and NumericalityValidator parses a numeric coercion, which no container has (measured against `["1"]`,
+        # `[1]` and `{"a"=>1}`, with `only_integer:` and `greater_than:` alike).
+        #
+        # `comparison:` and `acceptance:` deliberately do NOT belong here, though an earlier draft had them:
+        # their options can name a CONTAINER, and then they work. `comparison: { equal_to: ["a"] }` accepts
+        # `["a"]`, `{ greater_than_or_equal_to: { "read" => true } }` accepts a Hash superset (Hash#>=),
+        # `{ greater_than: Set["a"] }` accepts a Set superset (Set#>), and `acceptance: { accept: [["a"]] }`
+        # accepts `["a"]` — all measured in bare ActiveModel. What is broken about them is a bound or set of the
+        # WRONG type, which is the satisfiability question Task 3 answers with the runtime's own matcher, not a
+        # blanket refusal by key.
+        TO_S_TARGETED_VALIDATOR_KEYS = %i[format numericality].freeze
+
         # Field-level options a shape member supports (beyond validations + metadata). `sensitive:` is
         # one of them: a member's name is added to the ParameterFilter set by the sensitive-name
         # collectors, which descend into shape members via `_sensitive_candidate_configs`, and
@@ -3180,6 +3202,311 @@ module Axn
                                           offenders.size == 1 ? "that check runs" : "those checks run")
         end
 
+        # A validator whose ActiveModel implementation can only reach the declared value through its Ruby string
+        # form or a numeric coercion of it, on a field whose every declared type is a container. Refused at
+        # declaration: `format:` there constrains `["a"].inspect` — satisfiable, meaningless, and unexpressible
+        # in JSON Schema, where `pattern` applies to strings — and `numericality:` accepts no container value at
+        # all, whatever its options say. (`comparison:` and `acceptance:` are NOT here — see
+        # `TO_S_TARGETED_VALIDATOR_KEYS` for the measurements that took them back out.)
+        #
+        # Gates do NOT rescue one. This is a judgment about what the validator can MEAN at this position, and a
+        # closed `if:` skips a check rather than giving it a reading. The satisfiability guard below refuses
+        # through a gate too, for a different reason: reflection is static-maximal, so a gated can-never-match
+        # set still emits an unsatisfiable node.
+        #
+        # Every offender is named at once: an author who wrote two has one declaration to fix.
+        def _reject_container_position_validators!(validations, where:)
+          return unless _declares_container_type_only?(validations[:type])
+
+          entries = Axn::Validation::Base.validator_entries(validations)
+          # A falsy entry is a disabled validator ActiveModel skips, so it constrains nothing and names nothing.
+          offenders = TO_S_TARGETED_VALIDATOR_KEYS.select { |key| entries[key] }
+          return if offenders.empty?
+
+          raise ArgumentError,
+                "#{offenders.map { |key| "#{key}:" }.join(' / ')} on #{where} cannot " \
+                "constrain a container: ActiveModel reads #{offenders.length == 1 ? 'it' : 'them'} off the " \
+                "value's Ruby string form (`format:` matches `[\"a\"].to_s`) or off a numeric coercion of it " \
+                "(`numericality:`), and a container has neither — so the check constrains punctuation or can " \
+                "never pass. A validator constrains the value at the position it is declared at. Express a " \
+                "constraint on the contents as `validate: ->(value) { ... }` — a per-element spelling inside " \
+                "`of:` is not supported yet (PRO-3193) — or drop the option."
+        end
+
+        # An `inclusion:` set no value of the declared type can be a member of — a contract that rejects every
+        # input while looking like a constraint. The common spelling of it is the one this ticket retires:
+        # `type: Array, of: String, inclusion: { in: %w[a b] }` used to distribute over the elements, and under
+        # the positional rule it asks for an array that IS the string "a", so it is refused with the position
+        # named rather than silently rejecting every call.
+        #
+        # NOT container-only: `type: Integer, inclusion: { in: %w[1 2] }` is unsatisfiable for the same reason
+        # and is as broken, so scoping this to containers would leave the identical hole open on every other
+        # type.
+        #
+        # Membership starts from the runtime's own matcher (`TypeValidator.value_matches?`), so the guard cannot
+        # disagree with the check it is predicting — the guard/projection rule in AGENTS.md — and widens from
+        # there only where a cross-class comparison genuinely passes (see `_literal_may_satisfy?`). It stands
+        # down wherever a passing value survives the check as written: a set it may not read, a type it cannot
+        # judge, or a tolerance flag, under which nil passes and the emitted node stays satisfiable (`type:
+        # ["array","null"]` with nil in the enum).
+        #
+        # An `if:`/`unless:` gate does NOT stand it down, and that asymmetry is the point: reflection is
+        # static-maximal, so a gated can-never-match set still emits `{type: "array", enum: [...]}` — exactly
+        # the unsatisfiable node the corollary forbids. A gate removes the check rather than giving the set a
+        # reading: closed it enforces nothing, open it rejects everything.
+        # The option keys each value-comparing validator reads its literals from. One judgment serves all three
+        # because they break the same way. `other_than` is deliberately ABSENT from comparison's list: it is an
+        # inverted operator, so a wrong-type bound makes the check always PASS rather than never — measured,
+        # `comparison: { other_than: 1 }` accepts `["a"]` — which is vacuous rather than unsatisfiable, the same
+        # reason `exclusion:` is not judged here either. The remaining five are ActiveModel's own non-inverted
+        # checks (activemodel 7.2.2.2, comparison.rb COMPARE_CHECKS).
+        VALUE_CONSTRAINT_KEYS = {
+          inclusion: %i[in within],
+          acceptance: %i[accept],
+          comparison: %i[equal_to greater_than greater_than_or_equal_to less_than less_than_or_equal_to],
+        }.freeze
+
+        # AcceptanceValidator's own default set, used when an entry names none (`acceptance: true`) — so
+        # `type: Integer, acceptance: true` is judged against what it will really be compared with and refused,
+        # while `type: String, acceptance: true` stands down, because `"1"` is a String.
+        DEFAULT_ACCEPTANCE_SET = ["1", true].freeze
+
+        # A tolerated nil is a passing value only if the WHOLE contract admits it, which is a question about every
+        # validator on the field rather than about the constrained entry alone — so the stand-down asks
+        # `Base.nil_accepted?`, the same judgment requiredness and nullability already turn on, rather than
+        # reading one entry's tolerance keys.
+        #
+        # Two ways the narrower reading was wrong, both measured. An entry's own tolerance does not carry the
+        # field: `inclusion: { in: ["a"], allow_blank: true }` on a `type: Array` field leaves the default
+        # presence check in place, so `[]` is rejected by presence while every non-empty Array fails inclusion —
+        # nothing passes. And a validator can admit nil without saying so: ActiveModel's acceptance skips a nil
+        # outright, so `type: [Array, NilClass], presence: false, acceptance: true` accepts nil and is perfectly
+        # satisfiable, while an entry-options read sees no tolerance key at all.
+        #
+        # `tolerance` is the DECLARATION-level pair, folded in as the shared options it becomes. Only its TRUTHY
+        # half is merged: an explicit `allow_nil: false` riding along would change how `nil_accepted?` reads an
+        # `acceptance:` entry (AM's own skip is disabled by exactly that key), turning a satisfiable contract
+        # into a refused one.
+        def _reject_unsatisfiable_value_constraints!(validations, where:, tolerance:)
+          klasses = _judgeable_type_klasses(validations[:type])
+          return if klasses.empty?
+
+          admitted = tolerance.select { |_key, value| value }
+          return if Axn::Validation::Base.nil_accepted?(admitted.any? ? validations.merge(admitted) : validations)
+
+          entries = Axn::Validation::Base.validator_entries(validations)
+          VALUE_CONSTRAINT_KEYS.each do |key, option_keys|
+            entry = entries[key]
+            next unless entry
+
+            literals = _judgeable_constraint_literals(key, entry, option_keys, klasses)
+            next if literals.nil?
+            next if _constraint_satisfiable?(key, literals, klasses)
+
+            raise ArgumentError,
+                  "#{key}: on #{where} can never match — nothing it compares against " \
+                  "is of type #{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so every " \
+                  "value is rejected. A validator constrains the value at the position it is declared at: compare " \
+                  "against literals of the declared type, and for a constraint on a container's CONTENTS " \
+                  "express it as `validate: ->(value) { ... }` (a per-element spelling inside `of:` is not " \
+                  "supported yet — PRO-3193)."
+          end
+        end
+
+        # Classes whose instances compare and equate ACROSS the family, so a literal of one can satisfy a
+        # declaration naming another: every Numeric with every other (`1 == 1.0`, `3 > 1.5`,
+        # `[1.0].include?(1)`), and the date/time trio, which Rails code mixes routinely. UNRELATED classes do
+        # not (`["1"].include?(1)` is false), which is what keeps judging them safe.
+        #
+        # Deliberately not narrowed further: `type: Date, comparison: { greater_than: Time.now }` raises on
+        # every call outside Rails (bare `Date`/`Time` do not compare) but is legal once ActiveSupport's
+        # Date/Time extensions are loaded, and a `Complex` bound stands down here too. A declaration's
+        # legality must not depend on what happens to be loaded, so both stay admitted — the under-restricting
+        # direction, which this guard must prefer over refusing a declaration that can genuinely work.
+        CROSS_COMPARABLE_FAMILIES = [[::Numeric], [::Date, ::Time, ::DateTime]].freeze
+
+        # The classes whose equality axn actually understands, and the ONLY pairs it will judge. Ruby's core
+        # value types compare by content within a type and refuse across unrelated ones (`["1"].include?(1)` is
+        # false), which is exactly what makes a verdict about them safe.
+        #
+        # This list is deliberately a CLOSED world rather than a list of exceptions to widen. The guard was
+        # first written the other way round — enumerate the classes whose `==` compares contents, judge
+        # everything else — and that enumeration was wrong four times over, each time by refusing a legal
+        # declaration: a `Comparable` value object whose `<=>` takes a Numeric, sibling subclasses of one
+        # container root, a literal carrying its own cross-class `==`, and a `Regexp`/`Range` subclass
+        # (`SubRegexp.new("a") == /a/` is true — measured). Equality is not inferable from ancestry, so an open
+        # world cannot be completed; naming what IS known and standing down on everything else can be, and it
+        # errs by admitting a broken declaration rather than by refusing a working one.
+        JUDGEABLE_EQUALITY_CLASSES = [
+          ::String, ::Symbol, ::Integer, ::Float, ::Rational, ::NilClass, ::TrueClass, ::FalseClass,
+          ::Array, ::Hash, ::Date, ::Time, ::DateTime, (defined?(Set) ? ::Set : nil)
+        ].compact.freeze
+
+        # Whether ONE literal could satisfy a constraint on a value of ONE declared klass. The runtime's own
+        # matcher answers first, so the guard cannot disagree with the type check about the same pair.
+        #
+        # Everything past that is a stand-down. A pair outside the closed world above is not judged at all,
+        # because its `==` belongs to the classes involved. Within it, one further chance: a literal in the same
+        # cross-comparable family as the declared type really does compare across classes, which is what keeps
+        # `type: Float, inclusion: { in: [0, 1] }` declaring.
+        #
+        # `klass` is always a real Module — `_judgeable_type_klasses` stands the whole guard down unless every
+        # declared token is one — so nothing here asks a caller-supplied token what it is. The LITERAL's class is
+        # read through `Internal::Identity`, and membership is compared by identity, so neither side's own
+        # methods decide a declaration.
+        def _literal_may_satisfy?(literal, klass)
+          return true if Validators::TypeValidator.value_matches?(literal, klass:)
+          return true unless _judgeable_equality?(Internal::Identity.class_of(literal)) && _judgeable_equality?(klass)
+
+          CROSS_COMPARABLE_FAMILIES.any? do |family|
+            family.any? { |root| Internal::NativeMethods.includes_module?(klass, root) } &&
+              family.any? { |root| Internal::Identity.kind?(literal, root) }
+          end
+        end
+
+        # Exact-class membership, never descent: a SUBCLASS of a core value type may override `==` (or inherit
+        # one that crosses the subclass boundary, as an Array subclass does), and either way its equality is no
+        # longer the one this list vouches for. Compared with `equal?` so nothing the class defines decides it.
+        def _judgeable_equality?(klass) = JUDGEABLE_EQUALITY_CLASSES.any? { |known| known.equal?(klass) }
+
+        # The literals one value-comparing entry will be judged against, or nil for an entry that cannot be
+        # judged at declaration. Each validator names them differently, and each has its own unjudgeable shapes:
+        #
+        # `comparison:` names one bound per key, and ActiveModel RESOLVES a Symbol or Proc bound against the
+        # record at validation time (`ResolveValue`) — measured: `comparison: { equal_to: :allowed }` passes when
+        # that method returns the value — so a declaration carrying one is unjudgeable and stands down. Bounds are
+        # read by `key?` rather than truthiness, since `equal_to: false` is a real bound.
+        #
+        # `acceptance:` names a set under `accept:`, defaulting to ActiveModel's own when absent. A bare scalar
+        # (`accept: "yes"`) is not a literal set the shared reader will read, so it stands down. Only that
+        # reader's admissibility TEST is shared; its member-reading rule is not, because
+        # `AcceptanceValidator` tests `Array(accept).include?(value)`, and `Array()`
+        # on a Hash yields its `[key, value]` PAIRS rather than its keys — measured, `accept: { "a" => 1 }`
+        # accepts `["a", 1]` and rejects `"a"` — so `literal_set_members`'s "a Hash's members are its keys"
+        # rule (right for `inclusion:`, whose `include?` tests keys) is wrong for this validator.
+        #
+        # `inclusion:` delegates to the set reader, which also judges a Range's bounds at a container position.
+        # Whether ONE entry's literals leave any value of the declared type able to satisfy it. The quantifier
+        # differs by validator and the difference is the whole point: `inclusion:`/`acceptance:` name a SET, and a
+        # value satisfies the check by matching ONE member, so the entry is satisfiable when any member could
+        # match. `comparison:` names one bound per operator and ActiveModel applies every one of them, so the
+        # value must satisfy them ALL — an entry is unsatisfiable the moment a single bound is
+        # (`comparison: { equal_to: ["a"], greater_than: 1 }` on a `type: Array` field admits nothing, though its
+        # equality literal is an Array).
+        #
+        # The nesting of the two quantifiers matters as much as which one each takes, because a union declares
+        # several branches and a single runtime value takes exactly ONE of them. For `comparison:`, some ONE
+        # branch must satisfy EVERY bound: `type: [Array, Hash], comparison: { equal_to: [], greater_than: {} }`
+        # has an Array-satisfiable bound and a Hash-satisfiable bound and admits nothing, because no value is
+        # both. For a SET, one branch and one member is all a value needs, so either order reads the same.
+        def _constraint_satisfiable?(key, literals, klasses)
+          return klasses.any? { |klass| literals.all? { |literal| _literal_may_satisfy?(literal, klass) } } if key == :comparison
+
+          literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
+        end
+
+        def _judgeable_constraint_literals(key, entry, option_keys, klasses)
+          return _judgeable_set_members(entry, klasses) if key == :inclusion
+
+          opts = Axn::Validation::Base.validator_entry_options(entry)
+          if key == :acceptance
+            return DEFAULT_ACCEPTANCE_SET unless Internal::ShapeGraph.carries_key?(opts, :accept)
+
+            # Judge only the shapes `Array()` leaves alone (an Array or a Set); a Hash or a bare scalar stands
+            # the guard down rather than being read through the wrong rule. Which shapes those are is the set
+            # reader's own question, asked through its definition rather than respelled here.
+            accept = opts[:accept]
+            return nil unless Axn::Validation::Base.literal_set_collection?(accept)
+
+            return accept
+          end
+
+          # A comparison bound is judgeable only at a CONTAINER position, exactly as a Range set is, and for the
+          # same reason: `<=>` decides these operators, and outside a container its semantics belong to the
+          # declared class. A `Comparable` value object routinely accepts another class — a `Money` whose `<=>`
+          # takes a Numeric satisfies `type: Money, comparison: { greater_than: 0 }` (measured: `Money.new(1) > 0`
+          # is true) — and no ancestry test can predict that. An Array/Hash/Set compares with its own kind and
+          # nothing else, so there the bound's type settles it.
+          return nil unless _all_container_tokens?(klasses)
+
+          bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
+          return nil if bounds.empty?
+          return nil if bounds.any? { |bound| bound.is_a?(::Symbol) || bound.is_a?(::Proc) }
+
+          bounds
+        end
+
+        # The declared types this guard can judge membership against: every token a real Class or Module. Empty
+        # for an undeclared type and for a declaration naming any pseudo-type (`:boolean`/`:uuid`/`:params`),
+        # whose admissible values are not a class membership question — both stand the guard down.
+        #
+        # Classified with `case`/`when Module`, which does not call the token's own `is_a?`.
+        def _judgeable_type_klasses(declared)
+          tokens = _declared_type_tokens_in(declared)
+          return [] if tokens.empty?
+
+          tokens.all? { |token| case token when ::Module then true else false end } ? tokens : []
+        end
+
+        # The set members whose type membership can be judged, or nil for a set that cannot be judged at all.
+        # Usually that is `Base.literal_set_members` — a literal in-memory Array/Set, never an Array subclass or
+        # a dynamic source, since judging one would run the caller's own traversal.
+        #
+        # A RANGE is the one non-literal set that can still be judged, and only at a container position: a Range
+        # decides membership with `<=>`, which is nil across unrelated classes, so `(1..5).include?([1, 2])` is
+        # false however the array is spelled — while `(["a"]..["z"]).include?(["b"])` would need `<=>` between
+        # Arrays, which exists. So the BOUNDS are what decide, not the Range-ness, and they are exactly what the
+        # membership test wants. Deliberately not extended past a container position: `(1.0..5.0).cover?(3)` is
+        # true, so a Float-bounded Range on `type: Integer` is satisfiable and judging its bounds would falsely
+        # refuse it. A beginless-and-endless Range yields no bounds and stands the guard down.
+        def _judgeable_set_members(entry, klasses)
+          collection = Axn::Validation::Base.declared_set_collection(entry)
+          return Axn::Validation::Base.literal_set_members(entry) unless collection.is_a?(::Range)
+          return nil unless _all_container_tokens?(klasses)
+
+          bounds = [collection.begin, collection.end].compact
+          bounds.empty? ? nil : bounds
+        end
+
+        # Whether every token names a container whose cross-class comparison is reliably false. THE single
+        # definition, shared by the to_s-targeted refusal and the Range judgment.
+        def _all_container_tokens?(tokens) = tokens.all? { |token| CONTAINER_TYPE_TOKENS.any? { |container| container.equal?(token) } }
+
+        # Whether every type this declaration names is a container whose `to_s` is an inspect form. Answers
+        # false for an undeclared type, a union carrying one non-container, and a pseudo-type token — each a
+        # declaration the guard above must stand down on, since a value it can constrain is still possible.
+        #
+        # The `type:` bag's `klass:` is read where a bag was declared, so axn's own canonicalized
+        # `type: { klass: Array }` is judged as the `Array` it is. Compared with `equal?` and classified through
+        # `hash_or_nil`, because a guard that dispatches `==`/`is_a?` on a caller's class is one the caller can
+        # switch off.
+        def _declares_container_type_only?(declared)
+          tokens = _declared_type_tokens_in(declared)
+          return false if tokens.empty?
+
+          _all_container_tokens?(tokens)
+        end
+
+        # The type tokens a FIELD declaration names, reading a `type:` bag's `klass:` where a bag was declared
+        # and the bare spelling otherwise. Deliberately NOT the same answer as `_declared_type_tokens`, which
+        # this wraps: that one exists to read an AXIS or `of:` position, where a bare Hash written in place of a
+        # type is searched as a list of two-element Arrays, so it must answer `[declared]` rather than unwrap
+        # it. A field's `type:` has no such axis — a bag there is always axn's own — so this unwraps it via
+        # `bag[:klass]` first and only falls through to the wrapped reader for the union/bare-token case. Two
+        # different questions, both legitimate; a caller that wants the axis answer keeps using
+        # `_declared_type_tokens` directly.
+        #
+        # Reads `bag[:klass]` on the assumption that any Hash-valued entry here is already axn's own plain Hash
+        # — true because this runs downstream of `ShapeGraph.detach_option_containers!` (`:1651`), which is
+        # what makes that read safe rather than a dispatch onto a caller-supplied object. Classified through
+        # `hash_or_nil`, never by dispatching to the value: the bag is the caller's, and a Hash subclass denying
+        # its own class would otherwise pick how it is read.
+        def _declared_type_tokens_in(declared)
+          bag = Internal::ShapeGraph.hash_or_nil(declared)
+
+          _declared_type_tokens(nil.equal?(bag) ? declared : bag[:klass])
+        end
+
         # The one sentence, shared by the entry scan above and by the bag check that reaches the positions it
         # cannot see (`_reject_inner_contract_context_scope!`). `inside` is what the `on:` was written in — a
         # validator key, or a bag — so the message names the thing the author has to edit rather than a
@@ -3321,6 +3648,18 @@ module Axn
           # one entry that seam skips, which is why the predicate classifies and reads its key without
           # dispatching to the bag.
           _reject_validator_context_scope!(validations, where: fields.map(&:to_s).inspect)
+
+          # Beside the context-scope refusal: both refuse a validator that cannot do what the declaration says,
+          # ahead of every consumer of this bag. Placement ahead of the tolerance push-down is not load-bearing
+          # for THIS message — it carries only key names and the field label, both push-down-invariant — but it
+          # is for the satisfiability guard Task 3 adds here next, whose message quotes the declared set.
+          _reject_container_position_validators!(validations, where: _declared_fields_label(fields))
+
+          # The tolerance PAIR, not a collapsed boolean: the guard resolves it per entry the way `validates` does,
+          # so an entry overriding one of these keeps its own value. Passed explicitly because these are
+          # declaration KWARGS at this point — the push-down that writes them into each entry has not run yet.
+          _reject_unsatisfiable_value_constraints!(validations, where: _declared_fields_label(fields),
+                                                                tolerance: { allow_nil:, allow_blank: })
 
           _derive_raw_shape_container!(validations)
 
