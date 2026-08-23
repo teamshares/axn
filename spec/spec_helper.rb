@@ -47,7 +47,13 @@ RSpec.configure do |config|
   # Snapshotted once every file has loaded and put back after each example.
   registered_strategies = nil
   config.before(:suite) { registered_strategies = Axn::Strategies.all.dup }
-  config.after { Axn::Strategies.instance_variable_set(:@items, registered_strategies.dup) }
+  # Through the public reader every time, not `instance_variable_set(:@items, ...)`: `Registry.all` is
+  # `@items ||= built_in.dup`, and a spec that calls `.clear!` (which reassigns `@items` to a fresh
+  # Hash) between examples means the CURRENT object behind `.all` can change — so restoring has to read
+  # it fresh each time rather than caching one reference, and `#replace` mutates that live Hash in
+  # place rather than leaving any caller still holding a reference to a Hash `.all` returned earlier
+  # pointing at a now-discarded object.
+  config.after { Axn::Strategies.all.replace(registered_strategies) }
 end
 
 # The inbound context facade an action's field readers resolve through. It is a private implementation

@@ -454,7 +454,7 @@ RSpec.describe "expects ..., user_facing:" do
         Data.define(:field, :validations, :user_facing).new(field: :status, validations: { type: { klass: String } }, user_facing: 123),
       ].each do |bad|
         expect do
-          build_axn { expects :items, type: Array, shape: { members: [bad], container: Array } }
+          build_axn { expects :items, type: Hash, shape: { members: [bad] } }
         end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
       end
     end
@@ -464,7 +464,7 @@ RSpec.describe "expects ..., user_facing:" do
 
       expect do
         copy = original.with(user_facing: 123)
-        build_axn { expects :items, type: Array, shape: { members: [copy], container: Array } }
+        build_axn { expects :items, type: Hash, shape: { members: [copy] } }
       end.to raise_error(ArgumentError, /user_facing: must be true, a String, a Symbol, or a Proc/)
     end
 
@@ -522,7 +522,7 @@ RSpec.describe "expects ..., user_facing:" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :status, validations: { type: { klass: String } }, user_facing: "surfaced")
       expect do
         build_axn do
-          exposes :items, type: Array, shape: { members: [member], container: Array }
+          exposes :items, type: Hash, shape: { members: [member] }
         end
       end.to raise_error(ArgumentError, /`status` does not support user_facing: on exposes/)
     end

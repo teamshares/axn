@@ -53,14 +53,29 @@ RSpec.describe "mounting onto a target whose hierarchy declares #initialize" do
       expect(Axn::Core::MethodShadowing.inherited_definer(target, :initialize)).to eq(ActiveRecord::Core)
     end
 
-    # The guard rather than a run: ActiveRecord defines its own `.new` on the model class, which the mounted
-    # action inherits along with everything else, and that one hands axn's `#initialize` a positional attributes
-    # hash it cannot take. Constructing a mounted action under an AR model is a separate limitation of mounting
-    # onto models, above and beyond the name-ownership question this exemption settles.
     it "admits the mounted action at the guard" do
       target.mount_axn(:notify, exposes: [:notified]) { expose(:notified, true) }
 
       expect { Axn::Core::InstanceDeferral.assert_dispatchable_names_free!(target::Axns::Notify) }.not_to raise_error
+    end
+
+    # `ActiveRecord::Base` defines its own class-level `.new(attributes = nil)`, which the mounted action's
+    # superclass chain inherits along with the exemption above — and which would otherwise forward that
+    # positional argument into axn's kwargs-only `#initialize(**)` on construction (`ArgumentError: wrong
+    # number of arguments`), a *different*, purely mechanical limitation from the name-ownership question the
+    # guard settles. `Axn::Factory._build_axn_class` defines its own `.new` directly on every class it builds,
+    # which always outranks an inherited `self.new`, so construction now succeeds here exactly as it does on
+    # the `ActiveModel::API` target above.
+    it "runs a mounted axn" do
+      target.mount_axn(:notify, exposes: [:notified]) { expose(:notified, true) }
+
+      expect(target.notify.notified).to be(true)
+    end
+
+    it "runs a mounted method" do
+      target.mount_axn_method(:label) { "labelled" }
+
+      expect(target.label!).to eq("labelled")
     end
 
     it "still refuses an action class the app wrote under the same superclass" do

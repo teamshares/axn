@@ -32,6 +32,14 @@ module Axn
         end
       end
 
+      # Two threads reaching a fresh call tree concurrently could both read the ivar as unset and both
+      # warn — the same check-then-set race `InstanceDeferral::WARNED_LOCK` guards against, fixed here
+      # the identical way: a lock-free fast path once the flag is set, the check-and-set inside the
+      # lock, and the log emission OUTSIDE it (a logger that itself runs an axn action must not
+      # deadlock on this non-reentrant mutex re-entering from the same thread).
+      ISOLATION_MISMATCH_LOCK = Thread::Mutex.new
+      private_constant :ISOLATION_MISMATCH_LOCK
+
       # axn's per-execution state lives in ActiveSupport::IsolatedExecutionState, which is scoped by
       # `isolation_level`. A fiber-based host (async/Falcon) running under the default :thread isolation
       # would share that state across concurrent fibers on one thread — silently corrupting the nesting
@@ -43,7 +51,11 @@ module Axn
         return unless Fiber.respond_to?(:scheduler) && Fiber.scheduler
         return unless ActiveSupport::IsolatedExecutionState.isolation_level == :thread
 
-        @_isolation_mismatch_warned = true
+        claimed = ISOLATION_MISMATCH_LOCK.synchronize do
+          @_isolation_mismatch_warned ? false : (@_isolation_mismatch_warned = true)
+        end
+        return unless claimed
+
         Axn.config.logger.warn(
           "[Axn] A Fiber scheduler is active but ActiveSupport::IsolatedExecutionState.isolation_level " \
           "is :thread. axn's per-execution state will leak across concurrent fibers. Set " \

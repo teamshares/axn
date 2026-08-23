@@ -60,7 +60,7 @@ Common options (same for `expects` and `exposes`):
 
 | Option | Meaning |
 | --- | --- |
-| `type:` | `is_a?` check. `type: :boolean` (no Ruby Boolean class; also defines a `field?` predicate), `type: :uuid`, `type: :params` (a Hash or any `ActionController::Parameters`). Union: `type: [String, Symbol]`. |
+| `type:` | `is_a?` check. `type: :boolean` (no Ruby Boolean class; also defines a `field?` predicate), `type: :uuid`, `type: :params` (a Hash or any `ActionController::Parameters`). Union: `type: [String, Symbol]`. A token outside that grammar (`type: false`, `type: [String, nil]`) raises `ArgumentError` at declaration. |
 | `optional: true` | Don't fail when the field is missing or nil (≡ `allow_blank: true`); removes the auto presence check. **Preferred** spelling. Caveat: a *typed* field still type-checks a non-nil blank — `type: Hash, optional: true` still rejects `""` (a `type: String` field accepts it, since `"".is_a?(String)`). |
 | `allow_empty: true` | Accept an empty collection or string but **not** `nil` — the field stays required. Needs a `type:` whose values can be empty — `Array`/`Hash`/`Set`/`String`/`:params`, or any class or module defining `empty?`; raises otherwise, as does any value other than `true`/`false`/`nil`. Pair with a tolerance flag inverted (`optional: true, allow_empty: false`) for "may be omitted, but not empty". Don't also declare `presence:` — the two answer the same question, and a disagreement raises. |
 | `allow_nil:` / `allow_blank:` | Finer-grained than `optional:`. |
@@ -163,7 +163,9 @@ expects :user, model: true
 
 `user_id` always means *the record's primary key*, on every path. Passing both a record and a
 disagreeing `user_id` (default `:find` finder) raises `InboundValidationError` — contradictory
-input is a developer error. Source: `lib/axn/core/field_resolvers/model.rb`.
+input is a developer error. `klass:` must be a single Class/Module (no union, no `type:`-style
+pseudo-type); anything else raises `ArgumentError` at declaration. Source:
+`lib/axn/core/field_resolvers/model.rb`.
 
 **`on:` — subfields (the `:extract` resolver).** Declare expectations about nested data and get a
 flat reader:

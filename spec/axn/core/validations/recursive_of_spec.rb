@@ -182,6 +182,21 @@ RSpec.describe "recursive of:" do
           .to raise_error(ArgumentError, "of: requires klass: Array or Hash (got [a value of class FalseClass])")
       end
 
+      # `_declared_type_tokens` (shared by this guard and the bare-axis one) classifies the union-or-single
+      # split through `case`/`when ::Array`, never `Kernel#Array()` — `Array()` tries `to_ary` before
+      # wrapping, and a `klass:` whose `to_ary` lies about being a real-class union would otherwise wave a
+      # genuinely unsupported token through (found by Codex review, round 3, on PRO-3207's sibling `type:`
+      # guard — the same coercion is shared here). A RAISING `to_ary` is not pinned here: `klass:` reaches
+      # `_of_axis_constrains?`'s own (pre-existing, unrelated to this fix) `Array(bag[:klass])` first, which
+      # has the identical gap but is out of this ticket's scope.
+      it "reports the declaration error rather than accepting a to_ary lying about a real-class union" do
+        liar = Object.new
+        liar.define_singleton_method(:to_ary) { [String] }
+
+        expect { build_axn { expects :m, type: Array, of: { klass: liar } } }
+          .to raise_error(ArgumentError, unsupported("a value of class Object"))
+      end
+
       describe "controls" do
         it "leaves a class alone" do
           action = build_axn { expects :m, type: Hash, of: { values: { klass: Integer } } }
@@ -981,12 +996,16 @@ RSpec.describe "recursive of:" do
       expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: inner_shape } } }.not_to raise_error
     end
 
+    # A Hash is the only container whose OWN `shape:` can sit beside an `of:` bag at all (PRO-3166's Hash
+    # exemption) — a distributing `shape:` beside `type: Array` is refused outright (PRO-3191), so a Hash
+    # field naming a `values:` shape of its own is the one remaining spelling that spends both edges from a
+    # single declaration.
     it "refuses the declaration that spends both" do
       field_shape = shared_sibling_shape(13, { type: String })
       inner_shape = shared_sibling_shape(13, { type: String })
 
       expect do
-        build_axn { expects :rows, type: Array, shape: field_shape, of: { klass: Hash, shape: inner_shape } }
+        build_axn { expects :m, type: Hash, shape: field_shape, of: { values: { klass: Hash, shape: inner_shape } } }
       end.to raise_error(ArgumentError, /has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths/)
     end
   end
