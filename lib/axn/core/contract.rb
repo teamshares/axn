@@ -3271,25 +3271,33 @@ module Axn
         # while `type: String, acceptance: true` stands down, because `"1"` is a String.
         DEFAULT_ACCEPTANCE_SET = ["1", true].freeze
 
-        # `tolerance` is the DECLARATION-level `allow_nil:`/`allow_blank:` pair, applied per entry rather than as a
-        # blanket stand-down, because an entry's own spelling overrides it per key — which is how `validates`
-        # itself resolves the two tiers (`defaults.merge(entry_options)`). A declaration-wide `optional: true`
-        # alongside `inclusion: { in: %w[a], allow_nil: false }` really does leave a contract nothing can satisfy:
-        # the push-down preserves the entry's explicit `false`, so neither nil nor any value of the declared type
-        # passes. Standing the whole guard down on the declaration flag missed exactly that.
+        # A tolerated nil is a passing value only if the WHOLE contract admits it, which is a question about every
+        # validator on the field rather than about the constrained entry alone — so the stand-down asks
+        # `Base.nil_accepted?`, the same judgment requiredness and nullability already turn on, rather than
+        # reading one entry's tolerance keys.
+        #
+        # Two ways the narrower reading was wrong, both measured. An entry's own tolerance does not carry the
+        # field: `inclusion: { in: ["a"], allow_blank: true }` on a `type: Array` field leaves the default
+        # presence check in place, so `[]` is rejected by presence while every non-empty Array fails inclusion —
+        # nothing passes. And a validator can admit nil without saying so: ActiveModel's acceptance skips a nil
+        # outright, so `type: [Array, NilClass], presence: false, acceptance: true` accepts nil and is perfectly
+        # satisfiable, while an entry-options read sees no tolerance key at all.
+        #
+        # `tolerance` is the DECLARATION-level pair, folded in as the shared options it becomes. Only its TRUTHY
+        # half is merged: an explicit `allow_nil: false` riding along would change how `nil_accepted?` reads an
+        # `acceptance:` entry (AM's own skip is disabled by exactly that key), turning a satisfiable contract
+        # into a refused one.
         def _reject_unsatisfiable_value_constraints!(validations, where:, tolerance:)
           klasses = _judgeable_type_klasses(validations[:type])
           return if klasses.empty?
+
+          admitted = tolerance.select { |_key, value| value }
+          return if Axn::Validation::Base.nil_accepted?(admitted.any? ? validations.merge(admitted) : validations)
 
           entries = Axn::Validation::Base.validator_entries(validations)
           VALUE_CONSTRAINT_KEYS.each do |key, option_keys|
             entry = entries[key]
             next unless entry
-
-            # The two tiers resolved the way ActiveModel resolves them, so an entry that overrides the
-            # declaration's tolerance is judged on what it will actually run with.
-            opts = Axn::Validation::Base.effective_entry_options(entry, tolerance)
-            next if opts[:allow_nil] || opts[:allow_blank]
 
             literals = _judgeable_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?

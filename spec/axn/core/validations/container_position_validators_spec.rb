@@ -313,6 +313,26 @@ RSpec.describe "a validator at a container position" do
       expect { build_axn { expects :f, type: :params, inclusion: { in: %w[a b] } } }.not_to raise_error
     end
 
+    it "asks whether the WHOLE contract admits nil, not whether one entry tolerates it" do
+      # The entry tolerates a blank, but the default presence check still rejects `[]` and every non-empty
+      # Array fails inclusion — so nothing passes, and an entry-level read of tolerance missed it.
+      expect { build_axn { expects :f, type: Array, inclusion: { in: ["a"], allow_blank: true } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+
+      # Same shape one step further: the entry's `allow_nil` exempts only the inclusion check, while `type:`
+      # and presence both still reject nil.
+      expect { build_axn { expects :f, type: Array, inclusion: { in: %w[a], allow_nil: true } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    it "stands down where a validator admits nil without saying so" do
+      # ActiveModel's acceptance skips a nil outright, so this contract really does have a passing value —
+      # nil — even though the entry carries no tolerance key for an options read to find.
+      action = build_axn { expects :f, type: [Array, NilClass], presence: false, acceptance: true }
+
+      expect(action.call(f: nil).ok?).to be(true)
+    end
+
     it "resolves tolerance per entry, so an entry overriding a declaration-wide flag is still judged" do
       # `validates` merges declaration defaults under the entry's own options, so an explicit `false` survives
       # the tolerance push-down. This contract accepts NOTHING: nil is refused by the entry, and no Array is
