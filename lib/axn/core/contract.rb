@@ -3287,7 +3287,7 @@ module Axn
 
             literals = _judgeable_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?
-            next if literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
+            next if _constraint_satisfiable?(key, literals, klasses)
 
             raise ArgumentError,
                   "#{key}: on #{where} can never match — nothing it compares against " \
@@ -3366,6 +3366,23 @@ module Axn
         # rule (right for `inclusion:`, whose `include?` tests keys) is wrong for this validator.
         #
         # `inclusion:` delegates to the set reader, which also judges a Range's bounds at a container position.
+        # Whether ONE entry's literals leave any value of the declared type able to satisfy it. The quantifier
+        # differs by validator and the difference is the whole point: `inclusion:`/`acceptance:` name a SET, and a
+        # value satisfies the check by matching ONE member, so the entry is satisfiable when any member could
+        # match. `comparison:` names one bound per operator and ActiveModel applies every one of them, so the
+        # value must satisfy them ALL — an entry is unsatisfiable the moment a single bound is
+        # (`comparison: { equal_to: ["a"], greater_than: 1 }` on a `type: Array` field admits nothing, though its
+        # equality literal is an Array).
+        #
+        # For a union, each bound is judged against the klasses as a group rather than per branch, which
+        # under-restricts a declaration whose bounds are individually satisfiable on DIFFERENT branches. That is
+        # the safe direction, and it is unreachable at the only position comparison bounds are judged at.
+        def _constraint_satisfiable?(key, literals, klasses)
+          predicate = ->(literal) { klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
+
+          key == :comparison ? literals.all?(&predicate) : literals.any?(&predicate)
+        end
+
         def _judgeable_constraint_literals(key, entry, option_keys, klasses)
           return _judgeable_set_members(entry, klasses) if key == :inclusion
 
@@ -3381,6 +3398,14 @@ module Axn
 
             return accept
           end
+
+          # A comparison bound is judgeable only at a CONTAINER position, exactly as a Range set is, and for the
+          # same reason: `<=>` decides these operators, and outside a container its semantics belong to the
+          # declared class. A `Comparable` value object routinely accepts another class — a `Money` whose `<=>`
+          # takes a Numeric satisfies `type: Money, comparison: { greater_than: 0 }` (measured: `Money.new(1) > 0`
+          # is true) — and no ancestry test can predict that. An Array/Hash/Set compares with its own kind and
+          # nothing else, so there the bound's type settles it.
+          return nil unless _all_container_tokens?(klasses)
 
           bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
           return nil if bounds.empty?

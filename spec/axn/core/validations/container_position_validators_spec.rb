@@ -374,8 +374,12 @@ RSpec.describe "a validator at a container position" do
 
       expect { build_axn { expects :tags, type: Array, inclusion: { in: [literal] } } }
         .to raise_error(ArgumentError, /inclusion:/)
-      expect { build_axn { expects :name, type: String, comparison: { equal_to: literal } } }
+      expect { build_axn { expects :tags, type: Array, comparison: { equal_to: literal } } }
         .to raise_error(ArgumentError, /comparison:/)
+
+      # A comparison bound is judged only at a container position, so the same literal on a scalar type
+      # declares: outside a container, `==`/`<=>` belong to the declared class and may accept anything.
+      expect { build_axn { expects :name, type: String, comparison: { equal_to: literal } } }.not_to raise_error
     end
 
     it "refuses a gated entry too — a gate removes the check, it does not give the set a reading" do
@@ -420,6 +424,35 @@ RSpec.describe "a validator at a container position" do
       action = build_axn { expects :meta, type: Hash, comparison: { greater_than_or_equal_to: { "read" => true } } }
 
       expect(action.call(meta: { "read" => true, "w" => 1 }).ok?).to be(true)
+    end
+
+    it "stands down on a comparison bound outside a container, where `<=>` semantics belong to the class" do
+      # A Comparable value object routinely compares against another class, and no ancestry test predicts it.
+      money = Class.new do
+        include Comparable
+        attr_reader :amount
+
+        def initialize(amount) = @amount = amount
+        def <=>(other) = amount <=> (other.is_a?(self.class) ? other.amount : other)
+      end
+      stub_const("Money", money)
+
+      expect(Money.new(1) > 0).to be(true) # the runtime truth the guard must not contradict
+
+      action = build_axn { expects :f, type: Money, comparison: { greater_than: 0 } }
+      expect(action.call(f: Money.new(1)).ok?).to be(true)
+    end
+
+    it "refuses an entry whose bounds are conjunctively unsatisfiable, not just wholly so" do
+      # ActiveModel applies EVERY operator in one entry, so a single unsatisfiable bound sinks the entry —
+      # even alongside one whose literal is of the declared type.
+      expect { build_axn { expects :f, type: Array, comparison: { equal_to: ["a"], greater_than: 1 } } }
+        .to raise_error(ArgumentError, /comparison:/)
+
+      # The satisfiable half alone still declares, and still enforces.
+      action = build_axn { expects :f, type: Array, comparison: { equal_to: ["a"] } }
+      expect(action.call(f: ["a"]).ok?).to be(true)
+      expect(action.call(f: ["b"]).ok?).to be(false)
     end
 
     it "stands down on a Symbol or Proc bound, which ActiveModel resolves per call" do
