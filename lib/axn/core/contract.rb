@@ -3325,26 +3325,38 @@ module Axn
         # direction, which this guard must prefer over refusing a declaration that can genuinely work.
         CROSS_COMPARABLE_FAMILIES = [[::Numeric], [::Date, ::Time, ::DateTime]].freeze
 
-        # Classes whose `==` compares CONTENTS rather than identity, so an instance of a subclass can equal a
-        # literal of the root (`SubArray.new([1]) == [1]` is true — measured). The subclass branch below is
-        # gated on these because `==` for an arbitrary ancestor is identity: without the gate, a literal of ANY
-        # ancestor disarms the guard, and a bare `Object.new` — an ancestor-instance of every declared type —
-        # disarms it universally.
-        VALUE_SEMANTICS_ROOTS = [::Array, ::Hash, ::String, (defined?(Set) ? ::Set : nil)].compact.freeze
+        # The classes whose equality axn actually understands, and the ONLY pairs it will judge. Ruby's core
+        # value types compare by content within a type and refuse across unrelated ones (`["1"].include?(1)` is
+        # false), which is exactly what makes a verdict about them safe.
+        #
+        # This list is deliberately a CLOSED world rather than a list of exceptions to widen. The guard was
+        # first written the other way round — enumerate the classes whose `==` compares contents, judge
+        # everything else — and that enumeration was wrong four times over, each time by refusing a legal
+        # declaration: a `Comparable` value object whose `<=>` takes a Numeric, sibling subclasses of one
+        # container root, a literal carrying its own cross-class `==`, and a `Regexp`/`Range` subclass
+        # (`SubRegexp.new("a") == /a/` is true — measured). Equality is not inferable from ancestry, so an open
+        # world cannot be completed; naming what IS known and standing down on everything else can be, and it
+        # errs by admitting a broken declaration rather than by refusing a working one.
+        JUDGEABLE_EQUALITY_CLASSES = [
+          ::String, ::Symbol, ::Integer, ::Float, ::Rational, ::NilClass, ::TrueClass, ::FalseClass,
+          ::Array, ::Hash, ::Date, ::Time, ::DateTime, (defined?(Set) ? ::Set : nil)
+        ].compact.freeze
 
         # Whether ONE literal could satisfy a constraint on a value of ONE declared klass. The runtime's own
-        # matcher answers first, so the guard cannot disagree with the type check about the same pair. The two
-        # further chances are what keep this from refusing ordinary declarations: a declared type descending
-        # from a content-comparing ROOT the literal's class IS can equal it, and a literal in the same
-        # cross-comparable family can compare with it — `type: Float, comparison: { greater_than: 0 }` is an
-        # Integer bound on a Float field and compares perfectly well.
+        # matcher answers first, so the guard cannot disagree with the type check about the same pair.
+        #
+        # Everything past that is a stand-down. A pair outside the closed world above is not judged at all,
+        # because its `==` belongs to the classes involved. Within it, one further chance: a literal in the same
+        # cross-comparable family as the declared type really does compare across classes, which is what keeps
+        # `type: Float, inclusion: { in: [0, 1] }` declaring.
         #
         # `klass` is always a real Module — `_judgeable_type_klasses` stands the whole guard down unless every
-        # declared token is one — so nothing here asks a caller-supplied token what it is. The LITERAL is read
-        # through `Internal::Identity`, so neither side's own methods decide a declaration.
+        # declared token is one — so nothing here asks a caller-supplied token what it is. The LITERAL's class is
+        # read through `Internal::Identity`, and membership is compared by identity, so neither side's own
+        # methods decide a declaration.
         def _literal_may_satisfy?(literal, klass)
           return true if Validators::TypeValidator.value_matches?(literal, klass:)
-          return true if _literal_shares_value_semantics_root?(literal, klass)
+          return true unless _judgeable_equality?(Internal::Identity.class_of(literal)) && _judgeable_equality?(klass)
 
           CROSS_COMPARABLE_FAMILIES.any? do |family|
             family.any? { |root| Internal::NativeMethods.includes_module?(klass, root) } &&
@@ -3352,24 +3364,10 @@ module Axn
           end
         end
 
-        # Whether the literal's class and the declared klass meet at ONE content-comparing root — BOTH descend
-        # from the same root, which is what makes their `==` compare contents rather than identity. Sibling
-        # subclasses qualify and must: with `Left < Array` and `Right < Array`, `Left.new([1]) == Right.new([1])`
-        # is true, so `type: Right, inclusion: [Left.new([1])]` has a passing value.
-        #
-        # Both halves bind to the SAME root deliberately: testing them against the list independently would pair
-        # a String literal with an Array subclass and stand the guard down for a declaration nothing can satisfy.
-        # And descent from a root is the whole test — an ancestor that is not itself rooted there does not
-        # qualify, which is what keeps a bare `Object.new` literal (an ancestor-instance of every declared type)
-        # from disarming the guard universally.
-        def _literal_shares_value_semantics_root?(literal, klass)
-          literal_class = Internal::Identity.class_of(literal)
-
-          VALUE_SEMANTICS_ROOTS.any? do |root|
-            Internal::NativeMethods.includes_module?(literal_class, root) &&
-              Internal::NativeMethods.includes_module?(klass, root)
-          end
-        end
+        # Exact-class membership, never descent: a SUBCLASS of a core value type may override `==` (or inherit
+        # one that crosses the subclass boundary, as an Array subclass does), and either way its equality is no
+        # longer the one this list vouches for. Compared with `equal?` so nothing the class defines decides it.
+        def _judgeable_equality?(klass) = JUDGEABLE_EQUALITY_CLASSES.any? { |known| known.equal?(klass) }
 
         # The literals one value-comparing entry will be judged against, or nil for an entry that cannot be
         # judged at declaration. Each validator names them differently, and each has its own unjudgeable shapes:

@@ -343,16 +343,16 @@ RSpec.describe "a validator at a container position" do
     end
 
     it "does not dispatch `<=` on a declared class to decide the verdict" do
-      # A declared class may define its own singleton `<=`; the ancestry probe binds Module#ancestors instead,
-      # so the class cannot raise from — or lie to — a declaration guard.
+      # A declared class may define its own singleton `<=`. Nothing here asks it: the pair is outside the
+      # judgeable-equality world, so the guard stands down before any ancestry question — and were it asked
+      # through a dispatch, this class would raise and fail the example.
       liar = Class.new do
         def self.name = "Liar"
         def self.<=(_other) = raise("a declared class decided a guard")
       end
       stub_const("Liar", liar)
 
-      expect { build_axn { expects :f, type: Liar, inclusion: { in: %w[a] } } }
-        .to raise_error(ArgumentError, /inclusion:/)
+      expect { build_axn { expects :f, type: Liar, inclusion: { in: %w[a] } } }.not_to raise_error
     end
 
     it "stands down under tolerance, where nil is a passing value" do
@@ -407,14 +407,24 @@ RSpec.describe "a validator at a container position" do
       expect(action.call(f: Right.new([1])).ok?).to be(true)
     end
 
-    it "still refuses two classes rooted differently, which do not cross-equate" do
+    it "still refuses two core value classes that do not cross-equate" do
+      # `["1"].include?(1)` is false and `[[1]].include?("a")` is false, and both pairs are classes whose
+      # equality this guard vouches for — so the verdict is safe to reach.
+      expect { build_axn { expects :f, type: Array, inclusion: { in: ["a"] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+      expect { build_axn { expects :f, type: String, inclusion: { in: [[1]] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    it "stands down for a SUBCLASS of a core value class, whose equality is its own" do
+      # A subclass may override `==`, or inherit one that crosses the subclass boundary as an Array's does
+      # (`SubArray.new([1]) == [1]`, `SubRegexp.new("a") == /a/` — both true). Either way the guard no longer
+      # vouches for it, so it declares rather than risk refusing work that runs.
       stub_const("RightArr", Class.new(Array))
       stub_const("SubStr", Class.new(String))
 
-      expect { build_axn { expects :f, type: RightArr, inclusion: { in: ["a"] } } }
-        .to raise_error(ArgumentError, /inclusion:/)
-      expect { build_axn { expects :f, type: SubStr, inclusion: { in: [[1]] } } }
-        .to raise_error(ArgumentError, /inclusion:/)
+      expect { build_axn { expects :f, type: RightArr, inclusion: { in: ["a"] } } }.not_to raise_error
+      expect { build_axn { expects :f, type: SubStr, inclusion: { in: [[1]] } } }.not_to raise_error
     end
 
     it "admits a content-comparing subclass against a literal of its root" do
@@ -424,25 +434,23 @@ RSpec.describe "a validator at a container position" do
       expect(action.call(tags: subclass.new([1])).ok?).to be(true)
     end
 
-    it "refuses a literal whose class is merely an ancestor, where == is identity" do
+    it "stands down for a user-defined hierarchy, whose == the guard cannot vouch for" do
+      # `Base#==` is identity here, so nothing can pass — a defect the guard knowingly declines to catch,
+      # because the same reasoning applied to user classes refused four working declarations before it caught
+      # this one. It surfaces at call time instead of at boot.
       base = Class.new
       sub = Class.new(base)
       literal = base.new
 
-      expect { build_axn { expects :f, type: sub, inclusion: { in: [literal] } } }
-        .to raise_error(ArgumentError, /inclusion:/)
+      expect { build_axn { expects :f, type: sub, inclusion: { in: [literal] } } }.not_to raise_error
     end
 
-    it "refuses a bare Object literal, which is an ancestor-instance of every declared type" do
+    it "stands down for a bare Object literal, whose == is its own" do
+      # Object's `==` is identity, so these admit nothing — conceded on the same terms as the hierarchy above.
       literal = Object.new
 
-      expect { build_axn { expects :tags, type: Array, inclusion: { in: [literal] } } }
-        .to raise_error(ArgumentError, /inclusion:/)
-      expect { build_axn { expects :tags, type: Array, comparison: { equal_to: literal } } }
-        .to raise_error(ArgumentError, /comparison:/)
-
-      # A comparison bound is judged only at a container position, so the same literal on a scalar type
-      # declares: outside a container, `==`/`<=>` belong to the declared class and may accept anything.
+      expect { build_axn { expects :tags, type: Array, inclusion: { in: [literal] } } }.not_to raise_error
+      expect { build_axn { expects :tags, type: Array, comparison: { equal_to: literal } } }.not_to raise_error
       expect { build_axn { expects :name, type: String, comparison: { equal_to: literal } } }.not_to raise_error
     end
 
