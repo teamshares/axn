@@ -313,6 +313,28 @@ RSpec.describe "a validator at a container position" do
       expect { build_axn { expects :f, type: :params, inclusion: { in: %w[a b] } } }.not_to raise_error
     end
 
+    it "resolves tolerance per entry, so an entry overriding a declaration-wide flag is still judged" do
+      # `validates` merges declaration defaults under the entry's own options, so an explicit `false` survives
+      # the tolerance push-down. This contract accepts NOTHING: nil is refused by the entry, and no Array is
+      # the String "a".
+      expect do
+        build_axn { expects :f, type: Array, inclusion: { in: %w[a], allow_nil: false, allow_blank: false }, optional: true }
+      end.to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    it "does not dispatch `<=` on a declared class to decide the verdict" do
+      # A declared class may define its own singleton `<=`; the ancestry probe binds Module#ancestors instead,
+      # so the class cannot raise from — or lie to — a declaration guard.
+      liar = Class.new do
+        def self.name = "Liar"
+        def self.<=(_other) = raise("a declared class decided a guard")
+      end
+      stub_const("Liar", liar)
+
+      expect { build_axn { expects :f, type: Liar, inclusion: { in: %w[a] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
     it "stands down under tolerance, where nil is a passing value" do
       action = build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] }, optional: true }
       expect(action.call.ok?).to be(true)

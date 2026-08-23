@@ -3271,9 +3271,13 @@ module Axn
         # while `type: String, acceptance: true` stands down, because `"1"` is a String.
         DEFAULT_ACCEPTANCE_SET = ["1", true].freeze
 
-        def _reject_unsatisfiable_value_constraints!(validations, where:, tolerant:)
-          return if tolerant
-
+        # `tolerance` is the DECLARATION-level `allow_nil:`/`allow_blank:` pair, applied per entry rather than as a
+        # blanket stand-down, because an entry's own spelling overrides it per key — which is how `validates`
+        # itself resolves the two tiers (`defaults.merge(entry_options)`). A declaration-wide `optional: true`
+        # alongside `inclusion: { in: %w[a], allow_nil: false }` really does leave a contract nothing can satisfy:
+        # the push-down preserves the entry's explicit `false`, so neither nil nor any value of the declared type
+        # passes. Standing the whole guard down on the declaration flag missed exactly that.
+        def _reject_unsatisfiable_value_constraints!(validations, where:, tolerance:)
           klasses = _judgeable_type_klasses(validations[:type])
           return if klasses.empty?
 
@@ -3282,7 +3286,9 @@ module Axn
             entry = entries[key]
             next unless entry
 
-            opts = Axn::Validation::Base.validator_entry_options(entry)
+            # The two tiers resolved the way ActiveModel resolves them, so an entry that overrides the
+            # declaration's tolerance is judged on what it will actually run with.
+            opts = Axn::Validation::Base.effective_entry_options(entry, tolerance)
             next if opts[:allow_nil] || opts[:allow_blank]
 
             literals = _judgeable_constraint_literals(key, entry, option_keys, klasses)
@@ -3333,7 +3339,8 @@ module Axn
           return true if _literal_shares_value_semantics_root?(literal, klass)
 
           CROSS_COMPARABLE_FAMILIES.any? do |family|
-            family.any? { |root| klass <= root } && family.any? { |root| Internal::Identity.kind?(literal, root) }
+            family.any? { |root| Internal::NativeMethods.includes_module?(klass, root) } &&
+              family.any? { |root| Internal::Identity.kind?(literal, root) }
           end
         end
 
@@ -3345,7 +3352,7 @@ module Axn
           literal_class = Internal::Identity.class_of(literal)
 
           VALUE_SEMANTICS_ROOTS.any? do |root|
-            literal_class.equal?(root) && (klass <= root)
+            literal_class.equal?(root) && Internal::NativeMethods.includes_module?(klass, root)
           end
         end
 
@@ -3633,11 +3640,11 @@ module Axn
           # is for the satisfiability guard Task 3 adds here next, whose message quotes the declared set.
           _reject_container_position_validators!(validations, where: _declared_fields_label(fields))
 
-          # `tolerant` is computed further down for the push-down; it is passed here explicitly rather than read
-          # off the entries, because the tolerance flags are declaration KWARGS at this point and the push-down
-          # that writes them into each entry has not run yet.
+          # The tolerance PAIR, not a collapsed boolean: the guard resolves it per entry the way `validates` does,
+          # so an entry overriding one of these keeps its own value. Passed explicitly because these are
+          # declaration KWARGS at this point — the push-down that writes them into each entry has not run yet.
           _reject_unsatisfiable_value_constraints!(validations, where: _declared_fields_label(fields),
-                                                                tolerant: allow_blank || allow_nil)
+                                                                tolerance: { allow_nil:, allow_blank: })
 
           _derive_raw_shape_container!(validations)
 

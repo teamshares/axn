@@ -789,7 +789,8 @@ module Axn
           member_where = "shape member `#{_shape_member_label(name)}`"
           _reject_validator_context_scope!(copy, where: member_where)
           _reject_container_position_validators!(copy, where: member_where)
-          _reject_unsatisfiable_value_constraints!(copy, where: member_where, tolerant: copy[:allow_nil] || copy[:allow_blank])
+          _reject_unsatisfiable_value_constraints!(copy, where: member_where,
+                                                         tolerance: copy.slice(:allow_nil, :allow_blank))
           # Last, where the block form checks it too (after the same canonicalization), so a declaration failing
           # both is reported by the same one on either route. A raw member's `coerce:` used to reach ActiveModel
           # as a validator (`Unknown validator: 'CoerceValidator'` on every call) while `type: { coerce: true }`
