@@ -2,6 +2,11 @@
 
 require "active_support"
 require "active_support/concern"
+# ActiveModel validates `numericality: { in: range }` through `Object#in?` (its `RANGE_CHECKS` is
+# `{ in: :in? }`), which is a core extension `require "active_support"` does not load — so the option
+# declared cleanly and raised `NoMethodError` on every call outside Rails, while working inside it. Required
+# explicitly rather than reaching for `active_support/all`, which would pull in far more than axn depends on.
+require "active_support/core_ext/object/inclusion"
 
 # Standalone
 require "axn/version"
