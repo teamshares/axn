@@ -574,22 +574,21 @@ module Axn
             retained, superseded = _partition_superseded_confirmation_companions(internal_field_configs, configs)
 
             _reject_duplicate_fields!(retained, configs)
-            # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
-            # a same-named subfield reader), so the resolved check runs here too rather than only where
-            # subfields are declared.
-
-            # A map declared HERE can contradict a subfield declared earlier, so the map-parent check is asked
-            # from this seam as well — otherwise `expects :counts, type: Hash, of: {...}` written after
-            # `expects :n, on: :counts` reaches no check at all, and ships the schema/runtime split the check
-            # exists to refuse. Only that check, over the same candidate tree the subfield seam judges: the rest
-            # of `SubfieldContradictions` is asked where a SUBFIELD is declared, and a map `of:` is the one
-            # top-level declaration that can invalidate an existing subfield. Skipped outright where no subfield
-            # exists, which is the only shape this can fire on.
-            unless subfield_configs.empty?
-              SubfieldContradictions.check_subfields_under_map!(
-                Axn::Internal::SubfieldTree.build(retained + configs, subfield_configs),
-              )
-            end
+            # A top-level declaration carries no `on:`, so it looks like it can contradict no subfield. It
+            # can: an explicit top-level config OUTRANKS an explicit subfield of the same name
+            # (SubfieldTree.reader_rank), so it takes that reader over and every subfield anchored on the
+            # name RE-ANCHORS onto the new root — stranding it under a parent that cannot answer it, under
+            # a map, or under a tolerance nothing rescues. So the FULL check is asked here, over the same
+            # candidate tree the subfield seam judges (`check!` builds it), rather than only the map slice
+            # (PRO-3169). What a re-anchor can reach is what fires: `check_ambiguous_crossings!` is asked
+            # for symmetry but cannot newly fire from here, since a top-level config's root node holds
+            # exactly one config and a re-anchor SPLITS routes apart rather than merging them onto one node.
+            #
+            # A repeated top-level name is a duplicate (rejected above), so the takeover is always
+            # top-level-over-subfield. Skipped outright where no subfield exists: with an empty tree every
+            # top-level tolerance is exercisable and no segment is read, so a subfield-free contract sees
+            # none of this — which is also what keeps the per-declaration tree build off that path.
+            SubfieldContradictions.check!(retained + configs, subfield_configs) unless subfield_configs.empty?
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
@@ -1230,13 +1229,14 @@ module Axn
         # options hash, which reads the keys it knows and drops the rest, so an unrecognized key declares
         # cleanly, constrains nothing, and every value passes.
         #
-        # `on:` is admitted here and refused by `_reject_inner_contract_context_scope!` — the bag-level twin of
-        # the field's `_reject_validator_context_scope!`, and the one that reaches a bag at every position —
-        # which names the actual problem (axn has no validation contexts) instead of reporting the key as
-        # unknown. The other shared options stay admitted because axn WRITES two of them here: the tolerance
-        # push-down merges `allow_blank:`/`allow_nil:` into every validator entry, this bag included, so a
-        # whitelist without them would refuse `of: Integer, optional: true`. Whether they then do anything
-        # depends on the position, which is `AXIS_INERT_OPTION_KEYS` below.
+        # `on:` and `strict:` are admitted here and refused by `_reject_inner_contract_context_scope!` /
+        # `_reject_inner_contract_strict!` — the bag-level twins of the field's own scans, and the ones that reach
+        # a bag at every position — which name the actual problem (axn has no validation contexts, and no
+        # strict-raising mode) instead of reporting the key as unknown. The remaining shared options stay
+        # admitted because axn WRITES two of them here: the tolerance push-down merges `allow_blank:`/`allow_nil:`
+        # into every validator entry, this bag included, so a whitelist without them would refuse
+        # `of: Integer, optional: true`. Whether they then do anything depends on the position, which is
+        # `AXIS_INERT_OPTION_KEYS` below.
         #
         # `POSITIONAL_VALIDATOR_KEYS` is the value-constraint half (PRO-3193): a bag is a validator SET for
         # the position it describes, not only a type check, which is what makes the remedy PRO-3192's refusal
@@ -2511,6 +2511,7 @@ module Axn
           _reject_unconstraining_of_bag!(bag)
           _reject_unsupported_of_klass!(bag)
           _reject_inner_contract_context_scope!(bag, fields)
+          _reject_inner_contract_strict!(bag, fields)
           _reject_unusable_of_message!(bag, fields)
           _reject_positional_bag_validators!(bag, fields)
         end
@@ -2680,6 +2681,20 @@ module Axn
           _raise_validator_context_scope!("an `of:` bag", _declared_fields_label(fields), "that check runs")
         end
 
+        # The bag-level twin of `_reject_strict_validation!`'s entry scan, for the reason that pair exists on the
+        # context-scope side: the field's own `of:` IS an entry, so the scan sees it, but a bag nested inside one
+        # and a map's axis are reached only by the declaration walk. Asked of the bag directly here, through the
+        # same predicate the scan uses, so one rule decides it at every position.
+        #
+        # It fires for the field's own `of:` bag as well, ahead of the entry scan, which is deliberate: this
+        # message names the bag the author wrote rather than the validator key it rode in on, and one spelling of
+        # one defect should not read two ways.
+        def _reject_inner_contract_strict!(bag, fields)
+          return unless Axn::Validation::Base.entry_declares_strict?(bag)
+
+          _raise_strict_validation!("an `of:` bag", _declared_fields_label(fields))
+        end
+
         # A `message:` replaces the type description a mismatch reports, so a bag naming no class has nothing
         # for it to replace: `OfValidator#matches_axis?` waves every value through an empty class list, the
         # mismatch branch is never reached, and the message the author wrote is never emitted. Reachable since
@@ -2720,10 +2735,11 @@ module Axn
         # narrower ban safe — verified against the stored config, where `optional: true` on a map lands the pair
         # on the map bag and leaves the axis untouched.
         #
-        # `on:` is left out because `_check_inner_contract_bag!` has already refused it a step earlier, naming
-        # the real problem: axn has no validation contexts, which is true at every position rather than at this
-        # one. Listing it here would offer "drop it" where the message above offers `if:`/`unless:` instead.
-        AXIS_INERT_OPTION_KEYS = (Axn::Validation::Base.shared_validation_option_keys - %i[on]).freeze
+        # `on:` and `strict:` are left out because `_check_inner_contract_bag!` has already refused each a step
+        # earlier, naming the real problem — axn has no validation contexts, and no strict-raising mode — both of
+        # which are true at every position rather than at this one. Listing either here would offer "drop it, the
+        # axis reads nothing" where the messages above name what axn does not have.
+        AXIS_INERT_OPTION_KEYS = (Axn::Validation::Base.shared_validation_option_keys - %i[on strict]).freeze
 
         # Every offender at once: an author who wrote two of them has one declaration to fix. The keys are
         # axn's own frozen Symbols, so naming them runs nothing of the caller's.
@@ -2761,6 +2777,73 @@ module Axn
           !bag[axis].nil?
         end
 
+        # WHY an empty union is a defect, in the words shared by every position one can be written at: a bag's
+        # `klass:` and a map's two axes. The three differ in what an author has to EDIT, never in what went
+        # wrong — so the diagnosis is one string and only the remedy is per-position. Without this, the same
+        # mistake read as three unrelated ones, and the map axes reported neither: an empty `values:` landed on
+        # "name the axis you are constraining", which asks for the key the author had just written (PRO-3170).
+        #
+        # The RUNTIME consequence only, and deliberately no schema one. An empty union holds a value to nothing
+        # wherever it is written, at every position and every depth — but what the SCHEMA does with it depends
+        # on the position's ANCESTRY, which no bag can see from the point it is refused at: a `keys:` axis emits
+        # nothing (every JSON object key is already a String, so there is no keyword to carry a constraint), and
+        # neither does anything nested under one, at any depth. Measured: `of: { keys: [Symbol, String] }` and
+        # `of: { keys: { klass: [Symbol, String] } }` both emit `{"type":"object","minProperties":1}` and no
+        # `anyOf`, while the `values:` spelling of each emits `additionalProperties.anyOf`.
+        #
+        # So the earlier "the schema emits `anyOf: []`, which nothing satisfies" was true of an Array's element
+        # and a map's `values:` and false of `keys:` — and threading enough ancestry to tell them apart would
+        # put a walk-shaped parameter through five call sites to decorate an error message, with a wrong clause
+        # at depth as the failure mode. The refusal states what is unconditionally true instead (PRO-3170).
+        EMPTY_UNION_DIAGNOSIS = "a value held to every class in an empty list is held to none, so every value " \
+                                "at that position passes"
+
+        # The remedy half for the position an empty union sits at when it is a map's AXIS rather than a bag's
+        # `klass:`. Separate from the `klass:` wording because the fix genuinely differs: a bag has `of:` and
+        # `shape:` to fall back on, so dropping its empty `klass:` is real advice, while a map needs at least
+        # one constraining axis — telling an author to simply drop theirs would send them to the "name an axis"
+        # refusal on the next declaration. Takes the AXIS rather than a rendered option label, since the axis is
+        # the key the author has to edit and only the caller knows which was written.
+        def _empty_union_axis_message(axis)
+          "of: #{axis}: names an empty union, so that axis constrains nothing — #{EMPTY_UNION_DIAGNOSIS}. " \
+            "Name the class(es) that axis must hold, or drop the axis and constrain the other one — an axis " \
+            "left off is the honest spelling of \"unconstrained\", while one naming nothing only looks like " \
+            "a constraint."
+        end
+
+        # Whether an axis was SUPPLIED as an empty union, which is the one "names no class" spelling this
+        # message is for. Deliberately narrower than `_axis_names_no_class?`: a nil axis and an absent one name
+        # nothing either, but neither is an empty UNION, so both keep whatever refusal they already had —
+        # "name the axis you are constraining" when nothing else on the bag constrains, and `must name a type
+        # … NilClass` from `_reject_unsupported_map_axis!` when a sibling axis does. `nil` mirrors a bag's
+        # `klass: nil`, which lands on "must constrain something" rather than on the empty-union message.
+        #
+        # Asked through `_declared_type_tokens` rather than `Array(...)` so this and
+        # `_reject_unsupported_map_axis!` — the two guards that now route on the answer — cannot disagree about
+        # which values are an empty union. That matters beyond tidiness: `Array()` tries the value's own
+        # `to_ary`/`to_a` first, so a caller-supplied object could otherwise read as empty at one guard and
+        # non-empty at the other, and fall between them.
+        def _axis_names_empty_union?(declared)
+          return false if nil.equal?(declared)
+          return false unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
+
+          _declared_type_tokens(declared).empty?
+        end
+
+        # Which refusal a map bag whose axes all name no class gets. An axis written as an empty union has a key
+        # to name and gets the defect it actually has; a bag whose axes are absent or nil has none, so it keeps
+        # the refusal that asks for one. The FIRST such axis in `MAP_OF_AXES` order is named rather than both:
+        # each is one defect, and an author fixing this one meets the other on the next declaration.
+        #
+        # Runs only on the failure path, so the second read of `bag[axis]` costs nothing on a good declaration.
+        def _map_axes_name_no_class_message(bag)
+          axis = MAP_OF_AXES.find do |candidate|
+            Internal::ShapeGraph.carries_key?(bag, candidate) && _axis_names_empty_union?(bag[candidate])
+          end
+
+          nil.equal?(axis) ? MAP_OF_REQUIRED_MESSAGE : _empty_union_axis_message(axis)
+        end
+
         def _reject_unconstraining_of_bag!(bag)
           return if INNER_CONTRACT_AXES.any? { |axis| _of_axis_constrains?(bag, axis) }
 
@@ -2768,11 +2851,9 @@ module Axn
           # contents' class with `klass:`" is no help to an author looking at the `klass:` they wrote.
           if Internal::ShapeGraph.carries_key?(bag, :klass) && !bag[:klass].nil?
             raise ArgumentError,
-                  "of: klass: names an empty union, so this bag constrains nothing — a value held to every " \
-                  "class in an empty list is held to none, so every value at that position passes while the " \
-                  "schema emits `anyOf: []`, which nothing satisfies. Name the class(es) the contents must be, " \
-                  "or drop the empty klass: and constrain them with `of:` or `shape:`. (`of: []` is sugar for " \
-                  "`of: { klass: [] }`.)"
+                  "of: klass: names an empty union, so this bag constrains nothing — #{EMPTY_UNION_DIAGNOSIS}. " \
+                  "Name the class(es) the contents must be, or drop the empty klass: and constrain them with " \
+                  "`of:` or `shape:`. (`of: []` is sugar for `of: { klass: [] }`.)"
           end
 
           # A bag carrying only value validators constrains the position perfectly well — `of: { format: ... }`
@@ -2914,7 +2995,7 @@ module Axn
           raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if nil.equal?(bag)
 
           _reject_unknown_of_keys!(bag, MAP_OF_OPTION_KEYS)
-          raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
+          raise ArgumentError, _map_axes_name_no_class_message(bag) if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
 
           _reject_inner_contract_context_scope!(bag, fields)
           _reject_unsupported_map_axis!(bag)
@@ -2999,8 +3080,14 @@ module Axn
             declared = bag[axis]
             next unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
 
+            # An empty union is not a token the runtime cannot hold a value to — `[]` IS the union spelling, and
+            # being empty is the defect — so it reports the emptiness, in the same words a bag's `klass:` uses
+            # for the identical mistake. Reached when a SIBLING axis constrains: with both axes naming nothing
+            # `_map_axes_name_no_class_message` has already answered, one guard earlier.
+            raise ArgumentError, _empty_union_axis_message(axis) if _axis_names_empty_union?(declared)
+
             tokens = _declared_type_tokens(declared)
-            # An axis SUPPLIED and naming nothing (`nil`, `[]`) has no token to name, so the refusal names the
+            # An axis SUPPLIED and naming nothing else (`nil`) has no token to name, so the refusal names the
             # value written instead. Unlike a bag's `klass:`, an axis has no second way to constrain, so there
             # is no other guard for this to defer to.
             raise ArgumentError, _unsupported_type_token_message("of: #{axis}:", declared) if tokens.empty?
@@ -3272,17 +3359,22 @@ module Axn
           keys.empty? ? Internal::ShapeGraph::NO_SHAPED_KEYS : keys.uniq.freeze
         end
 
+        # Bag keys admitted by the whitelist only so a dedicated guard can name what is actually wrong with them.
+        UNADVERTISED_OF_KEYS = %i[on strict].freeze
+        private_constant :UNADVERTISED_OF_KEYS
+
         # Every offender at once: an author who wrote two of them has one declaration to fix, not two rounds
         # of the same error.
         def _reject_unknown_of_keys!(bag, allowed)
           offenders = bag.keys.reject { |key| allowed.include?(key) }
           return if offenders.empty?
 
-          # `on:` sits in the whitelist so `_reject_validator_context_scope!` can name the real problem (axn has
-          # no validation contexts) instead of reporting it as unknown — but it is left out of what this
+          # `on:` and `strict:` sit in the whitelist so `_reject_inner_contract_context_scope!` /
+          # `_reject_inner_contract_strict!` can name the real problem (axn has no validation contexts, and no
+          # strict-raising mode) instead of reporting either as unknown — but both are left out of what this
           # ADVERTISES, since a key this line calls supported and the next line refuses is not one to point an
           # author at.
-          supported = allowed.reject { |key| key == :on }
+          supported = allowed.reject { |key| UNADVERTISED_OF_KEYS.include?(key) }
           raise ArgumentError,
                 "of: does not support #{offenders.map { |key| _of_key_label(key) }.join(', ')} " \
                 "(supported: #{supported.map { |key| "#{key}:" }.join(', ')})"
@@ -3303,6 +3395,71 @@ module Axn
 
         SYMBOL_KEY_NAME = ::Symbol.instance_method(:name)
         private_constant :SYMBOL_KEY_NAME
+
+        # The two keys the field grammar admits that ActiveModel cannot resolve a validator for, at any
+        # position and under any declared type. `validates` resolves an entry by
+        # `const_get("#{key.to_s.camelize}Validator")` from the class being declared on, which for axn is a
+        # `Validation::Base` subclass — `ActiveModel::Validations` and axn's own validator constants, nothing
+        # else — so both names miss and every call raises `ArgumentError: Unknown validator: '…Validator'`.
+        # A declaration that looks supported, enforces nothing, and converts every call into an exception is
+        # the one outcome that should not stand, so both are refused where the declaration is written.
+        #
+        # They stay in `KNOWN_VALIDATION_KEYS` rather than being struck from it, for the reason `on:` does:
+        # a recognized option reported as an unknown key names the author's problem less well than a message
+        # that says what the option would have meant.
+        #
+        # Key PRESENCE, not truthiness. The falsy-entry no-op that leaves `confirmation: false` alone does not
+        # apply: AM's `const_get` runs BEFORE its `next unless options`, so `uniqueness: false` raises exactly
+        # as `uniqueness: true` does (measured).
+        #
+        # One at a time rather than joined, which is the opposite of how same-reason offenders are reported
+        # (`_reject_validator_context_scope!` names every `on:` at once): these are two different problems with
+        # two different fixes, and an author who wrote both is better served reading one at a time.
+        def _reject_unsupported_validator_keys!(validations, where:)
+          _raise_uniqueness_unsupported!(where) if validations.key?(:uniqueness)
+          _raise_bare_message_unsupported!(where) if validations.key?(:message)
+        end
+
+        # `uniqueness:` is an ActiveRecord validator — it needs a record, a relation to query, and a connection
+        # — and an axn contract has none of the three: it validates a plain value that arrived over the wire.
+        #
+        # Supporting it for `model:`-backed fields, where a record does exist, was considered and rejected: the
+        # option would then mean one thing on one kind of field and be refused on every other, and the check it
+        # would run (does another row share this value) is a question about the database at a moment, not about
+        # the input the contract is describing. A contract that queries is a contract whose reflected schema
+        # cannot state what it enforces.
+        def _raise_uniqueness_unsupported!(where)
+          raise ArgumentError,
+                "uniqueness: on #{where} is not supported — it is an ActiveRecord validator " \
+                "(ActiveRecord::Validations::UniquenessValidator), so it needs a record and a relation to " \
+                "query, and an axn contract validates a plain value with ActiveModel alone. Declared, it " \
+                "resolves to no validator at all and every call raises `Unknown validator: " \
+                "'UniquenessValidator'`. Check uniqueness where the records are — on the model, or as " \
+                "`validate: ->(value) { ... }` querying it yourself."
+        end
+
+        # `message:` overrides the wording of ONE check, so it belongs inside that check's own option bag. At a
+        # field's top level it is not the shared option it looks like: AM's `_validates_default_keys` is
+        # `if:`/`unless:`/`on:`/`allow_blank:`/`allow_nil:`/`strict:`/`except_on:` and does not include it, so a
+        # bare `message:` is parsed as a validator ENTRY named `message` and looks for a `MessageValidator`.
+        #
+        # The bag spelling is untouched by this and is where every working use already lives — `type: { klass:,
+        # message: }`, an `of:` bag's own (`OF_OPTION_KEYS` carries it), and every ActiveModel built-in's
+        # (`length:`, `inclusion:`, …). Only the field's or member's own top-level key is refused, since only
+        # that one reaches `validates` as an entry.
+        #
+        # The three spellings the message names are the ones measured to work. `validate: { with:, message: }`
+        # is deliberately NOT among them though its bag admits the key: `ValidateValidator#validate_each` adds
+        # the CALLABLE's return value as the error and never reads `options[:message]`, so a message there is
+        # inert — pointing an author at it would trade one silently-ignored option for another.
+        def _raise_bare_message_unsupported!(where)
+          raise ArgumentError,
+                "message: on #{where} is not an option at this level — it overrides one check's wording, so it " \
+                "belongs inside that check's own bag (`type: { klass: String, message: \"...\" }`, `of: " \
+                "{ klass: String, message: \"...\" }`, `length: { minimum: 3, message: \"...\" }`). " \
+                "ActiveModel's shared options do not include `message:`, so a bare one is read as a validator " \
+                "named `message` and every call raises `Unknown validator: 'MessageValidator'`."
+        end
 
         # `on:` inside a validator's own option bag is ActiveModel's validation CONTEXT option, and axn has no
         # validation contexts: `Validation::Fields` calls `valid?` with no context, while `validate` installs a
@@ -3393,15 +3550,31 @@ module Axn
         # reading: closed it enforces nothing, open it rejects everything.
         # The option keys each value-comparing validator reads its literals from. One judgment serves all three
         # because they break the same way. `other_than` is deliberately ABSENT from comparison's list: it is an
-        # inverted operator, so a wrong-type bound makes the check always PASS rather than never — measured,
-        # `comparison: { other_than: 1 }` accepts `["a"]` — which is vacuous rather than unsatisfiable, the same
-        # reason `exclusion:` is not judged here either. The remaining five are ActiveModel's own non-inverted
-        # checks (activemodel 7.2.2.2, comparison.rb COMPARE_CHECKS).
+        # inverted operator, so a wrong-type bound makes the check ActiveModel runs always PASS rather than
+        # never (`["a"] != 1` is true) — vacuous rather than unsatisfiable, the same reason `exclusion:` is not
+        # here either. Both are judged by `VACUOUS_CONSTRAINT_KEYS` below, on the opposite verdict. The
+        # remaining five are ActiveModel's own non-inverted checks (activemodel 7.2.2.2, comparison.rb
+        # COMPARE_CHECKS).
         VALUE_CONSTRAINT_KEYS = {
           inclusion: %i[in within],
           acceptance: %i[accept],
           comparison: %i[equal_to greater_than greater_than_or_equal_to less_than less_than_or_equal_to],
         }.freeze
+
+        # The INVERTED half of the same map: the option keys whose literals decide when a check FAILS rather
+        # than when it passes, so wrong-type literals make the check always pass instead of never. Judged by
+        # `_reject_vacuous_value_constraints!` with the identical readers and the opposite verdict.
+        #
+        # `exclusion:` names a set exactly as `inclusion:` does. `comparison:` contributes only `other_than`,
+        # ActiveModel's one inverted operator; its other five belong above.
+        VACUOUS_CONSTRAINT_KEYS = {
+          exclusion: %i[in within],
+          comparison: %i[other_than],
+        }.freeze
+
+        # The two validators whose membership is decided by the COLLECTION's own `include?` rather than by an
+        # operator, and so the only ones whose equality depends on which collection was written.
+        CLUSIVITY_KEYS = %i[inclusion exclusion].freeze
 
         # AcceptanceValidator's own default set, used when an entry names none (`acceptance: true`) — so
         # `type: Integer, acceptance: true` is judged against what it will really be compared with and refused,
@@ -3438,7 +3611,7 @@ module Axn
 
             literals = _judgeable_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?
-            next if _constraint_satisfiable?(key, literals, klasses)
+            next if _constraint_satisfiable?(key, literals, klasses, cross_family: _cross_family_admissible?(key, entry))
 
             raise ArgumentError,
                   "#{key}: on #{where} can never match — nothing it compares against " \
@@ -3447,6 +3620,194 @@ module Axn
                   "against literals of the declared type, and constrain a container's CONTENTS at their own " \
                   "position — #{_contents_position_remedy(nested)}."
           end
+        end
+
+        # An `exclusion:` set — or an `other_than:` bound — no value of the declared type could ever be, which
+        # makes the check impossible to FAIL. The author wrote a constraint, the class defines cleanly, and
+        # every value passes: "the strongest form of a silently ignored option", in
+        # `_reject_validator_context_scope!`'s words. `type: Array, exclusion: { in: ["admin"] }` is the
+        # spelling that reaches here most often — no Array is the String "admin", so the set forbids nothing
+        # any Array could be, and `["admin"]` passes the check it names.
+        #
+        # The mirror of the guard above, and deliberately not folded into it: unsatisfiable asks whether any
+        # value can PASS, vacuous whether any can FAIL, and the two verdicts are opposite on the same evidence.
+        # So the literals, the readers and the closed equality world are shared outright, and only the verdict
+        # is negated — a set is vacuous exactly when its `inclusion:` mirror would be unsatisfiable.
+        #
+        # Two doctrine differences follow from the inversion, both of them the reason this is its own method:
+        #
+        # TOLERANCE is read for the OPPOSITE purpose. The satisfiability guard stands down under it, because a
+        # tolerated nil is a value that PASSES; no amount of passing makes a check something can fail, so
+        # tolerance never rescues a declaration here. What it does instead is DISCOUNT WITNESSES: ActiveModel
+        # skips a tolerated value outright, so a forbidden literal the flag skips is one no admitted value can
+        # ever be compared against — `type: NilClass, exclusion: { in: [nil] }, allow_nil: true` forbids only
+        # the nil the flag exempts, and `type: Array, exclusion: { in: [[]] }, allow_blank: true` forbids only
+        # the blank one. Both accept every input, and both are refused once the skipped literal stops counting.
+        #
+        # A GATE does not rescue one either, but for a simpler reason than above: `exclusion:` emits nothing
+        # into the schema, so there is no static-maximal node to argue from. A gate can only remove the check.
+        # Closed it enforces nothing, open it enforces nothing — there is no reading under which the
+        # declaration means what it says.
+        def _reject_vacuous_value_constraints!(validations, where:, tolerance:)
+          klasses = _judgeable_type_klasses(validations[:type])
+          return if klasses.empty?
+
+          entries = Axn::Validation::Base.validator_entries(validations)
+          VACUOUS_CONSTRAINT_KEYS.each do |key, option_keys|
+            entry = entries[key]
+            next unless entry
+
+            literals = _vacuous_constraint_literals(key, entry, option_keys, klasses, tolerance)
+            next if literals.nil?
+
+            witnesses = _witness_literals(key, literals, entry, tolerance, klasses)
+            next if _any_literal_may_satisfy?(witnesses, klasses, cross_family: _cross_family_admissible?(key, entry))
+
+            raise ArgumentError,
+                  "#{key}: on #{where} enforces nothing — no value of type " \
+                  "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')} could be one of the " \
+                  "literals it forbids, so every value passes. A validator constrains the value at the " \
+                  "position it is declared at: forbid literals of the declared type, and for a constraint on " \
+                  "a container's CONTENTS express it as `validate: ->(value) { ... }` (a per-element spelling " \
+                  "inside `of:` is not supported yet — PRO-3193)."
+          end
+        end
+
+        # The forbidden literals that could actually be the value that FAILS. Two filters, and the second is
+        # asked only of `comparison:` because the two validators reach their verdict by different routes.
+        def _witness_literals(key, literals, entry, tolerance, klasses)
+          literals = _reflexive_literals(literals, klasses) if key == :comparison
+
+          _unskipped_literals(literals, entry, tolerance)
+        end
+
+        # A bound nothing can equal — not even itself — is no witness: `other_than:` is `!=`, so the check
+        # reports a difference from every value including the bound, and passes always. `Float::NAN` is the
+        # one such value among the types this guard vouches for (measured: `Float::NAN != Float::NAN`).
+        #
+        # Deliberately NOT applied to `exclusion:`, and the difference is measured rather than assumed: a
+        # collection's membership test short-circuits on object IDENTITY before it ever asks `==`, so
+        # `[Float::NAN].include?(Float::NAN)` and `Set[Float::NAN].include?(Float::NAN)` are both true and the
+        # set really does forbid the value. Discounting it there would refuse a contract that enforces.
+        #
+        # BOTH sides of the comparison must be ones the closed world vouches for, exactly as
+        # `_literal_may_satisfy?` requires — and this filter runs BEFORE that judgment, so it has to repeat the
+        # stand-down rather than inherit it. The declared type decides as much as the bound does: a value
+        # object whose `==` answers for the bound really can differ from it, so `type: Token, comparison:
+        # { other_than: Float::NAN }` has a failing input when `Token#==` accepts NaN, and discounting the
+        # bound there would refuse a contract that enforces. Asked of EVERY declared branch, since a runtime
+        # value takes one and any un-vouched-for branch could supply the equality.
+        #
+        # A bound whose own class is outside the world — `BigDecimal::NAN`, which this guard does not judge —
+        # stays a witness for the same reason, which under-restricts rather than judging a `==` axn has not
+        # vouched for.
+        def _reflexive_literals(literals, klasses)
+          return literals unless klasses.all? { |klass| _judgeable_equality?(klass) }
+
+          literals.reject do |literal|
+            klass = Internal::Identity.class_of(literal)
+            next false unless _judgeable_equality?(klass) && _class_owned_equality?(literal, klass)
+
+            # rubocop:disable Lint/BinaryOperatorWithIdenticalOperands
+            # The identical operands ARE the check: a value unequal to itself can never equal anything. Asked
+            # with `!=` rather than a negated `==` because that is the operator ActiveModel applies here.
+            literal != literal
+            # rubocop:enable Lint/BinaryOperatorWithIdenticalOperands
+          end
+        end
+
+        # Whether the equality the probe above would run is the one the CLASS carries, rather than one this
+        # particular object does. The probe is the only place this guard runs an operator at all, and a
+        # per-object override makes its answer foreign twice over: it executes the caller's own code, and it
+        # generalizes one object's behaviour to every value of the declared type. Measured — a `String` bound
+        # carrying `def bound.!=(other) = true` reports non-reflexive, while an ordinary `"x"` uses
+        # `String#==` and really does fail the check, so discounting the bound refuses a working contract.
+        #
+        # Decided by OWNERSHIP rather than by another probe: both operators must be owned by the exact class
+        # or something in its ancestry, which a singleton class never is. `Method#owner` is read through
+        # `NativeMethods`, and ancestry through its bound `Module#ancestors`, so nothing the object defines
+        # answers the question. `==` is asked alongside `!=` because BasicObject's `!=` negates it, so an
+        # override of either decides the probe (`Date#==` comes from `Comparable`, which its ancestry carries).
+        def _class_owned_equality?(literal, klass)
+          %i[!= ==].all? do |name|
+            owner = Internal::NativeMethods.method_owner(literal, name)
+            next false unless owner
+
+            owner.equal?(klass) || Internal::NativeMethods.includes_module?(klass, owner)
+          end
+        end
+
+        # The forbidden literals that could still be COMPARED against an admitted value. ActiveModel's
+        # `EachValidator` skips a tolerated value before any validator sees it (`value.nil? && allow_nil`,
+        # `value.blank? && allow_blank`), so a literal the flag exempts can never be the value that fails —
+        # it is not a witness, and counting it would certify a check nothing can fail.
+        #
+        # Tolerance is resolved per ENTRY through `effective_entry_options`, the same precedence `validates`
+        # itself applies (declaration defaults under the entry's own options), so an entry turning a
+        # declaration-wide flag back off keeps its literals: with `allow_nil: false` on the entry, nil really
+        # is compared, and the declaration really can fail.
+        #
+        # Blankness is `Internal::NativeMethods.blank_literal?` — ActiveSupport's own reading of `blank?`,
+        # which is what the skip tests, decided through bound reads so a literal cannot answer for itself.
+        # Nil is asked by identity for the same reason. `allow_blank` subsumes the nil case (a nil is blank),
+        # and both are asked so an `allow_nil`-only entry still discounts its nil.
+        def _unskipped_literals(literals, entry, tolerance)
+          opts = Axn::Validation::Base.effective_entry_options(entry, tolerance)
+          allow_nil = opts[:allow_nil]
+          allow_blank = opts[:allow_blank]
+          return literals unless allow_nil || allow_blank
+
+          literals.reject do |literal|
+            (allow_blank && Internal::NativeMethods.blank_literal?(literal)) ||
+              (allow_nil && Internal::Identity.nil_value?(literal))
+          end
+        end
+
+        # The literals ONE inverted entry will be judged against, or nil for an entry that cannot be judged.
+        # Both routes delegate to the readers the satisfiability guard already uses, so neither validator grows
+        # a second way to read the same option.
+        #
+        # `exclusion:` names its set exactly where `inclusion:` does, Range judgment included: a Range is
+        # decided by `<=>`, which is nil across unrelated classes, so `(1..5)` forbids no Array however the
+        # array is spelled — and at a SCALAR position it stands down, since `(1.0..5.0).cover?(3)` is true.
+        #
+        # `other_than:` is judged at EVERY type, where the five non-inverted bounds are judged only at a
+        # container position. That gate exists because `<=>` decides those operators and a `Comparable` value
+        # object's `<=>` routinely accepts another class, which no ancestry test predicts. `other_than` is
+        # `!=` (activemodel 7.2.2.2, comparison.rb COMPARE_CHECKS), and equality has no such hole here: the
+        # closed world stands down on any class whose `==` axn does not vouch for, so the gate would only cost
+        # coverage — `type: String, comparison: { other_than: 1 }` is as vacuous as the container spelling.
+        # The bound is read by `key?`, since `other_than: false` is a real bound, and a Symbol or Proc stands
+        # down because ActiveModel resolves it against the record per call (`ResolveValue`).
+        def _vacuous_constraint_literals(key, entry, option_keys, klasses, tolerance)
+          return _judgeable_set_members(entry, klasses) if key == :exclusion
+
+          opts = Axn::Validation::Base.validator_entry_options(entry)
+          bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
+          return nil if bounds.empty?
+          return nil if bounds.any? { |bound| _dynamic_bound?(bound) }
+          return nil unless _blank_cannot_reach_comparison?(entry, tolerance, klasses)
+
+          bounds
+        end
+
+        # Whether the bound is the ONLY thing a `comparison:` entry can reject — which is what makes the
+        # equality judgment above sufficient. It usually is not: ActiveModel's `ComparisonValidator` rejects a
+        # blank value BEFORE it looks at any bound (`value.nil? || value.blank?` → `errors.add(:blank)`,
+        # activemodel 7.2.2.2, comparison.rb:23), so an entry on a type that HAS a blank value rejects that
+        # value whatever the bound says, and enforces something after all.
+        #
+        # Measured: `type: Array, comparison: { other_than: 1 }` rejects `[]`, and on a `presence: false`
+        # field the entry is the only thing rejecting it. So the vacuity question is only reachable where no
+        # blank value can arrive — a declared type with no blank instance, or an entry whose `allow_blank`
+        # skips them before the check runs. Every other `comparison:` declaration stands down.
+        #
+        # `exclusion:` has no such branch — `Clusivity` compares membership and nothing else — which is why
+        # this asks only about the comparison route.
+        def _blank_cannot_reach_comparison?(entry, tolerance, klasses)
+          return true if Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank]
+
+          klasses.all? { |klass| NEVER_BLANK_KLASSES.any? { |known| known.equal?(klass) } }
         end
 
         # Classes whose instances compare and equate ACROSS the family, so a literal of one can satisfy a
@@ -3490,9 +3851,10 @@ module Axn
         # declared token is one — so nothing here asks a caller-supplied token what it is. The LITERAL's class is
         # read through `Internal::Identity`, and membership is compared by identity, so neither side's own
         # methods decide a declaration.
-        def _literal_may_satisfy?(literal, klass)
+        def _literal_may_satisfy?(literal, klass, cross_family: true)
           return true if Validators::TypeValidator.value_matches?(literal, klass:)
           return true unless _judgeable_equality?(Internal::Identity.class_of(literal)) && _judgeable_equality?(klass)
+          return false unless cross_family
 
           CROSS_COMPARABLE_FAMILIES.any? do |family|
             family.any? { |root| Internal::NativeMethods.includes_module?(klass, root) } &&
@@ -3535,10 +3897,44 @@ module Axn
         # branch must satisfy EVERY bound: `type: [Array, Hash], comparison: { equal_to: [], greater_than: {} }`
         # has an Array-satisfiable bound and a Hash-satisfiable bound and admits nothing, because no value is
         # both. For a SET, one branch and one member is all a value needs, so either order reads the same.
-        def _constraint_satisfiable?(key, literals, klasses)
-          return klasses.any? { |klass| literals.all? { |literal| _literal_may_satisfy?(literal, klass) } } if key == :comparison
+        def _constraint_satisfiable?(key, literals, klasses, cross_family: true)
+          if key == :comparison
+            return klasses.any? do |klass|
+              literals.all? { |literal| _literal_may_satisfy?(literal, klass, cross_family:) }
+            end
+          end
 
-          literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
+          _any_literal_may_satisfy?(literals, klasses, cross_family:)
+        end
+
+        # The SET quantifier on its own, because both guards ask for it and neither owns it: one literal
+        # matching one declared branch is all a set-membership check needs to be reachable. The satisfiability
+        # guard reads it as "some value can pass"; the vacuity guard negates it, reading "no value can fail".
+        # An empty literal list answers false either way — nothing to match — which is what makes
+        # `inclusion: { in: [] }` unsatisfiable and `exclusion: { in: [] }` vacuous by the same line.
+        def _any_literal_may_satisfy?(literals, klasses, cross_family: true)
+          literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass, cross_family:) } }
+        end
+
+        # Whether a literal of a DIFFERENT class in the same cross-comparable family can match this entry —
+        # true for everything except a set whose `include?` is keyed by hash identity.
+        #
+        # `Clusivity` calls the collection's own `include?`, so the COLLECTION decides which equality applies.
+        # An Array compares with `==`, under which the families really do cross (`[1].include?(1.0)` is true).
+        # A `Set` and a `Hash` (whose members are its keys) look the member up by `hash` + `eql?`, and `eql?`
+        # never crosses a family — measured: `Set[1].include?(1.0)` and `{1 => true}.include?(1.0)` are both
+        # false while `1 == 1.0` is true. Widening there predicts a match ActiveModel will not make, in both
+        # directions: `type: Float, inclusion: { in: Set[1] }` rejects every Float, and its `exclusion:` mirror
+        # forbids none. Everything else — `acceptance:` (read through `Array()`), a `comparison:` bound, a
+        # Range's bounds (`cover?`, decided by `<=>`) — compares by operator, so the families cross as before.
+        #
+        # Exact-class through `Internal::Identity`, so neither the collection nor its members decide it.
+        def _cross_family_admissible?(key, entry)
+          return true unless CLUSIVITY_KEYS.include?(key)
+
+          collection = Axn::Validation::Base.declared_set_collection(entry)
+          klass = Internal::Identity.class_of(collection)
+          !(klass.equal?(::Hash) || (defined?(Set) && klass.equal?(::Set)))
         end
 
         def _judgeable_constraint_literals(key, entry, option_keys, klasses)
@@ -3567,9 +3963,33 @@ module Axn
 
           bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
           return nil if bounds.empty?
-          return nil if bounds.any? { |bound| bound.is_a?(::Symbol) || bound.is_a?(::Proc) }
+          return nil if bounds.any? { |bound| _dynamic_bound?(bound) }
 
           bounds
+        end
+
+        # The declared types no instance of which is `blank?`, so a `comparison:` entry on one is reached by
+        # every admitted value and its bound really is the only thing it can reject. Measured against
+        # ActiveSupport rather than reasoned from: a Numeric is never blank (`0.blank?` is false), and neither
+        # is a Date/Time. Everything else can be — `[]`, `{}`, `Set[]`, `""`, `:""`, `nil`, `false` — and a
+        # class outside this list is assumed blankable, since a value object answering `empty?` is blank to
+        # ActiveSupport and nothing here can tell without asking it.
+        NEVER_BLANK_KLASSES = [
+          ::Integer, ::Float, ::Rational, ::TrueClass, ::Date, ::Time, ::DateTime
+        ].freeze
+
+        # Whether a bound is one ActiveModel RESOLVES against the record per call (`ResolveValue`) rather than
+        # comparing directly — a Symbol or a Proc — so a declaration carrying one cannot be judged here.
+        #
+        # Classified through `Internal::Identity`, never `bound.is_a?`: the bound is caller-supplied, so its
+        # own answer should not decide which branch a guard takes. This does NOT make a hostile bound safe,
+        # and the reachability is worth stating rather than implying — `_literal_may_satisfy?` calls
+        # `TypeValidator.value_matches?` a step later, which asks `is_a?` because the guard must not disagree
+        # with the check it predicts, and the type check asks it again on every call. A bound whose `is_a?`
+        # raises raises either way. THE single definition, shared by both literal readers so neither can
+        # classify a bound the other would not.
+        def _dynamic_bound?(bound)
+          Internal::Identity.kind?(bound, ::Symbol) || Internal::Identity.kind?(bound, ::Proc)
         end
 
         # The declared types this guard can judge membership against: every token a real Class or Module. Empty
@@ -3641,6 +4061,54 @@ module Axn
           bag = Internal::ShapeGraph.hash_or_nil(declared)
 
           _declared_type_tokens(nil.equal?(bag) ? declared : bag[:klass])
+        end
+
+        # ActiveModel's `strict:` asks `errors.add` to RAISE instead of recording the error — and axn already
+        # settles a contract violation by raising, into the same handling: `Validation::Fields` collects the
+        # errors, the executor composes them into one `Axn::InboundValidationError` (or a user-facing failure),
+        # and the exception chain turns that into a failed result. A strict raise arrives at that chain having
+        # skipped the composition, so it can only take things away, never add the caller-facing raise ActiveModel
+        # documents:
+        #
+        # * a `user_facing:` violation loses its message — strict raises before the settlement that would have
+        #   reclassified it, so the caller sees the generic "Something went wrong" instead of the field's own text
+        # * co-occurring violations are lost — `errors.add` raises on the first one, so a report that named every
+        #   defect in the contract names one
+        # * a `strict:` naming a class outside StandardError escapes the call entirely, which no axn call does
+        #
+        # And it does none of that consistently: ActiveModel's own validators read the option out of the options
+        # hash they are handed, while axn's (`type:`, `of:`, `shape:`, `model:`, `validate:`) add their errors
+        # without forwarding it — so the same spelling raises beside `presence:` and is dropped beside `type:`.
+        # Refused rather than forwarded to the remaining five, since making it uniform would spread the losses
+        # above rather than fix them.
+        #
+        # Refused at EVERY position a validator's options are written — a field, a subfield, an ambient subfield,
+        # an exposure, a shape member, and an `of:` bag at any depth — through the two seams that reach them:
+        # this scan for a declaration's own key and its validator entries, `_reject_inner_contract_strict!` for a
+        # bag. Every offender is named at once: an author who wrote two of them has one declaration to fix.
+        def _reject_strict_validation!(validations, where:)
+          offenders = []
+          offenders << "the declaration" if Internal::ShapeGraph.carries_key?(validations, :strict)
+          Axn::Validation::Base.validator_entries(validations).each do |key, entry|
+            offenders << "#{key}:" if Axn::Validation::Base.entry_declares_strict?(entry)
+          end
+          return if offenders.empty?
+
+          _raise_strict_validation!(offenders.join(" / "), where)
+        end
+
+        # The one sentence, shared by the entry scan above and by the bag check that reaches the positions it
+        # cannot see (`_reject_inner_contract_strict!`) — the same split, and for the same reason, as the
+        # context-scope pair below. `inside` is where the `strict:` was written, so the message names the thing
+        # the author has to edit.
+        def _raise_strict_validation!(inside, where)
+          raise ArgumentError,
+                "`strict:` inside #{inside} on #{where} is ActiveModel's strict-raising mode, and axn does not " \
+                "have one: a contract violation already raises, and the strict exception lands in the same " \
+                "handling with LESS to say — it pre-empts the settlement, so a `user_facing:` message degrades " \
+                "to the generic one, co-occurring violations are dropped, and a class outside StandardError " \
+                "escapes the call. Drop `strict:`; a failed validation already stops the action. To shape what " \
+                "the failure says, use `message:` on the check, `user_facing:` on the field, or `fails_on`."
         end
 
         # The one sentence, shared by the entry scan above and by the bag check that reaches the positions it
@@ -3783,7 +4251,15 @@ module Axn
           # to state and not to decide: every Hash-valued entry is axn's own plain Hash by now. `:shape` is the
           # one entry that seam skips, which is why the predicate classifies and reads its key without
           # dispatching to the bag.
+          #
+          # First of the group, because it is the broadest of the six judgments: the other five ask what a
+          # validator can MEAN at this position, while this one asks whether the key names a validator at all —
+          # and the answer is no wherever it is written. It reads only this hash's own keys (kwargs, so Symbols
+          # by construction) and nothing nested, so unlike its neighbours it has no dependency on the
+          # canonicalization above.
+          _reject_unsupported_validator_keys!(validations, where: _declared_fields_label(fields))
           _reject_validator_context_scope!(validations, where: fields.map(&:to_s).inspect)
+          _reject_strict_validation!(validations, where: fields.map(&:to_s).inspect)
 
           # Beside the context-scope refusal: both refuse a validator that cannot do what the declaration says,
           # ahead of every consumer of this bag. Placement ahead of the tolerance push-down is not load-bearing
@@ -3796,6 +4272,13 @@ module Axn
           # declaration KWARGS at this point — the push-down that writes them into each entry has not run yet.
           _reject_unsatisfiable_value_constraints!(validations, where: _declared_fields_label(fields),
                                                                 tolerance: { allow_nil:, allow_blank: })
+
+          # Its mirror, taking the same tolerance pair and reading it the other way: not as a stand-down (a
+          # tolerated value PASSES, which cannot rescue a check nothing fails) but to discount the forbidden
+          # literals ActiveModel would skip. Second, so a declaration broken both ways is reported as the
+          # unsatisfiable contract — the defect that rejects every call, ahead of the one that rejects none.
+          _reject_vacuous_value_constraints!(validations, where: _declared_fields_label(fields),
+                                                          tolerance: { allow_nil:, allow_blank: })
 
           _derive_raw_shape_container!(validations)
 
@@ -3825,11 +4308,11 @@ module Axn
             # ActiveModel's shared "default" options (`if:`/`unless:`/`on:`/`strict:`/`allow_blank:`/
             # `allow_nil:`) ride the hash as sibling keys of the validators but are NOT validators —
             # there is nothing to push tolerance into, and normalizing them as scalars would corrupt
-            # them (e.g. `strict: true` → `strict: { allow_blank:, allow_nil: }`, which then raises a
-            # bare `TypeError` at strict-raise time instead of `ActiveModel::StrictValidationFailed`).
-            # Slice them out (reusing AM's own canonical list so the set can't drift), transform only
-            # the real validators, then restore verbatim. Core-Ruby delete (not ActiveSupport's
-            # Hash#except!): axn runs outside Rails, where that core_ext may never be loaded.
+            # them (e.g. `if: :flag` → `if: { with: :flag, allow_blank:, allow_nil: }`, a Hash the
+            # callback machinery cannot resolve, so the gate stops deciding anything). Slice them out
+            # (reusing AM's own canonical list so the set can't drift), transform only the real
+            # validators, then restore verbatim. Core-Ruby delete (not ActiveSupport's Hash#except!):
+            # axn runs outside Rails, where that core_ext may never be loaded.
             shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
             shared_options = validations.slice(*shared_option_keys)
             shared_option_keys.each { |key| validations.delete(key) }
@@ -3871,7 +4354,6 @@ module Axn
           return unless _type_rejects_nil?(validations)
 
           shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
-          declaration_options = validations.slice(*shared_option_keys)
 
           # Iterate a snapshot of the keys: the loop reassigns entries as it goes, and Ruby forbids
           # mutating a Hash mid-iteration.
@@ -3882,20 +4364,10 @@ module Axn
             normalized = Axn::Validation::Base.normalize_validator_options(opt)
             next if normalized.key?(:allow_nil) || normalized.key?(:allow_blank)
 
-            # A strict entry RAISES instead of recording an error, and EachValidator's allow_nil skip
-            # happens BEFORE validate_each — so relaxing it would swallow the raise rather than merely
-            # drop a duplicate message. Standing down here preserves baseline behavior rather than being
-            # lossless: none of axn's own custom validators (type/of/validate/model/shape) forward
-            # `**options` to `errors.add`, so a `strict:` entry among them never raises regardless — it
-            # keeps recording its own derivative message alongside the type error exactly as it did
-            # before this guard runs. Only a validator that DOES forward `strict:` into `errors.add`
-            # (an ActiveModel built-in such as presence) actually raises and so benefits from being left
-            # untouched here.
-            # Strictness is per ENTRY, so the effective value is asked (an entry's own `strict:` wins
-            # over the declaration's), and the test is truthiness — the one AM applies — not blankness:
-            # `strict: ""` is blank yet still raises.
-            next if Axn::Validation::Base.entry_effective_option(normalized, declaration_options, :strict)
-
+            # Every entry that reaches here records an error rather than raising: `strict:` — the one
+            # option under which relaxing an entry would swallow a raise instead of dropping a duplicate
+            # message, since EachValidator's allow_nil skip runs BEFORE validate_each — is refused at
+            # declaration (`_reject_strict_validation!`), at both tiers and at every position.
             validations[key] = normalized.merge(allow_nil: true)
           end
         end

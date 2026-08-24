@@ -890,35 +890,23 @@ RSpec.describe "nil and empty axes" do
       expect(action.call(v: [1])).to be_ok
     end
 
-    it "preserves a strict validator's raise instead of suppressing it" do
-      # A strict entry RAISES rather than recording an error, and EachValidator's allow_nil skip runs
-      # BEFORE validate_each — so relaxing it would swallow the raise, not just drop a duplicate message.
-      # True here because presence forwards `strict:` into `errors.add`; none of axn's own custom
-      # validators (type/of/validate/model/shape) do, so a `strict:` entry among THEM never raises and
-      # this guard's stand-down preserves baseline behavior for them rather than suppressing anything.
-      # Pins the exception CLASS, which is what a caller (e.g. fails_on) keys on. Both tiers, because
-      # strictness is per entry: `strict:` on the declaration, and `strict:` on the entry itself.
-      declaration_tier = build(type: String, strict: true).call(v: nil)
-      expect(declaration_tier.exception).to be_a(ActiveModel::StrictValidationFailed)
-
-      entry_tier = build(type: String, presence: { strict: true }).call(v: nil)
-      expect(entry_tier.exception).to be_a(ActiveModel::StrictValidationFailed)
-
-      custom_class = build(type: String, strict: ArgumentError).call(v: nil)
-      expect(custom_class.exception).to be_a(ArgumentError)
+    it "has no raising entry to suppress, at either tier" do
+      # The one entry this collapse could not safely relax is a STRICT one: it RAISES rather than
+      # recording an error, and EachValidator's allow_nil skip runs BEFORE validate_each, so relaxing it
+      # would swallow the raise instead of dropping a duplicate message. `strict:` is refused at
+      # declaration at both tiers — on the declaration and inside an entry — so no declaration reaches
+      # this collapse carrying one, and the type error is always the whole account of the nil.
+      expect { build(type: String, strict: true) }
+        .to raise_error(ArgumentError, /`strict:` inside the declaration on \["v"\]/)
+      expect { build(type: String, presence: { strict: true }) }
+        .to raise_error(ArgumentError, /`strict:` inside presence: on \["v"\]/)
     end
 
-    it "still collapses the duplicate messages when strict: is falsy" do
-      # `strict: false` is not strict at either tier, so the collapse must still apply — standing down
-      # there would silently restore the duplicate messages this behavior exists to remove.
-      expect(build(type: String, strict: false).call(v: nil).exception.message).to eq("V is not a String")
-      expect(build(type: String, presence: { strict: false }).call(v: nil).exception.message).to eq("V is not a String")
-
-      # AM composes each validator's options as `declaration_defaults.merge(entry_options)`, so the
-      # entry's own `strict:` overrides the declaration's — including overriding it with a falsy one.
-      overridden = build(type: String, strict: true, presence: { strict: false }).call(v: nil)
-      expect(overridden.exception).to be_a(Axn::InboundValidationError)
-      expect(overridden.exception.message).to eq("V is not a String")
+    it "collapses the duplicate messages for an entry carrying its own tolerance keys" do
+      # The collapse stands down for an entry that already declares tolerance and applies to every other
+      # entry — the one duplicate-message case this behavior exists to remove.
+      expect(build(type: String, presence: true).call(v: nil).exception.message).to eq("V is not a String")
+      expect(build(type: String, presence: { allow_nil: true }).call(v: nil).exception.message).to eq("V is not a String")
     end
 
     it "leaves the other validators' nil rejections in force when the type check is gated" do

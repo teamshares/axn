@@ -250,16 +250,6 @@ RSpec.describe "an `on:` that names a validation context" do
 
       expect(klass.call(v: "a")).to be_ok
     end
-
-    it "accepts a nested strict:, which raises rather than being inert" do
-      klass = Class.new do
-        include Axn
-        expects :v, optional: true, length: { minimum: 5, strict: true }
-        def call = nil
-      end
-
-      expect(klass.call(v: "a")).not_to be_ok
-    end
   end
 
   # A member's bag reaches `validates` as-is on the raw route, so a bag-level `on:` silences every validator in

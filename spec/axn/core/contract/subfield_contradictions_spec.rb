@@ -682,4 +682,139 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.not_to raise_error
     end
   end
+
+  # A top-level `expects` never carries an `on:`, so it looks like it can contradict nothing. It can:
+  # an explicit top-level declaration OUTRANKS an explicit subfield of the same name
+  # (SubfieldTree.reader_rank), so it takes the reader over and every subfield anchored on that name
+  # RE-ANCHORS onto the new root. That is the one move a top-level declaration has, and it can strand a
+  # subfield under a parent that cannot answer it, under a map, or under a tolerance nothing rescues.
+  # (`_reject_duplicate_fields!` blocks a repeated TOP-LEVEL name, so the takeover is always
+  # top-level-over-subfield.)
+  describe "a top-level expects that re-anchors an existing subfield (PRO-3169)" do
+    it "rejects a re-anchor onto a parent that cannot answer the segment" do
+      # Before this ran here, the contract declared cleanly and was unsatisfiable for EVERY input:
+      # `counts: "hi"` fails "N can't be blank", `counts: {n: 5}` fails "Counts is not a String" — while
+      # the emitted schema advertised `counts` as a plain string and dropped `:n` outright.
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :counts, on: :payload, type: Hash
+          expects :n, on: :counts, type: Integer
+          expects :counts, type: String
+        end
+      end.to raise_error(ArgumentError, /subfield :n \(on :counts\) can never resolve.*declared String/m)
+    end
+
+    it "rejects a re-anchor onto an Array parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :counts, on: :payload, type: Hash
+          expects :n, on: :counts, type: Integer
+          expects :counts, type: Array
+        end
+      end.to raise_error(ArgumentError, /can never resolve.*declared Array/m)
+    end
+
+    it "rejects a re-anchor onto a map, the slice PRO-3165 already closed" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :counts, on: :payload, type: Hash
+          expects :n, on: :counts, type: Integer
+          expects :counts, type: Hash, of: { values: Integer }
+        end
+      end.to raise_error(ArgumentError, /names the key :n of :counts, which declares `of:` on a Hash/)
+    end
+
+    it "rejects a re-anchor onto a nil-tolerant parent whose child nothing rescues" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :counts, on: :payload, type: Hash
+          expects :n, on: :counts, type: Integer
+          expects :counts, type: Hash, allow_nil: true
+        end
+      end.to raise_error(ArgumentError, /:counts is declared nil-tolerant.*:n is required/m)
+    end
+
+    it "rejects a re-anchor that pulls a subfield OUT of the ambient subtree onto a scalar root" do
+      # `on:` roots at ambient only while the reader-owner index says so. A top-level declaration of that
+      # name takes the reader over, so `:ip` stops being an ambient subfield and becomes an ordinary one
+      # on a String root — caught by the shared tree, with no ambient-scoped check involved.
+      expect do
+        build_axn do
+          expects :request, on: :ambient_context, type: Hash
+          expects :ip, on: :request, type: String
+          expects :request, type: String
+        end
+      end.to raise_error(ArgumentError, /subfield :ip \(on :request\) can never resolve/)
+    end
+
+    it "accepts a re-anchor onto a parent that CAN still answer the subfield, and re-points the read" do
+      # The mechanism the whole seam rests on, pinned against the runtime rather than asserted: the two
+      # candidate parents disagree, so which value `:n` resolves to says where it is anchored. It reads
+      # the TOP-LEVEL root (99), not the `payload.counts` it was originally declared on (1).
+      action = nil
+      expect do
+        action = build_axn do
+          expects :payload, type: Hash
+          expects :counts, on: :payload, type: Hash
+          expects :n, on: :counts, type: Integer
+          expects :counts, type: Hash
+          exposes :seen
+          def call = expose(seen: n)
+        end
+      end.not_to raise_error
+
+      expect(action.call(payload: { counts: { n: 1 } }, counts: { n: 99 }).seen).to eq(99)
+    end
+
+    it "accepts a re-anchor onto a model: route, whose record is never statically refutable" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :counts, on: :payload, type: Hash
+          expects :name, on: :counts, type: String
+          expects :counts, model: "DeadCo"
+        end
+      end.not_to raise_error
+    end
+
+    it "leaves a top-level declaration that takes over no reader alone" do
+      # The checks are asked over the WHOLE candidate tree, so every unrelated top-level field is
+      # re-judged at this seam too. None of these declares a contradiction, and none may start to.
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :kid, on: :payload, type: Integer
+          expects :other, allow_nil: true
+          expects :maybe, allow_blank: true
+          expects :extra, type: Hash, optional: true
+          expects :counts, type: Hash, of: { values: Integer }
+          expects :label, type: String
+        end
+      end.not_to raise_error
+    end
+
+    it "does not re-anchor a dotted wire segment that merely shares a top-level field's name" do
+      # `payload.bar` is a wire key read out of `payload`, not a reader — so a top-level `:bar` is a
+      # different node entirely and strands nothing.
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :baz, on: "payload.bar", type: Integer
+          expects :bar, type: String
+        end
+      end.not_to raise_error
+    end
+
+    it "runs no check at all when the contract declares no subfield" do
+      expect(Axn::Core::Contract::SubfieldContradictions).not_to receive(:check!)
+      build_axn do
+        expects :payload, type: Hash
+        expects :other, allow_nil: true
+      end
+    end
+  end
 end

@@ -1052,13 +1052,18 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
 
       # ActiveModel's own shared options ride a `validates` call without being validators, and a raw bag
       # reaches `validates` verbatim — so they work on this route today and refusing them would reject a legal
-      # declaration. They are unioned in from AM's own list rather than listed again.
+      # declaration. They are unioned in from AM's own list rather than listed again. The two axn refuses
+      # everywhere (`on:`, `strict:`) name mechanisms axn does not have and are refused here too.
       it "accepts ActiveModel's shared options, which apply on this route" do
         klass = declared_with({ type: String, allow_blank: true })
 
         expect(klass.call(payload: { m: "" })).to be_ok
-        expect(declared_with({ type: String, strict: true }).call(payload: { m: "x" })).to be_ok
         expect(declared_with({ type: String, if: -> { false } }).call(payload: { m: 1 })).to be_ok
+      end
+
+      it "refuses strict:, which names a raising mode axn does not have" do
+        expect { declared_with({ type: String, strict: true }) }
+          .to raise_error(ArgumentError, /`strict:` inside the declaration on shape member `m`/)
       end
 
       it "leaves a member's own attributes alone — they were never bag keys" do

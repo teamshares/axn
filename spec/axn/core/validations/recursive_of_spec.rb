@@ -71,12 +71,14 @@ RSpec.describe "recursive of:" do
     # also how `_reject_unusable_of_message!` asks it — one question, one answer, at every position a bag sits
     # at.
     describe "an empty klass: union" do
+      # No schema consequence is claimed: whether an empty union reaches the document depends on ancestry the
+      # refusal cannot see — nothing under a `keys:` axis emits at any depth — so the message states the
+      # runtime consequence, which holds at every position (PRO-3170).
       empty_union_message =
         "of: klass: names an empty union, so this bag constrains nothing — a value held to every " \
-        "class in an empty list is held to none, so every value at that position passes while the " \
-        "schema emits `anyOf: []`, which nothing satisfies. Name the class(es) the contents must be, " \
-        "or drop the empty klass: and constrain them with `of:` or `shape:`. (`of: []` is sugar for " \
-        "`of: { klass: [] }`.)"
+        "class in an empty list is held to none, so every value at that position passes. Name the " \
+        "class(es) the contents must be, or drop the empty klass: and constrain them with `of:` or " \
+        "`shape:`. (`of: []` is sugar for `of: { klass: [] }`.)"
 
       it "refuses the bare `of: []` spelling, which is sugar for it" do
         expect { build_axn { expects :a, type: Array, of: [] } }
@@ -1479,13 +1481,18 @@ RSpec.describe "recursive of:" do
     end
 
     it "are refused on the keys axis, naming every offender at once" do
-      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, allow_nil: true, strict: true } } } }
-        .to raise_error(ArgumentError, /\Aof: keys: does not support allow_nil:, strict: on :m/)
+      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, allow_nil: true, allow_blank: true } } } }
+        .to raise_error(ArgumentError, /\Aof: keys: does not support allow_blank:, allow_nil: on :m/)
     end
 
     it "leaves on: to the context-scope guard, which names a different problem" do
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, on: :create } } } }
         .to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :m names an ActiveModel validation context/)
+    end
+
+    it "leaves strict: to the strict guard, which names a different problem" do
+      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, strict: true } } } }
+        .to raise_error(ArgumentError, /\A`strict:` inside an `of:` bag on :m is ActiveModel's strict-raising mode/)
     end
 
     # The reason the ban is axis-only rather than bag-wide: axn's own tolerance push-down writes

@@ -219,6 +219,173 @@ RSpec.describe Axn::Validators::OfValidator do
       end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
     end
 
+    # The COMPLETE axis-pair behaviour, as a truth table over every combination of the six things an axis can
+    # be. Three consecutive review rounds found prose asserting a condition narrower or simply different from
+    # the real one — each time about which pair lands on which refusal — so the dimensions are enumerated here
+    # and the whole product is held, rather than the cases anyone happened to think of. The input space is
+    # genuinely closed: an axis is absent, `nil`, an empty union, a usable type, an unusable token, or a bag.
+    #
+    # Read down for `keys:`, across for `values:`. What it pins, beyond each individual cell: the "name the
+    # axis you are constraining" refusal belongs to the top-left 2x2 ALONE — a bag with nothing to point at —
+    # and every other pair names an axis the author actually wrote.
+    describe "which refusal each axis pair lands on" do
+      absent = Object.new
+      axis_values = { "absent" => absent, "nil" => nil, "empty union" => [], "a class" => Symbol,
+                      "a non-class" => "", "a bag" => { klass: Symbol } }
+
+      # Derived from the raised message rather than restated per cell, so a cell cannot silently be pinned to
+      # wording that no longer exists. An instance method rather than a group-scope lambda, since `build_axn`
+      # is only available from within an example.
+      def classify(axis_pair)
+        build_axn { expects :a, type: Hash, of: axis_pair }
+        "declares"
+      rescue ArgumentError => e
+        case e.message
+        when %r{\Aof: requires keys: and/or values:} then "name-an-axis"
+        when /\Aof: (keys|values): names an empty union/ then "empty-union(#{Regexp.last_match(1)})"
+        when /\Aof: (keys|values): must name a type/ then "not-a-type(#{Regexp.last_match(1)})"
+        else "unexpected: #{e.message[0, 60]}"
+        end
+      end
+
+      {
+        %w[absent absent] => "name-an-axis", %w[absent nil] => "name-an-axis",
+        ["absent", "empty union"] => "empty-union(values)",
+        ["absent", "a class"] => "declares", ["absent", "a non-class"] => "not-a-type(values)",
+        ["absent", "a bag"] => "declares",
+        %w[nil absent] => "name-an-axis", %w[nil nil] => "name-an-axis",
+        ["nil", "empty union"] => "empty-union(values)",
+        ["nil", "a class"] => "not-a-type(keys)", ["nil", "a non-class"] => "not-a-type(keys)",
+        ["nil", "a bag"] => "not-a-type(keys)",
+        ["empty union", "absent"] => "empty-union(keys)", ["empty union", "nil"] => "empty-union(keys)",
+        ["empty union", "empty union"] => "empty-union(keys)",
+        ["empty union", "a class"] => "empty-union(keys)",
+        ["empty union", "a non-class"] => "empty-union(keys)",
+        ["empty union", "a bag"] => "empty-union(keys)",
+        ["a class", "absent"] => "declares", ["a class", "nil"] => "not-a-type(values)",
+        ["a class", "empty union"] => "empty-union(values)",
+        ["a class", "a class"] => "declares", ["a class", "a non-class"] => "not-a-type(values)",
+        ["a class", "a bag"] => "declares",
+        ["a non-class", "absent"] => "not-a-type(keys)", ["a non-class", "nil"] => "not-a-type(keys)",
+        ["a non-class", "empty union"] => "not-a-type(keys)",
+        ["a non-class", "a class"] => "not-a-type(keys)",
+        ["a non-class", "a non-class"] => "not-a-type(keys)",
+        ["a non-class", "a bag"] => "not-a-type(keys)",
+        ["a bag", "absent"] => "declares", ["a bag", "nil"] => "not-a-type(values)",
+        ["a bag", "empty union"] => "empty-union(values)",
+        ["a bag", "a class"] => "declares", ["a bag", "a non-class"] => "not-a-type(values)",
+        ["a bag", "a bag"] => "declares"
+      }.each do |(keys_name, values_name), expected|
+        it "answers keys: #{keys_name} with values: #{values_name} as #{expected}" do
+          of = {}
+          of[:keys] = axis_values.fetch(keys_name) unless axis_values.fetch(keys_name).equal?(absent)
+          of[:values] = axis_values.fetch(values_name) unless axis_values.fetch(values_name).equal?(absent)
+
+          expect(classify(of)).to eq(expected)
+        end
+      end
+    end
+
+    # The one rule every `of:` axis is held to (PRO-3170): it must name at least one class, and everything it
+    # names must be a class. Three positions spell the axis differently — `klass:` inside a bag, `keys:` and
+    # `values:` on a map — so the refusals differ in which key they tell the author to edit, and in nothing
+    # else. Pinned as the shared DIAGNOSIS rather than as three whole strings, so a reworded remedy at one
+    # position stays free while the three drifting into describing different mistakes does not.
+    describe "the one rule an `of:` axis is held to" do
+      # The RUNTIME consequence, which is what is actually shared: an empty union holds a value to nothing
+      # wherever it is written. No SCHEMA consequence is claimed at any position, because whether one is
+      # emitted depends on ancestry the refusal cannot see — see the emitter examples below.
+      shared_diagnosis =
+        "a value held to every class in an empty list is held to none, so every value at that position passes"
+
+      {
+        "a bag's klass:" => [Array, { klass: [] }],
+        "a map's keys:" => [Hash, { keys: [], values: Integer }],
+        "a map's values:" => [Hash, { keys: Symbol, values: [] }],
+      }.each do |position, (container, of)|
+        it "reports an empty union at #{position} with the same diagnosis" do
+          expect { build_axn { expects :a, type: container, of: } }
+            .to raise_error(ArgumentError, /#{Regexp.escape(shared_diagnosis)}/)
+        end
+      end
+
+      # No position claims a schema consequence, because none can: whether an empty union reaches the document
+      # at all depends on ancestry the raise site cannot see. Pinned as an ABSENCE across every position and
+      # depth, since a claim that happened to be true of the element case is exactly how the false `keys:` one
+      # survived a battery that compared the three refusals only against each other.
+      {
+        "a bag's klass:" => [Array, { klass: [] }],
+        "a map's keys:" => [Hash, { keys: [], values: Integer }],
+        "a map's values:" => [Hash, { keys: Symbol, values: [] }],
+        "a bag under a keys: axis" => [Hash, { keys: { klass: [] } }],
+        "a bag under a values: axis" => [Hash, { values: { klass: [] } }],
+        "a bag one container down" => [Array, { klass: Array, of: { klass: [] } }],
+      }.each do |position, (container, of)|
+        it "claims no schema emission at #{position}" do
+          expect { build_axn { expects :a, type: container, of: } }
+            .to raise_error(ArgumentError) { |error| expect(error.message).not_to include("anyOf") }
+        end
+      end
+
+      # WHY no such claim is made, and the measurement the whole design rests on: a `keys:` axis reaches the
+      # emitter with nothing to say — there is no keyword to hang a key constraint on, so the emitter never
+      # descends — and that holds through a bag and through every container nested under one.
+      #
+      # The `values:` spelling of each shape is the positive control, and it asserts the COMPLETE nested
+      # document rather than the presence of the root `additionalProperties` key. The weaker spelling cannot do
+      # this control's job: the root key appears as soon as the depth-1 bag emits anything, so an emitter that
+      # stopped descending at depth 2 would still satisfy it — and the whole point of the control is to tell
+      # "a `keys:` axis specifically emits nothing" apart from "descent stopped here for unrelated reasons".
+      #
+      # Pinned as a spec rather than left as a one-off measurement because it is the sole justification for the
+      # refusals claiming no schema consequence: if a `keys:` axis ever starts emitting, the messages become
+      # under-informative and this fails, which is the notice to revisit them.
+      {
+        "a bare union" => [{ keys: [Symbol, String] },
+                           { values: [Symbol, String] },
+                           { anyOf: [{ type: "string" }, { type: "string" }] }],
+        "a bag" => [{ keys: { klass: [Symbol, String] } },
+                    { values: { klass: [Symbol, String] } },
+                    { anyOf: [{ type: "string" }, { type: "string" }] }],
+        "a nested map" => [{ keys: { klass: Hash, of: { values: Integer } } },
+                           { values: { klass: Hash, of: { values: Integer } } },
+                           { type: "object", additionalProperties: { type: "integer" } }],
+        "a nested array" => [{ keys: { klass: Array, of: Integer } },
+                             { values: { klass: Array, of: Integer } },
+                             { type: "array", items: { type: "integer" } }],
+        "two containers down" => [{ keys: { klass: Array, of: { klass: Hash, of: { values: Integer } } } },
+                                  { values: { klass: Array, of: { klass: Hash, of: { values: Integer } } } },
+                                  { type: "array",
+                                    items: { type: "object", additionalProperties: { type: "integer" } } }],
+      }.each do |shape, (keys_of, values_of, emitted)|
+        it "emits nothing for #{shape} on the keys: axis, where the values: spelling emits to the leaf" do
+          keyed = build_axn { expects :a, type: Hash, of: keys_of }
+          valued = build_axn { expects :a, type: Hash, of: values_of }
+
+          expect(keyed.input_schema.to_h.dig(:properties, :a)).not_to have_key(:additionalProperties)
+          expect(valued.input_schema.to_h.dig(:properties, :a, :additionalProperties)).to eq(emitted)
+        end
+      end
+
+      # The other half of the rule, at the same three positions: a token the runtime cannot hold a value to.
+      # A String is the spelling that used to declare cleanly, emit a schema describing a type nobody
+      # declared (`items: {type: "string"}`), and then fail EVERY call with an opaque "Something went wrong".
+      {
+        "a bare of:" => [Array, "", "of: klass:"],
+        "a bag's klass:" => [Array, { klass: "" }, "of: klass:"],
+        "a map's keys:" => [Hash, { keys: "" }, "of: keys:"],
+        "a map's values:" => [Hash, { values: "" }, "of: values:"],
+      }.each do |position, (container, of, option)|
+        it "refuses a non-class token at #{position}, where every call used to fail opaquely" do
+          expect { build_axn { expects :a, type: container, of: } }.to raise_error(
+            ArgumentError,
+            "#{option} must name a type — a Class, a union of them, or one of " \
+            ":boolean, :uuid, :params (got a value of class String)",
+          )
+        end
+      end
+    end
+
     # A bag has to CONSTRAIN something, and `klass:` is no longer the only way to do it (PRO-3166), so the
     # rule is stated over the axes rather than over the one option.
     it "raises ArgumentError when of: is a hash constraining nothing" do
@@ -353,30 +520,51 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
     end
 
-    # An axis holding an EMPTY union is `of: {}` in a costume: `matches_axis?` waves every value through a class
-    # list with nothing in it, so the declaration reads like a constraint and enforces none. Judged as an absent
-    # axis, which is what it is, so a bag whose axes all name nothing lands on the same "name an axis" refusal.
-    it "rejects a values axis naming no class at all" do
+    # An axis holding an EMPTY union is the defect a bag's `klass:` has when it is written the same way, so it
+    # reports the same defect: `matches_axis?` waves every value through a class list with nothing in it, and
+    # the declaration reads like a constraint while enforcing none. The refusal names the axis the author
+    # actually wrote rather than asking for an axis that is already there.
+    it "rejects a values axis naming an empty union" do
       expect { build_axn { expects :counts, type: Hash, of: { values: [] } } }
-        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+        .to raise_error(ArgumentError, /\Aof: values: names an empty union, so that axis constrains nothing/)
     end
 
-    it "rejects a keys axis naming no class at all" do
+    it "rejects a keys axis naming an empty union" do
       expect { build_axn { expects :counts, type: Hash, of: { keys: [] } } }
-        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+        .to raise_error(ArgumentError, /\Aof: keys: names an empty union, so that axis constrains nothing/)
     end
 
-    it "rejects both axes naming no class at all" do
+    # Both axes empty is still ONE defect per axis, so the first one written is the one named — an author
+    # fixing it sees the second on the next declaration rather than a refusal describing neither.
+    it "names the first axis when both name an empty union" do
       expect { build_axn { expects :counts, type: Hash, of: { keys: [], values: [] } } }
-        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+        .to raise_error(ArgumentError, /\Aof: keys: names an empty union/)
+    end
+
+    # An axis left OFF entirely is the honest spelling of "unconstrained", and a bag with no constraining axis
+    # has none to name — that is what is still answered by the "name the axis" refusal. A `nil` axis joins it
+    # only while nothing else on the bag constrains: beside a sibling that does, there IS an axis to name, and
+    # `_reject_unsupported_map_axis!` names it (pinned further down). Both halves are pinned because the
+    # boundary between them is the one this refusal's wording turns on.
+    {
+      "neither axis written" => {},
+      "a sole nil values: axis" => { values: nil },
+      "a sole nil keys: axis" => { keys: nil },
+      "both axes nil" => { keys: nil, values: nil },
+    }.each do |position, of|
+      it "answers #{position} with the name-an-axis refusal" do
+        expect { build_axn { expects :counts, type: Hash, of: } }
+          .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+      end
     end
 
     # Omitting an axis is the spelling of "unconstrained"; writing one that names nothing is not. An empty
     # union constrains exactly nothing, so it is refused wherever it is supplied rather than read as an
-    # omission that happens to be typed out.
+    # omission that happens to be typed out — including beside a sibling that does constrain, where the bag
+    # as a whole is not the thing at fault.
     it "rejects an empty axis even beside one that names a class" do
       expect { build_axn { expects :counts, type: Hash, of: { keys: [], values: Integer } } }
-        .to raise_error(ArgumentError, /of: keys: must name a type/)
+        .to raise_error(ArgumentError, /\Aof: keys: names an empty union/)
     end
 
     # The map bag reaches the same context-scope guard the element bag does, in the same words — `on:` is one
@@ -423,9 +611,12 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, /of: values: must name a type .* \(got a value of class NilClass\)/)
     end
 
+    # An empty union is not "not a type": `[]` IS the union spelling, and being empty is the defect. Reported
+    # as the emptiness it is, in the words a bag's `klass:` uses for the identical mistake, rather than as a
+    # token the runtime cannot hold a value to.
     it "rejects an axis naming an empty union beside a valid one" do
       expect { build_axn { expects :c, type: Hash, of: { keys: Symbol, values: [] } } }
-        .to raise_error(ArgumentError, /of: values: must name a type/)
+        .to raise_error(ArgumentError, /\Aof: values: names an empty union, so that axis constrains nothing/)
     end
 
     # `nil` INSIDE a union is the one unsupported token a `find`-based search cannot report: the answer for

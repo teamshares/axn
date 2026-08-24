@@ -16,11 +16,18 @@ module Axn
       module SubfieldContradictions
         module_function
 
-        # All three checks re-scan the WHOLE candidate tree (prospective configs included), never just the new
+        # Every check re-scans the WHOLE candidate tree (prospective configs included), never just the new
         # batch: a NEW declaration can invalidate an OLD subfield regardless of order — a new required
         # descendant kills an old tolerance (dead-tolerance check), and a new type/shape declaration on a
-        # parent kills an old subfield's answerability (e.g. `expects "bar.baz", on: :payload` accepted
-        # while `bar` is unknown, then `expects :bar, ..., type: String` retro-strands `bar.baz`).
+        # parent kills an old subfield's answerability (`expects :bar, on: :payload` then `expects :baz,
+        # on: :bar` accepted while `bar` is a Hash, then `expects :bar, type: String` — a top-level
+        # declaration outranks the same-named subfield's reader, so `baz` RE-ANCHORS onto a String root
+        # nothing can read `baz` off).
+        #
+        # Which is why this runs from all three declaration seams, top-level `expects` included (PRO-3169):
+        # re-anchoring is the one move a top-level declaration has, and it is enough to strand a subfield.
+        # Note that a wire SEGMENT is not a reader — `expects :baz, on: "payload.bar"` reads `bar` out of
+        # `payload`, so a later top-level `:bar` is a different node and re-anchors nothing.
         def check!(field_configs, subfield_configs, crossings: true)
           tree = Axn::Internal::SubfieldTree.build(field_configs, subfield_configs)
           check_unanswerable_segments!(tree) # first: an unreachable path moots any ambiguity on it
