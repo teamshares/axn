@@ -751,15 +751,23 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.to raise_error(ArgumentError, /subfield :ip \(on :request\) can never resolve/)
     end
 
-    it "accepts a re-anchor onto a parent that CAN still answer the subfield" do
+    it "accepts a re-anchor onto a parent that CAN still answer the subfield, and re-points the read" do
+      # The mechanism the whole seam rests on, pinned against the runtime rather than asserted: the two
+      # candidate parents disagree, so which value `:n` resolves to says where it is anchored. It reads
+      # the TOP-LEVEL root (99), not the `payload.counts` it was originally declared on (1).
+      action = nil
       expect do
-        build_axn do
+        action = build_axn do
           expects :payload, type: Hash
           expects :counts, on: :payload, type: Hash
           expects :n, on: :counts, type: Integer
           expects :counts, type: Hash
+          exposes :seen
+          def call = expose(seen: n)
         end
       end.not_to raise_error
+
+      expect(action.call(payload: { counts: { n: 1 } }, counts: { n: 99 }).seen).to eq(99)
     end
 
     it "accepts a re-anchor onto a model: route, whose record is never statically refutable" do
