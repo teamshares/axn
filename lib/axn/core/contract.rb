@@ -3248,6 +3248,71 @@ module Axn
         SYMBOL_KEY_NAME = ::Symbol.instance_method(:name)
         private_constant :SYMBOL_KEY_NAME
 
+        # The two keys the field grammar admits that ActiveModel cannot resolve a validator for, at any
+        # position and under any declared type. `validates` resolves an entry by
+        # `const_get("#{key.to_s.camelize}Validator")` from the class being declared on, which for axn is a
+        # `Validation::Base` subclass — `ActiveModel::Validations` and axn's own validator constants, nothing
+        # else — so both names miss and every call raises `ArgumentError: Unknown validator: '…Validator'`.
+        # A declaration that looks supported, enforces nothing, and converts every call into an exception is
+        # the one outcome that should not stand, so both are refused where the declaration is written.
+        #
+        # They stay in `KNOWN_VALIDATION_KEYS` rather than being struck from it, for the reason `on:` does:
+        # a recognized option reported as an unknown key names the author's problem less well than a message
+        # that says what the option would have meant.
+        #
+        # Key PRESENCE, not truthiness. The falsy-entry no-op that leaves `confirmation: false` alone does not
+        # apply: AM's `const_get` runs BEFORE its `next unless options`, so `uniqueness: false` raises exactly
+        # as `uniqueness: true` does (measured).
+        #
+        # One at a time rather than joined, which is the opposite of how same-reason offenders are reported
+        # (`_reject_validator_context_scope!` names every `on:` at once): these are two different problems with
+        # two different fixes, and an author who wrote both is better served reading one at a time.
+        def _reject_unsupported_validator_keys!(validations, where:)
+          _raise_uniqueness_unsupported!(where) if validations.key?(:uniqueness)
+          _raise_bare_message_unsupported!(where) if validations.key?(:message)
+        end
+
+        # `uniqueness:` is an ActiveRecord validator — it needs a record, a relation to query, and a connection
+        # — and an axn contract has none of the three: it validates a plain value that arrived over the wire.
+        #
+        # Supporting it for `model:`-backed fields, where a record does exist, was considered and rejected: the
+        # option would then mean one thing on one kind of field and be refused on every other, and the check it
+        # would run (does another row share this value) is a question about the database at a moment, not about
+        # the input the contract is describing. A contract that queries is a contract whose reflected schema
+        # cannot state what it enforces.
+        def _raise_uniqueness_unsupported!(where)
+          raise ArgumentError,
+                "uniqueness: on #{where} is not supported — it is an ActiveRecord validator " \
+                "(ActiveRecord::Validations::UniquenessValidator), so it needs a record and a relation to " \
+                "query, and an axn contract validates a plain value with ActiveModel alone. Declared, it " \
+                "resolves to no validator at all and every call raises `Unknown validator: " \
+                "'UniquenessValidator'`. Check uniqueness where the records are — on the model, or as " \
+                "`validate: ->(value) { ... }` querying it yourself."
+        end
+
+        # `message:` overrides the wording of ONE check, so it belongs inside that check's own option bag. At a
+        # field's top level it is not the shared option it looks like: AM's `_validates_default_keys` is
+        # `if:`/`unless:`/`on:`/`allow_blank:`/`allow_nil:`/`strict:`/`except_on:` and does not include it, so a
+        # bare `message:` is parsed as a validator ENTRY named `message` and looks for a `MessageValidator`.
+        #
+        # The bag spelling is untouched by this and is where every working use already lives — `type: { klass:,
+        # message: }`, an `of:` bag's own (`OF_OPTION_KEYS` carries it), and every ActiveModel built-in's
+        # (`length:`, `inclusion:`, …). Only the field's or member's own top-level key is refused, since only
+        # that one reaches `validates` as an entry.
+        #
+        # The three spellings the message names are the ones measured to work. `validate: { with:, message: }`
+        # is deliberately NOT among them though its bag admits the key: `ValidateValidator#validate_each` adds
+        # the CALLABLE's return value as the error and never reads `options[:message]`, so a message there is
+        # inert — pointing an author at it would trade one silently-ignored option for another.
+        def _raise_bare_message_unsupported!(where)
+          raise ArgumentError,
+                "message: on #{where} is not an option at this level — it overrides one check's wording, so it " \
+                "belongs inside that check's own bag (`type: { klass: String, message: \"...\" }`, `of: " \
+                "{ klass: String, message: \"...\" }`, `length: { minimum: 3, message: \"...\" }`). " \
+                "ActiveModel's shared options do not include `message:`, so a bare one is read as a validator " \
+                "named `message` and every call raises `Unknown validator: 'MessageValidator'`."
+        end
+
         # `on:` inside a validator's own option bag is ActiveModel's validation CONTEXT option, and axn has no
         # validation contexts: `Validation::Fields` calls `valid?` with no context, while `validate` installs a
         # gate of `!(Array(options[:on]) & Array(validation_context)).empty?` whenever `options.key?(:on)` — an
@@ -3980,6 +4045,13 @@ module Axn
           # to state and not to decide: every Hash-valued entry is axn's own plain Hash by now. `:shape` is the
           # one entry that seam skips, which is why the predicate classifies and reads its key without
           # dispatching to the bag.
+          #
+          # First of the group, because it is the broadest of the five judgments: the other four ask what a
+          # validator can MEAN at this position, while this one asks whether the key names a validator at all —
+          # and the answer is no wherever it is written. It reads only this hash's own keys (kwargs, so Symbols
+          # by construction) and nothing nested, so unlike its neighbours it has no dependency on the
+          # canonicalization above.
+          _reject_unsupported_validator_keys!(validations, where: _declared_fields_label(fields))
           _reject_validator_context_scope!(validations, where: fields.map(&:to_s).inspect)
 
           # Beside the context-scope refusal: both refuse a validator that cannot do what the declaration says,
