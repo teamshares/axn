@@ -6438,13 +6438,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(prop[:propertyNames]).to eq(pattern: "^[a-z]+$")
       end
 
-      # A JSON object key is always a string, so a Symbol inclusion set has to reach the wire in its wire form.
-      it "renders a Symbol inclusion set as strings" do
-        prop = prop_for(:m) do
+      # A JSON object key is always a string — but a Symbol AXIS rejects one, so on input the rendered form
+      # would name a key axn refuses. Emitted on output only, through the key serializer. The full treatment
+      # (and the Time case that showed the value serializer was the wrong renderer) is under "a keys axis emits
+      # only what a JSON property name can be" below.
+      it "emits a Symbol inclusion set on output, and stands down on input" do
+        inbound = prop_for(:m) do
           expects :m, type: Hash, of: { keys: { klass: Symbol, inclusion: { in: %i[a b] } }, values: Integer }
         end
+        outbound = build_axn do
+          exposes :m, type: Hash, of: { keys: { klass: Symbol, inclusion: { in: %i[a b] } }, values: Integer }
+          def call = expose(:m, { a: 1 })
+        end
 
-        expect(prop[:propertyNames]).to eq(enum: %w[a b])
+        expect(inbound).not_to have_key(:propertyNames)
+        expect(outbound.output_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a b])
       end
 
       it "emits a keys-axis length bound" do
@@ -6599,6 +6607,22 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop).to include(exclusiveMaximum: 10)
     end
 
+    # The size bounds already reach every size-bearing `anyOf` branch; the numeric bounds did not, so a union
+    # emitted no bound at all and the schema accepted what the runtime rejected.
+    it "applies a numeric bound to every numeric anyOf branch" do
+      action = build_axn { expects :n, type: [Integer, Float], numericality: { greater_than: 0 } }
+
+      expect(action.call(n: -1)).not_to be_ok
+      expect(action.input_schema[:properties][:n][:anyOf])
+        .to eq([{ type: "integer", exclusiveMinimum: 0 }, { type: "number", exclusiveMinimum: 0 }])
+    end
+
+    it "leaves a non-numeric branch of a union alone" do
+      prop = prop_for(:n) { expects :n, type: [Integer, String], numericality: { greater_than: 0 } }
+
+      expect(prop[:anyOf]).to eq([{ type: "integer", exclusiveMinimum: 0 }, { type: "string", minLength: 1 }])
+    end
+
     it "intersects a range-derived bound with an explicitly declared one" do
       prop = prop_for { expects :f, type: Integer, numericality: { greater_than_or_equal_to: 10, in: 0..100 } }
 
@@ -6707,12 +6731,49 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # A JSON object property name is always a string. A Symbol has a faithful wire form; an Integer key does
     # not (the runtime accepts `{1 => v}`, and no `propertyNames` set can say so), so the axis stands down
     # rather than emit a set no key can satisfy.
-    it "renders a Symbol set to its wire form" do
+    # A JSON client can only send STRING keys, and a Symbol axis rejects one — measured, `{ "a" => 1 }` fails
+    # where `{ a: 1 }` passes. So advertising `enum: ["a", "b"]` inbound tells a client to send a key axn will
+    # refuse, which is PRO-3165's "a `keys: Symbol` would be a lie on the wire" in a different costume. It
+    # stands down on input, and on OUTPUT it emits — there the serializer really does render the key as "a".
+    it "stands down on a Symbol set for INPUT, which a JSON key cannot satisfy" do
       prop = prop_for(:m) do
         expects :m, type: Hash, of: { keys: { klass: Symbol, inclusion: { in: %i[a b] } }, values: Integer }
       end
 
+      expect(prop).not_to have_key(:propertyNames)
+    end
+
+    it "emits a Symbol set on OUTPUT, through the key serializer" do
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: Symbol, inclusion: { in: %i[a b] } }, values: Integer }
+        def call = expose(:m, { a: 1 })
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a b])
+    end
+
+    it "still emits a String set on input, which a JSON key CAN satisfy" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { klass: String, inclusion: { in: %w[a b] } }, values: Integer }
+      end
+
       expect(prop[:propertyNames]).to eq(enum: %w[a b])
+    end
+
+    # The member is rendered by the KEY serializer, not the value serializer: a Time value serializes as
+    # `iso8601` and a Time KEY as `to_s`, and the emitted set has to match what the map actually serializes to.
+    it "renders an output set through the key serializer rather than the value serializer" do
+      moment = Time.now
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: Time, inclusion: { in: [moment] } }, values: Integer }
+        define_method(:call) { expose(:m, { moment => 1 }) }
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema.dig(:properties, :m, :propertyNames))
+        .to eq(enum: [Axn::Internal::Reflection::Values.canonical_wire_key(moment)])
+      expect(action.output_schema.dig(:properties, :m, :propertyNames, :enum).first).not_to eq(moment.iso8601)
     end
 
     it "stands down on a set whose members have no property-name form" do

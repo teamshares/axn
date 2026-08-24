@@ -1389,7 +1389,7 @@ module Axn
         # which is what a mirrored copy would eventually become. The keyword each one lands on is decided by the
         # node's own emitted `type:`, so the same call does the right thing wherever the node sits.
         def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false)
-          apply_inclusion_enum!(node, validations, nullable:, property_names:)
+          apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:)
           apply_size_constraints!(node, validations)
           apply_numeric_bounds!(node, validations)
           apply_pattern!(node, validations, for_output:)
@@ -1404,35 +1404,40 @@ module Axn
         # object key is a string. A Symbol has a faithful form; an Integer does not, and the runtime really does
         # accept `{ 1 => v }`, so a set with any unrenderable member stands the ENUM down (leaving the axis's
         # other, string-shaped constraints in place) rather than emit a set no key can satisfy.
-        def apply_inclusion_enum!(node, validations, nullable:, property_names:)
+        def apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:)
           inclusion = validations[:inclusion]
           return unless inclusion
 
           values = inclusion_enum_values(inclusion)
           return unless values
 
-          values = enum_for_inclusion(values, nullable:)
           if property_names
-            values = property_name_enum(values)
+            values = property_name_enum(values, for_output:)
             return if values.nil?
+          else
+            values = enum_for_inclusion(values, nullable:)
           end
 
           existing = node[:enum]
           node[:enum] = existing ? existing & values : values
         end
 
-        # A property-name set in its wire form, or nil when any member has none. A Symbol renders (`:a` is the
-        # key `"a"`); a String is already one; anything else — an Integer, a Float, nil — is a key JSON cannot
-        # spell, so the whole set stands down rather than being half-rendered into something narrower than the
-        # contract.
-        def property_name_enum(values)
-          rendered = values.map do |value|
-            case value
-            when ::String then value
-            when ::Symbol then value.to_s
-            end
-          end
-          rendered.include?(nil) ? nil : rendered
+        # A property-name set, or nil to stand down — and the two directions are different questions.
+        #
+        # On OUTPUT the members are rendered by `Values.canonical_wire_key`, the SAME function the map's own
+        # serializer uses for a key. Reading them through the VALUE serializer instead was wrong for any type
+        # whose two renderings differ: a Time value serializes as `iso8601` and a Time KEY as `to_s`, so the
+        # emitted set named a key the map never produces.
+        #
+        # On INPUT only a String member survives. A JSON client can send nothing but string keys, and a
+        # non-String axis rejects one — measured, a `keys: Symbol` axis refuses `{ "a" => 1 }` while accepting
+        # `{ a: 1 }` — so advertising the rendered form there would tell a client to send a key axn will refuse.
+        # That is PRO-3165's "a `keys: Symbol` would be a lie on the wire", which holds for a SET exactly as it
+        # held for a bare type.
+        def property_name_enum(values, for_output:)
+          return values.map { |value| Values.canonical_wire_key(value) } if for_output
+
+          values.all?(::String) ? values : nil
         end
 
         # A declared `format:` reflects as `pattern` when the regex translates faithfully — `Reflection::Pattern`
@@ -1458,7 +1463,7 @@ module Axn
         # than the runtime, never looser) by construction — and every case a bound cannot be carried exactly
         # stands down to emitting nothing, which is where this started.
         def apply_numeric_bounds!(prop, validations)
-          return unless Array(prop[:type]).intersect?(NUMERIC_TYPES)
+          return unless numeric_node?(prop)
 
           entries = Axn::Validation::Base.validator_entries(validations)
           # Both entries are enforced, so their bounds are INTERSECTED into one set before any keyword is
@@ -1496,7 +1501,26 @@ module Axn
             end
             next unless Axn::Validation::Base.emittable_numeric_bound?(bound)
 
-            prop[NUMERIC_BOUND_KEYS.fetch(operator)] = bound
+            write_numeric_bound!(prop, NUMERIC_BOUND_KEYS.fetch(operator), bound)
+          end
+        end
+
+        # Whether any part of this node carries a numeric type — the node's own, or a branch of a union.
+        def numeric_node?(prop)
+          return true if Array(prop[:type]).intersect?(NUMERIC_TYPES)
+
+          prop[:anyOf].is_a?(Array) && prop[:anyOf].any? { |branch| Array(branch[:type]).intersect?(NUMERIC_TYPES) }
+        end
+
+        # A union leaves `prop[:type]` unset and its branches under `anyOf`, so a bound written at the node
+        # would sit on nothing. It follows the emitted type into the branches instead — the same shape
+        # `apply_member_size_constraints` already gives the size bounds, and the reason a union `length:`
+        # reflected while a union `numericality:` silently did not.
+        def write_numeric_bound!(prop, key, bound)
+          return prop[key] = bound unless prop[:anyOf].is_a?(Array)
+
+          prop[:anyOf] = prop[:anyOf].map do |branch|
+            Array(branch[:type]).intersect?(NUMERIC_TYPES) ? branch.merge(key => bound) : branch
           end
         end
 
