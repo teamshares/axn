@@ -1429,14 +1429,37 @@ module Axn
           tokens = Array(klass)
           return true if tokens.empty?
 
-          tokens.any? do |token|
-            case token
-            when ::Symbol then token == :uuid
-            # `String <= token` asked the same question, but reversing it to satisfy the linter would dispatch
-            # `>=` on a caller-supplied Module. This reads String's OWN ancestry natively instead, which is the
-            # undispatched form and the seam the error-path rules already point at.
-            else Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(::String, token)
-            end
+          tokens.any? { |token| string_shaped_key_token?(token) }
+        end
+
+        # Whether a single `klass:` token names a String — the one question both key-axis gates ask, so they ask
+        # it of one definition rather than each carrying its own reading of the token grammar.
+        def string_shaped_key_token?(token)
+          case token
+          when ::Symbol then token == :uuid
+          # `String <= token` asked the same question, but reversing it to satisfy the linter would dispatch
+          # `>=` on a caller-supplied Module. This reads String's OWN ancestry natively instead, which is the
+          # undispatched form and the seam the error-path rules already point at.
+          else Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(::String, token)
+          end
+        end
+
+        # Whether a key's `length:` measures the same thing before and after serialization. It is the one
+        # projected keyword whose subject is the KEY OBJECT rather than the key's wire form: ActiveModel measures
+        # `#length`, while the emitted `minLength`/`maxLength` measure the property name the serializer wrote. A
+        # class is free to have both — a path whose `#length` counts segments serializes to `"a/b"` — and then
+        # the runtime accepts a key the emitted bound rejects. They agree only for a class whose `#length` IS its
+        # own name's length, so the promise is made only for String and Symbol and withheld for every other
+        # token, an absent `klass:` included: keys may then be anything, and nothing can be promised about them.
+        #
+        # `pattern` and `enum` need no such gate — both already read the wire form the serializer writes
+        # (`#to_s` and `canonical_wire_key` respectively), so their subject survives by construction.
+        def key_length_survives_serialization?(klass)
+          tokens = Array(klass)
+          return false if tokens.empty?
+
+          tokens.all? do |token|
+            Internal::Identity.same?(token, ::Symbol) || string_shaped_key_token?(token)
           end
         end
 
@@ -2161,8 +2184,19 @@ module Axn
           # numeric bound does not. The type is then dropped: `propertyNames` needs no `type: "string"` of its
           # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
           node = { type: "string" }
-          apply_value_constraints!(node, bag_value_constraints(axis, for_output:), nullable: false, for_output:, property_names: true)
+          apply_value_constraints!(node, key_axis_constraints(axis, for_output:), nullable: false, for_output:, property_names: true)
           node.except(:type)
+        end
+
+        # The axis's validators, less any whose subject does not survive serialization. Only the OUTPUT side can
+        # reach that mismatch: an inbound key is the wire string itself, and the class gate above has already
+        # turned the whole projection away for an axis that could not be satisfied from JSON.
+        def key_axis_constraints(axis, for_output:)
+          constraints = bag_value_constraints(axis, for_output:)
+          return constraints unless for_output
+          return constraints if key_length_survives_serialization?(axis[:klass])
+
+          constraints.except(:length)
         end
 
         # Whether the value at a bag's position may be nil — `Base.nil_accepted?`, the same seam a field's

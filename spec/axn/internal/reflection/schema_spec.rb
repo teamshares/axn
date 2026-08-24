@@ -6782,6 +6782,86 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(pattern: "^a$")
     end
 
+    # ...but only those keywords whose SUBJECT survives the trip. `format:` and the enum already read the wire
+    # form the serializer writes (`#to_s` and `canonical_wire_key`), so they project. `length:` does not:
+    # ActiveModel measures the key OBJECT's `#length`, while `minLength`/`maxLength` measure the property name.
+    # A class is free to have both — a path whose `#length` counts segments serializes to `"a/b"` — and then the
+    # emitted bound rejects output the action itself produced.
+    describe "a keys-axis length:, whose subject is the key object rather than its wire form" do
+      let(:segmented_key) do
+        Class.new do
+          def initialize(*parts) = @parts = parts
+          def length = @parts.length
+          def to_s = @parts.join("/")
+          def hash = to_s.hash
+          def eql?(other) = other.is_a?(self.class) && other.to_s == to_s
+        end
+      end
+
+      before { stub_const("SegmentedKey", segmented_key) }
+
+      # The divergence itself, pinned so the examples below cannot go vacuously green on a key whose two
+      # measurements happen to agree.
+      it "is a class whose #length disagrees with its serialized form" do
+        key = SegmentedKey.new("a", "b")
+
+        expect(key.length).to eq(2)
+        expect(key.to_s).to eq("a/b")
+      end
+
+      it "stands down on output, where the bound would reject the action's own serialized output" do
+        action = build_axn do
+          exposes :m, type: Hash, of: { keys: { klass: SegmentedKey, length: { is: 2 } }, values: Integer }
+          def call = expose(:m, { SegmentedKey.new("a", "b") => 1 })
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["m"].keys).to eq(["a/b"])
+        expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+      end
+
+      it "keeps a format: declared beside it, whose subject IS the #to_s the serializer writes" do
+        action = build_axn do
+          exposes :m, type: Hash, of: {
+            keys: { klass: SegmentedKey, length: { is: 2 }, format: { with: %r{\A[a-z]/[a-z]\z} } },
+            values: Integer,
+          }
+          def call = expose(:m, { SegmentedKey.new("a", "b") => 1 })
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(pattern: "^[a-z]/[a-z]$")
+      end
+    end
+
+    # No `klass:` means the keys may be anything, the class above included, so nothing can be promised about
+    # what their length becomes on the wire. Input is unaffected: there the key IS the string it was sent as.
+    it "stands a length: down on output for a klass-less axis, whose keys may be anything" do
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { length: { is: 2 } }, values: Integer }
+        def call = expose(:m, { "ab" => 1 })
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+      expect(prop_for(:m) { expects :m, type: Hash, of: { keys: { length: { is: 2 } }, values: Integer } })
+        .to include(propertyNames: { minLength: 2, maxLength: 2 })
+    end
+
+    # String and Symbol are the classes whose `#length` IS their own name's length, so the two measurements
+    # cannot come apart and the bound stays emitted.
+    it "keeps a length: on output for the classes whose #length is their serialized length" do
+      [String, Symbol, :uuid, [String, Symbol]].each do |token|
+        action = build_axn do
+          exposes :m, type: Hash, of: { keys: { klass: token, length: { is: 2 } }, values: Integer }
+        end
+
+        expect(action.output_schema.dig(:properties, :m, :propertyNames))
+          .to eq({ minLength: 2, maxLength: 2 }), "expected #{token.inspect} to keep its key length bound"
+      end
+    end
+
     it "still emits inbound for a klass-less axis, which a String key can satisfy" do
       prop = prop_for(:m) do
         expects :m, type: Hash, of: { keys: { format: { with: /\Aa\z/ } }, values: Integer }
