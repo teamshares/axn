@@ -1540,11 +1540,17 @@ module Axn
         #
         # The union is the runtime rule verbatim — a key is one the shape names, or one the axis admits — so the
         # node stays satisfiable AND stays exact, rather than being loosened to nothing or dropped.
-        def exempt_shaped_keys_from_property_names!(prop, member_props)
-          axis = prop[:propertyNames]
-          return if axis.nil? || axis.empty? || member_props.empty?
+        # Reads the exempt set off the node's OWN emitted `properties` rather than taking a member list: the
+        # runtime derives its exempt set from the emitter's key computation in the first place (PRO-3166), so
+        # this is the same answer asked of the same source, and one helper then serves every site where the two
+        # options meet — a field's own map node, and a NESTED bag composing a `shape:` with a map `of:`, which
+        # is also where the distributing block form lands (PRO-3191 folds it into that bag).
+        def exempt_shaped_keys_from_property_names(node)
+          axis = node[:propertyNames]
+          shaped = node[:properties]
+          return node if axis.nil? || axis.empty? || shaped.nil? || shaped.empty?
 
-          prop[:propertyNames] = { anyOf: [axis, { enum: member_props.keys.map(&:to_s) }] }
+          node.merge(propertyNames: { anyOf: [axis, { enum: shaped.keys.map(&:to_s) }] })
         end
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
@@ -1575,7 +1581,7 @@ module Axn
             member_props, required = member_properties(shape[:members], for_output:, ancestry:)
             prop[:properties] = plan.base_properties.merge(member_props)
             prop[:required] = required unless required.empty?
-            exempt_shaped_keys_from_property_names!(prop, member_props)
+            prop.replace(exempt_shaped_keys_from_property_names(prop))
           elsif plan.in_items?
             # The plan's own type schema, not a second `contents_schema_for` call: one build, and the plan is
             # then literally what gets emitted rather than a parallel derivation of it.
@@ -1854,7 +1860,10 @@ module Axn
             if Axn::Internal::ShapeGraph.map_bag?(inner)
               # The object type is the bag's OWN `klass:` (a map bag is only ever reached from `klass: Hash`), exactly
               # as a field's map node takes its type from `type:` and its `additionalProperties` from the axis.
-              node.merge(map_values_schema(inner, for_output:, ancestry: child))
+              # The exemption runs here too, and has to: this is where a bag's `shape:` properties (merged above by
+              # `contents_member_schema`) meet the axis's `propertyNames`, so without it a shaped nested map with a
+              # constrained `keys:` axis emits a node its own required members cannot satisfy.
+              exempt_shaped_keys_from_property_names(node.merge(map_values_schema(inner, for_output:, ancestry: child)))
             else
               contents = contents_node_schema(inner, for_output:, ancestry: child)
               contents.empty? ? node : node.merge(items: contents)

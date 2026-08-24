@@ -6074,6 +6074,34 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(prop[:propertyNames]).to eq(anyOf: [{ pattern: "^\\d+$" }, { enum: ["label"] }])
       end
 
+      # The exemption has to reach EVERY node where a shape's `properties` and a keys axis's `propertyNames`
+      # meet, not only the field's own. A nested bag composes both in `contents_node_schema`, and the block
+      # form folds into exactly that bag (PRO-3191), so both spellings land on the same node.
+      it "unions them on a NESTED shaped map too" do
+        action = build_axn do
+          expects :rows, type: Array, of: { klass: Hash,
+                                            of: { keys: { klass: String, format: { with: /\A\d+\z/ } }, values: Integer },
+                                            shape: { members: [Struct.new(:field, :validations).new(:label, { type: Integer })] } }
+        end
+
+        expect(action.input_schema.dig(:properties, :rows, :items, :propertyNames))
+          .to eq(anyOf: [{ pattern: "^\\d+$" }, { enum: ["label"] }])
+        expect(action.call(rows: [{ "label" => 1, "42" => 2 }])).to be_ok
+      end
+
+      it "unions them for the block form, which folds into the same bag" do
+        action = build_axn do
+          expects :rows, type: Array, of: { klass: Hash,
+                                            of: { keys: { klass: String, format: { with: /\A\d+\z/ } }, values: Integer } } do
+            field :label, type: Integer
+          end
+        end
+
+        expect(action.input_schema.dig(:properties, :rows, :items, :propertyNames))
+          .to eq(anyOf: [{ pattern: "^\\d+$" }, { enum: ["label"] }])
+        expect(action.call(rows: [{ "label" => 1, "42" => 2 }])).to be_ok
+      end
+
       it "keeps that node satisfiable — the runtime accepts the exempt key the axis would reject" do
         action = build_axn do
           expects :m, type: Hash, of: { keys: { klass: String, format: { with: /\A\d+\z/ } }, values: Integer } do
