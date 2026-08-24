@@ -691,6 +691,31 @@ RSpec.describe "a validator at a container position" do
       expect(action.call(x: nil).ok?).to be(false)
     end
 
+    it "keeps a forbidden literal whose blankness only its own empty? could decide" do
+      # ActiveSupport reads a `Set`'s blankness through `Object#blank?`, which DISPATCHES `empty?` — so a Set
+      # subclass overriding it is not blank, ActiveModel does not skip it, and the check really can fail.
+      # Discounting it would refuse a working contract, the one direction this guard must never take. A
+      # custom object with an `empty?` lands on the same side: finding it would mean running the caller's
+      # code at declaration, so it is never discounted.
+      stub_const("LyingSet", Class.new(Set) { def empty? = false })
+      stub_const("Tokenish", Class.new { def empty? = true })
+
+      expect { build_axn { expects :s, type: Set, exclusion: { in: [LyingSet.new] }, allow_blank: true } }
+        .not_to raise_error
+      expect { build_axn { expects :t, type: Tokenish, exclusion: { in: [Tokenish.new] }, allow_blank: true } }
+        .not_to raise_error
+    end
+
+    it "still discounts an Array or Hash literal, whose blank? ActiveSupport aliases to the root's empty?" do
+      # `Array#blank?`/`Hash#blank?` ARE `empty?` (active_support 7.2.2.2), so a subclass overriding `empty?`
+      # never gets a say and the bound read gives ActiveSupport's own answer.
+      stub_const("LyingArr", Class.new(Array) { def empty? = false })
+
+      expect(LyingArr.new.blank?).to be(true) # the runtime truth the discount must not contradict
+      expect { build_axn { expects :r, type: Array, exclusion: { in: [LyingArr.new] }, allow_blank: true } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
     it "refuses a hash-keyed set whose only member matches across a numeric family" do
       # `Clusivity` calls the collection's own `include?`, and a Set/Hash looks the member up by `hash` +
       # `eql?`, which never crosses a family: `Set[1].include?(1.0)` is false while `[1].include?(1.0)` is

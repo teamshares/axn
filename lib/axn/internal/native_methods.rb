@@ -529,13 +529,27 @@ module Axn
       # one must agree with ActiveSupport, because a blank value really is one the validator never sees.
       #
       # Every read is bound, so nothing the value defines decides it — the point of asking here rather than
-      # calling `blank?`, which dispatches `empty?` to whatever the caller supplied. Classified with
-      # `case`/`when Module`, which uses Ruby's own `Module#===`; a SUBCLASS matching its root is correct
-      # here, since the bound read then gives the root's own answer rather than the subclass's.
+      # calling `blank?`, which dispatches `empty?` to whatever the caller supplied. Where the two could
+      # disagree, this answers NOT BLANK, because a caller acts on the verdict by discounting the value: a
+      # false "blank" drops a value ActiveModel really would compare, and only a missed one is safe.
+      #
+      # Which classes may match a SUBCLASS follows ActiveSupport's own spelling, since agreeing with it is the
+      # whole job. `Array#blank?` and `Hash#blank?` are ALIASES of `empty?` (active_support 7.2.2.2,
+      # core_ext/object/blank.rb), so ActiveSupport itself reads the ROOT's method and a subclass overriding
+      # `empty?` never gets a say — measured, an `Array` subclass whose `empty?` returns false is still
+      # `blank?`. They are matched with `case`/`when Module` (Ruby's own `Module#===`, not the value's
+      # `is_a?`), and the bound read then gives the same answer ActiveSupport would.
+      #
+      # `Set` is NOT one of them: ActiveSupport defines no `Set#blank?`, so a Set falls to `Object#blank?`,
+      # which DISPATCHES `empty?` — measured, a `Set` subclass whose `empty?` returns false is not `blank?`.
+      # So only an exact `Set` is judged, by this module's own bound class read rather than the value's
+      # `is_a?`; a subclass is left un-discounted, which is the safe direction.
       #
       # `Symbol#empty?` is not bound, for the reason `absent_value?` gives: a Symbol subclass can be declared
-      # but never instantiated. Anything else — a Numeric, a Date, a value object — has no `empty?` for
-      # ActiveSupport to call either, so `!self` decides it and only nil/false are blank.
+      # but never instantiated. A `String` subclass may override `empty?` and be read as blank by
+      # ActiveSupport where the bound read is not, which lands on the safe side. Anything else — a Numeric, a
+      # Date, a value object of the caller's own — has an `empty?` only ActiveSupport's dispatch could find,
+      # and finding it would mean running the caller's code at declaration, so it is never blank here.
       def self.blank_literal?(value)
         case value
         when nil, false then true
@@ -543,12 +557,18 @@ module Axn
         when ::String then STRING_EMPTY.bind_call(value) || _blank_string?(value)
         when ::Array then ARRAY_EMPTY.bind_call(value)
         when ::Hash then HASH_EMPTY.bind_call(value)
-        else SET_EMPTY ? _blank_set?(value) : false
+        else _blank_set?(value)
         end
       end
 
-      # Split out so the Set branch above stays a single expression on builds where `Set` is absent.
-      def self._blank_set?(value) = value.is_a?(::Set) && SET_EMPTY.bind_call(value)
+      # Exact-class, read through this module's own bound `Kernel#class` so the value's own `class`/`is_a?`
+      # cannot answer (or raise) for it. Guarded on the bound method rather than `defined?(Set)` so a build
+      # without Set is answered by the same expression.
+      def self._blank_set?(value)
+        return false unless SET_EMPTY && KERNEL_CLASS.bind_call(value).equal?(::Set)
+
+        SET_EMPTY.bind_call(value)
+      end
 
       # Whitespace-only, for any encoding, without letting the check itself become the failure. A String whose
       # bytes are invalid for its encoding raises from the match — it is not blank, and reporting it is the
