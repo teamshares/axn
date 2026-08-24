@@ -147,6 +147,53 @@ RSpec.describe "value validators in an of: bag" do
     end
   end
 
+  # A bag's OWN keys were already canonicalized at every rung (PRO-3166). A validator entry carries an option
+  # bag of its own, and ActiveModel reads THOSE keys as Symbols too — a String-keyed `"with"` reaches
+  # `FormatValidator#check_validity!` as no `:with` at all and raises on every call. The field path
+  # canonicalizes them; a bag position is held to the same grammar by the same seam.
+  describe "option-key canonicalization inside a bag's validators" do
+    it "accepts a String-keyed validator option bag" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, format: { "with" => /\A[A-Z]+\z/ } } }
+
+      expect(action.call(f: %w[AB])).to be_ok
+      expect(action.call(f: %w[ab])).not_to be_ok
+      expect(action.call(f: %w[ab]).exception).to be_a(Axn::InboundValidationError)
+    end
+
+    it "accepts an indifferent-access bag, the form a Rails author hands in" do
+      action = build_axn do
+        expects :f, type: Array, of: { klass: String, format: { with: /\A[A-Z]+\z/ } }.with_indifferent_access
+      end
+
+      expect(action.call(f: %w[AB])).to be_ok
+      expect(action.call(f: %w[ab])).not_to be_ok
+    end
+
+    it "canonicalizes at a map axis" do
+      action = build_axn do
+        expects :f, type: Hash, of: { values: { klass: Integer, numericality: { "greater_than" => 0 } } }
+      end
+
+      expect(action.call(f: { a: 1 })).to be_ok
+      expect(action.call(f: { a: -1 })).not_to be_ok
+    end
+
+    it "canonicalizes at a nested bag" do
+      action = build_axn do
+        expects :f, type: Array, of: { klass: Array, of: { klass: String, format: { "with" => /\Ax/ } } }
+      end
+
+      expect(action.call(f: [%w[xa]])).to be_ok
+      expect(action.call(f: [%w[ya]])).not_to be_ok
+    end
+
+    it "reflects the canonicalized option, so the schema agrees with the runtime" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, format: { "with" => /\A[A-Z]+\z/ } } }
+
+      expect(action.input_schema.dig(:properties, :f, :items)).to include(pattern: "^[A-Z]+$")
+    end
+  end
+
   describe "validators a position cannot read, refused at declaration" do
     # Each reads something an unnamed position has not got. The derivation is the point: the refusals are not
     # a hand-kept list beside the admitted set, they are what is left when the grammar's own keys and the

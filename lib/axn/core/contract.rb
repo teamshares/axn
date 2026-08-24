@@ -2457,6 +2457,25 @@ module Axn
           bag.merge(container: ::Array)
         end
 
+        # A bag's own keys are canonicalized where the bag is accepted (`_symbolize_inner_bag!`, and the field
+        # path's `_symbolize_option_bags!` for the top-level one). Its VALIDATOR ENTRIES carry option bags of
+        # their own — `format: { with: … }` — and ActiveModel reads those keys as Symbols too: a String-keyed
+        # `"with"` arrives at `FormatValidator#check_validity!` as no `:with` at all and raises `ArgumentError`
+        # on EVERY call, which is the declares-cleanly-then-always-raises shape the bag grammar exists to
+        # remove. The field path already canonicalizes them one level down; this holds a bag to the same
+        # grammar, through the same function rather than a second symbolizer.
+        #
+        # Restricted to the validator entries: `of:` and `shape:` are the recursion edges and are canonicalized
+        # by the walk that descends them, and `klass:`/`message:` are not option bags at all. The symbolized
+        # bag is a NEW Hash (`_symbol_keyed_bag` builds one), so the caller's own nested Hash is never mutated.
+        def _canonicalize_positional_validator_options!(bag)
+          entries = bag.slice(*POSITIONAL_VALIDATOR_KEYS)
+          return if entries.empty?
+
+          _symbolize_option_bags!(entries)
+          entries.each { |key, value| bag[key] = value }
+        end
+
         # The grammar EVERY inner-contract bag is held to, asked once wherever one is accepted: at an Array's
         # element position and at each of a map's two axes. One function rather than three call sequences,
         # because a bag means the same thing in all three and a check missing from one of them is a hole the
@@ -2466,6 +2485,7 @@ module Axn
         # two positions this function never sees (a field's own `shape:`, a shape MEMBER's), so it is one
         # refusal at the walk that reaches all four (`ShapeDeclaration#_reject_unshaped_shape!`).
         def _check_inner_contract_bag!(bag, fields)
+          _canonicalize_positional_validator_options!(bag)
           _reject_unknown_of_keys!(bag, OF_OPTION_KEYS)
           _reject_unconstraining_of_bag!(bag)
           _reject_unsupported_of_klass!(bag)
