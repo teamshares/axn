@@ -58,6 +58,15 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       expect { declare(type: Array, absence: true, if: -> { false }) }.not_to raise_error
     end
 
+    # A presence entry being PRESENT is not it rejecting anything: blank values are the only ones it ever
+    # rejects, and a blank-tolerant entry is skipped for exactly those — so it leaves `absence:` unopposed.
+    it "stands down where the presence half is blank-tolerant, and so enforces nothing" do
+      action = declare(type: Array, presence: { allow_blank: true }, absence: true)
+
+      expect(action.call(f: []).ok?).to be(true)
+      expect(action.call(f: ["a"]).ok?).to be(false)
+    end
+
     it "leaves the gated pair working at runtime" do
       action = declare(type: Array, presence: { unless: :archived }, absence: { if: :archived })
       action.define_method(:archived) { false }
@@ -287,6 +296,31 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         expect(action.call(f: member).ok?).to be(true)
       end
 
+      # `Array#include?` dispatches `member == candidate`, so a member's own `==` decides what it matches —
+      # and measuring the member is evidence about those values only where its equality is one axn vouches
+      # for. That world is closed and asked by EXACT class, so every subclass stands the branch down.
+      it "stands down on a member whose == decides membership for itself" do
+        member = Class.new(Array) { def ==(other) = other == [1] }.new
+
+        expect { declare(type: Array, length: { minimum: 1 }, inclusion: { in: [member] }) }.not_to raise_error
+      end
+
+      it "accepts at runtime the value that member matches" do
+        member = Class.new(Array) { def ==(other) = other == [1] }.new
+        action = declare(type: Array, length: { minimum: 1 }, inclusion: { in: [member] })
+
+        expect(action.call(f: [1]).ok?).to be(true)
+      end
+
+      # Exact class says nothing about a SINGLETON method, which is why the native-measurement test is not
+      # redundant with the equality world: a plain Array can still answer `length` with code of its own.
+      it "stands down on a plain Array carrying a singleton length" do
+        member = []
+        def member.length = 3
+
+        expect { declare(type: Array, length: { minimum: 3 }, inclusion: { in: [member] }) }.not_to raise_error
+      end
+
       # `Object#blank?` is ActiveSupport's own, and answers out of the `empty?` already required native — so a
       # Set, whose `blank?` AS does not specialize, stays measurable rather than standing the guard down.
       it "measures a Set, whose blank? is ActiveSupport's generic one" do
@@ -294,9 +328,16 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
           .to raise_error(ArgumentError, /can never match/)
       end
 
-      # A subclass that overrides NEITHER is measured by the built-in it inherits, so the refusal still lands.
-      it "still refuses a subclass that overrides neither" do
-        expect { declare(type: Array, inclusion: { in: [Class.new(Array).new] }) }
+      # A SUBCLASS stands the branch down whether or not it overrides anything: `JUDGEABLE_EQUALITY_CLASSES`
+      # is asked by exact class precisely because a subclass's equality — overridden or inherited across the
+      # boundary — is not the one axn vouches for. Under-restricting here is the direction the closed world
+      # was built to err in.
+      it "stands down on a subclass that overrides nothing" do
+        expect { declare(type: Array, inclusion: { in: [Class.new(Array).new] }) }.not_to raise_error
+      end
+
+      it "still refuses the exact-class member the ticket is about" do
+        expect { declare(type: Array, inclusion: { in: [[]] }) }
           .to raise_error(ArgumentError, /can never match/)
       end
     end

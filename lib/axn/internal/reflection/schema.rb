@@ -933,7 +933,7 @@ module Axn
           presence = validations[:presence]
           return false unless presence
 
-          opts = effective_entry_options(presence, validations.slice(*Axn::Validation::Base.shared_validation_option_keys))
+          opts = effective_entry_options(presence, Axn::Validation::Base.shared_validation_options(validations))
           !opts[:allow_blank]
         end
 

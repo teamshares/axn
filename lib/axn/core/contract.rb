@@ -4215,12 +4215,22 @@ module Axn
         # skipped independently of its siblings, which a shared gate never does.)
         def _reject_blank_axis_complement!(validations, where:)
           entries = Axn::Validation::Base.validator_entries(validations)
-          presence = entries[:presence]
           absence = entries[:absence]
-          return unless presence && absence
+          return unless absence
+
+          # That a `presence:` entry is PRESENT is not that it rejects anything: ActiveModel skips a
+          # blank-tolerant entry outright for a blank value, and blank values are the only ones a presence
+          # check ever rejects — so `presence: { allow_blank: true }` enforces nothing and leaves `absence:`
+          # unopposed. Asked through the emitter's own `presence_rejects_blank?`, THE definition of "does an
+          # active presence check here reject every blank value", so the half this rule leans on is the same
+          # half the emitted floor is derived from.
+          #
+          # `absence:`'s own tolerances need no such test: it rejects only NON-blank values, and both
+          # `allow_blank:` and `allow_nil:` withdraw it from values it already accepts.
+          return unless Internal::Reflection::Schema.presence_rejects_blank?(validations)
 
           gates = _shared_validation_options(validations)
-          return if [presence, absence].any? { |entry| Axn::Validation::Base.entry_effectively_gated?(entry, gates) }
+          return if [entries[:presence], absence].any? { |entry| Axn::Validation::Base.entry_effectively_gated?(entry, gates) }
 
           # Both exits are named rather than the one that applies: by the time this runs, an inferred presence
           # check and an authored one are the same entry (`_apply_default_presence!` writes a bare `true`, and
@@ -4322,10 +4332,21 @@ module Axn
 
         # Whether ONE set member leaves a value able to satisfy the declaration: of a type the field admits,
         # and of a size the bounds admit. Type membership reuses the shared literal judgment, which already
-        # stands down on any pair it cannot judge; the size is read through the emitter's ownership test, which
-        # answers nil for a value whose `size` is not Ruby's own — also a stand-down.
+        # stands down on any pair it cannot judge.
+        #
+        # Measuring the member is only evidence about the values it can MATCH if its equality is one axn
+        # vouches for, and that is the closed world `_judgeable_equality?` names — asked by EXACT class, never
+        # by descent, because `Array#include?` dispatches `member == candidate`, so a subclass overriding `==`
+        # decides membership itself: an empty one matching `[1]` really does satisfy a `minimum: 1` floor while
+        # measuring 0 here. Outside that world the member proves nothing and the branch stands down.
+        #
+        # The size itself is then read through the emitter's ownership test, which answers nil for a value
+        # whose measurement is not Ruby's own — a second stand-down, and not redundant with the first: exact
+        # class says nothing about a SINGLETON method, which is how a plain `[]` can still answer `length` with
+        # code of its own.
         def _member_size_admissible?(member, klasses, minimum, maximum)
           return false unless klasses.any? { |klass| _literal_may_satisfy?(member, klass) }
+          return true unless _judgeable_equality?(Internal::Identity.class_of(member))
 
           size = Internal::Reflection::Schema.container_size(member)
           return true if size.nil?
