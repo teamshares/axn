@@ -225,9 +225,12 @@ RSpec.describe Axn::Validators::OfValidator do
     # else. Pinned as the shared DIAGNOSIS rather than as three whole strings, so a reworded remedy at one
     # position stays free while the three drifting into describing different mistakes does not.
     describe "the one rule an `of:` axis is held to" do
+      # The RUNTIME half of the diagnosis, which is what is actually shared: an empty union holds a value to
+      # nothing wherever it is written. The SCHEMA consequence is deliberately not part of this string and is
+      # pinned per position below — a `keys:` axis emits no schema at all, so a diagnosis claiming `anyOf: []`
+      # everywhere would be false at exactly one of the three positions it was written to unify.
       shared_diagnosis =
-        "a value held to every class in an empty list is held to none, so every value at that position " \
-        "passes while the schema emits `anyOf: []`, which nothing satisfies"
+        "a value held to every class in an empty list is held to none, so every value at that position passes"
 
       {
         "a bag's klass:" => [Array, { klass: [] }],
@@ -238,6 +241,34 @@ RSpec.describe Axn::Validators::OfValidator do
           expect { build_axn { expects :a, type: container, of: } }
             .to raise_error(ArgumentError, /#{Regexp.escape(shared_diagnosis)}/)
         end
+      end
+
+      # What each position publishes differs, so each says only what is true of it. Pinned in BOTH directions
+      # — the `keys:` example asserts the absence of the `anyOf` claim, not merely the presence of its own
+      # wording — because a refusal that merely agreed with its siblings would pass a sameness check while
+      # telling the author something the emitter never does.
+      it "claims an `anyOf: []` emission at the two positions that emit one" do
+        [[Array, { klass: [] }], [Hash, { keys: Symbol, values: [] }]].each do |container, of|
+          expect { build_axn { expects :a, type: container, of: } }
+            .to raise_error(ArgumentError, /while the schema emits `anyOf: \[\]`, which nothing satisfies/)
+        end
+      end
+
+      it "claims no emission at all on the keys: axis, which reaches no schema" do
+        expect { build_axn { expects :a, type: Hash, of: { keys: [], values: Integer } } }.to raise_error(
+          ArgumentError,
+        ) { |error|
+          expect(error.message).to include("A `keys:` axis emits no schema at all")
+          expect(error.message).not_to include("anyOf")
+        }
+      end
+
+      # The measurement the clause above rests on: a `keys:` axis really does reach the emitter with nothing
+      # to say, so the refusal is not merely differently worded but differently TRUE.
+      it "emits no anyOf for a keys: union, which is why its refusal claims none" do
+        action = build_axn { expects :a, type: Hash, of: { keys: [Symbol, String] } }
+
+        expect(action.input_schema.to_h.dig(:properties, :a)).not_to have_key(:additionalProperties)
       end
 
       # The other half of the rule, at the same three positions: a token the runtime cannot hold a value to.
