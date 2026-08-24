@@ -1454,12 +1454,21 @@ module Axn
         # held for a bare type.
         def property_name_enum(values, for_output:)
           return values.map { |value| Values.canonical_wire_key(value) } if for_output
-          return nil unless values.all?(::String)
+
+          # Inbound, the REACHABLE subset rather than all-or-nothing. A JSON key is a String, so it can only
+          # ever equal a String member — which makes `["a", 1]` project to exactly `["a"]`: not an
+          # approximation, but the precise set of JSON-supplied keys the runtime accepts. Standing down from
+          # the whole constraint instead admitted every key the document said nothing about.
+          reachable = values.grep(::String)
+          # Nothing reachable means no JSON key can satisfy the axis, and it stands down for the same reason a
+          # non-String `klass:` does. NOT `enum: []`: that spelling is for a contract admitting nothing at all,
+          # and this one a Ruby caller satisfies perfectly well — it is only the wire that cannot reach it.
+          return nil if reachable.empty?
 
           # Detached, never the inclusion array's own Strings: reflection hands these to a consumer, and one
           # mutating a member in place would change which keys the DECLARED action accepts. The value-enum path
           # dups through the same normalizer.
-          normalize_schema_literal(values)
+          normalize_schema_literal(reachable)
         end
 
         # A declared `format:` reflects as `pattern` when the regex translates faithfully — `Reflection::Pattern`

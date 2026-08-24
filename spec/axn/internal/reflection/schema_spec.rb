@@ -6802,6 +6802,42 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # Reflection must not hand back the objects the contract itself holds: a consumer mutating a returned
     # member in place would change which keys the DECLARED action accepts. The value-enum path dups through
     # `normalize_schema_literal`; this one was returning the inclusion array's own Strings.
+    # A JSON key can only ever equal a STRING member, so the reachable subset is not an approximation — it is
+    # exactly the set of JSON-supplied keys the runtime accepts. Standing down from the whole constraint
+    # instead let `{"zzz" => 1}` through the document while the runtime rejected it.
+    it "projects the reachable String subset of a mixed set" do
+      action = build_axn do
+        expects :m, type: Hash, of: { keys: { klass: [String, Integer], inclusion: { in: ["a", 1] } }, values: Integer }
+      end
+
+      expect(action.call(m: { "a" => 1 })).to be_ok
+      expect(action.call(m: { "zzz" => 1 })).not_to be_ok
+      expect(action.input_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a])
+    end
+
+    # When NO member is reachable the axis stands down rather than emitting `enum: []`, matching the class gate
+    # above — both are "no JSON key can satisfy this axis". Deliberately unlike the contradictory-equality case,
+    # which emits an unsatisfiable node: there the contract admits NOTHING, where here a Ruby caller passing
+    # `{1 => 1}` satisfies it perfectly well and only the JSON wire cannot reach it.
+    it "stands down when no member of the set is reachable from JSON" do
+      action = build_axn do
+        expects :m, type: Hash, of: { keys: { klass: [String, Integer], inclusion: { in: [1, 2] } }, values: Integer }
+      end
+
+      expect(action.call(m: { 1 => 1 })).to be_ok
+      expect(action.input_schema[:properties][:m]).not_to have_key(:propertyNames)
+    end
+
+    it "still renders every member on output, where each is serialized to a String" do
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: [String, Integer], inclusion: { in: ["a", 1] } }, values: Integer }
+        def call = expose(:m, { "a" => 1 })
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a 1])
+    end
+
     it "detaches the emitted members from the ones the validator holds" do
       member = +"a"
       action = build_axn { expects :m, type: Hash, of: { keys: { klass: String, inclusion: { in: [member] } }, values: Integer } }
@@ -6845,18 +6881,23 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.input_schema[:properties][:m]).not_to have_key(:propertyNames)
     end
 
-    it "stands down on a mixed set rather than rendering half of it" do
-      prop = prop_for(:m) do
-        expects :m, type: Hash, of: { keys: { inclusion: { in: ["a", 1] } }, values: Integer }
-      end
+    # Originally asserted the opposite — "don't render half of it" — which was wrong: the half that renders is
+    # the whole of what a JSON key can reach, since a String key can never equal the Integer member. The
+    # subset is exact rather than partial. (Full treatment in "projects the reachable String subset" below.)
+    it "projects the reachable half of a mixed set rather than standing down" do
+      action = build_axn { expects :m, type: Hash, of: { keys: { inclusion: { in: ["a", 1] } }, values: Integer } }
 
-      expect(prop).not_to have_key(:propertyNames)
+      expect(action.call(m: { "a" => 1 })).to be_ok
+      expect(action.call(m: { "zzz" => 1 })).not_to be_ok
+      expect(action.input_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a])
     end
 
     it "still emits the string-shaped constraints beside a stood-down set" do
+      # No member is reachable from JSON here, so the enum stands down while the size bound — which a string
+      # key CAN be held to — still emits.
       prop = prop_for(:m) do
         expects :m, type: Hash,
-                    of: { keys: { length: { maximum: 4 }, inclusion: { in: ["a", 1] } }, values: Integer }
+                    of: { keys: { length: { maximum: 4 }, inclusion: { in: [1, 2] } }, values: Integer }
       end
 
       expect(prop[:propertyNames]).to eq(maxLength: 4)
