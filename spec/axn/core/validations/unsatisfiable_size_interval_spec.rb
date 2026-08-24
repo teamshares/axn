@@ -198,6 +198,48 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         .to raise_error(ArgumentError, /can never match/)
     end
 
+    # A blank value skips a blank-tolerant entry outright, so the set stops being the only way through and the
+    # member scan proves nothing — but only where such a value can actually arrive, which is a question about
+    # the rest of the contract.
+    describe "a blank-tolerant entry, which a blank value skips entirely" do
+      it "stands down where no floor keeps the blank value out" do
+        action = declare(type: Array, presence: false, length: { maximum: 1 },
+                         inclusion: { in: [%w[a b c]], allow_blank: true })
+
+        expect(action.call(f: []).ok?).to be(true)
+      end
+
+      # An entry's own tolerance does not carry the FIELD: here the presence check still rejects the `[]` the
+      # tolerance would have let past, so nothing gets through and the refusal stands.
+      it "still refuses where the floor rejects the blank value anyway" do
+        expect { declare(type: Array, inclusion: { in: [[]], allow_blank: true }) }
+          .to raise_error(ArgumentError, /can never match/)
+      end
+
+      # For a String a blank value has very nearly any size, so once the emptiness axis is off no SIZE bound
+      # rules one out — a floor of 2 still admits `"  "`.
+      it "stands down for a String past a floor, since a blank String is not an empty one" do
+        action = declare(type: String, presence: false, length: { minimum: 2, maximum: 2 },
+                         inclusion: { in: %w[abcd], allow_blank: true })
+
+        expect(action.call(f: "  ").ok?).to be(true)
+      end
+
+      # A live presence check rejects every blank value whatever its size, so on a String too there is then no
+      # blank value to bypass the set with, and the refusal stands.
+      it "still refuses a String where the presence check rejects every blank value" do
+        expect { declare(type: String, inclusion: { in: [""], allow_blank: true }) }
+          .to raise_error(ArgumentError, /can never match/)
+      end
+
+      it "reads a declaration-level allow_blank: the same way" do
+        action = declare(type: Array, presence: false, length: { maximum: 1 },
+                         inclusion: { in: [%w[a b c]] }, allow_blank: true)
+
+        expect(action.call(f: []).ok?).to be(true)
+      end
+    end
+
     it "stands down on a set it may not read" do
       action = declare(type: Array, inclusion: { in: :allowed_tags })
       expect(action).to be_a(Class)

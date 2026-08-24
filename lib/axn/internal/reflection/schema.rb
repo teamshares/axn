@@ -1998,7 +1998,17 @@ module Axn
           return false unless entry
           return false if Axn::Validation::Base.entry_effectively_gated?(entry, Axn::Validation::Base.shared_validation_options(validations))
 
+          blank_values_are_empty?(validations)
+        end
+
+        # Whether every value this declaration calls BLANK measures 0 — the question that decides whether the
+        # blank axis can be read as a statement about size at all. True only where every declared type is one
+        # whose `blank?` is its `empty?`; false for an undeclared type, for a union carrying a `String`, and
+        # for a `String` itself. Shared with the guard that asks whether a blank value could slip past a
+        # blank-tolerant entry, so the two cannot disagree about the same declaration.
+        def blank_values_are_empty?(validations)
           tokens = declared_type_tokens(validations)
+
           tokens.any? && tokens.all? { |token| blank_is_empty_class?(token) }
         end
 

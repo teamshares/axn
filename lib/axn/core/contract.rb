@@ -4284,12 +4284,40 @@ module Axn
 
           entry = Axn::Validation::Base.validator_entries(validations)[:inclusion]
           return unless entry
+          return if _blank_value_bypasses_set?(validations, entry, minimum)
 
           members = Axn::Validation::Base.literal_set_members(entry)
           return if members.nil? || members.empty?
           return if members.any? { |member| _member_size_admissible?(member, klasses, minimum, maximum) }
 
           _raise_size_closed_inclusion_set!(where, minimum, maximum)
+        end
+
+        # Whether a BLANK value could get through without the set being consulted at all, which would make the
+        # member scan prove nothing: ActiveModel skips a blank-tolerant entry outright for such a value, so the
+        # set stops being the only way through. Whether one can actually arrive is a question about the rest of
+        # the contract rather than about this entry, asked in two steps.
+        #
+        # First, the emptiness axis, which is what the sibling guard's measured note is really about: an
+        # entry's own tolerance does not carry the field, because a live presence or non-emptiness check
+        # rejects EVERY blank value whatever its size — so `inclusion: { in: ["a"], allow_blank: true }` on a
+        # bare `type: Array` still admits nothing, the `[]` the tolerance would have let past being rejected
+        # before the set is reached. Asked through the emitter's own `empty_value_rejected?`, the same
+        # judgment the floor is derived from.
+        #
+        # Then the size bounds, and here the type decides. Where every declared type's blank values are its
+        # EMPTY ones a blank value measures 0, so a floor above 0 excludes it. For a `String` it does not:
+        # `"  "` is blank and two characters long, so a blank value of very nearly any size exists and no size
+        # bound rules one out.
+        #
+        # Read through the entry's EFFECTIVE options, so a declaration-level `allow_blank:` counts exactly as
+        # the entry's own does.
+        def _blank_value_bypasses_set?(validations, entry, minimum)
+          return false unless Axn::Validation::Base.effective_entry_options(entry, _shared_validation_options(validations))[:allow_blank]
+          return false if Internal::Reflection::Schema.empty_value_rejected?(validations)
+          return true unless Internal::Reflection::Schema.blank_values_are_empty?(validations)
+
+          minimum.nil? || minimum.zero?
         end
 
         # Whether ONE set member leaves a value able to satisfy the declaration: of a type the field admits,
