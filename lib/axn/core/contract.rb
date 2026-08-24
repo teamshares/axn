@@ -3366,7 +3366,7 @@ module Axn
             literals = _vacuous_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?
 
-            witnesses = _unskipped_literals(literals, entry, tolerance)
+            witnesses = _witness_literals(key, literals, entry, tolerance)
             next if _any_literal_may_satisfy?(witnesses, klasses, cross_family: _cross_family_admissible?(key, entry))
 
             raise ArgumentError,
@@ -3376,6 +3376,38 @@ module Axn
                   "position it is declared at: forbid literals of the declared type, and for a constraint on " \
                   "a container's CONTENTS express it as `validate: ->(value) { ... }` (a per-element spelling " \
                   "inside `of:` is not supported yet — PRO-3193)."
+          end
+        end
+
+        # The forbidden literals that could actually be the value that FAILS. Two filters, and the second is
+        # asked only of `comparison:` because the two validators reach their verdict by different routes.
+        def _witness_literals(key, literals, entry, tolerance)
+          literals = _reflexive_literals(literals) if key == :comparison
+
+          _unskipped_literals(literals, entry, tolerance)
+        end
+
+        # A bound nothing can equal — not even itself — is no witness: `other_than:` is `!=`, so the check
+        # reports a difference from every value including the bound, and passes always. `Float::NAN` is the
+        # one such value among the types this guard vouches for (measured: `Float::NAN != Float::NAN`).
+        #
+        # Deliberately NOT applied to `exclusion:`, and the difference is measured rather than assumed: a
+        # collection's membership test short-circuits on object IDENTITY before it ever asks `==`, so
+        # `[Float::NAN].include?(Float::NAN)` and `Set[Float::NAN].include?(Float::NAN)` are both true and the
+        # set really does forbid the value. Discounting it there would refuse a contract that enforces.
+        #
+        # Reflexivity is asked only of the classes the closed world already vouches for, by the equality
+        # ActiveModel itself will use. A bound outside it — `BigDecimal::NAN`, whose class this guard does not
+        # judge — stands down and stays a witness, which under-restricts rather than judging a `==` axn has
+        # not vouched for.
+        def _reflexive_literals(literals)
+          literals.reject do |literal|
+            next false unless _judgeable_equality?(Internal::Identity.class_of(literal))
+
+            # rubocop:disable Lint/BinaryOperatorWithIdenticalOperands
+            # The identical operands ARE the check: a value unequal to itself can never equal anything.
+            !(literal == literal)
+            # rubocop:enable Lint/BinaryOperatorWithIdenticalOperands
           end
         end
 

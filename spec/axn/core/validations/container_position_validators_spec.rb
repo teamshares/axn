@@ -716,6 +716,26 @@ RSpec.describe "a validator at a container position" do
         .to raise_error(ArgumentError, /exclusion:/)
     end
 
+    it "refuses an other_than: bound nothing can equal, not even itself" do
+      # `other_than:` is `!=`, and `Float::NAN != Float::NAN` — so the check reports a difference from every
+      # value, the bound included, and passes always.
+      expect { build_axn { expects :n, type: Float, comparison: { other_than: Float::NAN } } }
+        .to raise_error(ArgumentError, /comparison: on :n enforces nothing/)
+    end
+
+    it "keeps that same literal in an exclusion: set, where membership short-circuits on identity" do
+      # Measured, and the reason the reflexivity discount is asked only of `comparison:`: a collection tests
+      # object identity before it asks `==`, so the set really does forbid the value.
+      expect([Float::NAN].include?(Float::NAN)).to be(true) # the runtime truth the guard must not contradict
+
+      action = build_axn { expects :n, type: Float, exclusion: { in: [Float::NAN] } }
+      expect(action.call(n: Float::NAN).ok?).to be(false)
+      expect(action.call(n: 1.0).ok?).to be(true)
+
+      set_action = build_axn { expects :n, type: Float, exclusion: { in: Set[Float::NAN] } }
+      expect(set_action.call(n: Float::NAN).ok?).to be(false)
+    end
+
     it "refuses a hash-keyed set whose only member matches across a numeric family" do
       # `Clusivity` calls the collection's own `include?`, and a Set/Hash looks the member up by `hash` +
       # `eql?`, which never crosses a family: `Set[1].include?(1.0)` is false while `[1].include?(1.0)` is
