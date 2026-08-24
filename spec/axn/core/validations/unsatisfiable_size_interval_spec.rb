@@ -58,6 +58,14 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       expect { declare(type: Array, absence: true, if: -> { false }) }.not_to raise_error
     end
 
+    # A declaration gate is weighed THROUGH each entry rather than as a fact of its own, which is what keeps
+    # ActiveModel's per-key precedence intact: a blank nested `if:` drops the shared gate for that key, leaving
+    # the entry ungated after all — so both checks run on every call and the pair admits nothing.
+    it "still refuses where a blank nested gate drops the shared one" do
+      expect { declare(type: Array, presence: { if: nil }, absence: { if: nil }, if: -> { false }) }
+        .to raise_error(ArgumentError, /presence: and absence:.*admit no value at all/m)
+    end
+
     # A presence entry being PRESENT is not it rejecting anything: blank values are the only ones it ever
     # rejects, and a blank-tolerant entry is skipped for exactly those — so it leaves `absence:` unopposed.
     it "stands down where the presence half is blank-tolerant, and so enforces nothing" do
@@ -312,8 +320,24 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         expect(action.call(f: [1]).ok?).to be(true)
       end
 
-      # Exact class says nothing about a SINGLETON method, which is why the native-measurement test is not
-      # redundant with the equality world: a plain Array can still answer `length` with code of its own.
+      # Exact class says nothing about a SINGLETON method — which cuts both ways: the member's `==` is read
+      # through the same ownership test as its measurement, because an exact `Array` whose equality is its own
+      # decides membership for itself.
+      it "stands down on a plain Array carrying a singleton ==" do
+        member = []
+        def member.==(other) = other == [1]
+
+        expect { declare(type: Array, length: { minimum: 1 }, inclusion: { in: [member] }) }.not_to raise_error
+      end
+
+      it "accepts at runtime the value that singleton == matches" do
+        member = []
+        def member.==(other) = other == [1]
+        action = declare(type: Array, length: { minimum: 1 }, inclusion: { in: [member] })
+
+        expect(action.call(f: [1]).ok?).to be(true)
+      end
+
       it "stands down on a plain Array carrying a singleton length" do
         member = []
         def member.length = 3

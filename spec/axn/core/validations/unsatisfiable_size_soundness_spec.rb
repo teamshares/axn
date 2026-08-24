@@ -45,6 +45,23 @@ module SizeSoundness
     "length maximum 1" => { length: { maximum: 1 } },
   }.freeze
 
+  # Members whose own code decides what they match or how they measure — the axes the member scan consults
+  # beyond the declared type, each built fresh so a singleton definition belongs to this object alone.
+  #
+  # Both are wired to a value that is IN the candidate spread, without which the product would contain the
+  # cell and still prove nothing: an over-restriction is only observable when some candidate actually passes.
+  def self.singleton_equality_member
+    member = []
+    member.define_singleton_method(:==) { |other| other == ["a"] }
+    member
+  end
+
+  def self.singleton_length_member
+    member = ["a"]
+    member.define_singleton_method(:length) { 0 }
+    member
+  end
+
   SETS = {
     "-" => {},
     "inclusion [[]]" => { inclusion: { in: [[]] } },
@@ -52,11 +69,15 @@ module SizeSoundness
     "inclusion [[], [1]]" => { inclusion: { in: [[], [1]] } },
     "inclusion blank-tolerant" => { inclusion: { in: [%w[a b c]], allow_blank: true } },
     "inclusion [\"ab\"]" => { inclusion: { in: %w[ab] } },
+    "inclusion [member with singleton ==]" => { inclusion: { in: [singleton_equality_member] } },
+    "inclusion [member with singleton length]" => { inclusion: { in: [singleton_length_member] } },
   }.freeze
 
   MODIFIERS = {
     "-" => {},
     "declaration if:" => { if: -> { false } },
+    "declaration if: with blank nested overrides" =>
+      { if: -> { false }, presence: { if: nil }, absence: { if: nil }, length: { if: nil }, inclusion: { if: nil } },
     "declaration unless:" => { unless: -> { true } },
     "optional" => { optional: true },
   }.freeze

@@ -4181,7 +4181,6 @@ module Axn
         # already turn on, rather than by reading one entry's tolerance keys.
         def _reject_unsatisfiable_size_interval!(validations, where:)
           return if Axn::Validation::Base.nil_accepted?(validations)
-          return if _declaration_gated?(validations)
 
           _reject_blank_axis_complement!(validations, where:)
 
@@ -4194,33 +4193,21 @@ module Axn
           _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
         end
 
-        # Whether the whole declaration rides a gate. Every rule below claims "no value satisfies this
-        # contract", and a DECLARATION-level `if:`/`unless:` makes that false outright: it skips every
-        # validator in the declaration together — the type check included — so on the calls where it is closed
-        # the contract enforces nothing and every value passes. There is no call on which these bounds are in
-        # force without their siblings also being in force, which is exactly what an ENTRY-level gate does
-        # leave open, and why that one is still counted static-maximally.
-        #
-        # The emitted node is unaffected by this stand-down and stays static-maximal — a gated
-        # `length: { maximum: 0 }` beside the inferred floor still emits `{minItems: 1, maxItems: 0}`, as it
-        # did before PRO-3220 — but the corollary is about refusing a CONTRACT that admits nothing, and this
-        # one admits everything.
-        #
-        # Declaration gates are blank-canonicalized by `_canonicalize_blank_gates!` long before this runs, so
-        # a present key is always a real gate.
-        def _declaration_gated?(validations)
-          gates = _shared_validation_options(validations)
-
-          Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| gates[key] }
-        end
-
         # The validator entries that can supply a bound to the size rules below, or the set they scan. Kept as a
         # list rather than asked of each derivation in turn, because the derivations are the EMITTER's and are
         # rightly static-maximal — the question here is a different one.
         BOUND_BEARING_VALIDATOR_KEYS = %i[presence absence length inclusion].freeze
 
-        # Whether any entry that could supply a bound can be skipped on a given call. The size rules claim "no
-        # value satisfies this contract", and a bound that is sometimes not enforced cannot support that claim:
+        # Whether any entry that could supply a bound can be skipped on a given call — its OWN gate and any it
+        # inherits from the declaration alike, which is what makes this the only gate test the size rules need.
+        # A declaration-level `if:` reaches every entry here, so it stands the rules down through this one test
+        # rather than through a check of its own; and reaching them THROUGH the per-entry model is what keeps
+        # ActiveModel's precedence intact, since a blank nested `if:` drops the shared gate for that key and
+        # leaves the entry ungated after all (`presence: { if: nil }, absence: { if: nil }, if: -> { false }`
+        # really does enforce both checks on every call).
+        #
+        # The size rules claim "no value satisfies this contract", and a bound that is sometimes not enforced
+        # cannot support that claim:
         # `length: { minimum: 3, maximum: 2, if: -> { false } }` really does admit `["a"]` on every call where
         # its gate is closed, and a floor read out of a gated `presence:` is no floor on those calls either.
         #
@@ -4398,23 +4385,37 @@ module Axn
         # stands down on any pair it cannot judge.
         #
         # Measuring the member is only evidence about the values it can MATCH if its equality is one axn
-        # vouches for, and that is the closed world `_judgeable_equality?` names — asked by EXACT class, never
-        # by descent, because `Array#include?` dispatches `member == candidate`, so a subclass overriding `==`
-        # decides membership itself: an empty one matching `[1]` really does satisfy a `minimum: 1` floor while
-        # measuring 0 here. Outside that world the member proves nothing and the branch stands down.
+        # vouches for, because `Array#include?` dispatches `member == candidate` — so the member decides
+        # membership itself, and one matching `[1]` while measuring 0 really does satisfy a `minimum: 1` floor.
         #
         # The size itself is then read through the emitter's ownership test, which answers nil for a value
-        # whose measurement is not Ruby's own — a second stand-down, and not redundant with the first: exact
-        # class says nothing about a SINGLETON method, which is how a plain `[]` can still answer `length` with
-        # code of its own.
+        # whose measurement is not Ruby's own.
         def _member_size_admissible?(member, klasses, minimum, maximum)
           return false unless klasses.any? { |klass| _literal_may_satisfy?(member, klass) }
-          return true unless _judgeable_equality?(Internal::Identity.class_of(member))
+          return true unless _member_equality_vouched_for?(member)
 
           size = Internal::Reflection::Schema.container_size(member)
           return true if size.nil?
 
           (minimum.nil? || size >= minimum) && (maximum.nil? || size <= maximum)
+        end
+
+        # Whether the `==` this member will actually be compared with is the one the closed equality world
+        # vouches for. Two questions, and both are needed:
+        #
+        #   * is the member's class in that world at all — asked by EXACT class, never by descent, for the
+        #     reasons `JUDGEABLE_EQUALITY_CLASSES` gives;
+        #   * does that class OWN the `==` that would run. A singleton method is invisible to the first
+        #     question — `member = []; def member.==(other) = other == [1]` is an exact `Array` whose equality
+        #     is nobody's but its own — so the effective owner is read the same way the size predicates read
+        #     theirs, through `NativeMethods.method_owner`.
+        #
+        # The owner is compared by identity, so nothing the member defines decides the question.
+        def _member_equality_vouched_for?(member)
+          klass = Internal::Identity.class_of(member)
+          return false unless _judgeable_equality?(klass)
+
+          klass.equal?(Internal::NativeMethods.method_owner(member, :==))
         end
 
         def _raise_size_closed_inclusion_set!(where, minimum, maximum)
