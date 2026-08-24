@@ -5739,6 +5739,28 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(name).not_to have_key(:maxLength)
     end
 
+    # A union emits one branch per token and no bound lands on a branch with no size keyword, so a token that
+    # cannot carry the ceiling must not veto it for the tokens that can.
+    it "keeps the ceiling on the size-bearing branch of a union whose other token carries no size" do
+      prop = build_axn do
+        expects :f, type: [Array, Integer], presence: false, absence: true
+      end.input_schema[:properties][:f]
+
+      expect(prop[:anyOf]).to include(a_hash_including(type: "array", maxItems: 0))
+      expect(prop[:anyOf]).to include(a_hash_including(type: "integer"))
+      expect(prop[:anyOf].find { |b| b[:type] == "integer" }).not_to have_key(:maxItems)
+    end
+
+    # A String branch IS size-bearing, and an `absence:` bounds whitespace there rather than size — so one
+    # among the tokens takes the ceiling off the whole union rather than putting a wrong bound on that branch.
+    it "drops the ceiling from a union carrying a String" do
+      prop = build_axn do
+        expects :f, type: [Array, String], presence: false, absence: true
+      end.input_schema[:properties][:f]
+
+      expect(prop[:anyOf].map(&:keys).flatten).not_to include(:maxItems, :maxLength)
+    end
+
     # The blank-is-empty classification the ceiling turns on reads the declared token, and a token is a
     # caller's own Class or Module — so it is classified with `case`/`when ::Array` rather than `Kernel#Array`,
     # which would DISPATCH `to_ary` on it. Asked of the derivation directly, since other (pre-existing) readers

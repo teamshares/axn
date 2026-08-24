@@ -2002,14 +2002,38 @@ module Axn
         end
 
         # Whether every value this declaration calls BLANK measures 0 — the question that decides whether the
-        # blank axis can be read as a statement about size at all. True only where every declared type is one
-        # whose `blank?` is its `empty?`; false for an undeclared type, for a union carrying a `String`, and
-        # for a `String` itself. Shared with the guard that asks whether a blank value could slip past a
-        # blank-tolerant entry, so the two cannot disagree about the same declaration.
+        # blank axis can be read as a statement about size at all. Shared with the guard that asks whether a
+        # blank value could slip past a blank-tolerant entry, so the two cannot disagree about one declaration.
+        #
+        # Only the SIZE-BEARING tokens are asked. A union emits one branch per token and `size_bounds_for` puts
+        # no bound on a branch that carries no size keyword, so a `NilClass` (or an `Integer`, or `:boolean`)
+        # can neither make an `absence:` ceiling wrong nor be constrained by one — and must not veto it either.
+        # Judging every token alike is what left `type: [Array, NilClass], presence: false, absence: true`
+        # without a ceiling on its ARRAY branch, so a non-empty array was schema-valid and runtime-invalid: the
+        # looser direction, which the emitter may never take.
+        #
+        # A `String` among them still answers false, and that is the point of asking per token rather than
+        # per branch: a String branch IS size-bearing, and `absence:` bounds whitespace there rather than size,
+        # so no ceiling can be emitted for the union at all while one member reads that way.
         def blank_values_are_empty?(validations)
-          tokens = declared_type_tokens(validations)
+          sized = declared_type_tokens(validations).select { |token| token_carries_a_size?(token) }
 
-          tokens.any? && tokens.all? { |token| blank_is_empty_class?(token) }
+          sized.any? && sized.all? { |token| blank_is_empty_class?(token) }
+        end
+
+        # Whether the branch a token emits can carry a size keyword at all, asked through the emitter's own
+        # type mapping and its own key lookup rather than an enumeration beside them — so a token whose emitted
+        # type changes cannot leave this answering the old one.
+        #
+        # A token the map does not know falls through to the permissive `"string"`, which IS size-bearing, so
+        # it vetoes. That is the right answer for an unknown token and the wrong one for `NilClass`, whose only
+        # value is `nil` — blank, and with no size to bound. `NilClass` is absent from `TYPE_MAP`, so a union
+        # naming it emits a spurious string branch (measured: `type: [Array, NilClass], presence: false` emits
+        # `anyOf: [array, string, null]` while the runtime rejects `"x"`), and this inherits that. Not corrected
+        # here: the mapping is a pre-existing looseness with a blast radius of its own — the nullability pass
+        # already contributes a `"null"` branch — and it is tracked in PRO-3233.
+        def token_carries_a_size?(token)
+          !size_ceiling_key_for(single_type_for(token, for_output: false)[:type]).nil?
         end
 
         def blank_is_empty_class?(token)
