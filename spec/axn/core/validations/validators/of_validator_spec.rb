@@ -225,10 +225,9 @@ RSpec.describe Axn::Validators::OfValidator do
     # else. Pinned as the shared DIAGNOSIS rather than as three whole strings, so a reworded remedy at one
     # position stays free while the three drifting into describing different mistakes does not.
     describe "the one rule an `of:` axis is held to" do
-      # The RUNTIME half of the diagnosis, which is what is actually shared: an empty union holds a value to
-      # nothing wherever it is written. The SCHEMA consequence is deliberately not part of this string and is
-      # pinned per position below — a `keys:` axis emits no schema at all, so a diagnosis claiming `anyOf: []`
-      # everywhere would be false at exactly one of the three positions it was written to unify.
+      # The RUNTIME consequence, which is what is actually shared: an empty union holds a value to nothing
+      # wherever it is written. No SCHEMA consequence is claimed at any position, because whether one is
+      # emitted depends on ancestry the refusal cannot see — see the emitter examples below.
       shared_diagnosis =
         "a value held to every class in an empty list is held to none, so every value at that position passes"
 
@@ -243,32 +242,35 @@ RSpec.describe Axn::Validators::OfValidator do
         end
       end
 
-      # What each position publishes differs, so each says only what is true of it. Pinned in BOTH directions
-      # — the `keys:` example asserts the absence of the `anyOf` claim, not merely the presence of its own
-      # wording — because a refusal that merely agreed with its siblings would pass a sameness check while
-      # telling the author something the emitter never does.
-      it "claims an `anyOf: []` emission at the two positions that emit one" do
-        [[Array, { klass: [] }], [Hash, { keys: Symbol, values: [] }]].each do |container, of|
+      # No position claims a schema consequence, because none can: whether an empty union reaches the document
+      # at all depends on ancestry the raise site cannot see. Pinned as an ABSENCE across every position and
+      # depth, since a claim that happened to be true of the element case is exactly how the false `keys:` one
+      # survived a battery that compared the three refusals only against each other.
+      {
+        "a bag's klass:" => [Array, { klass: [] }],
+        "a map's keys:" => [Hash, { keys: [], values: Integer }],
+        "a map's values:" => [Hash, { keys: Symbol, values: [] }],
+        "a bag under a keys: axis" => [Hash, { keys: { klass: [] } }],
+        "a bag under a values: axis" => [Hash, { values: { klass: [] } }],
+        "a bag one container down" => [Array, { klass: Array, of: { klass: [] } }],
+      }.each do |position, (container, of)|
+        it "claims no schema emission at #{position}" do
           expect { build_axn { expects :a, type: container, of: } }
-            .to raise_error(ArgumentError, /while the schema emits `anyOf: \[\]`, which nothing satisfies/)
+            .to raise_error(ArgumentError) { |error| expect(error.message).not_to include("anyOf") }
         end
       end
 
-      it "claims no emission at all on the keys: axis, which reaches no schema" do
-        expect { build_axn { expects :a, type: Hash, of: { keys: [], values: Integer } } }.to raise_error(
-          ArgumentError,
-        ) { |error|
-          expect(error.message).to include("A `keys:` axis emits no schema at all")
-          expect(error.message).not_to include("anyOf")
-        }
-      end
+      # WHY no such claim is made: a `keys:` axis reaches the emitter with nothing to say, at the bare spelling
+      # and through a bag alike, while the `values:` spelling of each emits `additionalProperties`. So the
+      # consequence genuinely differs by position, and a bag has no view of which position it sits at.
+      it "emits nothing for a keys: union where the values: spelling emits additionalProperties" do
+        bare_keys = build_axn { expects :a, type: Hash, of: { keys: [Symbol, String] } }
+        bag_keys = build_axn { expects :a, type: Hash, of: { keys: { klass: [Symbol, String] } } }
+        bare_values = build_axn { expects :a, type: Hash, of: { values: [Symbol, String] } }
 
-      # The measurement the clause above rests on: a `keys:` axis really does reach the emitter with nothing
-      # to say, so the refusal is not merely differently worded but differently TRUE.
-      it "emits no anyOf for a keys: union, which is why its refusal claims none" do
-        action = build_axn { expects :a, type: Hash, of: { keys: [Symbol, String] } }
-
-        expect(action.input_schema.to_h.dig(:properties, :a)).not_to have_key(:additionalProperties)
+        expect(bare_keys.input_schema.to_h.dig(:properties, :a)).not_to have_key(:additionalProperties)
+        expect(bag_keys.input_schema.to_h.dig(:properties, :a)).not_to have_key(:additionalProperties)
+        expect(bare_values.input_schema.to_h.dig(:properties, :a)).to have_key(:additionalProperties)
       end
 
       # The other half of the rule, at the same three positions: a token the runtime cannot hold a value to.

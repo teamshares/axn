@@ -2694,37 +2694,32 @@ module Axn
         # mistake read as three unrelated ones, and the map axes reported neither: an empty `values:` landed on
         # "name the axis you are constraining", which asks for the key the author had just written (PRO-3170).
         #
-        # The RUNTIME half only. What the SCHEMA does with an empty union is NOT shared — a `keys:` axis emits
-        # no schema at any time — so that consequence is appended per position rather than folded in here. A
-        # diagnosis claiming `anyOf: []` at every position would put a factually false statement into the one
-        # refusal an author reads to learn what went wrong.
+        # The RUNTIME consequence only, and deliberately no schema one. An empty union holds a value to nothing
+        # wherever it is written, at every position and every depth — but what the SCHEMA does with it depends
+        # on the position's ANCESTRY, which no bag can see from the point it is refused at: a `keys:` axis emits
+        # nothing (every JSON object key is already a String, so there is no keyword to carry a constraint), and
+        # neither does anything nested under one, at any depth. Measured: `of: { keys: [Symbol, String] }` and
+        # `of: { keys: { klass: [Symbol, String] } }` both emit `{"type":"object","minProperties":1}` and no
+        # `anyOf`, while the `values:` spelling of each emits `additionalProperties.anyOf`.
+        #
+        # So the earlier "the schema emits `anyOf: []`, which nothing satisfies" was true of an Array's element
+        # and a map's `values:` and false of `keys:` — and threading enough ancestry to tell them apart would
+        # put a walk-shaped parameter through five call sites to decorate an error message, with a wrong clause
+        # at depth as the failure mode. The refusal states what is unconditionally true instead (PRO-3170).
         EMPTY_UNION_DIAGNOSIS = "a value held to every class in an empty list is held to none, so every value " \
                                 "at that position passes"
-
-        # What an empty union publishes, per position. A bag's `klass:` and a map's `values:` both reach the
-        # emitter as the class union of a node (`items`, `additionalProperties`), so an empty one emits
-        # `anyOf: []` and the document contradicts the runtime in the LOOSENING direction. A `keys:` axis emits
-        # nothing at all — every JSON object key is already a String, so there is no keyword to carry it — which
-        # makes its empty union a purely runtime defect with no document to disagree with. Measured, not
-        # assumed: `of: { keys: [Symbol, String] }` emits `{"type":"object","minProperties":1}` and no `anyOf`.
-        EMPTY_UNION_SCHEMA_CLAUSE = " while the schema emits `anyOf: []`, which nothing satisfies"
-        EMPTY_UNION_KEYS_CLAUSE = ". A `keys:` axis emits no schema at all — every JSON object key is already " \
-                                  "a String — so it is enforced in Ruby alone, and an empty union enforces " \
-                                  "nothing there either"
 
         # The remedy half for the position an empty union sits at when it is a map's AXIS rather than a bag's
         # `klass:`. Separate from the `klass:` wording because the fix genuinely differs: a bag has `of:` and
         # `shape:` to fall back on, so dropping its empty `klass:` is real advice, while a map needs at least
         # one constraining axis — telling an author to simply drop theirs would send them to the "name an axis"
-        # refusal on the next declaration. Takes the AXIS rather than a rendered option label, since the axis
-        # decides both the key to edit and which schema consequence is true of it.
+        # refusal on the next declaration. Takes the AXIS rather than a rendered option label, since the axis is
+        # the key the author has to edit and only the caller knows which was written.
         def _empty_union_axis_message(axis)
-          schema_clause = axis == :keys ? EMPTY_UNION_KEYS_CLAUSE : EMPTY_UNION_SCHEMA_CLAUSE
-
-          "of: #{axis}: names an empty union, so that axis constrains nothing — #{EMPTY_UNION_DIAGNOSIS}" \
-            "#{schema_clause}. Name the class(es) that axis must hold, or drop the axis and constrain the " \
-            "other one — an axis left off is the honest spelling of \"unconstrained\", while one naming " \
-            "nothing only looks like a constraint."
+          "of: #{axis}: names an empty union, so that axis constrains nothing — #{EMPTY_UNION_DIAGNOSIS}. " \
+            "Name the class(es) that axis must hold, or drop the axis and constrain the other one — an axis " \
+            "left off is the honest spelling of \"unconstrained\", while one naming nothing only looks like " \
+            "a constraint."
         end
 
         # Whether an axis was SUPPLIED as an empty union, which is the one "names no class" spelling that has a
@@ -2766,10 +2761,9 @@ module Axn
           # contents' class with `klass:`" is no help to an author looking at the `klass:` they wrote.
           if Internal::ShapeGraph.carries_key?(bag, :klass) && !bag[:klass].nil?
             raise ArgumentError,
-                  "of: klass: names an empty union, so this bag constrains nothing — #{EMPTY_UNION_DIAGNOSIS}" \
-                  "#{EMPTY_UNION_SCHEMA_CLAUSE}. Name the class(es) the contents must be, or drop the empty " \
-                  "klass: and constrain them with `of:` or `shape:`. (`of: []` is sugar for " \
-                  "`of: { klass: [] }`.)"
+                  "of: klass: names an empty union, so this bag constrains nothing — #{EMPTY_UNION_DIAGNOSIS}. " \
+                  "Name the class(es) the contents must be, or drop the empty klass: and constrain them with " \
+                  "`of:` or `shape:`. (`of: []` is sugar for `of: { klass: [] }`.)"
           end
 
           raise ArgumentError,
