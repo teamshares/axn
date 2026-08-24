@@ -3591,19 +3591,82 @@ module Axn
           return false unless Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank]
           return false if _blank_rejected_by_contract?(validations, allow_empty:, tolerant: tolerance.values.any?)
 
-          _blank_witnesses_for(klasses).any? do |klass, witness|
-            case _sibling_blank_verdict(validations, witness, except: key, tolerance:)
-            when :admits then true
-            # A sibling that rejects EVERY blank leaves no other blank to hope for, so the multi-blank escape
-            # below must not reach it.
-            when :rejects_every_blank then false
-            # A sibling rejecting THIS witness only settles the question where the witness is the class's ONLY
-            # blank. Where it is not, another blank may sail past the same value-specific check, and concluding
-            # "no blank passes" from the one we can name would refuse a contract that works — measured:
-            # `type: String` with a sibling forbidding `""` still admits `"  "`, which is blank too.
-            else !_sole_blank_klass?(klass)
+          siblings = _judgeable_blank_siblings(validations, except: key, tolerance:)
+
+          _blank_witnesses_for(klasses).any? { |klass, witness| _some_blank_survives?(siblings, klass, witness) }
+        end
+
+        # The siblings whose verdict counts at all: not the audited entry, not a disabled one, not one whose own
+        # tolerance skips the blank exactly as the audited entry does, and not one a gate can skip — a gated
+        # sibling is no evidence, since this verdict is what a refusal rests on and a gate can only make a
+        # validator run LESS. Gates are resolved across BOTH tiers (`validates` merges the declaration's shared
+        # options under the entry's own), through the reader that owns that precedence.
+        def _judgeable_blank_siblings(validations, except:, tolerance:)
+          decl_gates = _shared_validation_options(validations).slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+
+          Axn::Validation::Base.validator_entries(validations).reject do |key, sibling|
+            key == except || !sibling ||
+              Axn::Validation::Base.effective_entry_options(sibling, tolerance)[:allow_blank] ||
+              Axn::Validation::Base.entry_effective_gate_keys(sibling, decl_gates).any?
+          end
+        end
+
+        # Whether SOME blank of this class survives every sibling — which is what the stand-down claims, and what
+        # a per-witness verdict could not establish. Two siblings can each admit a blank and still share none:
+        # `inclusion: { in: [" "] }` beside `acceptance: { accept: ["\t"] }` admits `" "` and `"\t"`
+        # respectively and nothing at all between them, so asking each about one witness said "another blank
+        # might do" twice and let an impossible contract declare.
+        #
+        # The candidates are ENUMERABLE wherever a value must be IN a set to pass, which is what makes the
+        # negative answer sound rather than a guess: only a member can pass, so only a blank member can be the
+        # blank that passes.
+        def _some_blank_survives?(siblings, klass, witness)
+          # A sibling rejecting every blank whatever it is leaves nothing to enumerate.
+          return false if siblings.any? { |key, sibling| _one_sibling_blank_verdict(key, sibling, witness) == :rejects_every_blank }
+
+          candidates = _candidate_blanks(siblings, klass, witness)
+          return true if candidates.any? { |candidate| _all_siblings_admit_blank?(siblings, candidate) }
+
+          # Nothing survived. That settles the class only where the candidates were exhaustive; otherwise a blank
+          # this cannot name may still pass, and refusing on that would refuse a contract that works.
+          !_blank_candidates_exhaustive?(siblings, klass)
+        end
+
+        def _all_siblings_admit_blank?(siblings, candidate)
+          siblings.all? { |key, sibling| _one_sibling_blank_verdict(key, sibling, candidate) == :admits }
+        end
+
+        # Every blank of `klass` that could possibly pass: the class's own witness, plus the blank members of each
+        # set a value must be IN to pass. Members are filtered to the WITNESS'S OWN CLASS — a blank of another
+        # class is no alternative for a value that has to be a `klass` (measured: `type: String` with
+        # `inclusion: { in: ["ok", []] }` was letting the empty ARRAY stand in for a String blank).
+        def _candidate_blanks(siblings, klass, witness)
+          alternates = siblings.flat_map do |key, sibling|
+            next [] unless MEMBERSHIP_BLANK_KEYS.include?(key)
+
+            Array(_membership_members(key, sibling)).select do |member|
+              Internal::NativeMethods.blank_literal?(member) && Internal::Identity.class_of(member).equal?(klass)
             end
           end
+
+          [witness] + alternates
+        end
+
+        # Whether the candidates above are the WHOLE list of blanks that could pass. True when the class has just
+        # one blank, and true when some readable must-be-in set is present — nothing outside such a set can pass
+        # it, so its blank members are exhaustive. False otherwise, where `String`'s unbounded whitespace blanks
+        # mean the absence of a passing candidate proves nothing.
+        def _blank_candidates_exhaustive?(siblings, klass)
+          return true if _sole_blank_klass?(klass)
+
+          siblings.any? { |key, sibling| MEMBERSHIP_BLANK_KEYS.include?(key) && !_membership_members(key, sibling).nil? }
+        end
+
+        # The validators a value must be a MEMBER of to pass, and their members under each one's own reader.
+        MEMBERSHIP_BLANK_KEYS = %i[inclusion acceptance].freeze
+
+        def _membership_members(key, sibling)
+          key == :acceptance ? _acceptance_members(sibling) : _readable_set_members(sibling)
         end
 
         # The blank value each declared class actually HAS, as [klass, witness] pairs. A blankness question needs
@@ -3639,58 +3702,14 @@ module Axn
         # forbids the very `[]` the inclusion skips, so no Array passes at all.
         #
         # Only the families this guard judges EXACTLY are consulted, and every other answer is "admits": a
-        # sibling it cannot read must not turn into a refusal, since this guard's unforgivable error is refusing a
-        # contract that works. So `format:`, `numericality:`, a `validate:` callable and an unreadable set all
-        # stand it down, which under-restricts rather than guessing.
+        # What ONE sibling does with ONE blank. Two answers are about that blank (`:admits`/`:rejects`); the
+        # third is about the class — `ComparisonValidator` rejects a blank BEFORE it looks at any bound
+        # (activemodel 7.2.2.2, comparison.rb:23), so it rejects every blank whatever it compares against, and no
+        # enumeration of alternatives could help.
         #
-        # A sibling with its own blank-tolerance skips the witness exactly as the audited entry does, so it admits
-        # by definition and is asked nothing further.
-        # Three-valued, and the third value is what keeps the multi-blank fallback honest. A sibling can reject
-        # the witness for two different reasons, and only one of them generalizes to the class's OTHER blanks:
-        #
-        #   * VALUE-SPECIFIC — a set the witness happens not to be in. Another blank may well be in it, so this
-        #     settles nothing on a class with more than one blank.
-        #   * EVERY BLANK — `ComparisonValidator` rejects a blank BEFORE it looks at any bound (activemodel
-        #     7.2.2.2, comparison.rb:23), so it rejects them all whatever it compares against. No other blank
-        #     can be hoped for, and treating this as value-specific let an impossible contract declare:
-        #     `type: String, presence: false, acceptance: { accept: [1], allow_blank: true },
-        #     comparison: { equal_to: "ok" }` rejects every non-blank String by acceptance and every blank one
-        #     by the comparison, and nothing passes.
-        #
-        # Everything this cannot read exactly answers `:admits`, standing the guard down rather than guessing.
-        def _sibling_blank_verdict(validations, witness, except:, tolerance:)
-          verdict = :admits
-          decl_gates = _shared_validation_options(validations).slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
-
-          Axn::Validation::Base.validator_entries(validations).each do |key, sibling|
-            next if key == except || !sibling
-            next if Axn::Validation::Base.effective_entry_options(sibling, tolerance)[:allow_blank]
-            # A sibling a gate can skip is no evidence of anything: this verdict is affirmative — it is what a
-            # refusal rests on — and a gate can only make a validator run LESS. So a gated sibling admits,
-            # exactly as `_reconcile_emptiness_axis!` refuses to hand the emptiness axis to one. (The audited
-            # entry's own gate is a different question, and a standing one — PRO-3234.)
-            #
-            # Resolved against the DECLARATION-level gates rather than the sibling's own options, through the
-            # reader that owns that precedence: `validates` builds each validator's options as
-            # `declaration_defaults.merge(entry_options)`, so a declaration-level `if:` gates every entry that
-            # does not override it — while an entry naming a BLANK one (`if: nil`) drops the shared gate and
-            # runs unconditionally. Reading only the sibling's own keys called a declaration-gated sibling
-            # unconditional and refused a working contract.
-            next if Axn::Validation::Base.entry_effective_gate_keys(sibling, decl_gates).any?
-
-            case _one_sibling_blank_verdict(key, sibling, witness)
-            when :rejects_every_blank then return :rejects_every_blank
-            when :rejects_this_blank then verdict = :rejects_this_blank
-            end
-          end
-
-          verdict
-        end
-
-        # What ONE sibling does with the witness. The split between "this blank" and "every blank" is the whole
-        # point (see above), and a readable set decides it: a set holding NO blank at all rejects every blank of
-        # the declared type rather than just the one named here, since no blank could be a member. A set that
-        # DOES hold one is value-specific — `inclusion: { in: ["ok", "  "] }` rejects `""` while admitting `"  "`.
+        # Anything this cannot read exactly answers `:admits`, standing the guard down rather than guessing:
+        # `format:`, `numericality:`, a `validate:` callable and an unreadable set all reach that fallback, which
+        # under-restricts. A sibling whose own tolerance skips the blank never reaches here at all.
         def _one_sibling_blank_verdict(key, sibling, witness)
           case key
           # `ComparisonValidator` rejects a blank BEFORE it looks at any bound (activemodel 7.2.2.2,
@@ -3702,10 +3721,9 @@ module Axn
                                    skips_nil: Axn::Validation::Base.acceptance_admits_nil?(
                                      Axn::Validation::Base.validator_entry_options(sibling),
                                    ))
-          # An exclusion set rejects only what it NAMES, so it is always value-specific; where the class has a
-          # single blank the `_sole_blank_klass?` test already closes it.
+          # An exclusion set rejects only what it NAMES, so it never speaks for the class.
           when :exclusion
-            _readable_set_members(sibling)&.any? { |member| member == witness } ? :rejects_this_blank : :admits
+            _readable_set_members(sibling)&.any? { |member| member == witness } ? :rejects : :admits
           else :admits
           end
         end
@@ -3716,10 +3734,10 @@ module Axn
         # against the set and really can be rejected.
         def _excluding_set_verdict(members, witness, skips_nil: false)
           return :admits if skips_nil && Internal::Identity.nil_value?(witness)
-          return :admits if members.nil?
+          return :admits if members.nil? # a set this cannot read admits, rather than being guessed at
           return :admits if members.any? { |member| member == witness }
 
-          members.any? { |member| Internal::NativeMethods.blank_literal?(member) } ? :rejects_this_blank : :rejects_every_blank
+          :rejects
         end
 
         # An `acceptance:` entry's set, read by ITS rule rather than the clusivity one: `AcceptanceValidator`
@@ -4208,10 +4226,17 @@ module Axn
           # `ResolveValue` falls through to `value.respond_to?(:call)` and calls ANY other callable
           # (activemodel 7.2.2.2, resolve_value.rb:17), so a bound is dynamic on its ability to be called, not
           # on being one of the two obvious classes — a String carrying a singleton `call` is resolved exactly
-          # as a Proc is, and judging it by its own class refused a declaration that works. Asked of the METHOD
-          # TABLE rather than by dispatching `respond_to?`, which is how the rest of this guard reads a caller's
-          # object; the two answer alike for anything but a hostile one, and this errs toward standing down.
-          !Internal::NativeMethods.method_owner(bound, :call).nil?
+          # as a Proc is, and judging it by its own class refused a declaration that works.
+          #
+          # BOTH channels are asked, and the union is deliberate: the method table misses a `call` reached
+          # through `respond_to_missing?`/`method_missing` (measured — a String proxy answering `respond_to?
+          # (:call)` is resolved by ActiveModel while its method table shows nothing), and `respond_to?` is the
+          # question ActiveModel actually asks, so the guard must not disagree with the check it predicts.
+          # Either saying "callable" stands the bound down, which is the only direction that cannot refuse a
+          # working declaration — a missed callable is judged as a literal, and that is what refuses one.
+          return true unless Internal::NativeMethods.method_owner(bound, :call).nil?
+
+          bound.respond_to?(:call)
         end
 
         # The declared types this guard can judge membership against: every token a real Class or Module. Empty

@@ -103,6 +103,19 @@ RSpec.describe "a degenerate literal" do
       expect { build_axn { expects :n, type: Float, comparison: { equal_to: ->(_r) { 1.0 } } } }.not_to raise_error
     end
 
+    it "counts a callable reached through method_missing, which ActiveModel resolves" do
+      # AM asks `respond_to?(:call)`, which a `respond_to_missing?` answers — so this bound resolves to `1` and
+      # the contract works, while a method-table read alone sees nothing and judged it as the String it is.
+      bound = String.new("proxy")
+      bound.define_singleton_method(:respond_to_missing?) { |name, _priv = false| name == :call }
+      bound.define_singleton_method(:method_missing) { |name, *args| name == :call ? 1 : super(name, *args) }
+
+      action = build_axn { expects :n, type: Integer, comparison: { equal_to: bound } }
+
+      expect(action.call(n: 1).ok?).to be(true)
+      expect(action.call(n: 2).ok?).to be(false)
+    end
+
     it "counts ANY callable bound as resolved per call, not just a Proc or a Symbol" do
       # `ResolveValue` falls through to `value.respond_to?(:call)` and calls whatever it finds (activemodel
       # 7.2.2.2, resolve_value.rb:17), so this bound resolves to `1` and the contract works — judging it by the
@@ -346,6 +359,40 @@ RSpec.describe "a degenerate literal" do
                     acceptance: { accept: ["ok"] }
       end
       expect(action.call(v: nil).ok?).to be(true)
+    end
+
+    it "requires ONE blank to survive every sibling, not a different blank for each" do
+      # `inclusion:` admits `" "` and `acceptance:` admits `"\t"`, and nothing at all between them. Asking each
+      # sibling about one witness answered "another blank might do" twice over and let this declare.
+      expect do
+        build_axn do
+          expects :v, type: String, presence: false, comparison: { equal_to: 1, allow_blank: true },
+                      inclusion: { in: [" "] }, acceptance: { accept: ["\t"] }
+        end
+      end.to raise_error(ArgumentError, /comparison:.*can never match/m)
+    end
+
+    it "counts only blank alternates of the WITNESS's own class" do
+      # `[]` is blank, but the value has to be a String — so the empty Array is no alternative for it, and every
+      # String fails either the bound or the set.
+      expect do
+        build_axn do
+          expects :v, type: String, presence: false, comparison: { equal_to: 1, allow_blank: true },
+                      inclusion: { in: ["ok", []] }
+        end
+      end.to raise_error(ArgumentError, /comparison:.*can never match/m)
+    end
+
+    it "stands down where the blanks that could pass cannot be enumerated" do
+      # No must-be-in set here, so the candidates are not exhaustive: the exclusion names `""` and nothing else,
+      # and `"  "` is blank too and sails past it.
+      action = build_axn do
+        expects :v, type: String, presence: false, comparison: { equal_to: 1, allow_blank: true },
+                    exclusion: { in: ["", "zzz"] }
+      end
+
+      expect(action.call(v: "  ").ok?).to be(true)
+      expect(action.call(v: "x").ok?).to be(false)
     end
 
     it "still stands down when the sibling leaves that blank alone" do
