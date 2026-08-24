@@ -440,9 +440,22 @@ module Axn
       # declaration.
       MINIMUM_BOUND_KEYS = %i[greater_than greater_than_or_equal_to].freeze
 
+      # What an intersection with no solution resolves to. Not a bound, so `emittable_numeric_bound?` refuses it
+      # and nothing is emitted for that side — the honest answer for a contract no value satisfies. Refusing
+      # such a declaration outright belongs to the contradiction detectors (PRO-3220); emitting a SATISFIABLE
+      # keyword for it, as picking either candidate would, is the one option that is simply wrong.
+      CONTRADICTORY_BOUND = :__axn_contradictory_bound__
+
       def self.intersect_numeric_bound(bounds, key, candidate)
         existing = bounds[key]
         return bounds[key] = candidate if existing.nil?
+        return bounds[key] if existing == CONTRADICTORY_BOUND
+
+        # `equal_to` is an equality rather than an ordering, so two different values intersect to nothing at
+        # all — there is no "tighter" of the two, and keeping either advertises a value the runtime rejects.
+        if key == :equal_to
+          return bounds[key] = existing == candidate ? existing : CONTRADICTORY_BOUND
+        end
 
         tighter = begin
           comparison = existing <=> candidate
@@ -465,6 +478,8 @@ module Axn
       # bound gets. Restricted to Integer and Float on purpose: a `BigDecimal` or `Rational` bound has no
       # single JSON number form (its `to_json` depends on the consumer's setup), so it stands down rather than
       # emit a value the document might carry as a string.
+      # `CONTRADICTORY_BOUND` needs no branch of its own: it is a Symbol, and every Symbol — a per-call bound
+      # ActiveModel resolves against the record included — falls to the same refusal.
       def self.emittable_numeric_bound?(bound)
         case bound
         when ::Integer then true

@@ -375,6 +375,39 @@ RSpec.describe "value validators in an of: bag" do
     end
   end
 
+  # An output schema that rejects what the action can successfully serialize is worse than one that says less,
+  # which is why `effective_validations` reduces a self-gated entry away on output for a named field. A bag's
+  # validators get the same reduction — `emitted_contents_edge` already did it for the bag's `of:`/`shape:`.
+  describe "a self-gated positional validator on output" do
+    let(:action) do
+      build_axn do
+        expects :flag, type: :boolean
+        exposes :codes, type: Array, of: { klass: String, inclusion: { in: ["a"], if: :flag } }
+        def call = expose(:codes, ["zzz"])
+      end
+    end
+
+    it "is reduced away in the output schema, which must not reject what the action exposes" do
+      expect(action.call(flag: false)).to be_ok
+      expect(action.output_schema.dig(:properties, :codes, :items)).not_to have_key(:enum)
+    end
+
+    it "still enforces the gated constraint when the gate is open" do
+      expect(action.call(flag: true)).not_to be_ok
+    end
+
+    # Reflection is static-maximal on INPUT: a gate removes the check at runtime but the document advertises it
+    # regardless, which is the existing rule for a self-gated `of:` edge (PRO-3166) and for a field's own.
+    it "still advertises it on input, where reflection is static-maximal" do
+      inbound = build_axn do
+        expects :flag, type: :boolean
+        expects :codes, type: Array, of: { klass: String, inclusion: { in: ["a"], if: :flag } }
+      end
+
+      expect(inbound.input_schema.dig(:properties, :codes, :items)).to include(enum: ["a"])
+    end
+  end
+
   describe "a bag that constrains nothing" do
     it "still refuses an empty bag" do
       expect { build_axn { expects :f, type: Array, of: {} } }

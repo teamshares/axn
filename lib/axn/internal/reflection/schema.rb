@@ -1474,7 +1474,14 @@ module Axn
             end
           end
 
-          bounds.each { |operator, bound| prop[NUMERIC_BOUND_KEYS.fetch(operator)] = bound }
+          # Filtered again after intersecting, not only before: an intersection with no solution resolves to a
+          # sentinel rather than a bound (`Base::CONTRADICTORY_BOUND`), and emitting a satisfiable keyword for a
+          # contract no value satisfies is the one outcome that is simply wrong.
+          bounds.each do |operator, bound|
+            next unless Axn::Validation::Base.emittable_numeric_bound?(bound)
+
+            prop[NUMERIC_BOUND_KEYS.fetch(operator)] = bound
+          end
         end
 
         def apply_size_constraints!(prop, validations)
@@ -1891,13 +1898,13 @@ module Axn
           # the bag — a `klass:` naming NilClass admits it until another validator on the same bag rejects it.
           # Hard-coding it left `of: { klass: [String, NilClass], presence: true }` advertising a `null` branch
           # the runtime rejects, and stripped nil from an enum at a position that accepts it.
-          nullable = bag_nullable?(bag)
+          nullable = bag_nullable?(bag, for_output:)
           node = reconcile_contents_nullability(node, nullable:)
           # The bag's value validators (PRO-3193), through the same projector a named position uses. Applied
           # before the member/contents merges below so a `type:` those steps install cannot be read as the type
           # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
           # validators constrain.
-          apply_value_constraints!(node, bag_value_constraints(bag), nullable:)
+          apply_value_constraints!(node, bag_value_constraints(bag, for_output:), nullable:)
           node = contents_member_schema(node, bag, for_output:, ancestry:)
           inner = emitted_contents_edge(bag, :of, for_output:)
           return node if nil.equal?(inner)
@@ -2072,8 +2079,8 @@ module Axn
         # Whether the value at a bag's position may be nil — `Base.nil_accepted?`, the same seam a field's
         # `nil_allowed?` reads, asked of the bag's own `klass:` and validators. A bag that constrains nothing at
         # all admits nil, exactly as an empty validator set does at a field.
-        def bag_nullable?(bag)
-          validations = bag_value_constraints(bag)
+        def bag_nullable?(bag, for_output: false)
+          validations = bag_value_constraints(bag, for_output:)
           klass = bag[:klass]
           # Synthesized in the CANONICAL `type:` shape a field's stored validations carry. A bare token would be
           # normalized as a validator scalar and read under the wrong key entirely, so `type_admits_nil?` would
@@ -2107,10 +2114,16 @@ module Axn
         # them: what this returns is consumed as "the constraints on this value", and `of:`/`shape:` describe a
         # NESTED node instead — they are emitted by `contents_node_schema` and `contents_member_schema`. A
         # projection that reads the set generically would otherwise pick them up as keywords on the wrong node.
-        def bag_value_constraints(bag)
-          Axn::Validation::Base.validator_entries(bag)
-                               .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
-                                       *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)
+        def bag_value_constraints(bag, for_output: false)
+          constraints = Axn::Validation::Base.validator_entries(bag)
+                                             .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
+                                                     *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)
+          # On OUTPUT a self-gated entry promises nothing — the action may successfully expose a value the entry
+          # would have rejected — so it is reduced away exactly as `effective_validations` reduces a named
+          # field's, and for the same reason: an output schema that rejects what the action can serialize is
+          # worse than one that says less. `emitted_contents_edge` already does this for the bag's `of:`/`shape:`
+          # edges; this is the same reduction for its validators.
+          effective_validations(constraints, for_output:)
         end
 
         def single_contents_schema(klass, for_output: false)

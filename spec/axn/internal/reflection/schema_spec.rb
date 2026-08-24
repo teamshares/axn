@@ -5888,6 +5888,34 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       # Ruby's `\s` is the ASCII whitespace set; ECMA's also includes NBSP, the Unicode Zs category and the
       # line/paragraph separators. So an emitted `\s` accepts strings the runtime rejects — looser, the one
       # direction reflection may not err in. `\d`/`\w` are the SAME set in both dialects and stay.
+      # Where the referenced group did not participate in the match, Ruby FAILS the backreference and ECMA
+      # matches the EMPTY STRING — so `/\A(a|(b))\2c\z/` rejects "ac" in Ruby and `^(a|(b))\2c$` accepts it.
+      # Proving participation means parsing the alternation, so they stand down.
+      #
+      # Note this divergence is invisible to a Ruby-side JSON Schema validator, which compiles `pattern` with
+      # Ruby's own engine — so it is asserted from the specification, not from a differential run.
+      it "stands down on a numeric backreference" do
+        stands_down { expects :s, type: String, format: { with: /\A(a|(b))\2c\z/ } }
+      end
+
+      # `input_schema` must not RAISE. The guard patterns are UTF-8, so matching them against a source in an
+      # incompatible encoding raises `Encoding::CompatibilityError` — which breaks reflection outright rather
+      # than degrading it, the one failure mode a stand-down design must not have.
+      it "stands down on a non-UTF-8 source instead of raising" do
+        euc = Regexp.new("あ".encode("EUC-JP"))
+        action = build_axn { expects :s, type: String, format: { with: euc } }
+
+        expect { action.input_schema }.not_to raise_error
+        expect(action.input_schema[:properties][:s]).not_to have_key(:pattern)
+      end
+
+      it "still emits an ASCII-only source whose Regexp declares another encoding" do
+        ascii = Regexp.new("\\Aab\\z".encode("EUC-JP"))
+        action = build_axn { expects :s, type: String, format: { with: ascii } }
+
+        expect(action.input_schema[:properties][:s]).to include(pattern: "^ab$")
+      end
+
       it "stands down on \\s, whose character set differs between the dialects" do
         stands_down { expects :s, type: String, format: { with: /\A\s+\z/ } }
       end
@@ -6241,6 +6269,23 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       prop = prop_for { expects :f, type: Integer, numericality: { less_than_or_equal_to: 50, in: 0..100 } }
 
       expect(prop).to include(minimum: 0, maximum: 50)
+    end
+
+    # `equal_to` is an EQUALITY, not an ordering: two different values intersect to nothing, and keeping either
+    # advertises a value the runtime rejects. Refusing the declaration outright is PRO-3220's; emitting a
+    # satisfiable keyword for a contract no value satisfies is the one option that is simply wrong.
+    it "emits no const when two equality bounds contradict" do
+      action = build_axn { expects :f, type: Integer, numericality: { equal_to: 1 }, comparison: { equal_to: 2 } }
+
+      expect(action.call(f: 1)).not_to be_ok
+      expect(action.call(f: 2)).not_to be_ok
+      expect(action.input_schema[:properties][:f]).not_to have_key(:const)
+    end
+
+    it "still emits const when two equality bounds agree" do
+      prop = prop_for { expects :f, type: Integer, numericality: { equal_to: 5 }, comparison: { equal_to: 5 } }
+
+      expect(prop).to include(const: 5)
     end
 
     it "agrees with the runtime on the value each finding named" do

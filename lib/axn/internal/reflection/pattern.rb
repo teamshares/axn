@@ -33,10 +33,13 @@ module Axn
         # `.` is a knowing exception rather than an oversight: ECMA's excludes `\r` and U+2028/9 where Ruby's
         # excludes only `\n`, so an emitted `.` matches FEWER strings — stricter, the licensed direction, and
         # standing down on it would cost the keyword for most real patterns.
+        # Numeric BACKREFERENCES are absent for a semantic difference, not a syntactic one: where the referenced
+        # group did not participate in the match, Ruby fails the backreference and ECMA matches the empty string
+        # — so `/\A(a|(b))\2c\z/` rejects `"ac"` in Ruby and an emitted `^(a|(b))\2c$` accepts it. Proving
+        # participation would mean parsing the alternation, so they stand down instead.
         SAFE_ESCAPES = Set.new(
           %w[A z d D w W b B n r t f v 0 x u] +
-          %w[. * + ? ( ) [ ] { } | ^ $ / \\ -] +
-          %w[1 2 3 4 5 6 7 8 9],
+          %w[. * + ? ( ) [ ] { } | ^ $ / \\ -],
         ).freeze
 
         # Constructs with no ECMA form, checked against the source rather than the escape set because each is a
@@ -74,11 +77,26 @@ module Axn
           return nil unless regexp.options.nobits?(SEMANTIC_FLAGS)
 
           source = regexp.source
+          # The guard patterns below are UTF-8, so matching them against a source in an incompatible encoding
+          # raises `Encoding::CompatibilityError` — and this runs inside schema building, where a raise breaks
+          # reflection outright rather than degrading it. A source that is ASCII-only is safe whatever its
+          # encoding claims; a valid UTF-8 one is safe; anything else stands down, which is what an
+          # untranslatable pattern gets anyway.
+          return nil unless translatable_encoding?(source)
           return nil if RUBY_ONLY_CONSTRUCTS.match?(source)
           return nil unless escapes_translatable?(source)
           return nil unless braces_are_quantifiers?(source)
 
           translate_anchors(source)
+        end
+
+        # Whether the source can be inspected by the UTF-8 guard patterns at all. `ascii_only?` covers every
+        # ordinary pattern regardless of the Regexp's declared encoding; beyond that only valid UTF-8 is safe to
+        # match. An invalid byte sequence is refused for the same reason — `match?` raises on one.
+        def translatable_encoding?(source)
+          return true if source.ascii_only?
+
+          source.encoding == ::Encoding::UTF_8 && source.valid_encoding?
         end
 
         # Every `\X` in the source, left to right. `scan` consumes each escape pair before looking further, so
