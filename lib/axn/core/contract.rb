@@ -3502,10 +3502,8 @@ module Axn
         # Its own message, because the shared one blames the bound's TYPE and a NaN bound is of the declared type
         # — the defect is the value, not the class.
         def _reject_non_reflexive_bound!(key, entry, option_keys, klasses, where:)
-          opts = Axn::Validation::Base.validator_entry_options(entry)
-          bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
+          bounds = _static_bounds(Axn::Validation::Base.validator_entry_options(entry), option_keys)
           return if bounds.empty?
-          return if bounds.any? { |bound| _dynamic_bound?(bound) }
           return unless bounds.any? { |bound| _non_reflexive_literal?(bound, klasses) }
 
           raise ArgumentError,
@@ -4055,11 +4053,28 @@ module Axn
           # none.
           judgeable = _all_container_tokens?(klasses) ? option_keys : (option_keys & EQUALITY_COMPARISON_KEYS)
 
-          bounds = judgeable.select { |option| opts.key?(option) }.map { |option| opts[option] }
-          return nil if bounds.empty?
-          return nil if bounds.any? { |bound| _dynamic_bound?(bound) }
+          bounds = _static_bounds(opts, judgeable)
+          bounds.empty? ? nil : bounds
+        end
 
-          bounds
+        # The bounds of a `comparison:` entry this guard can actually read — every one ActiveModel resolves
+        # against the record per call (`ResolveValue`) dropped, rather than standing the whole entry down
+        # because of it. Empty when nothing static remains, which stands the caller down as before.
+        #
+        # Sound only because `ComparisonValidator` applies EVERY operator the entry names: a value must satisfy
+        # all of them, so a static bound nothing can satisfy sinks the entry whatever a Symbol or Proc sibling
+        # later resolves to, and judging a SUBSET of a conjunction can only under-restrict. Standing down on the
+        # pair instead let `comparison: { equal_to: Float::NAN, greater_than: -> { 0 } }` declare while rejecting
+        # every value, and `type: Array, comparison: { equal_to: 1, greater_than: :floor }` likewise.
+        #
+        # Deliberately NOT used by the vacuity reader, whose quantifier is the other way round: there a bound
+        # decides when the check FAILS, so dropping one would be claiming "nothing can fail" from a subset of the
+        # ways to fail. Its single inverted operator makes the two equivalent today, and encoding the unsound
+        # generalization anyway is how that stops being true quietly.
+        def _static_bounds(opts, option_keys)
+          option_keys.select { |option| opts.key?(option) }
+                     .map { |option| opts[option] }
+                     .reject { |bound| _dynamic_bound?(bound) }
         end
 
         # The declared types no instance of which is `blank?`, so a `comparison:` entry on one is reached by

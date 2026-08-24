@@ -88,6 +88,21 @@ RSpec.describe "a degenerate literal" do
       expect(action.call(s: "y").ok?).to be(true)
     end
 
+    it "still judges a static NaN bound beside one ActiveModel resolves per call" do
+      # `ComparisonValidator` applies EVERY operator it names, so the value has to satisfy all of them — a NaN
+      # bound sinks the entry whatever a Symbol or Proc sibling resolves to. Standing down on the pair let this
+      # declare while rejecting every value.
+      expect { build_axn { expects :n, type: Float, comparison: { equal_to: Float::NAN, greater_than: ->(_r) { 0 } } } }
+        .to raise_error(ArgumentError, /comparison:.*can never match/m)
+      expect { build_axn { expects :n, type: Float, comparison: { equal_to: Float::NAN, greater_than: :floor_bound } } }
+        .to raise_error(ArgumentError, /comparison:.*can never match/m)
+    end
+
+    it "stands down when every bound is one resolved per call" do
+      expect { build_axn { expects :n, type: Float, comparison: { equal_to: :exact_bound } } }.not_to raise_error
+      expect { build_axn { expects :n, type: Float, comparison: { equal_to: ->(_r) { 1.0 } } } }.not_to raise_error
+    end
+
     it "leaves a SET containing NaN alone, because membership short-circuits on identity" do
       # `[Float::NAN].include?(Float::NAN)` and `Set[Float::NAN].include?(Float::NAN)` are both true — the
       # collection compares object identity before it ever asks `==` — so the set really does forbid the value.
@@ -128,6 +143,19 @@ RSpec.describe "a degenerate literal" do
     it "stands down on a declared type whose equality axn has not vouched for" do
       klass = money
       expect { build_axn { expects :n, type: klass, comparison: { equal_to: 0 } } }.not_to raise_error
+    end
+
+    it "still judges the static bounds at a container position beside a per-call one" do
+      # The same conjunction argument, on the type judgment rather than the reflexivity one: a wrong-typed
+      # static bound sinks the entry whatever its per-call sibling resolves to.
+      expect { build_axn { expects :v, type: Array, comparison: { equal_to: 1, greater_than: :floor_bound } } }
+        .to raise_error(ArgumentError, /comparison:.*can never match/m)
+      expect { build_axn { expects :v, type: Array, comparison: { greater_than: 1, less_than: :ceiling_bound } } }
+        .to raise_error(ArgumentError, /comparison:.*can never match/m)
+
+      # ...and stands down where the static half is satisfiable.
+      expect { build_axn { expects :v, type: Array, comparison: { equal_to: %w[a], greater_than: :floor_bound } } }
+        .not_to raise_error
     end
   end
 
