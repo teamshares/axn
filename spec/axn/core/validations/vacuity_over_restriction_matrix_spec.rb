@@ -85,6 +85,7 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
       "sibling forbids blank" => { presence: false, exclusion: { in: [[], "", :"", {}] } },
       "sibling forbids other" => { presence: false, exclusion: { in: [%w[zzz], "zzz"] } },
       "sibling unreadable" => { presence: false, validate: ->(value) { "bad" if value.nil? } },
+      "acceptance sibling" => { presence: false, acceptance: { accept: [%w[ok], "ok"] } },
     }
   end
 

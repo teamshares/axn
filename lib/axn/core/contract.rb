@@ -3651,6 +3651,7 @@ module Axn
             # A set the witness is not in rejects it; a set it IS in admits it. `nil` is unknown, which admits.
             when :inclusion then _set_witness_membership(sibling, witness) != :excludes
             when :exclusion then _set_witness_membership(sibling, witness) != :contains
+            when :acceptance then _acceptance_admits_blank?(sibling, witness)
             else true
             end
           end
@@ -3679,6 +3680,29 @@ module Axn
           return :unknown unless members.all? { |member| _vouched_equality_operand?(member) }
 
           members.any? { |member| member == witness } ? :contains : :excludes
+        end
+
+        # Whether an `acceptance:` sibling admits the blank witness. Read by ITS OWN rule rather than the set
+        # reader above, because `AcceptanceValidator` tests `Array(accept).include?(value)` — so a Hash `accept:`
+        # is searched as its `[key, value]` PAIRS, which is why only the shapes `Array()` leaves alone are judged
+        # and everything else answers "admits". With no `accept:` of its own it compares against ActiveModel's
+        # default set, which is what makes `acceptance: true` reject an Array blank.
+        #
+        # A nil witness admits unconditionally: AM's acceptance skips a nil outright. That is the standing-down
+        # direction anyway, so an entry disabling the skip (`allow_nil: false`) costs only coverage.
+        #
+        # Judged here and not for `format:`/`numericality:` — which can also reject a blank — because this guard
+        # already reads an acceptance set exactly (`_judgeable_constraint_literals`), and a rule is only worth
+        # having where the reading is exact. The others stay in the "admits" fallback, under-restricting.
+        def _acceptance_admits_blank?(sibling, witness)
+          return true if Internal::Identity.nil_value?(witness)
+
+          opts = Axn::Validation::Base.validator_entry_options(sibling)
+          accept = Internal::ShapeGraph.carries_key?(opts, :accept) ? opts[:accept] : DEFAULT_ACCEPTANCE_SET
+          return true unless Axn::Validation::Base.literal_set_collection?(accept)
+          return true unless accept.all? { |member| _vouched_equality_operand?(member) }
+
+          accept.any? { |member| member == witness }
         end
 
         # Whether ONE value's equality is the one its class carries and one this guard vouches for — the pair of

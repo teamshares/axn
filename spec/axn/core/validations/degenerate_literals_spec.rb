@@ -232,6 +232,24 @@ RSpec.describe "a degenerate literal" do
       end.to raise_error(ArgumentError, /comparison:.*can never match/m)
     end
 
+    it "counts an `acceptance:` sibling, which rejects a blank its set does not name" do
+      # `AcceptanceValidator` tests `Array(accept).include?(value)`, so `[]` is rejected unless the set names it.
+      expect do
+        build_axn do
+          expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true },
+                      acceptance: { accept: [%w[ok]] }
+        end
+      end.to raise_error(ArgumentError, /comparison:.*can never match/m)
+
+      # ...and stands down where the acceptance set DOES name the blank, which is the positive control.
+      action = build_axn do
+        expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true },
+                    acceptance: { accept: [[], %w[ok]] }
+      end
+      expect(action.call(v: []).ok?).to be(true)
+      expect(action.call(v: ["x"]).ok?).to be(false)
+    end
+
     it "still stands down when the sibling leaves that blank alone" do
       # The mirror of the case above, and the reason a sibling cannot simply veto the stand-down: this exclusion
       # forbids something else, so `[]` really does pass and the contract really does enforce.
