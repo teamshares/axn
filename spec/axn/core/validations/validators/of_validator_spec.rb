@@ -260,17 +260,32 @@ RSpec.describe Axn::Validators::OfValidator do
         end
       end
 
-      # WHY no such claim is made: a `keys:` axis reaches the emitter with nothing to say, at the bare spelling
-      # and through a bag alike, while the `values:` spelling of each emits `additionalProperties`. So the
-      # consequence genuinely differs by position, and a bag has no view of which position it sits at.
-      it "emits nothing for a keys: union where the values: spelling emits additionalProperties" do
-        bare_keys = build_axn { expects :a, type: Hash, of: { keys: [Symbol, String] } }
-        bag_keys = build_axn { expects :a, type: Hash, of: { keys: { klass: [Symbol, String] } } }
-        bare_values = build_axn { expects :a, type: Hash, of: { values: [Symbol, String] } }
+      # WHY no such claim is made, and the measurement the whole design rests on: a `keys:` axis reaches the
+      # emitter with nothing to say — there is no keyword to hang a key constraint on, so the emitter never
+      # descends — and that holds through a bag and through every container nested under one. The `values:`
+      # spelling of each is the positive control, emitting at the matching depth, so an emitter that had simply
+      # stopped descending for unrelated reasons would fail this rather than read as agreement.
+      #
+      # Pinned as a spec rather than left as a one-off measurement because it is the sole justification for the
+      # refusals claiming no schema consequence: if a `keys:` axis ever starts emitting, the messages become
+      # under-informative and this fails, which is the notice to revisit them.
+      {
+        "a bare union" => [{ keys: [Symbol, String] }, { values: [Symbol, String] }],
+        "a bag" => [{ keys: { klass: [Symbol, String] } }, { values: { klass: [Symbol, String] } }],
+        "a nested map" => [{ keys: { klass: Hash, of: { values: Integer } } },
+                           { values: { klass: Hash, of: { values: Integer } } }],
+        "a nested array" => [{ keys: { klass: Array, of: Integer } },
+                             { values: { klass: Array, of: Integer } }],
+        "two containers down" => [{ keys: { klass: Array, of: { klass: Hash, of: { values: Integer } } } },
+                                  { values: { klass: Array, of: { klass: Hash, of: { values: Integer } } } }],
+      }.each do |shape, (keys_of, values_of)|
+        it "emits nothing for #{shape} on the keys: axis, where the values: spelling does emit" do
+          keyed = build_axn { expects :a, type: Hash, of: keys_of }
+          valued = build_axn { expects :a, type: Hash, of: values_of }
 
-        expect(bare_keys.input_schema.to_h.dig(:properties, :a)).not_to have_key(:additionalProperties)
-        expect(bag_keys.input_schema.to_h.dig(:properties, :a)).not_to have_key(:additionalProperties)
-        expect(bare_values.input_schema.to_h.dig(:properties, :a)).to have_key(:additionalProperties)
+          expect(keyed.input_schema.to_h.dig(:properties, :a)).not_to have_key(:additionalProperties)
+          expect(valued.input_schema.to_h.dig(:properties, :a)).to have_key(:additionalProperties)
+        end
       end
 
       # The other half of the rule, at the same three positions: a token the runtime cannot hold a value to.
