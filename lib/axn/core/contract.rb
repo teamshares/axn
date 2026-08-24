@@ -2475,6 +2475,16 @@ module Axn
           return if entries.empty?
 
           _symbolize_option_bags!(entries)
+          # DETACHED as well as symbolized, and unconditionally: `_symbolize_option_bags!` builds a new Hash only
+          # when a key actually needs converting, so the ordinary Symbol-keyed spelling took its no-op path and
+          # the caller's option bag stayed stored by reference — `opts[:in] << "b"` then widened an
+          # already-declared contract. That is the aliasing rule exactly: "nothing needs changing" is a
+          # different question from "nothing needs copying".
+          #
+          # The field path is safe because `detach_option_containers!` reaches ITS validator entries directly.
+          # A bag's entries sit one level further down, where `detached_option_bag` copies a nested Hash by
+          # reference — it detaches nested Arrays only — so the same seam is applied here, to the entries.
+          Internal::ShapeGraph.detach_option_containers!(entries)
           entries.each { |key, value| bag[key] = value }
           # `validate:` is the one admitted validator carrying a DSL-misuse guard of its own, and it has to run
           # HERE as well as on the field path: without it `validate: { inclusion: … }` declared cleanly and then

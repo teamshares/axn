@@ -235,6 +235,62 @@ RSpec.describe "value validators in an of: bag" do
       expect(action.call(f: %w[12])).not_to be_ok
     end
 
+    # The symbolizer only builds a new Hash when a key actually needs converting, so the ORDINARY symbol-keyed
+    # spelling took its no-op path and the caller's option bag was stored by reference — "nothing needs
+    # changing" answering a different question from "nothing needs copying", which is the aliasing rule
+    # verbatim. The field path escapes it because `detach_option_containers!` reaches its entries directly;
+    # a bag's entries are one level further down, where `detached_option_bag` copies a nested HASH by
+    # reference (it detaches nested Arrays only).
+    it "detaches a Symbol-keyed option bag, whose keys need no conversion" do
+      opts = { in: ["a"] }
+      action = build_axn { expects :f, type: Array, of: { klass: String, inclusion: opts } }
+      opts[:in] << "b"
+
+      expect(action.call(f: %w[a])).to be_ok
+      expect(action.call(f: %w[b])).not_to be_ok
+    end
+
+    it "detaches the container INSIDE an option bag, not just the bag" do
+      members = ["a"]
+      action = build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: members } } }
+      members << "b"
+
+      expect(action.call(f: %w[b])).not_to be_ok
+    end
+
+    it "detaches the bare-Array form too" do
+      members = ["a"]
+      action = build_axn { expects :f, type: Array, of: { klass: String, inclusion: members } }
+      members << "b"
+
+      expect(action.call(f: %w[b])).not_to be_ok
+    end
+
+    it "detaches at a map axis" do
+      members = ["a"]
+      action = build_axn { expects :m, type: Hash, of: { values: { klass: String, inclusion: { in: members } } } }
+      members << "b"
+
+      expect(action.call(m: { x: "b" })).not_to be_ok
+    end
+
+    it "detaches at a nested bag" do
+      members = ["a"]
+      action = build_axn do
+        expects :f, type: Array, of: { klass: Array, of: { klass: String, inclusion: { in: members } } }
+      end
+      members << "b"
+
+      expect(action.call(f: [%w[b]])).not_to be_ok
+    end
+
+    it "leaves the caller's own objects unmutated" do
+      opts = { in: ["a"] }
+      build_axn { expects :f, type: Array, of: { klass: String, inclusion: opts } }
+
+      expect(opts).to eq(in: ["a"])
+    end
+
     it "reflects the canonicalized option, so the schema agrees with the runtime" do
       action = build_axn { expects :f, type: Array, of: { klass: String, format: { "with" => /\A[A-Z]+\z/ } } }
 
