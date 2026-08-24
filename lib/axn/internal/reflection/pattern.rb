@@ -99,10 +99,27 @@ module Axn
         # `^`/`$`: Ruby's are line anchors (reachable only with AM's `multiline: true`, which refuses the
         # pattern otherwise), ECMA's here are input anchors.
         #
-        # Detected on the escape-stripped source, so `\.`/`\^`/`\$` are not mistaken for metacharacters. It
-        # over-stands-down for a class-internal `[^a]` or `[.]`, which is the safe direction on output.
+        # Detected on the escape-stripped source, so `\.`/`\^`/`\$` are not mistaken for metacharacters. The
+        # over-standing-down this causes for a class-internal `[^a]` or `[.]` is not a wart here but the point:
+        # a NEGATED class reaches astral input exactly as the complements below do, and the bare `^` already
+        # catches every one of them, so no separate entry is needed (measured — adding one changed nothing).
         NARROWING_METACHARACTERS = /[.^$]/
         private_constant :NARROWING_METACHARACTERS
+
+        # A flagless ECMA pattern counts UTF-16 CODE UNITS where Ruby counts CHARACTERS, so anything able to
+        # match a character OUTSIDE THE BMP is narrower in ECMA than in Ruby: `"😀"` is one character to Ruby
+        # and a surrogate pair to ECMA, so `^\D$` matches it in Ruby and fails in ECMA with one code unit left
+        # over. Measured: an action exposing it under `/\A\D\z/` succeeds.
+        #
+        # The COMPLEMENTS are what reach astral input — `\w`/`\d` are ASCII-only and never match one, and a BMP
+        # character like "é" is a single code unit either way, so neither is affected. A negated character class
+        # has the same reach and is already caught by the `^` above; a literal astral character in the source is
+        # the third way in, since ECMA reads it as the two surrogates individually.
+        ASTRAL_REACHING_ESCAPES = %w[D W].freeze
+        private_constant :ASTRAL_REACHING_ESCAPES
+
+        BMP_MAXIMUM = 0xFFFF
+        private_constant :BMP_MAXIMUM
 
         # The ECMA-262 pattern for a declared `format:` entry's regex, or nil to emit nothing.
         #
@@ -144,10 +161,13 @@ module Axn
           source.scan(/\\(.)/m).all? { |(char)| SAFE_ESCAPES.include?(char) }
         end
 
-        # Whether the translation would be narrower than the source rather than exact (see
-        # NARROWING_METACHARACTERS). Only asked on output.
+        # Whether the translation would be narrower than the source rather than exact. Only asked on output,
+        # where a narrowing rejects values axn successfully serialized.
         def narrowing?(source)
-          source.gsub(/\\./m, "").match?(NARROWING_METACHARACTERS)
+          return true if source.gsub(/\\./m, "").match?(NARROWING_METACHARACTERS)
+          return true if source.scan(/\\(.)/m).any? { |(char)| ASTRAL_REACHING_ESCAPES.include?(char) }
+
+          source.each_char.any? { |char| char.ord > BMP_MAXIMUM }
         end
 
         # Ruby reads a `[` INSIDE a character class as a nested class union — `[a[bc]]` is the set {a,b,c} —

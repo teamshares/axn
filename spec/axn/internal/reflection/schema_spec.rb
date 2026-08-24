@@ -5951,6 +5951,74 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
         end
 
+        # A flagless ECMA pattern counts UTF-16 CODE UNITS where Ruby counts CHARACTERS, so anything that can
+        # match a character outside the BMP is a narrowing outbound: Ruby sees one character in "😀" and ECMA
+        # sees a surrogate pair. `\w`/`\d` are safe (ASCII-only, they never match one), and a BMP character
+        # like "é" is safe (one code unit either way) — it is the COMPLEMENTS and the negated classes that
+        # match astral input, plus a literal astral character in the source.
+        it "stands down on a complement escape, which matches astral input" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A\D\z/ }
+            define_method(:call) { expose(:s, "\u{1F600}") }
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        it "stands down on \\W for the same reason" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A\W\z/ }
+            define_method(:call) { expose(:s, "\u{1F600}") }
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        it "stands down on a negated character class, which has the same reach" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A[^0-9]\z/ }
+            define_method(:call) { expose(:s, "\u{1F600}") }
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        it "stands down on a literal astral character in the source" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: Regexp.new("\\A[\u{1F600}]\\z") }
+            define_method(:call) { expose(:s, "\u{1F600}") }
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        # The controls: an ASCII-only pattern, and a BMP non-ASCII one, both still emit outbound.
+        it "still emits an ASCII-only pattern" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A\d+\z/ }
+            def call = expose(:s, "123")
+          end
+
+          expect(action.output_schema[:properties][:s]).to include(pattern: "^\\d+$")
+        end
+
+        it "still emits a BMP non-ASCII pattern, which needs no surrogate pair" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\Aé+\z/ }
+            def call = expose(:s, "éé")
+          end
+
+          expect(action.output_schema[:properties][:s]).to include(pattern: "^é+$")
+        end
+
+        it "still emits the complements on INPUT, where a narrowing is licensed" do
+          expect(prop_for { expects :s, type: String, format: { with: /\A\D\z/ } }).to include(pattern: "^\\D$")
+        end
+
         # An EXACT translation still emits on output — the stand-down is about narrowing, not about output.
         it "still emits an exactly-translated pattern" do
           action = build_axn do
