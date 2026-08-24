@@ -64,10 +64,14 @@ module Axn
       MODULE_PRIVATE_METHOD_DEFINED = ::Module.instance_method(:private_method_defined?)
       MODULE_PROTECTED_INSTANCE_METHODS = ::Module.instance_method(:protected_instance_methods)
       STRING_EMPTY = ::String.instance_method(:empty?)
+      ARRAY_EMPTY = ::Array.instance_method(:empty?)
+      HASH_EMPTY = ::Hash.instance_method(:empty?)
+      SET_EMPTY = (::Set.instance_method(:empty?) if defined?(::Set))
       STRING_ENCODING = ::String.instance_method(:encoding)
       SYMBOL_ENCODING = ::Symbol.instance_method(:encoding)
       UNBOUND_METHOD_SUPER_METHOD = ::UnboundMethod.instance_method(:super_method)
       private_constant :SYMBOL_ENCODING, :UNBOUND_METHOD_SUPER_METHOD
+      private_constant :ARRAY_EMPTY, :HASH_EMPTY, :SET_EMPTY
       private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
                        :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS, :MODULE_METHOD_DEFINED,
@@ -517,6 +521,39 @@ module Axn
         when ::String then STRING_EMPTY.bind_call(value) || _blank_string?(value)
         else false
         end
+      end
+
+      # Whether a value is one ActiveModel's `allow_blank:` would SKIP — `value.blank?`, as its
+      # `EachValidator` asks it (activemodel 7.2.2.2). Deliberately WIDER than `absent_value?` above, which
+      # answers a different question: that one refuses to read `[]` as a spelling of "no option", while this
+      # one must agree with ActiveSupport, because a blank value really is one the validator never sees.
+      #
+      # Every read is bound, so nothing the value defines decides it — the point of asking here rather than
+      # calling `blank?`, which dispatches. Where the two could still disagree, this answers NOT BLANK,
+      # because a caller acts on the verdict by DISCOUNTING the value: a false "blank" drops a value
+      # ActiveModel really would compare, and only a missed one is safe.
+      #
+      # EXACT class throughout, which is what makes that guarantee hold without reasoning about
+      # ActiveSupport's per-class spelling. A subclass may override `blank?` itself, or the `empty?` some of
+      # ActiveSupport's definitions dispatch — measured, an `Array` subclass with `def blank? = false` is not
+      # blank though the root's `empty?` says it is, and a whitespace `String` subclass does the same. An
+      # exact class has no such override anywhere in its lookup path, so ActiveSupport's implementation and
+      # the bound read here are the same code. Every subclass, and every object of the caller's own, is left
+      # NOT blank.
+      #
+      # `Symbol#empty?` is dispatched, for the reason `absent_value?` gives: a Symbol subclass can be declared
+      # but never instantiated, so no value is ever an instance of one.
+      def self.blank_literal?(value)
+        klass = KERNEL_CLASS.bind_call(value)
+
+        return true if klass.equal?(::NilClass) || klass.equal?(::FalseClass)
+        return value.empty? if klass.equal?(::Symbol)
+        return STRING_EMPTY.bind_call(value) || _blank_string?(value) if klass.equal?(::String)
+        return ARRAY_EMPTY.bind_call(value) if klass.equal?(::Array)
+        return HASH_EMPTY.bind_call(value) if klass.equal?(::Hash)
+        return SET_EMPTY.bind_call(value) if SET_EMPTY && klass.equal?(::Set)
+
+        false
       end
 
       # Whitespace-only, for any encoding, without letting the check itself become the failure. A String whose
