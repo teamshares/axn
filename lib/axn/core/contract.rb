@@ -4181,6 +4181,7 @@ module Axn
         # already turn on, rather than by reading one entry's tolerance keys.
         def _reject_unsatisfiable_size_interval!(validations, where:)
           return if Axn::Validation::Base.nil_accepted?(validations)
+          return if _declaration_gated?(validations)
 
           _reject_blank_axis_complement!(validations, where:)
 
@@ -4189,6 +4190,26 @@ module Axn
 
           _raise_empty_size_interval!(validations, where, minimum, maximum) if minimum && maximum && minimum > maximum
           _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
+        end
+
+        # Whether the whole declaration rides a gate. Every rule below claims "no value satisfies this
+        # contract", and a DECLARATION-level `if:`/`unless:` makes that false outright: it skips every
+        # validator in the declaration together — the type check included — so on the calls where it is closed
+        # the contract enforces nothing and every value passes. There is no call on which these bounds are in
+        # force without their siblings also being in force, which is exactly what an ENTRY-level gate does
+        # leave open, and why that one is still counted static-maximally.
+        #
+        # The emitted node is unaffected by this stand-down and stays static-maximal — a gated
+        # `length: { maximum: 0 }` beside the inferred floor still emits `{minItems: 1, maxItems: 0}`, as it
+        # did before PRO-3220 — but the corollary is about refusing a CONTRACT that admits nothing, and this
+        # one admits everything.
+        #
+        # Declaration gates are blank-canonicalized by `_canonicalize_blank_gates!` long before this runs, so
+        # a present key is always a real gate.
+        def _declaration_gated?(validations)
+          gates = _shared_validation_options(validations)
+
+          Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| gates[key] }
         end
 
         # `presence:` and `absence:` are exact complements: ActiveModel's presence check errors unless the value

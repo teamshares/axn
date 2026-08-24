@@ -105,3 +105,26 @@ The guard then read that ceiling back and used it to prove a contract unsatisfia
 So an approximation loses its licence the moment a guard reads it as fact. Where a guard must lean on a projected bound, the bound has to be EXACT on the axis being judged, or the guard stands down. The fix split the family in two: `presence:` ∧ `absence:` is a blank-axis contradiction, exact at every type and needing no size reasoning at all, while the size rule keeps only the bounds that really are about size — which meant withdrawing the String ceiling from the emitter as well, since a bound no guard may trust is one worth asking whether to emit at all.
 
 The same distinction settles gates in opposite directions in the two rules, and the test is *authored or inferred*, not *conditional or not*. Whichever way a rule resolves, ask it of EFFECTIVE gates (`Base.entry_effectively_gated?`) rather than of each entry's own (`entry_self_gated?`): a declaration-level `if:` is nobody's own gate and stops every check in the declaration regardless, so a rule asking "does this run on every call" that consults only nested gates is wrong on the commonest spelling. A `length:` ceiling is a size constraint the author wrote, so it is emitted as written whatever gates it, and the size rule counts it static-maximally. A size meaning for `absence:` is one axn infers, so it may only be inferred from a check that always runs — `presence: { unless: :archived }, absence: { if: :archived }` is a working contract, and a `maxItems: 0` derived from its conditional half would describe a document the contract does not carry on the calls where the gate is closed.
+
+## Four review rounds, one class: shape read where effect was the question
+
+PRO-3220's guard drew a finding in each of four rounds, and every one was the same mistake wearing different clothes — a declaration's SHAPE consulted where its EFFECT at runtime was the question:
+
+| read | should have read |
+|---|---|
+| `value.size` | `value.length` — what `LengthValidator` measures |
+| an emitted `maxLength: 0` | nothing; it was a biased-stricter approximation, not a fact |
+| `entry_self_gated?` | `entry_effectively_gated?` — a declaration gate skips the entry too |
+| two of three measurement routes | all three: `length`, `empty?`, `blank?` |
+| "a `presence:` entry exists" | "a `presence:` entry rejects something" — a blank-tolerant one does not |
+| a member's own size | its size AND whether its `==` decides what it matches |
+
+Six hand-written fixes, each one round apart, and the count was not falling. What ended it was not a seventh fix: it was **enumerating the product and measuring it against the real runtime**. The soundness invariant is mechanical — *if the guard refuses, no value passes* — so it can be checked rather than argued: build every combination of floor × ceiling × set × modifier × type, build each one again with the guard stubbed off on that one class, and run axn's own validation over a candidate spread.
+
+That found a twenty-five-cell hole no round had reported (a declaration-level `if:` suspends the entire contract, so every value passes, while the size rule never consulted gates at all), and it is now `spec/axn/core/validations/unsatisfiable_size_soundness_spec.rb`. Two inverse mutations confirm it bites: remove the declaration-gate stand-down and all five examples fail; remove the blank-tolerant-presence test and four do.
+
+Three transferable rules:
+
+- **A declaration-time guard has one asymmetric failure mode.** Refusing a legal declaration cannot be recovered from — there is no runtime left to correct it — while admitting a broken one merely leaves it broken. So the invariant worth checking mechanically is soundness (*refuses ⇒ unsatisfiable*), not completeness, and every stand-down is cheap.
+- **Measure against the runtime, not against a second model of it.** The stub-the-guard-and-run-it trick works for any guard that blocks its own construction, and it is what makes "does anything pass" an observation rather than a claim.
+- **When round N rhymes with round N−1, the next artifact is a product probe, not another fix.** Same conclusion as PRO-2883's malformed-input matrix and PRO-2995's derive-don't-enumerate specs; this is the third time, which is the point at which the rule should be reached for first rather than last.
