@@ -44,6 +44,20 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         .not_to raise_error
     end
 
+    # A DECLARATION-level gate skips both checks together, so on every call where it is closed the field
+    # accepts anything — the same legitimate reading, reached by a different spelling. What matters here is
+    # whether both checks run on every call, which is a question about EFFECTIVE gates rather than about the
+    # gate each entry owns.
+    %i[if unless].each do |key|
+      it "stands down under a declaration-level `#{key}:`, which skips both halves together" do
+        expect { declare(type: Array, presence: true, absence: true, key => -> { false }) }.not_to raise_error
+      end
+    end
+
+    it "stands down where a declaration-level gate reaches an otherwise bare absence:" do
+      expect { declare(type: Array, absence: true, if: -> { false }) }.not_to raise_error
+    end
+
     it "leaves the gated pair working at runtime" do
       action = declare(type: Array, presence: { unless: :archived }, absence: { if: :archived })
       action.define_method(:archived) { false }
@@ -75,6 +89,12 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       prop = declare(type: String, absence: true, allow_empty: true).input_schema[:properties][:f]
 
       expect(prop).not_to have_key(:maxLength)
+    end
+
+    it "emits no ceiling for an absence: a declaration-level gate can skip" do
+      prop = declare(type: Array, absence: true, allow_empty: true, if: -> { false }).input_schema[:properties][:f]
+
+      expect(prop).not_to have_key(:maxItems)
     end
 
     it "leaves absence: false alone — a disabled validator constrains nothing" do
@@ -190,6 +210,7 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
     describe "a member whose measurement is not Ruby's own" do
       let(:overriding_length) { Class.new(Array) { def length = 3 } }
       let(:overriding_empty) { Class.new(Array) { def empty? = false } }
+      let(:overriding_blank) { Class.new(Array) { def blank? = false } }
 
       it "stands down on a member that answers `length` with its own code" do
         member = overriding_length.new
@@ -209,6 +230,26 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
 
       it "stands down on a member that answers `empty?` with its own code" do
         expect { declare(type: Array, inclusion: { in: [overriding_empty.new] }) }.not_to raise_error
+      end
+
+      # The third route: the floor here is the presence check, which asks the value `blank?`. A member
+      # answering that with its own code clears the floor at runtime whatever its length says.
+      it "stands down on a member that answers `blank?` with its own code" do
+        expect { declare(type: Array, inclusion: { in: [overriding_blank.new] }) }.not_to raise_error
+      end
+
+      it "accepts at runtime the member whose blank? it stood down on" do
+        member = overriding_blank.new
+        action = declare(type: Array, inclusion: { in: [member] })
+
+        expect(action.call(f: member).ok?).to be(true)
+      end
+
+      # `Object#blank?` is ActiveSupport's own, and answers out of the `empty?` already required native — so a
+      # Set, whose `blank?` AS does not specialize, stays measurable rather than standing the guard down.
+      it "measures a Set, whose blank? is ActiveSupport's generic one" do
+        expect { declare(type: Set, inclusion: { in: [Set.new] }) }
+          .to raise_error(ArgumentError, /can never match/)
       end
 
       # A subclass that overrides NEITHER is measured by the built-in it inherits, so the refusal still lands.

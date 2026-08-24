@@ -980,12 +980,18 @@ module Axn
         # declared literal has to be weighed against the sizes a contract admits (the empty-interval guard's
         # inclusion branch).
         #
-        # TWO routes enforce those sizes, and they measure by different methods: a `length:` entry, which reads
-        # `value.length` (activemodel 8.1.3.1, length.rb:48), and the emptiness axis, which asks `blank?`/
-        # `empty?`. Which one holds a given bound is not this method's to know, so a value is measured only
-        # where BOTH are Ruby's own — and there they agree by construction. `size` is deliberately not the
-        # method read: no check measures it, and reading it is how an `Array` subclass overriding `length` was
-        # measured as empty here while `length:` and `inclusion:` both accepted it at runtime.
+        # THREE routes enforce those sizes, and each measures by a different method — the complete list, since
+        # these are every check that can hold a size bound:
+        #
+        #   `length:`             `value.length`  (activemodel 8.1.3.1, length.rb:48)
+        #   `presence:`           `value.blank?`
+        #   the emptiness check   `value.empty?`  (NonEmptinessValidator)
+        #
+        # Which route holds a given bound is not this method's to know — the floor of 1 is `presence:`'s on one
+        # declaration and `length:`'s on the next — so a value is measured only where ALL THREE are Ruby's own,
+        # and there they agree by construction. `size` is deliberately not among them: no check measures it,
+        # and reading it is how an `Array` subclass overriding `length` was measured as empty here while
+        # `length:` and `inclusion:` both accepted it at runtime.
         #
         # Ownership is the whole test, the same one `empty_container?` applies and for the same reason: a
         # measurement a caller wrote is caller code, which a declaration-time verdict must neither run nor
@@ -994,15 +1000,25 @@ module Axn
         # The owner reads are bound (`NativeMethods.method_owner`); the call that follows needs no guard,
         # because the implementation it dispatches is the one whose owner was just established.
         def container_size(value)
-          return nil unless natively_measured?(value, :length) && natively_measured?(value, :empty?)
+          return nil unless MEASURED_BY_A_SIZE_CHECK.all? { |method_name| natively_measured?(value, method_name) }
 
           value.length
         end
 
+        # Every method a check that holds a size bound measures the value by. Ordered cheapest-first only
+        # incidentally; all three must be native, so the order is immaterial.
+        MEASURED_BY_A_SIZE_CHECK = %i[length empty? blank?].freeze
+
+        # `Object` is admitted as an owner, and only ever ends up owning `blank?` here — it defines neither
+        # `length` nor `empty?`, so those two can never resolve to it. ActiveSupport's `Object#blank?` is
+        # `respond_to?(:empty?) ? !!empty? : false`, so it answers out of the very `empty?` this method has
+        # already required to be native: for a `Set`, whose `blank?` AS does not specialize, that is the whole
+        # reason a member is measurable at all.
         def natively_measured?(value, method_name)
           owner = Axn::Internal::NativeMethods.method_owner(value, method_name)
+          return false if owner.nil?
 
-          !owner.nil? && native_empty_owner?(owner)
+          native_empty_owner?(owner) || ::Object.equal?(owner)
         end
 
         def native_empty_owner?(owner)
@@ -1969,17 +1985,18 @@ module Axn
         #     nothing;
         #   * every declared type is one whose blank values are its empty ones, since only there does the blank
         #     axis land on the size axis at all;
-        #   * the entry is UNGATED. This is the one bound here not counted static-maximally, and the asymmetry
-        #     is between an AUTHORED bound and an INFERRED one. A `length:` ceiling is a size constraint the
-        #     author wrote, so it is emitted as written whatever gates it. A size meaning for `absence:` is one
-        #     axn infers, and it may only infer it from a check that always runs: `presence: { unless: :archived
-        #     }, absence: { if: :archived }` is a working contract, and deriving a `maxItems: 0` from its
+        #   * the entry is UNGATED — by a gate of its own OR by one the whole declaration carries, since either
+        #     stops it running. This is the one bound here not counted static-maximally, and the asymmetry is
+        #     between an AUTHORED bound and an INFERRED one. A `length:` ceiling is a size constraint the author
+        #     wrote, so it is emitted as written whatever gates it. A size meaning for `absence:` is one axn
+        #     infers, and it may only infer it from a check that always runs: `presence: { unless: :archived },
+        #     absence: { if: :archived }` is a working contract, and deriving a `maxItems: 0` from its
         #     conditional half would put a ceiling on the document that the contract does not carry on the
         #     calls where the gate is closed — most of them.
         def absence_bounds_size?(validations)
           entry = Axn::Validation::Base.validator_entries(validations)[:absence]
           return false unless entry
-          return false if Axn::Validation::Base.entry_self_gated?(entry)
+          return false if Axn::Validation::Base.entry_effectively_gated?(entry, Axn::Validation::Base.shared_validation_options(validations))
 
           tokens = declared_type_tokens(validations)
           tokens.any? && tokens.all? { |token| blank_is_empty_class?(token) }

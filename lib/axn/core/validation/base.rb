@@ -329,6 +329,15 @@ module Axn
       # test for a type check that stands apart from the rest of its declaration.
       def self.entry_self_gated?(entry_opts) = entry_effective_gate_keys(entry_opts, {}).any?
 
+      # Whether an entry can be skipped at runtime AT ALL — its own nested gates and the declaration-level ones
+      # it inherits alike. The question to ask wherever what matters is "does this check run on every call",
+      # rather than "can this check be skipped independently of its siblings" (`entry_self_gated?`): a
+      # declaration-level gate is not this entry's own, but it stops the entry running just the same.
+      #
+      # `decl_gates` are the declaration's own `if:`/`unless:`, which must already be blank-canonicalized —
+      # true of any bag past `_canonicalize_blank_gates!`, which is every bag a config carries.
+      def self.entry_effectively_gated?(entry_opts, decl_gates) = entry_effective_gate_keys(entry_opts, decl_gates).any?
+
       # Whether a single validator ENTRY's options MENTION a per-validator gate key at all — blank or not
       # (contrast entry_self_gated?, which requires a NON-blank value). A blank nested gate is not inert:
       # per AM's measured per-key merge, a blank nested same-key value OVERRIDES and drops the shared

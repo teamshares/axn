@@ -4208,12 +4208,19 @@ module Axn
         # a working contract, and no structural test can tell complementary conditions from identical ones
         # (two Procs are never comparable). Refusing it would reject a declaration that works, which this guard
         # must never do — so it under-restricts here, and the emitted node is unaffected either way.
+        #
+        # EFFECTIVE gates, not each entry's own: the question is whether both checks run on every call, and a
+        # DECLARATION-level `if:` stops them both just as surely as a nested one stops either. (That is the
+        # opposite of what `_entry_guaranteed_to_run?` answers, and rightly — it asks whether one entry can be
+        # skipped independently of its siblings, which a shared gate never does.)
         def _reject_blank_axis_complement!(validations, where:)
           entries = Axn::Validation::Base.validator_entries(validations)
           presence = entries[:presence]
           absence = entries[:absence]
           return unless presence && absence
-          return unless _entry_guaranteed_to_run?(presence) && _entry_guaranteed_to_run?(absence)
+
+          gates = _shared_validation_options(validations)
+          return if [presence, absence].any? { |entry| Axn::Validation::Base.entry_effectively_gated?(entry, gates) }
 
           # Both exits are named rather than the one that applies: by the time this runs, an inferred presence
           # check and an authored one are the same entry (`_apply_default_presence!` writes a bare `true`, and
