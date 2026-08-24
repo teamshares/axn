@@ -404,6 +404,38 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
     end
   end
 
+  # A raw `ShapeConfig` member never reaches `_parse_field_validations`, so the guard is called again from the
+  # canonicalization seam that route does pass through — beside the five field-path guards already there.
+  describe "a raw shape member, which reaches the guard by another route" do
+    def raw_member(validations)
+      member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations:)
+      build_axn { expects :bag, type: Hash, shape: { members: [member], container: Hash } }
+    end
+
+    it "refuses a floor above its own ceiling, as the block form does" do
+      expect { raw_member({ type: { klass: Array }, length: { minimum: 3, maximum: 2 } }) }
+        .to raise_error(ArgumentError, /shape member `m` admits no value at all/)
+    end
+
+    # A raw member's bag is the author's own and carries no inferred presence check, so the non-emptiness
+    # floor that makes these contradictory on a field is simply absent here — and the contracts really do
+    # admit the empty container, which the emitted ceiling states exactly. Less is refused on this route than
+    # on the field path, and that is the contracts differing rather than the guard missing them.
+    it "leaves a zero ceiling alone, there being no inferred floor to contradict" do
+      action = raw_member({ type: { klass: Array }, length: { maximum: 0 } })
+
+      expect(action.call(bag: { m: [] }).ok?).to be(true)
+      expect(action.input_schema[:properties][:bag][:properties][:m][:maxItems]).to eq(0)
+    end
+
+    it "leaves absence: alone on the same terms, and reflects its ceiling" do
+      action = raw_member({ type: { klass: Array }, absence: true })
+
+      expect(action.call(bag: { m: [] }).ok?).to be(true)
+      expect(action.input_schema[:properties][:bag][:properties][:m][:maxItems]).to eq(0)
+    end
+  end
+
   # A tolerated nil is a passing value, and it makes the emitted node satisfiable through its null branch —
   # the same stand-down the value-constraint guard makes, for the same reason.
   describe "a nil tolerance rescues every one of them" do
