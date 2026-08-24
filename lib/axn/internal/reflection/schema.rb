@@ -1422,6 +1422,24 @@ module Axn
           node[:enum] = existing ? existing & values : values
         end
 
+        # Whether a JSON key — always a String — could satisfy this axis's declared class. An axis naming none
+        # constrains no class and so admits one. `:uuid` is the one pseudo-type whose values ARE Strings;
+        # `:boolean` and `:params` are not, and neither is any other class unless String descends from it.
+        def axis_admits_string_key?(klass)
+          tokens = Array(klass)
+          return true if tokens.empty?
+
+          tokens.any? do |token|
+            case token
+            when ::Symbol then token == :uuid
+            # `String <= token` asked the same question, but reversing it to satisfy the linter would dispatch
+            # `>=` on a caller-supplied Module. This reads String's OWN ancestry natively instead, which is the
+            # undispatched form and the seam the error-path rules already point at.
+            else Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(::String, token)
+            end
+          end
+        end
+
         # A property-name set, or nil to stand down — and the two directions are different questions.
         #
         # On OUTPUT the members are rendered by `Values.canonical_wire_key`, the SAME function the map's own
@@ -1436,8 +1454,12 @@ module Axn
         # held for a bare type.
         def property_name_enum(values, for_output:)
           return values.map { |value| Values.canonical_wire_key(value) } if for_output
+          return nil unless values.all?(::String)
 
-          values.all?(::String) ? values : nil
+          # Detached, never the inclusion array's own Strings: reflection hands these to a consumer, and one
+          # mutating a member in place would change which keys the DECLARED action accepts. The value-enum path
+          # dups through the same normalizer.
+          normalize_schema_literal(values)
         end
 
         # A declared `format:` reflects as `pattern` when the regex translates faithfully — `Reflection::Pattern`
@@ -2117,6 +2139,13 @@ module Axn
         def map_keys_schema(bag, for_output:)
           axis = Axn::Internal::ShapeGraph.hash_or_nil(bag[:keys])
           return {} if nil.equal?(axis)
+          # A JSON object key is a String, so an axis whose declared class EXCLUDES String cannot be satisfied
+          # from JSON at all — and then every inbound keyword here is a lie, not just the set: a
+          # `keys: { klass: Symbol, format: … }` told a client to send `{"a" => 1}`, which the axis rejects on
+          # the class check before the pattern is ever consulted. Gated on the CLASS rather than per keyword,
+          # which is what round 11 got wrong by fixing only the enum. On output the key has already been
+          # serialized to a String, so the whole projection stands.
+          return {} unless for_output || axis_admits_string_key?(axis[:klass])
 
           # The node is built with the type a JSON object key always has, so the projector keys each keyword off
           # `"string"` — which is what decides, on its own, that a `format:`/`length:` reflects here and a

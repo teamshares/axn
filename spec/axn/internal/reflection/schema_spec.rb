@@ -6753,6 +6753,66 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a b])
     end
 
+    # Round 11 gated the ENUM on this, which was the keyword rather than the class: a JSON key is a String, so
+    # a `keys:` axis whose declared class excludes String can never be satisfied from JSON AT ALL, and every
+    # inbound `propertyNames` keyword is equally a lie there — not just the set.
+    it "stands down entirely on input when the axis excludes String keys" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { klass: Symbol, format: { with: /\Aa\z/ } }, values: Integer }
+      end
+
+      expect(prop).not_to have_key(:propertyNames)
+    end
+
+    it "stands down for a length: on such an axis too" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { klass: Symbol, length: { maximum: 1 } }, values: Integer }
+      end
+
+      expect(prop).not_to have_key(:propertyNames)
+    end
+
+    it "still emits those keywords on OUTPUT, where the key is serialized to a String" do
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: Symbol, format: { with: /\Aa\z/ } }, values: Integer }
+        def call = expose(:m, { a: 1 })
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(pattern: "^a$")
+    end
+
+    it "still emits inbound for a klass-less axis, which a String key can satisfy" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { format: { with: /\Aa\z/ } }, values: Integer }
+      end
+
+      expect(prop[:propertyNames]).to eq(pattern: "^a$")
+    end
+
+    # A `:uuid` axis is string-shaped, so a JSON key really can satisfy it.
+    it "still emits inbound for a uuid axis, whose values are Strings" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { klass: :uuid, length: { maximum: 36 } }, values: Integer }
+      end
+
+      expect(prop[:propertyNames]).to eq(maxLength: 36)
+    end
+
+    # Reflection must not hand back the objects the contract itself holds: a consumer mutating a returned
+    # member in place would change which keys the DECLARED action accepts. The value-enum path dups through
+    # `normalize_schema_literal`; this one was returning the inclusion array's own Strings.
+    it "detaches the emitted members from the ones the validator holds" do
+      member = +"a"
+      action = build_axn { expects :m, type: Hash, of: { keys: { klass: String, inclusion: { in: [member] } }, values: Integer } }
+      emitted = action.input_schema.dig(:properties, :m, :propertyNames, :enum)
+
+      expect(emitted.first).not_to be_equal(member)
+      emitted.first << "ZZZ"
+      expect(member).to eq("a")
+      expect(action.call(m: { "a" => 1 })).to be_ok
+    end
+
     it "still emits a String set on input, which a JSON key CAN satisfy" do
       prop = prop_for(:m) do
         expects :m, type: Hash, of: { keys: { klass: String, inclusion: { in: %w[a b] } }, values: Integer }
