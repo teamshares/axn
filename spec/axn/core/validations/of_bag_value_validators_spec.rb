@@ -263,6 +263,28 @@ RSpec.describe "value validators in an of: bag" do
         .to raise_error(ArgumentError, /cannot constrain a container/)
     end
 
+    # At a FIELD, a tolerance flag stands the satisfiability guard down because it genuinely rescues the
+    # contract — `type: String, inclusion: { in: [1, 2] }, optional: true` really does accept nil. At a bag
+    # position it rescues nothing: a bag's `allow_nil:`/`allow_blank:` are not positional (PRO-3225), so
+    # honouring them here would let a contract that admits NOTHING declare cleanly, which is the whole class
+    # the guard exists to refuse.
+    it "does not let an unenforced bag tolerance stand the guard down" do
+      expect { build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_nil: true } } }
+        .to raise_error(ArgumentError, /can never match/)
+    end
+
+    it "refuses it under allow_blank: too" do
+      expect { build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_blank: true } } }
+        .to raise_error(ArgumentError, /can never match/)
+    end
+
+    # The field-level control, which must keep standing down — there the tolerance IS enforced.
+    it "still stands down at a field, where the tolerance is enforced" do
+      action = build_axn { expects :f, type: String, inclusion: { in: [1, 2] }, optional: true }
+
+      expect(action.call(f: nil)).to be_ok
+    end
+
     it "stands the container refusal down when the bag's klass is a scalar" do
       expect { build_axn { expects :f, type: Array, of: { klass: String, format: { with: /a/ } } } }.not_to raise_error
     end

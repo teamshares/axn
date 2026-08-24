@@ -22,12 +22,19 @@ module Axn
       module Pattern
         # The escapes that mean the same thing in both dialects. `A`/`z` are Ruby-only and TRANSLATED below
         # rather than passed through; they are listed because they are legal input. Absent on purpose, each
-        # because ECMA has no equivalent or needs a flag to enable one: `Z` (end-or-before-final-newline),
-        # `h`/`H` (hex digit), `p`/`P` (needs the `u` flag), `G`/`K` (match-start / keep), `R`/`X` (linebreak /
-        # grapheme), `g`/`k` (subexpression call / named backreference), `e`/`a` (escape / bell), `o` (braced
-        # octal), `M`/`C` (meta / control).
+        # because ECMA has no equivalent, needs a flag to enable one, or matches a DIFFERENT set of characters:
+        # `Z` (end-or-before-final-newline), `h`/`H` (hex digit), `p`/`P` (needs the `u` flag), `G`/`K`
+        # (match-start / keep), `R`/`X` (linebreak / grapheme), `g`/`k` (subexpression call / named
+        # backreference), `e`/`a` (escape / bell), `o` (braced octal), `M`/`C` (meta / control), and — the one
+        # that looks safe and is not — `s`/`S`: Ruby's `\s` is the ASCII whitespace set while ECMA's also
+        # includes NBSP, the Unicode Zs category and the line/paragraph separators, so emitting it would accept
+        # strings the runtime rejects. `d`/`D` and `w`/`W` ARE the same set in both and stay.
+        #
+        # `.` is a knowing exception rather than an oversight: ECMA's excludes `\r` and U+2028/9 where Ruby's
+        # excludes only `\n`, so an emitted `.` matches FEWER strings — stricter, the licensed direction, and
+        # standing down on it would cost the keyword for most real patterns.
         SAFE_ESCAPES = Set.new(
-          %w[A z d D w W s S b B n r t f v 0 x u] +
+          %w[A z d D w W b B n r t f v 0 x u] +
           %w[. * + ? ( ) [ ] { } | ^ $ / \\ -] +
           %w[1 2 3 4 5 6 7 8 9],
         ).freeze

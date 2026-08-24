@@ -1385,15 +1385,51 @@ module Axn
         # Array's element, a map's axis), so a keyword cannot land at one position and be forgotten at another —
         # which is what a mirrored copy would eventually become. The keyword each one lands on is decided by the
         # node's own emitted `type:`, so the same call does the right thing wherever the node sits.
-        def apply_value_constraints!(node, validations, nullable:)
-          if (inclusion = validations[:inclusion])
-            enum_values = inclusion_enum_values(inclusion)
-            node[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values
-          end
-
+        def apply_value_constraints!(node, validations, nullable:, property_names: false)
+          apply_inclusion_enum!(node, validations, nullable:, property_names:)
           apply_size_constraints!(node, validations)
           apply_numeric_bounds!(node, validations)
           apply_pattern!(node, validations)
+        end
+
+        # `enum` is INTERSECTED with whatever the node already carries, never assigned over it: a singleton type
+        # constrains itself by enum too (`TrueClass` emits `enum: [true]`, because the runtime accepts only the
+        # singleton), so overwriting it advertised `false` on a `klass: TrueClass` position the runtime rejects.
+        # Both are enforced, so the emitted set is the values that satisfy both.
+        #
+        # On a `propertyNames` node the members must additionally be renderable AS a property name — every JSON
+        # object key is a string. A Symbol has a faithful form; an Integer does not, and the runtime really does
+        # accept `{ 1 => v }`, so a set with any unrenderable member stands the ENUM down (leaving the axis's
+        # other, string-shaped constraints in place) rather than emit a set no key can satisfy.
+        def apply_inclusion_enum!(node, validations, nullable:, property_names:)
+          inclusion = validations[:inclusion]
+          return unless inclusion
+
+          values = inclusion_enum_values(inclusion)
+          return unless values
+
+          values = enum_for_inclusion(values, nullable:)
+          if property_names
+            values = property_name_enum(values)
+            return if values.nil?
+          end
+
+          existing = node[:enum]
+          node[:enum] = existing ? existing & values : values
+        end
+
+        # A property-name set in its wire form, or nil when any member has none. A Symbol renders (`:a` is the
+        # key `"a"`); a String is already one; anything else — an Integer, a Float, nil — is a key JSON cannot
+        # spell, so the whole set stands down rather than being half-rendered into something narrower than the
+        # contract.
+        def property_name_enum(values)
+          rendered = values.map do |value|
+            case value
+            when ::String then value
+            when ::Symbol then value.to_s
+            end
+          end
+          rendered.include?(nil) ? nil : rendered
         end
 
         # A declared `format:` reflects as `pattern` when the regex translates faithfully — `Reflection::Pattern`
@@ -1422,6 +1458,11 @@ module Axn
           return unless Array(prop[:type]).intersect?(NUMERIC_TYPES)
 
           entries = Axn::Validation::Base.validator_entries(validations)
+          # Both entries are enforced, so their bounds are INTERSECTED into one set before any keyword is
+          # written — assigning per entry let whichever the iteration reached last win, and emitted the weaker
+          # bound of the two (`numericality: { greater_than: 10 }, comparison: { greater_than: 0 }` advertised
+          # `exclusiveMinimum: 0` while the runtime rejected 5).
+          bounds = {}
           NUMERIC_BOUND_ENTRIES.each do |key, ranged|
             entry = entries[key]
             next unless entry
@@ -1429,9 +1470,11 @@ module Axn
             Axn::Validation::Base.declared_numeric_bounds(entry, ranged:).each do |operator, bound|
               next unless Axn::Validation::Base.emittable_numeric_bound?(bound)
 
-              prop[NUMERIC_BOUND_KEYS.fetch(operator)] = bound
+              Axn::Validation::Base.intersect_numeric_bound(bounds, operator, bound)
             end
           end
+
+          bounds.each { |operator, bound| prop[NUMERIC_BOUND_KEYS.fetch(operator)] = bound }
         end
 
         def apply_size_constraints!(prop, validations)
@@ -1844,11 +1887,17 @@ module Axn
         # deliberately rather than corrected here.
         def contents_node_schema(bag, for_output: false, ancestry: nil)
           node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : {}
+          # Whether the POSITION admits nil is the same question `nil_allowed?` answers for a field, asked of
+          # the bag — a `klass:` naming NilClass admits it until another validator on the same bag rejects it.
+          # Hard-coding it left `of: { klass: [String, NilClass], presence: true }` advertising a `null` branch
+          # the runtime rejects, and stripped nil from an enum at a position that accepts it.
+          nullable = bag_nullable?(bag)
+          node = reconcile_contents_nullability(node, nullable:)
           # The bag's value validators (PRO-3193), through the same projector a named position uses. Applied
           # before the member/contents merges below so a `type:` those steps install cannot be read as the type
           # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
           # validators constrain.
-          apply_value_constraints!(node, bag_value_constraints(bag), nullable: false)
+          apply_value_constraints!(node, bag_value_constraints(bag), nullable:)
           node = contents_member_schema(node, bag, for_output:, ancestry:)
           inner = emitted_contents_edge(bag, :of, for_output:)
           return node if nil.equal?(inner)
@@ -2016,8 +2065,38 @@ module Axn
           # numeric bound does not. The type is then dropped: `propertyNames` needs no `type: "string"` of its
           # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
           node = { type: "string" }
-          apply_value_constraints!(node, bag_value_constraints(axis), nullable: false)
+          apply_value_constraints!(node, bag_value_constraints(axis), nullable: false, property_names: true)
           node.except(:type)
+        end
+
+        # Whether the value at a bag's position may be nil — `Base.nil_accepted?`, the same seam a field's
+        # `nil_allowed?` reads, asked of the bag's own `klass:` and validators. A bag that constrains nothing at
+        # all admits nil, exactly as an empty validator set does at a field.
+        def bag_nullable?(bag)
+          validations = bag_value_constraints(bag)
+          klass = bag[:klass]
+          # Synthesized in the CANONICAL `type:` shape a field's stored validations carry. A bare token would be
+          # normalized as a validator scalar and read under the wrong key entirely, so `type_admits_nil?` would
+          # see no `klass:` and call a nil-admitting union nil-rejecting.
+          validations = validations.merge(type: { klass: }) unless Array(klass).empty?
+
+          Axn::Validation::Base.nil_accepted?(validations)
+        end
+
+        # Bring the type a bag's `klass:` produced into line with the nullability derived above. A `NilClass`
+        # token contributes a `null` branch like any other token; whether it survives is the nullability
+        # question, asked once — the same rule `apply_type_info!` follows at a named position.
+        def reconcile_contents_nullability(node, nullable:)
+          return node if nullable
+
+          if node[:anyOf].is_a?(Array)
+            without_null = node[:anyOf].reject { |member| member[:type] == "null" }
+            return node if without_null.empty?
+
+            return without_null.size == 1 ? node.except(:anyOf).merge(without_null.first) : node.merge(anyOf: without_null)
+          end
+
+          node
         end
 
         # A bag's value constraints: what it says about the VALUE at its position rather than about the position.

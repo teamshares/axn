@@ -2777,24 +2777,39 @@ module Axn
         # of the bag grammar (`_inner_of_container!`) — so ONE rule covers the field and all three bag
         # positions. A second table here could drift from the first; a shared call cannot.
         def _reject_positional_bag_validators!(bag, fields)
+          # Nothing to judge for a bag that names only what it holds — which is every `of: Integer` — so the
+          # ordinary declaration reaches neither guard and allocates nothing beyond the emptiness check.
+          return unless _bag_carries_positional_validator?(bag)
+
           validations = _bag_as_validations(bag)
-          return if Axn::Validation::Base.validator_entries(validations).empty?
 
           where = "an `of:` bag on #{_declared_fields_label(fields)}"
           _reject_container_position_validators!(validations, where:, nested: true)
-          _reject_unsatisfiable_value_constraints!(validations, where:, nested: true,
-                                                                tolerance: validations.slice(:allow_nil, :allow_blank))
+          # No tolerance is passed, and none is read out of `validations` either (see `_bag_as_validations`):
+          # a bag's `allow_nil:`/`allow_blank:` do not govern its position (PRO-3225), so honouring them here
+          # would stand the guard down for a rescue that never happens — letting a contract which admits
+          # NOTHING declare cleanly, which is the class this guard exists to refuse. At a field the same flags
+          # DO rescue the contract, and there they still stand it down.
+          _reject_unsatisfiable_value_constraints!(validations, where:, nested: true, tolerance: {})
         end
 
-        # The bag as a VALIDATIONS hash: its value constraints, with `klass:` renamed to `type:`. Only the
-        # grammar keys are dropped, so a validator added to `POSITIONAL_VALIDATOR_KEYS` reaches the guards
-        # without a second edit here.
+        # The bag as a VALIDATIONS hash: its value constraints, with `klass:` renamed to `type:` — the role
+        # `klass:` plays for the rest of the bag grammar. Only the grammar keys are dropped by name, so a
+        # validator added to `POSITIONAL_VALIDATOR_KEYS` reaches the guards without a second edit here.
+        #
+        # The shared ActiveModel options come out through `validator_entries`, exactly as they do for the
+        # runtime's own forwarding (`OfValidator#inner_contract_validations`): they are not validators, and at a
+        # bag position they are not enforced either, so leaving them in would have `Base.nil_accepted?` read a
+        # tolerance out of the bag and reach the same wrong answer the explicit `tolerance: {}` above avoids.
         def _bag_as_validations(bag)
-          validations = bag.except(*BAG_GRAMMAR_KEYS)
+          validations = Axn::Validation::Base.validator_entries(bag.except(*BAG_GRAMMAR_KEYS))
           klass = bag[:klass]
           return validations if Array(klass).empty?
 
-          validations.merge(type: klass)
+          # The CANONICAL `type:` shape, as a field's stored validations carry it: a bare token would be
+          # normalized as a validator scalar and read under the wrong key, so every judgment that unwraps
+          # `type: { klass: … }` would see no class at all.
+          validations.merge(type: { klass: })
         end
 
         # A bag's own `of:` is held to exactly the grammar a FIELD's is, with `klass:` in `type:`'s role: the

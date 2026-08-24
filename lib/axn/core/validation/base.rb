@@ -423,11 +423,40 @@ module Axn
         range = opts[:in]
         return bounds unless range.is_a?(Range)
 
-        bounds[:greater_than_or_equal_to] = range.begin if range.begin
+        # ActiveModel enforces an `in:` range AND any explicit bound beside it, so the range is INTERSECTED
+        # into what the entry already declared rather than assigned over it: `{ greater_than_or_equal_to: 10,
+        # in: 0..100 }` is bounded below by 10, not by 0.
+        intersect_numeric_bound(bounds, :greater_than_or_equal_to, range.begin) if range.begin
         # An exclusive end is the strict operator rather than a decremented bound: unlike a length, a numeric
         # bound has no "one less" (`1...10` admits 9.999), so the exclusivity has to be carried as itself.
-        bounds[range.exclude_end? ? :less_than : :less_than_or_equal_to] = range.end if range.end
+        intersect_numeric_bound(bounds, range.exclude_end? ? :less_than : :less_than_or_equal_to, range.end) if range.end
         bounds
+      end
+
+      # THE definition of "two of these bounds, both enforced" — the tighter one survives. A MINIMUM operator
+      # keeps the larger bound and a MAXIMUM operator the smaller, which is what enforcing both means.
+      # Comparison is guarded: bounds a caller may have written in unrelated classes (a Symbol, a Date beside an
+      # Integer) have no ordering, and there the existing bound stands rather than a `<=>` raising inside a
+      # declaration.
+      MINIMUM_BOUND_KEYS = %i[greater_than greater_than_or_equal_to].freeze
+
+      def self.intersect_numeric_bound(bounds, key, candidate)
+        existing = bounds[key]
+        return bounds[key] = candidate if existing.nil?
+
+        tighter = begin
+          comparison = existing <=> candidate
+          if comparison.nil?
+            existing
+          elsif MINIMUM_BOUND_KEYS.include?(key)
+            comparison.negative? ? candidate : existing
+          else
+            comparison.positive? ? candidate : existing
+          end
+        rescue StandardError
+          existing
+        end
+        bounds[key] = tighter
       end
 
       # Whether a bound read above is one a JSON Schema numeric keyword can carry. A `Numeric` that is not

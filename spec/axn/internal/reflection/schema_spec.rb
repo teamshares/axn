@@ -5885,6 +5885,22 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         stands_down { expects :s, type: String, format: { with: / a b /x } }
       end
 
+      # Ruby's `\s` is the ASCII whitespace set; ECMA's also includes NBSP, the Unicode Zs category and the
+      # line/paragraph separators. So an emitted `\s` accepts strings the runtime rejects — looser, the one
+      # direction reflection may not err in. `\d`/`\w` are the SAME set in both dialects and stay.
+      it "stands down on \\s, whose character set differs between the dialects" do
+        stands_down { expects :s, type: String, format: { with: /\A\s+\z/ } }
+      end
+
+      it "stands down on \\S for the same reason" do
+        stands_down { expects :s, type: String, format: { with: /\A\S+\z/ } }
+      end
+
+      it "still emits \\d and \\w, which agree in both dialects" do
+        expect(prop_for { expects :s, type: String, format: { with: /\A\d\w+\z/ } })
+          .to include(pattern: "^\\d\\w+$")
+      end
+
       it "stands down on \\Z, which permits a trailing newline where $ does not" do
         stands_down { expects :s, type: String, format: { with: /\Aa\Z/ } }
       end
@@ -6167,6 +6183,153 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         expect(prop[:items]).to eq(type: "string")
       end
+    end
+  end
+
+  # Codex round 1 found six emission defects, all confirmed with a real JSON Schema validator. They are three
+  # root causes, not six instances, and each is fixed at the root:
+  #
+  #   * a keyword ASSIGNED where it should be RECONCILED with what is already there (enum vs a singleton type
+  #     enum; a bound from one validator vs the same bound from another; a range-derived bound vs an explicit one)
+  #   * a position's nullability HARD-CODED false, where a field's is derived
+  #   * an escape passed through whose character set differs between the two dialects
+  describe "reconciling a keyword with what is already on the node" do
+    def prop_for(field = :f, &declaration)
+      build_axn(&declaration).input_schema[:properties][field]
+    end
+
+    # `single_contents_schema` constrains TrueClass to `enum: [true]`, because the runtime accepts only the
+    # singleton. An inclusion set must narrow that, never widen it.
+    it "intersects an inclusion enum with a singleton type enum rather than replacing it" do
+      prop = prop_for { expects :f, type: Array, of: { klass: TrueClass, inclusion: { in: [true, false] } } }
+
+      expect(prop[:items]).to include(enum: [true])
+    end
+
+    # A set disjoint from the position's own type never reaches the emitter: the satisfiability guard refuses
+    # the declaration first, which is the stronger answer.
+    it "never sees a disjoint set, because the declaration is refused" do
+      expect { build_axn { expects :f, type: Array, of: { klass: TrueClass, inclusion: { in: [false] } } } }
+        .to raise_error(ArgumentError, /can never match/)
+    end
+
+    # Both validators are enforced, so the emitted bound is the STRONGEST of the two, not whichever the
+    # iteration reached last.
+    it "intersects the same bound declared by numericality: and comparison:" do
+      prop = prop_for do
+        expects :f, type: Integer, numericality: { greater_than: 10 }, comparison: { greater_than: 0 }
+      end
+
+      expect(prop).to include(exclusiveMinimum: 10)
+    end
+
+    it "intersects in the other direction too" do
+      prop = prop_for do
+        expects :f, type: Integer, numericality: { less_than: 10 }, comparison: { less_than: 100 }
+      end
+
+      expect(prop).to include(exclusiveMaximum: 10)
+    end
+
+    it "intersects a range-derived bound with an explicitly declared one" do
+      prop = prop_for { expects :f, type: Integer, numericality: { greater_than_or_equal_to: 10, in: 0..100 } }
+
+      expect(prop).to include(minimum: 10, maximum: 100)
+    end
+
+    it "intersects a range's ceiling with an explicit one" do
+      prop = prop_for { expects :f, type: Integer, numericality: { less_than_or_equal_to: 50, in: 0..100 } }
+
+      expect(prop).to include(minimum: 0, maximum: 50)
+    end
+
+    it "agrees with the runtime on the value each finding named" do
+      both = build_axn { expects :f, type: Integer, numericality: { greater_than: 10 }, comparison: { greater_than: 0 } }
+      ranged = build_axn { expects :f, type: Integer, numericality: { greater_than_or_equal_to: 10, in: 0..100 } }
+
+      expect(both.call(f: 5)).not_to be_ok
+      expect(ranged.call(f: 5)).not_to be_ok
+      expect(both.input_schema[:properties][:f][:exclusiveMinimum]).to eq(10)
+      expect(ranged.input_schema[:properties][:f][:minimum]).to eq(10)
+    end
+  end
+
+  describe "a position's nullability, derived rather than assumed" do
+    def prop_for(field = :f, &declaration)
+      build_axn(&declaration).input_schema[:properties][field]
+    end
+
+    # A bag naming NilClass admits nil at that position — until another validator on the same bag rejects it.
+    # That is the same question `nil_accepted?` answers for a field, asked of the bag.
+    it "keeps the null branch when the bag admits nil" do
+      prop = prop_for { expects :f, type: Array, of: { klass: [String, NilClass] } }
+
+      expect(prop[:items]).to eq(anyOf: [{ type: "string" }, { type: "null" }])
+    end
+
+    it "drops the null branch when another validator on the bag rejects nil" do
+      action = build_axn { expects :f, type: Array, of: { klass: [String, NilClass], presence: true } }
+
+      expect(action.call(f: [nil])).not_to be_ok
+      # One surviving branch collapses onto the plain type, exactly as `apply_type_info!` does at a field.
+      expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "string", minLength: 1)
+    end
+
+    it "keeps nil in a positional enum that admits it" do
+      action = build_axn { expects :f, type: Array, of: { inclusion: { in: ["a", nil] } } }
+
+      expect(action.call(f: [nil])).to be_ok
+      expect(action.input_schema.dig(:properties, :f, :items, :enum)).to eq(["a", nil])
+    end
+
+    it "still strips nil from an enum at a position that rejects it" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: ["a", nil] } } }
+
+      expect(action.call(f: [nil])).not_to be_ok
+      expect(action.input_schema.dig(:properties, :f, :items, :enum)).to eq(["a"])
+    end
+  end
+
+  describe "a keys axis emits only what a JSON property name can be" do
+    def prop_for(field = :f, &declaration)
+      build_axn(&declaration).input_schema[:properties][field]
+    end
+
+    # A JSON object property name is always a string. A Symbol has a faithful wire form; an Integer key does
+    # not (the runtime accepts `{1 => v}`, and no `propertyNames` set can say so), so the axis stands down
+    # rather than emit a set no key can satisfy.
+    it "renders a Symbol set to its wire form" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { klass: Symbol, inclusion: { in: %i[a b] } }, values: Integer }
+      end
+
+      expect(prop[:propertyNames]).to eq(enum: %w[a b])
+    end
+
+    it "stands down on a set whose members have no property-name form" do
+      action = build_axn do
+        expects :m, type: Hash, of: { keys: { klass: Integer, inclusion: { in: [1] } }, values: Integer }
+      end
+
+      expect(action.call(m: { 1 => 2 })).to be_ok
+      expect(action.input_schema[:properties][:m]).not_to have_key(:propertyNames)
+    end
+
+    it "stands down on a mixed set rather than rendering half of it" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { inclusion: { in: ["a", 1] } }, values: Integer }
+      end
+
+      expect(prop).not_to have_key(:propertyNames)
+    end
+
+    it "still emits the string-shaped constraints beside a stood-down set" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash,
+                    of: { keys: { length: { maximum: 4 }, inclusion: { in: ["a", 1] } }, values: Integer }
+      end
+
+      expect(prop[:propertyNames]).to eq(maxLength: 4)
     end
   end
 end
