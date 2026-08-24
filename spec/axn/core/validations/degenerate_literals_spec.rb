@@ -271,6 +271,38 @@ RSpec.describe "a degenerate literal" do
       expect(action.call(v: "x").ok?).to be(false)
     end
 
+    it "ignores a sibling its OWN gate can skip, which is no evidence of a rejection" do
+      # This verdict is affirmative — a refusal rests on it — and a gate can only make a validator run LESS. So a
+      # self-gated sibling cannot certify that the blank is rejected: here the exclusion never runs and `[]`
+      # passes.
+      action = build_axn do
+        expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true },
+                    exclusion: { in: [[]], if: -> { false } }
+      end
+
+      expect(action.call(v: []).ok?).to be(true)
+      expect(action.call(v: ["a"]).ok?).to be(false)
+    end
+
+    it "reads a set holding NO blank as rejecting every blank, not just the witness" do
+      # A value must be IN an inclusion set to pass, so a set with no blank member rejects every blank of the
+      # declared type — there is no other blank to hope for, and the multi-blank fallback must not reach it.
+      expect do
+        build_axn do
+          expects :v, type: String, presence: false, comparison: { equal_to: 1, allow_blank: true },
+                      inclusion: { in: ["ok"] }
+        end
+      end.to raise_error(ArgumentError, /comparison:.*can never match/m)
+
+      # ...while a set that DOES hold a blank stays value-specific: it rejects `""` and admits `"  "`.
+      action = build_axn do
+        expects :v, type: String, presence: false, comparison: { equal_to: 1, allow_blank: true },
+                    inclusion: { in: ["ok", "  "] }
+      end
+      expect(action.call(v: "  ").ok?).to be(true)
+      expect(action.call(v: "x").ok?).to be(false)
+    end
+
     it "still stands down when the sibling leaves that blank alone" do
       # The mirror of the case above, and the reason a sibling cannot simply veto the stand-down: this exclusion
       # forbids something else, so `[]` really does pass and the contract really does enforce.
@@ -400,6 +432,20 @@ RSpec.describe "a degenerate literal" do
       empty = subclass.new(1, 1, true)
 
       expect { build_axn { expects :n, type: Integer, exclusion: { in: empty } } }.not_to raise_error
+    end
+
+    it "stands down on a Range carrying its own bound readers, not just its own `cover?`" do
+      # Every read the emptiness probe makes has to be the class's own, not just the comparison: a singleton
+      # `begin` outside the range makes `cover?(begin)` false while the native `cover?` still admits the real
+      # members.
+      range = (1..2).dup
+      range.define_singleton_method(:begin) { 3 }
+
+      action = build_axn { expects :n, type: Integer, inclusion: { in: range } }
+
+      expect(action.call(n: 1).ok?).to be(true)
+      expect(action.call(n: 2).ok?).to be(true)
+      expect(action.call(n: 5).ok?).to be(false)
     end
 
     it "stands down on a Range carrying its own `cover?` rather than its class's" do

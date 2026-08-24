@@ -3664,65 +3664,83 @@ module Axn
           Axn::Validation::Base.validator_entries(validations).each do |key, sibling|
             next if key == except || !sibling
             next if Axn::Validation::Base.effective_entry_options(sibling, tolerance)[:allow_blank]
+            # A sibling its OWN gate can skip is no evidence of anything: this verdict is affirmative — it is
+            # what a refusal rests on — and a gate can only make a validator run LESS. So a self-gated sibling
+            # admits, exactly as `_reconcile_emptiness_axis!` refuses to hand the emptiness axis to one. (The
+            # audited entry's own gate is a different question, and a standing one — PRO-3234.)
+            next unless _entry_guaranteed_to_run?(sibling)
 
-            case key
-            when :comparison then return :rejects_every_blank
-            # A set the witness is not in rejects it; a set it IS in admits it. `:unknown` admits.
-            when :inclusion then verdict = :rejects_this_blank if _set_witness_membership(sibling, witness) == :excludes
-            when :exclusion then verdict = :rejects_this_blank if _set_witness_membership(sibling, witness) == :contains
-            when :acceptance then verdict = :rejects_this_blank unless _acceptance_admits_blank?(sibling, witness)
+            case _one_sibling_blank_verdict(key, sibling, witness)
+            when :rejects_every_blank then return :rejects_every_blank
+            when :rejects_this_blank then verdict = :rejects_this_blank
             end
           end
 
           verdict
         end
 
-        # Where a clusivity set stands on the blank witness: `:contains`, `:excludes`, or `:unknown` for a set
-        # this cannot read. Three-valued rather than boolean because the unknown is load-bearing — both callers
-        # read it as "admits", and collapsing it into either verdict would turn a set axn may not read into a
-        # refusal.
+        # What ONE sibling does with the witness. The split between "this blank" and "every blank" is the whole
+        # point (see above), and a readable set decides it: a set holding NO blank at all rejects every blank of
+        # the declared type rather than just the one named here, since no blank could be a member. A set that
+        # DOES hold one is value-specific — `inclusion: { in: ["ok", "  "] }` rejects `""` while admitting `"  "`.
+        def _one_sibling_blank_verdict(key, sibling, witness)
+          case key
+          # `ComparisonValidator` rejects a blank BEFORE it looks at any bound (activemodel 7.2.2.2,
+          # comparison.rb:23), so it rejects them all whatever it compares against.
+          when :comparison then :rejects_every_blank
+          when :inclusion then _excluding_set_verdict(_readable_set_members(sibling), witness)
+          when :acceptance then _excluding_set_verdict(_acceptance_members(sibling), witness, skips_nil: true)
+          # An exclusion set rejects only what it NAMES, so it is always value-specific; where the class has a
+          # single blank the `_sole_blank_klass?` test already closes it.
+          when :exclusion
+            _readable_set_members(sibling)&.any? { |member| member == witness } ? :rejects_this_blank : :admits
+          else :admits
+          end
+        end
+
+        # The verdict of a set a value must be IN to pass — `inclusion:`, and `acceptance:` under its own reader.
+        def _excluding_set_verdict(members, witness, skips_nil: false)
+          return :admits if skips_nil && Internal::Identity.nil_value?(witness)
+          return :admits if members.nil?
+          return :admits if members.any? { |member| member == witness }
+
+          members.any? { |member| Internal::NativeMethods.blank_literal?(member) } ? :rejects_this_blank : :rejects_every_blank
+        end
+
+        # An `acceptance:` entry's set, read by ITS rule rather than the clusivity one: `AcceptanceValidator`
+        # tests `Array(accept).include?(value)`, so a Hash `accept:` is searched as its `[key, value]` PAIRS and
+        # only the shapes `Array()` leaves alone are readable. With no `accept:` of its own it compares against
+        # ActiveModel's default set, which is what makes a bare `acceptance: true` reject an Array blank.
+        def _acceptance_members(sibling)
+          opts = Axn::Validation::Base.validator_entry_options(sibling)
+          accept = Internal::ShapeGraph.carries_key?(opts, :accept) ? opts[:accept] : DEFAULT_ACCEPTANCE_SET
+          return nil unless Axn::Validation::Base.literal_set_collection?(accept)
+          return nil unless accept.all? { |member| _vouched_equality_operand?(member) }
+
+          accept
+        end
+
+        # The members of a clusivity set this guard may read, or nil for one it may not — and nil is load-bearing,
+        # since every caller reads it as "admits" and collapsing it into a membership answer would turn a set axn
+        # cannot read into a refusal.
         #
-        # Unknown is answered for any member outside the closed equality world, or one carrying its own equality,
-        # for the reason `_non_reflexive_literal?` stands down on the same: the comparison below runs the member's
+        # Nil is answered for any member outside the closed equality world, or one carrying its own equality, for
+        # the reason `_non_reflexive_literal?` stands down on the same: callers compare these with the member's
         # own `==`, and a member axn has not vouched for would be answering a declaration question for it.
-        #
-        # An empty Range excludes everything, which is definite. Any other Range is unknown: its membership is
-        # decided by `<=>` against bounds this witness need not be comparable with, and a wrong guess in either
-        # direction is a refusal this guard must not make.
-        def _set_witness_membership(entry, witness)
+        def _readable_set_members(entry)
           collection = Axn::Validation::Base.declared_set_collection(entry)
           if collection.is_a?(::Range)
-            return _empty_range?(collection) ? :excludes : :unknown
+            # An empty Range holds nothing, which is readable and definite. Any other Range is not: its
+            # membership is decided by `<=>` against bounds the witness need not be comparable with, and a wrong
+            # guess in either direction is a refusal this guard must not make.
+            return _empty_range?(collection) ? [] : nil
           end
 
           members = Axn::Validation::Base.literal_set_members(entry)
-          return :unknown if members.nil?
-          return :unknown unless members.all? { |member| _vouched_equality_operand?(member) }
+          return nil if members.nil?
+          return nil unless members.all? { |member| _vouched_equality_operand?(member) }
 
-          members.any? { |member| member == witness } ? :contains : :excludes
-        end
-
-        # Whether an `acceptance:` sibling admits the blank witness. Read by ITS OWN rule rather than the set
-        # reader above, because `AcceptanceValidator` tests `Array(accept).include?(value)` — so a Hash `accept:`
-        # is searched as its `[key, value]` PAIRS, which is why only the shapes `Array()` leaves alone are judged
-        # and everything else answers "admits". With no `accept:` of its own it compares against ActiveModel's
-        # default set, which is what makes `acceptance: true` reject an Array blank.
-        #
-        # A nil witness admits unconditionally: AM's acceptance skips a nil outright. That is the standing-down
-        # direction anyway, so an entry disabling the skip (`allow_nil: false`) costs only coverage.
-        #
-        # Judged here and not for `format:`/`numericality:` — which can also reject a blank — because this guard
-        # already reads an acceptance set exactly (`_judgeable_constraint_literals`), and a rule is only worth
-        # having where the reading is exact. The others stay in the "admits" fallback, under-restricting.
-        def _acceptance_admits_blank?(sibling, witness)
-          return true if Internal::Identity.nil_value?(witness)
-
-          opts = Axn::Validation::Base.validator_entry_options(sibling)
-          accept = Internal::ShapeGraph.carries_key?(opts, :accept) ? opts[:accept] : DEFAULT_ACCEPTANCE_SET
-          return true unless Axn::Validation::Base.literal_set_collection?(accept)
-          return true unless accept.all? { |member| _vouched_equality_operand?(member) }
-
-          accept.any? { |member| member == witness }
+          members
         end
 
         # Whether ONE value's equality is the one its class carries and one this guard vouches for — the pair of
@@ -4236,12 +4254,14 @@ module Axn
         # caller-supplied values, and a subclass or a singleton override would otherwise pick the verdict.
         def _empty_range?(range)
           return false unless Internal::Identity.class_of(range).equal?(::Range)
-          # The exact class is not enough: a Range instance can carry a SINGLETON `cover?`, and the probe below
-          # would then generalize one object's answer into a verdict about the declaration. Reachable — a Range
-          # literal is frozen, but `Range.new(1, 1, true).dup` and `.clone(freeze: false)` are not, and both take
-          # a singleton method. Asked by ownership exactly as the bounds' `<=>` is, so nothing the object defines
-          # decides this.
-          return false unless _class_owned_operators?(range, ::Range, %i[cover?])
+          # The exact class is not enough: a Range instance can carry SINGLETON methods, and the probe below would
+          # then generalize one object's answers into a verdict about the declaration. Reachable — a Range literal
+          # is frozen, but `Range.new(1, 1, true).dup` and `.clone(freeze: false)` are not, and both take a
+          # singleton method. EVERY read the probe makes is covered, not just the comparison: a singleton `begin`
+          # returning a value outside the range makes `cover?(begin)` false while the native `cover?` still admits
+          # the real members (measured on `(1..2).dup`). Asked by ownership exactly as the bounds' `<=>` is, so
+          # nothing the object defines decides this.
+          return false unless _class_owned_operators?(range, ::Range, %i[cover? begin end])
 
           first = range.begin
           last = range.end
