@@ -103,6 +103,19 @@ RSpec.describe "a degenerate literal" do
       expect { build_axn { expects :n, type: Float, comparison: { equal_to: ->(_r) { 1.0 } } } }.not_to raise_error
     end
 
+    it "counts ANY callable bound as resolved per call, not just a Proc or a Symbol" do
+      # `ResolveValue` falls through to `value.respond_to?(:call)` and calls whatever it finds (activemodel
+      # 7.2.2.2, resolve_value.rb:17), so this bound resolves to `1` and the contract works — judging it by the
+      # String it happens to be would refuse a declaration that enforces.
+      bound = String.new("ignored")
+      bound.define_singleton_method(:call) { |_record| 1 }
+
+      action = build_axn { expects :n, type: Integer, comparison: { equal_to: bound } }
+
+      expect(action.call(n: 1).ok?).to be(true)
+      expect(action.call(n: 2).ok?).to be(false)
+    end
+
     it "leaves a SET containing NaN alone, because membership short-circuits on identity" do
       # `[Float::NAN].include?(Float::NAN)` and `Set[Float::NAN].include?(Float::NAN)` are both true — the
       # collection compares object identity before it ever asks `==` — so the set really does forbid the value.
@@ -301,6 +314,38 @@ RSpec.describe "a degenerate literal" do
       end
       expect(action.call(v: "  ").ok?).to be(true)
       expect(action.call(v: "x").ok?).to be(false)
+    end
+
+    it "resolves a sibling's gate against the DECLARATION's, not just its own options" do
+      # `validates` builds each validator's options as `declaration_defaults.merge(entry_options)`, so the
+      # declaration-level gate reaches the exclusion while the audited entry's own blank `if:` drops it. The
+      # exclusion therefore never runs and `[]` passes — reading only the sibling's own keys called it
+      # unconditional and refused this.
+      action = build_axn do
+        expects :v, type: Array, presence: false, if: -> { false },
+                    comparison: { equal_to: 1, allow_blank: true, if: nil }, exclusion: { in: [[]] }
+      end
+
+      expect(action.call(v: []).ok?).to be(true)
+      expect(action.call(v: ["a"]).ok?).to be(false)
+    end
+
+    it "honors an `acceptance:` sibling that disables its own nil skip" do
+      # ActiveModel's acceptance skips a nil by default, but `allow_nil: false` puts the nil back in front of
+      # the set — so it really is compared, and really is rejected.
+      expect do
+        build_axn do
+          expects :v, type: [NilClass, String], presence: false, comparison: { equal_to: 1, allow_blank: true },
+                      acceptance: { accept: ["ok"], allow_nil: false }
+        end
+      end.to raise_error(ArgumentError, /comparison:.*can never match/m)
+
+      # ...while the default skip still admits the nil witness, which is the control.
+      action = build_axn do
+        expects :v, type: [NilClass, String], presence: false, comparison: { equal_to: 1, allow_blank: true },
+                    acceptance: { accept: ["ok"] }
+      end
+      expect(action.call(v: nil).ok?).to be(true)
     end
 
     it "still stands down when the sibling leaves that blank alone" do

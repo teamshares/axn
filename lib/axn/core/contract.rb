@@ -3660,15 +3660,23 @@ module Axn
         # Everything this cannot read exactly answers `:admits`, standing the guard down rather than guessing.
         def _sibling_blank_verdict(validations, witness, except:, tolerance:)
           verdict = :admits
+          decl_gates = _shared_validation_options(validations).slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
 
           Axn::Validation::Base.validator_entries(validations).each do |key, sibling|
             next if key == except || !sibling
             next if Axn::Validation::Base.effective_entry_options(sibling, tolerance)[:allow_blank]
-            # A sibling its OWN gate can skip is no evidence of anything: this verdict is affirmative — it is
-            # what a refusal rests on — and a gate can only make a validator run LESS. So a self-gated sibling
-            # admits, exactly as `_reconcile_emptiness_axis!` refuses to hand the emptiness axis to one. (The
-            # audited entry's own gate is a different question, and a standing one — PRO-3234.)
-            next unless _entry_guaranteed_to_run?(sibling)
+            # A sibling a gate can skip is no evidence of anything: this verdict is affirmative — it is what a
+            # refusal rests on — and a gate can only make a validator run LESS. So a gated sibling admits,
+            # exactly as `_reconcile_emptiness_axis!` refuses to hand the emptiness axis to one. (The audited
+            # entry's own gate is a different question, and a standing one — PRO-3234.)
+            #
+            # Resolved against the DECLARATION-level gates rather than the sibling's own options, through the
+            # reader that owns that precedence: `validates` builds each validator's options as
+            # `declaration_defaults.merge(entry_options)`, so a declaration-level `if:` gates every entry that
+            # does not override it — while an entry naming a BLANK one (`if: nil`) drops the shared gate and
+            # runs unconditionally. Reading only the sibling's own keys called a declaration-gated sibling
+            # unconditional and refused a working contract.
+            next if Axn::Validation::Base.entry_effective_gate_keys(sibling, decl_gates).any?
 
             case _one_sibling_blank_verdict(key, sibling, witness)
             when :rejects_every_blank then return :rejects_every_blank
@@ -3689,7 +3697,11 @@ module Axn
           # comparison.rb:23), so it rejects them all whatever it compares against.
           when :comparison then :rejects_every_blank
           when :inclusion then _excluding_set_verdict(_readable_set_members(sibling), witness)
-          when :acceptance then _excluding_set_verdict(_acceptance_members(sibling), witness, skips_nil: true)
+          when :acceptance
+            _excluding_set_verdict(_acceptance_members(sibling), witness,
+                                   skips_nil: Axn::Validation::Base.acceptance_admits_nil?(
+                                     Axn::Validation::Base.validator_entry_options(sibling),
+                                   ))
           # An exclusion set rejects only what it NAMES, so it is always value-specific; where the class has a
           # single blank the `_sole_blank_klass?` test already closes it.
           when :exclusion
@@ -3699,6 +3711,9 @@ module Axn
         end
 
         # The verdict of a set a value must be IN to pass — `inclusion:`, and `acceptance:` under its own reader.
+        # `skips_nil:` is acceptance's own default nil-skip, asked through `Base.acceptance_admits_nil?` rather
+        # than assumed: an entry may disable it (`allow_nil: false`), and then a nil witness really is compared
+        # against the set and really can be rejected.
         def _excluding_set_verdict(members, witness, skips_nil: false)
           return :admits if skips_nil && Internal::Identity.nil_value?(witness)
           return :admits if members.nil?
@@ -4188,7 +4203,15 @@ module Axn
         # raises raises either way. THE single definition, shared by both literal readers so neither can
         # classify a bound the other would not.
         def _dynamic_bound?(bound)
-          Internal::Identity.kind?(bound, ::Symbol) || Internal::Identity.kind?(bound, ::Proc)
+          return true if Internal::Identity.kind?(bound, ::Symbol) || Internal::Identity.kind?(bound, ::Proc)
+
+          # `ResolveValue` falls through to `value.respond_to?(:call)` and calls ANY other callable
+          # (activemodel 7.2.2.2, resolve_value.rb:17), so a bound is dynamic on its ability to be called, not
+          # on being one of the two obvious classes — a String carrying a singleton `call` is resolved exactly
+          # as a Proc is, and judging it by its own class refused a declaration that works. Asked of the METHOD
+          # TABLE rather than by dispatching `respond_to?`, which is how the rest of this guard reads a caller's
+          # object; the two answer alike for anything but a hostile one, and this errs toward standing down.
+          !Internal::NativeMethods.method_owner(bound, :call).nil?
         end
 
         # The declared types this guard can judge membership against: every token a real Class or Module. Empty
