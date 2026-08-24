@@ -529,45 +529,31 @@ module Axn
       # one must agree with ActiveSupport, because a blank value really is one the validator never sees.
       #
       # Every read is bound, so nothing the value defines decides it — the point of asking here rather than
-      # calling `blank?`, which dispatches `empty?` to whatever the caller supplied. Where the two could
-      # disagree, this answers NOT BLANK, because a caller acts on the verdict by discounting the value: a
-      # false "blank" drops a value ActiveModel really would compare, and only a missed one is safe.
+      # calling `blank?`, which dispatches. Where the two could still disagree, this answers NOT BLANK,
+      # because a caller acts on the verdict by DISCOUNTING the value: a false "blank" drops a value
+      # ActiveModel really would compare, and only a missed one is safe.
       #
-      # Which classes may match a SUBCLASS follows ActiveSupport's own spelling, since agreeing with it is the
-      # whole job. `Array#blank?` and `Hash#blank?` are ALIASES of `empty?` (active_support 7.2.2.2,
-      # core_ext/object/blank.rb), so ActiveSupport itself reads the ROOT's method and a subclass overriding
-      # `empty?` never gets a say — measured, an `Array` subclass whose `empty?` returns false is still
-      # `blank?`. They are matched with `case`/`when Module` (Ruby's own `Module#===`, not the value's
-      # `is_a?`), and the bound read then gives the same answer ActiveSupport would.
+      # EXACT class throughout, which is what makes that guarantee hold without reasoning about
+      # ActiveSupport's per-class spelling. A subclass may override `blank?` itself, or the `empty?` some of
+      # ActiveSupport's definitions dispatch — measured, an `Array` subclass with `def blank? = false` is not
+      # blank though the root's `empty?` says it is, and a whitespace `String` subclass does the same. An
+      # exact class has no such override anywhere in its lookup path, so ActiveSupport's implementation and
+      # the bound read here are the same code. Every subclass, and every object of the caller's own, is left
+      # NOT blank.
       #
-      # `Set` is NOT one of them: ActiveSupport defines no `Set#blank?`, so a Set falls to `Object#blank?`,
-      # which DISPATCHES `empty?` — measured, a `Set` subclass whose `empty?` returns false is not `blank?`.
-      # So only an exact `Set` is judged, by this module's own bound class read rather than the value's
-      # `is_a?`; a subclass is left un-discounted, which is the safe direction.
-      #
-      # `Symbol#empty?` is not bound, for the reason `absent_value?` gives: a Symbol subclass can be declared
-      # but never instantiated. A `String` subclass may override `empty?` and be read as blank by
-      # ActiveSupport where the bound read is not, which lands on the safe side. Anything else — a Numeric, a
-      # Date, a value object of the caller's own — has an `empty?` only ActiveSupport's dispatch could find,
-      # and finding it would mean running the caller's code at declaration, so it is never blank here.
+      # `Symbol#empty?` is dispatched, for the reason `absent_value?` gives: a Symbol subclass can be declared
+      # but never instantiated, so no value is ever an instance of one.
       def self.blank_literal?(value)
-        case value
-        when nil, false then true
-        when ::Symbol then value.empty?
-        when ::String then STRING_EMPTY.bind_call(value) || _blank_string?(value)
-        when ::Array then ARRAY_EMPTY.bind_call(value)
-        when ::Hash then HASH_EMPTY.bind_call(value)
-        else _blank_set?(value)
-        end
-      end
+        klass = KERNEL_CLASS.bind_call(value)
 
-      # Exact-class, read through this module's own bound `Kernel#class` so the value's own `class`/`is_a?`
-      # cannot answer (or raise) for it. Guarded on the bound method rather than `defined?(Set)` so a build
-      # without Set is answered by the same expression.
-      def self._blank_set?(value)
-        return false unless SET_EMPTY && KERNEL_CLASS.bind_call(value).equal?(::Set)
+        return true if klass.equal?(::NilClass) || klass.equal?(::FalseClass)
+        return value.empty? if klass.equal?(::Symbol)
+        return STRING_EMPTY.bind_call(value) || _blank_string?(value) if klass.equal?(::String)
+        return ARRAY_EMPTY.bind_call(value) if klass.equal?(::Array)
+        return HASH_EMPTY.bind_call(value) if klass.equal?(::Hash)
+        return SET_EMPTY.bind_call(value) if SET_EMPTY && klass.equal?(::Set)
 
-        SET_EMPTY.bind_call(value)
+        false
       end
 
       # Whitespace-only, for any encoding, without letting the check itself become the failure. A String whose

@@ -3491,7 +3491,7 @@ module Axn
           opts = Axn::Validation::Base.validator_entry_options(entry)
           bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
           return nil if bounds.empty?
-          return nil if bounds.any? { |bound| bound.is_a?(::Symbol) || bound.is_a?(::Proc) }
+          return nil if bounds.any? { |bound| _dynamic_bound?(bound) }
 
           bounds
         end
@@ -3649,9 +3649,23 @@ module Axn
 
           bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
           return nil if bounds.empty?
-          return nil if bounds.any? { |bound| bound.is_a?(::Symbol) || bound.is_a?(::Proc) }
+          return nil if bounds.any? { |bound| _dynamic_bound?(bound) }
 
           bounds
+        end
+
+        # Whether a bound is one ActiveModel RESOLVES against the record per call (`ResolveValue`) rather than
+        # comparing directly — a Symbol or a Proc — so a declaration carrying one cannot be judged here.
+        #
+        # Classified through `Internal::Identity`, never `bound.is_a?`: the bound is caller-supplied, so its
+        # own answer should not decide which branch a guard takes. This does NOT make a hostile bound safe,
+        # and the reachability is worth stating rather than implying — `_literal_may_satisfy?` calls
+        # `TypeValidator.value_matches?` a step later, which asks `is_a?` because the guard must not disagree
+        # with the check it predicts, and the type check asks it again on every call. A bound whose `is_a?`
+        # raises raises either way. THE single definition, shared by both literal readers so neither can
+        # classify a bound the other would not.
+        def _dynamic_bound?(bound)
+          Internal::Identity.kind?(bound, ::Symbol) || Internal::Identity.kind?(bound, ::Proc)
         end
 
         # The declared types this guard can judge membership against: every token a real Class or Module. Empty

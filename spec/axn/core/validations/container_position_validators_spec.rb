@@ -706,13 +706,28 @@ RSpec.describe "a validator at a container position" do
         .not_to raise_error
     end
 
-    it "still discounts an Array or Hash literal, whose blank? ActiveSupport aliases to the root's empty?" do
-      # `Array#blank?`/`Hash#blank?` ARE `empty?` (active_support 7.2.2.2), so a subclass overriding `empty?`
-      # never gets a say and the bound read gives ActiveSupport's own answer.
-      stub_const("LyingArr", Class.new(Array) { def empty? = false })
+    it "keeps any SUBCLASS literal, whose blankness its own methods may decide" do
+      # A subclass may override `blank?` itself, or the `empty?` some of ActiveSupport's definitions
+      # dispatch — measured, an `Array` subclass with `def blank? = false` is NOT blank though the root's
+      # `empty?` says it is. Discounting it would drop a literal ActiveModel really compares, so only an
+      # EXACT class is judged and every subclass stays a witness.
+      stub_const("ArrOwnBlank", Class.new(Array) { def blank? = false })
+      stub_const("ArrOwnEmpty", Class.new(Array) { def empty? = false })
 
-      expect(LyingArr.new.blank?).to be(true) # the runtime truth the discount must not contradict
-      expect { build_axn { expects :r, type: Array, exclusion: { in: [LyingArr.new] }, allow_blank: true } }
+      expect(ArrOwnBlank.new.blank?).to be(false) # the runtime truth the guard must not contradict
+
+      expect { build_axn { expects :r, type: Array, exclusion: { in: [ArrOwnBlank.new] }, allow_blank: true } }
+        .not_to raise_error
+      # The other override lands on the same side, by the same exact-class rule rather than by a second
+      # judgment about which of ActiveSupport's spellings dispatches.
+      expect { build_axn { expects :r, type: Array, exclusion: { in: [ArrOwnEmpty.new] }, allow_blank: true } }
+        .not_to raise_error
+    end
+
+    it "still discounts an EXACT blank literal, where ActiveSupport and the bound read are the same code" do
+      expect { build_axn { expects :r, type: Array, exclusion: { in: [[]] }, allow_blank: true } }
+        .to raise_error(ArgumentError, /exclusion:/)
+      expect { build_axn { expects :s, type: String, exclusion: { in: ["  "] }, allow_blank: true } }
         .to raise_error(ArgumentError, /exclusion:/)
     end
 
