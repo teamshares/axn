@@ -93,6 +93,7 @@ module Axn
           return nil if RUBY_ONLY_CONSTRUCTS.match?(source)
           return nil unless escapes_translatable?(source)
           return nil unless braces_are_quantifiers?(source)
+          return nil if nested_character_class?(source)
 
           translate_anchors(source)
         end
@@ -111,6 +112,15 @@ module Axn
         # matters, since the second character is not an escape at all.
         def escapes_translatable?(source)
           source.scan(/\\(.)/m).all? { |(char)| SAFE_ESCAPES.include?(char) }
+        end
+
+        # Ruby reads a `[` INSIDE a character class as a nested class union — `[a[bc]]` is the set {a,b,c} —
+        # where ECMA reads `[a[bc]` as a class containing `[` and then a literal `]`, so the emitted pattern
+        # accepts "[" which the runtime rejects. Escapes are stripped first, so an escaped `\[` inside a class
+        # (`[\[a]`) is not mistaken for one, and two SEPARATE classes (`[a]b[c]`) do not match: the scan needs a
+        # second `[` before the first class closes.
+        def nested_character_class?(source)
+          source.gsub(/\\./m, "").match?(/\[[^\]]*\[/)
         end
 
         # A `{` that is not a well-formed quantifier is a literal brace in Ruby and a parse hazard in a strict

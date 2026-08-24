@@ -5980,6 +5980,29 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         stands_down { expects :s, type: String, format: { with: /a++b/ } }
       end
 
+      # Ruby reads a `[` inside a character class as a nested class UNION (`[a[bc]]` is {a,b,c}); ECMA reads
+      # `[a[bc]` as a class containing `[` and then a literal `]`, so the emitted pattern accepts "[" which the
+      # runtime rejects. Found by sweeping the construct list rather than by a review — the escape half of this
+      # design is an allowlist, and the construct half is not, which is where these keep coming from.
+      it "stands down on a nested character-class union" do
+        stands_down { expects :s, type: String, format: { with: /\A[a[bc]]+\z/ } }
+      end
+
+      it "stands down on a nested union inside a negated class" do
+        stands_down { expects :s, type: String, format: { with: /\A[^a[b]]+\z/ } }
+      end
+
+      # The controls: two separate classes, and an ESCAPED bracket inside one, must keep emitting.
+      it "still emits two separate character classes" do
+        expect(prop_for { expects :s, type: String, format: { with: /\A[a]b[c]\z/ } })
+          .to include(pattern: "^[a]b[c]$")
+      end
+
+      it "still emits an escaped bracket inside a class" do
+        expect(prop_for { expects :s, type: String, format: { with: /\A[\[a]+\z/ } })
+          .to include(pattern: "^[\\[a]+$")
+      end
+
       it "stands down on a class intersection" do
         stands_down { expects :s, type: String, format: { with: /[\w&&[^a]]+/ } }
       end
