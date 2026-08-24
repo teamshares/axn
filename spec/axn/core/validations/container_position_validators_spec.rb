@@ -723,6 +723,21 @@ RSpec.describe "a validator at a container position" do
         .to raise_error(ArgumentError, /comparison: on :n enforces nothing/)
     end
 
+    it "keeps a bound carrying its own equality, rather than probing it" do
+      # The probe is the only operator this guard runs, and a per-object override makes its answer foreign
+      # twice: it executes the caller's code, and it generalizes one object to every value of the type.
+      # Measured — an ordinary `"x"` uses `String#==` and really does fail the check.
+      bound = +"x"
+      def bound.!=(_other) = true
+      stub_const("SINGLETON_BOUND", bound)
+
+      expect(bound != "x").to be(true) # the override the guard must not read as the type's own
+      expect(+"x" != bound).to be(false) # the runtime truth: an ordinary value DOES fail the check
+
+      expect { build_axn { expects :x, type: String, comparison: { other_than: SINGLETON_BOUND } } }
+        .not_to raise_error
+    end
+
     it "keeps a non-reflexive bound when a declared branch's equality is not one the guard vouches for" do
       # The bound alone cannot settle it: the declared type supplies the `==` ActiveModel will call, and a
       # value object may equal a NaN however it likes. Measured — `Token.new != Float::NAN` is FALSE, so the

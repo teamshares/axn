@@ -3411,13 +3411,35 @@ module Axn
           return literals unless klasses.all? { |klass| _judgeable_equality?(klass) }
 
           literals.reject do |literal|
-            next false unless _judgeable_equality?(Internal::Identity.class_of(literal))
+            klass = Internal::Identity.class_of(literal)
+            next false unless _judgeable_equality?(klass) && _class_owned_equality?(literal, klass)
 
             # rubocop:disable Lint/BinaryOperatorWithIdenticalOperands
             # The identical operands ARE the check: a value unequal to itself can never equal anything. Asked
             # with `!=` rather than a negated `==` because that is the operator ActiveModel applies here.
             literal != literal
             # rubocop:enable Lint/BinaryOperatorWithIdenticalOperands
+          end
+        end
+
+        # Whether the equality the probe above would run is the one the CLASS carries, rather than one this
+        # particular object does. The probe is the only place this guard runs an operator at all, and a
+        # per-object override makes its answer foreign twice over: it executes the caller's own code, and it
+        # generalizes one object's behaviour to every value of the declared type. Measured — a `String` bound
+        # carrying `def bound.!=(other) = true` reports non-reflexive, while an ordinary `"x"` uses
+        # `String#==` and really does fail the check, so discounting the bound refuses a working contract.
+        #
+        # Decided by OWNERSHIP rather than by another probe: both operators must be owned by the exact class
+        # or something in its ancestry, which a singleton class never is. `Method#owner` is read through
+        # `NativeMethods`, and ancestry through its bound `Module#ancestors`, so nothing the object defines
+        # answers the question. `==` is asked alongside `!=` because BasicObject's `!=` negates it, so an
+        # override of either decides the probe (`Date#==` comes from `Comparable`, which its ancestry carries).
+        def _class_owned_equality?(literal, klass)
+          %i[!= ==].all? do |name|
+            owner = Internal::NativeMethods.method_owner(literal, name)
+            next false unless owner
+
+            owner.equal?(klass) || Internal::NativeMethods.includes_module?(klass, owner)
           end
         end
 
