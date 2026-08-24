@@ -262,29 +262,41 @@ RSpec.describe Axn::Validators::OfValidator do
 
       # WHY no such claim is made, and the measurement the whole design rests on: a `keys:` axis reaches the
       # emitter with nothing to say — there is no keyword to hang a key constraint on, so the emitter never
-      # descends — and that holds through a bag and through every container nested under one. The `values:`
-      # spelling of each is the positive control, emitting at the matching depth, so an emitter that had simply
-      # stopped descending for unrelated reasons would fail this rather than read as agreement.
+      # descends — and that holds through a bag and through every container nested under one.
+      #
+      # The `values:` spelling of each shape is the positive control, and it asserts the COMPLETE nested
+      # document rather than the presence of the root `additionalProperties` key. The weaker spelling cannot do
+      # this control's job: the root key appears as soon as the depth-1 bag emits anything, so an emitter that
+      # stopped descending at depth 2 would still satisfy it — and the whole point of the control is to tell
+      # "a `keys:` axis specifically emits nothing" apart from "descent stopped here for unrelated reasons".
       #
       # Pinned as a spec rather than left as a one-off measurement because it is the sole justification for the
       # refusals claiming no schema consequence: if a `keys:` axis ever starts emitting, the messages become
       # under-informative and this fails, which is the notice to revisit them.
       {
-        "a bare union" => [{ keys: [Symbol, String] }, { values: [Symbol, String] }],
-        "a bag" => [{ keys: { klass: [Symbol, String] } }, { values: { klass: [Symbol, String] } }],
+        "a bare union" => [{ keys: [Symbol, String] },
+                           { values: [Symbol, String] },
+                           { anyOf: [{ type: "string" }, { type: "string" }] }],
+        "a bag" => [{ keys: { klass: [Symbol, String] } },
+                    { values: { klass: [Symbol, String] } },
+                    { anyOf: [{ type: "string" }, { type: "string" }] }],
         "a nested map" => [{ keys: { klass: Hash, of: { values: Integer } } },
-                           { values: { klass: Hash, of: { values: Integer } } }],
+                           { values: { klass: Hash, of: { values: Integer } } },
+                           { type: "object", additionalProperties: { type: "integer" } }],
         "a nested array" => [{ keys: { klass: Array, of: Integer } },
-                             { values: { klass: Array, of: Integer } }],
+                             { values: { klass: Array, of: Integer } },
+                             { type: "array", items: { type: "integer" } }],
         "two containers down" => [{ keys: { klass: Array, of: { klass: Hash, of: { values: Integer } } } },
-                                  { values: { klass: Array, of: { klass: Hash, of: { values: Integer } } } }],
-      }.each do |shape, (keys_of, values_of)|
-        it "emits nothing for #{shape} on the keys: axis, where the values: spelling does emit" do
+                                  { values: { klass: Array, of: { klass: Hash, of: { values: Integer } } } },
+                                  { type: "array",
+                                    items: { type: "object", additionalProperties: { type: "integer" } } }],
+      }.each do |shape, (keys_of, values_of, emitted)|
+        it "emits nothing for #{shape} on the keys: axis, where the values: spelling emits to the leaf" do
           keyed = build_axn { expects :a, type: Hash, of: keys_of }
           valued = build_axn { expects :a, type: Hash, of: values_of }
 
           expect(keyed.input_schema.to_h.dig(:properties, :a)).not_to have_key(:additionalProperties)
-          expect(valued.input_schema.to_h.dig(:properties, :a)).to have_key(:additionalProperties)
+          expect(valued.input_schema.to_h.dig(:properties, :a, :additionalProperties)).to eq(emitted)
         end
       end
 
