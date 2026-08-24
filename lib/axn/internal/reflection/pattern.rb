@@ -33,12 +33,19 @@ module Axn
         # `.` is a knowing exception rather than an oversight: ECMA's excludes `\r` and U+2028/9 where Ruby's
         # excludes only `\n`, so an emitted `.` matches FEWER strings — stricter, the licensed direction, and
         # standing down on it would cost the keyword for most real patterns.
+        # `x` and `0` are absent for a UNIT difference rather than a syntax one, found by sweeping this list
+        # rather than by a review: Ruby reads `\xHH` as a BYTE and ECMA as a CHARACTER, so `/\xC3\xA9/` matches
+        # the single character "é" in Ruby while the same source as an ECMA pattern means the two characters
+        # "Ã©" — wrong in both directions at once. `\0` is Ruby's octal escape (`\012` is a newline), whose
+        # ECMA reading is a legacy form or an error. `\uHHHH` names the same codepoint in both and stays; its
+        # braced `\u{…}` form is refused separately, ECMA needing the `u` flag for that one.
+        #
         # Numeric BACKREFERENCES are absent for a semantic difference, not a syntactic one: where the referenced
         # group did not participate in the match, Ruby fails the backreference and ECMA matches the empty string
         # — so `/\A(a|(b))\2c\z/` rejects `"ac"` in Ruby and an emitted `^(a|(b))\2c$` accepts it. Proving
         # participation would mean parsing the alternation, so they stand down instead.
         SAFE_ESCAPES = Set.new(
-          %w[A z d D w W b B n r t f v 0 x u] +
+          %w[A z d D w W b B n r t f v u] +
           %w[. * + ? ( ) [ ] { } | ^ $ / \\ -],
         ).freeze
 

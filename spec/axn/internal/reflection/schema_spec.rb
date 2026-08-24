@@ -5894,6 +5894,25 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       #
       # Note this divergence is invisible to a Ruby-side JSON Schema validator, which compiles `pattern` with
       # Ruby's own engine — so it is asserted from the specification, not from a differential run.
+      # Ruby reads `\xHH` as a BYTE and ECMA as a CHARACTER, which diverges at and above 0x80 — and the
+      # multi-byte spelling is both legal and reachable: `/\xC3\xA9/` matches the single character "é" in Ruby
+      # while the same source as an ECMA pattern means the two characters "Ã©", so it would reject what the
+      # runtime accepts AND accept what it rejects. Found by sweeping the allowlist rather than by a review.
+      it "stands down on a hex escape, whose unit differs between the dialects" do
+        stands_down { expects :s, type: String, format: { with: Regexp.new("\\xC3\\xA9") } }
+      end
+
+      it "stands down on an octal escape" do
+        stands_down { expects :s, type: String, format: { with: Regexp.new("\\012") } }
+      end
+
+      # `\uHHHH` is the same codepoint in both dialects and stays. The braced `\u{…}` form is refused
+      # separately, since ECMA needs the `u` flag for it.
+      it "still emits a \\uHHHH escape, which agrees in both dialects" do
+        expect(prop_for { expects :s, type: String, format: { with: Regexp.new("\\A\\u0041\\z") } })
+          .to include(pattern: "^\\u0041$")
+      end
+
       it "stands down on a numeric backreference" do
         stands_down { expects :s, type: String, format: { with: /\A(a|(b))\2c\z/ } }
       end
