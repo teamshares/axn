@@ -23,6 +23,9 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
       expect(Axn::Validation::Base.entry_declares_strict?({ klass: String, strict: true })).to be(true)
     end
 
+    # ActiveModel reads `strict:` by truthiness, so a falsy one is inert — but `strict: true` is supported
+    # nowhere, so the falsy spelling is a switch that cannot be turned on rather than a no-op inside a real
+    # option (which is what `confirmation: false`/`coerce: false` are, and why those are left alone).
     it "reads the key rather than its value, so a falsy strict: is still one" do
       expect(Axn::Validation::Base.entry_declares_strict?({ klass: String, strict: false })).to be(true)
       expect(Axn::Validation::Base.entry_declares_strict?({ klass: String, strict: nil })).to be(true)
@@ -57,7 +60,7 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
         .to raise_error(ArgumentError, /`strict:` inside the declaration on \["v"\].*axn does not have one.*Drop `strict:`/m)
     end
 
-    it "is refused whatever the value, since the value only chooses which class would be raised" do
+    it "is refused whatever the value — an option supported only in the off position is not one axn has" do
       expect { build_axn { expects :v, presence: true, strict: false } }
         .to raise_error(ArgumentError, /`strict:` inside the declaration on \["v"\]/)
       expect { build_axn { expects :v, presence: true, strict: ArgumentError } }

@@ -164,9 +164,15 @@ module Axn
       # pre-empted is simply lost. THE definition behind the declaration guard that refuses one
       # (`_reject_strict_validation!`) — its only consumer, so no judgment downstream ever meets one.
       #
-      # Only the key's presence is asked, for the reason it is asked of `on:`: the value chooses which exception
-      # class `errors.add` raises, not whether the option was understood, so `strict: false` names the same
-      # unsupported mode `strict: true` does.
+      # Only the key's presence is asked. ActiveModel reads the option by TRUTHINESS (`errors.add`'s
+      # `if exception = options[:strict]`), so a falsy one really is inert — but that makes `strict:` an option
+      # whose only accepted value would be the one that does nothing, which is not an option axn has. Keyed the
+      # way `uniqueness:` is rather than the way `confirmation: false`/`coerce: false` are: those two leave a
+      # falsy entry alone because their TRUTHY spelling is supported, so the falsy one is a real no-op inside a
+      # real option. `strict: true` is supported nowhere, so `strict: false` is not a no-op within an option —
+      # it is a switch that cannot be turned on, and admitting it would advertise one that can. It would also
+      # move the error: a config-driven `strict: flag` declares cleanly where the flag is false and raises at
+      # class definition where it is true, which is the same declaration failing in one environment only.
       def self.entry_declares_strict?(entry_opts) = entry_carries_option?(entry_opts, :strict)
 
       # One ENTRY, one option key, asked without dispatching to the bag — the shared read behind both refusals
