@@ -52,7 +52,9 @@ module Axn
         rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
           # Log the raised error best-effort, then surface it as this field's validation message — a
           # crashing custom validator fails the field rather than silently passing.
-          Axn::Extensions.best_effort("applying custom validation on field '#{attribute}'") { raise e }
+          # The subject is named by the validator collector rather than interpolated from the attribute: an
+          # unnamed position's attribute is a synthetic axn owns (see Validation::ContainerContents).
+          Axn::Extensions.best_effort("applying custom validation on #{record.send(:_validation_subject, attribute)}") { raise e }
 
           "failed validation: #{Axn::Internal::Rendering.exception_message(e)}"
         end

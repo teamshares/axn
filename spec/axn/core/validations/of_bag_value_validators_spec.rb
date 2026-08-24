@@ -224,6 +224,40 @@ RSpec.describe "value validators in an of: bag" do
     end
   end
 
+  # `validate:` is the one newly-admitted validator that reports through axn's own side channel, and that
+  # channel names its subject in prose. A named position names itself; an unnamed one was naming axn's
+  # synthetic attribute, which means nothing to the author reading the warning.
+  describe "a crashing validate: callable at a position" do
+    def warnings_from(&declaration)
+      logged = []
+      allow(Axn.config.logger).to receive(:warn) { |*args, &blk| logged << (args.first || blk&.call).to_s }
+      action = build_axn(&declaration)
+      yield_result = action.call(f: ["a"])
+      [logged.join("\n"), yield_result]
+    end
+
+    it "names the position rather than axn's synthetic attribute" do
+      message, = warnings_from { expects :f, type: Array, of: { klass: String, validate: -> {} } }
+
+      expect(message).not_to include("__AXN_CONTENTS__")
+      expect(message).to match(/CONTENTS OF A CONTAINER/i)
+    end
+
+    it "still fails the field rather than passing silently" do
+      _, result = warnings_from { expects :f, type: Array, of: { klass: String, validate: -> {} } }
+
+      expect(result).not_to be_ok
+    end
+
+    it "still names a NAMED position by its own name" do
+      logged = []
+      allow(Axn.config.logger).to receive(:warn) { |*args, &blk| logged << (args.first || blk&.call).to_s }
+      build_axn { expects :f, type: String, validate: -> {} }.call(f: "a")
+
+      expect(logged.join("\n")).to include("FIELD 'F'")
+    end
+  end
+
   describe "a bag that constrains nothing" do
     it "still refuses an empty bag" do
       expect { build_axn { expects :f, type: Array, of: {} } }
