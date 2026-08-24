@@ -45,13 +45,13 @@ Three cases hide under "nil elements", and only one is spellable today.
 
 The obstacle is that today's bag `allow_nil:`/`allow_blank:` are a *whole-field* fact that axn itself writes: `expects :f, type: Array, of: Integer` — nothing optional — stores `validations[:of] == {klass: Integer, container: Array, allow_nil: true}`. A hand-written one is meanwhile inert at both levels (`f: nil` still fails `is not a Array`; `f: [nil]` still fails `element at index 0 is not a String`). So the key currently carries a field-level fact and delivers nothing.
 
-The resolution is to separate the two facts rather than ban the key:
+**Deferred to PRO-3225, after measurement.** The intended resolution was to stop the push writing into the bag and let the key mean the position. What the measurement found is that the pushed copies are the **only** record of a field's tolerance: `optional: true` is axn sugar, converted at declaration into the `allow_blank:`/`allow_nil:` pair and then distributed into every validator entry, with nothing kept at the top level. `Base.nil_accepted?` — which requires every entry to be nil-tolerant, and which requiredness and nullability both turn on — therefore reads a field's tolerance off its entries. Exempting `:of` from the push alone moves eight examples, including `spec/downstream_contracts/axn_mcp_interface_spec.rb`'s "optional? still works on a field with of: present", which is a published downstream contract, plus three schema-nullability cases and the PRO-3166 example that pinned this very mechanism.
 
-- Stop the tolerance push writing `allow_nil:`/`allow_blank:` into the bag. Carry the field-level fact under a derived key, exactly as `container:` and `shaped_keys:` already are — dropped and re-derived on the second declaration pass (`_drop_derived_of_container!`).
-- `allow_nil:`/`allow_blank:` in a bag then become author-only and mean what ActiveModel means by them: skip this position's validators for a nil/blank value. That is the positional reading, and it closes cases 2 and 3.
-- Re-audit every consumer of the raw form in the same commit. Known: `OfValidator#validate_each`'s `options[:allow_nil] || options[:allow_blank]` nil-skip — mutation-check whether it is load-bearing at all, since `validate_elements`/`validate_entries` both `return unless value.is_a?(…)` and would no-op on a nil field regardless; `Base.nil_accepted?` / `nil_tolerant_validation?`; the emitter's `nil_allowed?` path; `_reconcile_emptiness_axis!`.
+So closing this residue means reworking how a field's tolerance is recorded, not how a bag is read — a change to the judgment every field's requiredness turns on, with a downstream contract riding on it. That is a different piece of work from widening the bag, and it is decided together with `if:`/`unless:`/`strict:` (below) rather than piecemeal. PRO-3225 carries the four candidate designs and the measurements.
 
-`if:`/`unless:`/`strict:` go the other way and are refused at **every** bag position. Their element-position meaning today is "gate the whole `of:` check" — a field-level fact wearing a positional key, the very thing being separated. `AXIS_INERT_OPTION_KEYS` already refuses them at an axis; the ban widens and the message points at the field, where ActiveModel does read them.
+One thing the measurement settled and is worth keeping: `OfValidator#validate_each`'s own field-level nil-skip is **not** load-bearing — removing it leaves the suite green, because `validate_elements`/`validate_entries` both `return unless value.is_a?(…)` and no-op on a nil field anyway. The obstacle is `nil_accepted?`, not that line.
+
+`if:`/`unless:`/`strict:` are **left exactly as they are**, for the same reason. Refusing them at every bag position was the intended design — their element-position meaning is "gate the whole field's `of:` check", a field-level fact wearing a positional key — but refusing is breaking for a spelling PRO-3166 shipped days earlier, and doing it here would remove a capability without delivering positional tolerance in exchange. Both decisions land together in PRO-3225.
 
 ## The failure grid
 
@@ -69,8 +69,7 @@ Every admitted validator against every position, with the runtime meaning and th
 | `absence:` | the value is blank | nothing | nothing | nothing |
 | `acceptance:` | the value is in the accept set | nothing | nothing | nothing |
 | `validate:` | the callable's verdict | nothing | nothing | nothing |
-| `allow_nil:` | skip this position's validators for `nil` | `"null"` joins the position's type | same | nothing |
-| `allow_blank:` | skip this position's validators for a blank value | nothing | nothing | nothing |
+| `allow_nil:` / `allow_blank:` | **unchanged — a whole-field fact, not positional** (PRO-3225) | nothing | nothing | nothing |
 
 Four of those cells need their reason on the record.
 
@@ -80,7 +79,7 @@ Four of those cells need their reason on the record.
 
 **`numericality:` and `comparison:` emit nothing at K, and are still enforced there.** A Ruby Hash key may legitimately be an Integer (`{1 => "a"}`), so `of: { keys: { klass: Integer, numericality: { greater_than: 0 } } }` is a real contract; but a JSON object key is always a string, so no `propertyNames` subschema expresses "parses to an integer greater than zero". This is PRO-3165's existing call for `keys: Symbol` — enforced in Ruby, invisible on the wire — now stated per validator rather than per axis. The general rule for K: **a keys-axis validator is emitted only when its constraint survives the string form of a JSON key.** `format:`, `length:`, `presence:` and a string-renderable `inclusion:` do; numeric bounds and `allow_nil:` (JSON has no null key) do not.
 
-**`allow_blank:` emits nothing anywhere.** It removes a constraint rather than adding one, and the constraint it removes is applied by the *other* validators on the same bag; the honest emission would be an `anyOf` of "the constraints" and "the blank values", which is a great deal of document for a rare declaration. Looser, documented, and the same call `exclusion:` already gets.
+**The tolerance row is a placeholder for PRO-3225.** Until that lands, a bag's `allow_nil:`/`allow_blank:` keep the whole-field meaning axn's own push gives them and are not forwarded to the position at all — `OfValidator#inner_contract_validations` takes the bag through `Validation::Base.validator_entries`, which is where "the shared options are not validators" is already expressed, so the question cannot be answered here by accident.
 
 ### Cells refused at declaration
 
@@ -88,7 +87,7 @@ Four of those cells need their reason on the record.
 | -- | -- |
 | `of: { klass: Array, format: … }`, `of: { klass: Hash, numericality: … }` | `_reject_container_position_validators!`, unchanged, reached with `klass:` as the declared type |
 | `of: { klass: String, inclusion: { in: [1, 2] } }` and every unsatisfiable-set spelling | `_reject_unsatisfiable_value_constraints!`, unchanged, same adaptation |
-| `of: { klass: String, if: -> { … } }` at any position | the widened `AXIS_INERT_OPTION_KEYS` ban |
+| `of: { klass: String, if: -> { … } }` at an axis | `AXIS_INERT_OPTION_KEYS`, unchanged — at an element position it is still admitted and still gates the whole field's check (PRO-3225) |
 | `of: { klass: String, model: … }`, `confirmation:`, `coerce:`, `type:` | the derived whitelist, each with its own reason |
 | `of: { keys: { klass: String, format: … } }` beside a `shape:` whose member name fails that format | nothing — it is legal, and the emission handles it (below) |
 
