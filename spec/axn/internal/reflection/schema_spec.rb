@@ -6260,6 +6260,58 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.input_schema.dig(:properties, :codes, :items)).to include(pattern: "^[A-Z]{2}$")
     end
 
+    # A validator-only bag names no class, and the node was seeded from `klass:` alone — so it stayed empty,
+    # every keyword that keys off a type declined to emit, and the parent dropped `items` entirely. The FIELD
+    # path infers a type from the validators in exactly this case (`json_type_for`), so the fix is to call it
+    # rather than to write a second inference beside it.
+    describe "a validator-only bag, which names no class" do
+      it "infers a numeric type and emits the bound" do
+        action = build_axn { expects :f, type: Array, of: { numericality: { greater_than: 0 } } }
+
+        expect(action.call(f: [1])).to be_ok
+        expect(action.call(f: [-1])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to include(type: "number", exclusiveMinimum: 0)
+      end
+
+      it "narrows to integer under only_integer, as a field does" do
+        prop = prop_for(:f) { expects :f, type: Array, of: { numericality: { only_integer: true } } }
+
+        expect(prop[:items]).to include(type: "integer")
+      end
+
+      it "infers a type from an inclusion set too, matching the field path" do
+        prop = prop_for(:f) { expects :f, type: Array, of: { inclusion: { in: %w[a b] } } }
+
+        expect(prop[:items]).to include(type: "string", enum: %w[a b])
+      end
+
+      it "keeps the declared class when the bag names one" do
+        prop = prop_for(:f) { expects :f, type: Array, of: { klass: String, numericality: { greater_than: 0 } } }
+
+        # `klass:` wins, exactly as `type:` wins at a field — and a numeric bound then stands down on a
+        # non-numeric emitted type.
+        expect(prop[:items]).to include(type: "string")
+        expect(prop[:items]).not_to have_key(:exclusiveMinimum)
+      end
+
+      it "reaches a map axis too" do
+        prop = prop_for(:m) { expects :m, type: Hash, of: { values: { numericality: { greater_than: 0 } } } }
+
+        expect(prop[:additionalProperties]).to include(type: "number", exclusiveMinimum: 0)
+      end
+
+      # `format:`/`length:` alone infer nothing, at a bag position AND at a field — there is no type to infer
+      # from a pattern or a size, since both apply to more than one JSON type. Pinned as the shared limitation
+      # it is, so the asymmetry above cannot creep back unnoticed.
+      it "infers nothing from format: alone, exactly as a field does not" do
+        bagged = build_axn { expects :f, type: Array, of: { format: { with: /\Aa/ } } }
+        fielded = build_axn { expects :f, format: { with: /\Aa/ } }
+
+        expect(bagged.input_schema[:properties][:f]).not_to have_key(:items)
+        expect(fielded.input_schema[:properties][:f]).to eq({})
+      end
+    end
+
     describe "keys axis, where propertyNames earns its place" do
       # PRO-3165 emitted nothing for `keys:` because every JSON object key is already a string, so a bare
       # `keys: String` says nothing actionable. That reasoning holds — and stops holding the moment the axis

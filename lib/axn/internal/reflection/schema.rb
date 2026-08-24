@@ -1909,7 +1909,15 @@ module Axn
         # land beside the `anyOf` at this node rather than inside each branch. Existing behavior, preserved
         # deliberately rather than corrected here.
         def contents_node_schema(bag, for_output:, ancestry: nil)
-          node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : {}
+          constraints = bag_value_constraints(bag, for_output:)
+          # A declared `klass:` decides the type, exactly as `type:` does at a field. With none, the type is
+          # INFERRED from the bag's own validators — through `json_type_for`, the function the field path
+          # already uses for that, rather than a second inference beside it. Without this a validator-only bag
+          # seeded an empty node, every keyword that keys off a type declined to emit, and the parent dropped
+          # `items` altogether: `of: { numericality: { greater_than: 0 } }` rejected `-1` at runtime and
+          # advertised nothing. (`format:`/`length:` alone still infer nothing, here and at a field alike —
+          # neither a pattern nor a size names one JSON type.)
+          node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : json_type_for(constraints, for_output:)
           # Whether the POSITION admits nil is the same question `nil_allowed?` answers for a field, asked of
           # the bag — a `klass:` naming NilClass admits it until another validator on the same bag rejects it.
           # Hard-coding it left `of: { klass: [String, NilClass], presence: true }` advertising a `null` branch
@@ -1920,7 +1928,7 @@ module Axn
           # before the member/contents merges below so a `type:` those steps install cannot be read as the type
           # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
           # validators constrain.
-          apply_value_constraints!(node, bag_value_constraints(bag, for_output:), nullable:, for_output:)
+          apply_value_constraints!(node, constraints, nullable:, for_output:)
           node = contents_member_schema(node, bag, for_output:, ancestry:)
           inner = emitted_contents_edge(bag, :of, for_output:)
           return node if nil.equal?(inner)
