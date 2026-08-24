@@ -20,6 +20,13 @@ module Axn
       # ALLOWLIST rather than a list of known-bad escapes — an escape nobody thought about stands down instead
       # of passing through.
       module Pattern
+        # The escapes whose equivalence across the two dialects is ESTABLISHED — not merely assumed, which is a
+        # distinction three review rounds have earned. Every member has been measured on the Ruby side against
+        # non-ASCII input and is spec-clear on the ECMA side: `\w`/`\W` and `\d`/`\D` are ASCII-only in both
+        # (Ruby's `\d` matches neither "٣" nor "３"), the control escapes name one codepoint, and `\uHHHH` names
+        # the same codepoint. The list is deliberately MINIMAL: this design cannot verify ECMA semantics, so its
+        # soundness rests entirely on nothing being here that has not been checked.
+        #
         # The escapes that mean the same thing in both dialects. `A`/`z` are Ruby-only and TRANSLATED below
         # rather than passed through; they are listed because they are legal input. Absent on purpose, each
         # because ECMA has no equivalent, needs a flag to enable one, or matches a DIFFERENT set of characters:
@@ -33,6 +40,11 @@ module Axn
         # `.` is a knowing exception rather than an oversight: ECMA's excludes `\r` and U+2028/9 where Ruby's
         # excludes only `\n`, so an emitted `.` matches FEWER strings — stricter, the licensed direction, and
         # standing down on it would cost the keyword for most real patterns.
+        # `b`/`B` are absent for a difference INSIDE Ruby that is easy to miss: Ruby's `\w` is ASCII-only
+        # (`/\w/` does not match "é") but its `\b` is Unicode-aware (`/\A\bé/` DOES match "é"), while ECMA's
+        # unflagged `\b` is defined through its ASCII `\w`. So `/\A\Bé\B\z/` rejects "é" in Ruby and
+        # `^\Bé\B$` accepts it. Measured on the Ruby side; the ECMA side is the spec's `IsWordChar`.
+        #
         # `x` and `0` are absent for a UNIT difference rather than a syntax one, found by sweeping this list
         # rather than by a review: Ruby reads `\xHH` as a BYTE and ECMA as a CHARACTER, so `/\xC3\xA9/` matches
         # the single character "é" in Ruby while the same source as an ECMA pattern means the two characters
@@ -45,7 +57,7 @@ module Axn
         # — so `/\A(a|(b))\2c\z/` rejects `"ac"` in Ruby and an emitted `^(a|(b))\2c$` accepts it. Proving
         # participation would mean parsing the alternation, so they stand down instead.
         SAFE_ESCAPES = Set.new(
-          %w[A z d D w W b B n r t f v u] +
+          %w[A z d D w W n r t f v u] +
           %w[. * + ? ( ) [ ] { } | ^ $ / \\ -],
         ).freeze
 

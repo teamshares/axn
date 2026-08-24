@@ -396,6 +396,20 @@ RSpec.describe "value validators in an of: bag" do
       expect(action.call(flag: true)).not_to be_ok
     end
 
+    # The keys AXIS needed the same reduction, and did not get it when the element position did — one call site
+    # swept, one missed. Sibling of the element-position case above, not a separate rule.
+    it "is reduced away on a keys axis too" do
+      keyed = build_axn do
+        expects :flag, type: :boolean
+        exposes :m, type: Hash, of: { keys: { klass: String, inclusion: { in: ["a"], if: :flag } }, values: Integer }
+        def call = expose(:m, { "zzz" => 1 })
+      end
+
+      expect(keyed.call(flag: false)).to be_ok
+      expect(keyed.output_schema.dig(:properties, :m, :propertyNames)).to be_nil
+      expect(keyed.call(flag: true)).not_to be_ok
+    end
+
     # Reflection is static-maximal on INPUT: a gate removes the check at runtime but the document advertises it
     # regardless, which is the existing rule for a self-gated `of:` edge (PRO-3166) and for a field's own.
     it "still advertises it on input, where reflection is static-maximal" do

@@ -1892,7 +1892,7 @@ module Axn
         # A union `klass:` keeps the merge order `apply_structured_schema!` has always used — the structural keys
         # land beside the `anyOf` at this node rather than inside each branch. Existing behavior, preserved
         # deliberately rather than corrected here.
-        def contents_node_schema(bag, for_output: false, ancestry: nil)
+        def contents_node_schema(bag, for_output:, ancestry: nil)
           node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : {}
           # Whether the POSITION admits nil is the same question `nil_allowed?` answers for a field, asked of
           # the bag — a `klass:` naming NilClass admits it until another validator on the same bag rejects it.
@@ -2048,7 +2048,7 @@ module Axn
               contents_node_schema(axis, for_output:, ancestry:)
             end
           node = values.empty? ? {} : { additionalProperties: values }
-          keys = map_keys_schema(bag)
+          keys = map_keys_schema(bag, for_output:)
           keys.empty? ? node : node.merge(propertyNames: keys)
         end
 
@@ -2063,7 +2063,10 @@ module Axn
         # numeric bound does not — a Ruby Hash key may legitimately be an Integer, but no `propertyNames`
         # subschema says "parses to an integer greater than zero", so that stays enforced-in-Ruby-only, exactly
         # as a bare `keys: Symbol` already is.
-        def map_keys_schema(bag)
+        # `for_output:` is threaded rather than defaulted: a self-gated validator on this axis promises nothing
+        # on output for the same reason it promises nothing at an element position, and forgetting it here is
+        # how the element-position fix stayed half-applied — one call site swept, one missed.
+        def map_keys_schema(bag, for_output:)
           axis = Axn::Internal::ShapeGraph.hash_or_nil(bag[:keys])
           return {} if nil.equal?(axis)
 
@@ -2072,14 +2075,14 @@ module Axn
           # numeric bound does not. The type is then dropped: `propertyNames` needs no `type: "string"` of its
           # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
           node = { type: "string" }
-          apply_value_constraints!(node, bag_value_constraints(axis), nullable: false, property_names: true)
+          apply_value_constraints!(node, bag_value_constraints(axis, for_output:), nullable: false, property_names: true)
           node.except(:type)
         end
 
         # Whether the value at a bag's position may be nil — `Base.nil_accepted?`, the same seam a field's
         # `nil_allowed?` reads, asked of the bag's own `klass:` and validators. A bag that constrains nothing at
         # all admits nil, exactly as an empty validator set does at a field.
-        def bag_nullable?(bag, for_output: false)
+        def bag_nullable?(bag, for_output:)
           validations = bag_value_constraints(bag, for_output:)
           klass = bag[:klass]
           # Synthesized in the CANONICAL `type:` shape a field's stored validations carry. A bare token would be
@@ -2114,7 +2117,11 @@ module Axn
         # them: what this returns is consumed as "the constraints on this value", and `of:`/`shape:` describe a
         # NESTED node instead — they are emitted by `contents_node_schema` and `contents_member_schema`. A
         # projection that reads the set generically would otherwise pick them up as keywords on the wrong node.
-        def bag_value_constraints(bag, for_output: false)
+        # `for_output:` is REQUIRED on this and its two callers rather than defaulted, on the same terms
+        # `effective_entry_options`' `declaration_options` is: a caller that omits the tier deciding the answer
+        # gets a quietly wrong one. That is exactly how the output reduction stayed half-applied — the element
+        # position forwarded it and the keys axis silently took the default. Now the omission is an error.
+        def bag_value_constraints(bag, for_output:)
           constraints = Axn::Validation::Base.validator_entries(bag)
                                              .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
                                                      *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)

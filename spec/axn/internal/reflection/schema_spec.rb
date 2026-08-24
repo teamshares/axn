@@ -5935,6 +5935,26 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(action.input_schema[:properties][:s]).to include(pattern: "^ab$")
       end
 
+      # A difference INSIDE Ruby that is easy to miss: Ruby's `\w` is ASCII-only but its `\b` is Unicode-aware,
+      # while ECMA's unflagged `\b` goes through its ASCII `\w`. So Ruby REJECTS "é" here and the emitted
+      # `^\Bé\B$` would accept it.
+      it "stands down on a word-boundary escape, which Ruby reads Unicode-aware" do
+        action = build_axn { expects :s, type: String, format: { with: /\A\Bé\B\z/ } }
+
+        expect(action.call(s: "é")).not_to be_ok
+        expect(action.input_schema[:properties][:s]).not_to have_key(:pattern)
+      end
+
+      it "stands down on \\b for the same reason" do
+        stands_down { expects :s, type: String, format: { with: /\A\bab\z/ } }
+      end
+
+      # The escapes that STAY are the ones measured ASCII-only on both sides, which is what makes them safe.
+      it "still emits \\d and \\w, which are ASCII-only in both dialects" do
+        expect(prop_for { expects :s, type: String, format: { with: /\A\d\w+\z/ } })
+          .to include(pattern: "^\\d\\w+$")
+      end
+
       it "stands down on \\s, whose character set differs between the dialects" do
         stands_down { expects :s, type: String, format: { with: /\A\s+\z/ } }
       end
@@ -6231,7 +6251,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         bag = { klass: String, container: Array, message: "m", of: { klass: Integer },
                 shape: { members: [] }, format: { with: /a/ }, allow_nil: true }
 
-        expect(described_class.send(:bag_value_constraints, bag)).to eq(format: { with: /a/ })
+        expect(described_class.send(:bag_value_constraints, bag, for_output: false)).to eq(format: { with: /a/ })
       end
     end
 
