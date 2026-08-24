@@ -8,6 +8,8 @@ require "axn/internal/native_methods"
 require "axn/internal/subfield_tree"
 # A property name in an emitted schema is the canonicalization's answer, so the builder cannot load without it.
 require "axn/internal/reflection/values"
+# A `format:` field's `pattern` is this module's translation, so the builder cannot load without it either.
+require "axn/internal/reflection/pattern"
 
 # The `model:` id convention and the conditional-gate keys are both read on the build path, so the builder
 # cannot load without their owner either.
@@ -1316,6 +1318,7 @@ module Axn
           # it. Nothing above depends on the constraint already being there.
           apply_size_constraints!(prop, config)
           apply_numeric_bounds!(prop, config)
+          apply_pattern!(prop, config)
 
           prop
         end
@@ -1384,6 +1387,21 @@ module Axn
         # follows the emitted type into a union's `anyOf` branches as well as a single `type:`.
         # For a String under `presence:` the runtime also rejects whitespace-only values, which
         # `minLength` cannot express, so the emitted constraint stays a floor rather than an exact mirror.
+        # A declared `format:` reflects as `pattern` when the regex translates faithfully — `Reflection::Pattern`
+        # owns that judgment and returns nil to stand down, which is what the emitter did for every regex
+        # before this. Only `with:` is read: `without:`'s honest spelling is `not: { pattern: ... }`, and `not:`
+        # is a single slot `reject_null!` already writes into, so a second writer would silently clobber the
+        # first. Booked as unemitted alongside `exclusion:`, which has the same shape.
+        def apply_pattern!(prop, config)
+          return unless Array(prop[:type]).include?("string")
+
+          entry = Axn::Validation::Base.validator_entries(config.validations)[:format]
+          return unless entry
+
+          pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with])
+          prop[:pattern] = pattern if pattern
+        end
+
         # The bound twin of the emptiness floor/ceiling: a declared `numericality:`/`comparison:` bound reflects
         # as the JSON Schema keyword that means the same thing. Read through `Base.declared_numeric_bounds`, the
         # same reader the runtime bound comes from, so the two cannot disagree about one declaration.

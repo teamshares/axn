@@ -5792,4 +5792,164 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         .to include(exclusiveMinimum: 0, exclusiveMaximum: 10)
     end
   end
+
+  # `pattern` was emitted nowhere, so a declared `format:` was enforced at runtime and advertised nowhere.
+  #
+  # JSON Schema's `pattern` is an ECMA-262 source with NO flags available, so a faithful translation is only
+  # sometimes possible — and the failure mode that matters is a FALSE EMIT, a pattern that means something
+  # other than the Ruby regex it came from. Standing down costs nothing (it emits nothing, which is where this
+  # started), so anything not provably translatable stands down. `Reflection::Pattern` owns that judgment.
+  describe "pattern" do
+    def prop_for(&declaration)
+      build_axn(&declaration).input_schema[:properties][:s]
+    end
+
+    it "emits an already-ECMA-shaped source unchanged" do
+      expect(prop_for { expects :s, type: String, format: { with: /[a-z]+/ } }).to include(pattern: "[a-z]+")
+    end
+
+    # `\A`/`\z` are Ruby-only. ECMA's `^`/`$` mean start/end of INPUT whenever no `m` flag is set, and a
+    # `pattern` can never set one — so the translation is exact rather than approximate.
+    it "translates \\A and \\z to the ECMA input anchors" do
+      expect(prop_for { expects :s, type: String, format: { with: /\A[A-Z]{2}\z/ } })
+        .to include(pattern: "^[A-Z]{2}$")
+    end
+
+    it "emits the bare Regexp form of format:" do
+      expect(prop_for { expects :s, type: String, format: /\Aab\z/ }).to include(pattern: "^ab$")
+    end
+
+    # Ruby's `^`/`$` are ALWAYS line anchors; ECMA's, with no flag available, are input anchors. So the
+    # emitted pattern matches a subset of what the runtime accepts — stricter, which is the documented and
+    # licensed direction, rather than a divergence.
+    it "emits a Ruby line anchor as an input anchor, which is stricter" do
+      expect(prop_for { expects :s, type: String, format: { with: /^\d+$/ } }).to include(pattern: "^\\d+$")
+    end
+
+    it "agrees with the runtime on the same value" do
+      action = build_axn { expects :s, type: String, format: { with: /\A[A-Z]{2}\z/ } }
+
+      expect(action.call(s: "US")).to be_ok
+      expect(action.call(s: "usa")).not_to be_ok
+      expect(action.input_schema[:properties][:s]).to include(pattern: "^[A-Z]{2}$")
+    end
+
+    it "reaches a shape member's own format:" do
+      action = build_axn do
+        expects :rows, type: Array, of: Hash do
+          field :sku, type: String, format: { with: /\A[A-Z]+\z/ }
+        end
+      end
+
+      expect(action.input_schema.dig(:properties, :rows, :items, :properties, :sku))
+        .to include(pattern: "^[A-Z]+$")
+    end
+
+    describe "stand-downs" do
+      def stands_down(&declaration)
+        expect(prop_for(&declaration)).not_to have_key(:pattern)
+      end
+
+      it "stands down on a case-insensitive regex, which a pattern cannot express" do
+        stands_down { expects :s, type: String, format: { with: /abc/i } }
+      end
+
+      it "stands down on Ruby's dotall flag, which ECMA spells differently" do
+        stands_down { expects :s, type: String, format: { with: /a.b/m } }
+      end
+
+      it "stands down on extended mode, which changes what the source means" do
+        stands_down { expects :s, type: String, format: { with: / a b /x } }
+      end
+
+      it "stands down on \\Z, which permits a trailing newline where $ does not" do
+        stands_down { expects :s, type: String, format: { with: /\Aa\Z/ } }
+      end
+
+      it "stands down on \\h, a Ruby-only escape" do
+        stands_down { expects :s, type: String, format: { with: /\A\h+\z/ } }
+      end
+
+      it "stands down on a POSIX bracket class" do
+        stands_down { expects :s, type: String, format: { with: /[[:alpha:]]+/ } }
+      end
+
+      it "stands down on \\p, which ECMA needs a u flag for" do
+        stands_down { expects :s, type: String, format: { with: /\p{Alpha}+/ } }
+      end
+
+      it "stands down on an atomic group" do
+        stands_down { expects :s, type: String, format: { with: /(?>ab)c/ } }
+      end
+
+      it "stands down on an inline flag group" do
+        stands_down { expects :s, type: String, format: { with: /(?i)abc/ } }
+      end
+
+      it "stands down on a named capture" do
+        stands_down { expects :s, type: String, format: { with: /(?<y>\d+)/ } }
+      end
+
+      it "stands down on a possessive quantifier" do
+        stands_down { expects :s, type: String, format: { with: /a++b/ } }
+      end
+
+      it "stands down on a class intersection" do
+        stands_down { expects :s, type: String, format: { with: /[\w&&[^a]]+/ } }
+      end
+
+      it "stands down on a braced escape ECMA needs a u flag for" do
+        stands_down { expects :s, type: String, format: { with: /\u{1F600}/ } }
+      end
+
+      # A `without:` pattern's honest spelling is `not: { pattern: ... }`, and `not:` is a single slot that
+      # `reject_null!` already writes into — two writers, one key, and the second silently clobbers the first.
+      # Booked as unemitted alongside `exclusion:`, which has the same shape.
+      it "stands down on format: { without: }" do
+        stands_down { expects :s, type: String, format: { without: /\d/ } }
+      end
+
+      it "stands down on a pattern ActiveModel resolves per call" do
+        stands_down { expects :s, type: String, format: { with: ->(_r) { /a/ } } }
+      end
+
+      it "stands down on a non-string emitted type" do
+        expect(prop_for { expects :s, type: Integer, format: { with: /\A\d+\z/ } }).not_to have_key(:pattern)
+      end
+
+      it "stands down on a disabled entry" do
+        stands_down { expects :s, type: String, format: false, optional: true }
+      end
+
+      # `{b}` is not a well-formed quantifier, so Ruby reads it as three literal characters. A strict ECMA
+      # engine may instead treat it as a parse error, which would make a consumer's validator throw on a
+      # document axn published — so the brace stands down rather than risk it.
+      it "stands down on a brace that is not a quantifier" do
+        stands_down { expects :s, type: String, format: { with: /\Aa{b}c\z/ } }
+      end
+
+      # `\A` translates to `^` only as a leading anchor. Inside an alternation its position would have to be
+      # tracked to translate safely — and inside a character class `[\A]` would become `[^]`, a negated empty
+      # class matching nothing — so anywhere but the ends, it stands down.
+      it "stands down on \\A anywhere but the start" do
+        stands_down { expects :s, type: String, format: { with: /(\Aa|b)/ } }
+      end
+
+      it "stands down on \\z anywhere but the end" do
+        stands_down { expects :s, type: String, format: { with: /a\z|b/ } }
+      end
+    end
+
+    # Lookahead and lookbehind are shared with ECMA, so they translate rather than stand down — the allowlist
+    # is not "punctuation only".
+    it "keeps a lookahead" do
+      expect(prop_for { expects :s, type: String, format: { with: /\A(?=.*\d)\w+\z/ } })
+        .to include(pattern: "^(?=.*\\d)\\w+$")
+    end
+
+    it "keeps a non-capturing group and an escaped literal" do
+      expect(prop_for { expects :s, type: String, format: { with: /\A(?:a|b)\.c\z/ } })
+        .to include(pattern: "^(?:a|b)\\.c$")
+    end
+  end
 end
