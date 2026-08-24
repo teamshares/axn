@@ -160,17 +160,10 @@ RSpec.describe "a degenerate literal" do
   end
 
   describe "a blank value the entry's own tolerance skips" do
-    it "stands the satisfiability guard down where that blank is admitted and passes" do
+    it "stands the satisfiability guard down for a comparison bound, at a scalar position and a container one" do
       # `presence: false` admits the blank, and the entry's `allow_blank:` makes ActiveModel skip it before the
       # check runs — so a value passes and the contract enforces something. Refusing it claims "every value is
       # rejected", which the blank disproves.
-      action = build_axn { expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true } }
-
-      expect(action.call(v: []).ok?).to be(true)
-      expect(action.call(v: ["a"]).ok?).to be(false)
-    end
-
-    it "does the same for a comparison bound, at a scalar position and a container one" do
       scalar = build_axn { expects :v, type: String, presence: false, comparison: { equal_to: 1, allow_blank: true } }
       expect(scalar.call(v: "").ok?).to be(true)
       expect(scalar.call(v: "a").ok?).to be(false)
@@ -178,6 +171,35 @@ RSpec.describe "a degenerate literal" do
       container = build_axn { expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true } }
       expect(container.call(v: []).ok?).to be(true)
       expect(container.call(v: ["a"]).ok?).to be(false)
+    end
+
+    it "emits a SATISFIABLE node for every stand-down it grants, which is what licenses the stand-down" do
+      # The projection of a satisfiable contract must itself be satisfiable (AGENTS.md). These two validators
+      # carry none of their literals into the schema — the node is just the declared type — so the blank that
+      # rescues the runtime leaves nothing for a schema consumer to reject. Locked here rather than reasoned
+      # about, so an emitter that started projecting a comparison bound fails on this example.
+      comparison = build_axn { expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true } }
+      expect(comparison.input_schema[:properties][:v]).to eq({ type: "array" })
+
+      acceptance = build_axn { expects :v, type: Array, presence: false, acceptance: { allow_blank: true } }
+      expect(acceptance.input_schema[:properties][:v]).to eq({ type: "array" })
+    end
+
+    it "does NOT let a blank rescue `inclusion:`, whose literals ARE the emitted enum" do
+      # `[]` passes at runtime (the entry skips it), but the emitted node would be
+      # `{type: "array", enum: [1]}` — which admits neither `1` (wrong type) nor `[]` (not in the enum). A blank
+      # that only passes by being SKIPPED is never in the enum, so no such declaration can have a satisfiable
+      # projection, and the invariant makes it refusable even though a value passes.
+      expect { build_axn { expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true } } }
+        .to raise_error(ArgumentError, /inclusion:.*can never match.*allow_blank.*enum/m)
+      expect { build_axn { expects :v, type: String, presence: false, inclusion: { in: [1], allow_blank: true } } }
+        .to raise_error(ArgumentError, /inclusion:.*can never match/m)
+
+      # ...and the right-typed set is untouched, so this costs no coverage: the guard never reached it anyway.
+      action = build_axn { expects :v, type: Array, presence: false, inclusion: { in: [["a"]], allow_blank: true } }
+      expect(action.input_schema[:properties][:v]).to eq({ type: "array", enum: [["a"]] })
+      expect(action.call(v: ["a"]).ok?).to be(true)
+      expect(action.call(v: []).ok?).to be(true)
     end
 
     it "keeps refusing where the blank is rejected anyway, so nothing passes after all" do
@@ -201,27 +223,20 @@ RSpec.describe "a degenerate literal" do
 
     it "keeps refusing when a SIBLING validator rejects the very blank the entry skips" do
       # The entry skips `[]`, but the exclusion sibling forbids it — so `[]` is rejected after all while every
-      # non-empty Array fails inclusion, and nothing passes. The blank is only a witness if the whole field
+      # non-empty Array fails the bound, and nothing passes. The blank is only a witness if the whole field
       # admits it.
       expect do
         build_axn do
-          expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true }, exclusion: { in: [[]] }
+          expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true }, exclusion: { in: [[]] }
         end
-      end.to raise_error(ArgumentError, /inclusion:.*can never match/m)
-
-      # A comparison sibling rejects a blank ahead of any bound, so it rejects every blank whatever it compares.
-      expect do
-        build_axn do
-          expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true }, comparison: { equal_to: [2] }
-        end
-      end.to raise_error(ArgumentError, /can never match/m)
+      end.to raise_error(ArgumentError, /comparison:.*can never match/m)
     end
 
     it "still stands down when the sibling leaves that blank alone" do
       # The mirror of the case above, and the reason a sibling cannot simply veto the stand-down: this exclusion
       # forbids something else, so `[]` really does pass and the contract really does enforce.
       action = build_axn do
-        expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true }, exclusion: { in: [%w[zzz]] }
+        expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true }, exclusion: { in: [%w[zzz]] }
       end
 
       expect(action.call(v: []).ok?).to be(true)
@@ -230,10 +245,10 @@ RSpec.describe "a degenerate literal" do
 
     it "stands down where the declared type has more than one blank, so one witness settles nothing" do
       # `blank?` matches any whitespace-only String, so `""` is not the only blank a String has. The sibling
-      # forbids `""` and nothing else, and `"  "` sails past it while the inclusion skips it — so the contract
+      # forbids `""` and nothing else, and `"  "` sails past it while the bound skips it — so the contract
       # enforces something, and concluding otherwise from the one witness we can name would refuse it.
       action = build_axn do
-        expects :v, type: String, presence: false, inclusion: { in: [1], allow_blank: true }, exclusion: { in: ["", "zzz"] }
+        expects :v, type: String, presence: false, comparison: { equal_to: 1, allow_blank: true }, exclusion: { in: ["", "zzz"] }
       end
 
       expect(action.call(v: "  ").ok?).to be(true)
@@ -245,7 +260,7 @@ RSpec.describe "a degenerate literal" do
       # into a refusal — the one direction this guard may never take.
       expect do
         build_axn do
-          expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true },
+          expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true },
                       validate: ->(value) { "must be given" if value.nil? }
         end
       end.not_to raise_error
@@ -256,7 +271,7 @@ RSpec.describe "a degenerate literal" do
       # witness exactly as the audited entry does. It forbids a non-blank literal too, so the sibling is not
       # itself vacuous.
       action = build_axn do
-        expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true },
+        expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true },
                     exclusion: { in: [[], %w[x]], allow_blank: true }
       end
 

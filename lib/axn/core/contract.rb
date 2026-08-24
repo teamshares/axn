@@ -3435,6 +3435,21 @@ module Axn
           comparison: %i[other_than],
         }.freeze
 
+        # The validators whose LITERALS reach the emitted schema, where a blank rescuing the RUNTIME cannot
+        # rescue the PROJECTION — and the projection of a satisfiable contract must itself be satisfiable
+        # (AGENTS.md). `inclusion:` emits its set as `enum`, so a wrong-typed set leaves a node nothing can
+        # satisfy: `type: Array, presence: false, inclusion: { in: [1], allow_blank: true }` accepts `[]` at
+        # runtime and emits `{type: "array", enum: [1]}`, which admits neither `1` (wrong type) nor `[]` (not in
+        # the enum). A blank that only passes by being SKIPPED is not in the enum by construction, so no such
+        # declaration can have a satisfiable node, and refusing it is right even though a value passes.
+        #
+        # Measured per key rather than assumed: `comparison:` and `acceptance:` emit only the declared type
+        # (`{type: "array"}`) and carry none of their literals, so their nodes stay satisfiable and the blank
+        # stand-down is sound for them. `exclusion:` emits nothing at all and is the vacuity guard's business.
+        # `spec/axn/core/validations/degenerate_literals_spec.rb` locks the emitted node for both polarities, so
+        # a future emitter that started projecting a comparison bound would fail there rather than here.
+        PROJECTED_LITERAL_KEYS = %i[inclusion].freeze
+
         # The comparison operators ActiveModel decides with `==` rather than `<=>` (activemodel 7.2.2.2,
         # comparison.rb COMPARE_CHECKS): the non-inverted `equal_to` here, and the inverted `other_than` whose
         # own map is `VACUOUS_CONSTRAINT_KEYS`. Named because equality is judgeable at every declared type while
@@ -3485,7 +3500,12 @@ module Axn
             next if literals.nil?
             next if _constraint_satisfiable?(key, literals, klasses, cross_family: _cross_family_admissible?(key, entry))
 
-            raise ArgumentError, _unsatisfiable_constraint_message(key, entry, klasses, where:)
+            # Whether a blank would have passed decides only the WORDING here: the refusal itself is settled by
+            # the projection invariant above, which no runtime-passing blank can satisfy.
+            blank_tolerant = PROJECTED_LITERAL_KEYS.include?(key) &&
+                             Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank].present?
+
+            raise ArgumentError, _unsatisfiable_constraint_message(key, entry, klasses, where:, blank_tolerant:)
           end
         end
 
@@ -3516,7 +3536,14 @@ module Axn
         # The unsatisfiable message, which names the reason the set or bound matches nothing. An empty Range
         # matches nothing whatever the declared type is, so blaming the literals' TYPE there would name a defect
         # the declaration does not have.
-        def _unsatisfiable_constraint_message(key, entry, klasses, where:)
+        def _unsatisfiable_constraint_message(key, entry, klasses, where:, blank_tolerant: false)
+          if blank_tolerant
+            return "#{key}: on #{where} can never match — nothing it compares against is of type " \
+                   "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so the only value that " \
+                   "could pass is the blank your `allow_blank:` skips, and the emitted schema advertises the set " \
+                   "as an `enum` no value can satisfy at all. Compare against literals of the declared type."
+          end
+
           if _empty_range_set?(key, entry)
             return "#{key}: on #{where} can never match — the Range it names is empty, so it contains no value " \
                    "at all and every value is rejected. Name a Range with at least one value in it (an " \
@@ -3560,6 +3587,7 @@ module Axn
         # reading of the same declaration. Anything they cannot settle resolves to ADMITTED, standing the guard
         # down: this guard's safe direction is admitting a broken declaration, never refusing a working one.
         def _blank_can_satisfy?(entry, key, validations, tolerance, klasses, allow_empty:)
+          return false if PROJECTED_LITERAL_KEYS.include?(key)
           return false unless Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank]
           return false if _blank_rejected_by_contract?(validations, allow_empty:, tolerant: tolerance.values.any?)
 

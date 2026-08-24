@@ -2,6 +2,7 @@
 
 require "axn/testing/spec_helpers"
 require "active_model"
+require "active_support/core_ext/object/blank"
 require "bigdecimal"
 require "date"
 
@@ -144,20 +145,32 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
   # refuses (a sibling set that is vacuous for this type), and there is then no contract to ask about the
   # candidate. Counted rather than folded into either answer, so a growing pile of undecidables cannot quietly
   # hollow the audit out.
-  def satisfiability_outcome(type, entry, validator_key, candidates)
+  # The candidates that pass BOTH halves, or nil when the question cannot be put.
+  def satisfiability_passers(type, entry, validator_key, candidates)
     audited = entry.slice(validator_key)
     others = declare_or_nil(type, entry.except(validator_key))
-    return :undecidable if others.nil?
+    return nil if others.nil?
 
-    passed = candidates.any? do |candidate|
+    candidates.select do |candidate|
       next false unless entry_outcome(audited, candidate) == :accept
 
       others.call(v: candidate).ok?
     rescue StandardError
       false
     end
+  end
 
-    passed ? :passes : :nothing_passes
+  # The OTHER half of the invariant: "the projection of a satisfiable contract must itself be satisfiable"
+  # (AGENTS.md). An `inclusion:` set IS the emitted `enum`, and a blank that passes only by being SKIPPED is
+  # never a member of it — so where the survivors are all blanks the node admits nothing at all
+  # (`{type: "array", enum: [1]}` takes neither `1` nor `[]`), and the refusal is earned even though the runtime
+  # accepts a value. Restricted to the enum-emitting validators because that is measured: `comparison:` and
+  # `acceptance:` carry none of their literals into the schema, so their nodes stay satisfiable and a blank
+  # really does rescue them.
+  def enum_emitting_keys = %i[inclusion]
+
+  def projection_unsatisfiable?(validator_key, passers)
+    enum_emitting_keys.include?(validator_key) && passers.all?(&:blank?)
   end
 
   # The rest of the declaration as an action, or nil when that half is itself a contract a guard refuses.
@@ -227,12 +240,12 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
               if verdict == :vacuous
                 earned = !can_fail?(entry, validator_key, candidates)
               else
-                outcome = satisfiability_outcome(type, entry, validator_key, candidates)
-                if outcome == :undecidable
+                passers = satisfiability_passers(type, entry, validator_key, candidates)
+                if passers.nil?
                   tally[:undecidable] += 1
                   next
                 end
-                earned = outcome == :nothing_passes
+                earned = passers.empty? || projection_unsatisfiable?(validator_key, passers)
               end
               next if earned
 
