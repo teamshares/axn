@@ -115,11 +115,15 @@ PRO-3220's guard drew a finding in each of four rounds, and every one was the sa
 | `value.size` | `value.length` — what `LengthValidator` measures |
 | an emitted `maxLength: 0` | nothing; it was a biased-stricter approximation, not a fact |
 | `entry_self_gated?` | `entry_effectively_gated?` — a declaration gate skips the entry too |
-| two of three measurement routes | all three: `length`, `empty?`, `blank?` |
+| the floor-holding checks' methods | every BOUND-holding check's: `length`, `empty?`, `blank?`, `present?` |
 | "a `presence:` entry exists" | "a `presence:` entry rejects something" — a blank-tolerant one does not |
 | a member's own size | its size AND whether its `==` decides what it matches |
+| a member's exact class | its class AND the owner of the `==` that will run — a singleton is invisible to a class check |
+| "an `inclusion:` set" | which CONTAINER, and whose `include?` — only Array's own dispatches `member ==` |
+| every declared type token alike | only the SIZE-BEARING ones; a token carrying no size must not veto a bound |
+| the field path's guards | every route into a contract, the raw `ShapeConfig` member's included |
 
-Six hand-written fixes, each one round apart, and the count was not falling. What ended it was not a seventh fix: it was **enumerating the product and measuring it against the real runtime**. The soundness invariant is mechanical — *if the guard refuses, no value passes* — so it can be checked rather than argued: build every combination of floor × ceiling × set × modifier × type, build each one again with the guard stubbed off on that one class, and run axn's own validation over a candidate spread.
+A dozen hand-written fixes, each a round apart, and the count was not falling. What ended it was not a seventh fix: it was **enumerating the product and measuring it against the real runtime**. The soundness invariant is mechanical — *if the guard refuses, no value passes* — so it can be checked rather than argued: build every combination of floor × ceiling × set × modifier × type, build each one again with the guard stubbed off on that one class, and run axn's own validation over a candidate spread.
 
 The product must span every axis the guard reads, and getting that wrong is the failure mode to expect — it happened twice. The first cut carried a gated `absence:` but no gated `length:` or `inclusion:`, and the next round reported a case in exactly the column it had left out. The cut after that added singleton-bearing members but wired one to a value the CANDIDATE spread did not contain, so the cell existed and still proved nothing: an over-restriction is only observable when some candidate actually passes. Derive the axes from what the guard consults, then check each new axis by inverse mutation — a cell that does not fail when you break the fix it was added for is decoration.
 
