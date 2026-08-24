@@ -73,8 +73,19 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
   let(:tolerances) { { "none" => {}, "allow_nil" => { allow_nil: true }, "allow_blank" => { allow_blank: true } } }
 
   # The rest of the declaration, varied because both verdicts depend on it: `presence: false` admits a blank
-  # value, which is what makes a blank-tolerant entry satisfiable.
-  let(:contexts) { { "default" => {}, "presence: false" => { presence: false } } }
+  # value, which is what makes a blank-tolerant entry satisfiable — and a SIBLING validator can then reject that
+  # blank right back, which decides whether the blank is really a witness. Both polarities of the sibling are
+  # walked (one forbidding the blank, one forbidding something else), since a sibling may neither veto the
+  # stand-down outright nor be ignored.
+  let(:contexts) do
+    {
+      "default" => {},
+      "presence: false" => { presence: false },
+      "sibling forbids blank" => { presence: false, exclusion: { in: [[], "", :"", {}] } },
+      "sibling forbids other" => { presence: false, exclusion: { in: [%w[zzz], "zzz"] } },
+      "sibling unreadable" => { presence: false, validate: ->(value) { "bad" if value.nil? } },
+    }
+  end
 
   # A bare ActiveModel model carrying the entry as axn really installs it — axn's own Clusivity validators for
   # inclusion/exclusion, ActiveModel's own for everything else.
@@ -119,8 +130,9 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
   # Measured instance: `type: Date, comparison: { other_than: Float::NAN }`, where `Date <=> NaN` raises
   # ArgumentError (Date reads a Numeric bound as an Astronomical Julian Day Number and cannot convert a NaN),
   # ActiveModel turns the raise into an error, and every Date is rejected.
-  def can_fail?(entry, candidates)
-    outcomes = candidates.map { |candidate| entry_outcome(entry, candidate) }
+  def can_fail?(entry, validator_key, candidates)
+    audited = entry.slice(validator_key)
+    outcomes = candidates.map { |candidate| entry_outcome(audited, candidate) }
 
     outcomes.include?(:reject) && outcomes.include?(:accept)
   end
@@ -128,25 +140,43 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
   # Whether some candidate passes BOTH halves of the contract: the constrained entry, and everything else the
   # declaration installs. The second half is axn's own — the same field, declared without the entry under
   # audit, and actually called.
-  def can_pass?(type, entry, validator_key, candidates)
-    rest = entry.except(validator_key)
-    others = build_axn { expects :v, type:, **rest }
+  # Returns nil when the question cannot be put: the REST of the declaration may itself be a contract a guard
+  # refuses (a sibling set that is vacuous for this type), and there is then no contract to ask about the
+  # candidate. Counted rather than folded into either answer, so a growing pile of undecidables cannot quietly
+  # hollow the audit out.
+  def satisfiability_outcome(type, entry, validator_key, candidates)
+    audited = entry.slice(validator_key)
+    others = declare_or_nil(type, entry.except(validator_key))
+    return :undecidable if others.nil?
 
-    candidates.any? do |candidate|
-      next false unless entry_outcome(entry, candidate) == :accept
+    passed = candidates.any? do |candidate|
+      next false unless entry_outcome(audited, candidate) == :accept
 
       others.call(v: candidate).ok?
     rescue StandardError
       false
     end
+
+    passed ? :passes : :nothing_passes
   end
 
-  # Which guard refused, if either. Only these two are under audit; the container-position and hostile-container
-  # guards refuse for their own reasons and have their own coverage.
-  def refusal(type, entry)
+  # The rest of the declaration as an action, or nil when that half is itself a contract a guard refuses.
+  def declare_or_nil(type, rest)
+    build_axn { expects :v, type:, **rest }
+  rescue StandardError
+    nil
+  end
+
+  # Which guard refused the entry UNDER AUDIT, if either. Scoped by the key the message names, because a
+  # surrounding sibling can be refused by the same guards for its own reasons — a `sibling forbids blank`
+  # exclusion set is vacuous on a type whose blank it cannot be — and attributing that to the audited entry
+  # reports a finding against a verdict nobody made about it. Only these two guards are under audit; the
+  # container-position and hostile-container ones have their own coverage.
+  def refusal(type, entry, validator_key)
     build_axn { expects :v, type:, **entry }
     nil
   rescue ArgumentError => e
+    return nil unless e.message.start_with?("#{validator_key}:")
     return :vacuous if e.message.include?("enforces nothing")
 
     :unsatisfiable if e.message.include?("can never match")
@@ -163,14 +193,14 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
       "inclusion (Set set)" => [{ inclusion: { in: Set[literal] }.merge(tolerance) }, :inclusion],
       "comparison equal_to" => [{ comparison: { equal_to: literal }.merge(tolerance) }, :comparison],
       "comparison greater_than" => [{ comparison: { greater_than: literal }.merge(tolerance) }, :comparison],
-    }.transform_values { |entry, key| [entry.merge(context), key] }
+    }.transform_values { |entry, key| [context.merge(entry), key] }
   end
 
   def range_spellings_for(range, tolerance, context)
     {
       "exclusion (Range)" => [{ exclusion: { in: range }.merge(tolerance) }, :exclusion],
       "inclusion (Range)" => [{ inclusion: { in: range }.merge(tolerance) }, :inclusion],
-    }.transform_values { |entry, key| [entry.merge(context), key] }
+    }.transform_values { |entry, key| [context.merge(entry), key] }
   end
 
   # The audit itself, shared by both products below: for every refusal, ask the runtime whether it was earned.
@@ -178,7 +208,7 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
   # actually reached both verdicts — an audit that refuses nothing agrees with the runtime trivially.
   def audit(sets)
     wrong = []
-    tally = { examined: 0, vacuous: 0, unsatisfiable: 0 }
+    tally = { examined: 0, vacuous: 0, unsatisfiable: 0, undecidable: 0 }
 
     candidates_by_type.each do |type, candidates|
       sets.each do |literal_name, literal|
@@ -187,14 +217,23 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
             yield(literal, tolerance, context).each do |spelling, (entry, validator_key)|
               tally[:examined] += 1
               verdict = begin
-                refusal(type, entry)
+                refusal(type, entry, validator_key)
               rescue StandardError
                 nil # refused for an unrelated reason, or could not be declared at all
               end
               next if verdict.nil?
 
               tally[verdict] += 1
-              earned = verdict == :vacuous ? !can_fail?(entry, candidates) : !can_pass?(type, entry, validator_key, candidates)
+              if verdict == :vacuous
+                earned = !can_fail?(entry, validator_key, candidates)
+              else
+                outcome = satisfiability_outcome(type, entry, validator_key, candidates)
+                if outcome == :undecidable
+                  tally[:undecidable] += 1
+                  next
+                end
+                earned = outcome == :nothing_passes
+              end
               next if earned
 
               wrong << "#{verdict}: #{type}/#{literal_name}/#{tolerance_name}/#{context_name}/#{spelling}"
@@ -212,6 +251,10 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
       expect(tally[:examined]).to be > examined # the product has not silently shrunk to nothing
       expect(tally[:vacuous]).to be > 0, "no vacuity refusal was exercised at all"
       expect(tally[:unsatisfiable]).to be > 0, "no satisfiability refusal was exercised at all"
+      # An undecidable combination is one whose non-audited half is itself refused, so there is no contract to
+      # ask about. Bounded rather than merely counted: if this ever dominates, the audit is checking far less
+      # than its size suggests.
+      expect(tally[:undecidable]).to be < (tally[:vacuous] + tally[:unsatisfiable]) / 2
       expect(wrong).to be_empty, "these refusals are not earned — the runtime disagrees:\n  #{wrong.join("\n  ")}"
     end
   end

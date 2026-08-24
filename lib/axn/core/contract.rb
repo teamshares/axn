@@ -3477,7 +3477,7 @@ module Axn
           VALUE_CONSTRAINT_KEYS.each do |key, option_keys|
             entry = entries[key]
             next unless entry
-            next if _blank_can_satisfy?(entry, validations, tolerance, klasses, allow_empty:)
+            next if _blank_can_satisfy?(entry, key, validations, tolerance, klasses, allow_empty:)
 
             _reject_non_reflexive_bound!(key, entry, option_keys, klasses, where:) if key == :comparison
 
@@ -3561,11 +3561,106 @@ module Axn
         # check, an explicit `presence:`, an author's `length:` floor, and `allow_empty:` — rather than a second
         # reading of the same declaration. Anything they cannot settle resolves to ADMITTED, standing the guard
         # down: this guard's safe direction is admitting a broken declaration, never refusing a working one.
-        def _blank_can_satisfy?(entry, validations, tolerance, klasses, allow_empty:)
+        def _blank_can_satisfy?(entry, key, validations, tolerance, klasses, allow_empty:)
           return false unless Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank]
-          return false if klasses.all? { |klass| NEVER_BLANK_KLASSES.any? { |known| known.equal?(klass) } }
+          return false if _blank_rejected_by_contract?(validations, allow_empty:, tolerant: tolerance.values.any?)
 
-          !_blank_rejected_by_contract?(validations, allow_empty:, tolerant: tolerance.values.any?)
+          _blank_witnesses_for(klasses).any? do |klass, witness|
+            # A sibling rejecting the witness only settles the question where that witness is the class's ONLY
+            # blank. Where it is not, another blank may sail past the same sibling, and concluding "no blank
+            # passes" from the one we can name would refuse a contract that works — measured: `type: String`
+            # with a sibling forbidding `""` still admits `"  "`, which is blank too.
+            _siblings_admit_blank?(validations, witness, except: key, tolerance:) || !_sole_blank_klass?(klass)
+          end
+        end
+
+        # The blank value each declared class actually HAS, as [klass, witness] pairs. A blankness question needs
+        # a witness rather than a class, unlike the nil axis where `nil` is the one value — so a class with no
+        # entry here yields no witness and no stand-down. Selected by `equal?` against axn's own keys rather than
+        # by `Hash#[]`, which would hash the caller's class.
+        def _blank_witnesses_for(klasses)
+          BLANK_WITNESSES.select { |klass, _| klasses.any? { |declared| declared.equal?(klass) } }.to_a
+        end
+
+        # A blank instance of each blankable class the closed equality world vouches for. Deliberately not
+        # derived (`klass.new`) — that runs the caller's constructor, and every class here is one whose blank is
+        # a literal. `Set` follows its own `defined?` guard; the never-blank classes have no entry by definition.
+        BLANK_WITNESSES = {
+          ::String => "", ::Symbol => :"", ::Array => [], ::Hash => {}, ::NilClass => nil, ::FalseClass => false
+        }.merge(defined?(Set) ? { ::Set => Set[] } : {}).freeze
+
+        # Whether the witness above is the class's ONLY blank value, which is what lets a sibling's rejection of
+        # it settle anything. Measured against ActiveSupport rather than reasoned from: emptiness is blankness for
+        # a container, so `[]`/`{}`/`Set[]` are each the sole blank of their class, and `:""` is Symbol's because
+        # `blank?` asks a Symbol `empty?` (`:" "` is NOT blank). `String` is the exception and the reason this
+        # distinction exists at all — `blank?` matches a whitespace-only String, so `""`, `" "` and `"\t\n"` are
+        # all blank and no single one of them answers for the class.
+        def _sole_blank_klass?(klass) = SOLE_BLANK_KLASSES.any? { |known| known.equal?(klass) }
+
+        SOLE_BLANK_KLASSES = [
+          ::Symbol, ::Array, ::Hash, ::NilClass, ::FalseClass, (defined?(Set) ? ::Set : nil)
+        ].compact.freeze
+
+        # Whether every OTHER validator on the field admits the blank witness. The entry under audit skips it, but
+        # the field is what has to admit a value, and a sibling that rejects the blank leaves nothing passing —
+        # `type: Array, presence: false, inclusion: { in: [1], allow_blank: true }, exclusion: { in: [[]] }`
+        # forbids the very `[]` the inclusion skips, so no Array passes at all.
+        #
+        # Only the families this guard judges EXACTLY are consulted, and every other answer is "admits": a
+        # sibling it cannot read must not turn into a refusal, since this guard's unforgivable error is refusing a
+        # contract that works. So `format:`, `numericality:`, a `validate:` callable and an unreadable set all
+        # stand it down, which under-restricts rather than guessing.
+        #
+        # A sibling with its own blank-tolerance skips the witness exactly as the audited entry does, so it admits
+        # by definition and is asked nothing further.
+        def _siblings_admit_blank?(validations, witness, except:, tolerance:)
+          Axn::Validation::Base.validator_entries(validations).all? do |key, sibling|
+            next true if key == except || !sibling
+            next true if Axn::Validation::Base.effective_entry_options(sibling, tolerance)[:allow_blank]
+
+            case key
+            # `ComparisonValidator` rejects a blank BEFORE it looks at any bound (activemodel 7.2.2.2,
+            # comparison.rb:23), so an untolerant comparison sibling rejects every blank whatever it compares.
+            when :comparison then false
+            # A set the witness is not in rejects it; a set it IS in admits it. `nil` is unknown, which admits.
+            when :inclusion then _set_witness_membership(sibling, witness) != :excludes
+            when :exclusion then _set_witness_membership(sibling, witness) != :contains
+            else true
+            end
+          end
+        end
+
+        # Where a clusivity set stands on the blank witness: `:contains`, `:excludes`, or `:unknown` for a set
+        # this cannot read. Three-valued rather than boolean because the unknown is load-bearing — both callers
+        # read it as "admits", and collapsing it into either verdict would turn a set axn may not read into a
+        # refusal.
+        #
+        # Unknown is answered for any member outside the closed equality world, or one carrying its own equality,
+        # for the reason `_non_reflexive_literal?` stands down on the same: the comparison below runs the member's
+        # own `==`, and a member axn has not vouched for would be answering a declaration question for it.
+        #
+        # An empty Range excludes everything, which is definite. Any other Range is unknown: its membership is
+        # decided by `<=>` against bounds this witness need not be comparable with, and a wrong guess in either
+        # direction is a refusal this guard must not make.
+        def _set_witness_membership(entry, witness)
+          collection = Axn::Validation::Base.declared_set_collection(entry)
+          if collection.is_a?(::Range)
+            return _empty_range?(collection) ? :excludes : :unknown
+          end
+
+          members = Axn::Validation::Base.literal_set_members(entry)
+          return :unknown if members.nil?
+          return :unknown unless members.all? { |member| _vouched_equality_operand?(member) }
+
+          members.any? { |member| member == witness } ? :contains : :excludes
+        end
+
+        # Whether ONE value's equality is the one its class carries and one this guard vouches for — the pair of
+        # conditions `_non_reflexive_literal?` requires of a bound, asked here of a set member.
+        def _vouched_equality_operand?(value)
+          klass = Internal::Identity.class_of(value)
+
+          _judgeable_equality?(klass) && _class_owned_equality?(value, klass)
         end
 
         # Whether something in this declaration OTHER than the tolerant entry rejects an empty value. Read off
@@ -3821,12 +3916,12 @@ module Axn
         # self-report: it is a stdlib Numeric value type whose `==` compares content and is owned by the class
         # (measured — `BigDecimal#==` and `BigDecimal#<=>` are BigDecimal's own, `!=` is BasicObject's, which
         # its ancestry carries), it crosses exactly the Numeric family this guard already crosses
-        # (`BigDecimal("1") == 1`), and it takes no subclass in the stdlib. `defined?`-guarded because axn runs
-        # outside Rails, where bigdecimal may never be required.
+        # (`BigDecimal("1") == 1`), and it takes no subclass in the stdlib. Named UNCONDITIONALLY, unlike `Set`:
+        # `axn.rb` requires bigdecimal itself, so a load order that left it out would raise there rather than
+        # quietly drop it from this frozen list and stop the refusals it earns from firing.
         JUDGEABLE_EQUALITY_CLASSES = [
-          ::String, ::Symbol, ::Integer, ::Float, ::Rational, ::NilClass, ::TrueClass, ::FalseClass,
-          ::Array, ::Hash, ::Date, ::Time, ::DateTime, (defined?(Set) ? ::Set : nil),
-          (defined?(BigDecimal) ? ::BigDecimal : nil)
+          ::String, ::Symbol, ::Integer, ::Float, ::Rational, ::BigDecimal, ::NilClass, ::TrueClass,
+          ::FalseClass, ::Array, ::Hash, ::Date, ::Time, ::DateTime, (defined?(Set) ? ::Set : nil)
         ].compact.freeze
 
         # Whether ONE literal could satisfy a constraint on a value of ONE declared klass. The runtime's own
@@ -3974,9 +4069,8 @@ module Axn
         # class outside this list is assumed blankable, since a value object answering `empty?` is blank to
         # ActiveSupport and nothing here can tell without asking it.
         NEVER_BLANK_KLASSES = [
-          ::Integer, ::Float, ::Rational, ::TrueClass, ::Date, ::Time, ::DateTime,
-          (defined?(BigDecimal) ? ::BigDecimal : nil)
-        ].compact.freeze
+          ::Integer, ::Float, ::Rational, ::BigDecimal, ::TrueClass, ::Date, ::Time, ::DateTime
+        ].freeze
 
         # Whether a bound is one ActiveModel RESOLVES against the record per call (`ResolveValue`) rather than
         # comparing directly — a Symbol or a Proc — so a declaration carrying one cannot be judged here.
@@ -4077,9 +4171,8 @@ module Axn
         # `cover?` (`Numeric`, `Time`, `DateTime`, `Date`) and what `JUDGEABLE_EQUALITY_CLASSES` vouches for.
         # Exact-class membership, never descent, for the reason that list is.
         COVER_COMPARABLE_BOUND_CLASSES = [
-          ::Integer, ::Float, ::Rational, ::Date, ::Time, ::DateTime,
-          (defined?(BigDecimal) ? ::BigDecimal : nil)
-        ].compact.freeze
+          ::Integer, ::Float, ::Rational, ::BigDecimal, ::Date, ::Time, ::DateTime
+        ].freeze
 
         # Whether every token names a container whose cross-class comparison is reliably false. THE single
         # definition, shared by the to_s-targeted refusal and the Range judgment.

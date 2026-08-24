@@ -170,6 +170,83 @@ RSpec.describe "a degenerate literal" do
       expect { build_axn { expects :v, type: Integer, presence: false, comparison: { equal_to: "x", allow_blank: true } } }
         .to raise_error(ArgumentError, /comparison:.*can never match/m)
     end
+
+    it "keeps refusing when a SIBLING validator rejects the very blank the entry skips" do
+      # The entry skips `[]`, but the exclusion sibling forbids it — so `[]` is rejected after all while every
+      # non-empty Array fails inclusion, and nothing passes. The blank is only a witness if the whole field
+      # admits it.
+      expect do
+        build_axn do
+          expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true }, exclusion: { in: [[]] }
+        end
+      end.to raise_error(ArgumentError, /inclusion:.*can never match/m)
+
+      # A comparison sibling rejects a blank ahead of any bound, so it rejects every blank whatever it compares.
+      expect do
+        build_axn do
+          expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true }, comparison: { equal_to: [2] }
+        end
+      end.to raise_error(ArgumentError, /can never match/m)
+    end
+
+    it "still stands down when the sibling leaves that blank alone" do
+      # The mirror of the case above, and the reason a sibling cannot simply veto the stand-down: this exclusion
+      # forbids something else, so `[]` really does pass and the contract really does enforce.
+      action = build_axn do
+        expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true }, exclusion: { in: [%w[zzz]] }
+      end
+
+      expect(action.call(v: []).ok?).to be(true)
+      expect(action.call(v: ["a"]).ok?).to be(false)
+    end
+
+    it "stands down where the declared type has more than one blank, so one witness settles nothing" do
+      # `blank?` matches any whitespace-only String, so `""` is not the only blank a String has. The sibling
+      # forbids `""` and nothing else, and `"  "` sails past it while the inclusion skips it — so the contract
+      # enforces something, and concluding otherwise from the one witness we can name would refuse it.
+      action = build_axn do
+        expects :v, type: String, presence: false, inclusion: { in: [1], allow_blank: true }, exclusion: { in: ["", "zzz"] }
+      end
+
+      expect(action.call(v: "  ").ok?).to be(true)
+      expect(action.call(v: "a").ok?).to be(false)
+    end
+
+    it "stands down on a sibling it cannot read, rather than guessing a refusal" do
+      # A `validate:` callable can admit or reject the blank and nothing static can tell, so it must not turn
+      # into a refusal — the one direction this guard may never take.
+      expect do
+        build_axn do
+          expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true },
+                      validate: ->(value) { "must be given" if value.nil? }
+        end
+      end.not_to raise_error
+    end
+
+    it "treats a sibling's own blank-tolerance as admitting the blank" do
+      # The sibling forbids the blank, but its own `allow_blank:` makes ActiveModel skip it — so it admits the
+      # witness exactly as the audited entry does. It forbids a non-blank literal too, so the sibling is not
+      # itself vacuous.
+      action = build_axn do
+        expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true },
+                    exclusion: { in: [[], %w[x]], allow_blank: true }
+      end
+
+      expect(action.call(v: []).ok?).to be(true)
+      expect(action.call(v: ["a"]).ok?).to be(false)
+    end
+  end
+
+  describe "BigDecimal is in the closed world unconditionally" do
+    it "never silently drops out of the lists it is named in" do
+      # The lists are frozen at load time, so a `BigDecimal` arriving later would be missing from them and the
+      # refusals it earns would stop firing with no error anywhere. `axn.rb` requires bigdecimal itself so the
+      # failure would be a LoadError at boot instead.
+      contract = Axn::Core::Contract::ClassMethods
+      %i[JUDGEABLE_EQUALITY_CLASSES NEVER_BLANK_KLASSES COVER_COMPARABLE_BOUND_CLASSES].each do |name|
+        expect(contract.const_get(name)).to include(BigDecimal), "expected #{name} to name BigDecimal"
+      end
+    end
   end
 
   describe "an empty Range names nothing, at any position" do
