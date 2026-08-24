@@ -2331,8 +2331,7 @@ module Axn
             end
           end
 
-          if validations[:numericality]
-            numericality = validations[:numericality]
+          if (numericality = validations[:numericality]) && numericality_type_provable?(numericality, for_output:)
             return { type: "integer" } if numericality.is_a?(Hash) && numericality[:only_integer]
 
             return { type: "number" }
@@ -2353,6 +2352,20 @@ module Axn
           return type_hash unless entry && Axn::Validation::Base.declared_only_integer?(entry)
 
           type_hash.merge(type: "integer")
+        end
+
+        # Whether a `numericality:` entry proves the value will SERIALIZE as a JSON number. ActiveModel accepts a
+        # numeric STRING unless `only_numeric: true` is given — `"1"` passes `greater_than: 0`, and passes
+        # `only_integer:` too, since that reads the string form — so an exposed value may well be a String.
+        #
+        # On INPUT that makes an inferred numeric type merely stricter, which is licensed: a client is told to
+        # send `1` rather than `"1"`, and the runtime would have taken either. On OUTPUT it rejects the action's
+        # own successful output, so the inference stands down unless the value must really be numeric. A declared
+        # `type:` is unaffected — it is read before this and does prove the class.
+        def numericality_type_provable?(numericality, for_output:)
+          return true unless for_output
+
+          numericality.is_a?(Hash) && numericality[:only_numeric] ? true : false
         end
 
         def enum_scalar_type(value)

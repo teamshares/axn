@@ -6300,6 +6300,70 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(prop[:additionalProperties]).to include(type: "number", exclusiveMinimum: 0)
       end
 
+      # ActiveModel's `numericality:` accepts a numeric STRING unless `only_numeric: true` is given, so an
+      # action may expose "1" successfully and serialize it as a JSON string. On OUTPUT an inferred numeric type
+      # therefore rejects the action's own output; on input it is merely stricter, which is licensed.
+      #
+      # The gate lives in `json_type_for`, so it covers the FIELD path too — where this was a pre-existing bug
+      # that the positional inference above would otherwise have propagated.
+      describe "a numericality-inferred type on output, where a numeric string may be exposed" do
+        it "stands down at a bag position" do
+          action = build_axn do
+            exposes :codes, type: Array, of: { numericality: { greater_than: 0 } }
+            def call = expose(:codes, ["1"])
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema.dig(:properties, :codes)).not_to have_key(:items)
+        end
+
+        it "stands down at a field, which had the same bug" do
+          action = build_axn do
+            exposes :n, numericality: { greater_than: 0 }
+            def call = expose(:n, "1")
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to eq({})
+        end
+
+        it "still infers on output under only_numeric:, which requires a real numeric" do
+          action = build_axn do
+            exposes :n, numericality: { greater_than: 0, only_numeric: true }
+            def call = expose(:n, 1)
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to include(type: "number", exclusiveMinimum: 0)
+        end
+
+        it "still emits when a declared type: requires a real numeric" do
+          action = build_axn do
+            exposes :n, type: Integer, numericality: { greater_than: 0 }
+            def call = expose(:n, 1)
+          end
+
+          expect(action.output_schema[:properties][:n]).to include(type: "integer", exclusiveMinimum: 0)
+        end
+
+        it "still infers on INPUT, where a narrowing is licensed" do
+          prop = prop_for(:f) { expects :f, type: Array, of: { numericality: { greater_than: 0 } } }
+
+          expect(prop[:items]).to include(type: "number", exclusiveMinimum: 0)
+        end
+
+        # An `inclusion:`-inferred type is sound on output and stays: `inclusion` compares by `include?`, so
+        # "1" is not a member of [1, 2] and the exposed value really is an Integer.
+        it "keeps an inclusion-inferred type on output" do
+          action = build_axn do
+            exposes :n, inclusion: { in: [1, 2] }
+            def call = expose(:n, 1)
+          end
+
+          expect(action.output_schema[:properties][:n]).to include(type: "integer")
+        end
+      end
+
       # `format:`/`length:` alone infer nothing, at a bag position AND at a field — there is no type to infer
       # from a pattern or a size, since both apply to more than one JSON type. Pinned as the shared limitation
       # it is, so the asymmetry above cannot creep back unnoticed.
