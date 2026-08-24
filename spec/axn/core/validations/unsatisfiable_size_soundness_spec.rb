@@ -15,6 +15,14 @@ require "axn/testing/spec_helpers"
 # The measurement builds each contract with the guard STUBBED OFF on that one class, then runs axn's own
 # validation over a candidate spread — so "does anything pass" is answered by the runtime rather than by a
 # second model of it.
+#
+# The candidate spread holds only HONEST values, and that boundary is load-bearing rather than incidental. A
+# candidate whose `blank?`/`present?`/`length` is its own satisfies contracts that admit nothing on any
+# ordinary value, so putting one here would report every correct refusal in the product as an over-restriction
+# — measured, it did. Set MEMBERS carrying singleton methods are a different matter and do belong (the author
+# named that object, and axn holds it at declaration), but only where an honest candidate can witness the
+# result; where the witness would have to be the lying object itself, the case lives in
+# `unsatisfiable_size_interval_spec.rb` with an explicit runtime control instead.
 module SizeSoundness
   CANDIDATES = [
     nil, [], ["a"], %w[a b], %w[a b c], "", " ", "  ", "a", "abc", "abcd",

@@ -980,18 +980,22 @@ module Axn
         # declared literal has to be weighed against the sizes a contract admits (the empty-interval guard's
         # inclusion branch).
         #
-        # THREE routes enforce those sizes, and each measures by a different method — the complete list, since
-        # these are every check that can hold a size bound:
+        # FOUR checks can hold a size bound, and each asks the value by a different method — the complete list:
         #
-        #   `length:`             `value.length`  (activemodel 8.1.3.1, length.rb:48)
-        #   `presence:`           `value.blank?`
-        #   the emptiness check   `value.empty?`  (NonEmptinessValidator)
+        #   `length:`             `value.length`   (activemodel 8.1.3.1, length.rb:48)     floor and ceiling
+        #   `presence:`           `value.blank?`   (presence.rb)                           floor
+        #   the emptiness check   `value.empty?`   (NonEmptinessValidator)                 floor
+        #   `absence:`            `value.present?` (absence.rb)                            ceiling
         #
-        # Which route holds a given bound is not this method's to know — the floor of 1 is `presence:`'s on one
-        # declaration and `length:`'s on the next — so a value is measured only where ALL THREE are Ruby's own,
-        # and there they agree by construction. `size` is deliberately not among them: no check measures it,
-        # and reading it is how an `Array` subclass overriding `length` was measured as empty here while
-        # `length:` and `inclusion:` both accepted it at runtime.
+        # Which check holds a given bound is not this method's to know — the floor of 1 is `presence:`'s on one
+        # declaration and `length:`'s on the next — so a value is measured only where ALL FOUR are Ruby's own,
+        # and there they agree by construction. `size` is deliberately not among them: no check asks it, and
+        # reading it is how an `Array` subclass overriding `length` was measured as empty here while `length:`
+        # and `inclusion:` both accepted it at runtime.
+        #
+        # The list grows with the bounds. `present?` belongs to it because PRO-3220 taught `absence:` to name a
+        # ceiling; adding that bound without revisiting this list is what let a member answering
+        # `present? => false` be weighed against a ceiling it does not obey.
         #
         # Ownership is the whole test, the same one `empty_container?` applies and for the same reason: a
         # measurement a caller wrote is caller code, which a declaration-time verdict must neither run nor
@@ -1000,21 +1004,21 @@ module Axn
         # The owner reads are bound (`NativeMethods.method_owner`); the call that follows needs no guard,
         # because the implementation it dispatches is the one whose owner was just established.
         def container_size(value)
-          return nil unless MEASURED_BY_A_SIZE_CHECK.all? { |method_name| natively_measured?(value, method_name) }
+          return nil unless ASKED_BY_A_BOUNDING_CHECK.all? { |method_name| natively_answered?(value, method_name) }
 
           value.length
         end
 
-        # Every method a check that holds a size bound measures the value by. Ordered cheapest-first only
-        # incidentally; all three must be native, so the order is immaterial.
-        MEASURED_BY_A_SIZE_CHECK = %i[length empty? blank?].freeze
+        # Every method a check that holds a size bound asks the value by. All four must be Ruby's own, so the
+        # order is immaterial.
+        ASKED_BY_A_BOUNDING_CHECK = %i[length empty? blank? present?].freeze
 
-        # `Object` is admitted as an owner, and only ever ends up owning `blank?` here — it defines neither
-        # `length` nor `empty?`, so those two can never resolve to it. ActiveSupport's `Object#blank?` is
-        # `respond_to?(:empty?) ? !!empty? : false`, so it answers out of the very `empty?` this method has
-        # already required to be native: for a `Set`, whose `blank?` AS does not specialize, that is the whole
-        # reason a member is measurable at all.
-        def natively_measured?(value, method_name)
+        # `Object` is admitted as an owner, and only ever ends up owning `blank?`/`present?` here — it defines
+        # neither `length` nor `empty?`, so those two can never resolve to it. ActiveSupport's `Object#blank?`
+        # is `respond_to?(:empty?) ? !!empty? : false` and its `present?` is `!blank?`, so both answer out of
+        # the very `empty?` this method has already required to be native: for a `Set`, whose blankness AS does
+        # not specialize, that is the whole reason a member is measurable at all.
+        def natively_answered?(value, method_name)
           owner = Axn::Internal::NativeMethods.method_owner(value, method_name)
           return false if owner.nil?
 

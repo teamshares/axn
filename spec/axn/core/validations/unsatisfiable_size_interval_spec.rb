@@ -316,6 +316,24 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         expect { declare(type: Array, inclusion: { in: [overriding_blank.new] }) }.not_to raise_error
       end
 
+      # The fourth: the CEILING here is `absence:`'s, which asks the value `present?`. The list of methods a
+      # bound-holding check asks grows with the bounds, and this one arrived with the absence ceiling.
+      it "stands down on a member that answers `present?` with its own code" do
+        member = [1]
+        member.define_singleton_method(:present?) { false }
+
+        expect { declare(type: Array, presence: false, absence: true, inclusion: { in: [member] }) }
+          .not_to raise_error
+      end
+
+      it "accepts at runtime the member whose present? it stood down on" do
+        member = [1]
+        member.define_singleton_method(:present?) { false }
+        action = declare(type: Array, presence: false, absence: true, inclusion: { in: [member] })
+
+        expect(action.call(f: member).ok?).to be(true)
+      end
+
       it "accepts at runtime the member whose blank? it stood down on" do
         member = overriding_blank.new
         action = declare(type: Array, inclusion: { in: [member] })
