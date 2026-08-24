@@ -3435,6 +3435,12 @@ module Axn
           comparison: %i[other_than],
         }.freeze
 
+        # The comparison operators ActiveModel decides with `==` rather than `<=>` (activemodel 7.2.2.2,
+        # comparison.rb COMPARE_CHECKS): the non-inverted `equal_to` here, and the inverted `other_than` whose
+        # own map is `VACUOUS_CONSTRAINT_KEYS`. Named because equality is judgeable at every declared type while
+        # `<=>` is not — see `_judgeable_constraint_literals` for the measured difference.
+        EQUALITY_COMPARISON_KEYS = %i[equal_to].freeze
+
         # The two validators whose membership is decided by the COLLECTION's own `include?` rather than by an
         # operator, and so the only ones whose equality depends on which collection was written.
         CLUSIVITY_KEYS = %i[inclusion exclusion].freeze
@@ -3460,7 +3466,7 @@ module Axn
         # half is merged: an explicit `allow_nil: false` riding along would change how `nil_accepted?` reads an
         # `acceptance:` entry (AM's own skip is disabled by exactly that key), turning a satisfiable contract
         # into a refused one.
-        def _reject_unsatisfiable_value_constraints!(validations, where:, tolerance:)
+        def _reject_unsatisfiable_value_constraints!(validations, where:, tolerance:, allow_empty: nil)
           klasses = _judgeable_type_klasses(validations[:type])
           return if klasses.empty?
 
@@ -3471,19 +3477,109 @@ module Axn
           VALUE_CONSTRAINT_KEYS.each do |key, option_keys|
             entry = entries[key]
             next unless entry
+            next if _blank_can_satisfy?(entry, validations, tolerance, klasses, allow_empty:)
+
+            _reject_non_reflexive_bound!(key, entry, option_keys, klasses, where:) if key == :comparison
 
             literals = _judgeable_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?
             next if _constraint_satisfiable?(key, literals, klasses, cross_family: _cross_family_admissible?(key, entry))
 
-            raise ArgumentError,
-                  "#{key}: on #{where} can never match — nothing it compares against " \
-                  "is of type #{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so every " \
-                  "value is rejected. A validator constrains the value at the position it is declared at: compare " \
-                  "against literals of the declared type, and for a constraint on a container's CONTENTS " \
-                  "express it as `validate: ->(value) { ... }` (a per-element spelling inside `of:` is not " \
-                  "supported yet — PRO-3193)."
+            raise ArgumentError, _unsatisfiable_constraint_message(key, entry, klasses, where:)
           end
+        end
+
+        # A bound nothing can equal makes every one of ActiveModel's five non-inverted operators reject every
+        # value, so the entry admits nothing. Measured across all five (`x == NAN`, `x > NAN`, `x >= NAN`,
+        # `x < NAN`, `x <= NAN` are false for every x, NaN itself included), which is why this is asked of the
+        # whole option list rather than of `equal_to:` alone.
+        #
+        # Deliberately NOT gated on a container position, where the TYPE judgment of the four `<=>` operators is:
+        # that gate exists because `<=>` crosses classes unpredictably, and non-reflexivity is not a question
+        # about the bound's relationship to the declared type at all. The closed-world stand-down inside
+        # `_non_reflexive_literal?` is what keeps a value object's own operators from being judged here.
+        #
+        # Its own message, because the shared one blames the bound's TYPE and a NaN bound is of the declared type
+        # — the defect is the value, not the class.
+        def _reject_non_reflexive_bound!(key, entry, option_keys, klasses, where:)
+          opts = Axn::Validation::Base.validator_entry_options(entry)
+          bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
+          return if bounds.empty?
+          return if bounds.any? { |bound| _dynamic_bound?(bound) }
+          return unless bounds.any? { |bound| _non_reflexive_literal?(bound, klasses) }
+
+          raise ArgumentError,
+                "#{key}: on #{where} can never match — it compares against a bound that does not equal even " \
+                "itself (a NaN), and every one of ActiveModel's non-inverted operators reports false against " \
+                "one, so every value is rejected. Compare against a bound a value can actually match, and test " \
+                "for NaN with `validate: ->(value) { ... }`."
+        end
+
+        # The unsatisfiable message, which names the reason the set or bound matches nothing. An empty Range
+        # matches nothing whatever the declared type is, so blaming the literals' TYPE there would name a defect
+        # the declaration does not have.
+        def _unsatisfiable_constraint_message(key, entry, klasses, where:)
+          if _empty_range_set?(key, entry)
+            return "#{key}: on #{where} can never match — the Range it names is empty, so it contains no value " \
+                   "at all and every value is rejected. Name a Range with at least one value in it (an " \
+                   "exclusive Range whose endpoints meet, or one whose bounds run backwards, is empty)."
+          end
+
+          "#{key}: on #{where} can never match — nothing it compares against " \
+            "is of type #{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so every " \
+            "value is rejected. A validator constrains the value at the position it is declared at: compare " \
+            "against literals of the declared type, and for a constraint on a container's CONTENTS " \
+            "express it as `validate: ->(value) { ... }` (a per-element spelling inside `of:` is not " \
+            "supported yet — PRO-3193)."
+        end
+
+        # Whether the refusal being worded is about an empty Range rather than about the literals' type. Asked
+        # only on the failure path, and only of the two validators that name a set — `comparison:` names bounds.
+        def _empty_range_set?(key, entry)
+          return false unless CLUSIVITY_KEYS.include?(key)
+
+          collection = Axn::Validation::Base.declared_set_collection(entry)
+          collection.is_a?(::Range) && _empty_range?(collection)
+        end
+
+        # Whether a BLANK value passes this entry, which makes the entry satisfiable however its literals read:
+        # ActiveModel's `EachValidator` skips a blank before any validator sees it when the entry tolerates one
+        # (`value.blank? && allow_blank`), so the check never runs on it and the value survives.
+        #
+        # The mirror of `_unskipped_literals` on the vacuity side, which reads the same skip to discount a
+        # forbidden literal. Here it rescues the whole entry, and it must: refusing one of these would claim
+        # "every value is rejected" of a contract with a passing value — measured, `type: Array, presence: false,
+        # inclusion: { in: [1], allow_blank: true }` accepts `[]` and rejects `["a"]`.
+        #
+        # Three things have to hold together, and the third is what keeps the coverage: the entry must tolerate a
+        # blank, the declared type must HAVE a blank instance (`NEVER_BLANK_KLASSES`, the same list the vacuity
+        # guard's comparison gate reads), and the rest of the contract must admit it. Without that last one this
+        # would stand down on `type: Array, inclusion: { in: ["a"], allow_blank: true }`, where the default
+        # presence check still rejects `[]` and nothing passes after all.
+        #
+        # Emptiness is asked through the axis judgments that already own the question — the automatic presence
+        # check, an explicit `presence:`, an author's `length:` floor, and `allow_empty:` — rather than a second
+        # reading of the same declaration. Anything they cannot settle resolves to ADMITTED, standing the guard
+        # down: this guard's safe direction is admitting a broken declaration, never refusing a working one.
+        def _blank_can_satisfy?(entry, validations, tolerance, klasses, allow_empty:)
+          return false unless Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank]
+          return false if klasses.all? { |klass| NEVER_BLANK_KLASSES.any? { |known| known.equal?(klass) } }
+
+          !_blank_rejected_by_contract?(validations, allow_empty:, tolerant: tolerance.values.any?)
+        end
+
+        # Whether something in this declaration OTHER than the tolerant entry rejects an empty value. Read off
+        # the emptiness axis rather than re-derived: `allow_empty: false` installs a check of its own, the
+        # automatic presence check covers a declaration that named no requiredness signal, and an explicit
+        # `presence:`/`length:` floor answers for itself. Asked before the axis is settled, so the automatic
+        # check is predicted through the same `_default_presence_applies?` that will install it.
+        def _blank_rejected_by_contract?(validations, allow_empty:, tolerant:)
+          return true if allow_empty == false
+          return true if _default_presence_applies?(validations, allow_empty:, tolerant:)
+          return true if _presence_emptiness_answer(validations, tolerant:) == :rejected
+          return true if _length_emptiness_answer(validations) == :rejected
+
+          false
         end
 
         # An `exclusion:` set — or an `other_than:` bound — no value of the declared type could ever be, which
@@ -3527,14 +3623,25 @@ module Axn
             witnesses = _witness_literals(key, literals, entry, tolerance, klasses)
             next if _any_literal_may_satisfy?(witnesses, klasses, cross_family: _cross_family_admissible?(key, entry))
 
-            raise ArgumentError,
-                  "#{key}: on #{where} enforces nothing — no value of type " \
-                  "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')} could be one of the " \
-                  "literals it forbids, so every value passes. A validator constrains the value at the " \
-                  "position it is declared at: forbid literals of the declared type, and for a constraint on " \
-                  "a container's CONTENTS express it as `validate: ->(value) { ... }` (a per-element spelling " \
-                  "inside `of:` is not supported yet — PRO-3193)."
+            raise ArgumentError, _vacuous_constraint_message(key, entry, klasses, where:)
           end
+        end
+
+        # The vacuity message, worded the way its mirror above is: an empty Range forbids nothing whatever the
+        # declared type is, so naming the literals' TYPE would name a defect the declaration does not have.
+        def _vacuous_constraint_message(key, entry, klasses, where:)
+          if _empty_range_set?(key, entry)
+            return "#{key}: on #{where} enforces nothing — the Range it names is empty, so it forbids no value " \
+                   "at all and every value passes. Name a Range with at least one value in it (an exclusive " \
+                   "Range whose endpoints meet, or one whose bounds run backwards, is empty)."
+          end
+
+          "#{key}: on #{where} enforces nothing — no value of type " \
+            "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')} could be one of the " \
+            "literals it forbids, so every value passes. A validator constrains the value at the " \
+            "position it is declared at: forbid literals of the declared type, and for a constraint on " \
+            "a container's CONTENTS express it as `validate: ->(value) { ... }` (a per-element spelling " \
+            "inside `of:` is not supported yet — PRO-3193)."
         end
 
         # The forbidden literals that could actually be the value that FAILS. Two filters, and the second is
@@ -3546,38 +3653,45 @@ module Axn
         end
 
         # A bound nothing can equal — not even itself — is no witness: `other_than:` is `!=`, so the check
-        # reports a difference from every value including the bound, and passes always. `Float::NAN` is the
-        # one such value among the types this guard vouches for (measured: `Float::NAN != Float::NAN`).
+        # reports a difference from every value including the bound, and passes always. `Float::NAN` and
+        # `BigDecimal::NAN` are the two such values among the types this guard vouches for (measured).
         #
         # Deliberately NOT applied to `exclusion:`, and the difference is measured rather than assumed: a
         # collection's membership test short-circuits on object IDENTITY before it ever asks `==`, so
         # `[Float::NAN].include?(Float::NAN)` and `Set[Float::NAN].include?(Float::NAN)` are both true and the
         # set really does forbid the value. Discounting it there would refuse a contract that enforces.
         #
-        # BOTH sides of the comparison must be ones the closed world vouches for, exactly as
-        # `_literal_may_satisfy?` requires — and this filter runs BEFORE that judgment, so it has to repeat the
-        # stand-down rather than inherit it. The declared type decides as much as the bound does: a value
-        # object whose `==` answers for the bound really can differ from it, so `type: Token, comparison:
-        # { other_than: Float::NAN }` has a failing input when `Token#==` accepts NaN, and discounting the
-        # bound there would refuse a contract that enforces. Asked of EVERY declared branch, since a runtime
-        # value takes one and any un-vouched-for branch could supply the equality.
-        #
-        # A bound whose own class is outside the world — `BigDecimal::NAN`, which this guard does not judge —
-        # stays a witness for the same reason, which under-restricts rather than judging a `==` axn has not
-        # vouched for.
+        # The stand-downs that keep this safe live in `_non_reflexive_literal?`, which the satisfiability guard
+        # reads on the opposite verdict — so a bound outside the closed world, or one carrying its own equality,
+        # is discounted by neither guard.
         def _reflexive_literals(literals, klasses)
-          return literals unless klasses.all? { |klass| _judgeable_equality?(klass) }
+          literals.reject { |literal| _non_reflexive_literal?(literal, klasses) }
+        end
 
-          literals.reject do |literal|
-            klass = Internal::Identity.class_of(literal)
-            next false unless _judgeable_equality?(klass) && _class_owned_equality?(literal, klass)
+        # THE definition of "this literal cannot equal itself", read by both guards on opposite verdicts: the
+        # vacuity guard discounts such a bound as a witness (`other_than:` passes always), while the
+        # satisfiability guard refuses one outright (every non-inverted operator rejects always). One definition
+        # so the two can never disagree about the same bound, and so the single place that runs an operator on a
+        # caller's value stays single.
+        #
+        # BOTH sides must be ones the closed world vouches for, exactly as `_literal_may_satisfy?` requires — and
+        # this runs BEFORE that judgment, so it repeats the stand-down rather than inheriting it. The declared
+        # type decides as much as the bound does: a value object whose `==` answers for the bound really can
+        # differ from it, so `type: Token, comparison: { other_than: Float::NAN }` has a failing input when
+        # `Token#==` accepts NaN, and discounting the bound there would refuse a contract that enforces. Asked of
+        # EVERY declared branch, since a runtime value takes one and any un-vouched-for branch could supply the
+        # equality.
+        def _non_reflexive_literal?(literal, klasses)
+          return false unless klasses.all? { |klass| _judgeable_equality?(klass) }
 
-            # rubocop:disable Lint/BinaryOperatorWithIdenticalOperands
-            # The identical operands ARE the check: a value unequal to itself can never equal anything. Asked
-            # with `!=` rather than a negated `==` because that is the operator ActiveModel applies here.
-            literal != literal
-            # rubocop:enable Lint/BinaryOperatorWithIdenticalOperands
-          end
+          klass = Internal::Identity.class_of(literal)
+          return false unless _judgeable_equality?(klass) && _class_owned_equality?(literal, klass)
+
+          # rubocop:disable Lint/BinaryOperatorWithIdenticalOperands
+          # The identical operands ARE the check: a value unequal to itself can never equal anything. Asked
+          # with `!=` rather than a negated `==` because that is the operator ActiveModel applies here.
+          literal != literal
+          # rubocop:enable Lint/BinaryOperatorWithIdenticalOperands
         end
 
         # Whether the equality the probe above would run is the one the CLASS carries, rather than one this
@@ -3592,8 +3706,12 @@ module Axn
         # `NativeMethods`, and ancestry through its bound `Module#ancestors`, so nothing the object defines
         # answers the question. `==` is asked alongside `!=` because BasicObject's `!=` negates it, so an
         # override of either decides the probe (`Date#==` comes from `Comparable`, which its ancestry carries).
-        def _class_owned_equality?(literal, klass)
-          %i[!= ==].all? do |name|
+        def _class_owned_equality?(literal, klass) = _class_owned_operators?(literal, klass, %i[!= ==])
+
+        # The ownership test itself, over whichever operators the caller names — shared by the equality probe
+        # above and by the Range emptiness probe, which asks the same question of `<=>`.
+        def _class_owned_operators?(literal, klass, names)
+          names.all? do |name|
             owner = Internal::NativeMethods.method_owner(literal, name)
             next false unless owner
 
@@ -3698,9 +3816,17 @@ module Axn
         # (`SubRegexp.new("a") == /a/` is true — measured). Equality is not inferable from ancestry, so an open
         # world cannot be completed; naming what IS known and standing down on everything else can be, and it
         # errs by admitting a broken declaration rather than by refusing a working one.
+        #
+        # `BigDecimal` is admitted on the same evidence as `Rational`, not on the strength of its `nan?`
+        # self-report: it is a stdlib Numeric value type whose `==` compares content and is owned by the class
+        # (measured — `BigDecimal#==` and `BigDecimal#<=>` are BigDecimal's own, `!=` is BasicObject's, which
+        # its ancestry carries), it crosses exactly the Numeric family this guard already crosses
+        # (`BigDecimal("1") == 1`), and it takes no subclass in the stdlib. `defined?`-guarded because axn runs
+        # outside Rails, where bigdecimal may never be required.
         JUDGEABLE_EQUALITY_CLASSES = [
           ::String, ::Symbol, ::Integer, ::Float, ::Rational, ::NilClass, ::TrueClass, ::FalseClass,
-          ::Array, ::Hash, ::Date, ::Time, ::DateTime, (defined?(Set) ? ::Set : nil)
+          ::Array, ::Hash, ::Date, ::Time, ::DateTime, (defined?(Set) ? ::Set : nil),
+          (defined?(BigDecimal) ? ::BigDecimal : nil)
         ].compact.freeze
 
         # Whether ONE literal could satisfy a constraint on a value of ONE declared klass. The runtime's own
@@ -3817,15 +3943,24 @@ module Axn
             return accept
           end
 
-          # A comparison bound is judgeable only at a CONTAINER position, exactly as a Range set is, and for the
-          # same reason: `<=>` decides these operators, and outside a container its semantics belong to the
-          # declared class. A `Comparable` value object routinely accepts another class — a `Money` whose `<=>`
-          # takes a Numeric satisfies `type: Money, comparison: { greater_than: 0 }` (measured: `Money.new(1) > 0`
-          # is true) — and no ancestry test can predict that. An Array/Hash/Set compares with its own kind and
+          # A `<=>`-decided comparison bound is judgeable only at a CONTAINER position, exactly as a Range set
+          # is, and for the same reason: outside a container those operators' semantics belong to the declared
+          # class. A `Comparable` value object routinely accepts another class — a `Money` whose `<=>` takes a
+          # Numeric satisfies `type: Money, comparison: { greater_than: 0 }` (measured: `Money.new(1) > 0` is
+          # true) — and no ancestry test can predict that. An Array/Hash/Set compares with its own kind and
           # nothing else, so there the bound's type settles it.
-          return nil unless _all_container_tokens?(klasses)
+          #
+          # `equal_to:` is exempt from that gate, judged at EVERY type exactly as its inverted twin
+          # `other_than:` already is (`_vacuous_constraint_literals`). Both are decided by `==` rather than
+          # `<=>`, and equality has no hole the gate is covering: swept across every pair in the closed world,
+          # `==` never crosses outside `CROSS_COMPARABLE_FAMILIES`, while `<=>` does — `Date > 0` is TRUE, since
+          # Ruby reads a Numeric bound as an Astronomical Julian Day Number, and `Date == 0` is false. So the
+          # gate is load-bearing for the four and would only cost coverage on the two: `type: String,
+          # comparison: { equal_to: 1 }` rejects every String, as surely as its `other_than:` mirror forbids
+          # none.
+          judgeable = _all_container_tokens?(klasses) ? option_keys : (option_keys & EQUALITY_COMPARISON_KEYS)
 
-          bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
+          bounds = judgeable.select { |option| opts.key?(option) }.map { |option| opts[option] }
           return nil if bounds.empty?
           return nil if bounds.any? { |bound| _dynamic_bound?(bound) }
 
@@ -3839,8 +3974,9 @@ module Axn
         # class outside this list is assumed blankable, since a value object answering `empty?` is blank to
         # ActiveSupport and nothing here can tell without asking it.
         NEVER_BLANK_KLASSES = [
-          ::Integer, ::Float, ::Rational, ::TrueClass, ::Date, ::Time, ::DateTime
-        ].freeze
+          ::Integer, ::Float, ::Rational, ::TrueClass, ::Date, ::Time, ::DateTime,
+          (defined?(BigDecimal) ? ::BigDecimal : nil)
+        ].compact.freeze
 
         # Whether a bound is one ActiveModel RESOLVES against the record per call (`ResolveValue`) rather than
         # comparing directly — a Symbol or a Proc — so a declaration carrying one cannot be judged here.
@@ -3872,21 +4008,78 @@ module Axn
         # Usually that is `Base.literal_set_members` — a literal in-memory Array/Set, never an Array subclass or
         # a dynamic source, since judging one would run the caller's own traversal.
         #
-        # A RANGE is the one non-literal set that can still be judged, and only at a container position: a Range
-        # decides membership with `<=>`, which is nil across unrelated classes, so `(1..5).include?([1, 2])` is
-        # false however the array is spelled — while `(["a"]..["z"]).include?(["b"])` would need `<=>` between
-        # Arrays, which exists. So the BOUNDS are what decide, not the Range-ness, and they are exactly what the
-        # membership test wants. Deliberately not extended past a container position: `(1.0..5.0).cover?(3)` is
-        # true, so a Float-bounded Range on `type: Integer` is satisfiable and judging its bounds would falsely
-        # refuse it. A beginless-and-endless Range yields no bounds and stands the guard down.
+        # A RANGE is the one non-literal set that can still be judged, and its BOUNDS are judgeable only at a
+        # container position: a Range decides membership with `<=>`, which is nil across unrelated classes, so
+        # `(1..5).include?([1, 2])` is false however the array is spelled — while `(["a"]..["z"]).include?(["b"])`
+        # would need `<=>` between Arrays, which exists. So the bounds are what decide, not the Range-ness, and
+        # they are exactly what the membership test wants. Deliberately not extended past a container position:
+        # `(1.0..5.0).cover?(3)` is true, so a Float-bounded Range on `type: Integer` is satisfiable and judging
+        # its bounds would falsely refuse it. A beginless-and-endless Range yields no bounds and stands the guard
+        # down.
+        #
+        # An EMPTY Range is a separate question, asked first and at every position, because emptiness is not
+        # about the bounds' type at all — see `_empty_range?`.
         def _judgeable_set_members(entry, klasses)
           collection = Axn::Validation::Base.declared_set_collection(entry)
           return Axn::Validation::Base.literal_set_members(entry) unless collection.is_a?(::Range)
+          return [] if _empty_range?(collection)
           return nil unless _all_container_tokens?(klasses)
 
           bounds = [collection.begin, collection.end].compact
           bounds.empty? ? nil : bounds
         end
+
+        # Whether a Range names NO value at all — an exclusive one whose endpoints meet, or one whose bounds run
+        # backwards. Answered ahead of the container gate above and independently of it, because this is not a
+        # question about the bounds' type: an empty set matches nothing whatever the declared type is, so there
+        # is no cross-class comparison for the gate to be protecting against. Reduced to the EMPTY MEMBER LIST
+        # rather than judged separately, so the verdict falls out of the line that already reads
+        # `inclusion: { in: [] }` as unsatisfiable and `exclusion: { in: [] }` as vacuous.
+        #
+        # `!range.cover?(range.begin)` is the whole test, and it is the range's OWN matcher rather than a
+        # reimplementation of it: `cover?` is `begin <= value` and `value <(=) end`, so it accepts `begin`
+        # exactly when `begin <(=) end` — which is emptiness. Verified against sampling across exclusive,
+        # reversed, degenerate and ordinary ranges over Integer, Float and Date bounds; no disagreement.
+        #
+        # Scoped to the ranges Clusivity decides with `cover?` — a Numeric/Time/Date/DateTime begin
+        # (activemodel 7.2.2.2, clusivity.rb:40) — and that scope is measured, not tidiness. An `include?`-backed
+        # Range is ITERATED, and Ruby's single-character String shortcut makes the obvious reading wrong:
+        # `("b".."a").include?("a")` is TRUE while `("b".."a").cover?("a")` is false and `to_a` is empty, so a
+        # reversed inclusive String range really does reject a value and refusing it would refuse a contract
+        # that enforces. The remaining `include?` shapes have no `succ` and raise loudly on every call
+        # (`(["a"]...["a"])` → `TypeError: can't iterate from Array`), which is an existing stand-down.
+        #
+        # A one-sided Range is never empty, so a nil bound answers false rather than being compacted away. The
+        # exact `Range` class is required and both bounds must be ones the closed world vouches for with
+        # class-owned `<=>`, for the reason `_non_reflexive_literal?` requires the same: this runs an operator on
+        # caller-supplied values, and a subclass or a singleton override would otherwise pick the verdict.
+        def _empty_range?(range)
+          return false unless Internal::Identity.class_of(range).equal?(::Range)
+
+          first = range.begin
+          last = range.end
+          return false if nil.equal?(first) || nil.equal?(last)
+          return false unless _cover_comparable_bound?(first) && _cover_comparable_bound?(last)
+
+          !range.cover?(first)
+        end
+
+        # Whether ONE Range bound is one whose ordering this guard will judge: a class Clusivity dispatches
+        # `cover?` for, in the closed world, carrying its own `<=>`.
+        def _cover_comparable_bound?(bound)
+          klass = Internal::Identity.class_of(bound)
+          return false unless COVER_COMPARABLE_BOUND_CLASSES.any? { |known| known.equal?(klass) }
+
+          _class_owned_operators?(bound, klass, %i[<=>])
+        end
+
+        # The bound classes the emptiness test above will judge: the intersection of what Clusivity decides with
+        # `cover?` (`Numeric`, `Time`, `DateTime`, `Date`) and what `JUDGEABLE_EQUALITY_CLASSES` vouches for.
+        # Exact-class membership, never descent, for the reason that list is.
+        COVER_COMPARABLE_BOUND_CLASSES = [
+          ::Integer, ::Float, ::Rational, ::Date, ::Time, ::DateTime,
+          (defined?(BigDecimal) ? ::BigDecimal : nil)
+        ].compact.freeze
 
         # Whether every token names a container whose cross-class comparison is reliably false. THE single
         # definition, shared by the to_s-targeted refusal and the Range judgment.
@@ -4134,8 +4327,11 @@ module Axn
           # The tolerance PAIR, not a collapsed boolean: the guard resolves it per entry the way `validates` does,
           # so an entry overriding one of these keeps its own value. Passed explicitly because these are
           # declaration KWARGS at this point — the push-down that writes them into each entry has not run yet.
+          # `allow_empty:` rides along for the same reason: the guard asks whether a blank value passes, and this
+          # runs ahead of `_reconcile_emptiness_axis!`, so the flag has not yet become the check it installs.
           _reject_unsatisfiable_value_constraints!(validations, where: _declared_fields_label(fields),
-                                                                tolerance: { allow_nil:, allow_blank: })
+                                                                tolerance: { allow_nil:, allow_blank: },
+                                                                allow_empty:)
 
           # Its mirror, taking the same tolerance pair and reading it the other way: not as a stand-down (a
           # tolerated value PASSES, which cannot rescue a check nothing fails) but to discount the forbidden

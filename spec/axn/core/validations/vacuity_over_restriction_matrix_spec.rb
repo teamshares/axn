@@ -2,31 +2,46 @@
 
 require "axn/testing/spec_helpers"
 require "active_model"
+require "bigdecimal"
+require "date"
 
-# The vacuity guard's ONE unforgivable failure is refusing a declaration that enforces something. Every other
-# error it can make — admitting a vacuous contract — is the direction its doctrine deliberately prefers.
+# The ONE unforgivable failure of either guard is refusing a declaration that enforces something. Every other
+# error they can make — admitting a broken contract — is the direction their doctrine deliberately prefers.
 #
-# So this walks the product of {declared type} x {forbidden literal} x {tolerance} x {validator spelling} and,
-# for every declaration the guard refuses, asks the REAL consumer whether some value of that type still fails
-# the check. A single such value proves the refusal wrong. The oracle is the validator axn actually installs,
-# not a re-derivation of it and not bare ActiveModel — whose `Clusivity` still distributes a set over an Array
-# value, the reading PRO-3192 removed, and which would therefore answer for a runtime axn does not have.
+# So this walks the product of {declared type} x {literal} x {tolerance} x {validator spelling} and, for every
+# declaration a guard refuses, asks the REAL consumer whether the refusal was earned:
 #
-# Written after the guard's fourth round of review findings all landed in one area: the answer was to probe
-# the whole product at once rather than fix another instance. It found a real one that four rounds had not —
-# `ComparisonValidator` rejects a blank value ahead of any bound, so `type: Array, comparison:
-# { other_than: 1 }` really does reject `[]` and must not be refused.
-RSpec.describe "the vacuity guard never refuses a declaration that enforces something" do
+#   * VACUITY ("enforces nothing") is wrong if the check DISCRIMINATES — some value of the declared type fails
+#     it while another passes. A check that rejects every value is the mirror defect, not a working contract.
+#   * SATISFIABILITY ("can never match") is wrong if some value still PASSES the whole contract.
+#
+# Both oracles are the machinery axn actually installs, not a re-derivation of it and not bare ActiveModel —
+# whose `Clusivity` still distributes a set over an Array value, the reading PRO-3192 removed, and which would
+# therefore answer for a runtime axn does not have. The satisfiability oracle is deliberately in two halves,
+# because that verdict is about the whole contract rather than one entry: the entry must admit the value AND the
+# rest of the declaration must admit it too, and the second half is asked by declaring the same field without
+# the constrained entry and calling it.
+#
+# Written after the vacuity guard's fourth round of review findings all landed in one area: the answer was to
+# probe the whole product at once rather than fix another instance. It found a real one that four rounds had
+# not — `ComparisonValidator` rejects a blank value ahead of any bound, so `type: Array, comparison:
+# { other_than: 1 }` really does reject `[]` and must not be refused. Extended for PRO-3228 with Range
+# spellings and the satisfiability direction, which found a second: the satisfiability guard ignored
+# `allow_blank`, so it refused `type: Array, presence: false, inclusion: { in: [1], allow_blank: true }`, which
+# accepts `[]` and rejects `["a"]`.
+RSpec.describe "the vacuity and satisfiability guards never refuse a declaration that enforces something" do
   # Ordinary values only. A subclass that lies about its own blankness or equality can defeat any static
-  # judgment, and axn does not hold itself responsible for one — see the guard's own stand-down rules.
+  # judgment, and axn does not hold itself responsible for one — see the guards' own stand-down rules.
   let(:candidates_by_type) do
     {
       Array => [[], [1], %w[a]],
       Hash => [{}, { a: 1 }],
       Set => [Set[], Set[1]],
-      String => ["", "  ", "x", "admin"],
+      String => ["", "  ", "x", "admin", "a", "b"],
       Integer => [0, 1, 2],
       Float => [0.0, 1.0, 2.5, Float::NAN],
+      BigDecimal => [BigDecimal("0"), BigDecimal("1"), BigDecimal::NAN],
+      Date => [Date.new(2020, 1, 1), Date.new(2020, 1, 2)],
       NilClass => [nil],
     }
   end
@@ -35,75 +50,181 @@ RSpec.describe "the vacuity guard never refuses a declaration that enforces some
     {
       "[]" => [], "[1]" => [1], '""' => "", '"  "' => "  ", '"admin"' => "admin",
       "nil" => nil, "false" => false, "1" => 1, "1.0" => 1.0, "NAN" => Float::NAN,
+      "BigDecimal::NAN" => BigDecimal::NAN, "BigDecimal(1)" => BigDecimal("1"),
       "Set[]" => Set[], "{}" => {}
+    }
+  end
+
+  # Range set spellings, kept separate from the scalar literals because a Range is not a literal a set can
+  # CONTAIN — it IS the set. Each degenerate shape (exclusive-endpoints-meet, reversed) is paired with an
+  # ordinary one of the same bound type, so the audit covers the refusals and the stand-downs together.
+  let(:range_sets) do
+    day = Date.new(2020, 1, 1)
+    {
+      "(1...1)" => (1...1), "(2..1)" => (2..1), "(1..2)" => (1..2), "(1..1)" => (1..1),
+      "(1.0...1.0)" => (1.0...1.0), "(2.0..1.0)" => (2.0..1.0), "(1.0..2.0)" => (1.0..2.0),
+      "(1..)" => (1..), "(..1)" => (..1),
+      '("a"..."a")' => ("a"..."a"), '("b".."a")' => ("b".."a"), '("a".."b")' => ("a".."b"),
+      "(day...day)" => (day...day), "(day..day)" => (day..day),
+      "([\"a\"]...[\"a\"])" => (["a"]...["a"])
     }
   end
 
   let(:tolerances) { { "none" => {}, "allow_nil" => { allow_nil: true }, "allow_blank" => { allow_blank: true } } }
 
-  # Whether some candidate makes this entry record an error — i.e. the check CAN fail, so it enforces.
-  def can_fail?(entry, candidates)
+  # The rest of the declaration, varied because both verdicts depend on it: `presence: false` admits a blank
+  # value, which is what makes a blank-tolerant entry satisfiable.
+  let(:contexts) { { "default" => {}, "presence: false" => { presence: false } } }
+
+  # A bare ActiveModel model carrying the entry as axn really installs it — axn's own Clusivity validators for
+  # inclusion/exclusion, ActiveModel's own for everything else.
+  def probe_model(entry)
     model = Class.new do
       include ActiveModel::Validations
       attr_accessor :v
 
-      def self.name = "VacuityProbe"
+      def self.name = "GuardProbe"
     end
 
-    if (opts = entry[:exclusion])
+    %i[exclusion inclusion].each do |key|
+      next unless (opts = entry[key])
+
       opts = { in: opts } unless opts.is_a?(Hash)
-      model.validates_with Axn::Validators::ExclusionValidator, attributes: [:v], **opts
-    else
-      model.validates :v, **entry
+      validator = key == :exclusion ? Axn::Validators::ExclusionValidator : Axn::Validators::InclusionValidator
+      model.validates_with validator, attributes: [:v], **opts
+      return model
     end
+
+    model.validates :v, **entry
+    model
+  end
+
+  # What the ENTRY does with this candidate. The three outcomes are kept distinct because the two directions
+  # read a RAISE oppositely: a check that blows up has not rejected the value (so it is no evidence the check
+  # can fail) and it certainly has not admitted it either (so it is no evidence anything passes). Collapsing
+  # the two into a boolean is what made the first draft of this audit report false positives on
+  # `(["a"]...["a"])`, whose `include?` raises `TypeError: can't iterate from Array` on every call.
+  def entry_outcome(entry, candidate)
+    record = probe_model(entry).new
+    record.v = candidate
+    record.valid? && record.errors[:v].empty? ? :accept : :reject
+  rescue StandardError
+    :raise
+  end
+
+  # Whether the check DISCRIMINATES: some value of the declared type fails it while some other value passes.
+  # That, rather than "some value fails", is what "enforces something" means — and the difference matters for a
+  # check that rejects EVERY value, which is the mirror defect (unsatisfiable) rather than a working contract.
+  # Such a declaration is refusable in either wording, so it is no counterexample to a vacuity refusal.
+  # Measured instance: `type: Date, comparison: { other_than: Float::NAN }`, where `Date <=> NaN` raises
+  # ArgumentError (Date reads a Numeric bound as an Astronomical Julian Day Number and cannot convert a NaN),
+  # ActiveModel turns the raise into an error, and every Date is rejected.
+  def can_fail?(entry, candidates)
+    outcomes = candidates.map { |candidate| entry_outcome(entry, candidate) }
+
+    outcomes.include?(:reject) && outcomes.include?(:accept)
+  end
+
+  # Whether some candidate passes BOTH halves of the contract: the constrained entry, and everything else the
+  # declaration installs. The second half is axn's own — the same field, declared without the entry under
+  # audit, and actually called.
+  def can_pass?(type, entry, validator_key, candidates)
+    rest = entry.except(validator_key)
+    others = build_axn { expects :v, type:, **rest }
 
     candidates.any? do |candidate|
-      record = model.new
-      record.v = candidate
-      begin
-        !record.valid? && record.errors[:v].any?
-      rescue StandardError
-        false # the check could not run at all; that is not a verdict about failing
-      end
+      next false unless entry_outcome(entry, candidate) == :accept
+
+      others.call(v: candidate).ok?
+    rescue StandardError
+      false
     end
   end
 
-  # Only THIS guard's refusal is under audit. The container-position, hostile-container and satisfiability
+  # Which guard refused, if either. Only these two are under audit; the container-position and hostile-container
   # guards refuse for their own reasons and have their own coverage.
-  def vacuity_refusal?(type, entry)
+  def refusal(type, entry)
     build_axn { expects :v, type:, **entry }
-    false
+    nil
   rescue ArgumentError => e
-    e.message.include?("enforces nothing")
+    return :vacuous if e.message.include?("enforces nothing")
+
+    :unsatisfiable if e.message.include?("can never match")
   end
 
-  it "agrees with the runtime on every refusal across the product" do
+  # {spelling => [entry, validator_key]} for one literal/tolerance/context combination. The inverted spellings
+  # are audited for vacuity, the non-inverted ones for satisfiability, which is exactly how the guards split.
+  def spellings_for(literal, tolerance, context)
+    {
+      "exclusion (Array set)" => [{ exclusion: { in: [literal] }.merge(tolerance) }, :exclusion],
+      "exclusion (Set set)" => [{ exclusion: { in: Set[literal] }.merge(tolerance) }, :exclusion],
+      "comparison other_than" => [{ comparison: { other_than: literal }.merge(tolerance) }, :comparison],
+      "inclusion (Array set)" => [{ inclusion: { in: [literal] }.merge(tolerance) }, :inclusion],
+      "inclusion (Set set)" => [{ inclusion: { in: Set[literal] }.merge(tolerance) }, :inclusion],
+      "comparison equal_to" => [{ comparison: { equal_to: literal }.merge(tolerance) }, :comparison],
+      "comparison greater_than" => [{ comparison: { greater_than: literal }.merge(tolerance) }, :comparison],
+    }.transform_values { |entry, key| [entry.merge(context), key] }
+  end
+
+  def range_spellings_for(range, tolerance, context)
+    {
+      "exclusion (Range)" => [{ exclusion: { in: range }.merge(tolerance) }, :exclusion],
+      "inclusion (Range)" => [{ inclusion: { in: range }.merge(tolerance) }, :inclusion],
+    }.transform_values { |entry, key| [entry.merge(context), key] }
+  end
+
+  # The audit itself, shared by both products below: for every refusal, ask the runtime whether it was earned.
+  # Returns the unearned refusals alongside a tally, because a green audit proves nothing unless the product
+  # actually reached both verdicts — an audit that refuses nothing agrees with the runtime trivially.
+  def audit(sets)
     wrong = []
-    exercised = 0
+    tally = { examined: 0, vacuous: 0, unsatisfiable: 0 }
 
     candidates_by_type.each do |type, candidates|
-      literals.each do |literal_name, literal|
+      sets.each do |literal_name, literal|
         tolerances.each do |tolerance_name, tolerance|
-          {
-            "exclusion (Array set)" => { exclusion: { in: [literal] }.merge(tolerance) },
-            "exclusion (Set set)" => { exclusion: { in: Set[literal] }.merge(tolerance) },
-            "comparison other_than" => { comparison: { other_than: literal }.merge(tolerance) },
-          }.each do |spelling, entry|
-            exercised += 1
-            next unless begin
-              vacuity_refusal?(type, entry)
-            rescue StandardError
-              false # refused for an unrelated reason, or could not be declared at all
-            end
+          contexts.each do |context_name, context|
+            yield(literal, tolerance, context).each do |spelling, (entry, validator_key)|
+              tally[:examined] += 1
+              verdict = begin
+                refusal(type, entry)
+              rescue StandardError
+                nil # refused for an unrelated reason, or could not be declared at all
+              end
+              next if verdict.nil?
 
-            wrong << "#{type}/#{literal_name}/#{tolerance_name}/#{spelling}" if can_fail?(entry, candidates)
+              tally[verdict] += 1
+              earned = verdict == :vacuous ? !can_fail?(entry, candidates) : !can_pass?(type, entry, validator_key, candidates)
+              next if earned
+
+              wrong << "#{verdict}: #{type}/#{literal_name}/#{tolerance_name}/#{context_name}/#{spelling}"
+            end
           end
         end
       end
     end
 
-    expect(exercised).to be > 500 # a guard against the product silently shrinking to nothing
-    expect(wrong).to be_empty, "the guard refused these, but a value of the declared type really fails the " \
-                               "check:\n  #{wrong.join("\n  ")}"
+    [wrong, tally]
+  end
+
+  def expect_audit_clean(wrong, tally, examined:)
+    aggregate_failures do
+      expect(tally[:examined]).to be > examined # the product has not silently shrunk to nothing
+      expect(tally[:vacuous]).to be > 0, "no vacuity refusal was exercised at all"
+      expect(tally[:unsatisfiable]).to be > 0, "no satisfiability refusal was exercised at all"
+      expect(wrong).to be_empty, "these refusals are not earned — the runtime disagrees:\n  #{wrong.join("\n  ")}"
+    end
+  end
+
+  it "agrees with the runtime on every refusal across the scalar-literal product" do
+    wrong, tally = audit(literals) { |literal, tolerance, context| spellings_for(literal, tolerance, context) }
+
+    expect_audit_clean(wrong, tally, examined: 2000)
+  end
+
+  it "agrees with the runtime on every refusal across the Range-set product" do
+    wrong, tally = audit(range_sets) { |range, tolerance, context| range_spellings_for(range, tolerance, context) }
+
+    expect_audit_clean(wrong, tally, examined: 500)
   end
 end
