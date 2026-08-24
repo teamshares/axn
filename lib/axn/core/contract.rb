@@ -2688,6 +2688,61 @@ module Axn
           !bag[axis].nil?
         end
 
+        # WHY an empty union is a defect, in the words shared by every position one can be written at: a bag's
+        # `klass:` and a map's two axes. The three differ in what an author has to EDIT, never in what went
+        # wrong — so the diagnosis is one string and only the remedy is per-position. Without this, the same
+        # mistake read as three unrelated ones, and the map axes reported neither: an empty `values:` landed on
+        # "name the axis you are constraining", which asks for the key the author had just written (PRO-3170).
+        EMPTY_UNION_DIAGNOSIS = "a value held to every class in an empty list is held to none, so every value " \
+                                "at that position passes while the schema emits `anyOf: []`, which nothing " \
+                                "satisfies"
+
+        # The remedy half for the position an empty union sits at when it is a map's AXIS rather than a bag's
+        # `klass:`. Separate from the `klass:` wording because the fix genuinely differs: a bag has `of:` and
+        # `shape:` to fall back on, so dropping its empty `klass:` is real advice, while a map needs at least
+        # one constraining axis — telling an author to simply drop theirs would send them to the "name an axis"
+        # refusal on the next declaration. `option:` travels with it for the reason
+        # `_unsupported_type_token_message`'s does: the key to edit is `keys:` or `values:`, and only the caller
+        # knows which was written.
+        def _empty_union_axis_message(option)
+          "#{option} names an empty union, so that axis constrains nothing — #{EMPTY_UNION_DIAGNOSIS}. Name " \
+            "the class(es) that axis must hold, or drop the axis and constrain the other one — an axis left " \
+            "off is the honest spelling of \"unconstrained\", while one naming nothing only looks like a " \
+            "constraint."
+        end
+
+        # Whether an axis was SUPPLIED as an empty union, which is the one "names no class" spelling that has a
+        # key the refusal can point at. Deliberately narrower than `_axis_names_no_class?`: a nil axis and an
+        # absent one name nothing either, but neither is an empty UNION, and both keep the "name an axis"
+        # refusal (`nil` mirrors a bag's `klass: nil`, which lands on "must constrain something" rather than on
+        # the empty-union message).
+        #
+        # Asked through `_declared_type_tokens` rather than `Array(...)` so this and
+        # `_reject_unsupported_map_axis!` — the two guards that now route on the answer — cannot disagree about
+        # which values are an empty union. That matters beyond tidiness: `Array()` tries the value's own
+        # `to_ary`/`to_a` first, so a caller-supplied object could otherwise read as empty at one guard and
+        # non-empty at the other, and fall between them.
+        def _axis_names_empty_union?(declared)
+          return false if nil.equal?(declared)
+          return false unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
+
+          _declared_type_tokens(declared).empty?
+        end
+
+        # Which refusal a map bag whose axes all name no class gets. An axis written as an empty union has a key
+        # to name and gets the defect it actually has; a bag whose axes are absent or nil has none, so it keeps
+        # the refusal that asks for one. The FIRST such axis in `MAP_OF_AXES` order is named rather than both:
+        # each is one defect, and an author fixing this one meets the other on the next declaration.
+        #
+        # Runs only on the failure path, so the second read of `bag[axis]` costs nothing on a good declaration.
+        def _map_axes_name_no_class_message(bag)
+          axis = MAP_OF_AXES.find do |candidate|
+            Internal::ShapeGraph.carries_key?(bag, candidate) && _axis_names_empty_union?(bag[candidate])
+          end
+
+          nil.equal?(axis) ? MAP_OF_REQUIRED_MESSAGE : _empty_union_axis_message("of: #{axis}:")
+        end
+
         def _reject_unconstraining_of_bag!(bag)
           return if INNER_CONTRACT_AXES.any? { |axis| _of_axis_constrains?(bag, axis) }
 
@@ -2695,11 +2750,9 @@ module Axn
           # contents' class with `klass:`" is no help to an author looking at the `klass:` they wrote.
           if Internal::ShapeGraph.carries_key?(bag, :klass) && !bag[:klass].nil?
             raise ArgumentError,
-                  "of: klass: names an empty union, so this bag constrains nothing — a value held to every " \
-                  "class in an empty list is held to none, so every value at that position passes while the " \
-                  "schema emits `anyOf: []`, which nothing satisfies. Name the class(es) the contents must be, " \
-                  "or drop the empty klass: and constrain them with `of:` or `shape:`. (`of: []` is sugar for " \
-                  "`of: { klass: [] }`.)"
+                  "of: klass: names an empty union, so this bag constrains nothing — #{EMPTY_UNION_DIAGNOSIS}. " \
+                  "Name the class(es) the contents must be, or drop the empty klass: and constrain them with " \
+                  "`of:` or `shape:`. (`of: []` is sugar for `of: { klass: [] }`.)"
           end
 
           raise ArgumentError,
@@ -2788,7 +2841,7 @@ module Axn
           raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if nil.equal?(bag)
 
           _reject_unknown_of_keys!(bag, MAP_OF_OPTION_KEYS)
-          raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
+          raise ArgumentError, _map_axes_name_no_class_message(bag) if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
 
           _reject_inner_contract_context_scope!(bag, fields)
           _reject_unsupported_map_axis!(bag)
@@ -2873,8 +2926,14 @@ module Axn
             declared = bag[axis]
             next unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
 
+            # An empty union is not a token the runtime cannot hold a value to — `[]` IS the union spelling, and
+            # being empty is the defect — so it reports the emptiness, in the same words a bag's `klass:` uses
+            # for the identical mistake. Reached when a SIBLING axis constrains: with both axes naming nothing
+            # `_map_axes_name_no_class_message` has already answered, one guard earlier.
+            raise ArgumentError, _empty_union_axis_message("of: #{axis}:") if _axis_names_empty_union?(declared)
+
             tokens = _declared_type_tokens(declared)
-            # An axis SUPPLIED and naming nothing (`nil`, `[]`) has no token to name, so the refusal names the
+            # An axis SUPPLIED and naming nothing else (`nil`) has no token to name, so the refusal names the
             # value written instead. Unlike a bag's `klass:`, an axis has no second way to constrain, so there
             # is no other guard for this to defer to.
             raise ArgumentError, _unsupported_type_token_message("of: #{axis}:", declared) if tokens.empty?

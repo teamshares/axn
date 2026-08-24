@@ -1643,12 +1643,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop[:type]).to eq("object")
     end
 
-    # An axis naming an EMPTY union says the same thing as an absent one on this container: `matches_axis?`
-    # waves every value through when the axis names no class. So there is no schema to emit for it — the
-    # declaration is refused outright, and a map whose axes all name nothing never reaches the emitter.
-    it "never reaches the emitter with a values axis naming no class at all" do
+    # An axis naming an EMPTY union constrains exactly what an absent one does: `matches_axis?` waves every
+    # value through when the axis names no class. So there is no schema to emit for it — the declaration is
+    # refused outright, and a map whose axes name nothing never reaches the emitter.
+    it "never reaches the emitter with a values axis naming an empty union" do
       expect { input_property(:counts) { expects :counts, type: Hash, of: { values: [] } } }
-        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+        .to raise_error(ArgumentError, /\Aof: values: names an empty union/)
     end
 
     it "still emits additionalProperties for a nil-allowed map, whose type is the [\"object\", \"null\"] pair" do

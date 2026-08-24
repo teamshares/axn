@@ -219,6 +219,46 @@ RSpec.describe Axn::Validators::OfValidator do
       end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
     end
 
+    # The one rule every `of:` axis is held to (PRO-3170): it must name at least one class, and everything it
+    # names must be a class. Three positions spell the axis differently — `klass:` inside a bag, `keys:` and
+    # `values:` on a map — so the refusals differ in which key they tell the author to edit, and in nothing
+    # else. Pinned as the shared DIAGNOSIS rather than as three whole strings, so a reworded remedy at one
+    # position stays free while the three drifting into describing different mistakes does not.
+    describe "the one rule an `of:` axis is held to" do
+      shared_diagnosis =
+        "a value held to every class in an empty list is held to none, so every value at that position " \
+        "passes while the schema emits `anyOf: []`, which nothing satisfies"
+
+      {
+        "a bag's klass:" => [Array, { klass: [] }],
+        "a map's keys:" => [Hash, { keys: [], values: Integer }],
+        "a map's values:" => [Hash, { keys: Symbol, values: [] }],
+      }.each do |position, (container, of)|
+        it "reports an empty union at #{position} with the same diagnosis" do
+          expect { build_axn { expects :a, type: container, of: } }
+            .to raise_error(ArgumentError, /#{Regexp.escape(shared_diagnosis)}/)
+        end
+      end
+
+      # The other half of the rule, at the same three positions: a token the runtime cannot hold a value to.
+      # A String is the spelling that used to declare cleanly, emit a schema describing a type nobody
+      # declared (`items: {type: "string"}`), and then fail EVERY call with an opaque "Something went wrong".
+      {
+        "a bare of:" => [Array, "", "of: klass:"],
+        "a bag's klass:" => [Array, { klass: "" }, "of: klass:"],
+        "a map's keys:" => [Hash, { keys: "" }, "of: keys:"],
+        "a map's values:" => [Hash, { values: "" }, "of: values:"],
+      }.each do |position, (container, of, option)|
+        it "refuses a non-class token at #{position}, where every call used to fail opaquely" do
+          expect { build_axn { expects :a, type: container, of: } }.to raise_error(
+            ArgumentError,
+            "#{option} must name a type — a Class, a union of them, or one of " \
+            ":boolean, :uuid, :params (got a value of class String)",
+          )
+        end
+      end
+    end
+
     # A bag has to CONSTRAIN something, and `klass:` is no longer the only way to do it (PRO-3166), so the
     # rule is stated over the axes rather than over the one option.
     it "raises ArgumentError when of: is a hash constraining nothing" do
@@ -349,30 +389,41 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
     end
 
-    # An axis holding an EMPTY union is `of: {}` in a costume: `matches_axis?` waves every value through a class
-    # list with nothing in it, so the declaration reads like a constraint and enforces none. Judged as an absent
-    # axis, which is what it is, so a bag whose axes all name nothing lands on the same "name an axis" refusal.
-    it "rejects a values axis naming no class at all" do
+    # An axis holding an EMPTY union is the defect a bag's `klass:` has when it is written the same way, so it
+    # reports the same defect: `matches_axis?` waves every value through a class list with nothing in it, and
+    # the declaration reads like a constraint while enforcing none. The refusal names the axis the author
+    # actually wrote rather than asking for an axis that is already there.
+    it "rejects a values axis naming an empty union" do
       expect { build_axn { expects :counts, type: Hash, of: { values: [] } } }
-        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+        .to raise_error(ArgumentError, /\Aof: values: names an empty union, so that axis constrains nothing/)
     end
 
-    it "rejects a keys axis naming no class at all" do
+    it "rejects a keys axis naming an empty union" do
       expect { build_axn { expects :counts, type: Hash, of: { keys: [] } } }
-        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+        .to raise_error(ArgumentError, /\Aof: keys: names an empty union, so that axis constrains nothing/)
     end
 
-    it "rejects both axes naming no class at all" do
+    # Both axes empty is still ONE defect per axis, so the first one written is the one named — an author
+    # fixing it sees the second on the next declaration rather than a refusal describing neither.
+    it "names the first axis when both name an empty union" do
       expect { build_axn { expects :counts, type: Hash, of: { keys: [], values: [] } } }
+        .to raise_error(ArgumentError, /\Aof: keys: names an empty union/)
+    end
+
+    # An axis left OFF entirely is the honest spelling of "unconstrained", and a bag with neither axis has no
+    # axis to name — that is the one case still answered by the "name the axis" refusal.
+    it "rejects a bag whose axes are absent rather than empty" do
+      expect { build_axn { expects :counts, type: Hash, of: {} } }
         .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
     end
 
     # Omitting an axis is the spelling of "unconstrained"; writing one that names nothing is not. An empty
     # union constrains exactly nothing, so it is refused wherever it is supplied rather than read as an
-    # omission that happens to be typed out.
+    # omission that happens to be typed out — including beside a sibling that does constrain, where the bag
+    # as a whole is not the thing at fault.
     it "rejects an empty axis even beside one that names a class" do
       expect { build_axn { expects :counts, type: Hash, of: { keys: [], values: Integer } } }
-        .to raise_error(ArgumentError, /of: keys: must name a type/)
+        .to raise_error(ArgumentError, /\Aof: keys: names an empty union/)
     end
 
     # The map bag reaches the same context-scope guard the element bag does, in the same words — `on:` is one
@@ -419,9 +470,12 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, /of: values: must name a type .* \(got a value of class NilClass\)/)
     end
 
+    # An empty union is not "not a type": `[]` IS the union spelling, and being empty is the defect. Reported
+    # as the emptiness it is, in the words a bag's `klass:` uses for the identical mistake, rather than as a
+    # token the runtime cannot hold a value to.
     it "rejects an axis naming an empty union beside a valid one" do
       expect { build_axn { expects :c, type: Hash, of: { keys: Symbol, values: [] } } }
-        .to raise_error(ArgumentError, /of: values: must name a type/)
+        .to raise_error(ArgumentError, /\Aof: values: names an empty union, so that axis constrains nothing/)
     end
 
     # `nil` INSIDE a union is the one unsupported token a `find`-based search cannot report: the answer for
