@@ -17,10 +17,15 @@ module Axn
     class ContainerContents < Fields
       def read_attribute_for_validation(_attr) = @source
 
+      private
+
       # The synthetic attribute this contract is built under (`:__axn_contents__`) is axn's own and locates
       # nothing for an author, so it never appears in prose. A validation MESSAGE has the enclosing
       # `OfValidator`'s positional prefix; a side-channel report of a raising callable has no prefix to borrow,
       # so it says what the subject is instead. Reachable since an `of:` bag took value validators (PRO-3193).
+      #
+      # Private, matching the visibility of the `Fields` method it overrides — the validators reach it through
+      # `record.send(...)`, exactly as they reach the other per-validation readers there.
       def _validation_subject(_attribute) = "contents of a container"
     end
   end

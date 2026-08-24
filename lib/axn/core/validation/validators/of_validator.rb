@@ -111,6 +111,7 @@ module Axn
       # out is what made this method the silent-ignore hole PRO-3165 closed at the grammar: a key the whitelist
       # admits but this method does not forward declares cleanly, reaches ActiveModel through nothing, and
       # constrains nothing — so the two lists have to be one list, and subtraction makes them one.
+      #
       # The shared ActiveModel options come out through `validator_entries`, which is what "these are not
       # validators" already means everywhere else. Whether a bag's `allow_nil:`/`allow_blank:` govern the
       # POSITION is a separate question, and not one this method may answer by accident: axn's own tolerance
