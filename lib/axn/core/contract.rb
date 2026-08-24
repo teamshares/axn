@@ -574,22 +574,21 @@ module Axn
             retained, superseded = _partition_superseded_confirmation_companions(internal_field_configs, configs)
 
             _reject_duplicate_fields!(retained, configs)
-            # Declaring a top-level field can RE-ANCHOR existing subfields (a new root takes precedence over
-            # a same-named subfield reader), so the resolved check runs here too rather than only where
-            # subfields are declared.
-
-            # A map declared HERE can contradict a subfield declared earlier, so the map-parent check is asked
-            # from this seam as well — otherwise `expects :counts, type: Hash, of: {...}` written after
-            # `expects :n, on: :counts` reaches no check at all, and ships the schema/runtime split the check
-            # exists to refuse. Only that check, over the same candidate tree the subfield seam judges: the rest
-            # of `SubfieldContradictions` is asked where a SUBFIELD is declared, and a map `of:` is the one
-            # top-level declaration that can invalidate an existing subfield. Skipped outright where no subfield
-            # exists, which is the only shape this can fire on.
-            unless subfield_configs.empty?
-              SubfieldContradictions.check_subfields_under_map!(
-                Axn::Internal::SubfieldTree.build(retained + configs, subfield_configs),
-              )
-            end
+            # A top-level declaration carries no `on:`, so it looks like it can contradict no subfield. It
+            # can: an explicit top-level config OUTRANKS an explicit subfield of the same name
+            # (SubfieldTree.reader_rank), so it takes that reader over and every subfield anchored on the
+            # name RE-ANCHORS onto the new root — stranding it under a parent that cannot answer it, under
+            # a map, or under a tolerance nothing rescues. So the FULL check is asked here, over the same
+            # candidate tree the subfield seam judges (`check!` builds it), rather than only the map slice
+            # (PRO-3169). What a re-anchor can reach is what fires: `check_ambiguous_crossings!` is asked
+            # for symmetry but cannot newly fire from here, since a top-level config's root node holds
+            # exactly one config and a re-anchor SPLITS routes apart rather than merging them onto one node.
+            #
+            # A repeated top-level name is a duplicate (rejected above), so the takeover is always
+            # top-level-over-subfield. Skipped outright where no subfield exists: with an empty tree every
+            # top-level tolerance is exercisable and no segment is read, so a subfield-free contract sees
+            # none of this — which is also what keeps the per-declaration tree build off that path.
+            SubfieldContradictions.check!(retained + configs, subfield_configs) unless subfield_configs.empty?
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
