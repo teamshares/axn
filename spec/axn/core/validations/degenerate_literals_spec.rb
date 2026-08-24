@@ -250,6 +250,27 @@ RSpec.describe "a degenerate literal" do
       expect(action.call(v: ["x"]).ok?).to be(false)
     end
 
+    it "does not let the multi-blank fallback survive a sibling that rejects EVERY blank" do
+      # `ComparisonValidator` rejects a blank ahead of any bound, so it rejects them all — there is no other
+      # blank to hope for, and the `String` escape hatch must not reach it. Acceptance rejects every non-blank
+      # String here, so nothing passes at all.
+      expect do
+        build_axn do
+          expects :v, type: String, presence: false, acceptance: { accept: [1], allow_blank: true },
+                      comparison: { equal_to: "ok" }
+        end
+      end.to raise_error(ArgumentError, /acceptance:.*can never match/m)
+
+      # ...while a VALUE-SPECIFIC sibling still gets the fallback, because another blank may pass it: this
+      # exclusion forbids `""` and nothing else, and `"  "` sails past it.
+      action = build_axn do
+        expects :v, type: String, presence: false, acceptance: { accept: [1], allow_blank: true },
+                    exclusion: { in: ["", "zzz"] }
+      end
+      expect(action.call(v: "  ").ok?).to be(true)
+      expect(action.call(v: "x").ok?).to be(false)
+    end
+
     it "still stands down when the sibling leaves that blank alone" do
       # The mirror of the case above, and the reason a sibling cannot simply veto the stand-down: this exclusion
       # forbids something else, so `[]` really does pass and the contract really does enforce.
@@ -379,6 +400,20 @@ RSpec.describe "a degenerate literal" do
       empty = subclass.new(1, 1, true)
 
       expect { build_axn { expects :n, type: Integer, exclusion: { in: empty } } }.not_to raise_error
+    end
+
+    it "stands down on a Range carrying its own `cover?` rather than its class's" do
+      # The exact class is not enough — a Range instance can hold a SINGLETON `cover?`, and the emptiness probe
+      # would then generalize one object's answer into a verdict. A literal is frozen, but `dup` is not, so this
+      # is reachable rather than theoretical: the range below reports empty at its own `begin` while genuinely
+      # covering `2`, and refusing it would refuse a contract that enforces.
+      range = Range.new(1, 1, true).dup
+      range.define_singleton_method(:cover?) { |value| value == 2 }
+
+      action = build_axn { expects :n, type: Integer, inclusion: { in: range } }
+
+      expect(action.call(n: 2).ok?).to be(true)
+      expect(action.call(n: 1).ok?).to be(false)
     end
   end
 end

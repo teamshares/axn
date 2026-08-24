@@ -3592,11 +3592,17 @@ module Axn
           return false if _blank_rejected_by_contract?(validations, allow_empty:, tolerant: tolerance.values.any?)
 
           _blank_witnesses_for(klasses).any? do |klass, witness|
-            # A sibling rejecting the witness only settles the question where that witness is the class's ONLY
-            # blank. Where it is not, another blank may sail past the same sibling, and concluding "no blank
-            # passes" from the one we can name would refuse a contract that works — measured: `type: String`
-            # with a sibling forbidding `""` still admits `"  "`, which is blank too.
-            _siblings_admit_blank?(validations, witness, except: key, tolerance:) || !_sole_blank_klass?(klass)
+            case _sibling_blank_verdict(validations, witness, except: key, tolerance:)
+            when :admits then true
+            # A sibling that rejects EVERY blank leaves no other blank to hope for, so the multi-blank escape
+            # below must not reach it.
+            when :rejects_every_blank then false
+            # A sibling rejecting THIS witness only settles the question where the witness is the class's ONLY
+            # blank. Where it is not, another blank may sail past the same value-specific check, and concluding
+            # "no blank passes" from the one we can name would refuse a contract that works — measured:
+            # `type: String` with a sibling forbidding `""` still admits `"  "`, which is blank too.
+            else !_sole_blank_klass?(klass)
+            end
           end
         end
 
@@ -3639,22 +3645,36 @@ module Axn
         #
         # A sibling with its own blank-tolerance skips the witness exactly as the audited entry does, so it admits
         # by definition and is asked nothing further.
-        def _siblings_admit_blank?(validations, witness, except:, tolerance:)
-          Axn::Validation::Base.validator_entries(validations).all? do |key, sibling|
-            next true if key == except || !sibling
-            next true if Axn::Validation::Base.effective_entry_options(sibling, tolerance)[:allow_blank]
+        # Three-valued, and the third value is what keeps the multi-blank fallback honest. A sibling can reject
+        # the witness for two different reasons, and only one of them generalizes to the class's OTHER blanks:
+        #
+        #   * VALUE-SPECIFIC — a set the witness happens not to be in. Another blank may well be in it, so this
+        #     settles nothing on a class with more than one blank.
+        #   * EVERY BLANK — `ComparisonValidator` rejects a blank BEFORE it looks at any bound (activemodel
+        #     7.2.2.2, comparison.rb:23), so it rejects them all whatever it compares against. No other blank
+        #     can be hoped for, and treating this as value-specific let an impossible contract declare:
+        #     `type: String, presence: false, acceptance: { accept: [1], allow_blank: true },
+        #     comparison: { equal_to: "ok" }` rejects every non-blank String by acceptance and every blank one
+        #     by the comparison, and nothing passes.
+        #
+        # Everything this cannot read exactly answers `:admits`, standing the guard down rather than guessing.
+        def _sibling_blank_verdict(validations, witness, except:, tolerance:)
+          verdict = :admits
+
+          Axn::Validation::Base.validator_entries(validations).each do |key, sibling|
+            next if key == except || !sibling
+            next if Axn::Validation::Base.effective_entry_options(sibling, tolerance)[:allow_blank]
 
             case key
-            # `ComparisonValidator` rejects a blank BEFORE it looks at any bound (activemodel 7.2.2.2,
-            # comparison.rb:23), so an untolerant comparison sibling rejects every blank whatever it compares.
-            when :comparison then false
-            # A set the witness is not in rejects it; a set it IS in admits it. `nil` is unknown, which admits.
-            when :inclusion then _set_witness_membership(sibling, witness) != :excludes
-            when :exclusion then _set_witness_membership(sibling, witness) != :contains
-            when :acceptance then _acceptance_admits_blank?(sibling, witness)
-            else true
+            when :comparison then return :rejects_every_blank
+            # A set the witness is not in rejects it; a set it IS in admits it. `:unknown` admits.
+            when :inclusion then verdict = :rejects_this_blank if _set_witness_membership(sibling, witness) == :excludes
+            when :exclusion then verdict = :rejects_this_blank if _set_witness_membership(sibling, witness) == :contains
+            when :acceptance then verdict = :rejects_this_blank unless _acceptance_admits_blank?(sibling, witness)
             end
           end
+
+          verdict
         end
 
         # Where a clusivity set stands on the blank witness: `:contains`, `:excludes`, or `:unknown` for a set
@@ -4216,6 +4236,12 @@ module Axn
         # caller-supplied values, and a subclass or a singleton override would otherwise pick the verdict.
         def _empty_range?(range)
           return false unless Internal::Identity.class_of(range).equal?(::Range)
+          # The exact class is not enough: a Range instance can carry a SINGLETON `cover?`, and the probe below
+          # would then generalize one object's answer into a verdict about the declaration. Reachable — a Range
+          # literal is frozen, but `Range.new(1, 1, true).dup` and `.clone(freeze: false)` are not, and both take
+          # a singleton method. Asked by ownership exactly as the bounds' `<=>` is, so nothing the object defines
+          # decides this.
+          return false unless _class_owned_operators?(range, ::Range, %i[cover?])
 
           first = range.begin
           last = range.end
