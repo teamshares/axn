@@ -5926,6 +5926,42 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           .to include(pattern: "^\\u0041$")
       end
 
+      # A flagless ECMA pattern counts UTF-16 CODE UNITS where Ruby counts CHARACTERS — and which side that
+      # favours DEPENDS ON THE QUANTIFIER, so it cannot be licensed on input as a narrowing:
+      #
+      #   ^.$     needs 1 unit, "😀" has 2  => ECMA rejects, Ruby accepts  (stricter)
+      #   ^.{2}$  needs 2 units, "😀" has 2 => ECMA ACCEPTS, Ruby rejects  (LOOSER)
+      #
+      # Determining which applies means parsing the quantifier context, so anything able to match a character
+      # outside the BMP stands down at BOTH positions.
+      it "stands down on a counted dot, where ECMA is LOOSER than Ruby" do
+        action = build_axn { expects :s, type: String, format: { with: /\A.{2}\z/ } }
+
+        expect(action.call(s: "\u{1F600}")).not_to be_ok
+        expect(action.input_schema[:properties][:s]).not_to have_key(:pattern)
+      end
+
+      it "stands down on a dot on input as well as output" do
+        stands_down { expects :s, type: String, format: { with: /\A.\z/ } }
+      end
+
+      it "stands down on a complement escape on input" do
+        stands_down { expects :s, type: String, format: { with: /\A\D{2}\z/ } }
+      end
+
+      it "stands down on a negated class on input" do
+        stands_down { expects :s, type: String, format: { with: /\A[^a]{2}\z/ } }
+      end
+
+      # The line anchors are the one construct that stays input-licensed: `^`/`$` are ZERO-WIDTH assertions, so
+      # no code units are consumed and no quantifier can reverse the direction — Ruby's line anchors match at a
+      # strict superset of ECMA's input-anchor positions whatever surrounds them.
+      it "still emits a line anchor on input, which no quantifier can reverse" do
+        action = build_axn { expects :s, type: String, format: { with: /^\d+$/, multiline: true } }
+
+        expect(action.input_schema[:properties][:s]).to include(pattern: "^\\d+$")
+      end
+
       # On INPUT a narrowing is licensed — the document may admit fewer values than the runtime. On OUTPUT the
       # direction flips: the schema describes what the action PRODUCES, so a narrowing rejects values axn
       # successfully serialized. Only translations that are EXACT survive there, which is the same reasoning
@@ -6015,8 +6051,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(action.output_schema[:properties][:s]).to include(pattern: "^é+$")
         end
 
-        it "still emits the complements on INPUT, where a narrowing is licensed" do
-          expect(prop_for { expects :s, type: String, format: { with: /\A\D\z/ } }).to include(pattern: "^\\D$")
+        it "stands down on the complements on input too, since a quantifier can reverse the direction" do
+          expect(prop_for { expects :s, type: String, format: { with: /\A\D\z/ } }).not_to have_key(:pattern)
         end
 
         # An EXACT translation still emits on output — the stand-down is about narrowing, not about output.
@@ -6030,10 +6066,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(action.output_schema[:properties][:s]).to include(pattern: "^[A-Z]{2}$")
         end
 
-        it "still emits both narrowings on INPUT, where they are licensed" do
-          action = build_axn { expects :s, type: String, format: { with: /\A.\z/ } }
+        it "still emits the LINE ANCHOR narrowing on input, the one a quantifier cannot reverse" do
+          action = build_axn { expects :s, type: String, format: { with: /^\d+$/, multiline: true } }
 
-          expect(action.input_schema[:properties][:s]).to include(pattern: "^.$")
+          expect(action.input_schema[:properties][:s]).to include(pattern: "^\\d+$")
         end
       end
 
@@ -6195,9 +6231,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
     # Lookahead and lookbehind are shared with ECMA, so they translate rather than stand down — the allowlist
     # is not "punctuation only".
+    # Written without a `.`, which stands down on its own account (code-unit sensitivity) — the claim here is
+    # that a LOOKAHEAD survives translation, and a dot inside it would test something else.
     it "keeps a lookahead" do
-      expect(prop_for { expects :s, type: String, format: { with: /\A(?=.*\d)\w+\z/ } })
-        .to include(pattern: "^(?=.*\\d)\\w+$")
+      expect(prop_for { expects :s, type: String, format: { with: /\A(?=\w*\d)\w+\z/ } })
+        .to include(pattern: "^(?=\\w*\\d)\\w+$")
     end
 
     it "keeps a non-capturing group and an escaped literal" do

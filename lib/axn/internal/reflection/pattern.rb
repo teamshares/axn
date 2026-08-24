@@ -99,22 +99,29 @@ module Axn
         # `^`/`$`: Ruby's are line anchors (reachable only with AM's `multiline: true`, which refuses the
         # pattern otherwise), ECMA's here are input anchors.
         #
-        # Detected on the escape-stripped source, so `\.`/`\^`/`\$` are not mistaken for metacharacters. The
-        # over-standing-down this causes for a class-internal `[^a]` or `[.]` is not a wart here but the point:
-        # a NEGATED class reaches astral input exactly as the complements below do, and the bare `^` already
-        # catches every one of them, so no separate entry is needed (measured — adding one changed nothing).
-        NARROWING_METACHARACTERS = /[.^$]/
-        private_constant :NARROWING_METACHARACTERS
+        # A LINE ANCHOR is the one construct that is safely narrower on input. `^`/`$` are ZERO-WIDTH
+        # assertions, so no code units are consumed and no quantifier can reverse the direction: Ruby's line
+        # anchors match at a strict superset of ECMA's input-anchor positions whatever surrounds them. Licensed
+        # inbound, refused outbound. (Reachable only with ActiveModel's `multiline: true`, which refuses the
+        # pattern otherwise.)
+        LINE_ANCHORS = /[\^$]/
+        private_constant :LINE_ANCHORS
 
-        # A flagless ECMA pattern counts UTF-16 CODE UNITS where Ruby counts CHARACTERS, so anything able to
-        # match a character OUTSIDE THE BMP is narrower in ECMA than in Ruby: `"😀"` is one character to Ruby
-        # and a surrogate pair to ECMA, so `^\D$` matches it in Ruby and fails in ECMA with one code unit left
-        # over. Measured: an action exposing it under `/\A\D\z/` succeeds.
+        # A flagless ECMA pattern counts UTF-16 CODE UNITS where Ruby counts CHARACTERS, and WHICH SIDE THAT
+        # FAVOURS DEPENDS ON THE QUANTIFIER — which is why these cannot be licensed inbound as narrowings:
         #
-        # The COMPLEMENTS are what reach astral input — `\w`/`\d` are ASCII-only and never match one, and a BMP
-        # character like "é" is a single code unit either way, so neither is affected. A negated character class
-        # has the same reach and is already caught by the `^` above; a literal astral character in the source is
-        # the third way in, since ECMA reads it as the two surrogates individually.
+        #   ^.$     needs 1 unit, "😀" has 2  => ECMA rejects where Ruby accepts (stricter)
+        #   ^.{2}$  needs 2 units, "😀" has 2 => ECMA ACCEPTS where Ruby rejects (LOOSER)
+        #
+        # Telling those apart means parsing the quantifier context, so anything able to match a character
+        # outside the BMP stands down at BOTH positions. `\w`/`\d` are ASCII-only and never match one, and a
+        # BMP character like "é" is a single code unit either way, so neither is affected.
+        #
+        # Three ways in: the COMPLEMENTS below; a NEGATED character class, which has the same reach; and a
+        # literal astral character in the source, which ECMA reads as its two surrogates individually.
+        CODE_UNIT_SENSITIVE = /\.|\[\^/
+        private_constant :CODE_UNIT_SENSITIVE
+
         ASTRAL_REACHING_ESCAPES = %w[D W].freeze
         private_constant :ASTRAL_REACHING_ESCAPES
 
@@ -140,7 +147,8 @@ module Axn
           return nil unless escapes_translatable?(source)
           return nil unless braces_are_quantifiers?(source)
           return nil if nested_character_class?(source)
-          return nil if for_output && narrowing?(source)
+          return nil if code_unit_sensitive?(source)
+          return nil if for_output && source.gsub(/\\./m, "").match?(LINE_ANCHORS)
 
           translate_anchors(source)
         end
@@ -161,10 +169,11 @@ module Axn
           source.scan(/\\(.)/m).all? { |(char)| SAFE_ESCAPES.include?(char) }
         end
 
-        # Whether the translation would be narrower than the source rather than exact. Only asked on output,
-        # where a narrowing rejects values axn successfully serialized.
-        def narrowing?(source)
-          return true if source.gsub(/\\./m, "").match?(NARROWING_METACHARACTERS)
+        # Whether the pattern can match a character outside the BMP, and so means something different once ECMA
+        # counts its code units (see CODE_UNIT_SENSITIVE). Asked at BOTH positions, because a quantifier decides
+        # which side the difference favours.
+        def code_unit_sensitive?(source)
+          return true if source.gsub(/\\./m, "").match?(CODE_UNIT_SENSITIVE)
           return true if source.scan(/\\(.)/m).any? { |(char)| ASTRAL_REACHING_ESCAPES.include?(char) }
 
           source.each_char.any? { |char| char.ord > BMP_MAXIMUM }
