@@ -74,6 +74,35 @@ RSpec.describe "value validators in an of: bag" do
       expect(action.call(codes: %w[us]).exception.message).to include("must be shouty")
     end
 
+    # The whitelist is DERIVED, so every admitted validator is admitted at every position whether or not
+    # anyone wrote an example. These three close the audit: each is exercised at a position, and the ones with
+    # no honest keyword are asserted to emit nothing rather than left to be discovered.
+    it "constrains each element with comparison:" do
+      action = build_axn { expects :f, type: Array, of: { klass: Integer, comparison: { greater_than: 0 } } }
+
+      expect(action.call(f: [1])).to be_ok
+      expect(action.call(f: [0])).not_to be_ok
+      expect(action.input_schema.dig(:properties, :f, :items)).to include(exclusiveMinimum: 0)
+    end
+
+    it "constrains each element with absence:, and emits no keyword for it" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, absence: true } }
+
+      expect(action.call(f: [""])).to be_ok
+      expect(action.call(f: ["a"])).not_to be_ok
+      # `maxLength: 0` / `const: null` would depend on the position's type and collides with the emptiness
+      # axis, which is PRO-3220's subject — so this stays unemitted, as at a field.
+      expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "string")
+    end
+
+    it "constrains each element with acceptance:, and emits no keyword for it" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, acceptance: { accept: %w[yes] } } }
+
+      expect(action.call(f: %w[yes])).to be_ok
+      expect(action.call(f: %w[no])).not_to be_ok
+      expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "string")
+    end
+
     it "constrains a klass-less bag, leaving the element's class open" do
       action = build_axn { expects :tags, type: Array, of: { inclusion: { in: ["a", 1] } } }
 
