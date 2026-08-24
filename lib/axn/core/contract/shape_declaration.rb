@@ -794,6 +794,7 @@ module Axn
           member_where = "shape member `#{_shape_member_label(name)}`"
           _reject_unsupported_validator_keys!(copy, where: member_where)
           _reject_validator_context_scope!(copy, where: member_where)
+          _reject_strict_validation!(copy, where: member_where)
           _reject_container_position_validators!(copy, where: member_where)
           _reject_unsatisfiable_value_constraints!(copy, where: member_where,
                                                          tolerance: copy.slice(:allow_nil, :allow_blank))

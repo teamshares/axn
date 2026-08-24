@@ -316,6 +316,18 @@ expects :v, type: { klass: String, on: :create }
 Use `if:`/`unless:` to gate a check instead. The same rejection covers a shape member's own `on:`, and `on:` on an `exposes`.
 
 Note that this is only about `on:` **inside a validator's options.** A declaration-level `on:` on `expects` is a completely different option — it is axn's [subfield parent](#nested-subfield-expectations) (`expects :zip, on: :address`) — and is unaffected.
+
+Axn also has **no strict-raising mode.** ActiveModel's `strict:` asks `errors.add` to raise instead of recording the error, so the exception reaches the caller in place of a validation result. Axn already settles a contract violation by raising — the errors are collected, composed into one message, and turned into a failed result — so a strict raise arrives at that same handling having skipped the composition, and can only take information away: a `user_facing:` field loses its message to the generic one, co-occurring violations are dropped (`errors.add` raises on the first), and a `strict:` naming a class outside `StandardError` escapes the call, which no axn call otherwise does. It is refused wherever a validator's options are written:
+
+```ruby
+expects :v, numericality: { greater_than: 5 }, strict: true
+# => ArgumentError: `strict:` inside the declaration on ["v"] is ActiveModel's strict-raising mode, and axn
+#    does not have one: a contract violation already raises, and the strict exception lands in the same
+#    handling with LESS to say.
+```
+
+The refusal covers both tiers ActiveModel reads (`strict:` on the declaration, and inside one validator's own bag), at every position a bag sits — a field, a subfield, an ambient subfield, an `exposes`, a shape member, and an `of:` bag at any depth — and it holds whatever the value is, since the value only chooses which class would have been raised. To shape what a failure says, use `message:` on the check, [`user_facing:`](#user-facing) on the field, or [`fails_on`](#fails-on).
+
 #### Confirmation pairs (`confirmation:`) {#confirmation}
 
 `confirmation: true` declares a **companion input** alongside the field and fails unless the two match — the password/password-confirmation pattern, as one line.
@@ -348,7 +360,7 @@ For fields you declare via `exposes`, you'll need [a corresponding `expose` call
 
 ### Details specific to `.expects`
 
-#### `user_facing:` — surface a violation to the caller
+#### `user_facing:` — surface a violation to the caller {#user-facing}
 
 By default a failed `expects` validation is **dev-facing**: it lands in the exception bucket, pages the global handler, and `result.error` is the generic `"Something went wrong"`. Mark a field `user_facing:` and a violation of it settles as a **failure** instead — firing `on_failure`, skipping the global report, and surfacing a meaningful message on `result.error`:
 

@@ -154,17 +154,29 @@ module Axn
       # the value, so `on: nil`/`false`/`[]` name a context no call is in exactly as `on: :publish` does —
       # `Array(nil)` is `[]`, and intersecting an empty Array with anything is empty.
       #
-      # Neither the classification nor the key read dispatches to the bag, because this decides a declaration
-      # and a guard a caller can invert is not a guard: `hash_or_nil` classifies with `case`/`when` (which does
-      # not call the object's `is_a?`) and `carries_key?` binds `Hash#key?`. That matches how ActiveModel reads
-      # the same bag — `_parse_validates_options` cases on `Hash`, and `key?` is asked of the plain Hash its
-      # `merge` builds — so the two cannot disagree about one entry.
-      #
       # Distinct from an if:/unless: GATE, which a given call MAY run, and which stays fully supported.
       # (Not to be confused with a DECLARATION-level `on:`, which is axn's subfield parent.)
-      def self.entry_context_scoped?(entry_opts)
+      def self.entry_context_scoped?(entry_opts) = entry_carries_option?(entry_opts, :on)
+
+      # Whether a validator ENTRY carries ActiveModel's `strict:` among its options, which asks for a mode axn
+      # does not have: strict raising replaces the recorded error with a raise, and axn settles a contract
+      # violation by raising already — so the strict exception reaches the same handling and the settlement it
+      # pre-empted is simply lost. THE definition behind the declaration guard that refuses one
+      # (`_reject_strict_validation!`) — its only consumer, so no judgment downstream ever meets one.
+      #
+      # Only the key's presence is asked, for the reason it is asked of `on:`: the value chooses which exception
+      # class `errors.add` raises, not whether the option was understood, so `strict: false` names the same
+      # unsupported mode `strict: true` does.
+      def self.entry_declares_strict?(entry_opts) = entry_carries_option?(entry_opts, :strict)
+
+      # One ENTRY, one option key, asked without dispatching to the bag — the shared read behind both refusals
+      # above, because a guard a caller can invert is not a guard: `hash_or_nil` classifies with `case`/`when`
+      # (which does not call the object's `is_a?`) and `carries_key?` binds `Hash#key?`. That matches how
+      # ActiveModel reads the same bag — `_parse_validates_options` cases on `Hash`, and `key?` is asked of the
+      # plain Hash its `merge` builds — so the two cannot disagree about one entry.
+      def self.entry_carries_option?(entry_opts, key)
         bag = Axn::Internal::ShapeGraph.hash_or_nil(entry_opts)
-        !nil.equal?(bag) && Axn::Internal::ShapeGraph.carries_key?(bag, :on)
+        !nil.equal?(bag) && Axn::Internal::ShapeGraph.carries_key?(bag, key)
       end
 
       # Whether an `acceptance:` ENTRY would let a nil through. ActiveModel's AcceptanceValidator skips a nil

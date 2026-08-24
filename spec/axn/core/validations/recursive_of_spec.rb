@@ -1475,13 +1475,18 @@ RSpec.describe "recursive of:" do
     end
 
     it "are refused on the keys axis, naming every offender at once" do
-      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, allow_nil: true, strict: true } } } }
-        .to raise_error(ArgumentError, /\Aof: keys: does not support allow_nil:, strict: on :m/)
+      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, allow_nil: true, allow_blank: true } } } }
+        .to raise_error(ArgumentError, /\Aof: keys: does not support allow_blank:, allow_nil: on :m/)
     end
 
     it "leaves on: to the context-scope guard, which names a different problem" do
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, on: :create } } } }
         .to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :m names an ActiveModel validation context/)
+    end
+
+    it "leaves strict: to the strict guard, which names a different problem" do
+      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, strict: true } } } }
+        .to raise_error(ArgumentError, /\A`strict:` inside an `of:` bag on :m is ActiveModel's strict-raising mode/)
     end
 
     # The reason the ban is axis-only rather than bag-wide: axn's own tolerance push-down writes

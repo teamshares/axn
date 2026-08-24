@@ -116,21 +116,22 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(action.input_schema[:required] || []).not_to include(:num, "num")
     end
 
-    # `strict:` is an ActiveModel SHARED option, not a validator — the push-down must leave it intact
-    # rather than normalize it into an options hash (which would raise a bare `TypeError` at
-    # strict-raise time instead of the strict exception).
-    it "preserves strict: under a tolerance flag (raises the strict exception, not a TypeError)" do
+    # A declaration-level gate is an ActiveModel SHARED option, not a validator — the push-down must
+    # leave it intact rather than normalize it into an options hash (`if: { with: :flag, allow_nil: }`,
+    # which the callback machinery cannot resolve, so the gate would stop deciding anything).
+    it "preserves a declaration-level gate under a tolerance flag" do
       action = build_axn do
-        expects :num, numericality: true, optional: true, strict: true
+        expects :num, numericality: true, optional: true, if: :check?
+        def check? = true
         def call; end
       end
 
       expect(action.call.ok?).to be true # omittable (tolerance intact)
       result = action.call(num: "nope")
-      expect(result.ok?).to be false
-      expect(result.exception).to be_a(ActiveModel::StrictValidationFailed)
+      expect(result.ok?).to be false # the gate still resolves, so the check still runs
+      expect(result.exception).to be_a(Axn::InboundValidationError)
 
-      # The restored strict: is a shared option, not a validator — reflection must not read it as a
+      # The restored gate is a shared option, not a validator — reflection must not read it as a
       # nil-rejecting validator and mark the (omittable) field required.
       expect(action.input_schema[:required] || []).not_to include(:num, "num")
       expect(action.input_schema.dig(:properties, :num, :type)).to contain_exactly("number", "null")
@@ -138,7 +139,8 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
 
     it "declares an optional field carrying only a shared option (no real validator) without crashing" do
       action = build_axn do
-        expects :note, optional: true, strict: true
+        expects :note, optional: true, if: :check?
+        def check? = true
         def call; end
       end
 
