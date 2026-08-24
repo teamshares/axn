@@ -219,6 +219,73 @@ RSpec.describe Axn::Validators::OfValidator do
       end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
     end
 
+    # The COMPLETE axis-pair behaviour, as a truth table over every combination of the six things an axis can
+    # be. Three consecutive review rounds found prose asserting a condition narrower or simply different from
+    # the real one — each time about which pair lands on which refusal — so the dimensions are enumerated here
+    # and the whole product is held, rather than the cases anyone happened to think of. The input space is
+    # genuinely closed: an axis is absent, `nil`, an empty union, a usable type, an unusable token, or a bag.
+    #
+    # Read down for `keys:`, across for `values:`. What it pins, beyond each individual cell: the "name the
+    # axis you are constraining" refusal belongs to the top-left 2x2 ALONE — a bag with nothing to point at —
+    # and every other pair names an axis the author actually wrote.
+    describe "which refusal each axis pair lands on" do
+      absent = Object.new
+      axis_values = { "absent" => absent, "nil" => nil, "empty union" => [], "a class" => Symbol,
+                      "a non-class" => "", "a bag" => { klass: Symbol } }
+
+      # Derived from the raised message rather than restated per cell, so a cell cannot silently be pinned to
+      # wording that no longer exists. An instance method rather than a group-scope lambda, since `build_axn`
+      # is only available from within an example.
+      def classify(axis_pair)
+        build_axn { expects :a, type: Hash, of: axis_pair }
+        "declares"
+      rescue ArgumentError => e
+        case e.message
+        when %r{\Aof: requires keys: and/or values:} then "name-an-axis"
+        when /\Aof: (keys|values): names an empty union/ then "empty-union(#{Regexp.last_match(1)})"
+        when /\Aof: (keys|values): must name a type/ then "not-a-type(#{Regexp.last_match(1)})"
+        else "unexpected: #{e.message[0, 60]}"
+        end
+      end
+
+      {
+        %w[absent absent] => "name-an-axis", %w[absent nil] => "name-an-axis",
+        ["absent", "empty union"] => "empty-union(values)",
+        ["absent", "a class"] => "declares", ["absent", "a non-class"] => "not-a-type(values)",
+        ["absent", "a bag"] => "declares",
+        %w[nil absent] => "name-an-axis", %w[nil nil] => "name-an-axis",
+        ["nil", "empty union"] => "empty-union(values)",
+        ["nil", "a class"] => "not-a-type(keys)", ["nil", "a non-class"] => "not-a-type(keys)",
+        ["nil", "a bag"] => "not-a-type(keys)",
+        ["empty union", "absent"] => "empty-union(keys)", ["empty union", "nil"] => "empty-union(keys)",
+        ["empty union", "empty union"] => "empty-union(keys)",
+        ["empty union", "a class"] => "empty-union(keys)",
+        ["empty union", "a non-class"] => "empty-union(keys)",
+        ["empty union", "a bag"] => "empty-union(keys)",
+        ["a class", "absent"] => "declares", ["a class", "nil"] => "not-a-type(values)",
+        ["a class", "empty union"] => "empty-union(values)",
+        ["a class", "a class"] => "declares", ["a class", "a non-class"] => "not-a-type(values)",
+        ["a class", "a bag"] => "declares",
+        ["a non-class", "absent"] => "not-a-type(keys)", ["a non-class", "nil"] => "not-a-type(keys)",
+        ["a non-class", "empty union"] => "not-a-type(keys)",
+        ["a non-class", "a class"] => "not-a-type(keys)",
+        ["a non-class", "a non-class"] => "not-a-type(keys)",
+        ["a non-class", "a bag"] => "not-a-type(keys)",
+        ["a bag", "absent"] => "declares", ["a bag", "nil"] => "not-a-type(values)",
+        ["a bag", "empty union"] => "empty-union(values)",
+        ["a bag", "a class"] => "declares", ["a bag", "a non-class"] => "not-a-type(values)",
+        ["a bag", "a bag"] => "declares"
+      }.each do |(keys_name, values_name), expected|
+        it "answers keys: #{keys_name} with values: #{values_name} as #{expected}" do
+          of = {}
+          of[:keys] = axis_values.fetch(keys_name) unless axis_values.fetch(keys_name).equal?(absent)
+          of[:values] = axis_values.fetch(values_name) unless axis_values.fetch(values_name).equal?(absent)
+
+          expect(classify(of)).to eq(expected)
+        end
+      end
+    end
+
     # The one rule every `of:` axis is held to (PRO-3170): it must name at least one class, and everything it
     # names must be a class. Three positions spell the axis differently — `klass:` inside a bag, `keys:` and
     # `values:` on a map — so the refusals differ in which key they tell the author to edit, and in nothing
