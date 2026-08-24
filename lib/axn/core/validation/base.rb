@@ -22,9 +22,9 @@ module Axn
       # ActiveModel's own two, subclassed for the positional reading (see WholeValueClusivity). Listed here for
       # the same reason the axn-only validators are: `validates` resolves a validator by `const_get` from the
       # class being declared on, so a constant here shadows `ActiveModel::Validations::InclusionValidator` for
-      # axn's one-off validator classes — top-level field, subfield and shape member; an `of:` position cannot
-      # carry one today, since the bag's whitelist refuses `inclusion:` (PRO-3193 is where that changes) — and
-      # for nothing else the consuming app declares.
+      # axn's one-off validator classes — top-level field, subfield, shape member, and every `of:` position
+      # (PRO-3193), which `Validation::ContainerContents` inherits from `Fields` and so picks up for free —
+      # and for nothing else the consuming app declares.
       InclusionValidator = Validators::InclusionValidator
       ExclusionValidator = Validators::ExclusionValidator
 

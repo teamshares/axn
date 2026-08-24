@@ -277,7 +277,11 @@ RSpec.describe Axn::Validators::OfValidator do
       expect { build_axn { expects :rows, type: Array, of: { klass: String, wat: 1 } } }
         .to raise_error(ArgumentError) do |error|
           expect(error.message).to include("(supported: klass:, of:, shape:, message:")
-          expect(error.message).not_to include("on:")
+          # Asserted against the LIST rather than the whole message: several admitted validators END in "on:"
+          # (`comparison:`, `exclusion:`, `inclusion:`), so a substring check answers yes for the wrong reason.
+          # The claim is that the key `on:` is not one of the listed options.
+          listed = error.message[/\(supported: (.+)\)\z/, 1].split(", ")
+          expect(listed).not_to include("on:")
         end
     end
 
