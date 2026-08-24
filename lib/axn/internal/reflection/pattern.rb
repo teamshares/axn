@@ -50,14 +50,21 @@ module Axn
         A_QUANTIFIER = /\{\d+(?:,\d*)?\}/
         private_constant :A_QUANTIFIER
 
+        # The flags that change what the source MEANS, and so have no faithful `pattern` translation: `i` and
+        # `x` have no spelling there at all, Ruby's `m` is ECMA's `s` rather than its `m`, and `n`
+        # (NOENCODING) matches BYTES rather than characters where a `pattern` is a Unicode string.
+        #
+        # `FIXEDENCODING` is deliberately absent. Ruby sets it on ANY non-ASCII regex, so refusing it refused
+        # every accented or non-Latin pattern — and it pins the regex's encoding without saying anything about
+        # matching, which a Unicode `pattern` carries faithfully.
+        SEMANTIC_FLAGS = ::Regexp::IGNORECASE | ::Regexp::EXTENDED | ::Regexp::MULTILINE | ::Regexp::NOENCODING
+
         module_function
 
         # The ECMA-262 pattern for a declared `format:` entry's regex, or nil to emit nothing.
         def ecma_source(regexp)
           return nil unless Internal::Identity.kind?(regexp, ::Regexp)
-          # Any flag at all: `i` and `x` have no `pattern` spelling, Ruby's `m` is ECMA's `s` rather than its
-          # `m`, and the encoding bits are not worth reasoning about for the sake of a rare declaration.
-          return nil unless regexp.options.zero?
+          return nil unless regexp.options.nobits?(SEMANTIC_FLAGS)
 
           source = regexp.source
           return nil if RUBY_ONLY_CONSTRUCTS.match?(source)

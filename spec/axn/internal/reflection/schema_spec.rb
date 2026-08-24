@@ -5850,6 +5850,29 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(prop_for(&declaration)).not_to have_key(:pattern)
       end
 
+      # Ruby sets FIXEDENCODING on ANY non-ASCII regex, so gating on `options.zero?` refused every accented
+      # or non-Latin pattern — a plausible declaration, not an exotic one. That bit pins the regex's encoding
+      # and says nothing about matching semantics, and a JSON Schema pattern is a Unicode string, so it
+      # translates faithfully. `/n` (NOENCODING) is the one encoding flag that DOES change semantics — it
+      # matches bytes rather than characters — and still stands down.
+      it "emits a non-ASCII pattern, whose FIXEDENCODING bit is not a semantic flag" do
+        prop = prop_for { expects :s, type: String, format: { with: /\A[é-ü]+\z/ } }
+
+        expect(prop).to include(pattern: "^[é-ü]+$")
+      end
+
+      it "agrees with the runtime on a non-ASCII pattern" do
+        action = build_axn { expects :s, type: String, format: { with: /\Aé+\z/ } }
+
+        expect(action.call(s: "éé")).to be_ok
+        expect(action.call(s: "ab")).not_to be_ok
+        expect(action.input_schema[:properties][:s]).to include(pattern: "^é+$")
+      end
+
+      it "stands down on /n, the one encoding flag that changes matching semantics" do
+        stands_down { expects :s, type: String, format: { with: Regexp.new("a", Regexp::NOENCODING) } }
+      end
+
       it "stands down on a case-insensitive regex, which a pattern cannot express" do
         stands_down { expects :s, type: String, format: { with: /abc/i } }
       end
