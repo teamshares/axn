@@ -3256,14 +3256,26 @@ module Axn
         # reading: closed it enforces nothing, open it rejects everything.
         # The option keys each value-comparing validator reads its literals from. One judgment serves all three
         # because they break the same way. `other_than` is deliberately ABSENT from comparison's list: it is an
-        # inverted operator, so a wrong-type bound makes the check always PASS rather than never — measured,
-        # `comparison: { other_than: 1 }` accepts `["a"]` — which is vacuous rather than unsatisfiable, the same
-        # reason `exclusion:` is not judged here either. The remaining five are ActiveModel's own non-inverted
-        # checks (activemodel 7.2.2.2, comparison.rb COMPARE_CHECKS).
+        # inverted operator, so a wrong-type bound makes the check ActiveModel runs always PASS rather than
+        # never (`["a"] != 1` is true) — vacuous rather than unsatisfiable, the same reason `exclusion:` is not
+        # here either. Both are judged by `VACUOUS_CONSTRAINT_KEYS` below, on the opposite verdict. The
+        # remaining five are ActiveModel's own non-inverted checks (activemodel 7.2.2.2, comparison.rb
+        # COMPARE_CHECKS).
         VALUE_CONSTRAINT_KEYS = {
           inclusion: %i[in within],
           acceptance: %i[accept],
           comparison: %i[equal_to greater_than greater_than_or_equal_to less_than less_than_or_equal_to],
+        }.freeze
+
+        # The INVERTED half of the same map: the option keys whose literals decide when a check FAILS rather
+        # than when it passes, so wrong-type literals make the check always pass instead of never. Judged by
+        # `_reject_vacuous_value_constraints!` with the identical readers and the opposite verdict.
+        #
+        # `exclusion:` names a set exactly as `inclusion:` does. `comparison:` contributes only `other_than`,
+        # ActiveModel's one inverted operator; its other five belong above.
+        VACUOUS_CONSTRAINT_KEYS = {
+          exclusion: %i[in within],
+          comparison: %i[other_than],
         }.freeze
 
         # AcceptanceValidator's own default set, used when an entry names none (`acceptance: true`) — so
@@ -3311,6 +3323,81 @@ module Axn
                   "express it as `validate: ->(value) { ... }` (a per-element spelling inside `of:` is not " \
                   "supported yet — PRO-3193)."
           end
+        end
+
+        # An `exclusion:` set — or an `other_than:` bound — no value of the declared type could ever be, which
+        # makes the check impossible to FAIL. The author wrote a constraint, the class defines cleanly, and
+        # every value passes: "the strongest form of a silently ignored option", in
+        # `_reject_validator_context_scope!`'s words. `type: Array, exclusion: { in: ["admin"] }` is the
+        # spelling that reaches here most often — no Array is the String "admin", so the set forbids nothing
+        # any Array could be, and `["admin"]` passes the check it names.
+        #
+        # The mirror of the guard above, and deliberately not folded into it: unsatisfiable asks whether any
+        # value can PASS, vacuous whether any can FAIL, and the two verdicts are opposite on the same evidence.
+        # So the literals, the readers and the closed equality world are shared outright, and only the verdict
+        # is negated — a set is vacuous exactly when its `inclusion:` mirror would be unsatisfiable.
+        #
+        # Two doctrine differences follow from the inversion, both of them the reason this is its own method:
+        #
+        # TOLERANCE is not consulted at all, where the satisfiability guard stands down under it. A tolerated
+        # nil is a PASSING value, which is evidence about satisfiability and says nothing about vacuity —
+        # tolerance only ever adds passing values, so it cannot make a check something fails, and ignoring it
+        # can only under-restrict. It does leave one hole knowingly: `allow_blank: true` with a blank literal
+        # (`exclusion: { in: [[]] }`) is vacuous, because the blank the set forbids is the one the flag skips,
+        # and the literal alone cannot show that.
+        #
+        # A GATE does not rescue one either, but for a simpler reason than above: `exclusion:` emits nothing
+        # into the schema, so there is no static-maximal node to argue from. A gate can only remove the check.
+        # Closed it enforces nothing, open it enforces nothing — there is no reading under which the
+        # declaration means what it says.
+        def _reject_vacuous_value_constraints!(validations, where:)
+          klasses = _judgeable_type_klasses(validations[:type])
+          return if klasses.empty?
+
+          entries = Axn::Validation::Base.validator_entries(validations)
+          VACUOUS_CONSTRAINT_KEYS.each do |key, option_keys|
+            entry = entries[key]
+            next unless entry
+
+            literals = _vacuous_constraint_literals(key, entry, option_keys, klasses)
+            next if literals.nil?
+            next if _any_literal_may_satisfy?(literals, klasses)
+
+            raise ArgumentError,
+                  "#{key}: on #{where} enforces nothing — no value of type " \
+                  "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')} could be one of the " \
+                  "literals it forbids, so every value passes. A validator constrains the value at the " \
+                  "position it is declared at: forbid literals of the declared type, and for a constraint on " \
+                  "a container's CONTENTS express it as `validate: ->(value) { ... }` (a per-element spelling " \
+                  "inside `of:` is not supported yet — PRO-3193)."
+          end
+        end
+
+        # The literals ONE inverted entry will be judged against, or nil for an entry that cannot be judged.
+        # Both routes delegate to the readers the satisfiability guard already uses, so neither validator grows
+        # a second way to read the same option.
+        #
+        # `exclusion:` names its set exactly where `inclusion:` does, Range judgment included: a Range is
+        # decided by `<=>`, which is nil across unrelated classes, so `(1..5)` forbids no Array however the
+        # array is spelled — and at a SCALAR position it stands down, since `(1.0..5.0).cover?(3)` is true.
+        #
+        # `other_than:` is judged at EVERY type, where the five non-inverted bounds are judged only at a
+        # container position. That gate exists because `<=>` decides those operators and a `Comparable` value
+        # object's `<=>` routinely accepts another class, which no ancestry test predicts. `other_than` is
+        # `!=` (activemodel 7.2.2.2, comparison.rb COMPARE_CHECKS), and equality has no such hole here: the
+        # closed world stands down on any class whose `==` axn does not vouch for, so the gate would only cost
+        # coverage — `type: String, comparison: { other_than: 1 }` is as vacuous as the container spelling.
+        # The bound is read by `key?`, since `other_than: false` is a real bound, and a Symbol or Proc stands
+        # down because ActiveModel resolves it against the record per call (`ResolveValue`).
+        def _vacuous_constraint_literals(key, entry, option_keys, klasses)
+          return _judgeable_set_members(entry, klasses) if key == :exclusion
+
+          opts = Axn::Validation::Base.validator_entry_options(entry)
+          bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
+          return nil if bounds.empty?
+          return nil if bounds.any? { |bound| bound.is_a?(::Symbol) || bound.is_a?(::Proc) }
+
+          bounds
         end
 
         # Classes whose instances compare and equate ACROSS the family, so a literal of one can satisfy a
@@ -3402,6 +3489,15 @@ module Axn
         def _constraint_satisfiable?(key, literals, klasses)
           return klasses.any? { |klass| literals.all? { |literal| _literal_may_satisfy?(literal, klass) } } if key == :comparison
 
+          _any_literal_may_satisfy?(literals, klasses)
+        end
+
+        # The SET quantifier on its own, because both guards ask for it and neither owns it: one literal
+        # matching one declared branch is all a set-membership check needs to be reachable. The satisfiability
+        # guard reads it as "some value can pass"; the vacuity guard negates it, reading "no value can fail".
+        # An empty literal list answers false either way — nothing to match — which is what makes
+        # `inclusion: { in: [] }` unsatisfiable and `exclusion: { in: [] }` vacuous by the same line.
+        def _any_literal_may_satisfy?(literals, klasses)
           literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
         end
 
@@ -3660,6 +3756,11 @@ module Axn
           # declaration KWARGS at this point — the push-down that writes them into each entry has not run yet.
           _reject_unsatisfiable_value_constraints!(validations, where: _declared_fields_label(fields),
                                                                 tolerance: { allow_nil:, allow_blank: })
+
+          # Its mirror, and no tolerance argument: a tolerated value is one more value that PASSES, which
+          # cannot rescue a check nothing fails. Second, so a declaration broken both ways is reported as the
+          # unsatisfiable contract — the defect that rejects every call, ahead of the one that rejects none.
+          _reject_vacuous_value_constraints!(validations, where: _declared_fields_label(fields))
 
           _derive_raw_shape_container!(validations)
 

@@ -777,20 +777,23 @@ module Axn
           # rule a field's are. The member's own BAG-level `on:` is refused earlier, by
           # `_check_member_option_keys!` above, with the reason particular to a member.
           #
-          # All three are the field path's own guards, called with the member's label where a field passes its
-          # own: an entry whose check cannot run, one that cannot MEAN anything at a container position, and one
-          # comparing against literals no value of the declared type could be. The positional rule is a rule
-          # about positions, and a member is one — so a raw member is held to it exactly as the block form and a
-          # top-level field are, rather than declaring cleanly and emitting the unsatisfiable node.
+          # All four are the field path's own guards, called with the member's label where a field passes its
+          # own: an entry whose check cannot run, one that cannot MEAN anything at a container position, one
+          # comparing against literals no value of the declared type could be, and one forbidding literals no
+          # value of the declared type could be. The positional rule is a rule about positions, and a member is
+          # one — so a raw member is held to it exactly as the block form and a top-level field are, rather
+          # than declaring cleanly and emitting the unsatisfiable node.
           #
           # Tolerance comes off the member's OWN bag: nothing pushes a field's kwargs into it on this route, and
           # `allow_nil:`/`allow_blank:` are legal there (KNOWN_MEMBER_VALIDATION_KEYS), under which nil passes
-          # and the emitted node stays satisfiable.
+          # and the emitted node stays satisfiable. The vacuity guard takes none, here as everywhere: a
+          # tolerated value passes, and no amount of passing makes a check something can fail.
           member_where = "shape member `#{_shape_member_label(name)}`"
           _reject_validator_context_scope!(copy, where: member_where)
           _reject_container_position_validators!(copy, where: member_where)
           _reject_unsatisfiable_value_constraints!(copy, where: member_where,
                                                          tolerance: copy.slice(:allow_nil, :allow_blank))
+          _reject_vacuous_value_constraints!(copy, where: member_where)
           # Last, where the block form checks it too (after the same canonicalization), so a declaration failing
           # both is reported by the same one on either route. A raw member's `coerce:` used to reach ActiveModel
           # as a validator (`Unknown validator: 'CoerceValidator'` on every call) while `type: { coerce: true }`

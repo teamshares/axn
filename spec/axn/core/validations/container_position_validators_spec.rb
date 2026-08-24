@@ -58,14 +58,15 @@ RSpec.describe "a validator at a container position" do
       expect(action.call(tags: %w[ok]).ok?).to be(true)
     end
 
-    it "treats the array as the value, so an array of forbidden strings is not itself forbidden" do
-      action = build_axn { expects :tags, type: Array, exclusion: { in: %w[bad] } }
+    it "does not distribute the set over an Array's elements" do
+      # The mirror of the inclusion example above: one member is the array that matches whole-value, one is
+      # the String an element-wise reading would have forbidden. The second assertion is what fails under a
+      # distributing reading. A set holding ONLY the String is refused at declaration now — see the vacuity
+      # guard below — so the mixed set is what can demonstrate the reading at all.
+      action = build_axn { expects :tags, type: Array, exclusion: { in: [%w[a b], "a"] } }
 
-      # THIS is the behavior change: element-wise, every element was forbidden, so the array was rejected.
-      # Whole-value, the array is not the String "bad", so it passes.
-      expect(action.call(tags: %w[bad]).ok?).to be(true)
-      # Unchanged, and named so nobody mistakes it for evidence: the old `all?` reading passed this too.
-      expect(action.call(tags: %w[ok bad]).ok?).to be(true)
+      expect(action.call(tags: %w[a b]).ok?).to be(false)
+      expect(action.call(tags: %w[a]).ok?).to be(true)
     end
 
     it "is unchanged at a scalar position" do
@@ -477,6 +478,223 @@ RSpec.describe "a validator at a container position" do
     end
   end
 
+  # The mirror of the guard above, and the reason it needed a rule of its own: an INVERTED validator carrying
+  # wrong-type literals does not reject everything, it enforces NOTHING — "the strongest form of a silently
+  # ignored option: the author wrote a check, the class defines cleanly, and every value passes"
+  # (`_reject_validator_context_scope!`). Same literals, same readers, same stand-downs, opposite verdict.
+  describe "a constraint no value of the declared type can FAIL is refused" do
+    it "refuses the set the positional rule stopped enforcing, naming the position and the type" do
+      expect { build_axn { expects :roles, type: Array, exclusion: { in: %w[admin] } } }
+        .to raise_error(ArgumentError,
+                        /exclusion: on :roles enforces nothing — no value of type Array/)
+    end
+
+    it "refuses the bare-Array shorthand identically" do
+      expect { build_axn { expects :roles, type: Array, exclusion: %w[admin] } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    it "refuses an empty forbidden set, the mirror of the empty inclusion: set" do
+      expect { build_axn { expects :roles, type: Array, exclusion: { in: [] } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    # NOT container-only, for the reason the satisfiability guard is not: the defect has the same shape at
+    # every type, and scoping to containers would leave it open everywhere else.
+    it "refuses a scalar declaration whose forbidden set holds nothing of the declared type" do
+      expect { build_axn { expects :n, type: Integer, exclusion: { in: %w[1 2] } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    it "refuses a Range set at a container position, where nothing can be a member" do
+      expect { build_axn { expects :nums, type: Array, of: Integer, exclusion: { in: 1..5 } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    it "refuses a wrong-type other_than: bound, the operator the satisfiability guard left for this one" do
+      expect { build_axn { expects :tags, type: Array, comparison: { other_than: 1 } } }
+        .to raise_error(ArgumentError, /comparison: on :tags enforces nothing/)
+    end
+
+    # `other_than:` is `!=` (activemodel 7.2.2.2, comparison.rb COMPARE_CHECKS), not `<=>` — so it is judged
+    # at EVERY type, where the five non-inverted bounds are judged only at a container position. That gate
+    # exists because a `Comparable` value object's `<=>` routinely accepts another class; equality has no such
+    # hole, since the closed world already stands down on any class whose `==` axn does not vouch for.
+    it "refuses a wrong-type other_than: bound at a scalar position too" do
+      expect { build_axn { expects :name, type: String, comparison: { other_than: 1 } } }
+        .to raise_error(ArgumentError, /comparison:/)
+    end
+
+    it "refuses a vacuous bound riding alongside a satisfiable one, which the other guard passes" do
+      # One entry, two operators, one verdict from each guard: `equal_to: ["a"]` is satisfiable, so the
+      # satisfiability guard admits the entry, and `other_than: 1` is what makes it enforce less than it says.
+      expect { build_axn { expects :tags, type: Array, comparison: { equal_to: ["a"], other_than: 1 } } }
+        .to raise_error(ArgumentError, /comparison: on :tags enforces nothing/)
+    end
+
+    it "reaches a subfield and a block-form member, which share the field's own call site" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :roles, on: :payload, type: Array, exclusion: { in: %w[admin] }
+        end
+      end.to raise_error(ArgumentError, /exclusion:/)
+
+      expect { build_axn { expects(:payload, type: Hash) { field :roles, type: Array, exclusion: { in: %w[admin] } } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    it "reaches an exposure, where a vacuous check is as silent as on an input" do
+      expect { build_axn { exposes :roles, type: Array, exclusion: { in: %w[admin] } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    it "admits a set whose members ARE of the declared type" do
+      expect { build_axn { expects :tags, type: Array, exclusion: { in: [%w[bad]] } } }.not_to raise_error
+      expect { build_axn { expects :n, type: Integer, exclusion: { in: [1, 2] } } }.not_to raise_error
+    end
+
+    it "admits a set where only ONE member could match — one failing value is all it takes" do
+      expect { build_axn { expects :n, type: Integer, exclusion: { in: ["1", 2] } } }.not_to raise_error
+    end
+
+    it "admits a union type any member of which matches" do
+      expect { build_axn { expects :f, type: [String, Array], exclusion: { in: %w[a b] } } }.not_to raise_error
+    end
+
+    it "admits a declared SUPERTYPE, whose admitted values include the forbidden member" do
+      # `type: Object` admits the String "admin" itself, so the set really does forbid something.
+      action = build_axn { expects :role, type: Object, exclusion: { in: %w[admin] } }
+
+      expect(action.call(role: "admin").ok?).to be(false)
+      expect(action.call(role: %w[admin]).ok?).to be(true)
+    end
+
+    it "admits a cross-family numeric member, which really does compare" do
+      action = build_axn { expects :n, type: Float, exclusion: { in: [1] } }
+
+      expect(action.call(n: 1.0).ok?).to be(false)
+    end
+
+    it "admits a nil-admitting union whose set forbids nil" do
+      action = build_axn { expects :roles, type: [Array, NilClass], exclusion: { in: [nil] } }
+
+      expect(action.call(roles: nil).ok?).to be(false)
+      expect(action.call(roles: %w[a]).ok?).to be(true)
+    end
+
+    it "refuses two core value classes that do not cross-equate, where the near-miss reads as a match" do
+      # `Set.new([1]) == [1]` and `"admin" == :admin` are both false, so neither set forbids anything of the
+      # declared type — the spellings most likely to be written expecting leniency across the pair.
+      expect { build_axn { expects :s, type: Set, exclusion: { in: [[1]] } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+      expect { build_axn { expects :role, type: String, exclusion: { in: %i[admin] } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    it "stands down on a model: field, whose declared type is not a judgeable token" do
+      stub_const("Widget", Struct.new(:id))
+
+      expect { build_axn { expects :widget, model: Widget, exclusion: { in: [1] } } }.not_to raise_error
+    end
+
+    it "stands down on a dynamically-sourced set, which reflection may not read" do
+      expect { build_axn { expects :tags, type: Array, exclusion: { in: :forbidden_tags } } }.not_to raise_error
+      expect { build_axn { expects :tags, type: Array, exclusion: { in: -> { [] } } } }.not_to raise_error
+    end
+
+    it "stands down on an Array-subclass set, judged by the same exact-class rule reflection uses" do
+      subclass = Class.new(Array)
+      set = subclass.new
+      set << "a"
+
+      expect { build_axn { expects :tags, type: Array, exclusion: { in: set.freeze } } }.not_to raise_error
+    end
+
+    it "stands down on a Range set at a scalar position, where cross-type comparison really works" do
+      expect { build_axn { expects :n, type: Integer, exclusion: { in: 1..5 } } }.not_to raise_error
+      expect { build_axn { expects :n, type: Integer, exclusion: { in: 1.0..5.0 } } }.not_to raise_error
+    end
+
+    it "stands down on an undeclared type and on a pseudo-type token" do
+      expect { build_axn { expects :f, exclusion: { in: %w[a b] } } }.not_to raise_error
+      expect { build_axn { expects :f, type: :params, exclusion: { in: %w[a b] } } }.not_to raise_error
+    end
+
+    it "stands down on a Symbol or Proc other_than: bound, which ActiveModel resolves per call" do
+      expect { build_axn { expects :tags, type: Array, comparison: { other_than: :forbidden } } }.not_to raise_error
+      expect { build_axn { expects :tags, type: Array, comparison: { other_than: ->(_r) { ["a"] } } } }.not_to raise_error
+    end
+
+    it "stands down outside the closed equality world, whose == belongs to the classes involved" do
+      # `Money#==` comes from `Comparable`, so a Money really can equal the Integer 0 and the check really
+      # can fail. No ancestry test predicts that, which is why the pair is not judged at all.
+      money = Class.new do
+        include Comparable
+        attr_reader :amount
+
+        def initialize(amount) = @amount = amount
+        def <=>(other) = amount <=> (other.is_a?(self.class) ? other.amount : other)
+      end
+      stub_const("Money", money)
+
+      expect(Money.new(0) == 0).to be(true) # the runtime truth the guard must not contradict
+
+      expect { build_axn { expects :f, type: Money, comparison: { other_than: 0 } } }.not_to raise_error
+      expect { build_axn { expects :f, type: Money, exclusion: { in: [0] } } }.not_to raise_error
+    end
+
+    it "stands down for a SUBCLASS of a core value class, whose equality is its own" do
+      stub_const("SubArr", Class.new(Array))
+
+      expect { build_axn { expects :f, type: SubArr, exclusion: { in: ["a"] } } }.not_to raise_error
+    end
+
+    # Tolerance only ADDS passing values, so it can never make a check something fails — where the
+    # satisfiability guard stands down under it (nil is a passing value), this one does not consult it at all.
+    it "refuses under a tolerance flag, which cannot rescue a check nothing fails" do
+      expect { build_axn { expects :roles, type: Array, exclusion: { in: %w[admin] }, optional: true } }
+        .to raise_error(ArgumentError, /exclusion:/)
+      expect { build_axn { expects :roles, type: Array, exclusion: { in: %w[admin], allow_nil: true } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+      expect { build_axn { expects :roles, type: Array, exclusion: { in: %w[admin], allow_blank: true } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    it "refuses a gated entry too — a gate removes the check, it does not give the set a reading" do
+      # Closed, the check enforces nothing; open, it enforces nothing. There is no reading under which the
+      # declaration means what it says.
+      expect { build_axn { expects :roles, type: Array, exclusion: { in: %w[admin], if: :flag? } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+      expect { build_axn { expects :roles, type: Array, exclusion: { in: %w[admin] }, if: :flag? } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    it "stands down on a length: bound that admits every size" do
+      # `Float::INFINITY` is ActiveModel's own spelling for "no ceiling" and `minimum: 0` is vacuous by the
+      # identical test — both are how a bound reads when it comes from a constant or generated code, so
+      # refusing them would refuse declarations that work exactly as written.
+      expect { build_axn { expects :tags, type: Array, length: { maximum: Float::INFINITY } } }.not_to raise_error
+      expect { build_axn { expects :tags, type: Array, length: { minimum: 0 } } }.not_to raise_error
+    end
+
+    it "stands down on a format: pattern that matches everything" do
+      # The class of total patterns is unbounded, so detecting one means a shortlist of BROKEN patterns — an
+      # open-world exception list, which is the enumeration `JUDGEABLE_EQUALITY_CLASSES` records getting
+      # wrong four times over. `/.*/` is also a deliberate "any string" idiom.
+      expect { build_axn { expects :s, type: String, format: /.*/ } }.not_to raise_error
+      expect { build_axn { expects :s, type: String, format: // } }.not_to raise_error
+    end
+
+    it "stands down on a non-inverted set that covers the declared type" do
+      # Vacuity for `inclusion:`/`acceptance:` needs the declared type's WHOLE value space to sit inside the
+      # set, which axn can enumerate only for the three singleton types — a rule that would reach almost
+      # nothing, at the cost of a second way to read a set.
+      expect { build_axn { expects :flag, type: TrueClass, acceptance: true } }.not_to raise_error
+      expect { build_axn { expects :flag, type: NilClass, inclusion: { in: [nil] } } }.not_to raise_error
+    end
+  end
+
   describe "comparison: and acceptance: are judged by their literals, not refused by key" do
     it "refuses a comparison bound of the wrong type" do
       # `["a"] > 1` raises NoMethodError on every call today, so refusing it at declaration is a strict
@@ -551,11 +769,14 @@ RSpec.describe "a validator at a container position" do
       expect(action.call(tags: ["a"]).ok?).to be(true)
     end
 
-    it "declares other_than: with a wrong-type bound, because an inverted operator is vacuous, not unsatisfiable" do
+    it "does not judge other_than: for satisfiability, because an inverted operator cannot be unsatisfiable" do
       # A wrong-type `other_than:` bound makes the check always PASS (`["a"] != 1` is true), the opposite of
-      # unsatisfiable, so this must NOT be refused.
-      action = build_axn { expects :tags, type: Array, comparison: { other_than: 1 } }
-      expect(action.call(tags: ["a"]).ok?).to be(true)
+      # unsatisfiable — so THIS guard leaves it alone and the vacuity guard below is what refuses it. A bound
+      # of the declared type is judged by neither, and enforces.
+      action = build_axn { expects :tags, type: Array, comparison: { other_than: ["a"] } }
+
+      expect(action.call(tags: ["a"]).ok?).to be(false)
+      expect(action.call(tags: ["b"]).ok?).to be(true)
     end
 
     it "refuses acceptance: whose effective set holds nothing of the declared type" do
@@ -615,10 +836,10 @@ RSpec.describe "a validator at a container position" do
   end
 
   # A RAW `shape:` member — a bag handed straight to the declaration walk — never reaches
-  # `_parse_field_validations`, so both positional guards are mirrored onto the member walk. Without the
+  # `_parse_field_validations`, so the positional guards are mirrored onto the member walk. Without the
   # mirror the block form raised while the identical raw member declared cleanly and emitted the very
   # unsatisfiable node the rule exists to eliminate.
-  describe "both positional guards reach a raw shape: member" do
+  describe "the positional guards reach a raw shape: member" do
     let(:member_struct) { Struct.new(:field, :validations) }
 
     def raw_shape(validations)
@@ -648,6 +869,13 @@ RSpec.describe "a validator at a container position" do
         .to raise_error(ArgumentError, /comparison: on shape member `x` can never match/)
     end
 
+    it "refuses a vacuous exclusion: and other_than: on a member too" do
+      expect { raw_shape({ type: Array, exclusion: { in: %w[a] } }) }
+        .to raise_error(ArgumentError, /exclusion: on shape member `x` enforces nothing/)
+      expect { raw_shape({ type: Array, comparison: { other_than: 1 } }) }
+        .to raise_error(ArgumentError, /comparison: on shape member `x` enforces nothing/)
+    end
+
     it "still declares a member whose set IS of the declared type" do
       expect { raw_shape({ type: String, inclusion: { in: %w[a] } }) }.not_to raise_error
       expect { raw_shape({ type: Array, inclusion: { in: [%w[a]] } }) }.not_to raise_error
@@ -675,6 +903,15 @@ RSpec.describe "a validator at a container position" do
     it "refuses regardless of tolerance for the container-position guard, which tolerance cannot rescue" do
       expect { raw_shape({ type: Array, format: { with: /a/ }, allow_nil: true }) }
         .to raise_error(ArgumentError, /format: on shape member `x`/)
+    end
+
+    it "refuses regardless of tolerance for the vacuity guard, which tolerance cannot rescue either" do
+      expect { raw_shape({ type: Array, exclusion: { in: %w[a] }, allow_nil: true }) }
+        .to raise_error(ArgumentError, /exclusion: on shape member `x`/)
+    end
+
+    it "still declares a member whose forbidden set IS of the declared type" do
+      expect { raw_shape({ type: Array, exclusion: { in: [%w[a]] } }) }.not_to raise_error
     end
 
     # `of: { values: { klass: Hash, shape: { members: [...] } } }` is the only spelling a map's shaped values
