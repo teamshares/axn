@@ -976,6 +976,20 @@ module Axn
           value.empty?
         end
 
+        # How many elements a literal holds, or nil for a value whose size is not Ruby's own to answer. Decided
+        # by the same OWNERSHIP test `empty_container?` uses, and for the same reason: a `size` a caller wrote
+        # is caller code, which a declaration-time verdict must not run. Read where a declared literal has to be
+        # measured against the sizes a contract admits (the empty-interval guard's inclusion branch).
+        #
+        # The owner read is bound (`NativeMethods.method_owner`); the call that follows it needs no guard,
+        # because the implementation it dispatches is the one whose owner was just established.
+        def container_size(value)
+          owner = Axn::Internal::NativeMethods.method_owner(value, :size)
+          return nil unless owner && native_empty_owner?(owner)
+
+          value.size
+        end
+
         def native_empty_owner?(owner)
           return true if EMPTY_CONTAINER_CLASSES.any? { |klass| klass.equal?(owner) }
           return true if defined?(Set) && ::Set.equal?(owner)
@@ -1880,12 +1894,23 @@ module Axn
           rejects_empty ? 1 : nil
         end
 
-        # The largest size this field's validators admit, or nil when they bound it nowhere. Simpler than the
-        # floor in two ways, both because a ceiling has no interaction with emptiness: only `length:` can name
-        # one (presence and the emptiness axis impose floors, never ceilings), and blank-tolerance cannot
-        # loosen one (an empty value measures 0, which every emittable ceiling admits). A GATED entry is counted
-        # as if its gate were open, the static-maximal policy every constraint here follows.
+        # The largest size this field's validators admit, or nil when they bound it nowhere. Two spellings name
+        # one, and `absence:` is the tighter of them whenever it is live, so it answers first: it rejects every
+        # non-blank value, which leaves size 0 as the only admissible size — the exact statement
+        # `length: { maximum: 0 }` makes. Without it a field carrying `absence:` beside a dropped floor emitted
+        # no ceiling at all, a node LOOSER than the contract it projects.
+        #
+        # Blank-tolerance cannot loosen either one (an empty value measures 0, which every emittable ceiling
+        # admits), and a GATED entry is counted as if its gate were open — the static-maximal policy every
+        # constraint here follows.
+        #
+        # For a String the ceiling is biased STRICTER than the runtime rather than exact: `blank?` covers a
+        # whitespace-only value that `empty?` does not, so `"  "` clears `absence:` and fails `maxLength: 0`.
+        # That is the same asymmetry `presence:` already carries in the other direction (see
+        # `apply_size_constraints!`), and the documented direction for reflection to err in.
         def declared_size_maximum(validations)
+          return 0 if non_blank_value_rejected?(validations)
+
           length = effective_entry_options(validations[:length], shared_validation_options(validations))
           declared = Axn::Validation::Base.declared_length_ceiling(length)
 
@@ -1914,6 +1939,11 @@ module Axn
 
           node.merge(propertyNames: { anyOf: [axis, { enum: shaped.keys.map(&:to_s) }] })
         end
+        # Whether a live `absence:` forbids every non-blank value. Falsy entries are the disabled validators
+        # ActiveModel skips, so they forbid nothing; every other spelling — a bare `true`, an options bag, a
+        # gated one — is counted, since a gate can only relax enforcement on a given call and reflection reads
+        # the maximal contract.
+        def non_blank_value_rejected?(validations) = !!Axn::Validation::Base.validator_entries(validations)[:absence]
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
         # `additionalProperties:` — and a `shape:`'s typed member contracts as `properties:`.
@@ -2956,9 +2986,10 @@ module Axn
         end
 
         # The declaration-wide options every entry of a config rides alongside — the tier the per-entry
-        # judgments resolve against.
+        # judgments resolve against. The slice itself is Validation::Base's one definition, so a judgment made
+        # from a bare validations bag (the declaration guards, before any config exists) reads the same tier.
         def shared_validation_options(validations)
-          validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
+          Axn::Validation::Base.shared_validation_options(validations)
         end
 
         def nil_tolerant_validation?(key, opt, declaration_options) = Axn::Validation::Base.nil_tolerant_validation?(key, opt, declaration_options)

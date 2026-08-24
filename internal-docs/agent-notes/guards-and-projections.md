@@ -78,3 +78,17 @@ fix ran the other way from the schema — the runtime moved to meet the document
 after which the emitted `enum` needed no change at all, and the spelling that produced the unsatisfiable node
 is refused at declaration before any projection exists. When a node cannot be satisfied, suspect the two sides
 disagree about what the validator TARGETS, not about how strict to be.
+
+## …and a contract that admits nothing has no honest projection at all
+
+The corollary above was written from one side: a satisfiable contract emitting an unsatisfiable node. The other side reaches the same place from a broken contract — the DECLARATION admits nothing, so there is no honest node to emit and whatever comes out is a document about a contract that does not exist.
+
+Four spellings turned out to be one shape (PRO-3220): the admissible SIZES form an empty interval, a floor the declaration imposes sitting above a ceiling it also imposes. `absence:` on a typed field, a `length:` ceiling of 0, a `length:` naming `minimum: 3, maximum: 2`, and an `inclusion:` set every member of which the bounds exclude — they differ only in which spelling supplies which bound. Finding the one axis is what turned four detectors into one test, and it is worth looking for before writing the second detector of a family.
+
+Three mechanics that made the single test possible, each an instance of a rule already stated here:
+
+- **Both bounds come from the emitter's own derivations** (`Schema.declared_size_minimum` / `declared_size_maximum`), so what is refused is exactly the pair that would have been emitted. Those two took a `FieldConfig` and were pure functions of its `validations`; widening them to the bag is what let a declaration-time guard read them at all, and is cheaper than the parallel derivation that sank PRO-2877's pulled detectors.
+- **A missing bound was a missing EMISSION first.** `absence:` names size 0 as the only admissible size and emitted nothing, which made the guard blind to it AND left `absence: true, allow_empty: true` advertising a node looser than its contract. Teaching the emitter fixed both — the guard's blindness and the projection defect were one gap seen from two sides.
+- **The guard runs LAST in `_parse_field_validations`**, unlike every other guard there, which reads the author's own spelling. The floor it weighs is one axn itself installs (`_apply_default_presence!`), so it has to judge the settled bag — the same bag the emitter will read.
+
+The stand-downs split along whether the emitted NODE survives, not whether the runtime does. A nil tolerance rescues, because the tolerated nil is a passing value and the node stays satisfiable through its null branch. An `if:`/`unless:` gate does not, because reflection is static-maximal and emits the gated bound anyway — so the runtime is satisfiable while the document is not, which is the original defect wearing a gate.

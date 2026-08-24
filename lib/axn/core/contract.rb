@@ -4162,6 +4162,113 @@ module Axn
           klasses.all? { |klass| NEVER_BLANK_KLASSES.any? { |known| known.equal?(klass) } }
         end
 
+        # A declaration whose admissible SIZES form an empty interval — a floor it imposes sitting above a
+        # ceiling it also imposes, so nothing of the declared type can satisfy it. One test closes what were
+        # four spellings of the same defect (PRO-3220): `absence:` against the non-emptiness floor a typed
+        # field carries by default, a `length:` ceiling of 0 against that same floor, a `length:` naming
+        # `minimum: 3, maximum: 2` in one entry, and an `inclusion:` set whose every member is outside the
+        # interval. They differ only in which spelling supplies which bound.
+        #
+        # Both bounds come from `Reflection::Schema`'s own derivations rather than from a re-reading beside
+        # them — the guard/projection rule in AGENTS.md — so what this refuses is exactly the pair of bounds
+        # that would have been emitted. That is also why an `if:`/`unless:` gate does not stand it down:
+        # reflection is static-maximal, so a gated bound is still emitted, and the node still carries a floor
+        # above its own ceiling.
+        #
+        # A nil tolerance DOES stand it down, and the same reasoning as the value-constraint guard applies: a
+        # tolerated nil is a passing value, and the emitted node stays satisfiable through the null branch its
+        # nullability adds. Asked through `Base.nil_accepted?`, the judgment requiredness and nullability
+        # already turn on, rather than by reading one entry's tolerance keys.
+        def _reject_unsatisfiable_size_interval!(validations, where:)
+          return if Axn::Validation::Base.nil_accepted?(validations)
+
+          minimum = Internal::Reflection::Schema.declared_size_minimum(validations)
+          maximum = Internal::Reflection::Schema.declared_size_maximum(validations)
+
+          _raise_empty_size_interval!(validations, where, minimum, maximum) if minimum && maximum && minimum > maximum
+          _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
+        end
+
+        def _raise_empty_size_interval!(validations, where, minimum, maximum)
+          authored = _size_floor_authored?(validations, minimum)
+          floor_source = authored ? "from `length:`" : "the non-emptiness check a typed field carries by default"
+          remedy = if authored
+                     "Correct the bounds so the floor does not sit above the ceiling."
+                   else
+                     "Widen the ceiling, or drop the floor with `allow_empty: true` (or `presence: false`)."
+                   end
+
+          raise ArgumentError,
+                "#{where} admits no value at all: it requires a size of at least #{minimum} (#{floor_source}) " \
+                "and at most #{maximum} (#{_size_ceiling_source(validations)}), an empty interval — so every " \
+                "value is rejected, and the reflected schema carries a floor above its own ceiling, which no " \
+                "caller can satisfy. #{remedy}"
+        end
+
+        # Whether the AUTHOR's own `length:` supplied the floor, rather than the emptiness axis — which decides
+        # both how the message names the bound and which remedy it offers, since `allow_empty:` moves one floor
+        # and not the other. The floor the emitter derived is what settles it: `declared_size_minimum` prefers
+        # an emittable `length:` floor and falls back to the 1 the non-emptiness axis imposes, so a `length:`
+        # floor that does not equal the derived minimum is one the derivation set aside (a blank-tolerant
+        # entry), leaving the axis to do the talking.
+        def _size_floor_authored?(validations, minimum)
+          declared = Axn::Validation::Base.declared_length_floor(_effective_length_options(validations))
+
+          Axn::Validation::Base.emittable_length_floor?(declared) && declared == minimum
+        end
+
+        # The ceiling's spelling, asked through the emitter's own predicate so the message cannot name one
+        # source while the derivation used the other.
+        def _size_ceiling_source(validations)
+          Internal::Reflection::Schema.non_blank_value_rejected?(validations) ? "from `absence:`" : "from `length:`"
+        end
+
+        # An `inclusion:` set every member of which the size bounds exclude. The same "does any member leave a
+        # value able to satisfy this" question `_reject_unsatisfiable_value_constraints!` asks of the declared
+        # TYPE, asked here of the declared sizes — and a member must clear both, since a member of the wrong
+        # type is rejected whatever its size.
+        #
+        # Only a LITERAL set is judged. A Range's bounds are not its members, so measuring them would answer a
+        # different question; every other unreadable set stands the check down, the direction this guard must
+        # prefer.
+        def _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
+          return if minimum.nil? && maximum.nil?
+
+          klasses = _judgeable_type_klasses(validations[:type])
+          return if klasses.empty?
+
+          entry = Axn::Validation::Base.validator_entries(validations)[:inclusion]
+          return unless entry
+
+          members = Axn::Validation::Base.literal_set_members(entry)
+          return if members.nil? || members.empty?
+          return if members.any? { |member| _member_size_admissible?(member, klasses, minimum, maximum) }
+
+          _raise_size_closed_inclusion_set!(where, minimum, maximum)
+        end
+
+        # Whether ONE set member leaves a value able to satisfy the declaration: of a type the field admits,
+        # and of a size the bounds admit. Type membership reuses the shared literal judgment, which already
+        # stands down on any pair it cannot judge; the size is read through the emitter's ownership test, which
+        # answers nil for a value whose `size` is not Ruby's own — also a stand-down.
+        def _member_size_admissible?(member, klasses, minimum, maximum)
+          return false unless klasses.any? { |klass| _literal_may_satisfy?(member, klass) }
+
+          size = Internal::Reflection::Schema.container_size(member)
+          return true if size.nil?
+
+          (minimum.nil? || size >= minimum) && (maximum.nil? || size <= maximum)
+        end
+
+        def _raise_size_closed_inclusion_set!(where, minimum, maximum)
+          bounds = [("at least #{minimum}" if minimum), ("at most #{maximum}" if maximum)].compact.join(" and ")
+          raise ArgumentError,
+                "inclusion: on #{where} can never match — every value in its set is outside the sizes this " \
+                "declaration admits (#{bounds}), so every value is rejected and the emitted `enum` names " \
+                "nothing the emitted size bounds allow. Widen the size bounds (`allow_empty: true` drops the " \
+                "floor a typed field carries by default), or drop the members the bounds exclude."
+        end
+
         # Classes whose instances compare and equate ACROSS the family, so a literal of one can satisfy a
         # declaration naming another: every Numeric with every other (`1 == 1.0`, `3 > 1.5`,
         # `[1.0].include?(1)`), and the date/time trio, which Rails code mixes routinely. UNRELATED classes do
@@ -4809,6 +4916,11 @@ module Axn
           # answer depends on what they left behind.
           _apply_nil_skip_to_non_type_validators!(validations)
 
+          # LAST, so it judges exactly the bag each config will carry — the same bag the emitter reads its size
+          # bounds out of. Every earlier guard here reads the author's own spelling; this one reads the settled
+          # contract, because the floor it weighs is one axn itself installs (`_apply_default_presence!`).
+          _reject_unsatisfiable_size_interval!(validations, where: _declared_fields_label(fields))
+
           fields.map { |field| [field, validations] }
         end
 
@@ -5061,9 +5173,10 @@ module Axn
         end
 
         # The declaration-wide options every entry of this declaration rides alongside — the tier each per-entry
-        # judgment resolves against.
+        # judgment resolves against. Validation::Base holds the one definition, so the tier a guard here resolves
+        # against and the tier the emitter resolves against cannot drift.
         def _shared_validation_options(validations)
-          validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
+          Axn::Validation::Base.shared_validation_options(validations)
         end
 
         def _raise_emptiness_conflict!(fields, allow_empty:, spelling:, says:)

@@ -78,6 +78,11 @@ module Axn
       # it to a Hash and break strict raising. Reuses AM's own canonical list so the set can't drift.
       def self.shared_validation_option_keys = _validates_default_keys
 
+      # The shared options ONE declaration carries — the tier every per-entry judgment resolves against.
+      # THE single definition, so the emitter, the declaration guards and the nil-axis judgment all read the
+      # same slice of the same bag rather than three copies of it.
+      def self.shared_validation_options(validations) = validations.slice(*shared_validation_option_keys)
+
       # The real VALIDATOR entries in a validations hash — everything that is NOT an ActiveModel shared
       # option (if:/unless:/on:/strict:/allow_blank:/allow_nil:). THE single definition of "is this a
       # validator", shared by the validator-class builder, the gate sweeps, and schema reflection, so
@@ -119,8 +124,7 @@ module Axn
         # The shared options are stripped from the ENTRY set but still govern how each entry runs, so they are
         # handed to the per-entry judgment rather than discarded: `validates` applies a declaration-wide
         # `allow_nil:`/`allow_blank:` to every validator in the call.
-        declaration_options = validations.slice(*shared_validation_option_keys)
-        v.all? { |key, opt| nil_tolerant_validation?(key, opt, declaration_options) }
+        v.all? { |key, opt| nil_tolerant_validation?(key, opt, shared_validation_options(validations)) }
       end
 
       # `declaration_options` are the shared options the entry rides alongside — required rather than defaulted,

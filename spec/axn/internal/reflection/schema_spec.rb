@@ -5714,6 +5714,39 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop[:maxItems]).to eq(0)
     end
 
+    # `absence:` names size 0 as the only admissible size just as surely as `length: { maximum: 0 }` does —
+    # it rejects every non-blank value — so it carries the ceiling through the same derivation. Without it the
+    # node said nothing at all while the runtime admitted the empty container only: a schema LOOSER than the
+    # contract.
+    it "emits a zero ceiling for absence: alongside a dropped floor" do
+      prop = build_axn { expects :tags, type: Array, absence: true, allow_empty: true }.input_schema[:properties][:tags]
+
+      expect(prop[:maxItems]).to eq(0)
+    end
+
+    it "emits it for a Hash and a String field on their own size keys" do
+      meta = build_axn { expects :meta, type: Hash, absence: true, allow_empty: true }.input_schema[:properties][:meta]
+      name = build_axn { expects :name, type: String, absence: true, allow_empty: true }.input_schema[:properties][:name]
+
+      expect(meta[:maxProperties]).to eq(0)
+      expect(name[:maxLength]).to eq(0)
+    end
+
+    it "emits it beside the nullability branch a tolerance adds" do
+      prop = build_axn { expects :tags, type: Array, absence: true, optional: true }.input_schema[:properties][:tags]
+
+      expect(prop[:type]).to eq(%w[array null])
+      expect(prop[:maxItems]).to eq(0)
+    end
+
+    # Nothing carries a size for an Integer to bound, so the ceiling the declaration names is emitted nowhere
+    # rather than onto a key that would not mean it.
+    it "emits no ceiling where the declared type has no size" do
+      prop = build_axn { expects :n, type: Integer, absence: true, presence: false }.input_schema[:properties][:n]
+
+      expect(prop.keys).not_to include(:maxItems, :maxLength, :maxProperties)
+    end
+
     it "emits the ceiling on every size-bearing branch of a union" do
       prop = build_axn { expects :f, type: [String, Array], length: { maximum: 2 } }.input_schema[:properties][:f]
 
