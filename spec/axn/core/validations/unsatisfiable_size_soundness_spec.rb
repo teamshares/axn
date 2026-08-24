@@ -69,6 +69,8 @@ module SizeSoundness
     "inclusion [[], [1]]" => { inclusion: { in: [[], [1]] } },
     "inclusion blank-tolerant" => { inclusion: { in: [%w[a b c]], allow_blank: true } },
     "inclusion [\"ab\"]" => { inclusion: { in: %w[ab] } },
+    "inclusion Hash-backed { [] => 1 }" => { inclusion: { in: { [] => 1 } } },
+    "inclusion Set-backed Set[[]]" => { inclusion: { in: Set[[]] } },
     "inclusion [member with singleton ==]" => { inclusion: { in: [singleton_equality_member] } },
     "inclusion [member with singleton length]" => { inclusion: { in: [singleton_length_member] } },
   }.freeze

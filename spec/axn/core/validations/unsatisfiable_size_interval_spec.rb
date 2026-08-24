@@ -257,6 +257,25 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       end
     end
 
+    # Which operation decides membership depends on the set's own container, and only one of them is an
+    # operation axn holds at declaration: `Array#include?` dispatches `member == candidate`, while a Hash or a
+    # Set is looked up by `hash`/`eql?` — where the CANDIDATE supplies half the comparison and may collide with
+    # a member of an entirely different size.
+    describe "a set whose container decides membership some other way" do
+      it "stands down on a Hash-backed set" do
+        expect { declare(type: Array, inclusion: { in: { [] => 1 } }) }.not_to raise_error
+      end
+
+      it "stands down on a Set-backed set" do
+        expect { declare(type: Array, inclusion: { in: Set[[]] }) }.not_to raise_error
+      end
+
+      it "still refuses the Array-backed spelling of the same set" do
+        expect { declare(type: Array, inclusion: { in: [[]] }) }
+          .to raise_error(ArgumentError, /can never match/)
+      end
+    end
+
     it "stands down on a set it may not read" do
       action = declare(type: Array, inclusion: { in: :allowed_tags })
       expect(action).to be_a(Class)

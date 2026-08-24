@@ -4346,6 +4346,8 @@ module Axn
           return unless entry
           return if _blank_value_bypasses_set?(validations, entry, minimum)
 
+          return unless _membership_is_the_members_own_equality?(entry)
+
           members = Axn::Validation::Base.literal_set_members(entry)
           return if members.nil? || members.empty?
           return if members.any? { |member| _member_size_admissible?(member, klasses, minimum, maximum) }
@@ -4398,6 +4400,21 @@ module Axn
           return true if size.nil?
 
           (minimum.nil? || size >= minimum) && (maximum.nil? || size <= maximum)
+        end
+
+        # Whether the set's own `include?` decides membership by asking a MEMBER — which is what makes vouching
+        # for that member's `==` (below) vouch for the whole operation.
+        #
+        # Only an Array-backed set does. `Array#include?` dispatches `member == candidate`, so the member is
+        # the whole operation and it is one axn holds. A `Hash`- or `Set`-backed set is looked up by
+        # `hash`/`eql?`, and there the CANDIDATE supplies half the comparison — an object axn will never see at
+        # declaration, and one whose `hash` may collide with a member of a quite different size. So the
+        # member's size is no evidence about what the set matches, and the branch stands down.
+        #
+        # Read through the shared collection reader, so a bare `inclusion: [..]` and the long
+        # `inclusion: { in: [..] }` are judged as the one thing they are.
+        def _membership_is_the_members_own_equality?(entry)
+          Axn::Validation::Base.declared_set_collection(entry).instance_of?(::Array)
         end
 
         # Whether the `==` this member will actually be compared with is the one the closed equality world
