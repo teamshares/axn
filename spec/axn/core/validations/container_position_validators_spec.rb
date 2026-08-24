@@ -723,6 +723,19 @@ RSpec.describe "a validator at a container position" do
         .to raise_error(ArgumentError, /comparison: on :n enforces nothing/)
     end
 
+    it "keeps a non-reflexive bound when a declared branch's equality is not one the guard vouches for" do
+      # The bound alone cannot settle it: the declared type supplies the `==` ActiveModel will call, and a
+      # value object may equal a NaN however it likes. Measured — `Token.new != Float::NAN` is FALSE, so the
+      # check has a failing input and refusing would reject a contract that enforces. Asked of every branch
+      # of a union, since a runtime value takes exactly one.
+      stub_const("Token", Class.new { def ==(other) = other.equal?(Float::NAN) })
+
+      expect(Token.new != Float::NAN).to be(false) # the runtime truth the guard must not contradict
+
+      expect { build_axn { expects :x, type: Token, comparison: { other_than: Float::NAN } } }.not_to raise_error
+      expect { build_axn { expects :x, type: [Float, Token], comparison: { other_than: Float::NAN } } }.not_to raise_error
+    end
+
     it "keeps that same literal in an exclusion: set, where membership short-circuits on identity" do
       # Measured, and the reason the reflexivity discount is asked only of `comparison:`: a collection tests
       # object identity before it asks `==`, so the set really does forbid the value.

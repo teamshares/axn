@@ -3366,7 +3366,7 @@ module Axn
             literals = _vacuous_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?
 
-            witnesses = _witness_literals(key, literals, entry, tolerance)
+            witnesses = _witness_literals(key, literals, entry, tolerance, klasses)
             next if _any_literal_may_satisfy?(witnesses, klasses, cross_family: _cross_family_admissible?(key, entry))
 
             raise ArgumentError,
@@ -3381,8 +3381,8 @@ module Axn
 
         # The forbidden literals that could actually be the value that FAILS. Two filters, and the second is
         # asked only of `comparison:` because the two validators reach their verdict by different routes.
-        def _witness_literals(key, literals, entry, tolerance)
-          literals = _reflexive_literals(literals) if key == :comparison
+        def _witness_literals(key, literals, entry, tolerance, klasses)
+          literals = _reflexive_literals(literals, klasses) if key == :comparison
 
           _unskipped_literals(literals, entry, tolerance)
         end
@@ -3396,17 +3396,27 @@ module Axn
         # `[Float::NAN].include?(Float::NAN)` and `Set[Float::NAN].include?(Float::NAN)` are both true and the
         # set really does forbid the value. Discounting it there would refuse a contract that enforces.
         #
-        # Reflexivity is asked only of the classes the closed world already vouches for, by the equality
-        # ActiveModel itself will use. A bound outside it — `BigDecimal::NAN`, whose class this guard does not
-        # judge — stands down and stays a witness, which under-restricts rather than judging a `==` axn has
-        # not vouched for.
-        def _reflexive_literals(literals)
+        # BOTH sides of the comparison must be ones the closed world vouches for, exactly as
+        # `_literal_may_satisfy?` requires — and this filter runs BEFORE that judgment, so it has to repeat the
+        # stand-down rather than inherit it. The declared type decides as much as the bound does: a value
+        # object whose `==` answers for the bound really can differ from it, so `type: Token, comparison:
+        # { other_than: Float::NAN }` has a failing input when `Token#==` accepts NaN, and discounting the
+        # bound there would refuse a contract that enforces. Asked of EVERY declared branch, since a runtime
+        # value takes one and any un-vouched-for branch could supply the equality.
+        #
+        # A bound whose own class is outside the world — `BigDecimal::NAN`, which this guard does not judge —
+        # stays a witness for the same reason, which under-restricts rather than judging a `==` axn has not
+        # vouched for.
+        def _reflexive_literals(literals, klasses)
+          return literals unless klasses.all? { |klass| _judgeable_equality?(klass) }
+
           literals.reject do |literal|
             next false unless _judgeable_equality?(Internal::Identity.class_of(literal))
 
             # rubocop:disable Lint/BinaryOperatorWithIdenticalOperands
-            # The identical operands ARE the check: a value unequal to itself can never equal anything.
-            !(literal == literal)
+            # The identical operands ARE the check: a value unequal to itself can never equal anything. Asked
+            # with `!=` rather than a negated `==` because that is the operator ActiveModel applies here.
+            literal != literal
             # rubocop:enable Lint/BinaryOperatorWithIdenticalOperands
           end
         end
