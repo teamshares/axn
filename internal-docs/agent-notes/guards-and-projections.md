@@ -130,3 +130,11 @@ Three transferable rules:
 - **A declaration-time guard has one asymmetric failure mode.** Refusing a legal declaration cannot be recovered from — there is no runtime left to correct it — while admitting a broken one merely leaves it broken. So the invariant worth checking mechanically is soundness (*refuses ⇒ unsatisfiable*), not completeness, and every stand-down is cheap.
 - **Measure against the runtime, not against a second model of it.** The stub-the-guard-and-run-it trick works for any guard that blocks its own construction, and it is what makes "does anything pass" an observation rather than a claim.
 - **When round N rhymes with round N−1, the next artifact is a product probe, not another fix.** Same conclusion as PRO-2883's malformed-input matrix and PRO-2995's derive-don't-enumerate specs; this is the third time, which is the point at which the rule should be reached for first rather than last.
+
+## `presence:` and `absence:` are complements by ActiveSupport, not by ActiveModel
+
+Worth knowing before reasoning about the pair: they are not spelled against the same predicate. `PresenceValidator` errors `if value.blank?`; `AbsenceValidator` errors `if value.present?` (activemodel 8.1.3.1). What makes them complements is ActiveSupport's `Object#present?` being defined as `!blank?`, plus every core class it specializes defining the pair together — measured, `Array`, `Hash`, `String`, `Symbol`, `Numeric`, `Time`, `NilClass`, `TrueClass` and `FalseClass` all own both.
+
+So a class overriding one and not the other escapes the complement, and it escapes in a direction the override does not suggest: `Array#present?` is its own `!empty?` rather than a call to `blank?`, so a subclass answering `blank? => true` with contents is still `present?` — it fails an `absence:`, exactly as a plain non-empty Array does. Only overriding `present?` itself divides the pair.
+
+That is an assumption about VALUES, and a declaration-time guard cannot check it: a declared `type:` admits every subclass, and nothing at declaration sees what will arrive. It is also not any one guard's assumption — the `minItems: 1` reflection emits for a bare `presence:` is unsound against the same object. Where a rule rests on it, say so at the rule and move on; the alternative is deleting every size and requiredness derivation in the layer.

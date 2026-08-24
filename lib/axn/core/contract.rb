@@ -4244,9 +4244,19 @@ module Axn
           end
         end
 
-        # `presence:` and `absence:` are exact complements: ActiveModel's presence check errors unless the value
-        # is `!blank?` and its absence check errors unless the value IS blank, so a declaration carrying both
-        # live admits nothing whatever the declared type — no value is blank and not blank. Asked FIRST, and
+        # `presence:` and `absence:` are exact complements: ActiveModel's presence check errors on a `blank?`
+        # value and its absence check errors on a `present?` one (activemodel 8.1.3.1, presence.rb / absence.rb),
+        # so a declaration carrying both live admits nothing whatever the declared type — no value is blank and
+        # present at once.
+        #
+        # That last step is the assumption this rule rests on, and it is ActiveSupport's: `present?` is defined
+        # as `!blank?`, and every core class AS specializes defines the pair together. A class overriding ONE of
+        # them is outside it — a non-empty `Array` subclass answering `present? => false` satisfies both checks
+        # — but that is an assumption the whole size layer already makes rather than this rule's own: the
+        # `minItems: 1` reflection emits for a bare `presence:` is unsound against exactly the same object
+        # (measured: a subclass answering `blank? => true` with contents satisfies the emitted node and is
+        # rejected at runtime). Refusing to make it here would mean deleting the rule, since a declared `type:`
+        # admits every subclass and nothing at declaration time can see what will arrive. Asked FIRST, and
         # separately from the size interval, because it is the one question here that needs no size reasoning:
         # the blank axis lands on the size axis only for a type whose blank values are its empty ones, and for
         # a `String` it does not (`"  "` is blank, and two characters long).
