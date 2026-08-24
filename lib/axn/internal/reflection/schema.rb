@@ -1314,7 +1314,7 @@ module Axn
           # holds the permissive fallback until `apply_structured_schema!` rewrites it to `object`. Deriving
           # the key any earlier reads an intermediate type and lands the floor under a key that cannot express
           # it. Nothing above depends on the constraint already being there.
-          apply_value_constraints!(prop, config.validations, nullable:)
+          apply_value_constraints!(prop, config.validations, nullable:, for_output:)
 
           prop
         end
@@ -1388,11 +1388,11 @@ module Axn
         # Array's element, a map's axis), so a keyword cannot land at one position and be forgotten at another —
         # which is what a mirrored copy would eventually become. The keyword each one lands on is decided by the
         # node's own emitted `type:`, so the same call does the right thing wherever the node sits.
-        def apply_value_constraints!(node, validations, nullable:, property_names: false)
+        def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false)
           apply_inclusion_enum!(node, validations, nullable:, property_names:)
           apply_size_constraints!(node, validations)
           apply_numeric_bounds!(node, validations)
-          apply_pattern!(node, validations)
+          apply_pattern!(node, validations, for_output:)
         end
 
         # `enum` is INTERSECTED with whatever the node already carries, never assigned over it: a singleton type
@@ -1440,13 +1440,13 @@ module Axn
         # before this. Only `with:` is read: `without:`'s honest spelling is `not: { pattern: ... }`, and `not:`
         # is a single slot `reject_null!` already writes into, so a second writer would silently clobber the
         # first. Booked as unemitted alongside `exclusion:`, which has the same shape.
-        def apply_pattern!(prop, validations)
+        def apply_pattern!(prop, validations, for_output:)
           return unless Array(prop[:type]).include?("string")
 
           entry = Axn::Validation::Base.validator_entries(validations)[:format]
           return unless entry
 
-          pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with])
+          pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with], for_output:)
           prop[:pattern] = pattern if pattern
         end
 
@@ -1920,7 +1920,7 @@ module Axn
           # before the member/contents merges below so a `type:` those steps install cannot be read as the type
           # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
           # validators constrain.
-          apply_value_constraints!(node, bag_value_constraints(bag, for_output:), nullable:)
+          apply_value_constraints!(node, bag_value_constraints(bag, for_output:), nullable:, for_output:)
           node = contents_member_schema(node, bag, for_output:, ancestry:)
           inner = emitted_contents_edge(bag, :of, for_output:)
           return node if nil.equal?(inner)
@@ -2091,7 +2091,7 @@ module Axn
           # numeric bound does not. The type is then dropped: `propertyNames` needs no `type: "string"` of its
           # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
           node = { type: "string" }
-          apply_value_constraints!(node, bag_value_constraints(axis, for_output:), nullable: false, property_names: true)
+          apply_value_constraints!(node, bag_value_constraints(axis, for_output:), nullable: false, for_output:, property_names: true)
           node.except(:type)
         end
 

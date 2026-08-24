@@ -90,8 +90,25 @@ module Axn
 
         module_function
 
+        # The two translations that are deliberately NARROWER than the Ruby source rather than exact. Both are
+        # licensed on input, where a document may admit fewer values than the runtime, and neither is licensed
+        # on OUTPUT, where the document describes what the action PRODUCES and a narrowing rejects values axn
+        # successfully serialized — the same direction `effective_validations` already reduces for on output.
+        #
+        # `.`: ECMA's excludes `\r` and U+2028/9 where Ruby's excludes only `\n`.
+        # `^`/`$`: Ruby's are line anchors (reachable only with AM's `multiline: true`, which refuses the
+        # pattern otherwise), ECMA's here are input anchors.
+        #
+        # Detected on the escape-stripped source, so `\.`/`\^`/`\$` are not mistaken for metacharacters. It
+        # over-stands-down for a class-internal `[^a]` or `[.]`, which is the safe direction on output.
+        NARROWING_METACHARACTERS = /[.^$]/
+        private_constant :NARROWING_METACHARACTERS
+
         # The ECMA-262 pattern for a declared `format:` entry's regex, or nil to emit nothing.
-        def ecma_source(regexp)
+        #
+        # `for_output:` is required rather than defaulted: it decides whether a merely-stricter translation may
+        # be emitted at all, and a caller that omitted it would publish one on the side where it is wrong.
+        def ecma_source(regexp, for_output:)
           return nil unless Internal::Identity.kind?(regexp, ::Regexp)
           return nil unless regexp.options.nobits?(SEMANTIC_FLAGS)
 
@@ -106,6 +123,7 @@ module Axn
           return nil unless escapes_translatable?(source)
           return nil unless braces_are_quantifiers?(source)
           return nil if nested_character_class?(source)
+          return nil if for_output && narrowing?(source)
 
           translate_anchors(source)
         end
@@ -124,6 +142,12 @@ module Axn
         # matters, since the second character is not an escape at all.
         def escapes_translatable?(source)
           source.scan(/\\(.)/m).all? { |(char)| SAFE_ESCAPES.include?(char) }
+        end
+
+        # Whether the translation would be narrower than the source rather than exact (see
+        # NARROWING_METACHARACTERS). Only asked on output.
+        def narrowing?(source)
+          source.gsub(/\\./m, "").match?(NARROWING_METACHARACTERS)
         end
 
         # Ruby reads a `[` INSIDE a character class as a nested class union — `[a[bc]]` is the set {a,b,c} —

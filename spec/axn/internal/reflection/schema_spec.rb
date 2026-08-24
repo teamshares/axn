@@ -5822,8 +5822,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # Ruby's `^`/`$` are ALWAYS line anchors; ECMA's, with no flag available, are input anchors. So the
     # emitted pattern matches a subset of what the runtime accepts — stricter, which is the documented and
     # licensed direction, rather than a divergence.
+    # `multiline: true` is required for the declaration to RUN at all: ActiveModel's FormatValidator refuses a
+    # `^`/`$` pattern without it ("using multiline anchors … may present a security risk"), so the bare spelling
+    # raises on every call and is not a working narrowing to document.
     it "emits a Ruby line anchor as an input anchor, which is stricter" do
-      expect(prop_for { expects :s, type: String, format: { with: /^\d+$/ } }).to include(pattern: "^\\d+$")
+      action = build_axn { expects :s, type: String, format: { with: /^\d+$/, multiline: true } }
+
+      expect(action.call(s: "123")).to be_ok
+      expect(action.input_schema[:properties][:s]).to include(pattern: "^\\d+$")
+    end
+
+    it "notes that the bare ^/$ spelling ActiveModel refuses never reaches a call" do
+      action = build_axn { expects :s, type: String, format: { with: /^\d+$/ } }
+
+      expect(action.call(s: "123")).not_to be_ok
+      expect(action.call(s: "123").exception).to be_a(ArgumentError)
     end
 
     it "agrees with the runtime on the same value" do
@@ -5911,6 +5924,49 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       it "still emits a \\uHHHH escape, which agrees in both dialects" do
         expect(prop_for { expects :s, type: String, format: { with: Regexp.new("\\A\\u0041\\z") } })
           .to include(pattern: "^\\u0041$")
+      end
+
+      # On INPUT a narrowing is licensed — the document may admit fewer values than the runtime. On OUTPUT the
+      # direction flips: the schema describes what the action PRODUCES, so a narrowing rejects values axn
+      # successfully serialized. Only translations that are EXACT survive there, which is the same reasoning
+      # `effective_validations` already applies to a self-gated entry on output.
+      describe "on output, where a narrowing rejects what the action serializes" do
+        it "stands down on a dot, whose ECMA reading excludes more than Ruby's" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A.\z/ }, allow_blank: true
+            def call = expose(:s, "\r")
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        it "stands down on a line anchor" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /^\d+$/, multiline: true }
+            def call = expose(:s, "123")
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        # An EXACT translation still emits on output — the stand-down is about narrowing, not about output.
+        it "still emits an exactly-translated pattern" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A[A-Z]{2}\z/ }
+            def call = expose(:s, "US")
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).to include(pattern: "^[A-Z]{2}$")
+        end
+
+        it "still emits both narrowings on INPUT, where they are licensed" do
+          action = build_axn { expects :s, type: String, format: { with: /\A.\z/ } }
+
+          expect(action.input_schema[:properties][:s]).to include(pattern: "^.$")
+        end
       end
 
       it "stands down on a numeric backreference" do
