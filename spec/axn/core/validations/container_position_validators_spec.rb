@@ -528,7 +528,25 @@ RSpec.describe "a validator at a container position" do
     end
 
     it "refuses a wrong-type other_than: bound, the operator the satisfiability guard left for this one" do
-      expect { build_axn { expects :tags, type: Array, comparison: { other_than: 1 } } }
+      # An Integer position: no Integer is blank, so the bound really is the only thing the entry can reject.
+      expect { build_axn { expects :n, type: Integer, comparison: { other_than: "a" } } }
+        .to raise_error(ArgumentError, /comparison: on :n enforces nothing/)
+    end
+
+    it "stands down where a BLANK value would reach the check, which the bound does not decide" do
+      # `ComparisonValidator` rejects a blank value before it looks at any bound (activemodel 7.2.2.2,
+      # comparison.rb:23), so an entry on a type that HAS a blank value enforces something whatever the bound
+      # says — measured, `[]` is rejected, and on a `presence: false` field this entry is the only thing
+      # rejecting it.
+      expect { build_axn { expects :tags, type: Array, comparison: { other_than: 1 } } }.not_to raise_error
+
+      action = build_axn { expects :tags, type: Array, presence: false, comparison: { other_than: 1 } }
+      expect(action.call(tags: []).ok?).to be(false)
+      expect(action.call(tags: [1]).ok?).to be(true)
+    end
+
+    it "judges the bound once allow_blank: takes the blank values out of reach" do
+      expect { build_axn { expects :tags, type: Array, comparison: { other_than: 1, allow_blank: true } } }
         .to raise_error(ArgumentError, /comparison: on :tags enforces nothing/)
     end
 
@@ -537,15 +555,19 @@ RSpec.describe "a validator at a container position" do
     # exists because a `Comparable` value object's `<=>` routinely accepts another class; equality has no such
     # hole, since the closed world already stands down on any class whose `==` axn does not vouch for.
     it "refuses a wrong-type other_than: bound at a scalar position too" do
-      expect { build_axn { expects :name, type: String, comparison: { other_than: 1 } } }
+      # A Float position, for the same reason an Integer one qualifies: no Float is blank.
+      expect { build_axn { expects :n, type: Float, comparison: { other_than: "a" } } }
         .to raise_error(ArgumentError, /comparison:/)
+
+      # A String position has `""`, so it stands down — the type decides, not the position.
+      expect { build_axn { expects :name, type: String, comparison: { other_than: 1 } } }.not_to raise_error
     end
 
     it "refuses a vacuous bound riding alongside a satisfiable one, which the other guard passes" do
       # One entry, two operators, one verdict from each guard: `equal_to: ["a"]` is satisfiable, so the
       # satisfiability guard admits the entry, and `other_than: 1` is what makes it enforce less than it says.
-      expect { build_axn { expects :tags, type: Array, comparison: { equal_to: ["a"], other_than: 1 } } }
-        .to raise_error(ArgumentError, /comparison: on :tags enforces nothing/)
+      expect { build_axn { expects :n, type: Integer, comparison: { equal_to: 1, other_than: "a" } } }
+        .to raise_error(ArgumentError, /comparison: on :n enforces nothing/)
     end
 
     it "reaches a subfield and a block-form member, which share the field's own call site" do
@@ -741,15 +763,18 @@ RSpec.describe "a validator at a container position" do
     it "keeps a bound carrying its own equality, rather than probing it" do
       # The probe is the only operator this guard runs, and a per-object override makes its answer foreign
       # twice: it executes the caller's code, and it generalizes one object to every value of the type.
-      # Measured — an ordinary `"x"` uses `String#==` and really does fail the check.
-      bound = +"x"
+      # Declared on a `Date`, deliberately: a type with a blank value stands the whole comparison judgment
+      # down before the probe is reached, which would leave this passing for the wrong reason.
+      bound = Date.new(2026, 1, 1)
       def bound.!=(_other) = true
       stub_const("SINGLETON_BOUND", bound)
 
-      expect(bound != "x").to be(true) # the override the guard must not read as the type's own
-      expect(+"x" != bound).to be(false) # the runtime truth: an ordinary value DOES fail the check
+      # rubocop:disable Lint/BinaryOperatorWithIdenticalOperands -- the identical operands ARE the probe
+      expect(bound != bound).to be(true) # the override the guard must not read as the type's own
+      # rubocop:enable Lint/BinaryOperatorWithIdenticalOperands
+      expect(Date.new(2026, 1, 1) != bound).to be(false) # an ordinary Date DOES fail the check
 
-      expect { build_axn { expects :x, type: String, comparison: { other_than: SINGLETON_BOUND } } }
+      expect { build_axn { expects :d, type: Date, comparison: { other_than: SINGLETON_BOUND } } }
         .not_to raise_error
     end
 
@@ -1019,7 +1044,7 @@ RSpec.describe "a validator at a container position" do
     it "refuses a vacuous exclusion: and other_than: on a member too" do
       expect { raw_shape({ type: Array, exclusion: { in: %w[a] } }) }
         .to raise_error(ArgumentError, /exclusion: on shape member `x` enforces nothing/)
-      expect { raw_shape({ type: Array, comparison: { other_than: 1 } }) }
+      expect { raw_shape({ type: Integer, comparison: { other_than: "a" } }) }
         .to raise_error(ArgumentError, /comparison: on shape member `x` enforces nothing/)
     end
 

@@ -3363,7 +3363,7 @@ module Axn
             entry = entries[key]
             next unless entry
 
-            literals = _vacuous_constraint_literals(key, entry, option_keys, klasses)
+            literals = _vacuous_constraint_literals(key, entry, option_keys, klasses, tolerance)
             next if literals.nil?
 
             witnesses = _witness_literals(key, literals, entry, tolerance, klasses)
@@ -3485,15 +3485,35 @@ module Axn
         # coverage — `type: String, comparison: { other_than: 1 }` is as vacuous as the container spelling.
         # The bound is read by `key?`, since `other_than: false` is a real bound, and a Symbol or Proc stands
         # down because ActiveModel resolves it against the record per call (`ResolveValue`).
-        def _vacuous_constraint_literals(key, entry, option_keys, klasses)
+        def _vacuous_constraint_literals(key, entry, option_keys, klasses, tolerance)
           return _judgeable_set_members(entry, klasses) if key == :exclusion
 
           opts = Axn::Validation::Base.validator_entry_options(entry)
           bounds = option_keys.select { |option| opts.key?(option) }.map { |option| opts[option] }
           return nil if bounds.empty?
           return nil if bounds.any? { |bound| _dynamic_bound?(bound) }
+          return nil unless _blank_cannot_reach_comparison?(entry, tolerance, klasses)
 
           bounds
+        end
+
+        # Whether the bound is the ONLY thing a `comparison:` entry can reject — which is what makes the
+        # equality judgment above sufficient. It usually is not: ActiveModel's `ComparisonValidator` rejects a
+        # blank value BEFORE it looks at any bound (`value.nil? || value.blank?` → `errors.add(:blank)`,
+        # activemodel 7.2.2.2, comparison.rb:23), so an entry on a type that HAS a blank value rejects that
+        # value whatever the bound says, and enforces something after all.
+        #
+        # Measured: `type: Array, comparison: { other_than: 1 }` rejects `[]`, and on a `presence: false`
+        # field the entry is the only thing rejecting it. So the vacuity question is only reachable where no
+        # blank value can arrive — a declared type with no blank instance, or an entry whose `allow_blank`
+        # skips them before the check runs. Every other `comparison:` declaration stands down.
+        #
+        # `exclusion:` has no such branch — `Clusivity` compares membership and nothing else — which is why
+        # this asks only about the comparison route.
+        def _blank_cannot_reach_comparison?(entry, tolerance, klasses)
+          return true if Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank]
+
+          klasses.all? { |klass| NEVER_BLANK_KLASSES.any? { |known| known.equal?(klass) } }
         end
 
         # Classes whose instances compare and equate ACROSS the family, so a literal of one can satisfy a
@@ -3653,6 +3673,16 @@ module Axn
 
           bounds
         end
+
+        # The declared types no instance of which is `blank?`, so a `comparison:` entry on one is reached by
+        # every admitted value and its bound really is the only thing it can reject. Measured against
+        # ActiveSupport rather than reasoned from: a Numeric is never blank (`0.blank?` is false), and neither
+        # is a Date/Time. Everything else can be — `[]`, `{}`, `Set[]`, `""`, `:""`, `nil`, `false` — and a
+        # class outside this list is assumed blankable, since a value object answering `empty?` is blank to
+        # ActiveSupport and nothing here can tell without asking it.
+        NEVER_BLANK_KLASSES = [
+          ::Integer, ::Float, ::Rational, ::TrueClass, ::Date, ::Time, ::DateTime
+        ].freeze
 
         # Whether a bound is one ActiveModel RESOLVES against the record per call (`ResolveValue`) rather than
         # comparing directly — a Symbol or a Proc — so a declaration carrying one cannot be judged here.
