@@ -731,7 +731,7 @@ module Axn
           # safe direction). Nil-TOLERANT entries never reject an omitted value, so a nested gate on them
           # can't affect requiredness — don't fall back on those.
           entries = Axn::Validation::Base.validator_entries(config.validations)
-          shared = shared_validation_options(config)
+          shared = shared_validation_options(config.validations)
           return nil if entries.any? { |key, opt| !nil_tolerant_validation?(key, opt, shared) && entry_mentions_gate_key?(opt) }
 
           rule = gates.values.first
@@ -1304,11 +1304,6 @@ module Axn
             prop[:default] = normalize_schema_literal(declared_default) if emit_default
           end
 
-          if (inclusion = config.validations[:inclusion])
-            enum_values = inclusion_enum_values(inclusion)
-            prop[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values
-          end
-
           apply_structured_schema!(prop, config, for_output:, ancestry:)
 
           # LAST, because the floor's KEY is chosen from the property's type (`minItems`/`minProperties`/
@@ -1316,9 +1311,7 @@ module Axn
           # holds the permissive fallback until `apply_structured_schema!` rewrites it to `object`. Deriving
           # the key any earlier reads an intermediate type and lands the floor under a key that cannot express
           # it. Nothing above depends on the constraint already being there.
-          apply_size_constraints!(prop, config)
-          apply_numeric_bounds!(prop, config)
-          apply_pattern!(prop, config)
+          apply_value_constraints!(prop, config.validations, nullable:)
 
           prop
         end
@@ -1387,15 +1380,31 @@ module Axn
         # follows the emitted type into a union's `anyOf` branches as well as a single `type:`.
         # For a String under `presence:` the runtime also rejects whitespace-only values, which
         # `minLength` cannot express, so the emitted constraint stays a floor rather than an exact mirror.
+        # Every validator-derived keyword for ONE position's node, in one place. `build_property` runs it for a
+        # named position (a field, a subfield, a shape member) and `contents_node_schema` for an unnamed one (an
+        # Array's element, a map's axis), so a keyword cannot land at one position and be forgotten at another —
+        # which is what a mirrored copy would eventually become. The keyword each one lands on is decided by the
+        # node's own emitted `type:`, so the same call does the right thing wherever the node sits.
+        def apply_value_constraints!(node, validations, nullable:)
+          if (inclusion = validations[:inclusion])
+            enum_values = inclusion_enum_values(inclusion)
+            node[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values
+          end
+
+          apply_size_constraints!(node, validations)
+          apply_numeric_bounds!(node, validations)
+          apply_pattern!(node, validations)
+        end
+
         # A declared `format:` reflects as `pattern` when the regex translates faithfully — `Reflection::Pattern`
         # owns that judgment and returns nil to stand down, which is what the emitter did for every regex
         # before this. Only `with:` is read: `without:`'s honest spelling is `not: { pattern: ... }`, and `not:`
         # is a single slot `reject_null!` already writes into, so a second writer would silently clobber the
         # first. Booked as unemitted alongside `exclusion:`, which has the same shape.
-        def apply_pattern!(prop, config)
+        def apply_pattern!(prop, validations)
           return unless Array(prop[:type]).include?("string")
 
-          entry = Axn::Validation::Base.validator_entries(config.validations)[:format]
+          entry = Axn::Validation::Base.validator_entries(validations)[:format]
           return unless entry
 
           pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with])
@@ -1409,10 +1418,10 @@ module Axn
         # Emitting only ever shrinks the schema-valid set, so it preserves the documented direction (stricter
         # than the runtime, never looser) by construction — and every case a bound cannot be carried exactly
         # stands down to emitting nothing, which is where this started.
-        def apply_numeric_bounds!(prop, config)
+        def apply_numeric_bounds!(prop, validations)
           return unless Array(prop[:type]).intersect?(NUMERIC_TYPES)
 
-          entries = Axn::Validation::Base.validator_entries(config.validations)
+          entries = Axn::Validation::Base.validator_entries(validations)
           NUMERIC_BOUND_ENTRIES.each do |key, ranged|
             entry = entries[key]
             next unless entry
@@ -1425,9 +1434,9 @@ module Axn
           end
         end
 
-        def apply_size_constraints!(prop, config)
-          minimum = declared_size_minimum(config)
-          maximum = declared_size_maximum(config)
+        def apply_size_constraints!(prop, validations)
+          minimum = declared_size_minimum(validations)
+          maximum = declared_size_maximum(validations)
           return if minimum.nil? && maximum.nil?
 
           if prop[:anyOf]
@@ -1494,14 +1503,13 @@ module Axn
         #
         # Only `length:` is consulted, never a `size:`: `size` is absent from KNOWN_VALIDATION_KEYS, so a
         # declaration carrying it raises "Unknown key(s) :size" and can never reach reflection.
-        def declared_size_minimum(config)
-          validations = config.validations
+        def declared_size_minimum(validations)
           # Whether an empty value can get through at all decides BOTH branches below: it is the floor of 1 a
           # presence/emptiness check imposes on its own, and it is what tells a blank-tolerant `length:` apart
           # from one whose blank-tolerance is moot.
           rejects_empty = empty_value_rejected?(validations)
 
-          length = effective_entry_options(validations[:length], shared_validation_options(config))
+          length = effective_entry_options(validations[:length], shared_validation_options(validations))
           if rejects_empty || !length[:allow_blank]
             declared = Axn::Validation::Base.declared_length_floor(length)
             return declared if Axn::Validation::Base.emittable_length_floor?(declared)
@@ -1515,11 +1523,28 @@ module Axn
         # one (presence and the emptiness axis impose floors, never ceilings), and blank-tolerance cannot
         # loosen one (an empty value measures 0, which every emittable ceiling admits). A GATED entry is counted
         # as if its gate were open, the static-maximal policy every constraint here follows.
-        def declared_size_maximum(config)
-          length = effective_entry_options(config.validations[:length], shared_validation_options(config))
+        def declared_size_maximum(validations)
+          length = effective_entry_options(validations[:length], shared_validation_options(validations))
           declared = Axn::Validation::Base.declared_length_ceiling(length)
 
           declared if Axn::Validation::Base.emittable_length_ceiling?(declared)
+        end
+
+        # JSON Schema's `propertyNames` applies to EVERY key of the object, `properties`-matched ones included.
+        # The runtime does the opposite for a shaped map: a key the `shape:` names is EXEMPT from both axes
+        # (Core::Contract#_derive_shaped_keys!), which is what `additionalProperties` already means and what
+        # makes combining the two options coherent. So a bare keys-axis constraint beside a shape would publish
+        # a document the runtime contradicts — and contradict it in the direction that matters, since a member
+        # is `required` and a `propertyNames` it fails forbids that key, leaving a node NO value satisfies. That
+        # is exactly the corollary PRO-3192 recorded in guards-and-projections.md.
+        #
+        # The union is the runtime rule verbatim — a key is one the shape names, or one the axis admits — so the
+        # node stays satisfiable AND stays exact, rather than being loosened to nothing or dropped.
+        def exempt_shaped_keys_from_property_names!(prop, member_props)
+          axis = prop[:propertyNames]
+          return if axis.nil? || axis.empty? || member_props.empty?
+
+          prop[:propertyNames] = { anyOf: [axis, { enum: member_props.keys.map(&:to_s) }] }
         end
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
@@ -1550,6 +1575,7 @@ module Axn
             member_props, required = member_properties(shape[:members], for_output:, ancestry:)
             prop[:properties] = plan.base_properties.merge(member_props)
             prop[:required] = required unless required.empty?
+            exempt_shaped_keys_from_property_names!(prop, member_props)
           elsif plan.in_items?
             # The plan's own type schema, not a second `contents_schema_for` call: one build, and the plan is
             # then literally what gets emitted rather than a parallel derivation of it.
@@ -1812,6 +1838,11 @@ module Axn
         # deliberately rather than corrected here.
         def contents_node_schema(bag, for_output: false, ancestry: nil)
           node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : {}
+          # The bag's value validators (PRO-3193), through the same projector a named position uses. Applied
+          # before the member/contents merges below so a `type:` those steps install cannot be read as the type
+          # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
+          # validators constrain.
+          apply_value_constraints!(node, bag_value_constraints(bag), nullable: false)
           node = contents_member_schema(node, bag, for_output:, ancestry:)
           inner = emitted_contents_edge(bag, :of, for_output:)
           return node if nil.equal?(inner)
@@ -1951,7 +1982,47 @@ module Axn
             else
               contents_node_schema(axis, for_output:, ancestry:)
             end
-          values.empty? ? {} : { additionalProperties: values }
+          node = values.empty? ? {} : { additionalProperties: values }
+          keys = map_keys_schema(bag)
+          keys.empty? ? node : node.merge(propertyNames: keys)
+        end
+
+        # The `keys:` axis, as `propertyNames`. PRO-3165 emitted nothing here on the grounds that every JSON
+        # object key is already a string, so `keys: String` says nothing a client can act on and `keys: Symbol`
+        # would misdescribe the wire — and that reasoning still holds for an axis that only names a TYPE.
+        # It stops holding once the axis carries a constraint, which is what `propertyNames` is for.
+        #
+        # Only the constraints that survive the string form of a JSON key are emitted, which the projector
+        # decides for itself: it keys every keyword off the node's own emitted `type:`, and a key node's type is
+        # `"string"` whatever Ruby class the axis names. So a `format:`/`length:`/`presence:` reflects and a
+        # numeric bound does not — a Ruby Hash key may legitimately be an Integer, but no `propertyNames`
+        # subschema says "parses to an integer greater than zero", so that stays enforced-in-Ruby-only, exactly
+        # as a bare `keys: Symbol` already is.
+        def map_keys_schema(bag)
+          axis = Axn::Internal::ShapeGraph.hash_or_nil(bag[:keys])
+          return {} if nil.equal?(axis)
+
+          # The node is built with the type a JSON object key always has, so the projector keys each keyword off
+          # `"string"` — which is what decides, on its own, that a `format:`/`length:` reflects here and a
+          # numeric bound does not. The type is then dropped: `propertyNames` needs no `type: "string"` of its
+          # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
+          node = { type: "string" }
+          apply_value_constraints!(node, bag_value_constraints(axis), nullable: false)
+          node.except(:type)
+        end
+
+        # A bag's value constraints: what it says about the VALUE at its position rather than about the position.
+        # Derived from the two lists `Internal::ShapeGraph` owns, so a validator admitted into the grammar
+        # reaches this projection without a second edit.
+        #
+        # The recursion edges come out even though `apply_value_constraints!` reads named keys and would ignore
+        # them: what this returns is consumed as "the constraints on this value", and `of:`/`shape:` describe a
+        # NESTED node instead — they are emitted by `contents_node_schema` and `contents_member_schema`. A
+        # projection that reads the set generically would otherwise pick them up as keywords on the wrong node.
+        def bag_value_constraints(bag)
+          Axn::Validation::Base.validator_entries(bag)
+                               .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
+                                       *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)
         end
 
         def single_contents_schema(klass, for_output: false)
@@ -2233,7 +2304,7 @@ module Axn
           some_gate = decl_gates.any? || entries.any? { |_key, opt| entry_self_gated?(opt) }
           return false unless some_gate
 
-          shared = shared_validation_options(config)
+          shared = shared_validation_options(config.validations)
           entries.all? do |key, opt|
             nil_tolerant_validation?(key, opt, shared) || entry_effective_gate_keys(opt, decl_gates).any?
           end
@@ -2241,8 +2312,8 @@ module Axn
 
         # The declaration-wide options every entry of a config rides alongside — the tier the per-entry
         # judgments resolve against.
-        def shared_validation_options(config)
-          config.validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
+        def shared_validation_options(validations)
+          validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
         end
 
         def nil_tolerant_validation?(key, opt, declaration_options) = Axn::Validation::Base.nil_tolerant_validation?(key, opt, declaration_options)
@@ -2262,7 +2333,7 @@ module Axn
         # matters for dropping `format: "uuid"` — a blank-tolerant `length:`/other validator doesn't make
         # `TypeValidator` accept `""`, so the format must stay.
         def type_allows_blank?(config)
-          effective_entry_options(config.validations[:type], shared_validation_options(config))[:allow_blank] == true
+          effective_entry_options(config.validations[:type], shared_validation_options(config.validations))[:allow_blank] == true
         end
 
         # Strip `format: "uuid"` from anyOf members: a blank-tolerant uuid accepts "" at runtime, which a

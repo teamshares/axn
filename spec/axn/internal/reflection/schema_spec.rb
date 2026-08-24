@@ -5952,4 +5952,170 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         .to include(pattern: "^(?:a|b)\\.c$")
     end
   end
+
+  # A bag's value validators land on the node the bag describes — `items` for an Array's element,
+  # `additionalProperties` for a map's values, `propertyNames` for its keys — through the SAME projector that
+  # serves a named position, so a keyword cannot reach a field and be forgotten one rung down.
+  describe "value constraints at an of: bag position" do
+    def prop_for(field, &declaration)
+      build_axn(&declaration).input_schema[:properties][field]
+    end
+
+    it "emits pattern into items" do
+      prop = prop_for(:codes) { expects :codes, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ } } }
+
+      expect(prop[:items]).to include(type: "string", pattern: "^[A-Z]{2}$")
+    end
+
+    it "emits enum into items" do
+      prop = prop_for(:tags) { expects :tags, type: Array, of: { klass: String, inclusion: { in: %w[a b] } } }
+
+      expect(prop[:items]).to include(enum: %w[a b])
+    end
+
+    # The element's OWN length, so the string keyword — not the array's size, which is the field's `length:`.
+    it "emits the element's own size bound into items, not the array's" do
+      prop = prop_for(:codes) { expects :codes, type: Array, of: { klass: String, length: { maximum: 2 } } }
+
+      expect(prop[:items]).to include(maxLength: 2)
+      expect(prop).not_to have_key(:maxItems)
+    end
+
+    it "emits a numeric bound into items" do
+      prop = prop_for(:qtys) { expects :qtys, type: Array, of: { klass: Integer, numericality: { greater_than: 0 } } }
+
+      expect(prop[:items]).to include(type: "integer", exclusiveMinimum: 0)
+    end
+
+    it "emits into additionalProperties for a map's values axis" do
+      prop = prop_for(:counts) { expects :counts, type: Hash, of: { values: { klass: Integer, numericality: { greater_than: 0 } } } }
+
+      expect(prop[:additionalProperties]).to include(type: "integer", exclusiveMinimum: 0)
+    end
+
+    it "emits at the nested node a nested bag names" do
+      prop = prop_for(:m) { expects :m, type: Array, of: { klass: Array, of: { klass: String, format: { with: /\Ax/ } } } }
+
+      expect(prop.dig(:items, :items)).to include(type: "string", pattern: "^x")
+    end
+
+    it "agrees with the runtime on the same value" do
+      action = build_axn { expects :codes, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ } } }
+
+      expect(action.call(codes: %w[US])).to be_ok
+      expect(action.call(codes: %w[usa])).not_to be_ok
+      expect(action.input_schema.dig(:properties, :codes, :items)).to include(pattern: "^[A-Z]{2}$")
+    end
+
+    describe "keys axis, where propertyNames earns its place" do
+      # PRO-3165 emitted nothing for `keys:` because every JSON object key is already a string, so a bare
+      # `keys: String` says nothing actionable. That reasoning holds — and stops holding the moment the axis
+      # carries a constraint a client can act on.
+      it "still emits nothing for a bare type axis" do
+        prop = prop_for(:m) { expects :m, type: Hash, of: { keys: String, values: Integer } }
+
+        expect(prop).not_to have_key(:propertyNames)
+      end
+
+      it "still emits nothing for a bag axis that only names a class" do
+        prop = prop_for(:m) { expects :m, type: Hash, of: { keys: { klass: String }, values: Integer } }
+
+        expect(prop).not_to have_key(:propertyNames)
+      end
+
+      it "emits propertyNames for a constrained keys axis" do
+        prop = prop_for(:m) do
+          expects :m, type: Hash, of: { keys: { klass: String, format: { with: /\A[a-z]+\z/ } }, values: Integer }
+        end
+
+        expect(prop[:propertyNames]).to eq(pattern: "^[a-z]+$")
+      end
+
+      # A JSON object key is always a string, so a Symbol inclusion set has to reach the wire in its wire form.
+      it "renders a Symbol inclusion set as strings" do
+        prop = prop_for(:m) do
+          expects :m, type: Hash, of: { keys: { klass: Symbol, inclusion: { in: %i[a b] } }, values: Integer }
+        end
+
+        expect(prop[:propertyNames]).to eq(enum: %w[a b])
+      end
+
+      it "emits a keys-axis length bound" do
+        prop = prop_for(:m) do
+          expects :m, type: Hash, of: { keys: { klass: String, length: { maximum: 4 } }, values: Integer }
+        end
+
+        expect(prop[:propertyNames]).to eq(maxLength: 4)
+      end
+
+      # A numeric bound survives no string-ification, so there is no `propertyNames` subschema that says it —
+      # the constraint is enforced in Ruby and reflects nowhere, exactly as PRO-3165 decided for a bare axis.
+      it "emits nothing for a keys-axis numeric bound, which no propertyNames expresses" do
+        action = build_axn do
+          expects :m, type: Hash, of: { keys: { klass: Integer, numericality: { greater_than: 0 } }, values: Integer }
+        end
+
+        expect(action.call(m: { 1 => 2 })).to be_ok
+        expect(action.call(m: { -1 => 2 })).not_to be_ok
+        expect(action.input_schema[:properties][:m]).not_to have_key(:propertyNames)
+      end
+
+      # JSON Schema's `propertyNames` applies to EVERY key, including ones `properties` matches, while the
+      # runtime EXEMPTS a shape-named key from both axes (PRO-3166). Emitting the bare constraint would make
+      # the node unsatisfiable whenever a member name fails it — required, and forbidden by propertyNames — so
+      # the emitted union is the runtime rule verbatim: a key is one the shape names, or one the axis admits.
+      it "unions the shaped key names in when a shape sits beside a constrained keys axis" do
+        prop = prop_for(:m) do
+          expects :m, type: Hash, of: { keys: { klass: String, format: { with: /\A\d+\z/ } }, values: Integer } do
+            field :label, type: Integer
+          end
+        end
+
+        expect(prop[:propertyNames]).to eq(anyOf: [{ pattern: "^\\d+$" }, { enum: ["label"] }])
+      end
+
+      it "keeps that node satisfiable — the runtime accepts the exempt key the axis would reject" do
+        action = build_axn do
+          expects :m, type: Hash, of: { keys: { klass: String, format: { with: /\A\d+\z/ } }, values: Integer } do
+            field :label, type: Integer
+          end
+        end
+
+        expect(action.call(m: { "label" => 1, "42" => 2 })).to be_ok
+        expect(action.call(m: { "label" => 1, "nope" => 2 })).not_to be_ok
+      end
+    end
+
+    # The projector reads named keys, so forwarding the recursion edges to it would be inert TODAY — this
+    # pins the helper's own contract instead, since what it returns is consumed as "the constraints on this
+    # value" and `of:`/`shape:` describe a nested node rather than a keyword on this one.
+    describe "bag_value_constraints" do
+      it "keeps the value validators and drops everything that describes the position" do
+        bag = { klass: String, container: Array, message: "m", of: { klass: Integer },
+                shape: { members: [] }, format: { with: /a/ }, allow_nil: true }
+
+        expect(described_class.send(:bag_value_constraints, bag)).to eq(format: { with: /a/ })
+      end
+    end
+
+    describe "constraints that stay unemitted" do
+      it "emits nothing for exclusion:, as at a field" do
+        prop = prop_for(:roles) { expects :roles, type: Array, of: { klass: String, exclusion: { in: %w[admin] } } }
+
+        expect(prop[:items]).to eq(type: "string")
+      end
+
+      it "emits nothing for a validate: callable" do
+        prop = prop_for(:codes) { expects :codes, type: Array, of: { klass: String, validate: ->(v) { "no" if v == "x" } } }
+
+        expect(prop[:items]).to eq(type: "string")
+      end
+
+      it "emits nothing for acceptance:" do
+        prop = prop_for(:flags) { expects :flags, type: Array, of: { klass: String, acceptance: { accept: %w[yes] } } }
+
+        expect(prop[:items]).to eq(type: "string")
+      end
+    end
+  end
 end

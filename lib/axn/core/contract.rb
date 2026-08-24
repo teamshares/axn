@@ -1198,10 +1198,12 @@ module Axn
                                           if unless on message strict
                                         ]).freeze
 
-        # What a bag says about the POSITION rather than about the value at it. Named here so the validator set
-        # below can be DERIVED by subtraction: a key added to the grammar cannot then be mistaken for a
-        # validator, and a validator cannot be mistaken for grammar, because neither list is written twice.
-        BAG_GRAMMAR_KEYS = %i[klass of shape message container shaped_keys keys values].freeze
+        # What a bag says about the POSITION rather than about the value at it, read from the lists
+        # `Internal::ShapeGraph` owns rather than restated here — the validator set below is DERIVED by
+        # subtracting it, so a key added to the grammar cannot be mistaken for a validator, and a validator
+        # cannot be mistaken for grammar, because neither list is written twice.
+        BAG_GRAMMAR_KEYS =
+          (Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS + Internal::ShapeGraph::INNER_CONTRACT_EDGES).freeze
 
         # The validators that have a reading at an unnamed position, derived rather than listed (PRO-3193).
         #

@@ -111,9 +111,6 @@ module Axn
       # out is what made this method the silent-ignore hole PRO-3165 closed at the grammar: a key the whitelist
       # admits but this method does not forward declares cleanly, reaches ActiveModel through nothing, and
       # constrains nothing — so the two lists have to be one list, and subtraction makes them one.
-      POSITION_DESCRIPTION_KEYS = %i[klass message container shaped_keys keys values].freeze
-      private_constant :POSITION_DESCRIPTION_KEYS
-
       # The shared ActiveModel options come out through `validator_entries`, which is what "these are not
       # validators" already means everywhere else. Whether a bag's `allow_nil:`/`allow_blank:` govern the
       # POSITION is a separate question, and not one this method may answer by accident: axn's own tolerance
@@ -121,7 +118,9 @@ module Axn
       # `of: Integer` quietly admit nil elements.
       def inner_contract_validations(bag)
         entries = Axn::Validation::Base.validator_entries(bag)
-        contents = entries.reject { |key, value| POSITION_DESCRIPTION_KEYS.include?(key) || !value }
+        contents = entries.reject do |key, value|
+          Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS.include?(key) || !value
+        end
         contents.empty? ? nil : contents
       end
 
