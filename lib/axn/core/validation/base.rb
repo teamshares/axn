@@ -398,6 +398,56 @@ module Axn
       # are for the floor.
       def self.emittable_length_ceiling?(ceiling) = ceiling.is_a?(Integer) && !ceiling.negative?
 
+      # The operators ActiveModel compares a value against, shared by `numericality:` and `comparison:` —
+      # `NumericalityValidator`'s COMPARE_CHECKS and `ComparisonValidator`'s are the same five plus
+      # `other_than:`, which is deliberately absent here: an inverted operator has no JSON Schema keyword, and
+      # the same reasoning keeps it out of PRO-3192's satisfiability judgment.
+      NUMERIC_BOUND_KEYS = %i[greater_than greater_than_or_equal_to less_than less_than_or_equal_to equal_to].freeze
+
+      # The bounds a `numericality:`/`comparison:` entry compares against, read from the checks it actually
+      # runs — the twin of `declared_length_checks`, and THE single definition of "what does this entry bound",
+      # so the runtime bound and the emitted `minimum`/`maximum` cannot disagree about one declaration.
+      #
+      # `ranged:` is required rather than defaulted, because the answer differs by validator and a caller that
+      # omitted it would get a quietly wrong one: `numericality:` resolves an `in:` range (its `RANGE_CHECKS`
+      # is `{ in: :in? }`), while `comparison:` has no range check at all — so reading `in:` there would report
+      # a bound ActiveModel never enforces.
+      #
+      # A falsy bound is dropped, mirroring the validators' own `next unless option_value`. `0` is kept: it is
+      # a real bound, and only `nil`/`false` are falsy in Ruby.
+      def self.declared_numeric_bounds(entry_opts, ranged:)
+        opts = validator_entry_options(entry_opts)
+        bounds = opts.slice(*NUMERIC_BOUND_KEYS).select { |_key, bound| bound }
+        return bounds unless ranged
+
+        range = opts[:in]
+        return bounds unless range.is_a?(Range)
+
+        bounds[:greater_than_or_equal_to] = range.begin if range.begin
+        # An exclusive end is the strict operator rather than a decremented bound: unlike a length, a numeric
+        # bound has no "one less" (`1...10` admits 9.999), so the exclusivity has to be carried as itself.
+        bounds[range.exclude_end? ? :less_than : :less_than_or_equal_to] = range.end if range.end
+        bounds
+      end
+
+      # Whether a bound read above is one a JSON Schema numeric keyword can carry. A `Numeric` that is not
+      # finite (`Float::INFINITY`, ActiveModel's spelling for "no bound", and `NaN`) names no number, and a
+      # Symbol/Proc bound is resolved per call against the record — the same stand-down a Symbol `length:`
+      # bound gets. Restricted to Integer and Float on purpose: a `BigDecimal` or `Rational` bound has no
+      # single JSON number form (its `to_json` depends on the consumer's setup), so it stands down rather than
+      # emit a value the document might carry as a string.
+      def self.emittable_numeric_bound?(bound)
+        case bound
+        when ::Integer then true
+        when ::Float then bound.finite?
+        else false
+        end
+      end
+
+      # Whether a `numericality:` entry restricts its value to whole numbers, which narrows the emitted type
+      # from "number" to "integer" even when a wider `type:` token would otherwise decide it.
+      def self.declared_only_integer?(entry_opts) = validator_entry_options(entry_opts)[:only_integer] ? true : false
+
       # Whether a `format:` ENTRY would let a nil through. FormatValidator tests `value.to_s` against the
       # pattern (activemodel 7.2.2.2), so a nil is tested as the empty string and the pattern decides — with
       # the polarity flipped by key: `with:` records an error UNLESS the pattern matches, so it tolerates a nil

@@ -5647,4 +5647,149 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(Axn::Validation::Base.emittable_length_ceiling?(nil)).to be(false)
     end
   end
+
+  # `enum` (from `inclusion:`) and the size bounds (from `length:`) projected; nothing else did. A declared
+  # numeric bound was enforced at runtime and advertised nowhere, which is LOOSER than the runtime — the one
+  # direction reflection is not licensed to err in (docs/reference/class.md: stricter, never looser).
+  #
+  # Bounds are read through `Validation::Base.declared_numeric_bounds`, the same reader/mapper split
+  # `length:` uses (`declared_length_checks` -> `size_bounds_for`), so the runtime bound and the emitted
+  # bound cannot disagree about one declaration.
+  describe "numeric bounds" do
+    def prop_for(field = :n, &declaration)
+      build_axn(&declaration).input_schema[:properties][field]
+    end
+
+    it "emits exclusiveMinimum for greater_than" do
+      expect(prop_for { expects :n, type: Integer, numericality: { greater_than: 0 } })
+        .to include(exclusiveMinimum: 0)
+    end
+
+    it "emits minimum for greater_than_or_equal_to" do
+      expect(prop_for { expects :n, type: Integer, numericality: { greater_than_or_equal_to: 1 } })
+        .to include(minimum: 1)
+    end
+
+    it "emits exclusiveMaximum for less_than" do
+      expect(prop_for { expects :n, type: Integer, numericality: { less_than: 10 } })
+        .to include(exclusiveMaximum: 10)
+    end
+
+    it "emits maximum for less_than_or_equal_to" do
+      expect(prop_for { expects :n, type: Integer, numericality: { less_than_or_equal_to: 10 } })
+        .to include(maximum: 10)
+    end
+
+    it "emits both bounds when both are declared" do
+      expect(prop_for { expects :n, type: Integer, numericality: { greater_than: 0, less_than: 10 } })
+        .to include(exclusiveMinimum: 0, exclusiveMaximum: 10)
+    end
+
+    it "emits const for equal_to" do
+      expect(prop_for { expects :n, type: Integer, numericality: { equal_to: 5 } }).to include(const: 5)
+    end
+
+    it "emits a Float bound" do
+      expect(prop_for { expects :n, type: Float, numericality: { greater_than: 0.5 } })
+        .to include(exclusiveMinimum: 0.5)
+    end
+
+    # ActiveModel resolves an `in:` range through `Object#in?`, inclusive of both ends unless the range
+    # excludes its own, which is the same resolution `length:`'s range already gets.
+    it "expands an inclusive in: range into both bounds" do
+      expect(prop_for { expects :n, type: Integer, numericality: { in: 1..10 } })
+        .to include(minimum: 1, maximum: 10)
+    end
+
+    it "expands an exclusive-end in: range into an exclusiveMaximum" do
+      expect(prop_for { expects :n, type: Integer, numericality: { in: 1...10 } })
+        .to include(minimum: 1, exclusiveMaximum: 10)
+    end
+
+    it "reads the same bounds off a comparison: entry" do
+      expect(prop_for { expects :n, type: Integer, comparison: { greater_than: 0 } })
+        .to include(exclusiveMinimum: 0)
+    end
+
+    # `comparison:` has no `in:` check of its own (ActiveModel's COMPARE_CHECKS names five operators and
+    # `other_than:`), so reading a range there would emit a bound nothing enforces.
+    it "does not expand an in: range on a comparison: entry, which ActiveModel never reads" do
+      prop = prop_for { expects :n, type: Integer, comparison: { in: 1..10 } }
+
+      expect(prop).not_to have_key(:minimum)
+      expect(prop).not_to have_key(:maximum)
+    end
+
+    it "narrows the type to integer under only_integer, even when type: names a wider Numeric" do
+      expect(prop_for { expects :n, type: Numeric, numericality: { only_integer: true } })
+        .to include(type: "integer")
+    end
+
+    describe "stand-downs" do
+      it "emits nothing for other_than, an inverted operator with no keyword" do
+        expect(prop_for { expects :n, type: Integer, numericality: { other_than: 5 } })
+          .not_to have_key(:const)
+      end
+
+      it "emits nothing for odd/even, a parity check with no keyword" do
+        prop = prop_for { expects :n, type: Integer, numericality: { odd: true } }
+
+        expect(prop).not_to have_key(:minimum)
+        expect(prop).not_to have_key(:multipleOf)
+      end
+
+      # ActiveModel resolves a Symbol or Proc bound per call against the record, so no fixed number expresses
+      # it — the same stand-down a Symbol `length:` bound already gets.
+      it "emits nothing for a Symbol bound" do
+        expect(prop_for { expects :n, type: Integer, numericality: { greater_than: :floor } })
+          .not_to have_key(:exclusiveMinimum)
+      end
+
+      it "emits nothing for a Proc bound" do
+        expect(prop_for { expects :n, type: Integer, numericality: { greater_than: ->(_r) { 1 } } })
+          .not_to have_key(:exclusiveMinimum)
+      end
+
+      it "emits nothing for an infinite bound, which no fixed number expresses" do
+        expect(prop_for { expects :n, type: Integer, numericality: { less_than: Float::INFINITY } })
+          .not_to have_key(:exclusiveMaximum)
+      end
+
+      # `comparison:` accepts any Comparable, so a bound may be a String or a Date. JSON Schema's numeric
+      # bound keywords take a NUMBER, so emitting one there would produce an invalid document.
+      it "emits nothing for a non-numeric comparison bound" do
+        prop = prop_for { expects :n, type: String, comparison: { greater_than: "b" } }
+
+        expect(prop).not_to have_key(:exclusiveMinimum)
+        expect(prop).not_to have_key(:minimum)
+      end
+
+      it "emits nothing on a non-numeric emitted type" do
+        expect(prop_for { expects :n, type: String, numericality: { greater_than: 0 } })
+          .not_to have_key(:exclusiveMinimum)
+      end
+
+      it "emits nothing for a disabled entry" do
+        expect(prop_for { expects :n, type: Integer, numericality: false, optional: true })
+          .not_to have_key(:exclusiveMinimum)
+      end
+    end
+
+    # A gated entry is counted as if its gate were open — the static-maximal policy every constraint in this
+    # emitter follows, since a condition can only relax enforcement at runtime, never tighten it.
+    it "emits a gated bound, static-maximally" do
+      expect(prop_for { expects :n, type: Integer, numericality: { greater_than: 0, if: -> { false } } })
+        .to include(exclusiveMinimum: 0)
+    end
+
+    it "agrees with the runtime on the same value" do
+      action = build_axn { expects :n, type: Integer, numericality: { greater_than: 0, less_than: 10 } }
+
+      expect(action.call(n: 5)).to be_ok
+      expect(action.call(n: 0)).not_to be_ok
+      expect(action.call(n: 10)).not_to be_ok
+      expect(action.input_schema[:properties][:n])
+        .to include(exclusiveMinimum: 0, exclusiveMaximum: 10)
+    end
+  end
 end

@@ -56,6 +56,24 @@ module Axn
           Time => "string",
         }.freeze
 
+        # Which JSON Schema keyword each ActiveModel comparison operator becomes. The exclusive pair is the
+        # draft-06+ NUMERIC form (`exclusiveMinimum: 0`), not draft-04's boolean flag beside `minimum:`.
+        NUMERIC_BOUND_KEYS = {
+          greater_than: :exclusiveMinimum,
+          greater_than_or_equal_to: :minimum,
+          less_than: :exclusiveMaximum,
+          less_than_or_equal_to: :maximum,
+          equal_to: :const,
+        }.freeze
+
+        # The emitted types a numeric bound keyword applies to. A bound on any other type would be ignored by a
+        # validator at best and invalid at worst, so it is not emitted there at all.
+        NUMERIC_TYPES = %w[integer number].freeze
+
+        # The two entries that compare a value against a bound, and whether ActiveModel reads an `in:` range for
+        # each — `numericality:` does (`RANGE_CHECKS`), `comparison:` has no range check.
+        NUMERIC_BOUND_ENTRIES = { numericality: true, comparison: false }.freeze
+
         NULL_BRANCH = { type: "null" }.freeze
 
         FORMAT_MAP = {
@@ -1297,6 +1315,7 @@ module Axn
           # the key any earlier reads an intermediate type and lands the floor under a key that cannot express
           # it. Nothing above depends on the constraint already being there.
           apply_size_constraints!(prop, config)
+          apply_numeric_bounds!(prop, config)
 
           prop
         end
@@ -1365,6 +1384,29 @@ module Axn
         # follows the emitted type into a union's `anyOf` branches as well as a single `type:`.
         # For a String under `presence:` the runtime also rejects whitespace-only values, which
         # `minLength` cannot express, so the emitted constraint stays a floor rather than an exact mirror.
+        # The bound twin of the emptiness floor/ceiling: a declared `numericality:`/`comparison:` bound reflects
+        # as the JSON Schema keyword that means the same thing. Read through `Base.declared_numeric_bounds`, the
+        # same reader the runtime bound comes from, so the two cannot disagree about one declaration.
+        #
+        # Emitting only ever shrinks the schema-valid set, so it preserves the documented direction (stricter
+        # than the runtime, never looser) by construction — and every case a bound cannot be carried exactly
+        # stands down to emitting nothing, which is where this started.
+        def apply_numeric_bounds!(prop, config)
+          return unless Array(prop[:type]).intersect?(NUMERIC_TYPES)
+
+          entries = Axn::Validation::Base.validator_entries(config.validations)
+          NUMERIC_BOUND_ENTRIES.each do |key, ranged|
+            entry = entries[key]
+            next unless entry
+
+            Axn::Validation::Base.declared_numeric_bounds(entry, ranged:).each do |operator, bound|
+              next unless Axn::Validation::Base.emittable_numeric_bound?(bound)
+
+              prop[NUMERIC_BOUND_KEYS.fetch(operator)] = bound
+            end
+          end
+        end
+
         def apply_size_constraints!(prop, config)
           minimum = declared_size_minimum(config)
           maximum = declared_size_maximum(config)
@@ -2049,8 +2091,11 @@ module Axn
             type_opt = validations[:type]
             klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
             type_hashes = Array(klass).map { |k| single_type_for(k, for_output:) }.uniq
-            return type_hashes.first if type_hashes.size == 1
+            return narrow_to_integer(type_hashes.first, validations) if type_hashes.size == 1
 
+            # A union stands down from the `only_integer:` narrowing below: narrowing one branch of
+            # `[Integer, Float]` duplicates the other, and leaving the union alone is the looser reading that
+            # was already being emitted.
             return { anyOf: type_hashes }
           end
 
@@ -2073,6 +2118,20 @@ module Axn
           end
 
           {}
+        end
+
+        # `numericality: { only_integer: true }` restricts the value to whole numbers, so it narrows a "number"
+        # the `type:` token resolved to. Without this the token won the whole decision and a
+        # `type: Numeric, numericality: { only_integer: true }` field advertised "number" while the runtime
+        # accepted integers only — looser than the contract. Only "number" is narrowed: every other type is
+        # either already "integer" or not a number at all, where `only_integer:` has nothing to say.
+        def narrow_to_integer(type_hash, validations)
+          return type_hash unless type_hash[:type] == "number"
+
+          entry = Axn::Validation::Base.validator_entries(validations)[:numericality]
+          return type_hash unless entry && Axn::Validation::Base.declared_only_integer?(entry)
+
+          type_hash.merge(type: "integer")
         end
 
         def enum_scalar_type(value)
