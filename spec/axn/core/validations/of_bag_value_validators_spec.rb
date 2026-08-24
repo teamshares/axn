@@ -187,6 +187,25 @@ RSpec.describe "value validators in an of: bag" do
       expect(action.call(f: [%w[ya]])).not_to be_ok
     end
 
+    # Canonicalizing writes back into the bag, so it has to write a NEW Hash rather than convert the caller's
+    # in place — the aliasing rule `detach_option_containers!` exists for, applied to the one container this
+    # step reaches that no earlier step did: a validator entry's own option bag.
+    it "leaves the caller's validator option bag unmutated" do
+      option_bag = { "with" => /\A[A-Z]+\z/ }
+      build_axn { expects :f, type: Array, of: { klass: String, format: option_bag } }
+
+      expect(option_bag).to eq("with" => /\A[A-Z]+\z/)
+    end
+
+    it "does not carry a later mutation of that bag into the declared contract" do
+      option_bag = { "with" => /\A[A-Z]+\z/ }
+      action = build_axn { expects :f, type: Array, of: { klass: String, format: option_bag } }
+      option_bag["with"] = /\A\d+\z/
+
+      expect(action.call(f: %w[AB])).to be_ok
+      expect(action.call(f: %w[12])).not_to be_ok
+    end
+
     it "reflects the canonicalized option, so the schema agrees with the runtime" do
       action = build_axn { expects :f, type: Array, of: { klass: String, format: { "with" => /\A[A-Z]+\z/ } } }
 
