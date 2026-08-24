@@ -12,43 +12,69 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
     build_axn { expects :f, **opts }
   end
 
-  describe "absence: against the non-emptiness floor a typed field carries" do
-    [Array, Hash, String].each do |klass|
+  # `presence:` and `absence:` are exact complements at EVERY type — no value is blank and not blank — so this
+  # needs no size reasoning, and is the only rule here that does not.
+  describe "absence: against the presence check axn infers" do
+    [Array, Hash, String, Integer].each do |klass|
       it "refuses absence: true on a #{klass} field" do
         expect { declare(type: klass, absence: true) }
-          .to raise_error(ArgumentError, /admits no value at all/)
+          .to raise_error(ArgumentError, /presence: and absence:.*admit no value at all/m)
       end
     end
 
-    # `absence:` names a ceiling of 0 wherever the value has a size or not: the floor comes from the presence
-    # check axn infers, and presence and absence are exact complements.
-    it "refuses absence: true on an untyped field, where the inferred presence check is the whole floor" do
-      expect { declare(absence: true) }.to raise_error(ArgumentError, /admits no value at all/)
+    it "refuses absence: true on an untyped field, where the inferred check is the whole other half" do
+      expect { declare(absence: true) }
+        .to raise_error(ArgumentError, /presence: and absence:.*admit no value at all/m)
     end
 
-    it "refuses absence: true on an Integer field, whose type rejects the only blank an absence admits" do
-      expect { declare(type: Integer, absence: true) }.to raise_error(ArgumentError, /admits no value at all/)
+    it "refuses an authored presence: true beside it" do
+      expect { declare(type: Array, presence: true, absence: true) }
+        .to raise_error(ArgumentError, /presence: and absence:.*admit no value at all/m)
     end
 
-    it "names both bounds and the spelling that produced the ceiling" do
+    it "names the flag that suppresses the check axn infers" do
       expect { declare(type: Array, absence: true) }
-        .to raise_error(ArgumentError, /at least 1.*at most 0 \(from `absence:`\)/m)
+        .to raise_error(ArgumentError, /`allow_empty: true` \(or `presence: false`\)/)
     end
 
-    # The remedy tracks which side the floor came from: `allow_empty:` moves the emptiness floor and nothing
-    # else, so offering it against a floor the author spelled in `length:` would send them the wrong way.
-    it "offers allow_empty: only where the emptiness axis is the floor" do
-      expect { declare(type: Array, absence: true) }.to raise_error(ArgumentError, /drop the floor with `allow_empty: true`/)
-      expect { declare(type: Array, length: { minimum: 3, maximum: 2 }) }
-        .to raise_error(ArgumentError, /Correct the bounds so the floor does not sit above the ceiling/)
+    # The one place a gate rescues rather than being counted static-maximally: the gated pair has a reading the
+    # ungated pair has not, and no structural test tells complementary conditions from identical ones.
+    it "stands down where either half carries its own gate" do
+      expect { declare(type: Array, presence: { unless: -> { false } }, absence: { if: -> { false } }) }
+        .not_to raise_error
     end
 
-    # A gate removes the check rather than giving it a reading, and reflection is static-maximal — so a gated
-    # absence still emits the `maxItems: 0` that collides with the floor. Same policy the value-constraint
-    # guard states for a gated `inclusion:`.
-    it "refuses a GATED absence:, which still emits its ceiling" do
-      expect { declare(type: Array, absence: { if: -> { false } }) }
-        .to raise_error(ArgumentError, /admits no value at all/)
+    it "leaves the gated pair working at runtime" do
+      action = declare(type: Array, presence: { unless: :archived }, absence: { if: :archived })
+      action.define_method(:archived) { false }
+
+      expect(action.call(f: ["a"]).ok?).to be(true)
+    end
+
+    # The derived ceiling needs an unconditional check, so a gated absence names none — and the contract really
+    # is satisfiable on every call where the gate is closed.
+    it "declares a GATED absence: on an Array, and emits no ceiling for it" do
+      action = declare(type: Array, absence: { if: -> { false } })
+
+      expect(action.call(f: ["a"]).ok?).to be(true)
+      expect(action.input_schema[:properties][:f]).not_to have_key(:maxItems)
+    end
+
+    # ActiveSupport gives String its own `blank?`: `"  "` is blank and two characters long. So `absence:` there
+    # bounds whitespace rather than size, and nothing may read a size bound out of it — this contract really is
+    # satisfiable, by any whitespace-only String.
+    it "declares a String contract whose only admissible values are whitespace" do
+      action = declare(type: String, presence: false, absence: true, length: { minimum: 1 })
+
+      expect(action.call(f: "  ").ok?).to be(true)
+      expect(action.call(f: "").ok?).to be(false)
+      expect(action.call(f: "x").ok?).to be(false)
+    end
+
+    it "emits no size ceiling for a String absence:, which names no size" do
+      prop = declare(type: String, absence: true, allow_empty: true).input_schema[:properties][:f]
+
+      expect(prop).not_to have_key(:maxLength)
     end
 
     it "leaves absence: false alone — a disabled validator constrains nothing" do
@@ -93,6 +119,16 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
     it "refuses a zero ceiling against the floor a blank-intolerant entry picks up" do
       expect { declare(type: Array, length: { maximum: 0, allow_blank: false }) }
         .to raise_error(ArgumentError, /admits no value at all/)
+    end
+
+    it "names correcting the bounds rather than dropping a floor the author did not write" do
+      expect { declare(type: Array, length: { minimum: 3, maximum: 2 }) }
+        .to raise_error(ArgumentError, /Correct the bounds so the floor does not sit above the ceiling/)
+    end
+
+    it "offers allow_empty: where the emptiness axis is the floor" do
+      expect { declare(type: Array, length: { maximum: 0 }) }
+        .to raise_error(ArgumentError, /drop the floor with `allow_empty: true`/)
     end
 
     it "leaves a floor that meets its ceiling alone" do

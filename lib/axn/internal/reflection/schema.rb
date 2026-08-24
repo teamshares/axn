@@ -1910,21 +1910,17 @@ module Axn
         end
 
         # The largest size this field's validators admit, or nil when they bound it nowhere. Two spellings name
-        # one, and `absence:` is the tighter of them whenever it is live, so it answers first: it rejects every
-        # non-blank value, which leaves size 0 as the only admissible size — the exact statement
-        # `length: { maximum: 0 }` makes. Without it a field carrying `absence:` beside a dropped floor emitted
-        # no ceiling at all, a node LOOSER than the contract it projects.
+        # one, and `absence:` is the tighter of them whenever it names one at all, so it answers first: it
+        # rejects every non-blank value, so where a type's blank values are exactly its EMPTY ones it leaves
+        # size 0 as the only admissible size — the exact statement `length: { maximum: 0 }` makes. Without it a
+        # field carrying `absence:` beside a dropped floor emitted no ceiling at all, a node LOOSER than the
+        # contract it projects.
         #
         # Blank-tolerance cannot loosen either one (an empty value measures 0, which every emittable ceiling
         # admits), and a GATED entry is counted as if its gate were open — the static-maximal policy every
         # constraint here follows.
-        #
-        # For a String the ceiling is biased STRICTER than the runtime rather than exact: `blank?` covers a
-        # whitespace-only value that `empty?` does not, so `"  "` clears `absence:` and fails `maxLength: 0`.
-        # That is the same asymmetry `presence:` already carries in the other direction (see
-        # `apply_size_constraints!`), and the documented direction for reflection to err in.
         def declared_size_maximum(validations)
-          return 0 if non_blank_value_rejected?(validations)
+          return 0 if absence_bounds_size?(validations)
 
           length = effective_entry_options(validations[:length], shared_validation_options(validations))
           declared = Axn::Validation::Base.declared_length_ceiling(length)
@@ -1954,11 +1950,54 @@ module Axn
 
           node.merge(propertyNames: { anyOf: [axis, { enum: shaped.keys.map(&:to_s) }] })
         end
-        # Whether a live `absence:` forbids every non-blank value. Falsy entries are the disabled validators
-        # ActiveModel skips, so they forbid nothing; every other spelling — a bare `true`, an options bag, a
-        # gated one — is counted, since a gate can only relax enforcement on a given call and reflection reads
-        # the maximal contract.
-        def non_blank_value_rejected?(validations) = !!Axn::Validation::Base.validator_entries(validations)[:absence]
+        # The classes whose BLANK values are exactly their EMPTY ones, so "rejects every non-blank value" and
+        # "admits size 0 only" say the same thing about them. `String` is deliberately absent and is the whole
+        # reason this is a list rather than `EMPTY_CONTAINER_CLASSES`: ActiveSupport gives it a `blank?` of its
+        # own (`BLANK_RE`), under which `"  "` is blank while `empty?` and `length` both say otherwise — so an
+        # `absence:` on a String bounds WHITESPACE, which no size key expresses, rather than size.
+        #
+        # `ActionController::Parameters` is not here either: it is identified by rendered name rather than by
+        # constant, and a list this one is read off must be comparable by identity.
+        BLANK_IS_EMPTY_CLASSES = [::Hash, ::Array].freeze
+
+        # Whether a live `absence:` bounds this declaration's SIZE — the question `declared_size_maximum` asks,
+        # and the one a guard may lean on, as opposed to the looser "is an `absence:` present".
+        #
+        # Three conditions, each load-bearing:
+        #
+        #   * the entry is LIVE — a falsy one is the disabled validator ActiveModel skips, so it forbids
+        #     nothing;
+        #   * every declared type is one whose blank values are its empty ones, since only there does the blank
+        #     axis land on the size axis at all;
+        #   * the entry is UNGATED. This is the one bound here not counted static-maximally, and the asymmetry
+        #     is between an AUTHORED bound and an INFERRED one. A `length:` ceiling is a size constraint the
+        #     author wrote, so it is emitted as written whatever gates it. A size meaning for `absence:` is one
+        #     axn infers, and it may only infer it from a check that always runs: `presence: { unless: :archived
+        #     }, absence: { if: :archived }` is a working contract, and deriving a `maxItems: 0` from its
+        #     conditional half would put a ceiling on the document that the contract does not carry on the
+        #     calls where the gate is closed — most of them.
+        def absence_bounds_size?(validations)
+          entry = Axn::Validation::Base.validator_entries(validations)[:absence]
+          return false unless entry
+          return false if Axn::Validation::Base.entry_self_gated?(entry)
+
+          tokens = declared_type_tokens(validations)
+          tokens.any? && tokens.all? { |token| blank_is_empty_class?(token) }
+        end
+
+        def blank_is_empty_class?(token)
+          BLANK_IS_EMPTY_CLASSES.any? { |klass| klass.equal?(token) } || (defined?(Set) && ::Set.equal?(token))
+        end
+
+        # The type tokens a declaration names, reading a `type:` bag's `klass:` where a bag was declared and the
+        # bare spelling otherwise — the same unwrapping `json_type_for` does, so what is judged here and what is
+        # emitted there are read off one shape.
+        def declared_type_tokens(validations)
+          type_opt = validations[:type]
+          return [] unless type_opt
+
+          Array(type_opt.is_a?(::Hash) ? type_opt[:klass] : type_opt)
+        end
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
         # `additionalProperties:` — and a `shape:`'s typed member contracts as `properties:`.

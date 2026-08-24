@@ -4182,11 +4182,49 @@ module Axn
         def _reject_unsatisfiable_size_interval!(validations, where:)
           return if Axn::Validation::Base.nil_accepted?(validations)
 
+          _reject_blank_axis_complement!(validations, where:)
+
           minimum = Internal::Reflection::Schema.declared_size_minimum(validations)
           maximum = Internal::Reflection::Schema.declared_size_maximum(validations)
 
           _raise_empty_size_interval!(validations, where, minimum, maximum) if minimum && maximum && minimum > maximum
           _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
+        end
+
+        # `presence:` and `absence:` are exact complements: ActiveModel's presence check errors unless the value
+        # is `!blank?` and its absence check errors unless the value IS blank, so a declaration carrying both
+        # live admits nothing whatever the declared type — no value is blank and not blank. Asked FIRST, and
+        # separately from the size interval, because it is the one question here that needs no size reasoning:
+        # the blank axis lands on the size axis only for a type whose blank values are its empty ones, and for
+        # a `String` it does not (`"  "` is blank, and two characters long).
+        #
+        # The presence half is usually the check axn infers, which is why this is reachable from a declaration
+        # naming only `absence:` — and why `allow_empty: true` / `presence: false`, which suppress that check,
+        # are the fix rather than a workaround.
+        #
+        # A GATE on either entry stands the rule down, and this is the one place in this file where a gate
+        # rescues rather than being counted static-maximally. The reason is that the gated pair has a legitimate
+        # reading the ungated pair does not: `presence: { unless: :archived? }, absence: { if: :archived? }` is
+        # a working contract, and no structural test can tell complementary conditions from identical ones
+        # (two Procs are never comparable). Refusing it would reject a declaration that works, which this guard
+        # must never do — so it under-restricts here, and the emitted node is unaffected either way.
+        def _reject_blank_axis_complement!(validations, where:)
+          entries = Axn::Validation::Base.validator_entries(validations)
+          presence = entries[:presence]
+          absence = entries[:absence]
+          return unless presence && absence
+          return unless _entry_guaranteed_to_run?(presence) && _entry_guaranteed_to_run?(absence)
+
+          # Both exits are named rather than the one that applies: by the time this runs, an inferred presence
+          # check and an authored one are the same entry (`_apply_default_presence!` writes a bare `true`, and
+          # the nil-skip pass rewrites either into an options bag), so which was written is no longer legible
+          # here — and a message that guessed would send half its readers the wrong way.
+          raise ArgumentError,
+                "presence: and absence: on #{where} admit no value at all: they are exact complements — " \
+                "presence rejects every blank value, absence rejects every value that is not blank — so " \
+                "nothing satisfies both. Drop one of the two: `allow_empty: true` (or `presence: false`) " \
+                "suppresses the non-emptiness check, including the one axn infers where a declaration " \
+                "names none."
         end
 
         def _raise_empty_size_interval!(validations, where, minimum, maximum)
@@ -4220,7 +4258,7 @@ module Axn
         # The ceiling's spelling, asked through the emitter's own predicate so the message cannot name one
         # source while the derivation used the other.
         def _size_ceiling_source(validations)
-          Internal::Reflection::Schema.non_blank_value_rejected?(validations) ? "from `absence:`" : "from `length:`"
+          Internal::Reflection::Schema.absence_bounds_size?(validations) ? "from `absence:`" : "from `length:`"
         end
 
         # An `inclusion:` set every member of which the size bounds exclude. The same "does any member leave a

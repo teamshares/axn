@@ -5724,12 +5724,29 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop[:maxItems]).to eq(0)
     end
 
-    it "emits it for a Hash and a String field on their own size keys" do
+    it "emits it for a Hash field on its own size key" do
       meta = build_axn { expects :meta, type: Hash, absence: true, allow_empty: true }.input_schema[:properties][:meta]
-      name = build_axn { expects :name, type: String, absence: true, allow_empty: true }.input_schema[:properties][:name]
 
       expect(meta[:maxProperties]).to eq(0)
-      expect(name[:maxLength]).to eq(0)
+    end
+
+    # ActiveSupport gives String a `blank?` of its own, under which `"  "` is blank and two characters long —
+    # so an `absence:` there bounds WHITESPACE, which no size key expresses, and reading a ceiling out of it
+    # would advertise a bound the runtime does not carry.
+    it "emits no ceiling for a String absence:, whose blank values are not its empty ones" do
+      name = build_axn { expects :name, type: String, absence: true, allow_empty: true }.input_schema[:properties][:name]
+
+      expect(name).not_to have_key(:maxLength)
+    end
+
+    # A ceiling derived from `absence:` is one axn infers rather than one the author wrote, so it is taken only
+    # from a check that always runs — unlike a `length:` bound, which is emitted as written whatever gates it.
+    it "emits no ceiling for a GATED absence:" do
+      prop = build_axn do
+        expects :tags, type: Array, absence: { if: -> { false } }, allow_empty: true
+      end.input_schema[:properties][:tags]
+
+      expect(prop).not_to have_key(:maxItems)
     end
 
     it "emits it beside the nullability branch a tolerance adds" do

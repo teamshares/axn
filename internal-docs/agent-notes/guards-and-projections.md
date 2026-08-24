@@ -83,7 +83,7 @@ disagree about what the validator TARGETS, not about how strict to be.
 
 The corollary above was written from one side: a satisfiable contract emitting an unsatisfiable node. The other side reaches the same place from a broken contract — the DECLARATION admits nothing, so there is no honest node to emit and whatever comes out is a document about a contract that does not exist.
 
-Four spellings turned out to be one shape (PRO-3220): the admissible SIZES form an empty interval, a floor the declaration imposes sitting above a ceiling it also imposes. `absence:` on a typed field, a `length:` ceiling of 0, a `length:` naming `minimum: 3, maximum: 2`, and an `inclusion:` set every member of which the bounds exclude — they differ only in which spelling supplies which bound. Finding the one axis is what turned four detectors into one test, and it is worth looking for before writing the second detector of a family.
+Four spellings looked like one shape (PRO-3220): the admissible SIZES form an empty interval, a floor the declaration imposes sitting above a ceiling it also imposes. `absence:` on a typed field, a `length:` ceiling of 0, a `length:` naming `minimum: 3, maximum: 2`, and an `inclusion:` set every member of which the bounds exclude. Looking for the one axis is worth doing before writing the second detector of a family — but three of those four are on the size axis and the `absence:` one is not, which is the subject of the section below.
 
 Three mechanics that made the single test possible, each an instance of a rule already stated here:
 
@@ -92,3 +92,16 @@ Three mechanics that made the single test possible, each an instance of a rule a
 - **The guard runs LAST in `_parse_field_validations`**, unlike every other guard there, which reads the author's own spelling. The floor it weighs is one axn itself installs (`_apply_default_presence!`), so it has to judge the settled bag — the same bag the emitter will read.
 
 The stand-downs split along whether the emitted NODE survives, not whether the runtime does. A nil tolerance rescues, because the tolerated nil is a passing value and the node stays satisfiable through its null branch. An `if:`/`unless:` gate does not, because reflection is static-maximal and emits the gated bound anyway — so the runtime is satisfiable while the document is not, which is the original defect wearing a gate.
+
+## A biased-stricter projection is not evidence about the contract
+
+`absence:` rejects every non-blank value. On an `Array` that means size 0 exactly, so a `maxItems: 0` is its faithful projection. On a `String` it does not: ActiveSupport gives String its own `blank?`, under which `"  "` is blank and two characters long. Emitting `maxLength: 0` there is still *permissible* — it is biased stricter, the documented direction for reflection to err in — and PRO-3220 first shipped it that way.
+
+The guard then read that ceiling back and used it to prove a contract unsatisfiable, which refused `type: String, presence: false, absence: true, length: { minimum: 1 }` — a contract satisfied by every whitespace-only String. Two rules collided and only one of them can bend:
+
+- a PROJECTION may be stricter than the runtime, because a caller who obeys it is still correct;
+- a GUARD may not, because over-restriction rejects a legal declaration, and there is no recovery from a declaration that will not declare.
+
+So an approximation loses its licence the moment a guard reads it as fact. Where a guard must lean on a projected bound, the bound has to be EXACT on the axis being judged, or the guard stands down. The fix split the family in two: `presence:` ∧ `absence:` is a blank-axis contradiction, exact at every type and needing no size reasoning at all, while the size rule keeps only the bounds that really are about size — which meant withdrawing the String ceiling from the emitter as well, since a bound no guard may trust is one worth asking whether to emit at all.
+
+The same distinction settles gates in opposite directions in the two rules, and the test is *authored or inferred*, not *conditional or not*. A `length:` ceiling is a size constraint the author wrote, so it is emitted as written whatever gates it, and the size rule counts it static-maximally. A size meaning for `absence:` is one axn infers, so it may only be inferred from a check that always runs — `presence: { unless: :archived }, absence: { if: :archived }` is a working contract, and a `maxItems: 0` derived from its conditional half would describe a document the contract does not carry on the calls where the gate is closed.
