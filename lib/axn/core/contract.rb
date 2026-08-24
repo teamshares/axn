@@ -1203,13 +1203,14 @@ module Axn
         # options hash, which reads the keys it knows and drops the rest, so an unrecognized key declares
         # cleanly, constrains nothing, and every value passes.
         #
-        # `on:` is admitted here and refused by `_reject_inner_contract_context_scope!` — the bag-level twin of
-        # the field's `_reject_validator_context_scope!`, and the one that reaches a bag at every position —
-        # which names the actual problem (axn has no validation contexts) instead of reporting the key as
-        # unknown. The other shared options stay admitted because axn WRITES two of them here: the tolerance
-        # push-down merges `allow_blank:`/`allow_nil:` into every validator entry, this bag included, so a
-        # whitelist without them would refuse `of: Integer, optional: true`. Whether they then do anything
-        # depends on the position, which is `AXIS_INERT_OPTION_KEYS` below.
+        # `on:` and `strict:` are admitted here and refused by `_reject_inner_contract_context_scope!` /
+        # `_reject_inner_contract_strict!` — the bag-level twins of the field's own scans, and the ones that reach
+        # a bag at every position — which name the actual problem (axn has no validation contexts, and no
+        # strict-raising mode) instead of reporting the key as unknown. The remaining shared options stay
+        # admitted because axn WRITES two of them here: the tolerance push-down merges `allow_blank:`/`allow_nil:`
+        # into every validator entry, this bag included, so a whitelist without them would refuse
+        # `of: Integer, optional: true`. Whether they then do anything depends on the position, which is
+        # `AXIS_INERT_OPTION_KEYS` below.
         OF_OPTION_KEYS = (Set.new(%i[klass of shape message]) | Axn::Validation::Base.shared_validation_option_keys).freeze
 
         # The same set for the other container. A Hash's insides are two axes rather than one element position,
@@ -2438,6 +2439,7 @@ module Axn
           _reject_unconstraining_of_bag!(bag)
           _reject_unsupported_of_klass!(bag)
           _reject_inner_contract_context_scope!(bag, fields)
+          _reject_inner_contract_strict!(bag, fields)
           _reject_unusable_of_message!(bag, fields)
         end
 
@@ -2606,6 +2608,20 @@ module Axn
           _raise_validator_context_scope!("an `of:` bag", _declared_fields_label(fields), "that check runs")
         end
 
+        # The bag-level twin of `_reject_strict_validation!`'s entry scan, for the reason that pair exists on the
+        # context-scope side: the field's own `of:` IS an entry, so the scan sees it, but a bag nested inside one
+        # and a map's axis are reached only by the declaration walk. Asked of the bag directly here, through the
+        # same predicate the scan uses, so one rule decides it at every position.
+        #
+        # It fires for the field's own `of:` bag as well, ahead of the entry scan, which is deliberate: this
+        # message names the bag the author wrote rather than the validator key it rode in on, and one spelling of
+        # one defect should not read two ways.
+        def _reject_inner_contract_strict!(bag, fields)
+          return unless Axn::Validation::Base.entry_declares_strict?(bag)
+
+          _raise_strict_validation!("an `of:` bag", _declared_fields_label(fields))
+        end
+
         # A `message:` replaces the type description a mismatch reports, so a bag naming no class has nothing
         # for it to replace: `OfValidator#matches_axis?` waves every value through an empty class list, the
         # mismatch branch is never reached, and the message the author wrote is never emitted. Reachable since
@@ -2646,10 +2662,11 @@ module Axn
         # narrower ban safe — verified against the stored config, where `optional: true` on a map lands the pair
         # on the map bag and leaves the axis untouched.
         #
-        # `on:` is left out because `_check_inner_contract_bag!` has already refused it a step earlier, naming
-        # the real problem: axn has no validation contexts, which is true at every position rather than at this
-        # one. Listing it here would offer "drop it" where the message above offers `if:`/`unless:` instead.
-        AXIS_INERT_OPTION_KEYS = (Axn::Validation::Base.shared_validation_option_keys - %i[on]).freeze
+        # `on:` and `strict:` are left out because `_check_inner_contract_bag!` has already refused each a step
+        # earlier, naming the real problem — axn has no validation contexts, and no strict-raising mode — both of
+        # which are true at every position rather than at this one. Listing either here would offer "drop it, the
+        # axis reads nothing" where the messages above name what axn does not have.
+        AXIS_INERT_OPTION_KEYS = (Axn::Validation::Base.shared_validation_option_keys - %i[on strict]).freeze
 
         # Every offender at once: an author who wrote two of them has one declaration to fix. The keys are
         # axn's own frozen Symbols, so naming them runs nothing of the caller's.
@@ -3216,17 +3233,22 @@ module Axn
           keys.empty? ? Internal::ShapeGraph::NO_SHAPED_KEYS : keys.uniq.freeze
         end
 
+        # Bag keys admitted by the whitelist only so a dedicated guard can name what is actually wrong with them.
+        UNADVERTISED_OF_KEYS = %i[on strict].freeze
+        private_constant :UNADVERTISED_OF_KEYS
+
         # Every offender at once: an author who wrote two of them has one declaration to fix, not two rounds
         # of the same error.
         def _reject_unknown_of_keys!(bag, allowed)
           offenders = bag.keys.reject { |key| allowed.include?(key) }
           return if offenders.empty?
 
-          # `on:` sits in the whitelist so `_reject_validator_context_scope!` can name the real problem (axn has
-          # no validation contexts) instead of reporting it as unknown — but it is left out of what this
+          # `on:` and `strict:` sit in the whitelist so `_reject_inner_contract_context_scope!` /
+          # `_reject_inner_contract_strict!` can name the real problem (axn has no validation contexts, and no
+          # strict-raising mode) instead of reporting either as unknown — but both are left out of what this
           # ADVERTISES, since a key this line calls supported and the next line refuses is not one to point an
           # author at.
-          supported = allowed.reject { |key| key == :on }
+          supported = allowed.reject { |key| UNADVERTISED_OF_KEYS.include?(key) }
           raise ArgumentError,
                 "of: does not support #{offenders.map { |key| _of_key_label(key) }.join(', ')} " \
                 "(supported: #{supported.map { |key| "#{key}:" }.join(', ')})"
@@ -3905,6 +3927,54 @@ module Axn
           _declared_type_tokens(nil.equal?(bag) ? declared : bag[:klass])
         end
 
+        # ActiveModel's `strict:` asks `errors.add` to RAISE instead of recording the error — and axn already
+        # settles a contract violation by raising, into the same handling: `Validation::Fields` collects the
+        # errors, the executor composes them into one `Axn::InboundValidationError` (or a user-facing failure),
+        # and the exception chain turns that into a failed result. A strict raise arrives at that chain having
+        # skipped the composition, so it can only take things away, never add the caller-facing raise ActiveModel
+        # documents:
+        #
+        # * a `user_facing:` violation loses its message — strict raises before the settlement that would have
+        #   reclassified it, so the caller sees the generic "Something went wrong" instead of the field's own text
+        # * co-occurring violations are lost — `errors.add` raises on the first one, so a report that named every
+        #   defect in the contract names one
+        # * a `strict:` naming a class outside StandardError escapes the call entirely, which no axn call does
+        #
+        # And it does none of that consistently: ActiveModel's own validators read the option out of the options
+        # hash they are handed, while axn's (`type:`, `of:`, `shape:`, `model:`, `validate:`) add their errors
+        # without forwarding it — so the same spelling raises beside `presence:` and is dropped beside `type:`.
+        # Refused rather than forwarded to the remaining five, since making it uniform would spread the losses
+        # above rather than fix them.
+        #
+        # Refused at EVERY position a validator's options are written — a field, a subfield, an ambient subfield,
+        # an exposure, a shape member, and an `of:` bag at any depth — through the two seams that reach them:
+        # this scan for a declaration's own key and its validator entries, `_reject_inner_contract_strict!` for a
+        # bag. Every offender is named at once: an author who wrote two of them has one declaration to fix.
+        def _reject_strict_validation!(validations, where:)
+          offenders = []
+          offenders << "the declaration" if Internal::ShapeGraph.carries_key?(validations, :strict)
+          Axn::Validation::Base.validator_entries(validations).each do |key, entry|
+            offenders << "#{key}:" if Axn::Validation::Base.entry_declares_strict?(entry)
+          end
+          return if offenders.empty?
+
+          _raise_strict_validation!(offenders.join(" / "), where)
+        end
+
+        # The one sentence, shared by the entry scan above and by the bag check that reaches the positions it
+        # cannot see (`_reject_inner_contract_strict!`) — the same split, and for the same reason, as the
+        # context-scope pair below. `inside` is where the `strict:` was written, so the message names the thing
+        # the author has to edit.
+        def _raise_strict_validation!(inside, where)
+          raise ArgumentError,
+                "`strict:` inside #{inside} on #{where} is ActiveModel's strict-raising mode, and axn does not " \
+                "have one: a contract violation already raises, and the strict exception lands in the same " \
+                "handling with LESS to say — it pre-empts the settlement, so a `user_facing:` message degrades " \
+                "to the generic one, co-occurring violations are dropped, and a class outside StandardError " \
+                "escapes the call. Drop `strict:`; a failed validation already stops the action. To shape what " \
+                "the failure says, use `message:` on the check, `user_facing:` on the field, or `fails_on`."
+        end
+
         # The one sentence, shared by the entry scan above and by the bag check that reaches the positions it
         # cannot see (`_reject_inner_contract_context_scope!`). `inside` is what the `on:` was written in — a
         # validator key, or a bag — so the message names the thing the author has to edit rather than a
@@ -4046,13 +4116,14 @@ module Axn
           # one entry that seam skips, which is why the predicate classifies and reads its key without
           # dispatching to the bag.
           #
-          # First of the group, because it is the broadest of the five judgments: the other four ask what a
+          # First of the group, because it is the broadest of the six judgments: the other five ask what a
           # validator can MEAN at this position, while this one asks whether the key names a validator at all —
           # and the answer is no wherever it is written. It reads only this hash's own keys (kwargs, so Symbols
           # by construction) and nothing nested, so unlike its neighbours it has no dependency on the
           # canonicalization above.
           _reject_unsupported_validator_keys!(validations, where: _declared_fields_label(fields))
           _reject_validator_context_scope!(validations, where: fields.map(&:to_s).inspect)
+          _reject_strict_validation!(validations, where: fields.map(&:to_s).inspect)
 
           # Beside the context-scope refusal: both refuse a validator that cannot do what the declaration says,
           # ahead of every consumer of this bag. Placement ahead of the tolerance push-down is not load-bearing
@@ -4101,11 +4172,11 @@ module Axn
             # ActiveModel's shared "default" options (`if:`/`unless:`/`on:`/`strict:`/`allow_blank:`/
             # `allow_nil:`) ride the hash as sibling keys of the validators but are NOT validators —
             # there is nothing to push tolerance into, and normalizing them as scalars would corrupt
-            # them (e.g. `strict: true` → `strict: { allow_blank:, allow_nil: }`, which then raises a
-            # bare `TypeError` at strict-raise time instead of `ActiveModel::StrictValidationFailed`).
-            # Slice them out (reusing AM's own canonical list so the set can't drift), transform only
-            # the real validators, then restore verbatim. Core-Ruby delete (not ActiveSupport's
-            # Hash#except!): axn runs outside Rails, where that core_ext may never be loaded.
+            # them (e.g. `if: :flag` → `if: { with: :flag, allow_blank:, allow_nil: }`, a Hash the
+            # callback machinery cannot resolve, so the gate stops deciding anything). Slice them out
+            # (reusing AM's own canonical list so the set can't drift), transform only the real
+            # validators, then restore verbatim. Core-Ruby delete (not ActiveSupport's Hash#except!):
+            # axn runs outside Rails, where that core_ext may never be loaded.
             shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
             shared_options = validations.slice(*shared_option_keys)
             shared_option_keys.each { |key| validations.delete(key) }
@@ -4147,7 +4218,6 @@ module Axn
           return unless _type_rejects_nil?(validations)
 
           shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
-          declaration_options = validations.slice(*shared_option_keys)
 
           # Iterate a snapshot of the keys: the loop reassigns entries as it goes, and Ruby forbids
           # mutating a Hash mid-iteration.
@@ -4158,20 +4228,10 @@ module Axn
             normalized = Axn::Validation::Base.normalize_validator_options(opt)
             next if normalized.key?(:allow_nil) || normalized.key?(:allow_blank)
 
-            # A strict entry RAISES instead of recording an error, and EachValidator's allow_nil skip
-            # happens BEFORE validate_each — so relaxing it would swallow the raise rather than merely
-            # drop a duplicate message. Standing down here preserves baseline behavior rather than being
-            # lossless: none of axn's own custom validators (type/of/validate/model/shape) forward
-            # `**options` to `errors.add`, so a `strict:` entry among them never raises regardless — it
-            # keeps recording its own derivative message alongside the type error exactly as it did
-            # before this guard runs. Only a validator that DOES forward `strict:` into `errors.add`
-            # (an ActiveModel built-in such as presence) actually raises and so benefits from being left
-            # untouched here.
-            # Strictness is per ENTRY, so the effective value is asked (an entry's own `strict:` wins
-            # over the declaration's), and the test is truthiness — the one AM applies — not blankness:
-            # `strict: ""` is blank yet still raises.
-            next if Axn::Validation::Base.entry_effective_option(normalized, declaration_options, :strict)
-
+            # Every entry that reaches here records an error rather than raising: `strict:` — the one
+            # option under which relaxing an entry would swallow a raise instead of dropping a duplicate
+            # message, since EachValidator's allow_nil skip runs BEFORE validate_each — is refused at
+            # declaration (`_reject_strict_validation!`), at both tiers and at every position.
             validations[key] = normalized.merge(allow_nil: true)
           end
         end
