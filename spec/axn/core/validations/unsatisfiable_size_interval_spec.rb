@@ -270,6 +270,26 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         expect { declare(type: Array, inclusion: { in: Set[[]] }) }.not_to raise_error
       end
 
+      # An exact Array can still carry a singleton `include?`, and a FROZEN one reaches a declared contract
+      # intact — `ShapeGraph.detached_option_array` stores it as the caller's object rather than copying,
+      # since nothing can mutate it. So the operation that runs is the set's, not the member's.
+      it "stands down on a frozen Array whose include? is its own" do
+        set = [[]]
+        set.define_singleton_method(:include?) { |value| value == [1] }
+        set.freeze
+
+        expect { declare(type: Array, length: { minimum: 1 }, inclusion: { in: set }) }.not_to raise_error
+      end
+
+      it "accepts at runtime the value that set's include? matches" do
+        set = [[]]
+        set.define_singleton_method(:include?) { |value| value == [1] }
+        set.freeze
+        action = declare(type: Array, length: { minimum: 1 }, inclusion: { in: set })
+
+        expect(action.call(f: [1]).ok?).to be(true)
+      end
+
       it "still refuses the Array-backed spelling of the same set" do
         expect { declare(type: Array, inclusion: { in: [[]] }) }
           .to raise_error(ArgumentError, /can never match/)

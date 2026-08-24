@@ -4405,16 +4405,28 @@ module Axn
         # Whether the set's own `include?` decides membership by asking a MEMBER — which is what makes vouching
         # for that member's `==` (below) vouch for the whole operation.
         #
-        # Only an Array-backed set does. `Array#include?` dispatches `member == candidate`, so the member is
+        # Two things must hold, and the second is not implied by the first.
+        #
+        # The container must be an Array. `Array#include?` dispatches `member == candidate`, so the member is
         # the whole operation and it is one axn holds. A `Hash`- or `Set`-backed set is looked up by
         # `hash`/`eql?`, and there the CANDIDATE supplies half the comparison — an object axn will never see at
-        # declaration, and one whose `hash` may collide with a member of a quite different size. So the
-        # member's size is no evidence about what the set matches, and the branch stands down.
+        # declaration, and one whose `hash` may collide with a member of a quite different size.
+        #
+        # And the `include?` that will RUN must be Array's own, asked by ownership exactly as a member's `==`
+        # is. An exact-class Array can still carry a singleton `include?`, and that spelling reaches a declared
+        # contract by a supported route: `ShapeGraph.detached_option_array` stores a FROZEN container as the
+        # caller's object rather than copying it, precisely because nothing can mutate it afterwards — so the
+        # override survives, and `Clusivity` dispatches it. (An unfrozen one never gets this far; that seam
+        # refuses a container defining methods of its own, since `dup` would drop the singleton class and the
+        # copy would answer differently from what was declared.)
         #
         # Read through the shared collection reader, so a bare `inclusion: [..]` and the long
         # `inclusion: { in: [..] }` are judged as the one thing they are.
         def _membership_is_the_members_own_equality?(entry)
-          Axn::Validation::Base.declared_set_collection(entry).instance_of?(::Array)
+          collection = Axn::Validation::Base.declared_set_collection(entry)
+          return false unless collection.instance_of?(::Array)
+
+          ::Array.equal?(Internal::NativeMethods.method_owner(collection, :include?))
         end
 
         # Whether the `==` this member will actually be compared with is the one the closed equality world
