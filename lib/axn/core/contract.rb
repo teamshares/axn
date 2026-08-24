@@ -4185,6 +4185,8 @@ module Axn
 
           _reject_blank_axis_complement!(validations, where:)
 
+          return if _bound_bearing_entry_gated?(validations)
+
           minimum = Internal::Reflection::Schema.declared_size_minimum(validations)
           maximum = Internal::Reflection::Schema.declared_size_maximum(validations)
 
@@ -4210,6 +4212,36 @@ module Axn
           gates = _shared_validation_options(validations)
 
           Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| gates[key] }
+        end
+
+        # The validator entries that can supply a bound to the size rules below, or the set they scan. Kept as a
+        # list rather than asked of each derivation in turn, because the derivations are the EMITTER's and are
+        # rightly static-maximal — the question here is a different one.
+        BOUND_BEARING_VALIDATOR_KEYS = %i[presence absence length inclusion].freeze
+
+        # Whether any entry that could supply a bound can be skipped on a given call. The size rules claim "no
+        # value satisfies this contract", and a bound that is sometimes not enforced cannot support that claim:
+        # `length: { minimum: 3, maximum: 2, if: -> { false } }` really does admit `["a"]` on every call where
+        # its gate is closed, and a floor read out of a gated `presence:` is no floor on those calls either.
+        #
+        # Coarser than it strictly needs to be — one gated entry stands the whole comparison down, rather than
+        # only the bound it supplies — and deliberately so: under-restriction leaves a broken contract
+        # declaring, while over-restriction rejects a working one, and only the second is unrecoverable.
+        #
+        # This is where the size rules part company with the EMITTER, which is static-maximal and will still
+        # emit `{minItems: 3, maxItems: 2}` for the gated entry above. That node is unsatisfiable while its
+        # contract is not, which is a real defect — but it is the emitter's gate policy, it predates this
+        # guard (a gated `length:` ceiling has emitted that way since PRO-3192), and the corollary this rule
+        # enforces is about refusing a CONTRACT that admits nothing.
+        def _bound_bearing_entry_gated?(validations)
+          gates = _shared_validation_options(validations)
+          keys = BOUND_BEARING_VALIDATOR_KEYS + [Internal::FieldConfig::NON_EMPTINESS_KEY]
+
+          keys.any? do |key|
+            entry = validations[key]
+
+            entry && Axn::Validation::Base.entry_effectively_gated?(entry, gates)
+          end
         end
 
         # `presence:` and `absence:` are exact complements: ActiveModel's presence check errors unless the value

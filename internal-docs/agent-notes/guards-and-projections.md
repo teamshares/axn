@@ -121,7 +121,9 @@ PRO-3220's guard drew a finding in each of four rounds, and every one was the sa
 
 Six hand-written fixes, each one round apart, and the count was not falling. What ended it was not a seventh fix: it was **enumerating the product and measuring it against the real runtime**. The soundness invariant is mechanical — *if the guard refuses, no value passes* — so it can be checked rather than argued: build every combination of floor × ceiling × set × modifier × type, build each one again with the guard stubbed off on that one class, and run axn's own validation over a candidate spread.
 
-That found a twenty-five-cell hole no round had reported (a declaration-level `if:` suspends the entire contract, so every value passes, while the size rule never consulted gates at all), and it is now `spec/axn/core/validations/unsatisfiable_size_soundness_spec.rb`. Two inverse mutations confirm it bites: remove the declaration-gate stand-down and all five examples fail; remove the blank-tolerant-presence test and four do.
+The product must span every axis the guard reads, and getting that wrong is the failure mode to expect: the first cut carried a gated `absence:` but no gated `length:` or `inclusion:`, and the very next round reported a case in exactly the column it had left out. A product probe is only as good as its axes, so derive them from what the guard consults rather than from the cases already known.
+
+Even so it found a twenty-five-cell hole no round had reported (a declaration-level `if:` suspends the entire contract, so every value passes, while the size rule never consulted gates at all), and it is now `spec/axn/core/validations/unsatisfiable_size_soundness_spec.rb`. Two inverse mutations confirm it bites: remove the declaration-gate stand-down and all five examples fail; remove the blank-tolerant-presence test and four do.
 
 Three transferable rules:
 

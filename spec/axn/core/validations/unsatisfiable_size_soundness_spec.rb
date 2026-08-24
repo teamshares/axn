@@ -28,8 +28,10 @@ module SizeSoundness
     "presence: false" => { presence: false },
     "allow_empty: false" => { allow_empty: false },
     "allow_empty: true" => { allow_empty: true },
+    "presence gated" => { presence: { if: -> { false } } },
     "length minimum 1" => { length: { minimum: 1 } },
     "length minimum 2" => { length: { minimum: 2 } },
+    "length minimum 2 gated" => { length: { minimum: 2, if: -> { false } } },
   }.freeze
 
   CEILINGS = {
@@ -39,12 +41,14 @@ module SizeSoundness
     "absence blank-tolerant" => { absence: { allow_blank: true } },
     "absence: false" => { absence: false },
     "length maximum 0" => { length: { maximum: 0 } },
+    "length maximum 0 gated" => { length: { maximum: 0, unless: -> { true } } },
     "length maximum 1" => { length: { maximum: 1 } },
   }.freeze
 
   SETS = {
     "-" => {},
     "inclusion [[]]" => { inclusion: { in: [[]] } },
+    "inclusion [[]] gated" => { inclusion: { in: [[]], if: -> { false } } },
     "inclusion [[], [1]]" => { inclusion: { in: [[], [1]] } },
     "inclusion blank-tolerant" => { inclusion: { in: [%w[a b c]], allow_blank: true } },
     "inclusion [\"ab\"]" => { inclusion: { in: %w[ab] } },
