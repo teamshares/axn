@@ -422,6 +422,59 @@ RSpec.describe "value validators in an of: bag" do
     end
   end
 
+  # `validate:` is the one admitted validator with a DSL-misuse guard of its own, and the bag path was skipping
+  # it — so `validate: { inclusion: … }` declared cleanly and raised `ArgumentError` on every call, the
+  # declares-cleanly-then-always-raises shape this grammar exists to remove. The field path refuses it at
+  # declaration; a position is held to the same rule by the same expander.
+  describe "validate: misuse at a position" do
+    it "refuses a Hash with no :with at an element position" do
+      expect { build_axn { expects :f, type: Array, of: { klass: String, validate: { inclusion: { in: ["a"] } } } } }
+        .to raise_error(ArgumentError, /`validate:` expects a callable/)
+    end
+
+    it "refuses an empty Hash" do
+      expect { build_axn { expects :f, type: Array, of: { klass: String, validate: {} } } }
+        .to raise_error(ArgumentError, /`validate:` expects a callable/)
+    end
+
+    it "refuses it on a map axis too" do
+      expect { build_axn { expects :f, type: Hash, of: { values: { klass: Integer, validate: { inclusion: { in: [1] } } } } } }
+        .to raise_error(ArgumentError, /`validate:` expects a callable/)
+    end
+
+    it "refuses it in a nested bag" do
+      expect do
+        build_axn do
+          expects :f, type: Array, of: { klass: Array, of: { klass: String, validate: { inclusion: { in: ["a"] } } } }
+        end
+      end.to raise_error(ArgumentError, /`validate:` expects a callable/)
+    end
+
+    # The remedy the message offers has to be the one that works HERE: declaring the validator directly in the
+    # bag constrains the element, where the field-level wording points at the container instead.
+    it "points a positional misuse at the position rather than at the container" do
+      message = begin
+        build_axn { expects :f, type: Array, of: { klass: String, validate: { inclusion: { in: ["a"] } } } }
+        nil
+      rescue ArgumentError => e
+        e.message
+      end
+
+      expect(message).to include("in the same bag")
+      expect(message).not_to include("the container itself")
+    end
+
+    it "still accepts the bare callable and the with: form" do
+      bare = build_axn { expects :f, type: Array, of: { klass: String, validate: ->(v) { "no" if v == "x" } } }
+      withed = build_axn { expects :f, type: Array, of: { klass: String, validate: { with: ->(v) { "no" if v == "x" } } } }
+
+      [bare, withed].each do |action|
+        expect(action.call(f: ["a"])).to be_ok
+        expect(action.call(f: ["x"])).not_to be_ok
+      end
+    end
+  end
+
   describe "a bag that constrains nothing" do
     it "still refuses an empty bag" do
       expect { build_axn { expects :f, type: Array, of: {} } }

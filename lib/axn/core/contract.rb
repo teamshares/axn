@@ -2367,7 +2367,9 @@ module Axn
           _reject_falsy_model_klass!(validations)
           validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
           _reject_unsupported_model_klass!(validations)
-          validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
+          if validations.key?(:validate)
+            validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields, nested: false)
+          end
           return unless validations.key?(:of)
 
           container = _of_container!(validations)
@@ -2468,12 +2470,21 @@ module Axn
         # Restricted to the validator entries: `of:` and `shape:` are the recursion edges and are canonicalized
         # by the walk that descends them, and `klass:`/`message:` are not option bags at all. The symbolized
         # bag is a NEW Hash (`_symbol_keyed_bag` builds one), so the caller's own nested Hash is never mutated.
-        def _canonicalize_positional_validator_options!(bag)
+        def _canonicalize_positional_validator_options!(bag, fields)
           entries = bag.slice(*POSITIONAL_VALIDATOR_KEYS)
           return if entries.empty?
 
           _symbolize_option_bags!(entries)
           entries.each { |key, value| bag[key] = value }
+          # `validate:` is the one admitted validator carrying a DSL-misuse guard of its own, and it has to run
+          # HERE as well as on the field path: without it `validate: { inclusion: … }` declared cleanly and then
+          # raised a bare `must supply :with` out of `check_validity!` on EVERY call — the
+          # declares-cleanly-then-always-raises shape this grammar exists to remove. The other three validators
+          # with a sugar step need no equivalent: `type:` and `model:` are refused at a bag position outright,
+          # and the bag's own `of:` is expanded where the bag is accepted.
+          return unless Internal::ShapeGraph.carries_key?(bag, :validate)
+
+          bag[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(bag[:validate], fields, nested: true)
         end
 
         # The grammar EVERY inner-contract bag is held to, asked once wherever one is accepted: at an Array's
@@ -2485,7 +2496,7 @@ module Axn
         # two positions this function never sees (a field's own `shape:`, a shape MEMBER's), so it is one
         # refusal at the walk that reaches all four (`ShapeDeclaration#_reject_unshaped_shape!`).
         def _check_inner_contract_bag!(bag, fields)
-          _canonicalize_positional_validator_options!(bag)
+          _canonicalize_positional_validator_options!(bag, fields)
           _reject_unknown_of_keys!(bag, OF_OPTION_KEYS)
           _reject_unconstraining_of_bag!(bag)
           _reject_unsupported_of_klass!(bag)
