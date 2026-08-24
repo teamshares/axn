@@ -40,6 +40,10 @@ module Axn
         TYPE_MAP = {
           String => "string",
           Symbol => "string",
+          # `null` is a first-class JSON type, so a declared `NilClass` has an exact spelling here. Without the
+          # entry it reached single_type_for's unknown-class fallback and reflected as "string" — whose premise
+          # ("a JSON client can't send a Ruby object anyway") is true of a PORO and false of nil.
+          NilClass => "null",
           Integer => "integer",
           Float => "number",
           Numeric => "number",
@@ -51,6 +55,8 @@ module Axn
           DateTime => "string",
           Time => "string",
         }.freeze
+
+        NULL_BRANCH = { type: "null" }.freeze
 
         FORMAT_MAP = {
           Date => "date",
@@ -1300,16 +1306,54 @@ module Axn
           if type_info[:anyOf]
             members = type_info[:anyOf]
             members = drop_uuid_format(members) if type_allows_blank?(config)
-            prop[:anyOf] = nullable ? members + [{ type: "null" }] : members
+            members = union_with_nullability(members, nullable:)
+            # Dropping a token-derived null branch can leave a single member, and a one-branch `anyOf` is a
+            # gratuitous shape change for a declaration whose node was a plain `type:` before. Collapse it back
+            # onto the single-type path, which is also what lets the emptiness floor land at the node rather than
+            # inside a lone branch. Only reachable when NOT nullable — a nullable union always keeps two.
+            if members.size == 1
+              apply_single_type!(prop, members.first, config, nullable: false)
+            else
+              prop[:anyOf] = members
+            end
           elsif type_info[:type]
-            prop[:type] = nullable ? [type_info[:type], "null"] : type_info[:type]
-            # A `type: :uuid, allow_blank: true` field accepts "" at runtime (TypeValidator treats a blank
-            # uuid as valid under allow_blank), but a strict `format: "uuid"` validator would reject "".
-            # Drop the uuid format there so the schema doesn't reject a value the contract accepts.
-            prop[:format] = type_info[:format] if type_info[:format] && !(type_info[:format] == "uuid" && type_allows_blank?(config))
-            # A singleton type (TrueClass/FalseClass) constrains the value via enum; nil joins it when nullable.
-            prop[:enum] = nullable ? type_info[:enum] + [nil] : type_info[:enum] if type_info[:enum]
+            apply_single_type!(prop, type_info, config, nullable:)
           end
+        end
+
+        def apply_single_type!(prop, type_info, config, nullable:)
+          prop[:type] = type_with_nullability(type_info[:type], nullable:)
+          # A `type: :uuid, allow_blank: true` field accepts "" at runtime (TypeValidator treats a blank
+          # uuid as valid under allow_blank), but a strict `format: "uuid"` validator would reject "".
+          # Drop the uuid format there so the schema doesn't reject a value the contract accepts.
+          prop[:format] = type_info[:format] if type_info[:format] && !(type_info[:format] == "uuid" && type_allows_blank?(config))
+          # A singleton type (TrueClass/FalseClass) constrains the value via enum; nil joins it when nullable.
+          prop[:enum] = nullable ? type_info[:enum] + [nil] : type_info[:enum] if type_info[:enum]
+        end
+
+        # Whether the emitted type admits `null` is the NULLABILITY question (`nil_allowed?`), never something a
+        # type token decides. A declared `NilClass` contributes a branch like any other token; this is where that
+        # branch is kept or dropped, so the two cannot disagree. Without it a REQUIRED `type: [String, NilClass]`
+        # would advertise `null` while its own `presence:` entry rejects nil, and a nullable one would advertise
+        # it twice.
+        def union_with_nullability(members, nullable:)
+          without_null = members.reject { |member| member[:type] == "null" }
+          return without_null + [NULL_BRANCH] if nullable
+
+          # A union of nothing BUT null cannot arise (`json_type_for` uniq's, so it would be a single type), but
+          # stripping to an empty `anyOf` would emit a node no value satisfies, so the guard is kept rather than
+          # left to an argument about reachability.
+          without_null.empty? ? members : without_null
+        end
+
+        # A lone `NilClass` keeps its `"null"` in both directions. Nullable, it is already what nullability would
+        # add. NOT nullable, the contract admits nothing at all — nothing is a NilClass except nil, and the
+        # presence check rejects that — so no emission is faithful; `"null"` is the narrower of the two available
+        # lies and matches what the declaration evidently meant. Refusing such a declaration is PRO-3220's.
+        def type_with_nullability(type, nullable:)
+          return type if type == "null"
+
+          nullable ? [type, "null"] : type
         end
 
         # The emptiness axis, as JSON Schema sees it: `minItems`/`minProperties`/`minLength` keyed off the

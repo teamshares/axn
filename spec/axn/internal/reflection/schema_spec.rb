@@ -5442,6 +5442,105 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
+  # `null` is a first-class JSON type, so a declared `NilClass` has an exact JSON Schema spelling. It reached
+  # `single_type_for`'s final branch instead — the "unknown Ruby class, keep a permissive string hint" fallback,
+  # whose premise ("a JSON client can't send a Ruby object anyway") is true of a PORO and false of nil.
+  #
+  # The rule the emitted `"null"` follows: it comes from the NULLABILITY decision (`nil_allowed?`), never from a
+  # type token. A token contributes a branch; whether that branch survives is the nullability question, asked
+  # once. Otherwise a required `type: [String, NilClass]` — which rejects nil, because its `presence:` entry
+  # does — would advertise `null` as acceptable, and a nullable one would advertise it twice.
+  describe "a declared NilClass token" do
+    it "reflects as null rather than the unknown-class string fallback" do
+      action = build_axn { expects :f, type: NilClass, optional: true }
+
+      expect(action.input_schema[:properties][:f]).to include(type: "null")
+    end
+
+    it "emits no emptiness floor for it (null has no size)" do
+      action = build_axn { expects :f, type: NilClass, optional: true }
+
+      expect(action.input_schema[:properties][:f]).not_to have_key(:minLength)
+    end
+
+    it "names null exactly once when the field is also nullable" do
+      action = build_axn { expects :f, type: NilClass, optional: true }
+
+      expect(action.input_schema[:properties][:f][:type]).to eq("null")
+    end
+
+    it "emits a union naming it as an anyOf branch when the field admits nil" do
+      action = build_axn { expects :f, type: [String, NilClass], optional: true }
+
+      expect(action.input_schema[:properties][:f][:anyOf]).to eq([{ type: "string" }, { type: "null" }])
+    end
+
+    # The discriminating case for "nullability decides, not the token": this field REJECTS nil at runtime (the
+    # default presence check), so the branch the token contributed must not survive into the document.
+    it "drops the branch on a required field, which rejects nil" do
+      action = build_axn { expects :f, type: [String, NilClass] }
+
+      expect(action.call(f: nil)).not_to be_ok
+      expect(action.input_schema[:properties][:f]).to include(type: "string")
+      expect(action.input_schema[:properties][:f][:anyOf]).to be_nil
+    end
+
+    # A lone `NilClass` with no tolerance admits NOTHING at runtime (presence rejects nil, and nothing else is
+    # a NilClass), so no emission is faithful. `"null"` is kept rather than stripped to nothing: it is the
+    # narrower of the two lies and matches what the declaration evidently meant. Refusing the declaration
+    # outright is PRO-3220's (contracts that admit nothing).
+    it "keeps null on a required lone NilClass, whose contract admits nothing" do
+      action = build_axn { expects :f, type: NilClass }
+
+      expect(action.call(f: nil)).not_to be_ok
+      expect(action.input_schema[:properties][:f]).to include(type: "null")
+    end
+
+    context "at an of: bag position, where there is no presence check to make it inert" do
+      it "reflects an element bag's klass" do
+        action = build_axn { expects :f, type: Array, of: { klass: NilClass } }
+
+        expect(action.call(f: [nil])).to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "null")
+      end
+
+      it "reflects a union element bag as distinct branches" do
+        action = build_axn { expects :f, type: Array, of: { klass: [String, NilClass] } }
+
+        expect(action.call(f: ["a", nil])).to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items))
+          .to eq(anyOf: [{ type: "string" }, { type: "null" }])
+      end
+
+      it "reflects a map's values axis" do
+        action = build_axn { expects :f, type: Hash, of: { values: [Integer, NilClass] } }
+
+        expect(action.call(f: { a: nil })).to be_ok
+        expect(action.input_schema.dig(:properties, :f, :additionalProperties))
+          .to eq(anyOf: [{ type: "integer" }, { type: "null" }])
+      end
+
+      it "reflects a nested bag at depth 2" do
+        action = build_axn { expects :f, type: Array, of: { klass: Array, of: [Integer, NilClass] } }
+
+        expect(action.call(f: [[1, nil]])).to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items, :items))
+          .to eq(anyOf: [{ type: "integer" }, { type: "null" }])
+      end
+
+      it "reflects a shape member's own union" do
+        action = build_axn do
+          expects :f, type: Array, of: Hash do
+            field :s, type: [String, NilClass], allow_nil: true
+          end
+        end
+
+        expect(action.input_schema.dig(:properties, :f, :items, :properties, :s, :anyOf))
+          .to eq([{ type: "string" }, { type: "null" }])
+      end
+    end
+  end
+
   # The ceiling twin of the emptiness floor. Emitting it only shrinks the schema-valid set, so it preserves the
   # documented direction (docs/reference/class.md:270 — stricter than the runtime, never looser) by construction.
   describe "size ceilings" do
