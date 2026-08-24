@@ -484,13 +484,13 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(Array(klass.input_schema[:required])).to include("v")
     end
 
-    # `uniqueness:` is accepted as a declaration key but ActiveModel ships no such validator — it is
-    # ActiveRecord's — so the check raises when the validator set is built rather than judging a nil.
-    it "reaches ActiveModel's unknown-validator error for uniqueness:" do
-      klass = declare(presence: false, uniqueness: true)
-
-      expect(klass.call.exception).to be_a(ArgumentError)
-      expect(klass.call.exception.message).to include("Unknown validator")
+    # `uniqueness:` has no nil axis to read, because it never reaches the validator set: ActiveModel ships no
+    # such validator (it is ActiveRecord's), so the declaration is refused outright rather than declaring
+    # cleanly and raising `Unknown validator: 'UniquenessValidator'` on every call. Same for a bare `message:`.
+    # See spec/axn/core/validations/unsupported_validator_keys_spec.rb.
+    it "never gets to judge uniqueness:, which is refused at declaration" do
+      expect { declare(presence: false, uniqueness: true) }
+        .to raise_error(ArgumentError, /uniqueness: on :v is not supported/)
     end
   end
 

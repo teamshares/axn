@@ -777,12 +777,14 @@ module Axn
           # rule a field's are. The member's own BAG-level `on:` is refused earlier, by
           # `_check_member_option_keys!` above, with the reason particular to a member.
           #
-          # All four are the field path's own guards, called with the member's label where a field passes its
-          # own: an entry whose check cannot run, one that cannot MEAN anything at a container position, one
-          # comparing against literals no value of the declared type could be, and one forbidding literals no
-          # value of the declared type could be. The positional rule is a rule about positions, and a member is
-          # one — so a raw member is held to it exactly as the block form and a top-level field are, rather
-          # than declaring cleanly and emitting the unsatisfiable node.
+          # All five are the field path's own guards, called with the member's label where a field passes its
+          # own: a key that names no validator at all, an entry whose check cannot run, one that cannot MEAN
+          # anything at a container position, one comparing against literals no value of the declared type
+          # could be, and one forbidding literals no value of the declared type could be. The positional rule
+          # is a rule about positions, and a member is one — so a raw member is held to it exactly as the block
+          # form and a top-level field are, rather than declaring cleanly and emitting the unsatisfiable node.
+          # The first of them is not positional at all (its keys name nothing anywhere), and rides along here
+          # because this is the seam a raw member's entries pass through.
           #
           # Tolerance comes off the member's OWN bag: nothing pushes a field's kwargs into it on this route, and
           # `allow_nil:`/`allow_blank:` are legal there (KNOWN_MEMBER_VALIDATION_KEYS), under which nil passes
@@ -790,6 +792,7 @@ module Axn
           # and reads it the other way — to discount forbidden literals ActiveModel would skip, never to
           # rescue the declaration.
           member_where = "shape member `#{_shape_member_label(name)}`"
+          _reject_unsupported_validator_keys!(copy, where: member_where)
           _reject_validator_context_scope!(copy, where: member_where)
           _reject_container_position_validators!(copy, where: member_where)
           _reject_unsatisfiable_value_constraints!(copy, where: member_where,
