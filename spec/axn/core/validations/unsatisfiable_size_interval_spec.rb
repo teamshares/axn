@@ -146,6 +146,41 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       action = declare(type: Array, inclusion: { in: :allowed_tags })
       expect(action).to be_a(Class)
     end
+
+    # Two routes enforce the size bounds and they measure by different methods — `length:` reads
+    # `value.length` (activemodel 8.1.3.1, length.rb:48), the emptiness axis asks `empty?` — so a member is
+    # weighed only where both are Ruby's own. A container that answers one of them with code of its own is a
+    # member this guard cannot place, and standing down leaves the declaration legal.
+    describe "a member whose measurement is not Ruby's own" do
+      let(:overriding_length) { Class.new(Array) { def length = 3 } }
+      let(:overriding_empty) { Class.new(Array) { def empty? = false } }
+
+      it "stands down on a member that answers `length` with its own code" do
+        member = overriding_length.new
+
+        expect { declare(type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: [member] }) }
+          .not_to raise_error
+      end
+
+      # The control: the runtime really does accept that member, so refusing the declaration above would
+      # reject a contract that works.
+      it "accepts at runtime the member it stood down on" do
+        member = overriding_length.new
+        action = declare(type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: [member] })
+
+        expect(action.call(f: member).ok?).to be(true)
+      end
+
+      it "stands down on a member that answers `empty?` with its own code" do
+        expect { declare(type: Array, inclusion: { in: [overriding_empty.new] }) }.not_to raise_error
+      end
+
+      # A subclass that overrides NEITHER is measured by the built-in it inherits, so the refusal still lands.
+      it "still refuses a subclass that overrides neither" do
+        expect { declare(type: Array, inclusion: { in: [Class.new(Array).new] }) }
+          .to raise_error(ArgumentError, /can never match/)
+      end
+    end
   end
 
   # A tolerated nil is a passing value, and it makes the emitted node satisfiable through its null branch —

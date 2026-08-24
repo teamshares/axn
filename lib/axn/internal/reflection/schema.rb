@@ -976,18 +976,33 @@ module Axn
           value.empty?
         end
 
-        # How many elements a literal holds, or nil for a value whose size is not Ruby's own to answer. Decided
-        # by the same OWNERSHIP test `empty_container?` uses, and for the same reason: a `size` a caller wrote
-        # is caller code, which a declaration-time verdict must not run. Read where a declared literal has to be
-        # measured against the sizes a contract admits (the empty-interval guard's inclusion branch).
+        # How many elements a literal holds, or nil where a check could measure it differently. Read where a
+        # declared literal has to be weighed against the sizes a contract admits (the empty-interval guard's
+        # inclusion branch).
         #
-        # The owner read is bound (`NativeMethods.method_owner`); the call that follows it needs no guard,
+        # TWO routes enforce those sizes, and they measure by different methods: a `length:` entry, which reads
+        # `value.length` (activemodel 8.1.3.1, length.rb:48), and the emptiness axis, which asks `blank?`/
+        # `empty?`. Which one holds a given bound is not this method's to know, so a value is measured only
+        # where BOTH are Ruby's own — and there they agree by construction. `size` is deliberately not the
+        # method read: no check measures it, and reading it is how an `Array` subclass overriding `length` was
+        # measured as empty here while `length:` and `inclusion:` both accepted it at runtime.
+        #
+        # Ownership is the whole test, the same one `empty_container?` applies and for the same reason: a
+        # measurement a caller wrote is caller code, which a declaration-time verdict must neither run nor
+        # second-guess. Standing down leaves the declaration legal, the direction this guard must err in.
+        #
+        # The owner reads are bound (`NativeMethods.method_owner`); the call that follows needs no guard,
         # because the implementation it dispatches is the one whose owner was just established.
         def container_size(value)
-          owner = Axn::Internal::NativeMethods.method_owner(value, :size)
-          return nil unless owner && native_empty_owner?(owner)
+          return nil unless natively_measured?(value, :length) && natively_measured?(value, :empty?)
 
-          value.size
+          value.length
+        end
+
+        def natively_measured?(value, method_name)
+          owner = Axn::Internal::NativeMethods.method_owner(value, method_name)
+
+          !owner.nil? && native_empty_owner?(owner)
         end
 
         def native_empty_owner?(owner)
