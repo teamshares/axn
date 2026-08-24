@@ -5739,6 +5739,24 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(name).not_to have_key(:maxLength)
     end
 
+    # The blank-is-empty classification the ceiling turns on reads the declared token, and a token is a
+    # caller's own Class or Module — so it is classified with `case`/`when ::Array` rather than `Kernel#Array`,
+    # which would DISPATCH `to_ary` on it. Asked of the derivation directly, since other (pre-existing) readers
+    # on the same path still use `Kernel#Array`.
+    it "classifies declared type tokens without dispatching to_ary" do
+      dispatched = []
+      token = Class.new do
+        define_singleton_method(:to_ary) do
+          dispatched << :to_ary
+          [String]
+        end
+      end
+
+      expect(described_class.declared_type_tokens({ type: token })).to eq([token])
+      expect(described_class.declared_type_tokens({ type: { klass: token } })).to eq([token])
+      expect(dispatched).to eq([])
+    end
+
     # A ceiling derived from `absence:` is one axn infers rather than one the author wrote, so it is taken only
     # from a check that always runs — unlike a `length:` bound, which is emitted as written whatever gates it.
     it "emits no ceiling for a GATED absence:" do

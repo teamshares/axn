@@ -2017,13 +2017,24 @@ module Axn
         end
 
         # The type tokens a declaration names, reading a `type:` bag's `klass:` where a bag was declared and the
-        # bare spelling otherwise — the same unwrapping `json_type_for` does, so what is judged here and what is
-        # emitted there are read off one shape.
+        # bare spelling otherwise.
+        #
+        # Classified with `case`/`when ::Array` rather than `Kernel#Array`, which DISPATCHES `to_ary`/`to_a` on
+        # whatever it is handed: a declared token is a caller's own Class or Module, and one carrying a
+        # singleton `to_ary` would have that method RUN from here — at declaration, and again from every
+        # reflection — which reflection may never do. Measured on a token whose `to_ary` returns `[String]`:
+        # it ran, and the emitted node became `{type: ["string", "null"]}` for a field declared as that token.
+        # The bag is unwrapped through `ShapeGraph.hash_or_nil` for the same reason, so a Hash subclass denying
+        # its own class cannot pick how it is read.
         def declared_type_tokens(validations)
           type_opt = validations[:type]
-          return [] unless type_opt
+          bag = Axn::Internal::ShapeGraph.hash_or_nil(type_opt)
+          declared = nil.equal?(bag) ? type_opt : bag[:klass]
 
-          Array(type_opt.is_a?(::Hash) ? type_opt[:klass] : type_opt)
+          case declared
+          when ::Array then declared
+          else nil.equal?(declared) ? [] : [declared]
+          end
         end
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
