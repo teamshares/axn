@@ -2722,11 +2722,12 @@ module Axn
             "a constraint."
         end
 
-        # Whether an axis was SUPPLIED as an empty union, which is the one "names no class" spelling that has a
-        # key the refusal can point at. Deliberately narrower than `_axis_names_no_class?`: a nil axis and an
-        # absent one name nothing either, but neither is an empty UNION, and both keep the "name an axis"
-        # refusal (`nil` mirrors a bag's `klass: nil`, which lands on "must constrain something" rather than on
-        # the empty-union message).
+        # Whether an axis was SUPPLIED as an empty union, which is the one "names no class" spelling this
+        # message is for. Deliberately narrower than `_axis_names_no_class?`: a nil axis and an absent one name
+        # nothing either, but neither is an empty UNION, so both keep whatever refusal they already had —
+        # "name the axis you are constraining" when nothing else on the bag constrains, and `must name a type
+        # … NilClass` from `_reject_unsupported_map_axis!` when a sibling axis does. `nil` mirrors a bag's
+        # `klass: nil`, which lands on "must constrain something" rather than on the empty-union message.
         #
         # Asked through `_declared_type_tokens` rather than `Array(...)` so this and
         # `_reject_unsupported_map_axis!` — the two guards that now route on the answer — cannot disagree about

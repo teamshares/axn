@@ -443,11 +443,21 @@ RSpec.describe Axn::Validators::OfValidator do
         .to raise_error(ArgumentError, /\Aof: keys: names an empty union/)
     end
 
-    # An axis left OFF entirely is the honest spelling of "unconstrained", and a bag with neither axis has no
-    # axis to name — that is the one case still answered by the "name the axis" refusal.
-    it "rejects a bag whose axes are absent rather than empty" do
-      expect { build_axn { expects :counts, type: Hash, of: {} } }
-        .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+    # An axis left OFF entirely is the honest spelling of "unconstrained", and a bag with no constraining axis
+    # has none to name — that is what is still answered by the "name the axis" refusal. A `nil` axis joins it
+    # only while nothing else on the bag constrains: beside a sibling that does, there IS an axis to name, and
+    # `_reject_unsupported_map_axis!` names it (pinned further down). Both halves are pinned because the
+    # boundary between them is the one this refusal's wording turns on.
+    {
+      "neither axis written" => {},
+      "a sole nil values: axis" => { values: nil },
+      "a sole nil keys: axis" => { keys: nil },
+      "both axes nil" => { keys: nil, values: nil },
+    }.each do |position, of|
+      it "answers #{position} with the name-an-axis refusal" do
+        expect { build_axn { expects :counts, type: Hash, of: } }
+          .to raise_error(ArgumentError, %r{of: requires keys: and/or values: for a Hash})
+      end
     end
 
     # Omitting an axis is the spelling of "unconstrained"; writing one that names nothing is not. An empty
