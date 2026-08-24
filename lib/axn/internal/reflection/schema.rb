@@ -76,6 +76,9 @@ module Axn
         # each — `numericality:` does (`RANGE_CHECKS`), `comparison:` has no range check.
         NUMERIC_BOUND_ENTRIES = { numericality: true, comparison: false }.freeze
 
+        # Satisfied by no value — what an unsatisfiable intersection projects to. See `apply_numeric_bounds!`.
+        EMPTY_ENUM = [].freeze
+
         NULL_BRANCH = { type: "null" }.freeze
 
         FORMAT_MAP = {
@@ -1474,10 +1477,23 @@ module Axn
             end
           end
 
-          # Filtered again after intersecting, not only before: an intersection with no solution resolves to a
-          # sentinel rather than a bound (`Base::CONTRADICTORY_BOUND`), and emitting a satisfiable keyword for a
-          # contract no value satisfies is the one outcome that is simply wrong.
+          # An intersection with no solution resolves to a sentinel rather than a bound
+          # (`Base::CONTRADICTORY_BOUND`), and the node then says NOTHING SATISFIES THIS rather than saying less.
+          #
+          # That is the faithful projection, and standing down here would be the papering-over PRO-3220 warns
+          # against: the corollary in guards-and-projections.md forbids an unsatisfiable node for a SATISFIABLE
+          # contract, this contract admits nothing, and the emitter already projects that family unsatisfiably
+          # elsewhere (`length: { maximum: 0 }` on a required Array emits `minItems: 1, maxItems: 0`). Refusing
+          # the declaration outright stays PRO-3220's; being honest about it is this layer's job.
+          #
+          # `enum: []` is the spelling: it is satisfied by no value, and it composes rather than collides —
+          # intersecting it with an enum the node already carries yields `[]` either way, where `not: {}` would
+          # contend for a slot `reject_null!` already writes.
           bounds.each do |operator, bound|
+            if Axn::Validation::Base.contradictory_bound?(bound)
+              prop[:enum] = EMPTY_ENUM
+              next
+            end
             next unless Axn::Validation::Base.emittable_numeric_bound?(bound)
 
             prop[NUMERIC_BOUND_KEYS.fetch(operator)] = bound

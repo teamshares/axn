@@ -445,6 +445,11 @@ module Axn
       # such a declaration outright belongs to the contradiction detectors (PRO-3220); emitting a SATISFIABLE
       # keyword for it, as picking either candidate would, is the one option that is simply wrong.
       CONTRADICTORY_BOUND = :__axn_contradictory_bound__
+      private_constant :CONTRADICTORY_BOUND
+
+      # Asked rather than compared against, so the sentinel stays this module's own: reflection reads it through
+      # a predicate exactly as it reads every other judgment here, and never names the constant.
+      def self.contradictory_bound?(bound) = bound == CONTRADICTORY_BOUND
 
       def self.intersect_numeric_bound(bounds, key, candidate)
         existing = bounds[key]

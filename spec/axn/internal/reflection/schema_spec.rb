@@ -6333,15 +6333,39 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop).to include(minimum: 0, maximum: 50)
     end
 
-    # `equal_to` is an EQUALITY, not an ordering: two different values intersect to nothing, and keeping either
-    # advertises a value the runtime rejects. Refusing the declaration outright is PRO-3220's; emitting a
-    # satisfiable keyword for a contract no value satisfies is the one option that is simply wrong.
-    it "emits no const when two equality bounds contradict" do
+    # `equal_to` is an EQUALITY, not an ordering: two different values intersect to NOTHING. The emitted node
+    # says so, rather than saying less.
+    #
+    # That is the faithful projection, and standing down would be the papering-over PRO-3220 explicitly warns
+    # against ("the emitter is faithfully projecting a contract that is already broken, and teaching it to paper
+    # over that would hide the defect rather than close it"). The corollary in guards-and-projections.md forbids
+    # an unsatisfiable node for a SATISFIABLE contract; this contract admits nothing, and the emitter already
+    # projects that family unsatisfiably elsewhere — `length: { maximum: 0 }` on a required Array emits
+    # `minItems: 1, maxItems: 0`. Refusing the declaration outright stays PRO-3220's.
+    it "emits an unsatisfiable enum when two equality bounds contradict" do
       action = build_axn { expects :f, type: Integer, numericality: { equal_to: 1 }, comparison: { equal_to: 2 } }
 
       expect(action.call(f: 1)).not_to be_ok
       expect(action.call(f: 2)).not_to be_ok
+      expect(action.input_schema[:properties][:f]).to include(enum: [])
       expect(action.input_schema[:properties][:f]).not_to have_key(:const)
+    end
+
+    it "dominates any enum the position already carried" do
+      action = build_axn do
+        expects :f, type: Integer, inclusion: { in: [1, 2] },
+                    numericality: { equal_to: 1 }, comparison: { equal_to: 2 }
+      end
+
+      expect(action.input_schema[:properties][:f][:enum]).to eq([])
+    end
+
+    it "emits it at a bag position too" do
+      action = build_axn do
+        expects :f, type: Array, of: { klass: Integer, numericality: { equal_to: 1 }, comparison: { equal_to: 2 } }
+      end
+
+      expect(action.input_schema.dig(:properties, :f, :items)).to include(enum: [])
     end
 
     it "still emits const when two equality bounds agree" do
