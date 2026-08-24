@@ -786,14 +786,16 @@ module Axn
           #
           # Tolerance comes off the member's OWN bag: nothing pushes a field's kwargs into it on this route, and
           # `allow_nil:`/`allow_blank:` are legal there (KNOWN_MEMBER_VALIDATION_KEYS), under which nil passes
-          # and the emitted node stays satisfiable. The vacuity guard takes none, here as everywhere: a
-          # tolerated value passes, and no amount of passing makes a check something can fail.
+          # and the emitted node stays satisfiable. The vacuity guard takes the same pair
+          # and reads it the other way — to discount forbidden literals ActiveModel would skip, never to
+          # rescue the declaration.
           member_where = "shape member `#{_shape_member_label(name)}`"
           _reject_validator_context_scope!(copy, where: member_where)
           _reject_container_position_validators!(copy, where: member_where)
           _reject_unsatisfiable_value_constraints!(copy, where: member_where,
                                                          tolerance: copy.slice(:allow_nil, :allow_blank))
-          _reject_vacuous_value_constraints!(copy, where: member_where)
+          _reject_vacuous_value_constraints!(copy, where: member_where,
+                                                   tolerance: copy.slice(:allow_nil, :allow_blank))
           # Last, where the block form checks it too (after the same canonicalization), so a declaration failing
           # both is reported by the same one on either route. A raw member's `coerce:` used to reach ActiveModel
           # as a validator (`Unknown validator: 'CoerceValidator'` on every call) while `type: { coerce: true }`

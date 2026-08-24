@@ -3278,6 +3278,10 @@ module Axn
           comparison: %i[other_than],
         }.freeze
 
+        # The two validators whose membership is decided by the COLLECTION's own `include?` rather than by an
+        # operator, and so the only ones whose equality depends on which collection was written.
+        CLUSIVITY_KEYS = %i[inclusion exclusion].freeze
+
         # AcceptanceValidator's own default set, used when an entry names none (`acceptance: true`) — so
         # `type: Integer, acceptance: true` is judged against what it will really be compared with and refused,
         # while `type: String, acceptance: true` stands down, because `"1"` is a String.
@@ -3313,7 +3317,7 @@ module Axn
 
             literals = _judgeable_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?
-            next if _constraint_satisfiable?(key, literals, klasses)
+            next if _constraint_satisfiable?(key, literals, klasses, cross_family: _cross_family_admissible?(key, entry))
 
             raise ArgumentError,
                   "#{key}: on #{where} can never match — nothing it compares against " \
@@ -3339,18 +3343,19 @@ module Axn
         #
         # Two doctrine differences follow from the inversion, both of them the reason this is its own method:
         #
-        # TOLERANCE is not consulted at all, where the satisfiability guard stands down under it. A tolerated
-        # nil is a PASSING value, which is evidence about satisfiability and says nothing about vacuity —
-        # tolerance only ever adds passing values, so it cannot make a check something fails, and ignoring it
-        # can only under-restrict. It does leave one hole knowingly: `allow_blank: true` with a blank literal
-        # (`exclusion: { in: [[]] }`) is vacuous, because the blank the set forbids is the one the flag skips,
-        # and the literal alone cannot show that.
+        # TOLERANCE is read for the OPPOSITE purpose. The satisfiability guard stands down under it, because a
+        # tolerated nil is a value that PASSES; no amount of passing makes a check something can fail, so
+        # tolerance never rescues a declaration here. What it does instead is DISCOUNT WITNESSES: ActiveModel
+        # skips a tolerated value outright, so a forbidden literal the flag skips is one no admitted value can
+        # ever be compared against — `type: NilClass, exclusion: { in: [nil] }, allow_nil: true` forbids only
+        # the nil the flag exempts, and `type: Array, exclusion: { in: [[]] }, allow_blank: true` forbids only
+        # the blank one. Both accept every input, and both are refused once the skipped literal stops counting.
         #
         # A GATE does not rescue one either, but for a simpler reason than above: `exclusion:` emits nothing
         # into the schema, so there is no static-maximal node to argue from. A gate can only remove the check.
         # Closed it enforces nothing, open it enforces nothing — there is no reading under which the
         # declaration means what it says.
-        def _reject_vacuous_value_constraints!(validations, where:)
+        def _reject_vacuous_value_constraints!(validations, where:, tolerance:)
           klasses = _judgeable_type_klasses(validations[:type])
           return if klasses.empty?
 
@@ -3361,7 +3366,9 @@ module Axn
 
             literals = _vacuous_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?
-            next if _any_literal_may_satisfy?(literals, klasses)
+
+            witnesses = _unskipped_literals(literals, entry, tolerance)
+            next if _any_literal_may_satisfy?(witnesses, klasses, cross_family: _cross_family_admissible?(key, entry))
 
             raise ArgumentError,
                   "#{key}: on #{where} enforces nothing — no value of type " \
@@ -3370,6 +3377,32 @@ module Axn
                   "position it is declared at: forbid literals of the declared type, and for a constraint on " \
                   "a container's CONTENTS express it as `validate: ->(value) { ... }` (a per-element spelling " \
                   "inside `of:` is not supported yet — PRO-3193)."
+          end
+        end
+
+        # The forbidden literals that could still be COMPARED against an admitted value. ActiveModel's
+        # `EachValidator` skips a tolerated value before any validator sees it (`value.nil? && allow_nil`,
+        # `value.blank? && allow_blank`), so a literal the flag exempts can never be the value that fails —
+        # it is not a witness, and counting it would certify a check nothing can fail.
+        #
+        # Tolerance is resolved per ENTRY through `effective_entry_options`, the same precedence `validates`
+        # itself applies (declaration defaults under the entry's own options), so an entry turning a
+        # declaration-wide flag back off keeps its literals: with `allow_nil: false` on the entry, nil really
+        # is compared, and the declaration really can fail.
+        #
+        # Blankness is `Internal::NativeMethods.blank_literal?` — ActiveSupport's own reading of `blank?`,
+        # which is what the skip tests, decided through bound reads so a literal cannot answer for itself.
+        # Nil is asked by identity for the same reason. `allow_blank` subsumes the nil case (a nil is blank),
+        # and both are asked so an `allow_nil`-only entry still discounts its nil.
+        def _unskipped_literals(literals, entry, tolerance)
+          opts = Axn::Validation::Base.effective_entry_options(entry, tolerance)
+          allow_nil = opts[:allow_nil]
+          allow_blank = opts[:allow_blank]
+          return literals unless allow_nil || allow_blank
+
+          literals.reject do |literal|
+            (allow_blank && Internal::NativeMethods.blank_literal?(literal)) ||
+              (allow_nil && Internal::Identity.nil_value?(literal))
           end
         end
 
@@ -3441,9 +3474,10 @@ module Axn
         # declared token is one — so nothing here asks a caller-supplied token what it is. The LITERAL's class is
         # read through `Internal::Identity`, and membership is compared by identity, so neither side's own
         # methods decide a declaration.
-        def _literal_may_satisfy?(literal, klass)
+        def _literal_may_satisfy?(literal, klass, cross_family: true)
           return true if Validators::TypeValidator.value_matches?(literal, klass:)
           return true unless _judgeable_equality?(Internal::Identity.class_of(literal)) && _judgeable_equality?(klass)
+          return false unless cross_family
 
           CROSS_COMPARABLE_FAMILIES.any? do |family|
             family.any? { |root| Internal::NativeMethods.includes_module?(klass, root) } &&
@@ -3486,10 +3520,14 @@ module Axn
         # branch must satisfy EVERY bound: `type: [Array, Hash], comparison: { equal_to: [], greater_than: {} }`
         # has an Array-satisfiable bound and a Hash-satisfiable bound and admits nothing, because no value is
         # both. For a SET, one branch and one member is all a value needs, so either order reads the same.
-        def _constraint_satisfiable?(key, literals, klasses)
-          return klasses.any? { |klass| literals.all? { |literal| _literal_may_satisfy?(literal, klass) } } if key == :comparison
+        def _constraint_satisfiable?(key, literals, klasses, cross_family: true)
+          if key == :comparison
+            return klasses.any? do |klass|
+              literals.all? { |literal| _literal_may_satisfy?(literal, klass, cross_family:) }
+            end
+          end
 
-          _any_literal_may_satisfy?(literals, klasses)
+          _any_literal_may_satisfy?(literals, klasses, cross_family:)
         end
 
         # The SET quantifier on its own, because both guards ask for it and neither owns it: one literal
@@ -3497,8 +3535,29 @@ module Axn
         # guard reads it as "some value can pass"; the vacuity guard negates it, reading "no value can fail".
         # An empty literal list answers false either way — nothing to match — which is what makes
         # `inclusion: { in: [] }` unsatisfiable and `exclusion: { in: [] }` vacuous by the same line.
-        def _any_literal_may_satisfy?(literals, klasses)
-          literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
+        def _any_literal_may_satisfy?(literals, klasses, cross_family: true)
+          literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass, cross_family:) } }
+        end
+
+        # Whether a literal of a DIFFERENT class in the same cross-comparable family can match this entry —
+        # true for everything except a set whose `include?` is keyed by hash identity.
+        #
+        # `Clusivity` calls the collection's own `include?`, so the COLLECTION decides which equality applies.
+        # An Array compares with `==`, under which the families really do cross (`[1].include?(1.0)` is true).
+        # A `Set` and a `Hash` (whose members are its keys) look the member up by `hash` + `eql?`, and `eql?`
+        # never crosses a family — measured: `Set[1].include?(1.0)` and `{1 => true}.include?(1.0)` are both
+        # false while `1 == 1.0` is true. Widening there predicts a match ActiveModel will not make, in both
+        # directions: `type: Float, inclusion: { in: Set[1] }` rejects every Float, and its `exclusion:` mirror
+        # forbids none. Everything else — `acceptance:` (read through `Array()`), a `comparison:` bound, a
+        # Range's bounds (`cover?`, decided by `<=>`) — compares by operator, so the families cross as before.
+        #
+        # Exact-class through `Internal::Identity`, so neither the collection nor its members decide it.
+        def _cross_family_admissible?(key, entry)
+          return true unless CLUSIVITY_KEYS.include?(key)
+
+          collection = Axn::Validation::Base.declared_set_collection(entry)
+          klass = Internal::Identity.class_of(collection)
+          !(klass.equal?(::Hash) || (defined?(Set) && klass.equal?(::Set)))
         end
 
         def _judgeable_constraint_literals(key, entry, option_keys, klasses)
@@ -3757,10 +3816,12 @@ module Axn
           _reject_unsatisfiable_value_constraints!(validations, where: _declared_fields_label(fields),
                                                                 tolerance: { allow_nil:, allow_blank: })
 
-          # Its mirror, and no tolerance argument: a tolerated value is one more value that PASSES, which
-          # cannot rescue a check nothing fails. Second, so a declaration broken both ways is reported as the
+          # Its mirror, taking the same tolerance pair and reading it the other way: not as a stand-down (a
+          # tolerated value PASSES, which cannot rescue a check nothing fails) but to discount the forbidden
+          # literals ActiveModel would skip. Second, so a declaration broken both ways is reported as the
           # unsatisfiable contract — the defect that rejects every call, ahead of the one that rejects none.
-          _reject_vacuous_value_constraints!(validations, where: _declared_fields_label(fields))
+          _reject_vacuous_value_constraints!(validations, where: _declared_fields_label(fields),
+                                                          tolerance: { allow_nil:, allow_blank: })
 
           _derive_raw_shape_container!(validations)
 

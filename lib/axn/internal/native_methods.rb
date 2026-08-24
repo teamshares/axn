@@ -64,10 +64,14 @@ module Axn
       MODULE_PRIVATE_METHOD_DEFINED = ::Module.instance_method(:private_method_defined?)
       MODULE_PROTECTED_INSTANCE_METHODS = ::Module.instance_method(:protected_instance_methods)
       STRING_EMPTY = ::String.instance_method(:empty?)
+      ARRAY_EMPTY = ::Array.instance_method(:empty?)
+      HASH_EMPTY = ::Hash.instance_method(:empty?)
+      SET_EMPTY = (::Set.instance_method(:empty?) if defined?(::Set))
       STRING_ENCODING = ::String.instance_method(:encoding)
       SYMBOL_ENCODING = ::Symbol.instance_method(:encoding)
       UNBOUND_METHOD_SUPER_METHOD = ::UnboundMethod.instance_method(:super_method)
       private_constant :SYMBOL_ENCODING, :UNBOUND_METHOD_SUPER_METHOD
+      private_constant :ARRAY_EMPTY, :HASH_EMPTY, :SET_EMPTY
       private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
                        :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS, :MODULE_METHOD_DEFINED,
@@ -518,6 +522,33 @@ module Axn
         else false
         end
       end
+
+      # Whether a value is one ActiveModel's `allow_blank:` would SKIP — `value.blank?`, as its
+      # `EachValidator` asks it (activemodel 7.2.2.2). Deliberately WIDER than `absent_value?` above, which
+      # answers a different question: that one refuses to read `[]` as a spelling of "no option", while this
+      # one must agree with ActiveSupport, because a blank value really is one the validator never sees.
+      #
+      # Every read is bound, so nothing the value defines decides it — the point of asking here rather than
+      # calling `blank?`, which dispatches `empty?` to whatever the caller supplied. Classified with
+      # `case`/`when Module`, which uses Ruby's own `Module#===`; a SUBCLASS matching its root is correct
+      # here, since the bound read then gives the root's own answer rather than the subclass's.
+      #
+      # `Symbol#empty?` is not bound, for the reason `absent_value?` gives: a Symbol subclass can be declared
+      # but never instantiated. Anything else — a Numeric, a Date, a value object — has no `empty?` for
+      # ActiveSupport to call either, so `!self` decides it and only nil/false are blank.
+      def self.blank_literal?(value)
+        case value
+        when nil, false then true
+        when ::Symbol then value.empty?
+        when ::String then STRING_EMPTY.bind_call(value) || _blank_string?(value)
+        when ::Array then ARRAY_EMPTY.bind_call(value)
+        when ::Hash then HASH_EMPTY.bind_call(value)
+        else SET_EMPTY ? _blank_set?(value) : false
+        end
+      end
+
+      # Split out so the Set branch above stays a single expression on builds where `Set` is absent.
+      def self._blank_set?(value) = value.is_a?(::Set) && SET_EMPTY.bind_call(value)
 
       # Whitespace-only, for any encoding, without letting the check itself become the failure. A String whose
       # bytes are invalid for its encoding raises from the match — it is not blank, and reporting it is the

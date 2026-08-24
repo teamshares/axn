@@ -380,6 +380,22 @@ RSpec.describe "a validator at a container position" do
       expect { build_axn { expects :d, type: Date, comparison: { greater_than: Time.now } } }.not_to raise_error
     end
 
+    it "refuses a hash-keyed inclusion set whose member only matches across a numeric family" do
+      # The mirror of the exclusion case: `Set[1].include?(1.0)` and `{1 => true}.include?(1.0)` are both
+      # false, so these reject every Float. Only an Array set makes the families cross.
+      expect { build_axn { expects :n, type: Float, inclusion: { in: Set[1] } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+      expect { build_axn { expects :n, type: Float, inclusion: { in: { 1 => true } } } }
+        .to raise_error(ArgumentError, /inclusion:/)
+    end
+
+    it "admits a hash-keyed set whose member IS of the declared type" do
+      action = build_axn { expects :n, type: Integer, inclusion: { in: Set[1] } }
+
+      expect(action.call(n: 1).ok?).to be(true)
+      expect(action.call(n: 2).ok?).to be(false)
+    end
+
     it "stands down on an inclusion set whose numeric literal matches across the family" do
       # `[0].include?(0.0)` is true, so an Integer literal in the set is a real match for a Float field.
       expect { build_axn { expects :n, type: Float, inclusion: { in: [0, 1] } } }.not_to raise_error
@@ -652,6 +668,49 @@ RSpec.describe "a validator at a container position" do
 
     # Tolerance only ADDS passing values, so it can never make a check something fails — where the
     # satisfiability guard stands down under it (nil is a passing value), this one does not consult it at all.
+    it "refuses when the only type-compatible literal is one the entry's tolerance skips" do
+      # ActiveModel skips a tolerated value before any validator sees it, so a forbidden literal the flag
+      # exempts can never be the value that fails. Both of these accept every input.
+      expect { build_axn { expects :x, type: NilClass, exclusion: { in: [nil] }, allow_nil: true } }
+        .to raise_error(ArgumentError, /exclusion:/)
+      expect { build_axn { expects :r, type: Array, exclusion: { in: [[]] }, allow_blank: true } }
+        .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    it "keeps a literal the tolerance does NOT skip, alongside one it does" do
+      action = build_axn { expects :r, type: Array, exclusion: { in: [[], [9]] }, allow_blank: true }
+
+      expect(action.call(r: [9]).ok?).to be(false)
+    end
+
+    it "keeps the literal when the entry turns a declaration-wide flag back off" do
+      # `validates` merges declaration defaults UNDER the entry's own options, so an explicit `false`
+      # survives the push-down and nil really is compared.
+      action = build_axn { expects :x, type: NilClass, exclusion: { in: [nil], allow_nil: false }, allow_nil: true }
+
+      expect(action.call(x: nil).ok?).to be(false)
+    end
+
+    it "refuses a hash-keyed set whose only member matches across a numeric family" do
+      # `Clusivity` calls the collection's own `include?`, and a Set/Hash looks the member up by `hash` +
+      # `eql?`, which never crosses a family: `Set[1].include?(1.0)` is false while `[1].include?(1.0)` is
+      # true. So the Array spelling forbids a Float and these two forbid nothing.
+      expect { build_axn { expects :n, type: Float, exclusion: { in: Set[1] } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+      expect { build_axn { expects :n, type: Float, exclusion: { in: { 1 => true } } } }
+        .to raise_error(ArgumentError, /exclusion:/)
+
+      # The Array spelling of the same set really does forbid `1.0`, and still declares.
+      expect(build_axn { expects :n, type: Float, exclusion: { in: [1] } }.call(n: 1.0).ok?).to be(false)
+    end
+
+    it "keeps a hash-keyed set whose member IS of the declared type" do
+      action = build_axn { expects :n, type: Integer, exclusion: { in: Set[1] } }
+
+      expect(action.call(n: 1).ok?).to be(false)
+      expect(action.call(n: 2).ok?).to be(true)
+    end
+
     it "refuses under a tolerance flag, which cannot rescue a check nothing fails" do
       expect { build_axn { expects :roles, type: Array, exclusion: { in: %w[admin] }, optional: true } }
         .to raise_error(ArgumentError, /exclusion:/)
