@@ -5779,6 +5779,25 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(dispatched).to eq([])
     end
 
+    # The same classification, asked of the nil-tolerance funnel: `Validation::Base.type_admits_nil?` is what
+    # every requiredness and nullability answer turns on AND what each declaration guard that stands down on a
+    # nil tolerance asks at class-definition time, so a token deciding how it is read there decides a guard's
+    # verdict. Asked of the derivation directly, because other (pre-existing) readers on the declaration path
+    # still use `Kernel#Array` — see PRO-3233.
+    it "judges a type entry's nil tolerance without dispatching to_ary" do
+      dispatched = []
+      token = Class.new do
+        define_singleton_method(:to_ary) do
+          dispatched << :to_ary
+          [NilClass]
+        end
+      end
+
+      expect(Axn::Validation::Base.type_admits_nil?(token)).to be(false)
+      expect(Axn::Validation::Base.type_admits_nil?({ klass: token })).to be(false)
+      expect(dispatched).to eq([])
+    end
+
     # A ceiling derived from `absence:` is one axn infers rather than one the author wrote, so it is taken only
     # from a check that always runs — unlike a `length:` bound, which is emitted as written whatever gates it.
     it "emits no ceiling for a GATED absence:" do

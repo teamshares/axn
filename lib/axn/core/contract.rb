@@ -3109,27 +3109,12 @@ module Axn
         # a Hash as something else entirely (an axis holding an inner contract) answers that on its own terms
         # first and never reaches this.
         #
-        # The union-or-single-token split is `case`/`when ::Array`, never `Kernel#Array()`: `Array()` tries
-        # `to_ary` and then `to_a` before wrapping, and BOTH are the caller's own methods — an object
-        # defining one decides how it gets read (its `to_ary` returning `[String]` waves a genuinely
-        # unsupported token through as a "union" of a real class), and one that raises replaces this
-        # declaration's actionable `ArgumentError` with whatever the caller's method throws, which outside
-        # StandardError escapes every rescue meant to settle it. Every consumer of a declared `type:`/`of:`
-        # token goes through this one function, so fixing the coercion here closes it at the bare axis, a
-        # bag's `klass:`, and a field's own `type:` at once.
-        #
-        # `nil` is the one value `Array()` special-cases (`Array(nil) == []`) rather than wrapping — kept
-        # identical here (`nil.equal?`, an identity check `nil` itself answers rather than the declared
-        # value) so "no type: at all" still renders the empty-list message every caller already has, instead
-        # of a one-token list naming `NilClass`.
-        def _declared_type_tokens(declared)
-          return [declared] unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
-
-          case declared
-          when ::Array then declared
-          else nil.equal?(declared) ? [] : [declared]
-          end
-        end
+        # The union-or-single-token split, and the reason it is never `Kernel#Array()`, belong to
+        # `ShapeGraph.type_tokens` — THE classification, shared with the nil-tolerance judgment and with
+        # schema reflection so no two of them can disagree about what one declaration names. Read from here
+        # for the AXIS position, where the value arrives as declared: a bare Hash written in place of a type
+        # is one unsupported token, which is what that reader answers for it.
+        def _declared_type_tokens(declared) = Internal::ShapeGraph.type_tokens(declared)
 
         # The one search for a token the runtime cannot hold a value to, shared by a field's own `type:`, the
         # bare-axis grammar and the bag's `klass:` so none of the three can drift about what a type is. Answers

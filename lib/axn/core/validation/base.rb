@@ -205,8 +205,17 @@ module Axn
       # (`type: [Array, NilClass]`, `type: Object`), so TypeValidator finds the value valid and the nil is no
       # type violation at all. Union semantics are TypeValidator's own: a value matching ANY declared klass
       # passes, so one nil-admitting member admits nil.
+      #
+      # Both reads are non-dispatching, and this is a path where that matters most: every declaration guard
+      # that stands down on a nil tolerance asks this at CLASS-DEFINITION time, so a token deciding how it is
+      # read decides a guard's verdict, and one whose method raises stops the class being defined at all. The
+      # bag is classified by `ShapeGraph.hash_or_nil` rather than by asking it `is_a?(Hash)`, and the tokens by
+      # `ShapeGraph.type_tokens` rather than by `Kernel#Array`, which would dispatch the token's own
+      # `to_ary`/`to_a`.
       def self.type_admits_nil?(entry_opts)
-        klasses = Array(entry_opts.is_a?(Hash) ? entry_opts[:klass] : entry_opts)
+        bag = Axn::Internal::ShapeGraph.hash_or_nil(entry_opts)
+        klasses = Axn::Internal::ShapeGraph.type_tokens(nil.equal?(bag) ? entry_opts : bag[:klass])
+
         klasses.any? { |klass| type_klass_admits_nil?(klass) }
       end
 

@@ -139,6 +139,15 @@ Three transferable rules:
 - **A soundness probe's candidate spread must hold only HONEST values, while its declared literals need not.** The two are not symmetric: a candidate whose `blank?`/`present?` is its own satisfies contracts that admit nothing on any ordinary value, so one in the spread reports every correct refusal as an over-restriction (measured — it did). A set MEMBER carrying a singleton is fair game, because the author named that object and the guard holds it. Where the only witness would BE the lying object, the case belongs in a targeted spec with an explicit runtime control, not in the product.
 - **When round N rhymes with round N−1, the next artifact is a product probe, not another fix.** Same conclusion as PRO-2883's malformed-input matrix and PRO-2995's derive-don't-enumerate specs; this is the third time, which is the point at which the rule should be reached for first rather than last.
 
+## `Kernel#Array` on a declared token, and why the sweep is not mechanical
+
+A declared `type:`/`of:` token is a caller's own Class or Module, so reading it through `Kernel#Array` runs its `to_ary` and then its `to_a` — from a declaration guard, which is the one place reflection may run none of the caller's code. One that returns `[String]` waves an unsupported token through as a union of a real class; one that raises stops the class being defined. `ShapeGraph.type_tokens` is THE classification (`case`/`when ::Array`), read by the contract's guards, by `Validation::Base.type_admits_nil?` and by schema reflection, so the three cannot disagree about what one declaration names.
+
+Two things are worth knowing before anyone finishes the job (PRO-3233 holds the rest — eleven further sites in `contract.rb`, fifteen in `schema.rb`):
+
+- **Fixing one site relocates the failure rather than removing it.** Closing the dispatch in `type_admits_nil?` moved the raise on the same declaration from `nil_accepted?` to `_default_presence_applies?`, one guard later on the same `expects` call. So a per-site fix is only honest if it says which site it closed; the *declaration* is fixed when the path is.
+- **The swap is not a rename, because the two disagree on a Hash.** `Array({a: 1})` is `[[:a, 1]]` — a two-element list of pairs — while `type_tokens` answers `[{a: 1}]`, one unsupported token. That is the wanted reading, but it changes the verdict of every site that asks `.empty?`, `.size == 1` or `.first` about a bag whose `klass:` is a Hash. Each of those needs its own reasoning and its own example; sweeping them together is how a thorough change goes wrong.
+
 ## `presence:` and `absence:` are complements by ActiveSupport, not by ActiveModel
 
 Worth knowing before reasoning about the pair: they are not spelled against the same predicate. `PresenceValidator` errors `if value.blank?`; `AbsenceValidator` errors `if value.present?` (activemodel 8.1.3.1). What makes them complements is ActiveSupport's `Object#present?` being defined as `!blank?`, plus every core class it specializes defining the pair together — measured, `Array`, `Hash`, `String`, `Symbol`, `Numeric`, `Time`, `NilClass`, `TrueClass` and `FalseClass` all own both.
