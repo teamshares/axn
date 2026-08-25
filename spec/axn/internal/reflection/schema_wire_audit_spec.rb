@@ -81,7 +81,7 @@ RSpec.describe "the emitted schema against runtime truth" do
   # `""`, `[]`, `{}` and `false` at runtime and its document refuses them.
   #
   # This is PRO-3016's axis conflation surfacing in reflection, it predates the work this file was written for,
-  # and closing it is a contract decision rather than a bug fix (stand the keyword down, which is looser, or
+  # and closing it is a contract decision rather than a bug fix (PRO-3240: stand the keyword down, which is looser, or
   # widen the emitted set with the blank). Excluded by NAME so the residue below stays meaningful, and so that
   # deleting these two lines is all it takes to hold the emitter to it once that call is made.
   def known_blank_tolerance_divergence?(tolerance_name, value)
@@ -93,7 +93,7 @@ RSpec.describe "the emitted schema against runtime truth" do
   # accepts every shorter value as well (`type: String, length: { is: 3 }, optional: true` emits `maxLength: 3`
   # with no `minLength`, so `"a"` passes the document and fails the runtime). One root, two symptoms: outbound
   # the document refuses the blank it accepts, inbound it accepts the non-blanks the constraint refuses. The
-  # honest spelling is an `anyOf` of the blank and the constrained form, which is the decision referred to above.
+  # honest spelling is an `anyOf` of the blank and the constrained form, which is the decision PRO-3240 carries.
   def floor_bearing_validators = ["length is:3"]
 
   def known_blank_tolerance_floor_drop?(tolerance_name, validator_name)
@@ -126,7 +126,7 @@ RSpec.describe "the emitted schema against runtime truth" do
   # A branch naming values that can never satisfy a `numericality:` entry is still advertised unless
   # `only_numeric:` is what does the narrowing — `of: { klass: :boolean, numericality: true }` and
   # `type: [Array, Integer], numericality: { only_integer: true }` both keep a branch the runtime rejects.
-  # Reported as an open class rather than closed here: dropping an Array or Hash branch needs an exact-class
+  # Left open rather than closed here (PRO-3240): dropping an Array or Hash branch needs an exact-class
   # test, since a subclass may override the `to_s` ActiveModel actually reads. Named so the residue stays
   # meaningful and so closing it is a deletion.
   def unnarrowed_branch_classes = [Array, Hash, TrueClass, FalseClass]
