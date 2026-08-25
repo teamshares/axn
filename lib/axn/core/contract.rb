@@ -4174,8 +4174,32 @@ module Axn
           minimum = Internal::Reflection::Schema.declared_size_minimum(validations)
           maximum = Internal::Reflection::Schema.declared_size_maximum(validations)
 
-          _raise_empty_size_interval!(validations, where, minimum, maximum) if minimum && maximum && minimum > maximum
+          if minimum && maximum && minimum > maximum && !_blank_branch_clears_the_floor?(validations, minimum)
+            _raise_empty_size_interval!(validations, where, minimum, maximum)
+          end
           _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
+        end
+
+        # Whether a declared branch escapes the ceiling this comparison rests on — which only an `absence:`-derived
+        # ceiling can be escaped, because it is a statement about the BLANK axis rather than the size one. It
+        # excludes a value only where that value's blankness implies size 0, and for a token whose blank value is
+        # `false` it does not: `false` is blank, so the `absence:` accepts it, and `LengthValidator` measures its
+        # rendering (`"false"`, five characters) rather than a length it does not have. So
+        # `type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1 }` is satisfied by
+        # `false` on every call, though its Array branch admits nothing at all.
+        #
+        # Asked HERE and not inside the ceiling derivation, because the emitter and this guard ask different
+        # questions of a union. `declared_size_maximum` answers what bound the ARRAY branch carries, and
+        # `maxItems: 0` is right there whatever a sibling branch admits — dropping it would leave a non-empty
+        # array schema-valid and runtime-invalid, the looseness a previous round fixed. This guard asks whether
+        # the DECLARATION admits anything, and one satisfiable branch settles that. Same derivation, two
+        # questions; the union is where they come apart.
+        #
+        # The witness must still clear the floor, so a floor above what `false` measures is refused as before.
+        def _blank_branch_clears_the_floor?(validations, minimum)
+          return false unless Internal::Reflection::Schema.absence_bounds_size?(validations)
+
+          Internal::Reflection::Schema.blank_witness_sizes(validations).any? { |size| size >= minimum }
         end
 
         # The validator entries that can supply a bound to the size rules below, or the set they scan. Kept as a

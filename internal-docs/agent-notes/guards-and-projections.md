@@ -139,6 +139,19 @@ Three transferable rules:
 - **A soundness probe's candidate spread must hold only HONEST values, while its declared literals need not.** The two are not symmetric: a candidate whose `blank?`/`present?` is its own satisfies contracts that admit nothing on any ordinary value, so one in the spread reports every correct refusal as an over-restriction (measured — it did). A set MEMBER carrying a singleton is fair game, because the author named that object and the guard holds it. Where the only witness would BE the lying object, the case belongs in a targeted spec with an explicit runtime control, not in the product.
 - **When round N rhymes with round N−1, the next artifact is a product probe, not another fix.** Same conclusion as PRO-2883's malformed-input matrix and PRO-2995's derive-don't-enumerate specs; this is the third time, which is the point at which the rule should be reached for first rather than last.
 
+## Deriving from the emitter is right; sharing its QUESTION is not — unions are where they part
+
+The rule to derive a guard from the emitter's own derivations is sound, and this PR followed it. The trap it does not warn about: an emitter derivation answers a question about ONE BRANCH, while a satisfiability guard asks about the WHOLE DECLARATION. For a single declared type those are the same sentence. For a union they are not, and one satisfiable branch is all a caller needs.
+
+`type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1 }` was refused. The Array branch really does admit nothing — `absence:` bounds it to empty, the floor demands one element. But `false` satisfies the declaration on every call: it is blank, so the `absence:` accepts it, and `LengthValidator` measures its RENDERING (`"false"`, five characters) rather than a length it does not have. The guard read `blank_values_are_empty?`, which filters the union down to its size-bearing tokens — correct for the emitter, which needs to know what bound the Array branch carries, and wrong for the guard, which needed the branch that had been filtered out.
+
+**The two answers cannot be merged, because the safe direction is opposite in each.** Dropping the Array branch's `maxItems: 0` because a sibling admits something would leave a non-empty array schema-valid and runtime-invalid — the looseness an earlier round of this same PR fixed. Keeping it while refusing the declaration rejects a working contract. So the derivation stays shared and the guard asks one extra question of the branches the derivation discarded.
+
+Two smaller things worth keeping:
+
+- **An `absence:` ceiling is a claim about the BLANK axis, not the size axis.** It excludes a value only where blankness implies size 0. That holds for `Array`/`Hash`/`Set` (blank ⇒ empty ⇒ 0) and for `nil` (`nil.to_s` is empty), and fails for exactly one non-container value: `false`, which is blank and renders as five characters. `String` fails it too and already vetoed for that reason (`"  "` is blank and two characters).
+- **Bound the stand-down by the witness, not by its existence.** A floor of 6 is still refused, because `false` measures 5. "A boolean branch disables the rule" would have been the easy version and would have lost a correct refusal; the example at the boundary is what pins the difference.
+
 ## A projection can be unsatisfiable, or it can PROMISE what the runtime refuses
 
 The corollary this file already carries reads one way: the projection of a satisfiable contract must itself be satisfiable, and an unsatisfiable node is the emitter and runtime disagreeing. The disagreement has a second direction, and it is the one that reached production code here: a SATISFIABLE node for a contract that admits nothing.

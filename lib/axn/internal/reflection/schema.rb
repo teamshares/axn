@@ -2063,6 +2063,34 @@ module Axn
           BLANK_IS_EMPTY_CLASSES.any? { |klass| klass.equal?(token) } || (defined?(Set) && ::Set.equal?(token))
         end
 
+        # The blank value a token admits, for the tokens that carry NO size of their own — the branches
+        # `blank_values_are_empty?` filters out before deriving an `absence:` ceiling. `false` is the only one:
+        # it is blank (so an `absence:` accepts it), it has no `length`, and `LengthValidator` therefore
+        # measures its RENDERING — `false.to_s` is five characters, which clears any floor at or below five.
+        #
+        # `true` is absent because it is not blank, and so are `Integer`/`Float`/`Numeric`: no value of theirs
+        # is blank either, so none of them can witness anything through the blank axis. Every other token
+        # `single_type_for` knows maps to a size-bearing type and is judged by `blank_is_empty_class?` instead.
+        BLANK_VALUES_WITHOUT_A_SIZE = { boolean: false, ::FalseClass => false }.freeze
+
+        # The sizes ActiveModel would measure for those blank values, for the tokens this declaration names.
+        # Read by the size guard and NOT by the emitter, because the two ask different questions about a union:
+        # the emitter asks what bound the ARRAY branch carries, and `maxItems: 0` is the right answer there
+        # whatever a sibling branch admits; the guard asks whether the DECLARATION admits anything at all, and
+        # one satisfiable branch settles that. `type: [Array, :boolean], presence: false, absence: true,
+        # length: { minimum: 1 }` accepts `false` on every call (measured) while its Array branch really does
+        # admit nothing.
+        def blank_witness_sizes(validations)
+          declared_type_tokens(validations).filter_map do |token|
+            next if token_carries_a_size?(token)
+
+            found = BLANK_VALUES_WITHOUT_A_SIZE.find { |key, _| Axn::Internal::Identity.same?(key, token) }
+            next if nil.equal?(found)
+
+            found.last.to_s.length
+          end
+        end
+
         # The type tokens a declaration names, reading a `type:` bag's `klass:` where a bag was declared and the
         # bare spelling otherwise.
         #
