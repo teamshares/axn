@@ -988,10 +988,26 @@ module Axn
         #   `absence:`            `value.present?` (absence.rb)                            ceiling
         #
         # Which check holds a given bound is not this method's to know — the floor of 1 is `presence:`'s on one
-        # declaration and `length:`'s on the next — so a value is measured only where ALL FOUR are Ruby's own,
-        # and there they agree by construction. `size` is deliberately not among them: no check asks it, and
-        # reading it is how an `Array` subclass overriding `length` was measured as empty here while `length:`
-        # and `inclusion:` both accepted it at runtime.
+        # declaration and `length:`'s on the next — so a value is measured only where every one of them is
+        # Ruby's own, and there they agree by construction. `size` is deliberately not among them: no check
+        # asks it, and reading it is how an `Array` subclass overriding `length` was measured as empty here
+        # while `length:` and `inclusion:` both accepted it at runtime.
+        #
+        # And a bound-holding check does not reach its measurement directly: it asks the value whether it CAN
+        # answer first, and takes a different measurement when the answer is no. `length:` reads
+        # `value.respond_to?(:length) ? value.length : value.to_s.length`, and ActiveSupport's `Object#blank?`
+        # is `respond_to?(:empty?) ? !!empty? : false`. So the capability probe is part of the measurement, and
+        # a value carrying its own `respond_to?` is measured by an answer IT wrote however native the method
+        # that answer names: an exact `Array` answering `false` for `:length` is measured as `"[]"` — two
+        # characters — and not as `Array#length`'s zero, so a floor of 2 it appears to fail is one it meets.
+        # `respond_to?` is therefore on the list beside the four measurements it selects between.
+        #
+        # That override is not deception to be refused: answering for a method it forwards is the ordinary
+        # shape of a proxy or delegator, which is why axn's own emptiness check asks the capability through a
+        # BOUND `Object#respond_to?` (`NonEmptinessValidator::CAPABILITY_CHECK`) rather than trusting the
+        # value's answer. ActiveModel dispatches it, so a declaration weighing what ActiveModel will measure
+        # has to count the caller's answer as part of the measurement — reading the unforgeable one here would
+        # measure something no check performs.
         #
         # The list grows with the bounds. `present?` belongs to it because PRO-3220 taught `absence:` to name a
         # ceiling; adding that bound without revisiting this list is what let a member answering
@@ -1009,20 +1025,23 @@ module Axn
           value.length
         end
 
-        # Every method a check that holds a size bound asks the value by. All four must be Ruby's own, so the
-        # order is immaterial.
-        ASKED_BY_A_BOUNDING_CHECK = %i[length empty? blank? present?].freeze
+        # Every method a check that holds a size bound asks the value by — the four measurements plus the
+        # `respond_to?` those checks select between them with. All must be Ruby's own, so the order is
+        # immaterial.
+        ASKED_BY_A_BOUNDING_CHECK = %i[length empty? blank? present? respond_to?].freeze
 
-        # `Object` is admitted as an owner, and only ever ends up owning `blank?`/`present?` here — it defines
-        # neither `length` nor `empty?`, so those two can never resolve to it. ActiveSupport's `Object#blank?`
-        # is `respond_to?(:empty?) ? !!empty? : false` and its `present?` is `!blank?`, so both answer out of
-        # the very `empty?` this method has already required to be native: for a `Set`, whose blankness AS does
-        # not specialize, that is the whole reason a member is measurable at all.
+        # `Object` and `Kernel` are admitted as owners, and neither can end up owning a MEASUREMENT here:
+        # `Object` only ever owns `blank?`/`present?` and `Kernel` only ever owns `respond_to?`, since none of
+        # them defines `length` or `empty?`. ActiveSupport's `Object#blank?` is
+        # `respond_to?(:empty?) ? !!empty? : false` and its `present?` is `!blank?`, so both answer out of the
+        # very `empty?` this method has already required to be native: for a `Set`, whose blankness AS does not
+        # specialize, that is the whole reason a member is measurable at all. `Kernel#respond_to?` is Ruby's
+        # own capability probe, which every value answers with until one carries an override.
         def natively_answered?(value, method_name)
           owner = Axn::Internal::NativeMethods.method_owner(value, method_name)
           return false if owner.nil?
 
-          native_empty_owner?(owner) || ::Object.equal?(owner)
+          native_empty_owner?(owner) || ::Object.equal?(owner) || ::Kernel.equal?(owner)
         end
 
         def native_empty_owner?(owner)

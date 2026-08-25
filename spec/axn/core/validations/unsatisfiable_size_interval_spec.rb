@@ -361,6 +361,28 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         expect(action.call(f: member).ok?).to be(true)
       end
 
+      # The capability probe, which is part of the measurement rather than a fifth check: LengthValidator reads
+      # `value.respond_to?(:length) ? value.length : value.to_s.length`, so a member answering `false` there is
+      # measured by its RENDERING however native its `length` is. `[]` renders as two characters and clears a
+      # floor of 2 that `Array#length`'s zero fails, so measuring the native method would refuse a declaration
+      # the runtime accepts. Answering for a method it forwards is ordinary proxy behaviour, which is why this
+      # stands the branch down rather than refusing the member.
+      it "stands down on a member that answers `respond_to?` with its own code" do
+        member = []
+        def member.respond_to?(name, *) = name == :length ? false : super
+
+        expect { declare(type: Array, presence: false, length: { minimum: 2 }, inclusion: { in: [member] }) }
+          .not_to raise_error
+      end
+
+      it "accepts at runtime the member whose respond_to? it stood down on" do
+        member = []
+        def member.respond_to?(name, *) = name == :length ? false : super
+        action = declare(type: Array, presence: false, length: { minimum: 2 }, inclusion: { in: [member] })
+
+        expect(action.call(f: member).ok?).to be(true)
+      end
+
       # `Array#include?` dispatches `member == candidate`, so a member's own `==` decides what it matches —
       # and measuring the member is evidence about those values only where its equality is one axn vouches
       # for. That world is closed and asked by EXACT class, so every subclass stands the branch down.
