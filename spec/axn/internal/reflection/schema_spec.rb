@@ -5611,6 +5611,25 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "null")
       end
 
+      # The position's mirror of a required field-level lone `NilClass`: a validator on the bag that rejects nil
+      # leaves the position admitting nothing at all, so the node has to say so rather than advertise `null`.
+      it "empties a lone null position another validator on the bag rejects" do
+        action = build_axn { expects :f, type: Array, of: { klass: NilClass, presence: true } }
+
+        expect(action.call(f: [nil])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to eq(enum: [])
+      end
+
+      it "empties it on output too, at a map's values axis" do
+        action = build_axn do
+          exposes :m, type: Hash, of: { values: { klass: NilClass, presence: true } }
+          def call = expose(:m, { a: nil })
+        end
+
+        expect(action.call).not_to be_ok
+        expect(action.output_schema.dig(:properties, :m, :additionalProperties)).to eq(enum: [])
+      end
+
       it "reflects a union element bag as distinct branches" do
         action = build_axn { expects :f, type: Array, of: { klass: [String, NilClass] } }
 
@@ -5976,6 +5995,72 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         expect(action.call).to be_ok
         expect(action.output_schema[:properties][:n]).to eq(type: "integer")
+      end
+    end
+
+    # A `length:` asks the same question a `format:` does one paragraph down, and had the same answer missing:
+    # ActiveModel measures the VALUE's own `#length` while `minLength`/`maxLength` measure the serialized string.
+    describe "an outbound length: whose subject is not the string the wire carries" do
+      it "is the divergence itself: a Time's #to_s is longer than its serialized form" do
+        moment = Time.utc(2026, 8, 25, 12)
+
+        expect(moment.to_s.length).to eq(23)
+        expect(Axn::Internal::Reflection::Values.serialize_value(moment).length).to eq(20)
+      end
+
+      it "stands the size down on output for a Time field" do
+        moment = Time.utc(2026, 8, 25, 12)
+        action = build_axn do
+          exposes :t, type: Time, length: { is: 23 }
+          define_method(:call) { expose(:t, moment) }
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["t"]).to eq("2026-08-25T12:00:00Z")
+        expect(action.output_schema[:properties][:t]).not_to have_key(:minLength)
+        expect(action.output_schema[:properties][:t]).not_to have_key(:maxLength)
+      end
+
+      it "stands it down at a bag position, which asks the same question" do
+        moment = Time.utc(2026, 8, 25, 12)
+        action = build_axn do
+          exposes :ts, type: Array, of: { klass: Time, length: { is: 23 } }
+          define_method(:call) { expose(:ts, [moment]) }
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(action.output_schema.dig(:properties, :ts, :items)).not_to have_key(:minLength)
+      end
+
+      it "keeps it for a String, which IS the string it serializes to" do
+        action = build_axn do
+          exposes :s, type: String, length: { is: 3 }
+          def call = expose(:s, "abc")
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema[:properties][:s]).to include(minLength: 3, maxLength: 3)
+      end
+
+      # A COLLECTION size is exempt by construction: the count the runtime measured is the count the serializer
+      # writes, whatever the elements themselves render as.
+      it "keeps an Array's own size, whose count survives serialization" do
+        moment = Time.utc(2026, 8, 25, 12)
+        action = build_axn do
+          exposes :ts, type: Array, of: Time, length: { is: 1 }
+          define_method(:call) { expose(:ts, [moment]) }
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema[:properties][:ts]).to include(minItems: 1, maxItems: 1)
+      end
+
+      it "still emits inbound, where the subject is the string that was sent" do
+        action = build_axn { expects :t, type: Time, length: { is: 23 } }
+
+        expect(action.input_schema[:properties][:t]).to include(minLength: 23, maxLength: 23)
       end
     end
 

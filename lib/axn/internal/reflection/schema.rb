@@ -1455,7 +1455,7 @@ module Axn
         # node's own emitted `type:`, so the same call does the right thing wherever the node sits.
         def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false, declared_klass: nil)
           apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass:)
-          apply_size_constraints!(node, validations)
+          apply_size_constraints!(node, validations, for_output:, property_names:, declared_klass:)
           apply_numeric_bounds!(node, validations, for_output:, declared_klass:)
           apply_pattern!(node, validations, for_output:, property_names:, declared_klass:)
         end
@@ -1740,41 +1740,68 @@ module Axn
           end
         end
 
-        def apply_size_constraints!(prop, validations)
+        def apply_size_constraints!(prop, validations, for_output: false, property_names: false, declared_klass: nil)
           minimum = declared_size_minimum(validations)
           maximum = declared_size_maximum(validations)
           return if minimum.nil? && maximum.nil?
 
+          strings = emit_string_size?(validations, for_output:, property_names:, declared_klass:)
+
           if prop[:anyOf]
-            prop[:anyOf] = apply_member_size_constraints(prop[:anyOf], minimum, maximum)
+            prop[:anyOf] = apply_member_size_constraints(prop[:anyOf], minimum, maximum, strings:)
           else
-            prop.merge!(size_bounds_for(prop[:type], minimum, maximum))
+            prop.merge!(size_bounds_for(prop[:type], minimum, maximum, strings:))
           end
         end
+
+        # Whether a STRING size may be emitted at this position — the same question `apply_pattern!` asks, and
+        # for the same reason. ActiveModel measures the value's own `#length`, and on OUTPUT that is not always
+        # the string the wire carries: `Time.utc(2026, 8, 25, 12).to_s` is 23 characters and it serializes as the
+        # 20-character `"2026-08-25T12:00:00Z"`, so `length: { is: 23 }` accepts the value at runtime while the
+        # emitted `minLength: 23` rejects the action's own output.
+        #
+        # A COLLECTION size is exempt by construction: `minItems`/`maxItems`/`minProperties`/`maxProperties`
+        # count the elements the serializer writes, so the runtime's measurement and the document's agree however
+        # the elements themselves render. A `propertyNames` node is exempt too, exactly as it is for a pattern —
+        # a KEY's wire form is the `to_s` the validator measured, and an axis whose key is not its own wire form
+        # has already had `length:` removed by `key_axis_constraints`. Input needs no gate: the subject there is
+        # the value that was sent.
+        def emit_string_size?(validations, for_output:, property_names:, declared_klass:)
+          return true unless for_output
+          return true if property_names
+
+          own_wire_form?(declared_type_tokens(validations, declared_klass))
+        end
+
+        # The size keywords whose subject is a STRING, and so the ones the wire-form gate above governs.
+        STRING_SIZE_KEYS = %i[minLength maxLength].freeze
+        private_constant :STRING_SIZE_KEYS
 
         # A union emits one branch per member type instead of a single `type:`, and the validators reject an
         # out-of-bounds value whichever branch it takes — so each bound belongs on every branch that can carry
         # it. A branch with no size (an `integer` member) and the nullability branch carry none, decided by the
         # same per-type key lookup the single-type path uses.
-        def apply_member_size_constraints(members, minimum, maximum)
+        def apply_member_size_constraints(members, minimum, maximum, strings: true)
           members.map do |member|
-            bounds = size_bounds_for(member[:type], minimum, maximum)
+            bounds = size_bounds_for(member[:type], minimum, maximum, strings:)
             bounds.empty? ? member : member.merge(bounds)
           end
         end
 
         # The size keywords one emitted type can carry, for the bounds this field declares. Empty for a type
         # with no size, which is what keeps a bound off an `integer` branch and off `"null"`.
-        def size_bounds_for(type, minimum, maximum)
+        def size_bounds_for(type, minimum, maximum, strings: true)
           bounds = {}
-          if minimum && (floor_key = size_constraint_key_for(type))
+          if minimum && (floor_key = size_constraint_key_for(type)) && emittable_size_key?(floor_key, strings)
             bounds[floor_key] = minimum
           end
-          if maximum && (ceiling_key = size_ceiling_key_for(type))
+          if maximum && (ceiling_key = size_ceiling_key_for(type)) && emittable_size_key?(ceiling_key, strings)
             bounds[ceiling_key] = maximum
           end
           bounds
         end
+
+        def emittable_size_key?(key, strings) = strings || !STRING_SIZE_KEYS.include?(key)
 
         # The JSON Schema floor key for an emitted type, or nil for a type with no empty state. Reads the
         # single-type String and the `[T, "null"]` nullable pair alike; `"null"` is never size-bearing.
@@ -2391,10 +2418,18 @@ module Axn
 
           if node[:anyOf].is_a?(Array)
             without_null = node[:anyOf].reject { |member| member[:type] == "null" }
-            return node if without_null.empty?
+            return { enum: EMPTY_ENUM } if without_null.empty?
 
             return without_null.size == 1 ? node.except(:anyOf).merge(without_null.first) : node.merge(anyOf: without_null)
           end
+
+          # The position's mirror of a field's lone required `NilClass`: nothing but nil is a NilClass, and the
+          # validator that makes the position non-nullable rejects nil, so it admits nothing — and `{ type:
+          # "null" }` advertised the one value it rejects, letting `[null]` through a schema whose runtime
+          # refuses it. `enum: []` is the faithful node, the same spelling `unsatisfiable_type?` reaches at a
+          # field. A union that reduces to no branch at all is the same contract and now says so too, where
+          # returning the node restored the very `null` branches this just rejected.
+          return { enum: EMPTY_ENUM } if unsatisfiable_type?(node[:type], nullable:)
 
           node
         end
