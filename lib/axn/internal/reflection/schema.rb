@@ -1381,8 +1381,12 @@ module Axn
             apply_single_type!(prop, type_info, config, nullable:)
           elsif type_info[:enum]
             # A type_info carrying only an enum names no type and still constrains the value — which is how a
-            # contract nothing satisfies reaches the node, as `enum: []`.
-            prop[:enum] = type_info[:enum]
+            # contract nothing satisfies reaches the node, as `enum: []`. Nullability joins it exactly as it
+            # joins a singleton's enum above: a narrowing that empties every TYPE branch has said nothing about
+            # nil, which the validators SKIP wherever the field tolerates one. So `type: String, numericality:
+            # { only_numeric: true }, optional: true` admits nil and nothing else — measured, it exposes nil
+            # successfully — and the bare empty set rejected the very value it accepts.
+            prop[:enum] = nullable ? type_info[:enum] + [nil] : type_info[:enum]
           end
         end
 
@@ -1456,7 +1460,7 @@ module Axn
         def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false, declared_klass: nil)
           apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass:)
           apply_size_constraints!(node, validations, for_output:, property_names:, declared_klass:)
-          apply_numeric_bounds!(node, validations, for_output:, declared_klass:)
+          apply_numeric_bounds!(node, validations, nullable:, for_output:, declared_klass:)
           apply_pattern!(node, validations, for_output:, property_names:, declared_klass:)
         end
 
@@ -1641,7 +1645,14 @@ module Axn
         # Emitting only ever shrinks the schema-valid set, so it preserves the documented direction (stricter
         # than the runtime, never looser) by construction — and every case a bound cannot be carried exactly
         # stands down to emitting nothing, which is where this started.
-        def apply_numeric_bounds!(prop, validations, for_output:, declared_klass: nil)
+        # An `enum` is INTERSECTED with whatever the node already carries rather than assigned over it, the same
+        # rule `apply_inclusion_enum!` follows and for the same reason: both sets are enforced.
+        def merge_enum!(prop, values)
+          existing = prop[:enum]
+          prop[:enum] = existing ? existing & values : values
+        end
+
+        def apply_numeric_bounds!(prop, validations, nullable:, for_output:, declared_klass: nil)
           return unless numeric_node?(prop)
           return if for_output && !numeric_serialization_exact?(declared_type_tokens(validations, declared_klass))
 
@@ -1677,10 +1688,22 @@ module Axn
           wrote_bound = false
           bounds.each do |operator, bound|
             if Axn::Validation::Base.contradictory_bound?(bound)
-              prop[:enum] = EMPTY_ENUM
+              # Nullable, nil is still a passing value — the validators skip it — so the node that admits
+              # nothing ELSE must say that rather than admit nothing at all.
+              merge_enum!(prop, nullable ? [nil] : EMPTY_ENUM)
               next
             end
             next unless Axn::Validation::Base.emittable_numeric_bound?(bound)
+
+            # `const` names exactly one value, so it cannot say "this number OR null", and a nullable position
+            # really does admit nil: `type: Integer, comparison: { equal_to: 1 }, optional: true` exposes nil
+            # successfully while `const: 1` rejected it, even beside a `"null"` in the node's own `type:`. The
+            # enum spelling says both, and intersects with any set the node already carries.
+            if operator == :equal_to && nullable
+              merge_enum!(prop, [bound, nil])
+              wrote_bound = true
+              next
+            end
 
             write_numeric_bound!(prop, NUMERIC_BOUND_KEYS.fetch(operator), bound)
             wrote_bound = true
@@ -2706,15 +2729,26 @@ module Axn
         # about nil — measured, `type: [String, Integer, NilClass], numericality: { only_numeric: true },
         # optional: true` accepts nil while rejecting every String.
         def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, for_output:)
+          # A branch `only_numeric:` may drop is one whose emitted type NAMES values that are not Numerics.
+          # Everything else is left exactly as built — including the `"null"` branch nullability owns, a branch
+          # already tagged `"integer"`, and any branch whose type is ABSENT. That last is load-bearing: a missing
+          # type is not evidence of anything. `type: Numeric` deliberately emits `{}` on output, its values
+          # having more than one wire form, and reading that absence as proof emptied a position the action
+          # satisfies with `1` — the schema rejecting output it had produced.
+          return numeric_only ? nil : branch if NON_NUMERIC_BRANCH_TYPES.include?(branch[:type])
+
           case branch[:type]
-          # Both survive, for different reasons: nullability owns the null branch (above), and a branch already
-          # tagged "integer" satisfies either option exactly as it stands.
-          when "null", "integer" then branch
           when "number" then only_integer ? number_branch_as_integer(branch, admits_integer) : branch
           when "string" then string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:)
-          else numeric_only ? nil : branch
+          else branch
           end
         end
+
+        # The emitted types that name values no Numeric can be, and so the only branches `only_numeric:` may
+        # drop. Listed rather than derived by exclusion for exactly the reason above — an absent or unrecognized
+        # type has to fall through to "keep", not to "drop".
+        NON_NUMERIC_BRANCH_TYPES = %w[array object boolean].freeze
+        private_constant :NON_NUMERIC_BRANCH_TYPES
 
         # A numeric branch under `only_integer:`: retagged where some declared token admits an Integer, and
         # dropped where none does — no Float satisfies the option (`2.0.to_s` is "2.0"), so the branch is

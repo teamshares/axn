@@ -5943,6 +5943,49 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
       end
 
+      # A narrowing that empties every TYPE branch has said nothing about nil, which the validators SKIP
+      # wherever the field tolerates one — so the node admits nil and nothing else, and the bare empty set
+      # rejected the very value the position accepts. Found by a differential scan of the emitted schema
+      # against runtime truth, not by a review.
+      it "admits nil where the emptied narrowing sits on a nullable position" do
+        action = build_axn do
+          exposes :n, type: String, numericality: { only_numeric: true }, optional: true
+          def call = expose(:n, nil)
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema[:properties][:n]).to eq(enum: [nil])
+      end
+
+      it "still empties completely where the position is NOT nullable" do
+        action = build_axn { expects :n, type: String, numericality: { only_numeric: true } }
+
+        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      end
+
+      # A MISSING emitted type is not evidence the branch is non-Numeric. `type: Numeric` emits `{}` on output
+      # deliberately — its values have more than one wire form — and reading that absence as proof emptied a
+      # position the action satisfies perfectly well.
+      it "keeps an untyped branch, whose absent type proves nothing" do
+        action = build_axn do
+          exposes :n, type: Numeric, numericality: { only_numeric: true }
+          def call = expose(:n, 1)
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["n"]).to eq(1)
+        expect(action.output_schema[:properties][:n]).to eq({})
+      end
+
+      it "still names the type on input, where Numeric has one wire form to advertise" do
+        action = build_axn { expects :n, type: Numeric, numericality: { only_numeric: true } }
+
+        expect(action.input_schema[:properties][:n]).to eq(type: "number")
+        expect(action.call(n: 1)).to be_ok
+        expect(action.call(n: "a")).not_to be_ok
+      end
+
       # NULLABILITY owns the null branch: ActiveModel skips a nil before any validator sees it, so neither
       # option says anything about it and dropping it would reject a value the contract accepts.
       it "keeps the null branch, which the validator never judges" do
@@ -7066,6 +7109,30 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(result).to be_ok
           expect(Axn::Extensions::Serialization.render(result)["n"]).to eq(0.0)
           expect(action.output_schema[:properties][:n]).not_to have_key(:exclusiveMinimum)
+        end
+
+        # `const` names exactly one value, so it cannot say "this number OR null" — and a nullable position
+        # really does admit nil. Measured: the action exposes nil successfully while `const: 1` refused it,
+        # even beside a `"null"` in the node's own `type:`.
+        it "spells a nullable equal_to: as an enum, which can carry the null" do
+          action = build_axn do
+            exposes :n, type: Integer, comparison: { equal_to: 1 }, optional: true
+            def call = expose(:n, nil)
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to include(enum: [1, nil])
+          expect(action.output_schema[:properties][:n]).not_to have_key(:const)
+        end
+
+        it "keeps const where the position admits no nil" do
+          action = build_axn do
+            exposes :n, type: Integer, comparison: { equal_to: 1 }
+            def call = expose(:n, 1)
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to include(const: 1)
         end
 
         it "still emits when a declared type: requires a real numeric" do
