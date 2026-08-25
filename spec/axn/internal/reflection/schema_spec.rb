@@ -5911,6 +5911,62 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.call(n: "2")).not_to be_ok
     end
 
+    # `only_numeric:` narrows on its OWN, without `only_integer:` beside it — the pass used to be gated on
+    # `only_integer:`, so this whole family went unapplied and the document accepted values the validator refuses.
+    describe "only_numeric: standing without only_integer:" do
+      it "drops the string branch, which no value can occupy" do
+        action = build_axn { expects :n, type: [String, Integer], numericality: { only_numeric: true } }
+
+        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+        expect(action.call(n: 1)).to be_ok
+        expect(action.call(n: "abc")).not_to be_ok
+        # The numeric STRING is the telling one: bare `numericality:` accepts it, and `only_numeric:` does not.
+        expect(action.call(n: "1")).not_to be_ok
+      end
+
+      it "empties a lone String position it leaves nothing to hold" do
+        action = build_axn { expects :n, type: String, numericality: { only_numeric: true } }
+
+        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+        expect(action.call(n: "1")).not_to be_ok
+      end
+
+      # Not just the string branch: the option demands a Numeric OBJECT, so every branch naming values that are
+      # not Numerics is unreachable in the same way.
+      [[Array, [1]], [Hash, { a: 1 }], [TrueClass, true]].each do |(klass, value)|
+        it "drops a #{klass} branch on the same reading" do
+          action = build_axn { expects :n, type: [klass, Integer], numericality: { only_numeric: true } }
+
+          expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+          expect(action.call(n: value)).not_to be_ok
+          expect(action.call(n: 1)).to be_ok
+        end
+      end
+
+      # NULLABILITY owns the null branch: ActiveModel skips a nil before any validator sees it, so neither
+      # option says anything about it and dropping it would reject a value the contract accepts.
+      it "keeps the null branch, which the validator never judges" do
+        action = build_axn do
+          expects :n, type: [String, Integer, NilClass], numericality: { only_numeric: true }, optional: true
+        end
+
+        expect(action.input_schema.dig(:properties, :n, :anyOf)).to eq([{ type: "integer" }, { type: "null" }])
+        expect(action.call(n: nil)).to be_ok
+        expect(action.call(n: "abc")).not_to be_ok
+      end
+
+      # A Proc/Symbol `only_numeric:` still narrows, and that is not an oversight: ActiveModel reads this one
+      # TRUTHILY (`options[:only_numeric] && !raw_value.is_a?(Numeric)`) rather than resolving it per call, so a
+      # callable token means the demand is always on — the opposite of `only_integer:`, which IS resolved.
+      it "narrows under a callable token, which ActiveModel reads truthily" do
+        action = build_axn { expects :n, type: [String, Integer], numericality: { only_numeric: -> { false } } }
+
+        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+        expect(action.call(n: "abc")).not_to be_ok
+        expect(action.call(n: 1)).to be_ok
+      end
+    end
+
     # Without `only_numeric:` the string branch is exactly what keeps that position satisfiable.
     it "keeps the string branch when only_integer: stands alone" do
       action = build_axn { expects :n, type: [String, Integer], numericality: { only_integer: true } }

@@ -2664,13 +2664,23 @@ module Axn
         # back untouched, duplicate branches included.
         def narrow_node_to_integer(node, validations, tokens, for_output:)
           entry = Axn::Validation::Base.validator_entries(validations)[:numericality]
-          return node unless entry && Axn::Validation::Base.declared_only_integer?(entry)
+          return node unless entry
+
+          # TWO independent narrowings, either of which is enough on its own. Gating the pass on `only_integer:`
+          # alone left `only_numeric:` unapplied whenever it stood without it, so `type: [String, Integer],
+          # numericality: { only_numeric: true }` advertised a string branch no value can occupy — the validator
+          # demands a Numeric OBJECT, so `"abc"` and the numeric string `"1"` are both rejected, and the document
+          # accepted them.
+          only_integer = Axn::Validation::Base.declared_only_integer?(entry)
+          numeric_only = Axn::Validation::Base.validator_entry_options(entry)[:only_numeric] ? true : false
+          return node unless only_integer || numeric_only
 
           union = node[:anyOf].is_a?(Array)
           admits = integer_admitted_by?(tokens)
-          numeric_only = Axn::Validation::Base.validator_entry_options(entry)[:only_numeric] ? true : false
           branches = union ? node[:anyOf] : [node]
-          mapped = branches.filter_map { |branch| only_integer_branch(branch, admits, numeric_only, for_output:) }
+          mapped = branches.filter_map do |branch|
+            numericality_branch(branch, admits, numeric_only:, only_integer:, for_output:)
+          end
           # Every branch dropping is the CONTRACT, not a case to fall back from: `type: Float, numericality:
           # { only_integer: true }` admits nothing at all — no Float's `to_s` is an integer literal, and a JSON
           # integer is not a Float — so restoring the node advertised `1.5` at a position that rejects it. A node
@@ -2685,14 +2695,37 @@ module Axn
           union ? node.merge(anyOf: deduped) : node
         end
 
-        def only_integer_branch(branch, admits_integer, numeric_only, for_output:)
+        # What each narrowing does to ONE branch. `only_numeric:` is the blunter of the two: it makes ActiveModel
+        # demand a Numeric OBJECT rather than parse anything, so every branch naming values that are not Numerics
+        # is unreachable — a string branch (the one that existed to carry `"2"`), and equally an array, object or
+        # boolean branch, each measured as rejected. `only_integer:` is the finer one, retagging a numeric branch
+        # and translating ActiveModel's integer test onto a string branch that survived.
+        #
+        # The `"null"` branch is exempt from both, and not by omission: NULLABILITY owns it. ActiveModel skips a
+        # nil before any validator sees it wherever the field tolerates one, so neither option says anything
+        # about nil — measured, `type: [String, Integer, NilClass], numericality: { only_numeric: true },
+        # optional: true` accepts nil while rejecting every String.
+        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, for_output:)
           case branch[:type]
-          when "number" then admits_integer ? branch.merge(type: "integer") : nil
-          # `only_numeric: true` is what makes ActiveModel demand a Numeric OBJECT rather than parse a string,
-          # so the branch that exists to carry `"2"` has nothing left to carry and goes with it.
-          when "string" then numeric_only ? nil : merge_integer_literal_pattern(branch, for_output:)
-          else branch
+          # Both survive, for different reasons: nullability owns the null branch (above), and a branch already
+          # tagged "integer" satisfies either option exactly as it stands.
+          when "null", "integer" then branch
+          when "number" then only_integer ? number_branch_as_integer(branch, admits_integer) : branch
+          when "string" then string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:)
+          else numeric_only ? nil : branch
           end
+        end
+
+        # A numeric branch under `only_integer:`: retagged where some declared token admits an Integer, and
+        # dropped where none does — no Float satisfies the option (`2.0.to_s` is "2.0"), so the branch is
+        # unreachable rather than merely narrower.
+        def number_branch_as_integer(branch, admits_integer) = admits_integer ? branch.merge(type: "integer") : nil
+
+        def string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:)
+          return nil if numeric_only
+          return branch unless only_integer
+
+          merge_integer_literal_pattern(branch, for_output:)
         end
 
         def merge_integer_literal_pattern(branch, for_output:)
