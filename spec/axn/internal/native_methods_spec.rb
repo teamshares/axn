@@ -527,3 +527,37 @@ RSpec.describe Axn::Internal::NativeMethods, ".declared_instance_method" do
     expect(described_class.public_instance_method?(klass, :hidden)).to be(false)
   end
 end
+
+RSpec.describe Axn::Internal::NativeMethods, ".includes_module?" do
+  it "answers the ancestry question, receiver included" do
+    expect(described_class.includes_module?(Integer, Numeric)).to be(true)
+    expect(described_class.includes_module?(Integer, Integer)).to be(true)
+    expect(described_class.includes_module?(Integer, String)).to be(false)
+  end
+
+  # `Array#include?` compares with `element == other`, and the FIRST element of any class's ancestry is the
+  # class itself — so a class carrying its own `==` answered this question about itself, which is the one thing
+  # reading the ancestry natively exists to take away from it. Reachable from a declaration guard: a declared
+  # `type:` token is the receiver at three call sites.
+  it "decides membership by identity, without dispatching the receiver's ==" do
+    dispatched = []
+    liar = Class.new(Numeric) do
+      define_singleton_method(:==) do |other|
+        dispatched << other
+        true
+      end
+    end
+
+    expect(described_class.includes_module?(liar, Numeric)).to be(true)
+    expect(described_class.includes_module?(liar, String)).to be(false)
+    expect(dispatched).to eq([])
+  end
+
+  it "is not fooled by a module that answers `ancestors` for itself" do
+    liar = Class.new do
+      def self.ancestors = [Numeric]
+    end
+
+    expect(described_class.includes_module?(liar, Numeric)).to be(false)
+  end
+end

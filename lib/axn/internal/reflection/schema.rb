@@ -2778,14 +2778,27 @@ module Axn
           end
         end
 
+        # Every question here is put to the token WITHOUT dispatching, and the reason is not only reflection's
+        # own rule that a walk may run none of a caller's code: a declaration GUARD reads this — the blank axis
+        # asks whether a declared type's branch can carry a size at all (`token_carries_a_size?`) — so a token
+        # answering for itself would decide whether a contract is refused, and one whose method raises would
+        # replace that verdict with its own exception, at class-definition time. Measured on an `Array` subclass
+        # with a singleton `hash`: `TYPE_MAP.key?(token)` ran it.
+        #
+        # So the four spellings a token could otherwise answer are each replaced by a native one. Identity
+        # (`Identity.same?`, a bound `equal?`) stands in for `==` against a known token; `Identity.kind?`
+        # (`Module#===`, C-level) for `is_a?`; `NativeMethods.includes_module?` — which reads the ancestry out
+        # of the method table — for `<`/`<=`/`>=`; and `map_type_for`/`map_format_for` scan the emitter's own
+        # maps by identity rather than looking a token up by its `hash`/`eql?`. The answers are identical for
+        # every token that does not define one of those methods, which is every token a declaration means.
         def single_type_for(klass, for_output:)
-          return { type: "boolean" } if klass == :boolean
+          return { type: "boolean" } if Axn::Internal::Identity.same?(klass, :boolean)
           # TypeValidator accepts only the singleton value for TrueClass/FalseClass, so constrain the schema
           # to it (a bare `type: "boolean"` would let a client send the other value and pass validation).
-          return { type: "boolean", enum: [true] } if klass == TrueClass
-          return { type: "boolean", enum: [false] } if klass == FalseClass
-          return { type: "string", format: "uuid" } if klass == :uuid
-          return { type: "object" } if klass == :params
+          return { type: "boolean", enum: [true] } if Axn::Internal::Identity.same?(klass, ::TrueClass)
+          return { type: "boolean", enum: [false] } if Axn::Internal::Identity.same?(klass, ::FalseClass)
+          return { type: "string", format: "uuid" } if Axn::Internal::Identity.same?(klass, :uuid)
+          return { type: "object" } if Axn::Internal::Identity.same?(klass, :params)
 
           # A declared type that ADMITS a Complex value (`type: Numeric` or `type: Complex`, i.e. Complex is
           # the class or one of its ancestors) can serialize to a JSON number (real Numerics) OR a String
@@ -2793,11 +2806,13 @@ module Axn
           # form isn't knowable from the declaration, so leave it UNTYPED on output rather than assert
           # "number" the serialized value could contradict. Input still resolves below: `Numeric` maps to
           # "number" (a JSON number is a real Numeric and validates), `Complex` to the permissive "string".
-          return {} if for_output && klass.is_a?(Class) && klass >= Complex
+          return {} if for_output && class_token?(klass) && Axn::Internal::NativeMethods.includes_module?(::Complex, klass)
 
-          if TYPE_MAP.key?(klass)
-            result = { type: TYPE_MAP[klass] }
-            result[:format] = FORMAT_MAP[klass] if FORMAT_MAP.key?(klass)
+          mapped = map_type_for(klass)
+          unless nil.equal?(mapped)
+            result = { type: mapped }
+            format = map_format_for(klass)
+            result[:format] = format unless nil.equal?(format)
             return result
           end
 
@@ -2806,7 +2821,7 @@ module Axn
           # object/string fallback. Complex is the exception: Float() rejects it, so on input it drops to
           # the permissive "string" below (a JSON client can't send a Complex anyway; output is handled
           # above).
-          return { type: "number" } if klass.is_a?(Class) && klass < Numeric && !(klass <= Complex)
+          return { type: "number" } if numeric_but_not_complex?(klass)
 
           # Unknown class: the serialized shape is only knowable at runtime (Values.serialize_value emits
           # an object for an as_json/to_h value but a string for a to_s-only one), so on output leave it
@@ -2816,6 +2831,37 @@ module Axn
           return {} if for_output
 
           { type: "string" }
+        end
+
+        # Whether the token is a Class at all, asked through `Module#===` rather than the token's own `is_a?`.
+        # The Complex and Numeric branches both need it: `Complex`'s ancestry holds `Comparable`, a MODULE, and
+        # the old `klass.is_a?(Class)` guard is what kept a declared `Comparable` out of the output-untyped
+        # branch.
+        def class_token?(klass) = Axn::Internal::Identity.kind?(klass, ::Class)
+
+        # A Numeric subclass other than Complex — `klass < Numeric && !(klass <= Complex)`, read out of the
+        # token's ancestry rather than through its own `<`/`<=`. STRICT descent, so `Numeric` itself falls
+        # through to `TYPE_MAP` (where it is "number" already) exactly as it did.
+        def numeric_but_not_complex?(klass)
+          return false unless class_token?(klass)
+          return false if Axn::Internal::Identity.same?(klass, ::Numeric)
+          return false unless Axn::Internal::NativeMethods.includes_module?(klass, ::Numeric)
+
+          !Axn::Internal::NativeMethods.includes_module?(klass, ::Complex)
+        end
+
+        def map_type_for(klass) = identity_lookup(TYPE_MAP, klass)
+
+        def map_format_for(klass) = identity_lookup(FORMAT_MAP, klass)
+
+        # One of the emitter's own maps, looked up by IDENTITY: `Hash#[]`/`#key?` would hash the TOKEN and
+        # compare it with `eql?`, both of which a caller's Class can define. The maps are axn's own frozen
+        # Hashes keyed by ten core classes, so the scan is bounded and its receiver is never the token. `nil`
+        # means "not in this map" — no value in either map is nil.
+        def identity_lookup(map, klass)
+          map.each { |key, value| return value if Axn::Internal::Identity.same?(key, klass) }
+
+          nil
         end
 
         def json_type_for(validations, for_output: false)

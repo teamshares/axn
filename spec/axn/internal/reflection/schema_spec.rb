@@ -5798,6 +5798,42 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(dispatched).to eq([])
     end
 
+    # `single_type_for` is the emitter's type resolver AND what the blank axis reads to decide whether a
+    # declared type's branch can carry a size at all — so a declaration guard inherits every dispatch it makes.
+    # Each of the four spellings a token could answer for itself is replaced by a native one: identity for `==`,
+    # `Module#===` for `is_a?`, the ancestry out of the method table for `<`/`<=`/`>=`, and an identity scan of
+    # TYPE_MAP/FORMAT_MAP for a `Hash#key?` that would hash the token.
+    it "resolves a declared token's type without dispatching to it" do
+      dispatched = []
+      token = Class.new(Array) do
+        %i[hash eql? == is_a? < <= >= ancestors].each do |name|
+          define_singleton_method(name) do |*args, &blk|
+            dispatched << name
+            super(*args, &blk)
+          end
+        end
+      end
+
+      expect(described_class.single_type_for(token, for_output: false)).to eq({ type: "string" })
+      expect(described_class.single_type_for(token, for_output: true)).to eq({})
+      expect(dispatched).to eq([])
+    end
+
+    # The reviewer's case end to end: an `Array` subclass whose singleton `hash` RAISES. `TYPE_MAP.key?(token)`
+    # ran it from the declaration guard, so the class could not be defined — while an empty instance satisfies
+    # the contract at runtime, which is the direction a declaration guard may never err in.
+    it "declares a token whose hash raises, and accepts its empty instance" do
+      token = Class.new(Array)
+      token.define_singleton_method(:hash) { raise ArgumentError, "hash ran" }
+      token.define_singleton_method(:name) { "Token" }
+
+      action = nil
+      expect do
+        action = build_axn { expects :f, type: token, presence: false, absence: true }
+      end.not_to raise_error
+      expect(action.call(f: token.new).ok?).to be(true)
+    end
+
     # A ceiling derived from `absence:` is one axn infers rather than one the author wrote, so it is taken only
     # from a check that always runs — unlike a `length:` bound, which is emitted as written whatever gates it.
     it "emits no ceiling for a GATED absence:" do
