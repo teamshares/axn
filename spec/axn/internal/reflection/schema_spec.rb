@@ -6617,10 +6617,49 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         .to eq([{ type: "integer", exclusiveMinimum: 0 }, { type: "number", exclusiveMinimum: 0 }])
     end
 
-    it "leaves a non-numeric branch of a union alone" do
-      prop = prop_for(:n) { expects :n, type: [Integer, String], numericality: { greater_than: 0 } }
+    # A branch that cannot carry the bound was left advertising values the validator rejects: the string branch
+    # accepted "abc" while ActiveModel rejected it on every call. Input reflection may be stricter than the
+    # runtime but never looser, and dropping the branch is the licensed direction — it says less than the runtime
+    # allows (ActiveModel does accept the numeric string "5"), and it cannot say more, no `minimum` applying to a
+    # JSON string. One survivor is no longer a union, so the node collapses rather than emit a one-branch anyOf.
+    it "drops a union branch that cannot carry the bound, rather than leave it lying" do
+      action = build_axn { expects :n, type: [Integer, String], numericality: { greater_than: 0 } }
+      prop = action.input_schema[:properties][:n]
 
-      expect(prop[:anyOf]).to eq([{ type: "integer", exclusiveMinimum: 0 }, { type: "string", minLength: 1 }])
+      expect(prop).to eq(type: "integer", exclusiveMinimum: 0)
+      expect(action.call(n: "abc")).not_to be_ok
+      expect(action.call(n: 5)).to be_ok
+    end
+
+    # The nullability branch is not dropped with them: a nil is SKIPPED by the validator rather than bounded by
+    # it, so removing that branch would reject a value the contract admits.
+    it "keeps the nullability branch, which the validator skips rather than bounds" do
+      action = build_axn { expects :n, type: [Integer, String], numericality: { greater_than: 0 }, optional: true }
+
+      expect(action.input_schema.dig(:properties, :n, :anyOf))
+        .to eq([{ type: "integer", exclusiveMinimum: 0 }, { type: "null" }])
+      expect(action.call(n: nil)).to be_ok
+    end
+
+    # The narrowing is OUTPUT-forbidden — there the schema describes what the action produces, and dropping a
+    # branch would reject a value axn serialized. Outbound there is no bound to drop in the first place: the
+    # projection stands down entirely unless the validator proves the value is numeric.
+    it "does not narrow the union on output" do
+      action = build_axn do
+        exposes :n, type: [Integer, String], numericality: { greater_than: 0 }
+        def call = expose(:n, "5")
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema[:properties][:n]).not_to include(:exclusiveMinimum)
+    end
+
+    # A union merely CONTAINING a numeric branch is not a union carrying a bound; narrowing on the former would
+    # drop the string branch of a plain `type: [String, Integer]`.
+    it "leaves a union that declares no bound at all alone" do
+      prop = prop_for(:n) { expects :n, type: [Integer, String] }
+
+      expect(prop[:anyOf]).to eq([{ type: "integer" }, { type: "string", minLength: 1 }])
     end
 
     it "intersects a range-derived bound with an explicitly declared one" do
@@ -6833,6 +6872,22 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(action.call).to be_ok
         expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(pattern: "^[a-z]/[a-z]$")
       end
+
+      # A broad token ADMITS a String without guaranteeing one, and the two questions have opposite ancestry
+      # directions: `Object` is in String's ancestry, so a JSON key really can satisfy a `klass: Object` axis —
+      # but so can this key. Asking the reachability question here kept the bound on an axis that promises
+      # nothing at all about what its keys are.
+      it "stands down for a broad token that merely ADMITS a String" do
+        action = build_axn do
+          exposes :m, type: Hash, of: { keys: { klass: Object, length: { is: 2 } }, values: Integer }
+          def call = expose(:m, { SegmentedKey.new("a", "b") => 1 })
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["m"].keys).to eq(["a/b"])
+        expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+      end
     end
 
     # No `klass:` means the keys may be anything, the class above included, so nothing can be promised about
@@ -6847,6 +6902,36 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
       expect(prop_for(:m) { expects :m, type: Hash, of: { keys: { length: { is: 2 } }, values: Integer } })
         .to include(propertyNames: { minLength: 2, maxLength: 2 })
+    end
+
+    # The set has the same shape of bug as the bound, one subject over: the runtime matches a key by Ruby `==`,
+    # which can identify values that serialize DIFFERENTLY. `1 == 1.0`, so an axis admitting the numeric tower
+    # accepts a `1.0` key against a member of `1` and then serializes "1.0" — a property name the emitted set
+    # does not contain. One gate answers both, rather than a keyword-by-keyword table.
+    it "stands an inclusion set down on output where Ruby equality crosses wire forms" do
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: Numeric, inclusion: { in: [1] } }, values: Integer }
+        def call = expose(:m, { 1.0 => 5 })
+      end
+      result = action.call
+
+      expect([1].include?(1.0)).to be true
+      expect(result).to be_ok
+      expect(Axn::Extensions::Serialization.render(result)["m"].keys).to eq(["1.0"])
+      expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+    end
+
+    # A String SUBCLASS is its own wire form — it IS a String — so the subtype direction keeps the projection
+    # that the supertype direction must refuse.
+    it "keeps the projection for a String subclass, which is its own wire form" do
+      stub_const("Slug", Class.new(String))
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: Slug, length: { is: 2 } }, values: Integer }
+        def call = expose(:m, { Slug.new("ab") => 1 })
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(minLength: 2, maxLength: 2)
     end
 
     # String and Symbol are the classes whose `#length` IS their own name's length, so the two measurements
@@ -6908,14 +6993,19 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.input_schema[:properties][:m]).not_to have_key(:propertyNames)
     end
 
-    it "still renders every member on output, where each is serialized to a String" do
+    # Outbound, the set is emitted only where the axis guarantees a key that IS its own property name. This
+    # axis does not: the emitted set would be exact here (an accepted key is the String "a" or the Integer 1,
+    # which serialize to "a" and "1"), but exactness rests on the numeric tower admitting no OTHER type that
+    # is `==` to 1, and that reasoning does not survive the next class. Saying less on output costs nothing —
+    # a missing `propertyNames` accepts what the action produces, which is the only promise output makes.
+    it "stands the set down on output for an axis whose keys are not their own wire form" do
       action = build_axn do
         exposes :m, type: Hash, of: { keys: { klass: [String, Integer], inclusion: { in: ["a", 1] } }, values: Integer }
         def call = expose(:m, { "a" => 1 })
       end
 
       expect(action.call).to be_ok
-      expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a 1])
+      expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
     end
 
     it "detaches the emitted members from the ones the validator holds" do
@@ -6937,19 +7027,23 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop[:propertyNames]).to eq(enum: %w[a b])
     end
 
-    # The member is rendered by the KEY serializer, not the value serializer: a Time value serializes as
-    # `iso8601` and a Time KEY as `to_s`, and the emitted set has to match what the map actually serializes to.
-    it "renders an output set through the key serializer rather than the value serializer" do
+    # A map key is rendered by the KEY serializer, not the value serializer: a Time VALUE serializes as
+    # `iso8601` and a Time KEY as `to_s`. Asserted against the serializer itself rather than through an emitted
+    # enum, which is where it actually decides what the map produces — and which is what the axis emits
+    # nothing for, a Time key not being its own property name.
+    it "serializes a map key by the key serializer, not the value serializer" do
       moment = Time.now
       action = build_axn do
         exposes :m, type: Hash, of: { keys: { klass: Time, inclusion: { in: [moment] } }, values: Integer }
         define_method(:call) { expose(:m, { moment => 1 }) }
       end
+      result = action.call
 
-      expect(action.call).to be_ok
-      expect(action.output_schema.dig(:properties, :m, :propertyNames))
-        .to eq(enum: [Axn::Internal::Reflection::Values.canonical_wire_key(moment)])
-      expect(action.output_schema.dig(:properties, :m, :propertyNames, :enum).first).not_to eq(moment.iso8601)
+      expect(result).to be_ok
+      expect(Axn::Extensions::Serialization.render(result)["m"].keys)
+        .to eq([Axn::Internal::Reflection::Values.canonical_wire_key(moment)])
+      expect(Axn::Extensions::Serialization.render(result)["m"].keys.first).not_to eq(moment.iso8601)
+      expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
     end
 
     it "stands down on a set whose members have no property-name form" do

@@ -1391,7 +1391,7 @@ module Axn
         def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false)
           apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:)
           apply_size_constraints!(node, validations)
-          apply_numeric_bounds!(node, validations)
+          apply_numeric_bounds!(node, validations, for_output:)
           apply_pattern!(node, validations, for_output:)
         end
 
@@ -1425,16 +1425,21 @@ module Axn
         # Whether a JSON key — always a String — could satisfy this axis's declared class. An axis naming none
         # constrains no class and so admits one. `:uuid` is the one pseudo-type whose values ARE Strings;
         # `:boolean` and `:params` are not, and neither is any other class unless String descends from it.
+        # The keys-axis validators whose subject is the key OBJECT rather than the property name it serializes
+        # to. See `key_is_its_own_wire_form?` for why these two and not the rest.
+        OBJECT_SUBJECT_KEY_VALIDATORS = %i[length inclusion].freeze
+        private_constant :OBJECT_SUBJECT_KEY_VALIDATORS
+
         def axis_admits_string_key?(klass)
           tokens = Array(klass)
           return true if tokens.empty?
 
-          tokens.any? { |token| string_shaped_key_token?(token) }
+          tokens.any? { |token| string_reachable_key_token?(token) }
         end
 
-        # Whether a single `klass:` token names a String — the one question both key-axis gates ask, so they ask
-        # it of one definition rather than each carrying its own reading of the token grammar.
-        def string_shaped_key_token?(token)
+        # Whether a String key could satisfy this token — String itself, or any SUPERTYPE of it. A `klass: Object`
+        # axis answers yes, correctly: a JSON client really can send a key that satisfies it.
+        def string_reachable_key_token?(token)
           case token
           when ::Symbol then token == :uuid
           # `String <= token` asked the same question, but reversing it to satisfy the linter would dispatch
@@ -1444,23 +1449,36 @@ module Axn
           end
         end
 
-        # Whether a key's `length:` measures the same thing before and after serialization. It is the one
-        # projected keyword whose subject is the KEY OBJECT rather than the key's wire form: ActiveModel measures
-        # `#length`, while the emitted `minLength`/`maxLength` measure the property name the serializer wrote. A
-        # class is free to have both — a path whose `#length` counts segments serializes to `"a/b"` — and then
-        # the runtime accepts a key the emitted bound rejects. They agree only for a class whose `#length` IS its
-        # own name's length, so the promise is made only for String and Symbol and withheld for every other
-        # token, an absent `klass:` included: keys may then be anything, and nothing can be promised about them.
+        # Whether every key this token admits IS its own wire form — String itself, or a SUBTYPE of it, plus
+        # Symbol, whose `#length` and `==` are its name's. The opposite ancestry direction from the predicate
+        # above, and deliberately not shared with it: reachability asks "could a String satisfy this axis", and a
+        # broad token answers yes to that while admitting keys that are not Strings at all. `klass: Object` is
+        # the case that separates them.
+        def string_valued_key_token?(token)
+          return token == :uuid if Internal::Identity.kind?(token, ::Symbol)
+          return false unless Internal::Identity.kind?(token, ::Module)
+
+          Internal::Identity.same?(token, ::Symbol) || Internal::NativeMethods.includes_module?(token, ::String)
+        end
+
+        # Whether the axis guarantees a key that IS the property name the serializer writes. Two of the projected
+        # keywords ask about the key OBJECT rather than its wire form, and both are wrong when the two come apart:
         #
-        # `pattern` and `enum` need no such gate — both already read the wire form the serializer writes
-        # (`#to_s` and `canonical_wire_key` respectively), so their subject survives by construction.
-        def key_length_survives_serialization?(klass)
+        #   `length:`    ActiveModel measures the object's `#length`, `minLength`/`maxLength` measure the property
+        #                name. A path whose `#length` counts segments serializes to "a/b" — runtime 2, wire 3.
+        #   `inclusion:` the runtime matches by Ruby `==`, which can identify values with DIFFERENT wire forms.
+        #                `1 == 1.0`, so a `{ in: [1] }` axis accepts a `1.0` key that serializes to "1.0" while
+        #                the emitted set holds only "1".
+        #
+        # Both reduce to one question — is the key its own wire form — so one gate answers both rather than a
+        # keyword-by-keyword table that has to be re-argued for each new keyword. `format:` is exempt by
+        # construction, not by omission: ActiveModel matches `value.to_s` and the serializer writes the same
+        # `to_s`, so its subject is the wire form already.
+        def key_is_its_own_wire_form?(klass)
           tokens = Array(klass)
           return false if tokens.empty?
 
-          tokens.all? do |token|
-            Internal::Identity.same?(token, ::Symbol) || string_shaped_key_token?(token)
-          end
+          tokens.all? { |token| string_valued_key_token?(token) }
         end
 
         # A property-name set, or nil to stand down — and the two directions are different questions.
@@ -1516,7 +1534,7 @@ module Axn
         # Emitting only ever shrinks the schema-valid set, so it preserves the documented direction (stricter
         # than the runtime, never looser) by construction — and every case a bound cannot be carried exactly
         # stands down to emitting nothing, which is where this started.
-        def apply_numeric_bounds!(prop, validations)
+        def apply_numeric_bounds!(prop, validations, for_output:)
           return unless numeric_node?(prop)
 
           entries = Axn::Validation::Base.validator_entries(validations)
@@ -1548,6 +1566,7 @@ module Axn
           # `enum: []` is the spelling: it is satisfied by no value, and it composes rather than collides —
           # intersecting it with an enum the node already carries yields `[]` either way, where `not: {}` would
           # contend for a slot `reject_null!` already writes.
+          wrote_bound = false
           bounds.each do |operator, bound|
             if Axn::Validation::Base.contradictory_bound?(bound)
               prop[:enum] = EMPTY_ENUM
@@ -1556,7 +1575,42 @@ module Axn
             next unless Axn::Validation::Base.emittable_numeric_bound?(bound)
 
             write_numeric_bound!(prop, NUMERIC_BOUND_KEYS.fetch(operator), bound)
+            wrote_bound = true
           end
+
+          # Only where a bound was actually written: a union merely CONTAINING a numeric branch is what
+          # `numeric_node?` answers, and narrowing on that would drop the string branch of a plain
+          # `type: [String, Integer]` that declares no bound at all.
+          restrict_union_to_bounded_branches!(prop) if wrote_bound && !for_output
+        end
+
+        # A bound can only be written onto a branch that carries a numeric type, which leaves a union's other
+        # branches advertising values the validator rejects: `type: [String, Integer], numericality: { greater_than: 0 }`
+        # accepted `"abc"` through the string branch while ActiveModel rejected it on every call. Input reflection
+        # may be STRICTER than the runtime but never looser (`docs/reference/class.md`), and a narrowing is the
+        # licensed direction — so the branches that cannot carry the bound are dropped rather than left lying.
+        # ActiveModel does accept a numeric STRING here (`"5"` passes), so this says less than the runtime allows;
+        # it cannot say more, since no `minimum` applies to a JSON string and a pattern cannot carry the bound.
+        #
+        # Output is not narrowed: there the schema describes what the action produces, and dropping a branch
+        # would reject a value axn serialized. It has no bound to drop anyway — `numericality_type_provable?`
+        # already stands the whole projection down outbound unless the validator proves the value is numeric.
+        def restrict_union_to_bounded_branches!(prop)
+          return unless prop[:anyOf].is_a?(Array)
+
+          kept = prop[:anyOf].select do |branch|
+            types = Array(branch[:type])
+            # The nullability branch stays: a nil is SKIPPED by the validator rather than bounded by it, so
+            # dropping it would reject a value the contract admits.
+            types.intersect?(NUMERIC_TYPES) || types.include?(NULL_BRANCH[:type])
+          end
+          return if kept.empty? || kept.size == prop[:anyOf].size
+
+          return prop[:anyOf] = kept unless kept.size == 1
+
+          # One survivor is no longer a union.
+          prop.delete(:anyOf)
+          prop.merge!(kept.first)
         end
 
         # Whether any part of this node carries a numeric type — the node's own, or a branch of a union.
@@ -2189,14 +2243,14 @@ module Axn
         end
 
         # The axis's validators, less any whose subject does not survive serialization. Only the OUTPUT side can
-        # reach that mismatch: an inbound key is the wire string itself, and the class gate above has already
-        # turned the whole projection away for an axis that could not be satisfied from JSON.
+        # reach that mismatch: an inbound key is the wire string itself, and the reachability gate above has
+        # already turned the whole projection away for an axis that could not be satisfied from JSON at all.
         def key_axis_constraints(axis, for_output:)
           constraints = bag_value_constraints(axis, for_output:)
           return constraints unless for_output
-          return constraints if key_length_survives_serialization?(axis[:klass])
+          return constraints if key_is_its_own_wire_form?(axis[:klass])
 
-          constraints.except(:length)
+          constraints.except(*OBJECT_SUBJECT_KEY_VALIDATORS)
         end
 
         # Whether the value at a bag's position may be nil — `Base.nil_accepted?`, the same seam a field's
