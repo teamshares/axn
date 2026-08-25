@@ -5846,6 +5846,95 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.call(n: "abc")).not_to be_ok
     end
 
+    # `format:` is checked by ActiveModel against `value.to_s`, and on OUTPUT that is not always the string the
+    # wire carries: the VALUE serializer renders a Time as `iso8601`. The pattern the runtime measured against
+    # "2026-08-25 12:00:00 UTC" would be measured against "2026-08-25T12:00:00Z" and reject the action's output.
+    describe "an outbound pattern whose subject is not the string the wire carries" do
+      it "is the divergence itself: a Time's #to_s is not its serialized form" do
+        moment = Time.utc(2026, 8, 25, 12)
+
+        expect(moment.to_s).to eq("2026-08-25 12:00:00 UTC")
+        expect(Axn::Internal::Reflection::Values.serialize_value(moment)).to eq("2026-08-25T12:00:00Z")
+      end
+
+      it "stands the pattern down on output for a Time position" do
+        moment = Time.utc(2026, 8, 25, 12)
+        action = build_axn do
+          exposes :f, type: Time, format: { with: / / }
+          define_method(:call) { expose(:f, moment) }
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["f"]).to eq("2026-08-25T12:00:00Z")
+        expect(action.output_schema[:properties][:f]).not_to have_key(:pattern)
+      end
+
+      it "keeps it for a String, which IS the string it serializes to" do
+        action = build_axn do
+          exposes :f, type: String, format: { with: /\Aab\z/ }
+          def call = expose(:f, "ab")
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :f, :pattern)).to eq("^ab$")
+      end
+
+      # Inbound the subject really is the string that was sent, so nothing stands down there.
+      it "still emits the pattern inbound for that same Time position" do
+        prop = prop_for(:f) { expects :f, type: Time, format: { with: / / } }
+
+        expect(prop[:pattern]).to eq(" ")
+      end
+
+      # A KEY is exempt: `canonical_wire_key` dispatches `to_s`, which is the subject the validator used.
+      it "keeps a keys-axis pattern, whose subject the key serializer shares" do
+        action = build_axn do
+          exposes :m, type: Hash, of: { keys: { klass: String, format: { with: /\A[a-z]+\z/ } }, values: Integer }
+          def call = expose(:m, { "ab" => 1 })
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(pattern: "^[a-z]+$")
+      end
+    end
+
+    # Every Numeric but Integer and Float reaches the wire through `Float()`, which ROUNDS — so a bound the Ruby
+    # value satisfies can be violated by the number actually serialized.
+    describe "an outbound bound across a lossy numeric serialization" do
+      it "stands down for a BigDecimal position, whose wire value rounds onto the bound" do
+        value = BigDecimal("0.099999999999999999")
+        action = build_axn do
+          exposes :f, type: BigDecimal, comparison: { less_than: 0.1 }
+          define_method(:call) { expose(:f, value) }
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["f"]).to eq(0.1)
+        expect(action.output_schema[:properties][:f]).not_to have_key(:exclusiveMaximum)
+      end
+
+      it "keeps it for Integer and Float, which serialize exactly" do
+        action = build_axn do
+          exposes :i, type: Integer, numericality: { less_than: 10 }
+          exposes :f, type: Float, numericality: { less_than: 10 }
+          def call = expose(i: 5, f: 5.5)
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :i, :exclusiveMaximum)).to eq(10)
+        expect(action.output_schema.dig(:properties, :f, :exclusiveMaximum)).to eq(10)
+      end
+
+      # Inbound a JSON number arrives as an Integer or Float already, so the bound is emitted regardless.
+      it "still emits the bound inbound for that same BigDecimal position" do
+        prop = prop_for(:f) { expects :f, type: BigDecimal, comparison: { less_than: 0.1 } }
+
+        expect(prop[:exclusiveMaximum]).to eq(0.1)
+      end
+    end
+
     # Both patterns are enforced at runtime and a node has one `pattern` slot, so the declared `format:` had been
     # overwriting the one `only_integer:` installs — and the node then advertised a value the integer test
     # rejects. `allOf` is JSON Schema's spelling for the conjunction, and it is free at a property: the
@@ -6564,14 +6653,30 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(action.output_schema[:properties][:n]).to eq({})
         end
 
-        it "still infers on output under only_numeric:, which requires a real numeric" do
+        # `only_numeric:` proves the value is a Numeric, which is enough to infer the TYPE and not enough to
+        # carry the BOUND: a Numeric may be a BigDecimal, and every Numeric but Integer and Float reaches the
+        # wire through `Float()`, which rounds. Measured — `BigDecimal("1e-400")` satisfies `greater_than: 0`,
+        # serializes as `0.0`, and an emitted `exclusiveMinimum: 0` rejects the action's own output.
+        it "still infers the type on output under only_numeric:, but not the bound" do
           action = build_axn do
             exposes :n, numericality: { greater_than: 0, only_numeric: true }
             def call = expose(:n, 1)
           end
 
           expect(action.call).to be_ok
-          expect(action.output_schema[:properties][:n]).to include(type: "number", exclusiveMinimum: 0)
+          expect(action.output_schema[:properties][:n]).to eq(type: "number")
+        end
+
+        it "is why: a Numeric the wire rounds satisfies the bound and the emitted node would not" do
+          action = build_axn do
+            exposes :n, numericality: { greater_than: 0, only_numeric: true }
+            def call = expose(:n, BigDecimal("1e-400"))
+          end
+          result = action.call
+
+          expect(result).to be_ok
+          expect(Axn::Extensions::Serialization.render(result)["n"]).to eq(0.0)
+          expect(action.output_schema[:properties][:n]).not_to have_key(:exclusiveMinimum)
         end
 
         it "still emits when a declared type: requires a real numeric" do

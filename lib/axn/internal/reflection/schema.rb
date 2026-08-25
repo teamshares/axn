@@ -1439,8 +1439,8 @@ module Axn
         def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false, declared_klass: nil)
           apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass:)
           apply_size_constraints!(node, validations)
-          apply_numeric_bounds!(node, validations, for_output:)
-          apply_pattern!(node, validations, for_output:)
+          apply_numeric_bounds!(node, validations, for_output:, declared_klass:)
+          apply_pattern!(node, validations, for_output:, property_names:, declared_klass:)
         end
 
         # `enum` is INTERSECTED with whatever the node already carries, never assigned over it: a singleton type
@@ -1476,7 +1476,7 @@ module Axn
         # constrains no class and so admits one. `:uuid` is the one pseudo-type whose values ARE Strings;
         # `:boolean` and `:params` are not, and neither is any other class unless String descends from it.
         # The keys-axis validators whose subject is the key OBJECT rather than the property name it serializes
-        # to. See `key_is_its_own_wire_form?` for why these two and not the rest.
+        # to. See `own_wire_form?` for why these two and not the rest.
         OBJECT_SUBJECT_KEY_VALIDATORS = %i[length inclusion].freeze
         private_constant :OBJECT_SUBJECT_KEY_VALIDATORS
 
@@ -1499,12 +1499,12 @@ module Axn
           end
         end
 
-        # Whether every key this token admits IS its own wire form — String itself, or a SUBTYPE of it, plus
-        # Symbol, whose `#length` and `==` are its name's. The opposite ancestry direction from the predicate
-        # above, and deliberately not shared with it: reachability asks "could a String satisfy this axis", and a
-        # broad token answers yes to that while admitting keys that are not Strings at all. `klass: Object` is
-        # the case that separates them.
-        def string_valued_key_token?(token)
+        # Whether every value this token admits IS the string it serializes to — String itself, or a SUBTYPE of
+        # it, plus Symbol, whose `#to_s`, `#length` and `==` are all its name's. The opposite ancestry direction
+        # from the predicate above, and deliberately not shared with it: reachability asks "could a String
+        # satisfy this position", and a broad token answers yes to that while admitting values that are not
+        # Strings at all. `Object` is the case that separates them.
+        def own_wire_string_token?(token)
           return token == :uuid if Internal::Identity.kind?(token, ::Symbol)
           return false unless Internal::Identity.kind?(token, ::Module)
 
@@ -1524,11 +1524,11 @@ module Axn
         # keyword-by-keyword table that has to be re-argued for each new keyword. `format:` is exempt by
         # construction, not by omission: ActiveModel matches `value.to_s` and the serializer writes the same
         # `to_s`, so its subject is the wire form already.
-        def key_is_its_own_wire_form?(klass)
+        def own_wire_form?(klass)
           tokens = Array(klass)
           return false if tokens.empty?
 
-          tokens.all? { |token| string_valued_key_token?(token) }
+          tokens.all? { |token| own_wire_string_token?(token) }
         end
 
         # A property-name set, or nil to stand down — and the two directions are different questions.
@@ -1567,9 +1567,15 @@ module Axn
         # before this. Only `with:` is read: `without:`'s honest spelling is `not: { pattern: ... }`, and `not:`
         # is a single slot `reject_null!` already writes into, so a second writer would silently clobber the
         # first. Booked as unemitted alongside `exclusion:`, which has the same shape.
-        def apply_pattern!(prop, validations, for_output:)
+        def apply_pattern!(prop, validations, for_output:, property_names: false, declared_klass: nil)
           entry = Axn::Validation::Base.validator_entries(validations)[:format]
           return unless entry
+          # ActiveModel matches `value.to_s`, and on OUTPUT that is not always the string the wire carries: the
+          # VALUE serializer renders a Time as `iso8601` and a Date as its own ISO form, so a pattern the runtime
+          # measured against `"2026-08-25 12:00:00 UTC"` is measured against `"2026-08-25T12:00:00Z"` instead and
+          # rejects output the action produced. Emitted outbound only where the value IS the string it serializes
+          # to. A KEY is exempt: `canonical_wire_key` dispatches `to_s`, the same subject the validator used.
+          return if for_output && !property_names && !own_wire_form?(declared_type_tokens(validations, declared_klass))
 
           pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with], for_output:)
           write_pattern_to_string_nodes!(prop, pattern) if pattern
@@ -1610,8 +1616,9 @@ module Axn
         # Emitting only ever shrinks the schema-valid set, so it preserves the documented direction (stricter
         # than the runtime, never looser) by construction — and every case a bound cannot be carried exactly
         # stands down to emitting nothing, which is where this started.
-        def apply_numeric_bounds!(prop, validations, for_output:)
+        def apply_numeric_bounds!(prop, validations, for_output:, declared_klass: nil)
           return unless numeric_node?(prop)
+          return if for_output && !numeric_serialization_exact?(declared_type_tokens(validations, declared_klass))
 
           entries = Axn::Validation::Base.validator_entries(validations)
           # Both entries are enforced, so their bounds are INTERSECTED into one set before any keyword is
@@ -2332,7 +2339,7 @@ module Axn
         def key_axis_constraints(axis, for_output:)
           constraints = bag_value_constraints(axis, for_output:)
           return constraints unless for_output
-          return constraints if key_is_its_own_wire_form?(axis[:klass])
+          return constraints if own_wire_form?(axis[:klass])
 
           constraints.except(*OBJECT_SUBJECT_KEY_VALIDATORS)
         end
@@ -2616,6 +2623,18 @@ module Axn
           composed = branch.dup
           write_pattern!(composed, source)
           composed
+        end
+
+        # Whether the position's numbers reach the wire unchanged. A Ruby Integer and Float serialize exactly;
+        # every other Numeric is rendered through `Float()`, which ROUNDS — `BigDecimal("0.099999999999999999")`
+        # satisfies `less_than: 0.1` and then serializes AS `0.1`, which the emitted `exclusiveMaximum` rejects.
+        # A bound is outbound-honest only where that rounding cannot happen.
+        def numeric_serialization_exact?(tokens)
+          return false if tokens.empty?
+
+          tokens.all? do |token|
+            Internal::Identity.same?(token, ::Integer) || Internal::Identity.same?(token, ::Float)
+          end
         end
 
         # Whether a JSON integer could satisfy any of the declared tokens. Asked of Integer's OWN ancestry, the
