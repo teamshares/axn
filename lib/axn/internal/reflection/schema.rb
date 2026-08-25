@@ -1580,10 +1580,16 @@ module Axn
           # approximation, but the precise set of JSON-supplied keys the runtime accepts. Standing down from
           # the whole constraint instead admitted every key the document said nothing about.
           reachable = values.grep(::String)
-          # Nothing reachable means no JSON key can satisfy the axis, and it stands down for the same reason a
-          # non-String `klass:` does. NOT `enum: []`: that spelling is for a contract admitting nothing at all,
-          # and this one a Ruby caller satisfies perfectly well — it is only the wire that cannot reach it.
-          return nil if reachable.empty?
+          # Nothing reachable, and the axis's CLASS already admits a String key — the whole inbound projection
+          # is gated on that before this runs — so the position is reachable from JSON while its set holds
+          # nothing a JSON key could equal: no key satisfies it, and `enum: []` is what says so. Standing down
+          # instead advertised every key the document was silent about, and `keys: { klass: [String, Integer],
+          # inclusion: { in: [1] } }` accepted `{"x" => 1}` while the runtime rejected it.
+          #
+          # The axis whose class excludes String is a DIFFERENT case and keeps its stand-down: there the wire
+          # cannot reach the position at all, a Ruby caller satisfies it perfectly well, and PRO-3165 already
+          # turns that whole projection away above rather than emitting a set no client can satisfy.
+          return EMPTY_ENUM if reachable.empty?
 
           # Detached, never the inclusion array's own Strings: reflection hands these to a consumer, and one
           # mutating a member in place would change which keys the DECLARED action accepts. The value-enum path
@@ -2221,7 +2227,7 @@ module Axn
           # Hard-coding it left `of: { klass: [String, NilClass], presence: true }` advertising a `null` branch
           # the runtime rejects, and stripped nil from an enum at a position that accepts it.
           nullable = bag_nullable?(bag, for_output:)
-          node = reconcile_contents_nullability(node, nullable:)
+          node = reconcile_contents_nullability(node, nullable:, for_output:)
           # The bag's value validators (PRO-3193), through the same projector a named position uses. Applied
           # before the member/contents merges below so a `type:` those steps install cannot be read as the type
           # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
@@ -2436,7 +2442,7 @@ module Axn
         # Bring the type a bag's `klass:` produced into line with the nullability derived above. A `NilClass`
         # token contributes a `null` branch like any other token; whether it survives is the nullability
         # question, asked once — the same rule `apply_type_info!` follows at a named position.
-        def reconcile_contents_nullability(node, nullable:)
+        def reconcile_contents_nullability(node, nullable:, for_output: false)
           return node if nullable
 
           if node[:anyOf].is_a?(Array)
@@ -2453,6 +2459,22 @@ module Axn
           # field. A union that reduces to no branch at all is the same contract and now says so too, where
           # returning the node restored the very `null` branches this just rejected.
           return { enum: EMPTY_ENUM } if unsatisfiable_type?(node[:type], nullable:)
+
+          # A position that names no TYPE still rejects nil, and had no way of saying so: a classless bag is
+          # newly legal (PRO-3193), so `of: { presence: true }` builds an empty node, the parent then omits
+          # `items` altogether, and the document accepted `[null]` that the positional validator rejects on
+          # every call. `not: { type: "null" }` is the spelling a named field's `reject_null!` already uses for
+          # exactly this shape — an untyped node that excludes nil.
+          #
+          # Only nil. The other blanks `presence:` rejects (`""`, `[]`, `{}`, `false`) need to know that
+          # presence is WHY the position is non-nullable — a `klass:` that simply excludes NilClass says nothing
+          # about them — and that plumbing is PRO-3240's, alongside the rest of the blank axis.
+          #
+          # INBOUND only, and the asymmetry is the doctrine rather than an omission: outbound the schema may say
+          # LESS than the contract and never more, and an untyped output position is untyped precisely because
+          # the emitter could not prove what it serializes to — `of:` a Data with a custom `as_json` among them.
+          # Writing a claim there would be inventing one in the direction reflection may not err.
+          return node.merge(not: { type: "null" }) if !for_output && !node.key?(:type) && !node.key?(:anyOf) && !node.key?(:enum)
 
           node
         end
@@ -2735,7 +2757,12 @@ module Axn
           # type is not evidence of anything. `type: Numeric` deliberately emits `{}` on output, its values
           # having more than one wire form, and reading that absence as proof emptied a position the action
           # satisfies with `1` — the schema rejecting output it had produced.
-          return numeric_only ? nil : branch if NON_NUMERIC_BRANCH_TYPES.include?(branch[:type])
+          # EITHER option drops it: no Array, Hash or boolean satisfies `only_integer:` any more than it
+          # satisfies `only_numeric:` — `[1].to_s` is `"[1]"` and `true.to_s` is `"true"`, neither an integer
+          # literal — so `of: { klass: [Array, Integer], numericality: { only_integer: true } }` had been
+          # advertising an Array element the validator rejects on every call. The test stays on types that NAME
+          # non-Numerics; an absent or unrecognized type still falls through to "keep".
+          return numeric_only || only_integer ? nil : branch if NON_NUMERIC_BRANCH_TYPES.include?(branch[:type])
 
           case branch[:type]
           when "number" then only_integer ? number_branch_as_integer(branch, admits_integer) : branch

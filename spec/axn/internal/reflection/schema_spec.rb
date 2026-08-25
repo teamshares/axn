@@ -6010,6 +6010,36 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
+    # `only_integer:` drops a branch naming non-Numerics just as `only_numeric:` does — no Array, Hash or
+    # boolean satisfies either (`[1].to_s` is "[1]", `true.to_s` is "true", neither an integer literal), so the
+    # branch was advertising an element the validator rejects on every call. A String branch is the exception
+    # and survives: ActiveModel parses a numeric string, so it carries the integer test as a pattern instead.
+    describe "only_integer: reaching a branch that names non-Numerics" do
+      it "drops an Array branch at a bag position" do
+        action = build_axn { expects :f, type: Array, of: { klass: [Array, Integer], numericality: { only_integer: true } } }
+
+        expect(action.call(f: [1])).to be_ok
+        expect(action.call(f: [[1]])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "integer")
+      end
+
+      it "drops a boolean branch at a field" do
+        action = build_axn { expects :n, type: [TrueClass, FalseClass, Integer], numericality: { only_integer: true } }
+
+        expect(action.call(n: 1)).to be_ok
+        expect(action.call(n: true)).not_to be_ok
+        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+      end
+
+      it "keeps the string branch, which the validator really does parse" do
+        action = build_axn { expects :n, type: [String, Integer], numericality: { only_integer: true } }
+
+        expect(action.call(n: "2")).to be_ok
+        expect(action.input_schema.dig(:properties, :n, :anyOf))
+          .to eq([{ type: "string", pattern: "^[+-]?\\d+$", minLength: 1 }, { type: "integer" }])
+      end
+    end
+
     # Without `only_numeric:` the string branch is exactly what keeps that position satisfiable.
     it "keeps the string branch when only_integer: stands alone" do
       action = build_axn { expects :n, type: [String, Integer], numericality: { only_integer: true } }
@@ -7170,11 +7200,39 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       # `format:`/`length:` alone infer nothing, at a bag position AND at a field — there is no type to infer
       # from a pattern or a size, since both apply to more than one JSON type. Pinned as the shared limitation
       # it is, so the asymmetry above cannot creep back unnoticed.
+      # A classless bag is legal (PRO-3193), and its node names no type — so nothing there said the position
+      # rejects nil, the parent dropped `items` entirely, and the document accepted `[null]` the positional
+      # validator refuses on every call.
+      it "rejects null at an untyped position that admits none" do
+        action = build_axn { expects :f, type: Array, of: { presence: true } }
+
+        expect(action.call(f: ["a"])).to be_ok
+        expect(action.call(f: [nil])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to eq(not: { type: "null" })
+      end
+
+      # Outbound the schema may say LESS than the contract and never more, and an untyped OUTPUT position is
+      # untyped precisely because the emitter could not prove what it serializes to. Writing a claim there
+      # would be inventing one in the direction reflection may not err.
+      it "writes no such claim on output, where an untyped position is one it could not prove" do
+        action = build_axn do
+          exposes :f, type: Array, of: { presence: true }
+          def call = expose(:f, ["a"])
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema[:properties][:f]).not_to have_key(:items)
+      end
+
       it "infers nothing from format: alone, exactly as a field does not" do
         bagged = build_axn { expects :f, type: Array, of: { format: { with: /\Aa/ } } }
         fielded = build_axn { expects :f, format: { with: /\Aa/ } }
 
-        expect(bagged.input_schema[:properties][:f]).not_to have_key(:items)
+        # No TYPE is inferred at either position, which is the claim — neither a pattern nor a size names one
+        # JSON type. The element node is not EMPTY, though: the position still rejects nil (`nil.to_s` is `""`,
+        # which this pattern refuses), so it says that much and nothing more.
+        expect(bagged.input_schema.dig(:properties, :f, :items)).to eq(not: { type: "null" })
+        expect(bagged.input_schema.dig(:properties, :f, :items)).not_to have_key(:type)
         expect(fielded.input_schema[:properties][:f]).to eq({})
       end
     end
@@ -7799,13 +7857,22 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # above — both are "no JSON key can satisfy this axis". Deliberately unlike the contradictory-equality case,
     # which emits an unsatisfiable node: there the contract admits NOTHING, where here a Ruby caller passing
     # `{1 => 1}` satisfies it perfectly well and only the JSON wire cannot reach it.
-    it "stands down when no member of the set is reachable from JSON" do
+    # This USED to stand the set down, on the reasoning that a Ruby caller satisfies the axis perfectly well and
+    # only the wire cannot reach it. That reasoning conflates two audiences: `input_schema` is a JSON Schema, and
+    # its reader is a JSON client, for which no key whatever satisfies this axis. Standing down told that client
+    # every key was acceptable — measured, the document accepted `{"x" => 1}` the runtime rejects, which is the
+    # one direction reflection may never err in. The empty set says what is true OF THE WIRE, and it says
+    # something useful besides: this declaration cannot be driven from JSON at all.
+    #
+    # The axis whose CLASS excludes String keeps its stand-down and is a different case — see PRO-3165 below.
+    it "admits no key when the axis is reachable from JSON but no member of its set is" do
       action = build_axn do
         expects :m, type: Hash, of: { keys: { klass: [String, Integer], inclusion: { in: [1, 2] } }, values: Integer }
       end
 
-      expect(action.call(m: { 1 => 1 })).to be_ok
-      expect(action.input_schema[:properties][:m]).not_to have_key(:propertyNames)
+      expect(action.call(m: { 1 => 1 })).to be_ok # a Ruby caller still satisfies it
+      expect(action.call(m: { "1" => 1 })).not_to be_ok # and no JSON-supplied key does
+      expect(action.input_schema.dig(:properties, :m, :propertyNames)).to eq(enum: [])
     end
 
     # Outbound, the set is emitted only where the axis guarantees a key that IS its own property name. This
@@ -7881,15 +7948,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.input_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a])
     end
 
-    it "still emits the string-shaped constraints beside a stood-down set" do
-      # No member is reachable from JSON here, so the enum stands down while the size bound — which a string
-      # key CAN be held to — still emits.
+    it "keeps the string-shaped constraints beside an unsatisfiable set" do
+      # A klass-less axis is reachable from JSON, and no member of this set is — so the set admits no key at
+      # all. The size bound still emits beside it: both are enforced, and the emitter's job is to say what the
+      # position holds rather than to tidy away a keyword the empty set already subsumes.
       prop = prop_for(:m) do
         expects :m, type: Hash,
                     of: { keys: { length: { maximum: 4 }, inclusion: { in: [1, 2] } }, values: Integer }
       end
 
-      expect(prop[:propertyNames]).to eq(maxLength: 4)
+      expect(prop[:propertyNames]).to eq(maxLength: 4, enum: [])
     end
   end
 end
