@@ -443,6 +443,36 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         expect { declare(type: Array, inclusion: { in: [[]] }) }
           .to raise_error(ArgumentError, /can never match/)
       end
+
+      # THE STATED LIMIT, not a gap left open. Measuring the member is evidence about the values it matches
+      # only if a matching value measures as it does — and `Array#==` compares CONTENTS, so a subclass with
+      # empty contents and a `length` of its own is matched by `[]` and measured by ActiveModel as whatever it
+      # says. The declaration below really is satisfiable, by that value and by nothing honest.
+      #
+      # It is refused anyway, for two measured reasons. Honouring the candidate takes 22 of the guard's 76
+      # refusals with it across the product — including `absence:` on a typed field and `length: { maximum: 0 }`,
+      # the two spellings the rule exists for — because every size a declaration bounds can be answered by a
+      # value that measures itself. And standing down is not the safe direction: the declaration then EMITS
+      # `{type: "array", enum: [[]], minItems: 3}`, a node no document satisfies, which AGENTS.md forbids
+      # outright. The over-refusal needs a value whose measurement contradicts its contents; the emission
+      # reaches every consumer of the schema.
+      it "refuses a declaration only a value that measures itself could satisfy" do
+        expect { declare(type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: [[]] }) }
+          .to raise_error(ArgumentError, /can never match/)
+      end
+
+      # The control for that limit, so the trade is recorded as a fact rather than a claim: with this one
+      # guard stubbed off, the candidate passes and no honest value does.
+      it "would admit that candidate at runtime, and nothing honest" do
+        action = Class.new { include Axn }
+        action.singleton_class.send(:define_method, :_reject_unsatisfiable_size_interval!) { |_v, where:| nil } # rubocop:disable Lint/UnusedBlockArgument
+        action.expects(:f, type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: [[]] })
+        candidate = Class.new(Array) { def length = 3 }.new
+
+        expect(action.call(f: candidate).ok?).to be(true)
+        expect([[], ["a"], %w[a b c], nil].select { |v| action.call(f: v).ok? }).to be_empty
+        expect(action.input_schema[:properties][:f]).to eq({ type: "array", enum: [[]], minItems: 3 })
+      end
     end
   end
 

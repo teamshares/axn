@@ -4377,6 +4377,30 @@ module Axn
         #
         # The size itself is then read through the emitter's ownership test, which answers nil for a value
         # whose measurement is not Ruby's own.
+        #
+        # THE ASSUMPTION THIS RESTS ON, stated because it cannot be checked here: that a value MATCHING the
+        # member measures as the member does. `Array#==` compares CONTENTS, so an `Array` subclass with empty
+        # contents and a `length` of its own is matched by the member `[]` and measured by ActiveModel as
+        # whatever it says — `type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: [[]] }` is
+        # satisfied by `Class.new(Array) { def length = 3 }.new` and by no honest value (measured).
+        #
+        # The assumption is kept rather than honoured, and the measurement is why. Standing down for such a
+        # candidate is not a narrowing of this branch: across the guard's product it takes 22 of 76 refusals
+        # with it, including both spellings the rule exists for (`absence:` on a typed field and
+        # `length: { maximum: 0 }`), because every size a declaration bounds can be answered by a value that
+        # measures itself. There is no version of a size rule that survives it.
+        #
+        # Nor is standing down the safe direction here, which is the usual reason to prefer it: with this
+        # branch off, that declaration EMITS `{type: "array", enum: [[]], minItems: 3}` — a node no document
+        # satisfies — and AGENTS.md is explicit that a contract admitting nothing has no honest projection and
+        # must be refused at declaration rather than papered over by the emitter. The over-refusal is reachable
+        # only by writing a value whose measurement contradicts its contents; the emission is reachable by
+        # every caller of the schema.
+        #
+        # The same assumption carries the blank axis (a subclass answering `blank?` for itself) and the
+        # `minItems: 1` reflection emits for a bare `presence:`. It is the layer's, not this rule's.
+        # `spec/axn/core/validations/unsatisfiable_size_interval_spec.rb` pins it as a stated limit, with the
+        # runtime control that shows the candidate really does pass.
         def _member_size_admissible?(member, klasses, minimum, maximum)
           return false unless klasses.any? { |klass| _literal_may_satisfy?(member, klass) }
           return true unless _member_equality_vouched_for?(member)
