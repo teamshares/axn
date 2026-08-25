@@ -2893,6 +2893,12 @@ module Axn
           # NOTHING declare cleanly, which is the class this guard exists to refuse. At a field the same flags
           # DO rescue the contract, and there they still stand it down.
           _reject_unsatisfiable_value_constraints!(validations, where:, nested: true, tolerance: {})
+          # Its mirror, in the same order the field path runs the pair: the unsatisfiable contract is reported
+          # first, so a declaration broken both ways names the defect that rejects every call ahead of the one
+          # that rejects none. Both guards run at all four positions — PRO-3192's rule is that a validator is
+          # judged where it is declared, and an INVERTED one that forbids literals no value of the position's
+          # class could be enforces nothing there just as surely as it does at a field.
+          _reject_vacuous_value_constraints!(validations, where:, nested: true, tolerance: {})
         end
 
         # The bag as a VALIDATIONS hash: its value constraints, with `klass:` renamed to `type:` — the role
@@ -3973,7 +3979,7 @@ module Axn
         # into the schema, so there is no static-maximal node to argue from. A gate can only remove the check.
         # Closed it enforces nothing, open it enforces nothing — there is no reading under which the
         # declaration means what it says.
-        def _reject_vacuous_value_constraints!(validations, where:, tolerance:)
+        def _reject_vacuous_value_constraints!(validations, where:, tolerance:, nested: false)
           klasses = _judgeable_type_klasses(validations[:type])
           return if klasses.empty?
 
@@ -3988,26 +3994,24 @@ module Axn
             witnesses = _witness_literals(key, literals, entry, tolerance, klasses)
             next if _any_literal_may_satisfy?(witnesses, klasses, cross_family: _cross_family_admissible?(key, entry))
 
-            raise ArgumentError, _vacuous_constraint_message(key, entry, klasses, where:)
+            raise ArgumentError, _vacuous_constraint_message(key, entry, klasses, where:, nested:)
           end
         end
 
         # The vacuity message, worded the way its mirror above is: an empty Range forbids nothing whatever the
         # declared type is, so naming the literals' TYPE would name a defect the declaration does not have.
-        def _vacuous_constraint_message(key, entry, klasses, where:)
+        def _vacuous_constraint_message(key, entry, klasses, where:, nested: false)
           if _empty_range_set?(key, entry)
             return "#{key}: on #{where} enforces nothing — the Range it names is empty, so it forbids no value " \
                    "at all and every value passes. Name a Range with at least one value in it (an exclusive " \
                    "Range whose endpoints meet, or one whose bounds run backwards, is empty)."
           end
 
-          # The remedy is the field-level one: this guard is asked at a field only, a bag's position reaching
-          # its satisfiability mirror alone, so there is no nested bag to send the author to.
           "#{key}: on #{where} enforces nothing — no value of type " \
             "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')} could be one of the " \
             "literals it forbids, so every value passes. A validator constrains the value at the " \
             "position it is declared at: forbid literals of the declared type, and constrain a container's " \
-            "CONTENTS at their own position — #{_contents_position_remedy(false)}."
+            "CONTENTS at their own position — #{_contents_position_remedy(nested)}."
         end
 
         # The forbidden literals that could actually be the value that FAILS. Two filters, and the second is

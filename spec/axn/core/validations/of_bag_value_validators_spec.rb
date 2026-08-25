@@ -353,6 +353,36 @@ RSpec.describe "value validators in an of: bag" do
     # position it rescues nothing: a bag's `allow_nil:`/`allow_blank:` are not positional (PRO-3225), so
     # honouring them here would let a contract that admits NOTHING declare cleanly, which is the whole class
     # the guard exists to refuse.
+    # The VACUITY twin, which reaches a bag position on the same terms. An inverted validator forbidding
+    # literals no value of the bag's `klass:` could be enforces nothing at that position, exactly as it
+    # enforces nothing at a field — so "PRO-3192's two guards" has to mean both of them here.
+    it "refuses an exclusion: set no value of the bag's klass could be" do
+      expect { build_axn { expects :f, type: Array, of: { klass: Integer, exclusion: { in: ["admin"] } } } }
+        .to raise_error(ArgumentError, /exclusion: on an `of:` bag on :f enforces nothing/)
+    end
+
+    it "refuses comparison: other_than on the same reading" do
+      expect { build_axn { expects :f, type: Array, of: { klass: Integer, comparison: { other_than: "admin" } } } }
+        .to raise_error(ArgumentError, /comparison: on an `of:` bag on :f enforces nothing/)
+    end
+
+    it "reaches a map axis too" do
+      expect { build_axn { expects :f, type: Hash, of: { values: { klass: Integer, exclusion: { in: ["a"] } } } } }
+        .to raise_error(ArgumentError, /exclusion: .* enforces nothing/)
+    end
+
+    it "reports the UNSATISFIABLE half first where a declaration is broken both ways" do
+      expect { build_axn { expects :f, type: Array, of: { klass: Integer, inclusion: { in: ["a"] }, exclusion: { in: ["b"] } } } }
+        .to raise_error(ArgumentError, /inclusion: .* can never match/)
+    end
+
+    # The controls: each of these forbids something a value of the position's class really could be, so each
+    # enforces something and must keep declaring.
+    it "stands down where the forbidden literal is of the bag's own class" do
+      expect { build_axn { expects :f, type: Array, of: { klass: Integer, exclusion: { in: [1] } } } }.not_to raise_error
+      expect { build_axn { expects :f, type: Array, of: { klass: String, exclusion: { in: ["admin"] } } } }.not_to raise_error
+    end
+
     it "does not let an unenforced bag tolerance stand the guard down" do
       expect { build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_nil: true } } }
         .to raise_error(ArgumentError, /can never match/)
