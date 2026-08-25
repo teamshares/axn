@@ -2573,7 +2573,7 @@ module Axn
           end
 
           if (numericality = validations[:numericality]) && numericality_type_provable?(numericality, for_output:)
-            return { type: "integer" } if numericality.is_a?(Hash) && numericality[:only_integer]
+            return { type: "integer" } if Axn::Validation::Base.declared_only_integer?(numericality)
 
             return { type: "number" }
           end
@@ -2662,18 +2662,30 @@ module Axn
           end
         end
 
-        # Whether a `numericality:` entry proves the value will SERIALIZE as a JSON number. ActiveModel accepts a
-        # numeric STRING unless `only_numeric: true` is given — `"1"` passes `greater_than: 0`, and passes
-        # `only_integer:` too, since that reads the string form — so an exposed value may well be a String.
+        # Whether a `numericality:` entry proves the value will SERIALIZE as a JSON number. Two different
+        # things can stop it, and it takes both options to exclude them.
         #
-        # On INPUT that makes an inferred numeric type merely stricter, which is licensed: a client is told to
-        # send `1` rather than `"1"`, and the runtime would have taken either. On OUTPUT it rejects the action's
-        # own successful output, so the inference stands down unless the value must really be numeric. A declared
-        # `type:` is unaffected — it is read before this and does prove the class.
+        # ActiveModel accepts a numeric STRING unless `only_numeric: true` is given — `"1"` passes
+        # `greater_than: 0`, and passes `only_integer:` too, since that reads the string form — so an exposed
+        # value may well be a String. And `only_numeric:` alone proves only that the value is a NUMERIC, which
+        # is not the same as a JSON number: `Complex(1, 2)` is a Numeric and serializes as `"1+2i"`, so the
+        # inferred `"number"` rejected output the action had produced successfully.
+        #
+        # `only_integer:` is what excludes it, and excludes it exactly: among Numerics only an Integer's `#to_s`
+        # is an integer literal (a Float's carries `.`, a Rational's `/`, a BigDecimal's `e`, a Complex's `i`),
+        # so the two options together pin the value to an Integer and the emitted type is "integer" rather than
+        # "number". It has to be a STATIC `only_integer:`, which is exactly what `declared_only_integer?` asks;
+        # `only_numeric:` needs no such test, being the one option here ActiveModel reads truthily instead of
+        # resolving per call.
+        #
+        # On INPUT none of this applies: an inferred numeric type is merely STRICTER there, which is licensed —
+        # a client is told to send `1` rather than `"1"`, and the runtime would have taken either. A declared
+        # `type:` is unaffected in both directions, being read before this and proving the class itself.
         def numericality_type_provable?(numericality, for_output:)
           return true unless for_output
+          return false unless Axn::Validation::Base.validator_entry_options(numericality)[:only_numeric]
 
-          numericality.is_a?(Hash) && numericality[:only_numeric] ? true : false
+          Axn::Validation::Base.declared_only_integer?(numericality)
         end
 
         def enum_scalar_type(value)

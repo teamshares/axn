@@ -5890,6 +5890,72 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.call(n: "abc")).not_to be_ok
     end
 
+    # ActiveModel resolves `only_integer:` per call against the record, so a Proc/Symbol token narrows NOTHING
+    # statically: when it comes back false the validator skips the integer check entirely and every non-integer
+    # the other options admit is still accepted. Reflection may not run it, so the narrowing stands down in both
+    # directions — the same refusal a Symbol/Proc numeric bound already gets.
+    describe "a per-call only_integer: token, which proves nothing about any single call" do
+      it "leaves a union unnarrowed rather than rejecting the Float the position accepts" do
+        action = build_axn do
+          exposes :n, type: [Integer, Float], numericality: { only_integer: -> { false } }
+          def call = expose(:n, 1.5)
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(action.output_schema.dig(:properties, :n, :anyOf)).to eq([{ type: "integer" }, { type: "number" }])
+      end
+
+      it "reads a Symbol token the same way" do
+        action = build_axn do
+          exposes :n, type: [Integer, Float], numericality: { only_integer: :whole_only? }
+          def call = expose(:n, 1.5)
+          def whole_only? = false
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(action.output_schema.dig(:properties, :n, :anyOf)).to eq([{ type: "integer" }, { type: "number" }])
+      end
+
+      # The emptied-node contract is earned by a STATIC narrowing. Under a per-call token the Float branch is
+      # reachable, so emptying it advertised that nothing is acceptable at a position that took `1.5`.
+      it "does not empty a Float node the validator still admits" do
+        action = build_axn do
+          exposes :n, type: Float, numericality: { only_integer: -> { false } }
+          def call = expose(:n, 1.5)
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(action.output_schema[:properties][:n]).to eq(type: "number")
+      end
+
+      # The string branch's `pattern` is ActiveModel's own integer test translated — and with the check skipped
+      # the validator merely parses the number, so `"1.5"` passes where the emitted pattern rejects it.
+      it "omits the integer-literal pattern a string branch would otherwise carry" do
+        action = build_axn do
+          exposes :n, type: String, numericality: { only_integer: -> { false } }
+          def call = expose(:n, "1.5")
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["n"]).to eq("1.5")
+        expect(action.output_schema[:properties][:n]).not_to have_key(:pattern)
+      end
+
+      it "still narrows on a static token, which is what the per-call one is measured against" do
+        action = build_axn do
+          exposes :n, type: [Integer, Float], numericality: { only_integer: true }
+          def call = expose(:n, 2)
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema[:properties][:n]).to eq(type: "integer")
+      end
+    end
+
     # `format:` is checked by ActiveModel against `value.to_s`, and on OUTPUT that is not always the string the
     # wire carries: the VALUE serializer renders a Time as `iso8601`. The pattern the runtime measured against
     # "2026-08-25 12:00:00 UTC" would be measured against "2026-08-25T12:00:00Z" and reject the action's output.
@@ -6697,21 +6763,72 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(action.output_schema[:properties][:n]).to eq({})
         end
 
-        # `only_numeric:` proves the value is a Numeric, which is enough to infer the TYPE and not enough to
-        # carry the BOUND: a Numeric may be a BigDecimal, and every Numeric but Integer and Float reaches the
-        # wire through `Float()`, which rounds. Measured — `BigDecimal("1e-400")` satisfies `greater_than: 0`,
-        # serializes as `0.0`, and an emitted `exclusiveMinimum: 0` rejects the action's own output.
-        it "still infers the type on output under only_numeric:, but not the bound" do
+        # `only_numeric:` proves the value is a NUMERIC, which is not the same as a JSON number, so on its own
+        # it infers nothing on output: `Complex(1, 2)` is a Numeric that serializes as the STRING "1+2i", and an
+        # inferred `"number"` rejected output the action had produced successfully.
+        it "stands down under only_numeric: alone, which does not prove a JSON number" do
           action = build_axn do
             exposes :n, numericality: { greater_than: 0, only_numeric: true }
             def call = expose(:n, 1)
           end
 
           expect(action.call).to be_ok
-          expect(action.output_schema[:properties][:n]).to eq(type: "number")
+          expect(action.output_schema[:properties][:n]).to eq({})
         end
 
-        it "is why: a Numeric the wire rounds satisfies the bound and the emitted node would not" do
+        it "is why: a Numeric that satisfies the validator serializes as a string" do
+          action = build_axn do
+            exposes :n, numericality: { only_numeric: true }
+            def call = expose(:n, Complex(1, 2))
+          end
+          result = action.call
+
+          expect(result).to be_ok
+          expect(Axn::Extensions::Serialization.render(result)["n"]).to eq("1+2i")
+          expect(action.output_schema[:properties][:n]).to eq({})
+        end
+
+        it "reaches a bag position the same way" do
+          action = build_axn do
+            exposes :ns, type: Array, of: { numericality: { only_numeric: true } }
+            def call = expose(:ns, [Complex(1, 2)])
+          end
+          result = action.call
+
+          expect(result).to be_ok
+          expect(Axn::Extensions::Serialization.render(result)["ns"]).to eq(["1+2i"])
+          expect(action.output_schema[:properties][:ns]).not_to have_key(:items)
+        end
+
+        # Together the two options pin the value to an Integer: among Numerics only an Integer's `#to_s` is an
+        # integer literal, which is the test `only_integer:` applies. So the pair infers, and infers "integer".
+        it "infers where only_numeric: and only_integer: together pin an Integer" do
+          action = build_axn do
+            exposes :n, numericality: { only_numeric: true, only_integer: true }
+            def call = expose(:n, 7)
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to eq(type: "integer")
+        end
+
+        it "stands down again where that only_integer: is resolved per call" do
+          action = build_axn do
+            exposes :n, numericality: { only_numeric: true, only_integer: -> { false } }
+            def call = expose(:n, 1.5)
+          end
+          result = action.call
+
+          expect(result).to be_ok
+          expect(Axn::Extensions::Serialization.render(result)["n"]).to eq(1.5)
+          expect(action.output_schema[:properties][:n]).to eq({})
+        end
+
+        # The BOUND stands down under `only_numeric:` for a second, independent reason: a Numeric may be a
+        # BigDecimal, and every Numeric but Integer and Float reaches the wire through `Float()`, which rounds.
+        # Measured — `BigDecimal("1e-400")` satisfies `greater_than: 0`, serializes as `0.0`, and an emitted
+        # `exclusiveMinimum: 0` rejects the action's own output.
+        it "keeps the bound down: a Numeric the wire rounds satisfies it and the emitted node would not" do
           action = build_axn do
             exposes :n, numericality: { greater_than: 0, only_numeric: true }
             def call = expose(:n, BigDecimal("1e-400"))

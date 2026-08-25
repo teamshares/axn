@@ -513,7 +513,23 @@ module Axn
 
       # Whether a `numericality:` entry restricts its value to whole numbers, which narrows the emitted type
       # from "number" to "integer" even when a wider `type:` token would otherwise decide it.
-      def self.declared_only_integer?(entry_opts) = validator_entry_options(entry_opts)[:only_integer] ? true : false
+      #
+      # Only a STATIC token answers. ActiveModel resolves this option per call against the record
+      # (`resolve_value`, activemodel 7.2.2.2), so a Proc/Symbol that comes back false leaves every non-integer
+      # the entry's other options admit still in play — and reading one as a narrowing emitted a node the value
+      # it narrowed for cannot occupy: `type: [Integer, Float]` advertised `"integer"` and rejected the Float
+      # exposed under it, `type: Float` emptied to `enum: []`, and a string branch carried the integer-literal
+      # `pattern`, which rejects the `"1.5"` the validator parses happily. Unknown stands down in BOTH
+      # directions, the same refusal a Symbol/Proc numeric bound gets from `emittable_numeric_bound?`.
+      #
+      # `resolve_value`'s own reach decides what counts as dynamic: a Symbol, and anything answering `#call` —
+      # its `else` branch calls a callable too, so testing for Proc alone would miss a callable object.
+      def self.declared_only_integer?(entry_opts)
+        token = validator_entry_options(entry_opts)[:only_integer]
+        return false if token.is_a?(::Symbol) || token.respond_to?(:call)
+
+        token ? true : false
+      end
 
       # The test `only_integer:` actually applies, handed to reflection rather than restated there: the emitted
       # pattern has to agree with the validator that runs, and a copy in the emitter would drift from it in
