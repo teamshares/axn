@@ -4001,12 +4001,13 @@ module Axn
                    "Range whose endpoints meet, or one whose bounds run backwards, is empty)."
           end
 
+          # The remedy is the field-level one: this guard is asked at a field only, a bag's position reaching
+          # its satisfiability mirror alone, so there is no nested bag to send the author to.
           "#{key}: on #{where} enforces nothing — no value of type " \
             "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')} could be one of the " \
             "literals it forbids, so every value passes. A validator constrains the value at the " \
-            "position it is declared at: forbid literals of the declared type, and for a constraint on " \
-            "a container's CONTENTS express it as `validate: ->(value) { ... }` (a per-element spelling " \
-            "inside `of:` is not supported yet — PRO-3193)."
+            "position it is declared at: forbid literals of the declared type, and constrain a container's " \
+            "CONTENTS at their own position — #{_contents_position_remedy(false)}."
         end
 
         # The forbidden literals that could actually be the value that FAILS. Two filters, and the second is

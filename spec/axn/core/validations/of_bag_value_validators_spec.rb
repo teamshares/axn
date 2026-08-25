@@ -388,8 +388,14 @@ RSpec.describe "value validators in an of: bag" do
       rescue ArgumentError => e
         messages << e.message
       end
+      # The VACUITY mirror, which carries its own copy of the remedy and so its own copy of the obligation.
+      begin
+        build_axn { expects :f, type: Array, exclusion: { in: ["admin"] } }
+      rescue ArgumentError => e
+        messages << e.message
+      end
 
-      expect(messages.length).to eq(2)
+      expect(messages.length).to eq(3)
       messages.each do |message|
         expect(message).not_to include("not supported yet")
         expect(message).to include("of:")
