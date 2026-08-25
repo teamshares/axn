@@ -4174,46 +4174,52 @@ module Axn
           minimum = Internal::Reflection::Schema.declared_size_minimum(validations)
           maximum = Internal::Reflection::Schema.declared_size_maximum(validations)
 
-          if minimum && maximum && minimum > maximum && !_blank_branch_satisfies_the_bounds?(validations, minimum)
-            _raise_empty_size_interval!(validations, where, minimum, maximum)
-          end
+          _raise_empty_size_interval!(validations, where, minimum, maximum) if _empty_interval?(validations, minimum, maximum)
           _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
         end
 
-        # Whether a declared branch escapes the ceiling this comparison rests on — which only an `absence:`-derived
-        # ceiling can be escaped, because it is a statement about the BLANK axis rather than the size one. It
-        # excludes a value only where that value's blankness implies size 0, and for a token whose blank value is
-        # `false` it does not: `false` is blank, so the `absence:` accepts it, and `LengthValidator` measures its
-        # rendering (`"false"`, five characters) rather than a length it does not have. So
+        # Whether the bounds this declaration derives admit no size at all — a floor above the ceiling, on a
+        # declaration whose every branch that ceiling actually bounds.
+        def _empty_interval?(validations, minimum, maximum)
+          return false unless minimum && maximum && minimum > maximum
+
+          _every_branch_is_bounded?(validations)
+        end
+
+        # Whether every branch this declaration names is one the ceiling actually bounds — the question a
+        # union makes necessary, since a value need satisfy only ONE branch and one unbounded branch is enough
+        # to sink the claim that nothing satisfies the declaration.
+        #
+        # Only an `absence:`-derived ceiling can be escaped, because it is a statement about the BLANK axis
+        # rather than the size one: it bounds a value to size 0 only where that value's blankness implies size
+        # 0. For `:boolean` it does not — `false` is blank, so the `absence:` accepts it, and LengthValidator
+        # measures its rendering rather than a length it has none of. So
         # `type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1 }` is satisfied by
         # `false` on every call, though its Array branch admits nothing at all.
         #
-        # Asked HERE and not inside the ceiling derivation, because the emitter and this guard ask different
-        # questions of a union. `declared_size_maximum` answers what bound the ARRAY branch carries, and
-        # `maxItems: 0` is right there whatever a sibling branch admits — dropping it would leave a non-empty
-        # array schema-valid and runtime-invalid, the looseness a previous round fixed. This guard asks whether
-        # the DECLARATION admits anything, and one satisfiable branch settles that. Same derivation, two
-        # questions; the union is where they come apart.
+        # An earlier cut of this tried to WITNESS that branch instead — to check that `false` satisfies the
+        # declaration and stand down only then. That does not terminate. A witness is a claim that something
+        # passes, so it owes every check in the declaration a pass, and each review round found another check
+        # it had not been asked: the author's own `length:` ceiling, then a closed `inclusion:` set, then
+        # `exclusion:`/`format:`/`numericality:`/`comparison:`/`acceptance:` — six of them measured in one
+        # sweep, with a custom `validate:` unanswerable in principle. Deciding a value against every validator
+        # in a declaration is a satisfiability solver, and building one inside a guard is the same unbounded
+        # treadmill `Internal::NativeMethods` exists to refuse.
         #
-        # The witness has to satisfy the AUTHOR'S OWN size bounds, both of them — it is a witness to the whole
-        # declaration or it is nothing. The floor is passed in; the ceiling is read off the `length:` entry
-        # rather than taken from the `maximum` this comparison holds, because that one IS the absence-derived 0
-        # the witness is being weighed against. `false` measures 5, so it witnesses `length: { minimum: 1 }` and
-        # `length: { is: 5 }`, and does NOT witness `length: { minimum: 1, maximum: 3 }` or `length: { is: 2 }`
-        # — each of which admits nothing and is refused.
-        #
-        # A ceiling ActiveModel resolves per call (`:unverifiable`) is no constraint here: whether the witness
-        # clears it is unknowable at declaration, and standing down leaves a declaration that may well work.
-        # `Float::INFINITY` is Numeric and admits every size, which is what that spelling means.
-        def _blank_branch_satisfies_the_bounds?(validations, minimum)
-          return false unless Internal::Reflection::Schema.absence_bounds_size?(validations)
+        # So the question is about the DECLARED TYPE, which is finite and knowable, rather than about a value:
+        # is every branch bounded. It costs three narrow refusals the witness version got right — a floor above
+        # what `false` measures, and an `is:`/`maximum:` that excludes it — and buys a rule that cannot acquire
+        # a new hole from a validator nobody thought about. Under-restriction leaves a broken contract
+        # declaring; over-restriction rejects a working one, and only the second is unrecoverable.
+        # Scoped to an absence-derived ceiling by the first line, and the existing suite is what caught its
+        # absence: a `length:` ceiling is a size bound the author wrote, so it bounds every branch by
+        # construction and this question does not arise — without the gate, `type: String,
+        # length: { minimum: 3, maximum: 2 }` stopped being refused because a String's blank values are not its
+        # empty ones.
+        def _every_branch_is_bounded?(validations)
+          return true unless Internal::Reflection::Schema.absence_bounds_size?(validations)
 
-          declared = Axn::Validation::Base.declared_length_ceiling(_effective_length_options(validations))
-          ceiling = declared if declared.is_a?(Numeric)
-
-          Internal::Reflection::Schema.blank_witness_sizes(validations).any? do |size|
-            size >= minimum && (ceiling.nil? || size <= ceiling)
-          end
+          Internal::Reflection::Schema.absence_ceiling_bounds_every_token?(validations)
         end
 
         # The validator entries that can supply a bound to the size rules below, or the set they scan. Kept as a

@@ -350,11 +350,19 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
     # as `is: || maximum:` therefore reported 2..2 for a pair that admits nothing, and the emitted node
     # advertised `minItems: 2` as satisfiable: a satisfiable projection for an unsatisfiable contract, the
     # emitter/runtime disagreement read the other way round.
-    # An `absence:`-derived ceiling is a statement about the BLANK axis, not the size one, so it excludes a
-    # value only where blankness implies size 0. `false` is the case where it does not: it is blank, so the
+    # An `absence:`-derived ceiling is a statement about the BLANK axis, not the size one, so it bounds a value
+    # to size 0 only where blankness implies size 0. For `:boolean` it does not: `false` is blank, so the
     # `absence:` accepts it, and `LengthValidator` measures its RENDERING — `"false"`, five characters — rather
-    # than a length it has none of. So a union naming a boolean has a branch the ceiling cannot speak for.
-    describe "a union whose non-size branch admits a blank value" do
+    # than a length it has none of. So a union naming a boolean has a branch the ceiling does not bound, and
+    # the rule cannot conclude anything about the declaration from it.
+    #
+    # The question is asked of the declared TYPE and not of a value, deliberately. An earlier cut tried to
+    # witness the branch — to check that `false` satisfies the declaration and stand down only then — and that
+    # does not terminate: a witness is a claim that something passes, so it owes every check a pass, and three
+    # successive review rounds each found another check it had not been asked (the author's own ceiling, then a
+    # closed `inclusion:`, then `exclusion:`/`format:`/`numericality:`/`comparison:`/`acceptance:`). The cost
+    # of the type-level question is pinned below.
+    describe "a union whose non-size branch is not bounded by the ceiling" do
       it "stands down on a :boolean branch beside a bounded container" do
         expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1 }) }
           .not_to raise_error
@@ -373,64 +381,36 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         expect(action.call(f: ["a"]).ok?).to be(false)
       end
 
-      # The witness still has to clear the floor, so the stand-down is bounded by what `false` measures rather
-      # than being "a boolean branch disables the rule".
-      it "still refuses a floor above what false measures" do
-        expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { minimum: 6 }) }
-          .to raise_error(ArgumentError, /admits no value at all|can never match/)
-      end
-
-      it "declares at the exact floor false measures" do
-        expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { minimum: 5 }) }
-          .not_to raise_error
-      end
-
-      # A branch admitting NO blank value witnesses nothing through the blank axis, so it must not stand the
-      # rule down: every Integer and `true` alike are present, so the `absence:` rejects them.
-      it "still refuses where the sibling branch has no blank value" do
+      # A branch whose values the `absence:` rejects OUTRIGHT is bounded vacuously — no `true`, Integer or
+      # Float is blank — so it must not stand the rule down. This is what keeps the type-level question from
+      # collapsing into "any union disables the rule".
+      it "still refuses where the sibling branch admits no blank value" do
         expect { declare(type: [Array, TrueClass], presence: false, absence: true, length: { minimum: 1 }) }
           .to raise_error(ArgumentError, /admits no value at all|can never match/)
         expect { declare(type: [Array, Integer], presence: false, absence: true, length: { minimum: 1 }) }
           .to raise_error(ArgumentError, /admits no value at all|can never match/)
-      end
-
-      # The witness is a witness to the WHOLE declaration or it is nothing, so it has to satisfy the author's
-      # own ceiling as well as the floor. `false` measures 5, so it witnesses `minimum: 1` and does not
-      # witness `maximum: 3` — nothing satisfies that declaration and it is refused. The ceiling is read off
-      # the `length:` entry rather than from the comparison's own maximum, which IS the absence-derived 0 the
-      # witness is being weighed against.
-      it "still refuses where the witness exceeds the author's ceiling" do
-        expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1, maximum: 3 }) }
+        expect { declare(type: [Array, Float], presence: false, absence: true, length: { minimum: 1 }) }
           .to raise_error(ArgumentError, /admits no value at all|can never match/)
       end
 
-      it "stands down where the witness fits inside the author's ceiling" do
-        expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1, maximum: 5 }) }
-          .not_to raise_error
+      # THE COST, pinned so the trade is a recorded decision rather than a gap. These three are genuinely
+      # unsatisfiable — `false` measures 5, so it clears none of them — and they now declare, because the rule
+      # asks about the declared type rather than about what `false` measures. Under-restriction leaves a broken
+      # contract declaring; the alternative was a satisfiability solver inside a declaration guard, which
+      # acquired a new hole in each of three review rounds.
+      it "gives up three refusals a per-value witness would have caught" do
+        [{ minimum: 6 }, { minimum: 1, maximum: 3 }, { is: 2 }].each do |length|
+          expect { declare(type: [Array, :boolean], presence: false, absence: true, length:) }
+            .not_to raise_error
+        end
       end
 
-      # `is:` is floor and ceiling at once, so it exercises both halves of the same test.
-      it "reads an is: as both bounds against the witness" do
-        expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { is: 2 }) }
+      # The scope of the stand-down: only an `absence:`-derived ceiling can be escaped this way. A `length:`
+      # ceiling is a bound the author wrote, so it bounds every branch by construction and a boolean sibling
+      # changes nothing.
+      it "still refuses a length: contradiction beside the same branch" do
+        expect { declare(type: [Array, :boolean], presence: false, length: { minimum: 3, maximum: 2 }) }
           .to raise_error(ArgumentError, /admits no value at all|can never match/)
-        expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { is: 5 }) }
-          .not_to raise_error
-      end
-
-      # A ceiling ActiveModel resolves PER CALL is no constraint at declaration, so the witness is not weighed
-      # against it — and the declaration really can work, which the control shows.
-      it "stands down on a per-call ceiling, which really is satisfiable" do
-        action = nil
-        expect do
-          action = Class.new do
-            include Axn
-            expects :f, type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1, maximum: :cap }
-            def cap = 9
-            def call; end
-          end
-        end.not_to raise_error
-
-        expect(action.call(f: false).ok?).to be(true)
       end
 
       # And the emitter keeps bounding the ARRAY branch, which is the same derivation answering the OTHER

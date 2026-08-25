@@ -2063,31 +2063,37 @@ module Axn
           BLANK_IS_EMPTY_CLASSES.any? { |klass| klass.equal?(token) } || (defined?(Set) && ::Set.equal?(token))
         end
 
-        # The blank value a token admits, for the tokens that carry NO size of their own — the branches
-        # `blank_values_are_empty?` filters out before deriving an `absence:` ceiling. `false` is the only one:
-        # it is blank (so an `absence:` accepts it), it has no `length`, and `LengthValidator` therefore
-        # measures its RENDERING — `false.to_s` is five characters, which clears any floor at or below five.
+        # The non-size tokens whose values an `absence:` check rejects OUTRIGHT: no `true`, no Integer and no
+        # Float is blank, so a declaration bounding the blank axis to size 0 admits nothing of theirs at all —
+        # which is what makes a refusal drawn from that ceiling sound even with one of them in the union.
         #
-        # `true` is absent because it is not blank, and so are `Integer`/`Float`/`Numeric`: no value of theirs
-        # is blank either, so none of them can witness anything through the blank axis. Every other token
-        # `single_type_for` knows maps to a size-bearing type and is judged by `blank_is_empty_class?` instead.
-        BLANK_VALUES_WITHOUT_A_SIZE = { boolean: false, ::FalseClass => false }.freeze
+        # `:boolean` and `FalseClass` are the ones deliberately absent, and they are the whole reason this list
+        # exists: `false` IS blank, so the `absence:` accepts it, and `LengthValidator` measures its rendering
+        # (`"false"`, five characters) rather than a length it has none of. A union naming either has a branch
+        # the ceiling does not bound, and the guard cannot conclude anything from it.
+        ABSENCE_REJECTS_EVERY_VALUE = [::TrueClass, ::Integer, ::Float, ::Numeric].freeze
 
-        # The sizes ActiveModel would measure for those blank values, for the tokens this declaration names.
-        # Read by the size guard and NOT by the emitter, because the two ask different questions about a union:
-        # the emitter asks what bound the ARRAY branch carries, and `maxItems: 0` is the right answer there
-        # whatever a sibling branch admits; the guard asks whether the DECLARATION admits anything at all, and
-        # one satisfiable branch settles that. `type: [Array, :boolean], presence: false, absence: true,
-        # length: { minimum: 1 }` accepts `false` on every call (measured) while its Array branch really does
-        # admit nothing.
-        def blank_witness_sizes(validations)
-          declared_type_tokens(validations).filter_map do |token|
-            next if token_carries_a_size?(token)
+        # Whether an `absence:`-derived ceiling of 0 bounds EVERY branch this declaration names — the size
+        # guard's question, and deliberately not `blank_values_are_empty?`, which filters the union down to its
+        # size-bearing tokens.
+        #
+        # Both questions are right for their caller. The emitter needs to know what bound the ARRAY branch
+        # carries, and `maxItems: 0` is the answer there whatever a sibling admits — dropping it would leave a
+        # non-empty array schema-valid and runtime-invalid. This guard needs to know whether the DECLARATION
+        # admits anything, and a single unbounded branch means it cannot say.
+        #
+        # Three cases per token, and the middle one is why this reads as a list rather than a measurement: a
+        # token whose blank values are its empty ones is bounded (`blank_is_empty_class?`); a token no blank
+        # value of which exists is bounded vacuously, since the `absence:` rejects everything it admits; and
+        # anything else — `:boolean`, a `String`, an unrecognized class — is not bounded, so the ceiling proves
+        # nothing about it. Unknown answers "not bounded", which stands the guard down: over-refusing a working
+        # declaration is the one failure it cannot recover from.
+        def absence_ceiling_bounds_every_token?(validations)
+          declared_type_tokens(validations).all? do |token|
+            next true if blank_is_empty_class?(token)
+            next false if token_carries_a_size?(token)
 
-            found = BLANK_VALUES_WITHOUT_A_SIZE.find { |key, _| Axn::Internal::Identity.same?(key, token) }
-            next if nil.equal?(found)
-
-            found.last.to_s.length
+            ABSENCE_REJECTS_EVERY_VALUE.any? { |known| Axn::Internal::Identity.same?(known, token) }
           end
         end
 
