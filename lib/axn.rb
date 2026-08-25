@@ -8,6 +8,13 @@ require "active_support/concern"
 # explicitly rather than reaching for `active_support/all`, which would pull in far more than axn depends on.
 require "active_support/core_ext/object/inclusion"
 
+# Named rather than relied on transitively. The declaration guards name `BigDecimal` in their closed equality
+# world, and those lists are frozen at load time — so a `BigDecimal` that arrived later would be missing from
+# them and the refusals it earns would silently stop firing. It is loaded either way today (activemodel's
+# `numericality.rb` requires it, eagerly, via `validations.rb`), which is exactly what makes depending on that
+# accident the wrong thing to do: nothing here would notice if activemodel stopped.
+require "bigdecimal"
+
 # Standalone
 require "axn/version"
 require "axn/field_declarations"
