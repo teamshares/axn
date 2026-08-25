@@ -296,6 +296,55 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       end
     end
 
+    # The member scan excludes a wrong-typed member using the declared `type:` — so a type check that can be
+    # SKIPPED excludes nothing on the calls where it is. With the gate closed, a String reaches a `type: Array`
+    # field, and one the set contains and whose length clears the floor satisfies the declaration outright.
+    describe "a gated type: entry, which rules no value out" do
+      it "stands down on a nested gate" do
+        expect { declare(type: { klass: Array, if: -> { false } }, presence: false, length: { minimum: 3 }, inclusion: { in: %w[abc] }) }
+          .not_to raise_error
+      end
+
+      # The control: the declaration really is satisfiable, by an ordinary String rather than by anything
+      # written to defeat the guard.
+      it "accepts at runtime the value the closed gate admits" do
+        action = declare(type: { klass: Array, if: -> { false } }, presence: false, length: { minimum: 3 },
+                         inclusion: { in: %w[abc] })
+
+        expect(action.call(f: "abc").ok?).to be(true)
+      end
+
+      # The entry's OWN gate, not the effective one, and the boundary is load-bearing: a gate the whole
+      # DECLARATION carries reaches the type check and the set's check alike, so it creates no asymmetry
+      # between them. That spelling stays refused, by the value-constraint rule whose pinned policy is that a
+      # declaration-level gate gives the set no reading — "closed the check enforces nothing, open it rejects
+      # everything". Reading the effective gate here imposed the size rules' opposite policy on that rule and
+      # broke both of its pins (measured).
+      it "does NOT stand down on a declaration-level gate" do
+        expect { declare(type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: %w[abc] }, if: -> { false }) }
+          .to raise_error(ArgumentError, /can never match/)
+      end
+
+      it "still refuses the ungated spelling" do
+        expect { declare(type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: %w[abc] }) }
+          .to raise_error(ArgumentError, /can never match/)
+      end
+
+      # What the stand-down costs, pinned so it reads as a known consequence of the gate policy rather than an
+      # oversight: this one IS unsatisfiable (only an empty container matches `[]`, and the floor is 3) and now
+      # declares, emitting a node no document satisfies. A gate is exactly the case where reflection's
+      # static-maximal emission and a satisfiable contract can disagree, and that gap is the emitter's. The
+      # alternative is refusing every gated type, which is what costs the satisfiable `"abc"` case above.
+      it "also stands down where the members make it genuinely unsatisfiable" do
+        action = nil
+        expect do
+          action = declare(type: { klass: Array, if: -> { false } }, presence: false, length: { minimum: 3 },
+                           inclusion: { in: [[]] })
+        end.not_to raise_error
+        expect(action.input_schema[:properties][:f]).to eq({ type: "array", enum: [[]], minItems: 3 })
+      end
+    end
+
     it "stands down on a set it may not read" do
       action = declare(type: Array, inclusion: { in: :allowed_tags })
       expect(action).to be_a(Class)

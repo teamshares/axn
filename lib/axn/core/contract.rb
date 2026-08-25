@@ -3610,7 +3610,7 @@ module Axn
         # `acceptance:` entry (AM's own skip is disabled by exactly that key), turning a satisfiable contract
         # into a refused one.
         def _reject_unsatisfiable_value_constraints!(validations, where:, tolerance:, nested: false, allow_empty: nil)
-          klasses = _judgeable_type_klasses(validations[:type])
+          klasses = _judgeable_type_klasses(validations)
           return if klasses.empty?
 
           admitted = tolerance.select { |_key, value| value }
@@ -3965,7 +3965,7 @@ module Axn
         # Closed it enforces nothing, open it enforces nothing — there is no reading under which the
         # declaration means what it says.
         def _reject_vacuous_value_constraints!(validations, where:, tolerance:, nested: false)
-          klasses = _judgeable_type_klasses(validations[:type])
+          klasses = _judgeable_type_klasses(validations)
           return if klasses.empty?
 
           entries = Axn::Validation::Base.validator_entries(validations)
@@ -4324,7 +4324,7 @@ module Axn
         def _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
           return if minimum.nil? && maximum.nil?
 
-          klasses = _judgeable_type_klasses(validations[:type])
+          klasses = _judgeable_type_klasses(validations)
           return if klasses.empty?
 
           entry = Axn::Validation::Base.validator_entries(validations)[:inclusion]
@@ -4700,9 +4700,31 @@ module Axn
         # for an undeclared type and for a declaration naming any pseudo-type (`:boolean`/`:uuid`/`:params`),
         # whose admissible values are not a class membership question — both stand the guard down.
         #
+        # Empty for a SELF-GATED `type:` entry too. All three callers read the declared type to rule values OUT
+        # — a set no value of the type could match, a forbidden set no value of the type could be, a member the
+        # size bounds exclude — so a type check that can be skipped while the rest of the declaration runs
+        # rules nothing out on those calls. `type: { klass: Array, if: -> { false } }, presence: false,
+        # length: { minimum: 3 }, inclusion: { in: ["abc"] }` is satisfied by `"abc"` on every call (measured):
+        # the closed gate admits the String, the set contains it, and its length clears the floor. The same
+        # reading rescues the vacuity rule's mirror — `exclusion: { in: ["admin"] }` under a gated `type: Array`
+        # really does reject the String "admin" it now admits.
+        #
+        # `entry_self_gated?`, and this is the one question that reader is right for: it asks whether the entry
+        # is skippable INDEPENDENTLY OF ITS SIBLINGS, which is exactly what makes a type check stop ruling
+        # values out while the constraint judging them still runs. A gate the whole DECLARATION carries reaches
+        # the type check and the constraint alike, so it creates no asymmetry between them and is deliberately
+        # not counted here — the three callers answer it in their own opposite ways (the size rules stand down
+        # on it; the value-constraint and vacuity rules refuse it outright, "closed the check enforces nothing,
+        # open it rejects everything", pinned in `container_position_validators_spec.rb`), and reading the
+        # effective gate here would impose one policy on all three. Measured: it did, and broke both pins.
+        #
         # Classified with `case`/`when Module`, which does not call the token's own `is_a?`.
-        def _judgeable_type_klasses(declared)
-          tokens = _declared_type_tokens_in(declared)
+        def _judgeable_type_klasses(validations)
+          entry = Axn::Validation::Base.validator_entries(validations)[:type]
+          return [] unless entry
+          return [] if Axn::Validation::Base.entry_self_gated?(entry)
+
+          tokens = _declared_type_tokens_in(entry)
           return [] if tokens.empty?
 
           tokens.all? { |token| case token when ::Module then true else false end } ? tokens : []
