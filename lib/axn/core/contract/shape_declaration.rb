@@ -777,13 +777,14 @@ module Axn
           # rule a field's are. The member's own BAG-level `on:` is refused earlier, by
           # `_check_member_option_keys!` above, with the reason particular to a member.
           #
-          # All six are the field path's own guards, called with the member's label where a field passes its
-          # own: a key that names no validator at all, an entry whose check cannot run, one that cannot MEAN
-          # anything at a container position, one comparing against literals no value of the declared type
-          # could be, one forbidding literals no value of the declared type could be, and one whose admissible
-          # SIZES form an empty interval. The positional rule is a rule about positions, and a member is one —
-          # so a raw member is held to it exactly as the block form and a top-level field are, rather than
-          # declaring cleanly and emitting the unsatisfiable node. The first of them is not positional at all
+          # All seven are the field path's own guards, called with the member's label where a field passes its
+          # own: a key that names no validator at all, an entry whose check cannot run, one asking for a
+          # strict-raising mode axn has not got, one that cannot MEAN anything at a container position, one
+          # comparing against literals no value of the declared type could be, one forbidding literals no
+          # value of the declared type could be, and one whose admissible SIZES form an empty interval. The
+          # positional rule is a rule about positions, and a member is one — so a raw member is held to it
+          # exactly as the block form and a top-level field are, rather than declaring cleanly and emitting
+          # the unsatisfiable node. The first of them is not positional at all
           # (its keys name nothing anywhere), and rides along here because this is the seam a raw member's
           # entries pass through.
           #
@@ -809,7 +810,7 @@ module Axn
           _reject_vacuous_value_constraints!(copy, where: member_where,
                                                    tolerance: copy.slice(:allow_nil, :allow_blank))
           # After that mirrored pair rather than between its halves, so the two verdicts on one set stay
-          # adjacent — and last of the six, matching the field path, where the size interval is judged once the
+          # adjacent — and last of them, matching the field path, where the size interval is judged once the
           # bag is settled.
           _reject_unsatisfiable_size_interval!(copy, where: member_where)
           # Last, where the block form checks it too (after the same canonicalization), so a declaration failing
