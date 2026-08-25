@@ -3792,11 +3792,23 @@ module Axn
         def _blank_rejected_by_contract?(validations, allow_empty:, tolerant:)
           return true if allow_empty == false
           return true if _default_presence_applies?(validations, allow_empty:, tolerant:)
-          return true if _presence_emptiness_answer(validations, tolerant:) == :rejected
-          return true if _length_emptiness_answer(validations) == :rejected
+
+          # An AUTHORED entry counts only where a gate cannot skip it, for the reason a sibling does: this is an
+          # affirmative claim that the blank is rejected, and a gate can only make a validator run LESS. Measured
+          # — `length: { minimum: 1, if: -> { false } }` never runs, so `[]` really does pass. The two answers
+          # above need no such test: `allow_empty: false` installs axn's own ungated check, and the automatic
+          # presence check is only inferred where the author named no requiredness signal at all.
+          decl_gates = _shared_validation_options(validations).slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+          return true if _ungated_entry?(validations[:presence], decl_gates) &&
+                         _presence_emptiness_answer(validations, tolerant:) == :rejected
+          return true if _ungated_entry?(validations[:length], decl_gates) &&
+                         _length_emptiness_answer(validations) == :rejected
 
           false
         end
+
+        # Whether nothing can skip this entry — its own `if:`/`unless:` or one the declaration hands it.
+        def _ungated_entry?(entry, decl_gates) = Axn::Validation::Base.entry_effective_gate_keys(entry, decl_gates).empty?
 
         # An `exclusion:` set — or an `other_than:` bound — no value of the declared type could ever be, which
         # makes the check impossible to FAIL. The author wrote a constraint, the class defines cleanly, and

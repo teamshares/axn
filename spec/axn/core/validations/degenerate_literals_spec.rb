@@ -242,6 +242,30 @@ RSpec.describe "a degenerate literal" do
       end.to raise_error(ArgumentError, /inclusion:/)
     end
 
+    it "ignores an emptiness-axis validator a gate can skip" do
+      # The same rule the siblings follow: an affirmative "the blank is rejected" cannot rest on a validator a
+      # gate can skip. The length floor never runs, so `[]` really does pass.
+      gated_length = build_axn do
+        expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true },
+                    length: { minimum: 1, if: -> { false } }
+      end
+      expect(gated_length.call(v: []).ok?).to be(true)
+      expect(gated_length.call(v: ["a"]).ok?).to be(false)
+
+      gated_presence = build_axn do
+        expects :v, type: Array, comparison: { equal_to: 1, allow_blank: true }, presence: { if: -> { false } }
+      end
+      expect(gated_presence.call(v: []).ok?).to be(true)
+
+      # ...while the UNGATED spellings still reject the blank, so nothing passes and the refusal stands.
+      expect do
+        build_axn { expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true }, length: { minimum: 1 } }
+      end.to raise_error(ArgumentError, /comparison:/)
+      expect do
+        build_axn { expects :v, type: Array, allow_empty: false, comparison: { equal_to: 1, allow_blank: true } }
+      end.to raise_error(ArgumentError, /comparison:/)
+    end
+
     it "keeps refusing on a type with no blank instance at all" do
       expect { build_axn { expects :v, type: Integer, presence: false, comparison: { equal_to: "x", allow_blank: true } } }
         .to raise_error(ArgumentError, /comparison:.*can never match/m)
