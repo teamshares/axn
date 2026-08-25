@@ -396,16 +396,28 @@ module Axn
       # open (a `maximum:` of 1 or more, or no size key at all), and `:unverifiable` for a floor AM resolves
       # per call (a Symbol/Proc).
       #
+      # Every lower bound the entry declares is weighed, not just the first one found: `LengthValidator`
+      # iterates its CHECKS and adds an error for each that fails, so `is:` and `minimum:` both run and the
+      # effective floor is the LARGER of them. Preferring `is:` hid an empty interval — `length: { is: 2,
+      # minimum: 3 }` reported 2..2 and declared, while ActiveModel rejects a value of every length (measured),
+      # and the emitted node advertised `minItems: 2` as satisfiable. A satisfiable node for a contract that
+      # admits nothing is the same emitter/runtime disagreement as its mirror, read the other way round.
+      #
+      # For a compatible pair the answer is unchanged, which is what makes this a narrowing rather than a new
+      # reading: `is: 2, minimum: 1` is still 2, since the `is:` was already the larger.
+      #
       # THE single definition of "how small a value may this length: entry be", shared by the emptiness
       # reconciliation at declaration (contract.rb) and by schema reflection's `minItems`/`minProperties`/
       # `minLength` emission, so the runtime floor and the emitted floor cannot disagree.
       def self.declared_length_floor(entry_opts)
         checks = declared_length_checks(entry_opts)
 
-        floor = checks[:is] || checks[:minimum]
+        lowers = [checks[:is], checks[:minimum]].compact
+        return :unverifiable unless lowers.all? { |bound| bound.is_a?(Numeric) }
+
+        floor = lowers.max
         max = checks[:maximum]
         return 0 if floor.nil? && max.is_a?(Numeric) && max.zero?
-        return :unverifiable unless floor.nil? || floor.is_a?(Numeric)
 
         floor
       end
@@ -420,15 +432,21 @@ module Axn
       # tolerated empty value measures 0, which every non-negative ceiling already admits, so a ceiling is exact
       # whether or not an empty value stands the entry aside.
       #
+      # Every upper bound is weighed for the same reason the floor weighs every lower one, and by the mirror
+      # rule: both checks run, so the effective ceiling is the SMALLER of `is:` and `maximum:`.
+      # `length: { is: 2, maximum: 1 }` is satisfied by nothing and used to declare.
+      # `Float::INFINITY` — ActiveModel's spelling for "no ceiling" — loses to any real bound beside it, which
+      # is what that spelling means.
+      #
       # THE single definition of "how large may this length: entry be", read by schema reflection's
       # `maxItems`/`maxProperties`/`maxLength` emission.
       def self.declared_length_ceiling(entry_opts)
         checks = declared_length_checks(entry_opts)
 
-        ceiling = checks[:is] || checks[:maximum]
-        return :unverifiable unless ceiling.nil? || ceiling.is_a?(Numeric)
+        uppers = [checks[:is], checks[:maximum]].compact
+        return :unverifiable unless uppers.all? { |bound| bound.is_a?(Numeric) }
 
-        ceiling
+        uppers.min
       end
 
       # Whether a ceiling read above is one a JSON Schema `maxItems`/`maxProperties`/`maxLength` can carry: a

@@ -139,6 +139,17 @@ Three transferable rules:
 - **A soundness probe's candidate spread must hold only HONEST values, while its declared literals need not.** The two are not symmetric: a candidate whose `blank?`/`present?` is its own satisfies contracts that admit nothing on any ordinary value, so one in the spread reports every correct refusal as an over-restriction (measured — it did). A set MEMBER carrying a singleton is fair game, because the author named that object and the guard holds it. Where the only witness would BE the lying object, the case belongs in a targeted spec with an explicit runtime control, not in the product.
 - **When round N rhymes with round N−1, the next artifact is a product probe, not another fix.** Same conclusion as PRO-2883's malformed-input matrix and PRO-2995's derive-don't-enumerate specs; this is the third time, which is the point at which the rule should be reached for first rather than last.
 
+## A projection can be unsatisfiable, or it can PROMISE what the runtime refuses
+
+The corollary this file already carries reads one way: the projection of a satisfiable contract must itself be satisfiable, and an unsatisfiable node is the emitter and runtime disagreeing. The disagreement has a second direction, and it is the one that reached production code here: a SATISFIABLE node for a contract that admits nothing.
+
+`length: { is: 2, maximum: 1 }` declared cleanly and emitted `{minItems: 2, maxItems: 2}`, so the schema told every caller that a two-element array was acceptable while ActiveModel rejected values of every length. The cause was reading the interval as `is: || minimum:` and `is: || maximum:`, when `LengthValidator` iterates its CHECKS and adds an error for each that fails — `is:` does not replace a bound beside it, both run. The effective floor is the LARGEST lower bound declared and the ceiling the SMALLEST upper one.
+
+Two things worth carrying forward:
+
+- **"Which bound wins" is a question about the VALIDATOR's loop, not about which option is more specific.** `is:` reads like it supersedes a range, and in most schema languages it would. Read the validator's iteration before deciding that one option subsumes another; the derivation had been correct for every single-bound spelling, which is why nothing caught it.
+- **Check both directions of the projection invariant.** A guard built to prevent unsatisfiable emissions will not notice that it is emitting a satisfiable node for an impossible contract — the failure is invisible to a probe that only asks "does anything the schema allows get rejected at declaration". Ask the mirror: for a contract nothing satisfies, does the projection say so? `Float::INFINITY` is the case that tells you the derivation understands the difference — it is ActiveModel's spelling for "no ceiling", so it must LOSE to a real bound rather than making the pair unverifiable.
+
 ## A shared type reader cannot carry a gate policy, because the rules disagree about gates
 
 Three declaration guards read the declared `type:` to rule values OUT: a set no value of the type could match, a forbidden set no value of the type could be, and a member the size bounds exclude. So a `type:` check that does not run rules nothing out — `type: { klass: Array, if: -> { false } }, presence: false, length: { minimum: 3 }, inclusion: { in: ["abc"] }` is satisfied by `"abc"` on every call, because the closed gate admits the String, the set contains it, and its length clears the floor. All three refused it.

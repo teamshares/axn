@@ -345,6 +345,54 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       end
     end
 
+    # `LengthValidator` iterates its CHECKS and adds an error for each that fails, so `is:` does not replace a
+    # `minimum:`/`maximum:` beside it — all of them run. Reading the floor as `is: || minimum:` and the ceiling
+    # as `is: || maximum:` therefore reported 2..2 for a pair that admits nothing, and the emitted node
+    # advertised `minItems: 2` as satisfiable: a satisfiable projection for an unsatisfiable contract, the
+    # emitter/runtime disagreement read the other way round.
+    describe "a length: entry combining is: with another bound" do
+      it "refuses an is: above its own ceiling" do
+        expect { declare(type: Array, presence: false, length: { is: 2, maximum: 1 }) }
+          .to raise_error(ArgumentError, /admits no value at all|can never match/)
+      end
+
+      it "refuses an is: below its own floor" do
+        expect { declare(type: Array, presence: false, length: { minimum: 3, is: 2 }) }
+          .to raise_error(ArgumentError, /admits no value at all|can never match/)
+      end
+
+      it "refuses an is: outside its own in: range" do
+        expect { declare(type: Array, presence: false, length: { is: 2, in: 3..4 }) }
+          .to raise_error(ArgumentError, /admits no value at all|can never match/)
+      end
+
+      # The controls: a compatible combination declares and still admits exactly the size `is:` names, so the
+      # conjunction is a NARROWING of the old reading rather than a different one.
+      it "declares a compatible combination, admitting only the is: size" do
+        action = declare(type: Array, presence: false, length: { is: 2, minimum: 1, maximum: 3 })
+
+        expect(action.call(f: %w[a b]).ok?).to be(true)
+        expect(action.call(f: ["a"]).ok?).to be(false)
+        expect(action.call(f: %w[a b c]).ok?).to be(false)
+        expect(action.input_schema[:properties][:f]).to include(minItems: 2, maxItems: 2)
+      end
+
+      # `Float::INFINITY` is ActiveModel's own spelling for "no ceiling", so it loses to a real bound beside it
+      # rather than making the pair unverifiable.
+      it "lets a real is: win over an infinite maximum" do
+        action = declare(type: Array, presence: false, length: { is: 2, maximum: Float::INFINITY })
+
+        expect(action.input_schema[:properties][:f]).to include(minItems: 2, maxItems: 2)
+      end
+
+      # A bound ActiveModel resolves PER CALL leaves the conjunction unknowable on the side it sits, so that
+      # side stands down rather than being compared against the literal.
+      it "stands down where one bound is resolved per call" do
+        expect { declare(type: Array, presence: false, length: { is: 2, minimum: :floor_for }) }
+          .not_to raise_error
+      end
+    end
+
     it "stands down on a set it may not read" do
       action = declare(type: Array, inclusion: { in: :allowed_tags })
       expect(action).to be_a(Class)
