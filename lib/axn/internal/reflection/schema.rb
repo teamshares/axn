@@ -1260,6 +1260,49 @@ module Axn
           members.any? { |m| m.equal?(nil) } ? members : members + [nil]
         end
 
+        # On OUTPUT an enum names what the action may PRODUCE, so it has to hold the wire form of every value the
+        # runtime accepts — and the runtime accepts by Ruby `==`, which can identify values that SERIALIZE
+        # differently. Two DateTimes for one instant in different offsets are `==` and render as different
+        # ISO-8601 strings; a Date is `==` to a DateTime at midnight and renders shorter; `1 == 1.0` renders as
+        # `1` and `1.0`. Each emits a set that rejects the action's own successful output.
+        #
+        # A member settles this for itself wherever its equality admits only its own type: a String, a Symbol,
+        # `true`, `false` and `nil` can only be `==` to a value that serializes identically, whatever class the
+        # position declares. A numeric member cannot, Ruby's tower crossing types, so it asks the position to pin
+        # exactly one numeric class — which is what keeps `type: Integer, inclusion: { in: [200, 404] }`
+        # reflecting. Anything else — a Time, a Date, an arbitrary object — stands the set down.
+        #
+        # INPUT needs no gate: there the emitted set is the values a client may SEND, and a set narrower than the
+        # runtime's equality is stricter, which is the licensed direction.
+        def output_enum_exact?(members, validations, declared_klass)
+          members.all? do |member|
+            case member
+            when ::String, ::Symbol, ::TrueClass, ::FalseClass, ::NilClass then true
+            when ::Numeric then numeric_enum_pinned?(member, validations, declared_klass)
+            else false
+            end
+          end
+        end
+
+        # Whether the position admits exactly the numeric class this member already is, so that no OTHER numeric
+        # type can be `==` to it and serialize differently. A position naming no class at all admits the whole
+        # tower and cannot pin anything.
+        def numeric_enum_pinned?(member, validations, declared_klass)
+          tokens = declared_type_tokens(validations, declared_klass)
+          return false if tokens.empty?
+
+          tokens.all? { |token| Internal::Identity.same?(token, Internal::Identity.class_of(member)) }
+        end
+
+        # The classes a position declares. A bag names them under `klass:`, which `bag_value_constraints`
+        # deliberately drops from the validator set, so a contents position hands them in directly.
+        def declared_type_tokens(validations, declared_klass)
+          return Array(declared_klass) unless nil.equal?(declared_klass)
+
+          type_opt = validations[:type]
+          Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
+        end
+
         # The literal membership set of an `inclusion:` validator, whether declared as the hash long form
         # ({ in: [...] } / { within: [...] }) or the equivalent bare-Array shorthand (inclusion: %w[a b c]).
         # The two enforce the same set at runtime, so reflection treats them identically (PRO-2944). Exact
@@ -1388,8 +1431,8 @@ module Axn
         # Array's element, a map's axis), so a keyword cannot land at one position and be forgotten at another —
         # which is what a mirrored copy would eventually become. The keyword each one lands on is decided by the
         # node's own emitted `type:`, so the same call does the right thing wherever the node sits.
-        def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false)
-          apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:)
+        def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false, declared_klass: nil)
+          apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass:)
           apply_size_constraints!(node, validations)
           apply_numeric_bounds!(node, validations, for_output:)
           apply_pattern!(node, validations, for_output:)
@@ -1404,7 +1447,7 @@ module Axn
         # object key is a string. A Symbol has a faithful form; an Integer does not, and the runtime really does
         # accept `{ 1 => v }`, so a set with any unrenderable member stands the ENUM down (leaving the axis's
         # other, string-shaped constraints in place) rather than emit a set no key can satisfy.
-        def apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:)
+        def apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass: nil)
           inclusion = validations[:inclusion]
           return unless inclusion
 
@@ -1415,6 +1458,8 @@ module Axn
             values = property_name_enum(values, for_output:)
             return if values.nil?
           else
+            return if for_output && !output_enum_exact?(values, validations, declared_klass)
+
             values = enum_for_inclusion(values, nullable:)
           end
 
@@ -2049,7 +2094,14 @@ module Axn
           # `items` altogether: `of: { numericality: { greater_than: 0 } }` rejected `-1` at runtime and
           # advertised nothing. (`format:`/`length:` alone still infer nothing, here and at a field alike —
           # neither a pattern nor a size names one JSON type.)
-          node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : json_type_for(constraints, for_output:)
+          node = if bag[:klass]
+                   # `contents_schema_for` reads the class alone, so the `only_integer:` narrowing that
+                   # `json_type_for` applies on the other branch has to be applied here too — same helper, not a
+                   # second reading of it.
+                   narrow_node_to_integer(contents_schema_for(bag[:klass], for_output:), constraints)
+                 else
+                   json_type_for(constraints, for_output:)
+                 end
           # Whether the POSITION admits nil is the same question `nil_allowed?` answers for a field, asked of
           # the bag — a `klass:` naming NilClass admits it until another validator on the same bag rejects it.
           # Hard-coding it left `of: { klass: [String, NilClass], presence: true }` advertising a `null` branch
@@ -2060,7 +2112,7 @@ module Axn
           # before the member/contents merges below so a `type:` those steps install cannot be read as the type
           # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
           # validators constrain.
-          apply_value_constraints!(node, constraints, nullable:, for_output:)
+          apply_value_constraints!(node, constraints, nullable:, for_output:, declared_klass: bag[:klass])
           node = contents_member_schema(node, bag, for_output:, ancestry:)
           inner = emitted_contents_edge(bag, :of, for_output:)
           return node if nil.equal?(inner)
@@ -2462,12 +2514,8 @@ module Axn
             type_opt = validations[:type]
             klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
             type_hashes = Array(klass).map { |k| single_type_for(k, for_output:) }.uniq
-            return narrow_to_integer(type_hashes.first, validations) if type_hashes.size == 1
-
-            # A union stands down from the `only_integer:` narrowing below: narrowing one branch of
-            # `[Integer, Float]` duplicates the other, and leaving the union alone is the looser reading that
-            # was already being emitted.
-            return { anyOf: type_hashes }
+            node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
+            return narrow_node_to_integer(node, validations)
           end
 
           if validations[:inclusion]
@@ -2495,6 +2543,24 @@ module Axn
         # `type: Numeric, numericality: { only_integer: true }` field advertised "number" while the runtime
         # accepted integers only — looser than the contract. Only "number" is narrowed: every other type is
         # either already "integer" or not a number at all, where `only_integer:` has nothing to say.
+        # The same narrowing across a whole node, union branches included. Standing a union down from it left
+        # `[Integer, Float], numericality: { only_integer: true }` advertising a `"number"` branch that accepted
+        # `1.5` while the runtime rejected it — looser than the contract, which input reflection may never be.
+        # Narrowing both branches of that pair converges them, which is what `uniq` is for. Reached from both the
+        # field path and the contents path, which build their node differently and must not narrow it differently.
+        def narrow_node_to_integer(node, validations)
+          return narrow_to_integer(node, validations) unless node[:anyOf].is_a?(Array)
+
+          narrowed = node[:anyOf].map { |branch| narrow_to_integer(branch, validations) }
+          # Untouched unions are returned exactly as built. Deduping is a CONSEQUENCE of the narrowing
+          # converging two branches, never a tidy-up of its own: `[Symbol, String]` already emits two identical
+          # `"string"` branches at a contents position, and collapsing that is a different decision than this one.
+          return node if narrowed == node[:anyOf]
+
+          deduped = narrowed.uniq
+          deduped.size == 1 ? deduped.first : node.merge(anyOf: deduped)
+        end
+
         def narrow_to_integer(type_hash, validations)
           return type_hash unless type_hash[:type] == "number"
 

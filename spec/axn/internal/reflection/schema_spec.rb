@@ -3460,9 +3460,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
     it "adds nil (but not \"\") to the output enum and does not widen the type" do
       # accepted divergence: outbound runtime accepts ""; the output schema's enum/type do not admit it.
+      # Numeric members are pinned with a `type:` so the set survives the outbound exactness gate below —
+      # what this example is about is the nil, not the numbers.
       klass = Class.new do
         include Axn
-        exposes :status, inclusion: { in: [1, 2] }, allow_blank: true
+        exposes :status, type: Integer, inclusion: { in: [1, 2] }, allow_blank: true
         def call = expose(status: 1)
       end
       schema = described_class.build_output(klass.external_field_configs)
@@ -3472,6 +3474,88 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop[:enum]).to match_array([1, 2, nil])
       expect(Array(prop[:type])).to include("integer", "null")
       expect(Array(prop[:type])).not_to include("string")
+    end
+
+    # An outbound enum has to hold the wire form of every value the runtime accepts, and the runtime accepts by
+    # Ruby `==` — which can identify values that SERIALIZE differently. Two DateTimes for one instant in
+    # different offsets are `==` and render as different ISO-8601 strings, so the emitted set rejects an element
+    # the action validated and serialized successfully. The same gate covers every position, the keys axis
+    # having been only the first place it showed.
+    describe "an outbound enum whose members' equality crosses the wire form" do
+      let(:utc) { DateTime.parse("2020-01-01T00:00:00+00:00") }
+      let(:offset) { DateTime.parse("2020-01-01T09:00:00+09:00") }
+
+      it "is the divergence itself: equal DateTimes, different ISO-8601" do
+        expect(utc == offset).to be true
+        expect(utc.iso8601).not_to eq(offset.iso8601)
+      end
+
+      it "stands the set down at a field" do
+        moment = utc
+        other = offset
+        action = build_axn do
+          exposes :f, type: DateTime, inclusion: { in: [moment] }
+          define_method(:call) { expose(:f, other) }
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["f"]).to eq(other.iso8601)
+        expect(action.output_schema[:properties][:f]).not_to have_key(:enum)
+      end
+
+      it "stands the set down at an element position" do
+        moment = utc
+        other = offset
+        action = build_axn do
+          exposes :f, type: Array, of: { klass: DateTime, inclusion: { in: [moment] } }
+          define_method(:call) { expose(:f, [other]) }
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :f, :items)).not_to have_key(:enum)
+      end
+
+      # Inbound is unaffected: there the set names what a client may SEND, and a set narrower than the runtime's
+      # equality is stricter, which is the licensed direction.
+      it "still emits the set inbound" do
+        moment = utc
+        action = build_axn { expects :f, type: DateTime, inclusion: { in: [moment] } }
+
+        expect(action.input_schema.dig(:properties, :f, :enum)).to eq([moment.iso8601])
+      end
+
+      # A member whose equality admits only its own type settles it without asking the position anything.
+      it "keeps a String, Symbol and pinned-numeric set at both positions" do
+        action = build_axn do
+          exposes :s, type: String, inclusion: { in: %w[a b] }
+          exposes :n, type: Integer, inclusion: { in: [1, 2] }
+          exposes :y, type: Array, of: { klass: Symbol, inclusion: { in: %i[a b] } }
+          def call = expose(s: "a", n: 1, y: [:a])
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :s, :enum)).to eq(%w[a b])
+        expect(action.output_schema.dig(:properties, :n, :enum)).to eq([1, 2])
+        expect(action.output_schema.dig(:properties, :y, :items, :enum)).to eq(%w[a b])
+      end
+    end
+
+    # The same declaration WITHOUT a `type:` admits Ruby's whole numeric tower, and `1 == 1.0` — so an action
+    # may expose `1.0`, satisfy `inclusion:`, and serialize `1.0`, which the emitted set does not contain. The
+    # set stands down outbound rather than reject the action's own output; inbound it is emitted, a set narrower
+    # than the runtime's equality being the licensed direction there.
+    it "stands an unpinned numeric set down on output, where equality crosses the wire form" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: [1, 2] }
+        exposes :out, inclusion: { in: [1, 2] }
+        def call = expose(out: 1.0)
+      end
+
+      expect(klass.call(status: 1.0)).to be_ok
+      expect(klass.output_schema[:properties][:out]).not_to have_key(:enum)
+      expect(klass.input_schema.dig(:properties, :status, :enum)).to eq([1, 2])
     end
   end
 
@@ -5723,6 +5807,44 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     it "narrows the type to integer under only_integer, even when type: names a wider Numeric" do
       expect(prop_for { expects :n, type: Numeric, numericality: { only_integer: true } })
         .to include(type: "integer")
+    end
+
+    # A UNION had been standing down from that narrowing, which left a `"number"` branch advertising values the
+    # validator rejects. Narrowing both branches of `[Integer, Float]` converges them, so the node collapses.
+    it "narrows every numeric branch of a union, not only a lone type" do
+      action = build_axn { expects :n, type: [Integer, Float], numericality: { only_integer: true } }
+
+      expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+      expect(action.call(n: 1.5)).not_to be_ok
+      expect(action.call(n: 2)).to be_ok
+    end
+
+    # The branches that are not numeric are untouched by it — ActiveModel parses a numeric STRING, so `"2"` is
+    # a value the position really accepts and the string branch is not the emitter's to drop here.
+    it "leaves a non-numeric branch of that union in place" do
+      action = build_axn { expects :n, type: [String, Float], numericality: { only_integer: true } }
+
+      expect(action.input_schema.dig(:properties, :n, :anyOf))
+        .to eq([{ type: "string", minLength: 1 }, { type: "integer" }])
+      expect(action.call(n: "2")).to be_ok
+    end
+
+    # Deduping is a CONSEQUENCE of the narrowing converging two branches, never a tidy-up of its own: a union
+    # that narrows nothing is emitted exactly as it was built, duplicate branches included.
+    it "leaves a union that narrows nothing exactly as built" do
+      prop = prop_for(:a) { expects :a, type: Hash, of: { values: { klass: [Symbol, String] } } }
+
+      expect(prop[:additionalProperties]).to eq(anyOf: [{ type: "string" }, { type: "string" }])
+    end
+
+    # The contents path builds its node from the class alone, so it has to reach the same narrowing rather than
+    # carry a second reading of it.
+    it "narrows a union at a bag position too" do
+      action = build_axn { expects :f, type: Array, of: { klass: [Integer, Float], numericality: { only_integer: true } } }
+
+      expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "integer")
+      expect(action.call(f: [1.5])).not_to be_ok
+      expect(action.call(f: [2])).to be_ok
     end
 
     describe "stand-downs" do
