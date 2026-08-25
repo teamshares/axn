@@ -1379,6 +1379,10 @@ module Axn
             end
           elsif type_info[:type]
             apply_single_type!(prop, type_info, config, nullable:)
+          elsif type_info[:enum]
+            # A type_info carrying only an enum names no type and still constrains the value — which is how a
+            # contract nothing satisfies reaches the node, as `enum: []`.
+            prop[:enum] = type_info[:enum]
           end
         end
 
@@ -2599,8 +2603,16 @@ module Axn
 
           union = node[:anyOf].is_a?(Array)
           admits = integer_admitted_by?(tokens)
-          mapped = (union ? node[:anyOf] : [node]).filter_map { |branch| only_integer_branch(branch, admits, for_output:) }
-          return node if mapped.empty? || mapped == (union ? node[:anyOf] : [node])
+          numeric_only = Axn::Validation::Base.validator_entry_options(entry)[:only_numeric] ? true : false
+          branches = union ? node[:anyOf] : [node]
+          mapped = branches.filter_map { |branch| only_integer_branch(branch, admits, numeric_only, for_output:) }
+          # Every branch dropping is the CONTRACT, not a case to fall back from: `type: Float, numericality:
+          # { only_integer: true }` admits nothing at all — no Float's `to_s` is an integer literal, and a JSON
+          # integer is not a Float — so restoring the node advertised `1.5` at a position that rejects it. A node
+          # nothing satisfies is the faithful projection here, on the same terms two disagreeing `equal_to:`
+          # bounds already emit `enum: []`. Refusing the declaration outright stays PRO-3220's.
+          return { enum: EMPTY_ENUM } if mapped.empty?
+          return node if mapped == branches
 
           deduped = mapped.uniq
           return deduped.first if deduped.size == 1
@@ -2608,10 +2620,12 @@ module Axn
           union ? node.merge(anyOf: deduped) : node
         end
 
-        def only_integer_branch(branch, admits_integer, for_output:)
+        def only_integer_branch(branch, admits_integer, numeric_only, for_output:)
           case branch[:type]
           when "number" then admits_integer ? branch.merge(type: "integer") : nil
-          when "string" then merge_integer_literal_pattern(branch, for_output:)
+          # `only_numeric: true` is what makes ActiveModel demand a Numeric OBJECT rather than parse a string,
+          # so the branch that exists to carry `"2"` has nothing left to carry and goes with it.
+          when "string" then numeric_only ? nil : merge_integer_literal_pattern(branch, for_output:)
           else branch
           end
         end

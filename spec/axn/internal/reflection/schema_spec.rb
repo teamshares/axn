@@ -5834,6 +5834,50 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.call(n: 2.0)).not_to be_ok
     end
 
+    # Every branch dropping is the CONTRACT rather than a case to fall back from. No Float's `to_s` is an
+    # integer literal and a JSON integer is not a Float, so this position admits nothing at all — restoring the
+    # node advertised `1.5` where the runtime rejects it. A node nothing satisfies is the faithful projection,
+    # on the same terms two disagreeing `equal_to:` bounds already emit `enum: []`; refusing the declaration
+    # outright belongs to the contradiction detectors, not to the emitter.
+    it "emits a node nothing satisfies where the narrowing empties the union" do
+      action = build_axn { expects :n, type: Float, numericality: { only_integer: true } }
+
+      expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      expect(action.call(n: 1.5)).not_to be_ok
+      expect(action.call(n: 2.0)).not_to be_ok
+      expect(action.call(n: 2)).not_to be_ok
+    end
+
+    # `only_numeric: true` is what makes ActiveModel demand a Numeric OBJECT rather than parse a string, so the
+    # branch that exists to carry `"2"` has nothing left to carry.
+    it "drops the string branch when only_numeric: demands a real numeric" do
+      action = build_axn do
+        expects :n, type: [String, Integer], numericality: { only_integer: true, only_numeric: true }
+      end
+
+      expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+      expect(action.call(n: 2)).to be_ok
+      expect(action.call(n: "2")).not_to be_ok
+    end
+
+    it "empties the node when only_numeric: leaves a String position nothing to hold" do
+      action = build_axn do
+        expects :n, type: String, numericality: { only_integer: true, only_numeric: true }
+      end
+
+      expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      expect(action.call(n: "2")).not_to be_ok
+    end
+
+    # Without `only_numeric:` the string branch is exactly what keeps that position satisfiable.
+    it "keeps the string branch when only_integer: stands alone" do
+      action = build_axn { expects :n, type: [String, Integer], numericality: { only_integer: true } }
+
+      expect(action.input_schema.dig(:properties, :n, :anyOf))
+        .to eq([{ type: "string", pattern: "^[+-]?\\d+$", minLength: 1 }, { type: "integer" }])
+      expect(action.call(n: "2")).to be_ok
+    end
+
     # `Numeric` DOES admit an Integer, so its branch narrows rather than drops — the decision is the declared
     # token's, never the emitted type's, which is what reading `"number"` alone got wrong.
     it "narrows rather than drops a numeric branch whose token admits an Integer" do
