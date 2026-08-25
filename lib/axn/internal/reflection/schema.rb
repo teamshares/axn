@@ -1390,6 +1390,11 @@ module Axn
           prop[:format] = type_info[:format] if type_info[:format] && !(type_info[:format] == "uuid" && type_allows_blank?(config))
           # A singleton type (TrueClass/FalseClass) constrains the value via enum; nil joins it when nullable.
           prop[:enum] = nullable ? type_info[:enum] + [nil] : type_info[:enum] if type_info[:enum]
+          # A pattern the TYPE resolution put there (`only_integer:` on a string branch) travels with it. Without
+          # this it survived a union and was dropped the moment the union collapsed to one branch — the same node,
+          # reached by two paths, saying two different things. A declared `format:` still overwrites it later,
+          # one schema object having only the one slot.
+          prop[:pattern] = type_info[:pattern] if type_info[:pattern]
         end
 
         # Whether the emitted type admits `null` is the NULLABILITY question (`nil_allowed?`), never something a
@@ -2098,7 +2103,8 @@ module Axn
                    # `contents_schema_for` reads the class alone, so the `only_integer:` narrowing that
                    # `json_type_for` applies on the other branch has to be applied here too — same helper, not a
                    # second reading of it.
-                   narrow_node_to_integer(contents_schema_for(bag[:klass], for_output:), constraints)
+                   narrow_node_to_integer(contents_schema_for(bag[:klass], for_output:), constraints,
+                                          Array(bag[:klass]), for_output:)
                  else
                    json_type_for(constraints, for_output:)
                  end
@@ -2515,7 +2521,7 @@ module Axn
             klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
             type_hashes = Array(klass).map { |k| single_type_for(k, for_output:) }.uniq
             node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
-            return narrow_node_to_integer(node, validations)
+            return narrow_node_to_integer(node, validations, Array(klass), for_output:)
           end
 
           if validations[:inclusion]
@@ -2538,36 +2544,63 @@ module Axn
           {}
         end
 
-        # `numericality: { only_integer: true }` restricts the value to whole numbers, so it narrows a "number"
-        # the `type:` token resolved to. Without this the token won the whole decision and a
-        # `type: Numeric, numericality: { only_integer: true }` field advertised "number" while the runtime
-        # accepted integers only — looser than the contract. Only "number" is narrowed: every other type is
-        # either already "integer" or not a number at all, where `only_integer:` has nothing to say.
-        # The same narrowing across a whole node, union branches included. Standing a union down from it left
-        # `[Integer, Float], numericality: { only_integer: true }` advertising a `"number"` branch that accepted
-        # `1.5` while the runtime rejected it — looser than the contract, which input reflection may never be.
-        # Narrowing both branches of that pair converges them, which is what `uniq` is for. Reached from both the
-        # field path and the contents path, which build their node differently and must not narrow it differently.
-        def narrow_node_to_integer(node, validations)
-          return narrow_to_integer(node, validations) unless node[:anyOf].is_a?(Array)
+        # `only_integer:` reaches a node's branches three different ways, and each is decided from the DECLARED
+        # token rather than from the emitted type alone — reading the type alone retagged branches no value of
+        # the declared class can occupy.
+        #
+        #   a "number" branch   narrows to "integer" only where some declared token ADMITS an Integer (`Numeric`
+        #                       does; `Float` does not). Retagging a Float branch advertised the JSON integer
+        #                       `2`, which `is_a?(Float)` rejects — and no Float satisfies `only_integer:`
+        #                       anyway (`2.0.to_s` is "2.0"), so the branch is unreachable and drops out.
+        #   a "string" branch   carries ActiveModel's own integer test, translated. The validator parses a
+        #                       numeric STRING, so `"2"` passes where `"abc"` does not, and leaving the branch
+        #                       unconstrained advertised both.
+        #   anything else       is left exactly as built.
+        #
+        # Narrowing both branches of `[Integer, Float]` converges them, so the node collapses; deduping is a
+        # CONSEQUENCE of that convergence and never a tidy-up of its own, so a union that narrows nothing comes
+        # back untouched, duplicate branches included.
+        def narrow_node_to_integer(node, validations, tokens, for_output:)
+          entry = Axn::Validation::Base.validator_entries(validations)[:numericality]
+          return node unless entry && Axn::Validation::Base.declared_only_integer?(entry)
 
-          narrowed = node[:anyOf].map { |branch| narrow_to_integer(branch, validations) }
-          # Untouched unions are returned exactly as built. Deduping is a CONSEQUENCE of the narrowing
-          # converging two branches, never a tidy-up of its own: `[Symbol, String]` already emits two identical
-          # `"string"` branches at a contents position, and collapsing that is a different decision than this one.
-          return node if narrowed == node[:anyOf]
+          union = node[:anyOf].is_a?(Array)
+          admits = integer_admitted_by?(tokens)
+          mapped = (union ? node[:anyOf] : [node]).filter_map { |branch| only_integer_branch(branch, admits, for_output:) }
+          return node if mapped.empty? || mapped == (union ? node[:anyOf] : [node])
 
-          deduped = narrowed.uniq
-          deduped.size == 1 ? deduped.first : node.merge(anyOf: deduped)
+          deduped = mapped.uniq
+          return deduped.first if deduped.size == 1
+
+          union ? node.merge(anyOf: deduped) : node
         end
 
-        def narrow_to_integer(type_hash, validations)
-          return type_hash unless type_hash[:type] == "number"
+        def only_integer_branch(branch, admits_integer, for_output:)
+          case branch[:type]
+          when "number" then admits_integer ? branch.merge(type: "integer") : nil
+          when "string" then merge_integer_literal_pattern(branch, for_output:)
+          else branch
+          end
+        end
 
-          entry = Axn::Validation::Base.validator_entries(validations)[:numericality]
-          return type_hash unless entry && Axn::Validation::Base.declared_only_integer?(entry)
+        # A declared `format:` owns the slot if it reached it first: two patterns cannot be ANDed in one schema
+        # object, and the author's is the one they wrote.
+        def merge_integer_literal_pattern(branch, for_output:)
+          return branch if branch.key?(:pattern)
 
-          type_hash.merge(type: "integer")
+          source = Pattern.ecma_source(Axn::Validation::Base.integer_literal_regexp, for_output:)
+          source ? branch.merge(pattern: source) : branch
+        end
+
+        # Whether a JSON integer could satisfy any of the declared tokens. Asked of Integer's OWN ancestry, the
+        # undispatched form, for the reason the key-axis gates give. No declared token at all means the caller is
+        # not describing a class union, and the narrowing behaves as it did before this distinction existed.
+        def integer_admitted_by?(tokens)
+          return true if tokens.empty?
+
+          tokens.any? do |token|
+            Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(::Integer, token)
+          end
         end
 
         # Whether a `numericality:` entry proves the value will SERIALIZE as a JSON number. ActiveModel accepts a

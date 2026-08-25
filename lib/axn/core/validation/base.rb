@@ -515,6 +515,12 @@ module Axn
       # from "number" to "integer" even when a wider `type:` token would otherwise decide it.
       def self.declared_only_integer?(entry_opts) = validator_entry_options(entry_opts)[:only_integer] ? true : false
 
+      # The test `only_integer:` actually applies, handed to reflection rather than restated there: the emitted
+      # pattern has to agree with the validator that runs, and a copy in the emitter would drift from it in
+      # silence. Lives here because this is the layer that owns what ActiveModel means — `schema.rb` requires no
+      # part of ActiveModel and must keep resolving every constant it names on its own.
+      def self.integer_literal_regexp = ::ActiveModel::Validations::NumericalityValidator::INTEGER_REGEX
+
       # Whether a `format:` ENTRY would let a nil through. FormatValidator tests `value.to_s` against the
       # pattern (activemodel 7.2.2.2), so a nil is tested as the empty string and the pattern decides — with
       # the polarity flipped by key: `with:` records an error UNLESS the pattern matches, so it tolerates a nil

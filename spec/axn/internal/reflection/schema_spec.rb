@@ -5819,14 +5819,50 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.call(n: 2)).to be_ok
     end
 
-    # The branches that are not numeric are untouched by it — ActiveModel parses a numeric STRING, so `"2"` is
-    # a value the position really accepts and the string branch is not the emitter's to drop here.
-    it "leaves a non-numeric branch of that union in place" do
+    # A string branch is not dropped — ActiveModel parses a numeric STRING, so `"2"` is a value the position
+    # really accepts — but it is not left unconstrained either: it carries the validator's own integer test, so
+    # it stops advertising `"abc"`. And the Float branch goes: no Float satisfies `only_integer:` (`2.0.to_s` is
+    # "2.0"), and retagging it `"integer"` had advertised the JSON `2`, which `is_a?(Float)` rejects.
+    it "patterns the string branch and drops a numeric branch no value can occupy" do
       action = build_axn { expects :n, type: [String, Float], numericality: { only_integer: true } }
+      prop = action.input_schema[:properties][:n]
+
+      expect(prop).to eq(type: "string", pattern: "^[+-]?\\d+$", minLength: 1)
+      expect(action.call(n: "2")).to be_ok
+      expect(action.call(n: "abc")).not_to be_ok
+      expect(action.call(n: 2)).not_to be_ok
+      expect(action.call(n: 2.0)).not_to be_ok
+    end
+
+    # `Numeric` DOES admit an Integer, so its branch narrows rather than drops — the decision is the declared
+    # token's, never the emitted type's, which is what reading `"number"` alone got wrong.
+    it "narrows rather than drops a numeric branch whose token admits an Integer" do
+      action = build_axn { expects :n, type: [String, Numeric], numericality: { only_integer: true } }
 
       expect(action.input_schema.dig(:properties, :n, :anyOf))
-        .to eq([{ type: "string", minLength: 1 }, { type: "integer" }])
+        .to eq([{ type: "string", pattern: "^[+-]?\\d+$", minLength: 1 }, { type: "integer" }])
+      expect(action.call(n: 2)).to be_ok
       expect(action.call(n: "2")).to be_ok
+      expect(action.call(n: "abc")).not_to be_ok
+    end
+
+    # The pattern is derived from the validator that actually runs rather than restated beside it.
+    it "emits ActiveModel's own integer test, translated" do
+      prop = prop_for(:n) { expects :n, type: String, numericality: { only_integer: true } }
+
+      expect(prop[:pattern])
+        .to eq(Axn::Internal::Reflection::Pattern.ecma_source(
+                 Axn::Validation::Base.integer_literal_regexp, for_output: false
+               ))
+    end
+
+    # A pattern the TYPE resolution installed has to survive a union collapsing to one branch — the same node
+    # reached by two paths must not say two different things.
+    it "keeps the pattern when the union collapses to a single branch" do
+      collapsed = prop_for(:n) { expects :n, type: [String, Float], numericality: { only_integer: true } }
+      union = prop_for(:n) { expects :n, type: [String, Numeric], numericality: { only_integer: true } }
+
+      expect(collapsed[:pattern]).to eq(union[:anyOf].first[:pattern])
     end
 
     # Deduping is a CONSEQUENCE of the narrowing converging two branches, never a tidy-up of its own: a union
