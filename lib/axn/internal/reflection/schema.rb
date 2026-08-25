@@ -1568,13 +1568,39 @@ module Axn
         # is a single slot `reject_null!` already writes into, so a second writer would silently clobber the
         # first. Booked as unemitted alongside `exclusion:`, which has the same shape.
         def apply_pattern!(prop, validations, for_output:)
-          return unless Array(prop[:type]).include?("string")
-
           entry = Axn::Validation::Base.validator_entries(validations)[:format]
           return unless entry
 
           pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with], for_output:)
-          prop[:pattern] = pattern if pattern
+          write_pattern_to_string_nodes!(prop, pattern) if pattern
+        end
+
+        # A union leaves the node's own `type:` unset and its branches under `anyOf`, so a pattern written at the
+        # node would sit on nothing — the same shape `write_numeric_bound!` follows for a bound, and the reason a
+        # union `format:` reflected nowhere at all while a single-type one reflected fine, leaving the string
+        # branch of `type: [String, Integer], format: …` advertising values the validator rejects.
+        def write_pattern_to_string_nodes!(node, pattern)
+          return write_pattern!(node, pattern) if Array(node[:type]).include?("string")
+          return unless node[:anyOf].is_a?(Array)
+
+          node[:anyOf] = node[:anyOf].map do |branch|
+            next branch unless Array(branch[:type]).include?("string")
+
+            branch.dup.tap { |composed| write_pattern!(composed, pattern) }
+          end
+        end
+
+        # Both patterns are enforced, so both are emitted. A node has one `pattern` slot, and a declared `format:`
+        # landing beside the one `only_integer:` installs had been overwriting it — `type: String,
+        # numericality: { only_integer: true }, format: { with: /\A[0-9a-z]+\z/ }` then advertised `"abc"`, which
+        # the runtime rejects on the integer test. `allOf` is JSON Schema's spelling for the conjunction, and it
+        # is free at a property: the conditional `allOf` this emitter writes is at the schema ROOT.
+        def write_pattern!(node, source)
+          existing = node[:pattern]
+          return node[:pattern] = source if existing.nil? || existing == source
+
+          node.delete(:pattern)
+          node[:allOf] = [{ pattern: existing }, { pattern: source }]
         end
 
         # The bound twin of the emptiness floor/ceiling: a declared `numericality:`/`comparison:` bound reflects
@@ -2583,13 +2609,13 @@ module Axn
           end
         end
 
-        # A declared `format:` owns the slot if it reached it first: two patterns cannot be ANDed in one schema
-        # object, and the author's is the one they wrote.
         def merge_integer_literal_pattern(branch, for_output:)
-          return branch if branch.key?(:pattern)
-
           source = Pattern.ecma_source(Axn::Validation::Base.integer_literal_regexp, for_output:)
-          source ? branch.merge(pattern: source) : branch
+          return branch unless source
+
+          composed = branch.dup
+          write_pattern!(composed, source)
+          composed
         end
 
         # Whether a JSON integer could satisfy any of the declared tokens. Asked of Integer's OWN ancestry, the

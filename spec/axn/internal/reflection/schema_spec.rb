@@ -5846,6 +5846,47 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.call(n: "abc")).not_to be_ok
     end
 
+    # Both patterns are enforced at runtime and a node has one `pattern` slot, so the declared `format:` had been
+    # overwriting the one `only_integer:` installs — and the node then advertised a value the integer test
+    # rejects. `allOf` is JSON Schema's spelling for the conjunction, and it is free at a property: the
+    # conditional `allOf` this emitter writes lives at the schema ROOT.
+    it "composes a declared format: with the integer pattern instead of replacing it" do
+      action = build_axn do
+        expects :n, type: String, numericality: { only_integer: true }, format: { with: /\A[0-9a-z]+\z/ }
+      end
+      prop = action.input_schema[:properties][:n]
+
+      expect(prop).not_to have_key(:pattern)
+      expect(prop[:allOf]).to eq([{ pattern: "^[+-]?\\d+$" }, { pattern: "^[0-9a-z]+$" }])
+      expect(action.call(n: "2")).to be_ok
+      expect(action.call(n: "abc")).not_to be_ok
+      expect(action.call(n: "2a")).not_to be_ok
+    end
+
+    # Either alone still takes the plain slot — the composition is reached only when two patterns actually meet.
+    it "leaves a lone pattern in its own slot" do
+      formatted = prop_for(:n) { expects :n, type: String, format: { with: /\A[0-9a-z]+\z/ } }
+      integral = prop_for(:n) { expects :n, type: String, numericality: { only_integer: true } }
+
+      expect(formatted[:pattern]).to eq("^[0-9a-z]+$")
+      expect(formatted).not_to have_key(:allOf)
+      expect(integral[:pattern]).to eq("^[+-]?\\d+$")
+      expect(integral).not_to have_key(:allOf)
+    end
+
+    # A union leaves the node's own `type:` unset, so a pattern written at the node sat on nothing and a union
+    # `format:` reflected nowhere at all — the string branch advertised values the validator rejects. It follows
+    # the branches now, exactly as a numeric bound already did.
+    it "writes a format: into the string branch of a union" do
+      action = build_axn { expects :n, type: [String, Integer], format: { with: /\A[0-9a-z]+\z/ } }
+
+      expect(action.input_schema.dig(:properties, :n, :anyOf))
+        .to eq([{ type: "string", minLength: 1, pattern: "^[0-9a-z]+$" }, { type: "integer" }])
+      expect(action.call(n: "ABC")).not_to be_ok
+      expect(action.call(n: "abc")).to be_ok
+      expect(action.call(n: 5)).to be_ok
+    end
+
     # The pattern is derived from the validator that actually runs rather than restated beside it.
     it "emits ActiveModel's own integer test, translated" do
       prop = prop_for(:n) { expects :n, type: String, numericality: { only_integer: true } }
