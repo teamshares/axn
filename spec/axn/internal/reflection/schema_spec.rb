@@ -6824,6 +6824,70 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(action.output_schema[:properties][:n]).to eq({})
         end
 
+        # The `inclusion:` branch of the same inference had the identical defect, and it is gated on the same
+        # predicate the outbound `enum` already uses rather than a second reading of it. `Integer#==` falls back
+        # to `other == self`, so a value object comparing equal to a member passes the validator and serializes
+        # as its own string — which is why the set may not name a type unless the position pins the class.
+        describe "an inclusion-inferred type on output, where a member's equality reaches another class" do
+          # A plain value object, not a hostile one: comparing equal to a Numeric is ordinary for a money type.
+          cents = Class.new do
+            attr_reader :n
+
+            def initialize(n) = @n = n
+            def ==(other) = n == (other.is_a?(self.class) ? other.n : other)
+            def to_s = "$#{n}"
+          end
+
+          # The exact rendering of an opaque object is not the point and is not asserted: it depends on which
+          # JSON core extensions are loaded (ActiveSupport's `Object#as_json` reports `instance_values`, so this
+          # renders as a Hash in a full run and as its `#to_s` without it). What matters either way is that it
+          # is NOT a JSON integer, so an inferred `"integer"` rejects it.
+          it "is the divergence itself: an Integer member matches a foreign class" do
+            expect([1].include?(cents.new(1))).to be(true)
+            expect(Axn::Internal::Reflection::Values.serialize_value(cents.new(1))).not_to be_a(Integer)
+          end
+
+          it "stands the inferred type down for a bare numeric set" do
+            action = build_axn do
+              exposes :n, inclusion: { in: [1] }
+              define_method(:call) { expose(:n, cents.new(1)) }
+            end
+            result = action.call
+
+            expect(result).to be_ok
+            expect(Axn::Extensions::Serialization.render(result)["n"]).not_to be_a(Integer)
+            expect(action.output_schema[:properties][:n]).to eq({})
+          end
+
+          it "still infers where a declared type: pins the numeric class" do
+            action = build_axn do
+              exposes :n, type: Integer, inclusion: { in: [1, 2] }
+              def call = expose(:n, 1)
+            end
+
+            expect(action.call).to be_ok
+            expect(action.output_schema[:properties][:n]).to include(type: "integer", enum: [1, 2])
+          end
+
+          # A String member cannot be `==` to a foreign class — `String#==` returns false rather than deferring —
+          # so the set names its type outbound exactly as before.
+          it "still infers from a String set, whose equality cannot reach another class" do
+            action = build_axn do
+              exposes :n, inclusion: { in: %w[a b] }
+              def call = expose(:n, "a")
+            end
+
+            expect(action.call).to be_ok
+            expect(action.output_schema[:properties][:n]).to include(type: "string", enum: %w[a b])
+          end
+
+          it "still infers on INPUT, where a narrowing is licensed" do
+            action = build_axn { expects :n, inclusion: { in: [1, 2] } }
+
+            expect(action.input_schema[:properties][:n]).to include(type: "integer", enum: [1, 2])
+          end
+        end
+
         # The BOUND stands down under `only_numeric:` for a second, independent reason: a Numeric may be a
         # BigDecimal, and every Numeric but Integer and Float reaches the wire through `Float()`, which rounds.
         # Measured — `BigDecimal("1e-400")` satisfies `greater_than: 0`, serializes as `0.0`, and an emitted
@@ -6855,15 +6919,20 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(prop[:items]).to include(type: "number", exclusiveMinimum: 0)
         end
 
-        # An `inclusion:`-inferred type is sound on output and stays: `inclusion` compares by `include?`, so
-        # "1" is not a member of [1, 2] and the exposed value really is an Integer.
-        it "keeps an inclusion-inferred type on output" do
+        # A bare numeric `inclusion:` set infers NOTHING on output. The reading this used to assert — that
+        # `include?` compares by membership so "the exposed value really is an Integer" — does not hold:
+        # `include?` compares by `==`, and `Integer#==` falls back to `other == self`, so a value object
+        # comparing equal to a member passes and serializes as something that is not a JSON integer. The set
+        # names a type outbound only where the position pins the class, which is the gate the `enum` beside it
+        # already used.
+        it "stands an inclusion-inferred type down on output for a bare numeric set" do
           action = build_axn do
             exposes :n, inclusion: { in: [1, 2] }
             def call = expose(:n, 1)
           end
 
-          expect(action.output_schema[:properties][:n]).to include(type: "integer")
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to eq({})
         end
       end
 

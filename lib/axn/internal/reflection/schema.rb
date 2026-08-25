@@ -2561,9 +2561,18 @@ module Axn
             return narrow_node_to_integer(node, validations, Array(klass), for_output:)
           end
 
+          # Outbound, the SET names a type only where it passes the same equality-safety test the `enum` itself
+          # is gated on — one predicate for both emissions, since both turn on whether a member can be `==` to a
+          # value that serializes differently. It can: `Integer#==` falls back to `other == self`, so a value
+          # object comparing equal to `1` satisfies `inclusion: { in: [1] }` and serializes as its own string,
+          # which an inferred `"integer"` then rejects. A String/Symbol/boolean/nil member settles it alone —
+          # their `==` never matches a foreign class — while a numeric member asks the position to pin its class,
+          # which nothing reaching here has declared (a `type:` returns above, and a bag with a `klass:` takes the
+          # other branch), so a numeric set always stands down outbound. Input needs no gate: a set narrower than
+          # the runtime's equality is the licensed direction there.
           if validations[:inclusion]
             enum_values = inclusion_enum_values(validations[:inclusion])
-            if enum_values&.any?
+            if enum_values&.any? && (!for_output || output_enum_exact?(enum_values, validations, nil))
               types = enum_values.map { |v| enum_scalar_type(v) }.uniq
               return { type: types.first } if types.size == 1 && types.first
 
