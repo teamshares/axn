@@ -394,6 +394,45 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
           .to raise_error(ArgumentError, /admits no value at all|can never match/)
       end
 
+      # The witness is a witness to the WHOLE declaration or it is nothing, so it has to satisfy the author's
+      # own ceiling as well as the floor. `false` measures 5, so it witnesses `minimum: 1` and does not
+      # witness `maximum: 3` — nothing satisfies that declaration and it is refused. The ceiling is read off
+      # the `length:` entry rather than from the comparison's own maximum, which IS the absence-derived 0 the
+      # witness is being weighed against.
+      it "still refuses where the witness exceeds the author's ceiling" do
+        expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1, maximum: 3 }) }
+          .to raise_error(ArgumentError, /admits no value at all|can never match/)
+      end
+
+      it "stands down where the witness fits inside the author's ceiling" do
+        expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1, maximum: 5 }) }
+          .not_to raise_error
+      end
+
+      # `is:` is floor and ceiling at once, so it exercises both halves of the same test.
+      it "reads an is: as both bounds against the witness" do
+        expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { is: 2 }) }
+          .to raise_error(ArgumentError, /admits no value at all|can never match/)
+        expect { declare(type: [Array, :boolean], presence: false, absence: true, length: { is: 5 }) }
+          .not_to raise_error
+      end
+
+      # A ceiling ActiveModel resolves PER CALL is no constraint at declaration, so the witness is not weighed
+      # against it — and the declaration really can work, which the control shows.
+      it "stands down on a per-call ceiling, which really is satisfiable" do
+        action = nil
+        expect do
+          action = Class.new do
+            include Axn
+            expects :f, type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1, maximum: :cap }
+            def cap = 9
+            def call; end
+          end
+        end.not_to raise_error
+
+        expect(action.call(f: false).ok?).to be(true)
+      end
+
       # And the emitter keeps bounding the ARRAY branch, which is the same derivation answering the OTHER
       # question: `maxItems: 0` is right for that branch whatever a sibling admits, and dropping it would leave
       # a non-empty array schema-valid and runtime-invalid. The node stays satisfiable through the boolean

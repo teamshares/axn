@@ -4174,7 +4174,7 @@ module Axn
           minimum = Internal::Reflection::Schema.declared_size_minimum(validations)
           maximum = Internal::Reflection::Schema.declared_size_maximum(validations)
 
-          if minimum && maximum && minimum > maximum && !_blank_branch_clears_the_floor?(validations, minimum)
+          if minimum && maximum && minimum > maximum && !_blank_branch_satisfies_the_bounds?(validations, minimum)
             _raise_empty_size_interval!(validations, where, minimum, maximum)
           end
           _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
@@ -4195,11 +4195,25 @@ module Axn
         # the DECLARATION admits anything, and one satisfiable branch settles that. Same derivation, two
         # questions; the union is where they come apart.
         #
-        # The witness must still clear the floor, so a floor above what `false` measures is refused as before.
-        def _blank_branch_clears_the_floor?(validations, minimum)
+        # The witness has to satisfy the AUTHOR'S OWN size bounds, both of them — it is a witness to the whole
+        # declaration or it is nothing. The floor is passed in; the ceiling is read off the `length:` entry
+        # rather than taken from the `maximum` this comparison holds, because that one IS the absence-derived 0
+        # the witness is being weighed against. `false` measures 5, so it witnesses `length: { minimum: 1 }` and
+        # `length: { is: 5 }`, and does NOT witness `length: { minimum: 1, maximum: 3 }` or `length: { is: 2 }`
+        # — each of which admits nothing and is refused.
+        #
+        # A ceiling ActiveModel resolves per call (`:unverifiable`) is no constraint here: whether the witness
+        # clears it is unknowable at declaration, and standing down leaves a declaration that may well work.
+        # `Float::INFINITY` is Numeric and admits every size, which is what that spelling means.
+        def _blank_branch_satisfies_the_bounds?(validations, minimum)
           return false unless Internal::Reflection::Schema.absence_bounds_size?(validations)
 
-          Internal::Reflection::Schema.blank_witness_sizes(validations).any? { |size| size >= minimum }
+          declared = Axn::Validation::Base.declared_length_ceiling(_effective_length_options(validations))
+          ceiling = declared if declared.is_a?(Numeric)
+
+          Internal::Reflection::Schema.blank_witness_sizes(validations).any? do |size|
+            size >= minimum && (ceiling.nil? || size <= ceiling)
+          end
         end
 
         # The validator entries that can supply a bound to the size rules below, or the set they scan. Kept as a
