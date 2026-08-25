@@ -466,6 +466,24 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         expect { declare(type: Array, presence: false, length: { is: 2, minimum: :floor_for }) }
           .not_to raise_error
       end
+
+      # A GATED contradiction: the guard stands down (a bound that may not be enforced cannot support "no
+      # value satisfies this"), while reflection stays static-maximal — so the node describes the gates-OPEN
+      # reading, which for a contradiction admits nothing. That gap is the emitter's and is tracked as
+      # PRO-3233. Pinned here because the conjunction made the `is:` spelling JOIN that gap rather than create
+      # it: measured at the merge base, a gated `minimum: 3, maximum: 2` already emitted
+      # `{minItems: 3, maxItems: 2}` while accepting every size, and the gated `is:` spelling emitted
+      # `{minItems: 2, maxItems: 2}` — satisfiable, but naming a size the gates-open contract rejects. The two
+      # spellings now agree, which is the direction that matters for a projection.
+      it "emits the gates-open reading for a gated contradiction, in either spelling" do
+        [{ minimum: 3, maximum: 2, if: -> { false } }, { is: 2, maximum: 1, if: -> { false } }].each do |length|
+          action = declare(type: Array, presence: false, length:)
+          prop = action.input_schema[:properties][:f]
+
+          expect(prop[:minItems]).to be > prop[:maxItems]
+          expect(action.call(f: %w[a b c d]).ok?).to be(true)
+        end
+      end
     end
 
     # A gated entry stands the size rules down because a bound that may not be enforced cannot support "no
