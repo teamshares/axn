@@ -5569,15 +5569,38 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.input_schema[:properties][:f][:anyOf]).to be_nil
     end
 
-    # A lone `NilClass` with no tolerance admits NOTHING at runtime (presence rejects nil, and nothing else is
-    # a NilClass), so no emission is faithful. `"null"` is kept rather than stripped to nothing: it is the
-    # narrower of the two lies and matches what the declaration evidently meant. Refusing the declaration
-    # outright is PRO-3220's (contracts that admit nothing).
-    it "keeps null on a required lone NilClass, whose contract admits nothing" do
+    # A lone `NilClass` with no tolerance admits NOTHING at runtime: the presence check rejects nil, and nothing
+    # else is a NilClass. `"null"` was emitted anyway, which advertised the single value the contract rejects —
+    # schema LOOSER than runtime, the one direction reflection may never err in. `enum: []` is the faithful node,
+    # the spelling used wherever a contract admits nothing. Refusing the declaration outright is PRO-3220's.
+    it "emits the unsatisfiable node for a required lone NilClass, which admits nothing at all" do
       action = build_axn { expects :f, type: NilClass }
 
       expect(action.call(f: nil)).not_to be_ok
-      expect(action.input_schema[:properties][:f]).to include(type: "null")
+      expect(action.call(f: "x")).not_to be_ok
+      expect(action.call).not_to be_ok
+      expect(action.input_schema[:properties][:f]).to eq(enum: [])
+    end
+
+    it "emits it on output too, where the action cannot settle successfully either" do
+      action = build_axn do
+        exposes :f, type: NilClass
+        def call = expose(:f, nil)
+      end
+
+      expect(action.call).not_to be_ok
+      expect(action.output_schema[:properties][:f]).to eq(enum: [])
+    end
+
+    # The soundness half: every nil-TOLERANT spelling is satisfiable, so none of them may be emptied. Each of
+    # these accepts nil at runtime and keeps its `"null"`.
+    [{ optional: true }, { allow_nil: true }, { allow_blank: true }, { presence: false }].each do |tolerance|
+      it "keeps null under #{tolerance.keys.first}: #{tolerance.values.first}, which nil really does satisfy" do
+        action = build_axn { expects :f, type: NilClass, **tolerance }
+
+        expect(action.call(f: nil)).to be_ok
+        expect(action.input_schema[:properties][:f]).to include(type: "null")
+      end
     end
 
     context "at an of: bag position, where there is no presence check to make it inert" do
@@ -7392,6 +7415,56 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(result).to be_ok
         expect(Axn::Extensions::Serialization.render(result)["m"].keys).to eq(["a/b"])
         expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+      end
+
+      # `presence:` is the same defect wearing a different keyword: ActiveModel asks the key OBJECT's `blank?`,
+      # so a key that is present can still serialize to the EMPTY property name, and what `presence:` emits at a
+      # `propertyNames` node is a length floor.
+      describe "a keys-axis presence:, whose emitted floor measures the property name" do
+        let(:blank_wire_key) do
+          Class.new do
+            def to_s = ""
+            def hash = "".hash
+            def eql?(other) = other.is_a?(self.class)
+          end
+        end
+
+        before { stub_const("BlankWireKey", blank_wire_key) }
+
+        it "is a class that is present while its serialized form is empty" do
+          key = BlankWireKey.new
+
+          expect(key.blank?).to be(false)
+          expect(key.to_s).to eq("")
+        end
+
+        it "stands down on output, where the floor would reject the action's own serialized output" do
+          action = build_axn do
+            exposes :m, type: Hash, of: { keys: { klass: BlankWireKey, presence: true }, values: Integer }
+            def call = expose(:m, { BlankWireKey.new => 1 })
+          end
+          result = action.call
+
+          expect(result).to be_ok
+          expect(Axn::Extensions::Serialization.render(result)["m"].keys).to eq([""])
+          expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+        end
+
+        it "keeps the floor for a String axis, whose key IS its own wire form" do
+          action = build_axn do
+            exposes :m, type: Hash, of: { keys: { klass: String, presence: true }, values: Integer }
+            def call = expose(:m, { "a" => 1 })
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(minLength: 1)
+        end
+
+        it "keeps it inbound, where the key is the wire string itself" do
+          action = build_axn { expects :m, type: Hash, of: { keys: { klass: String, presence: true }, values: Integer } }
+
+          expect(action.input_schema.dig(:properties, :m, :propertyNames)).to eq(minLength: 1)
+        end
       end
 
       it "keeps a format: declared beside it, whose subject IS the #to_s the serializer writes" do

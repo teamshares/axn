@@ -1387,6 +1387,11 @@ module Axn
         end
 
         def apply_single_type!(prop, type_info, config, nullable:)
+          if unsatisfiable_type?(type_info[:type], nullable:)
+            prop[:enum] = EMPTY_ENUM
+            return
+          end
+
           prop[:type] = type_with_nullability(type_info[:type], nullable:)
           # A `type: :uuid, allow_blank: true` field accepts "" at runtime (TypeValidator treats a blank
           # uuid as valid under allow_blank), but a strict `format: "uuid"` validator would reject "".
@@ -1416,15 +1421,23 @@ module Axn
           without_null.empty? ? members : without_null
         end
 
-        # A lone `NilClass` keeps its `"null"` in both directions. Nullable, it is already what nullability would
-        # add. NOT nullable, the contract admits nothing at all — nothing is a NilClass except nil, and the
-        # presence check rejects that — so no emission is faithful; `"null"` is the narrower of the two available
-        # lies and matches what the declaration evidently meant. Refusing such a declaration is PRO-3220's.
+        # A lone `NilClass` keeps its `"null"` only where nullability would have added it anyway. NOT nullable,
+        # the contract admits nothing at all — nothing is a NilClass except nil, and the check that makes it
+        # non-nullable rejects nil — and `"null"` then advertised the single value the contract rejects, which is
+        # schema LOOSER than runtime, the one direction reflection may never err in. See `unsatisfiable_type?`.
         def type_with_nullability(type, nullable:)
           return type if type == "null"
 
           nullable ? [type, "null"] : type
         end
+
+        # Whether the emitted type names a contract no value satisfies, which is true of exactly one pairing: a
+        # lone `"null"` that is not nullable. `enum: []` is the faithful node for it — the spelling this emitter
+        # already uses wherever a contract admits nothing (an `only_integer:` narrowing that empties a union,
+        # two disagreeing `equal_to:` bounds) — and it is emitted INSTEAD of the type rather than beside it, so
+        # none of the keyword passes that key off a type can land on a node nothing reaches. Refusing such a
+        # declaration outright stays PRO-3220's, exactly as it does for the other two.
+        def unsatisfiable_type?(type, nullable:) = type == "null" && !nullable
 
         # The emptiness axis, as JSON Schema sees it: `minItems`/`minProperties`/`minLength` keyed off the
         # emitted type. A field rejects empty when it carries an explicit length minimum, or when the default
@@ -1480,8 +1493,16 @@ module Axn
         # constrains no class and so admits one. `:uuid` is the one pseudo-type whose values ARE Strings;
         # `:boolean` and `:params` are not, and neither is any other class unless String descends from it.
         # The keys-axis validators whose subject is the key OBJECT rather than the property name it serializes
-        # to. See `own_wire_form?` for why these two and not the rest.
-        OBJECT_SUBJECT_KEY_VALIDATORS = %i[length inclusion].freeze
+        # to. See `own_wire_form?` for why these three and not the rest.
+        #
+        # `presence:` belongs here for the same reason `length:` does, and it is easy to miss because what it
+        # emits is a LENGTH keyword: ActiveModel asks the key object's own `blank?`, so an object that is present
+        # can still render as the empty property name — measured, a key whose `to_s` is `""` satisfies
+        # `presence: true`, serializes the map as `{"" => 1}`, and the emitted `propertyNames: { minLength: 1 }`
+        # rejects it. `absence:` needs no entry: it emits nothing into a `propertyNames` node at all. `format:`
+        # is deliberately absent, being the one validator whose subject IS the wire string — ActiveModel matches
+        # `value.to_s`, which is what `canonical_wire_key` dispatches for a key.
+        OBJECT_SUBJECT_KEY_VALIDATORS = %i[length inclusion presence].freeze
         private_constant :OBJECT_SUBJECT_KEY_VALIDATORS
 
         def axis_admits_string_key?(klass)
