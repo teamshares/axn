@@ -468,6 +468,39 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       end
     end
 
+    # A gated entry stands the size rules down because a bound that may not be enforced cannot support "no
+    # value satisfies this". `absence:` is the exception, and not by special-casing: its ceiling derivation
+    # asks the gate question itself and answers "no ceiling" for a gated entry, so counting it in the coarse
+    # test only suppressed contradictions it plays no part in. Found by scanning the guard's product for
+    # UNDER-refusals — 36 cells, and every one in a type where the rule applies had this shape.
+    describe "a gated absence:, whose ceiling is dropped at its own derivation" do
+      it "still refuses a set the emptiness floor excludes" do
+        expect { declare(type: Array, absence: { if: -> { false } }, inclusion: { in: [[]] }) }
+          .to raise_error(ArgumentError, /can never match/)
+      end
+
+      it "still refuses it beside an explicit floor" do
+        expect { declare(type: Array, absence: { if: -> { false } }, length: { minimum: 3 }, inclusion: { in: [[]] }) }
+          .to raise_error(ArgumentError, /can never match/)
+      end
+
+      # The control: nothing passes, so the refusal is sound rather than merely tighter.
+      it "admits nothing at runtime, which is what the refusal claims" do
+        action = Class.new { include Axn }
+        action.singleton_class.send(:define_method, :_reject_unsatisfiable_size_interval!) { |_v, where:| nil } # rubocop:disable Lint/UnusedBlockArgument
+        action.expects(:f, type: Array, absence: { if: -> { false } }, inclusion: { in: [[]] })
+
+        expect([[], ["a"], %w[a b], nil, "x"].select { |v| action.call(f: v).ok? }).to be_empty
+      end
+
+      # And a gate on an entry whose derivation is NOT gate-aware still stands the rules down: a `length:`
+      # bound is emitted as written whatever gates it, so a gated one cannot support the claim.
+      it "still stands down for a gated length: bound" do
+        expect { declare(type: Array, length: { minimum: 3, if: -> { false } }, inclusion: { in: [[]] }) }
+          .not_to raise_error
+      end
+    end
+
     it "stands down on a set it may not read" do
       action = declare(type: Array, inclusion: { in: :allowed_tags })
       expect(action).to be_a(Class)

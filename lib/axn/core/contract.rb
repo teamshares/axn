@@ -4225,7 +4225,16 @@ module Axn
         # The validator entries that can supply a bound to the size rules below, or the set they scan. Kept as a
         # list rather than asked of each derivation in turn, because the derivations are the EMITTER's and are
         # rightly static-maximal — the question here is a different one.
-        BOUND_BEARING_VALIDATOR_KEYS = %i[presence absence length inclusion].freeze
+        # `absence` is deliberately NOT here, though it does supply a ceiling. Its derivation
+        # (`Schema.absence_bounds_size?`) asks the gate question itself and answers "no ceiling" for a gated
+        # entry, so naming it here only made a gated `absence:` stand down bounds it never contributed —
+        # measured, that suppressed 21 correct refusals in the guard's product, every one of them a gated
+        # `absence:` beside an `inclusion:` set whose member the EMPTINESS floor excludes, which is a
+        # contradiction the absence entry plays no part in. The other three belong here because their
+        # derivations are the emitter's and rightly static-maximal: `declared_length_floor`/`_ceiling` count a
+        # gated bound as written, `presence_rejects_blank?` reads a gated entry's tolerance as live, and the set
+        # scan does not consult the `inclusion:` entry's own gate.
+        BOUND_BEARING_VALIDATOR_KEYS = %i[presence length inclusion].freeze
 
         # Whether any entry that could supply a bound can be skipped on a given call — its OWN gate and any it
         # inherits from the declaration alike, which is what makes this the only gate test the size rules need.

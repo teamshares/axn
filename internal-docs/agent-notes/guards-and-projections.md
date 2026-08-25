@@ -139,6 +139,24 @@ Three transferable rules:
 - **A soundness probe's candidate spread must hold only HONEST values, while its declared literals need not.** The two are not symmetric: a candidate whose `blank?`/`present?` is its own satisfies contracts that admit nothing on any ordinary value, so one in the spread reports every correct refusal as an over-restriction (measured — it did). A set MEMBER carrying a singleton is fair game, because the author named that object and the guard holds it. Where the only witness would BE the lying object, the case belongs in a targeted spec with an explicit runtime control, not in the product.
 - **When round N rhymes with round N−1, the next artifact is a product probe, not another fix.** Same conclusion as PRO-2883's malformed-input matrix and PRO-2995's derive-don't-enumerate specs; this is the third time, which is the point at which the rule should be reached for first rather than last.
 
+## Two scans that predict the reviewer, and what they found
+
+Both were built to get ahead of a review loop rather than react to it, and both paid immediately. They are cheap to re-run and belong at the front of any PR that adds a declaration guard.
+
+**Scan 1 — the product, checked in BOTH directions.** Type × floor × ceiling × set, with the axes every recent finding had come from: multi-token unions, `is:`/`in:` bound spellings, and a gated `type:` entry. 3072 cells, each built twice (guard live, guard stubbed off) and run against a candidate spread holding sizes 0..6 of every container.
+
+Result: **0 over-refusals** — the direction that cannot be recovered from was clean everywhere, including the cells three review rounds had just been about. **418 under-refusals**, and grouping them is what made them useful: ~93% sat in the three types where this PR deliberately stands down (a gated type, an unbounded union branch, a `String` whose blank values are not its empty ones). The residue — 21 cells in types where the rule *does* apply — was ONE shape: a gated `absence:` beside an `inclusion:` set. `absence` was in `BOUND_BEARING_VALIDATOR_KEYS` while its own derivation already answers "no ceiling" for a gated entry, so naming it there only suppressed contradictions it plays no part in. Removing it closed 36 cells and emptied the residue.
+
+Two things that make a scan like this trustworthy rather than decorative: **the candidate spread must contain a value of every size the bounds name** (the first run reported 448 gaps, and the `is: 5` rows were artifacts of a spread with no 5-element array), and **grouping beats listing** — 454 rows is unreadable, while "by type / by ceiling / by set" showed in three lines that all but 21 were already-decided policy.
+
+**Scan 2 — the dispatch inventory.** A token instrumented with every method a classification or a rendering might reach (`hash`, `eql?`, `==`, `is_a?`, `<`, `<=`, `ancestors`, `name`, `to_s`, …), walked through every declaration position and then through `input_schema`/`output_schema`, tallying what each one dispatched.
+
+It found seven sites in the class a review round had reported at ONE site — `object_typed_element?`, `member_keyed_object_type?`, `single_contents_schema`, `json_type_for`, `object_type_branches`, `boolean_coercion_can_flip_truthiness?`, the shape-property base — plus `model_id_property` reading the token's `name` into prose, where a `name` that raises took the whole reflection down. Fixing the reported site and not sweeping is the recurring mistake this file already names; the inventory is the cheap way not to repeat it.
+
+It is now `spec/axn/internal/reflection/reflection_does_not_dispatch_spec.rb`, and it **derives** rather than enumerates: a new dispatch anywhere in the emitter fails it without anyone adding a case. The tolerated set is two names (`respond_to?`, `respond_to_missing?`) with a reason — `Kernel#Array`'s probe, PRO-3233 — so the exception list is itself a shrinking ticket rather than a permanent carve-out.
+
+One trap worth carrying: replacing `klass < Data` with a native ancestry read moves the PRECONDITION. `<` raises NoMethodError on a non-Module, so every caller guarded first; `NativeMethods.module_ancestors` raises TypeError, and a shared helper that forgets the guard turns a nil token into a crash inside reflection. The suite caught it, and the fix is to hold the precondition in the helper rather than at three call sites.
+
 ## Deriving from the emitter is right; sharing its QUESTION is not — unions are where they part
 
 The rule to derive a guard from the emitter's own derivations is sound, and this PR followed it. The trap it does not warn about: an emitter derivation answers a question about ONE BRANCH, while a satisfiability guard asks about the WHOLE DECLARATION. For a single declared type those are the same sentence. For a union they are not, and one satisfiable branch is all a caller needs.

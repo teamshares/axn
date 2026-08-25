@@ -370,7 +370,7 @@ module Axn
           type_opt = config.validations[:type]
           return [Hash] unless type_opt # untyped parent — object-shaped for both any?/all?
 
-          Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
+          declared_type_tokens(config.validations)
         end
 
         # The builtin scalars whose reader-method surface we judge as the class's own public methods:
@@ -442,14 +442,14 @@ module Axn
           type_klass = validations.dig(:type, :klass)
           return true if type_klass.nil?
 
-          Array(type_klass).all? { |k| member_keyed_object_type?(k) }
+          Axn::Internal::ShapeGraph.type_tokens(type_klass).all? { |k| member_keyed_object_type?(k) }
         end
 
         def member_keyed_object_type?(klass)
-          return true if klass == :params
-          return false unless klass.is_a?(Class)
-          return true if klass == Hash
-          return false unless klass < Data || klass < Struct
+          return true if Axn::Internal::Identity.same?(klass, :params)
+          return false unless class_token?(klass)
+          return true if Axn::Internal::Identity.same?(klass, ::Hash)
+          return false unless strict_descendant?(klass, ::Data) || strict_descendant?(klass, ::Struct)
 
           # A Data/Struct serializes member-keyed via its built-in to_h — unless it carries a CUSTOM as_json
           # OR a custom to_h, either of which serialize_value would follow instead (as_json first) and which
@@ -816,11 +816,12 @@ module Axn
           type_opt = ref.validations[:type]
           return false unless type_opt
 
-          if type_opt.is_a?(Hash)
-            klasses = Array(type_opt[:klass])
-            return false if type_opt[:coerce] == false
+          bag = Axn::Internal::ShapeGraph.hash_or_nil(type_opt)
+          if nil.equal?(bag)
+            klasses = Axn::Internal::ShapeGraph.type_tokens(type_opt)
           else
-            klasses = Array(type_opt)
+            klasses = Axn::Internal::ShapeGraph.type_tokens(bag[:klass])
+            return false if bag[:coerce] == false
           end
 
           klasses.include?(:boolean) && klasses.any? { |k| FLIPPABLE_JSON_TYPES.include?(single_type_for(k, for_output: false)[:type]) }
@@ -2279,7 +2280,7 @@ module Axn
           # in TYPE_MAP — on input unconditionally, on output only when the value serializes member-keyed.
           emitted = !for_output || shape_serializes_to_object?(validations)
           type_klass = validations.dig(:type, :klass)
-          base = emitted && type_klass.is_a?(Class) && type_klass < Data ? type_klass.members.to_h { |m| [m, {}] } : {}
+          base = emitted && strict_descendant?(type_klass, ::Data) ? type_klass.members.to_h { |m| [m, {}] } : {}
           # A non-array type contributes at ONE node (a multi-class `type:` reflects as `anyOf` branches of
           # scalar types, which name no properties), so its schema is just those properties.
           ShapePropertyPlan.new(emitted:, in_items:, shape:, container:, type_schema: { properties: base })
@@ -2345,10 +2346,11 @@ module Axn
 
         # Whether an element type is an OBJECT on the wire a client sends (input): Hash/`:params`/Data/Struct.
         def object_typed_element?(klass)
-          return true if klass == :params
-          return false unless klass.is_a?(Class)
+          return true if Axn::Internal::Identity.same?(klass, :params)
+          return false unless class_token?(klass)
 
-          klass <= Hash || klass < Data || klass < Struct
+          Axn::Internal::NativeMethods.includes_module?(klass, ::Hash) ||
+            strict_descendant?(klass, ::Data) || strict_descendant?(klass, ::Struct)
         end
 
         # The schema for what is INSIDE a container, from the classes an `of:` axis names — an Array's elements
@@ -2706,7 +2708,7 @@ module Axn
           # A Data value serializes member-keyed via to_h, so it reflects as an object — except on OUTPUT when
           # it isn't provably member-keyed (a custom as_json/to_h serialize_value would follow); leave those
           # untyped rather than promise an object.
-          if klass.is_a?(Class) && klass < Data && (!for_output || member_keyed_object_type?(klass))
+          if strict_descendant?(klass, ::Data) && (!for_output || member_keyed_object_type?(klass))
             { type: "object", properties: klass.members.to_h { |m| [m, {}] } }
           else
             json_type_for({ type: klass }, for_output:)
@@ -2760,7 +2762,14 @@ module Axn
         def model_id_property(config)
           model_opts = config.validations[:model]
           klass = model_opts[:klass]
-          klass_name = klass.is_a?(Class) ? klass.name : klass.to_s
+          # The declared class written into PROSE, which owes both halves of that obligation: the name is read
+          # natively (`ClassName.of_module` binds `Module#to_s`, so a `name`/`to_s` of the class's own cannot
+          # answer it — measured, one that raises took the whole reflection down), and its bytes are RENDERED,
+          # because a constant may hold non-UTF-8 ones that cannot be joined to axn's prose at all. The
+          # declaration guard has already refused a non-Module `model:` token, so the receiver is always a
+          # Module here; `Module#to_s` also names an ANONYMOUS class, where the `name` this replaces answered
+          # nil and left the description reading "ID of the  record".
+          klass_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of_module(klass))
           id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
           prop = { description: config.description || "ID of the #{klass_name} record" }
           [id_field, prop.compact]
@@ -2873,6 +2882,23 @@ module Axn
         # branch.
         def class_token?(klass) = Axn::Internal::Identity.kind?(klass, ::Class)
 
+        # `klass < mod` — STRICT descent — read out of the token's ancestry rather than through its own `<`.
+        # Strict matters at every call site: `Data` and `Struct` are not themselves member-keyed, only their
+        # subclasses are, and `Hash` is tested by identity separately where it counts.
+        #
+        # Establishes Class-ness FIRST, which is the precondition every `NativeMethods` module reader states:
+        # binding `ancestors` to a non-Module is a TypeError, and that would replace the verdict being decided
+        # with an error from the reader meant to protect it. The `<` this replaces raised NoMethodError on a
+        # non-Module for the same reason, so each caller guarded separately; holding the precondition here
+        # keeps the three of them from having to remember it (measured — one forgot, and a nil `type:` bag's
+        # `klass:` took the reflection down).
+        def strict_descendant?(klass, mod)
+          return false unless class_token?(klass)
+          return false if Axn::Internal::Identity.same?(klass, mod)
+
+          Axn::Internal::NativeMethods.includes_module?(klass, mod)
+        end
+
         # A Numeric subclass other than Complex — `klass < Numeric && !(klass <= Complex)`, read out of the
         # token's ancestry rather than through its own `<`/`<=`. STRICT descent, so `Numeric` itself falls
         # through to `TYPE_MAP` (where it is "number" already) exactly as it did.
@@ -2900,11 +2926,10 @@ module Axn
 
         def json_type_for(validations, for_output: false)
           if validations[:type]
-            type_opt = validations[:type]
-            klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
-            type_hashes = Array(klass).map { |k| single_type_for(k, for_output:) }.uniq
+            tokens = declared_type_tokens(validations)
+            type_hashes = tokens.map { |k| single_type_for(k, for_output:) }.uniq
             node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
-            return narrow_node_to_integer(node, validations, Array(klass), for_output:)
+            return narrow_node_to_integer(node, validations, tokens, for_output:)
           end
 
           # Outbound, the SET names a type only where it passes the same equality-safety test the `enum` itself
