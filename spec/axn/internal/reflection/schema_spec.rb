@@ -6362,6 +6362,29 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(action.input_schema[:properties][:n]).to eq(type: "integer")
         end
 
+        # The witness reaches a consumer INSIDE a schema, and schemas are rebuilt per call and caller-mutable, so
+        # a shared mutable `[]`/`{}` would let one consumer's mutation reach every schema emitted afterwards —
+        # measured, appending to one action's witness changed a DIFFERENT action class's enum. Frozen on the same
+        # terms `EMPTY_ENUM` and `NULL_BRANCH` already are, so a mutating consumer gets a FrozenError instead.
+        it "hands out a witness no consumer can mutate into another action's schema" do
+          one = build_axn { expects :n, type: [Array, Integer], numericality: true, optional: true }
+          witness = one.input_schema.dig(:properties, :n, :anyOf, 0, :enum, 0)
+
+          expect(witness).to be_frozen
+          expect { witness << 99 }.to raise_error(FrozenError)
+
+          other = build_axn { expects :z, type: [Array, Integer], numericality: true, optional: true }
+          expect(other.input_schema.dig(:properties, :z, :anyOf, 0, :enum)).to eq([[]])
+        end
+
+        it "hands out an unmutatable object witness too" do
+          action = build_axn { expects :n, type: [Hash, Integer], numericality: true, optional: true }
+          witness = action.input_schema.dig(:properties, :n, :anyOf, 0, :enum, 0)
+
+          expect(witness).to be_frozen
+          expect { witness[:x] = 1 }.to raise_error(FrozenError)
+        end
+
         # Not new with the bare spelling: `only_numeric:` had been dropping the branch too, so a blank-tolerant
         # position under it refused the output it produced. One rule for every spelling closes that as well.
         it "accepts outbound the false an only_numeric: position exposed" do
