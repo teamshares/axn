@@ -6212,6 +6212,108 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
+    # The same drop under a BARE `numericality:`, and the reason it is the validator's rather than either
+    # option's: ActiveModel asks `is_number?` BEFORE it reads any option, and `only_numeric:` is one more
+    # restriction inside that check rather than the thing that establishes it. So no spelling of the validator
+    # can be satisfied by a value that does not parse as a number, and the options govern only the two things
+    # they alone decide — whether the string branch survives, and whether a numeric branch retags to "integer".
+    #
+    # Soundness rests on "no Array, Hash or boolean parses as a number", which is exact for booleans (a
+    # `TrueClass` subclass is legal and can never be instantiated — `new` and `allocate` both raise) and, for the
+    # containers, rests on the footing the two options above already stand on: a subclass reimplementing BOTH
+    # `to_s` and `to_i` to impersonate a number satisfies the validator, and `only_integer:` has been dropping
+    # its branch since before this. One footing for all three spellings, not a new one for this.
+    describe "a bare numericality:, which demands a number before any option is read" do
+      it "drops a boolean branch at a field" do
+        action = build_axn { expects :n, type: [TrueClass, Integer], numericality: true }
+
+        expect(action.call(n: 1)).to be_ok
+        expect(action.call(n: true)).not_to be_ok
+        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+      end
+
+      it "drops an Array branch at a field" do
+        action = build_axn { expects :n, type: [Array, Integer], numericality: true }
+
+        expect(action.call(n: 1)).to be_ok
+        expect(action.call(n: [1])).not_to be_ok
+        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+      end
+
+      it "drops a boolean branch at a bag position" do
+        action = build_axn { expects :f, type: Array, of: { klass: [TrueClass, Integer], numericality: true } }
+
+        expect(action.call(f: [1])).to be_ok
+        expect(action.call(f: [true])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "integer")
+      end
+
+      # An option-less entry is not the only spelling that reaches here: an entry whose options carry no
+      # emittable bound leaves `restrict_union_to_bounded_branches!` nothing to narrow on, so the drop is the
+      # only thing standing between the document and a branch the runtime rejects.
+      it "drops the branch under an entry whose only option emits no bound" do
+        action = build_axn { expects :n, type: [TrueClass, Integer], numericality: { other_than: 5 } }
+
+        expect(action.call(n: 1)).to be_ok
+        expect(action.call(n: true)).not_to be_ok
+        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+      end
+
+      # The string branch is the one this may not touch: bare `numericality:` really does accept a numeric
+      # string, so the branch is reachable. That it carries no PATTERN saying which strings is PRO-3240 item 3,
+      # excluded by name in the wire audit; what this pins is that the branch stays.
+      it "keeps the string branch, whose numeric strings the validator accepts" do
+        action = build_axn { expects :n, type: [String, Integer], numericality: true }
+
+        expect(action.call(n: "1")).to be_ok
+        expect(action.input_schema.dig(:properties, :n, :anyOf))
+          .to eq([{ type: "string", minLength: 1 }, { type: "integer" }])
+      end
+
+      # Every branch dropping is the contract, not a case to fall back from — no boolean is a number, so the
+      # position admits nothing and the node says so. Same projection `only_numeric:` already emits for the
+      # same contract, which is the point: the two spellings now agree.
+      it "empties a node whose every branch names non-Numerics" do
+        action = build_axn { expects :n, type: [TrueClass, FalseClass], numericality: true }
+
+        expect(action.call(n: true)).not_to be_ok
+        expect(action.call(n: false)).not_to be_ok
+        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      end
+
+      # Nullability owns the nil, and a narrowing that empties every TYPE branch has said nothing about it —
+      # the validators skip a nil wherever the field tolerates one, so the position admits nil and nothing else.
+      it "leaves the nil a nullable position still admits" do
+        action = build_axn { expects :n, type: TrueClass, numericality: true, optional: true }
+
+        expect(action.call(n: nil)).to be_ok
+        expect(action.call(n: true)).not_to be_ok
+        expect(action.input_schema[:properties][:n]).to eq(enum: [nil])
+      end
+
+      # A broad token still shields the branch, for the reason it always has: `single_type_for` renders `Object`
+      # APPROXIMATELY as a `"string"` branch, so that branch's emitted type is no evidence about what the
+      # position holds, and dropping it would empty a contract a plain `1` satisfies.
+      it "keeps the branch a broad token reaches a Numeric through" do
+        action = build_axn { expects :n, type: Object, numericality: true }
+
+        expect(action.call(n: 1)).to be_ok
+        expect(action.input_schema[:properties][:n]).to eq(type: "string", minLength: 1)
+      end
+
+      # The boundary, and the one measured counterexample that draws it. `comparison:` is a different validator
+      # with no numericality behind it, and `other_than:` is its INVERTED operator: `true != 5` passes, so the
+      # boolean branch is reachable and may not be dropped. Nothing above reads a `comparison:` entry, and
+      # `other_than:` writes no emittable bound either, so the branch stands — which is correct.
+      it "does not drop a branch a comparison: other_than: really admits" do
+        action = build_axn { expects :n, type: [TrueClass, Integer], comparison: { other_than: 5 } }
+
+        expect(action.call(n: true)).to be_ok
+        expect(action.input_schema.dig(:properties, :n, :anyOf))
+          .to eq([{ type: "boolean", enum: [true] }, { type: "integer" }])
+      end
+    end
+
     # Without `only_numeric:` the string branch is exactly what keeps that position satisfiable.
     it "keeps the string branch when only_integer: stands alone" do
       action = build_axn { expects :n, type: [String, Integer], numericality: { only_integer: true } }
