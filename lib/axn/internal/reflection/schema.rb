@@ -370,7 +370,7 @@ module Axn
           type_opt = config.validations[:type]
           return [Hash] unless type_opt # untyped parent — object-shaped for both any?/all?
 
-          Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
+          declared_type_tokens(config.validations)
         end
 
         # The builtin scalars whose reader-method surface we judge as the class's own public methods:
@@ -442,14 +442,14 @@ module Axn
           type_klass = validations.dig(:type, :klass)
           return true if type_klass.nil?
 
-          Array(type_klass).all? { |k| member_keyed_object_type?(k) }
+          Axn::Internal::ShapeGraph.type_tokens(type_klass).all? { |k| member_keyed_object_type?(k) }
         end
 
         def member_keyed_object_type?(klass)
-          return true if klass == :params
-          return false unless klass.is_a?(Class)
-          return true if klass == Hash
-          return false unless klass < Data || klass < Struct
+          return true if Axn::Internal::Identity.same?(klass, :params)
+          return false unless class_token?(klass)
+          return true if Axn::Internal::Identity.same?(klass, ::Hash)
+          return false unless strict_descendant?(klass, ::Data) || strict_descendant?(klass, ::Struct)
 
           # A Data/Struct serializes member-keyed via its built-in to_h — unless it carries a CUSTOM as_json
           # OR a custom to_h, either of which serialize_value would follow instead (as_json first) and which
@@ -816,11 +816,12 @@ module Axn
           type_opt = ref.validations[:type]
           return false unless type_opt
 
-          if type_opt.is_a?(Hash)
-            klasses = Array(type_opt[:klass])
-            return false if type_opt[:coerce] == false
+          bag = Axn::Internal::ShapeGraph.hash_or_nil(type_opt)
+          if nil.equal?(bag)
+            klasses = Axn::Internal::ShapeGraph.type_tokens(type_opt)
           else
-            klasses = Array(type_opt)
+            klasses = Axn::Internal::ShapeGraph.type_tokens(bag[:klass])
+            return false if bag[:coerce] == false
           end
 
           klasses.include?(:boolean) && klasses.any? { |k| FLIPPABLE_JSON_TYPES.include?(single_type_for(k, for_output: false)[:type]) }
@@ -933,7 +934,7 @@ module Axn
           presence = validations[:presence]
           return false unless presence
 
-          opts = effective_entry_options(presence, validations.slice(*Axn::Validation::Base.shared_validation_option_keys))
+          opts = effective_entry_options(presence, Axn::Validation::Base.shared_validation_options(validations))
           !opts[:allow_blank]
         end
 
@@ -974,6 +975,88 @@ module Axn
           return false unless owner && native_empty_owner?(owner)
 
           value.empty?
+        end
+
+        # How many elements a literal holds, or nil where a check could measure it differently. Read where a
+        # declared literal has to be weighed against the sizes a contract admits (the empty-interval guard's
+        # inclusion branch).
+        #
+        # FOUR checks can hold a size bound, and each asks the value by a different method — the complete list:
+        #
+        #   `length:`             `value.length`   (activemodel 8.1.3.1, length.rb:48)     floor and ceiling
+        #   `presence:`           `value.blank?`   (presence.rb)                           floor
+        #   the emptiness check   `value.empty?`   (NonEmptinessValidator)                 floor
+        #   `absence:`            `value.present?` (absence.rb)                            ceiling
+        #
+        # Which check holds a given bound is not this method's to know — the floor of 1 is `presence:`'s on one
+        # declaration and `length:`'s on the next — so a value is measured only where every one of them is
+        # Ruby's own, and there they agree by construction. `size` is deliberately not among them: no check
+        # asks it, and reading it is how an `Array` subclass overriding `length` was measured as empty here
+        # while `length:` and `inclusion:` both accepted it at runtime.
+        #
+        # And a bound-holding check does not reach its measurement directly: it asks the value whether it CAN
+        # answer first, and takes a different measurement when the answer is no. `length:` reads
+        # `value.respond_to?(:length) ? value.length : value.to_s.length`, and ActiveSupport's `Object#blank?`
+        # is `respond_to?(:empty?) ? !!empty? : false`. So the capability probe is part of the measurement, and
+        # a value carrying its own `respond_to?` is measured by an answer IT wrote however native the method
+        # that answer names: an exact `Array` answering `false` for `:length` is measured as `"[]"` — two
+        # characters — and not as `Array#length`'s zero, so a floor of 2 it appears to fail is one it meets.
+        # `respond_to?` is therefore on the list beside the four measurements it selects between.
+        #
+        # That override is not deception to be refused: answering for a method it forwards is the ordinary
+        # shape of a proxy or delegator, which is why axn's own emptiness check asks the capability through a
+        # BOUND `Object#respond_to?` (`NonEmptinessValidator::CAPABILITY_CHECK`) rather than trusting the
+        # value's answer. ActiveModel dispatches it, so a declaration weighing what ActiveModel will measure
+        # has to count the caller's answer as part of the measurement — reading the unforgeable one here would
+        # measure something no check performs.
+        #
+        # The list grows with the bounds. `present?` belongs to it because PRO-3220 taught `absence:` to name a
+        # ceiling; adding that bound without revisiting this list is what let a member answering
+        # `present? => false` be weighed against a ceiling it does not obey.
+        #
+        # Ownership is the whole test, the same one `empty_container?` applies and for the same reason: a
+        # measurement a caller wrote is caller code, which a declaration-time verdict must neither run nor
+        # second-guess. Standing down leaves the declaration legal, the direction this guard must err in.
+        #
+        # The owner reads are bound (`NativeMethods.method_owner`); the call that follows needs no guard,
+        # because the implementation it dispatches is the one whose owner was just established.
+        def container_size(value)
+          return nil unless ASKED_BY_A_BOUNDING_CHECK.all? { |method_name| natively_answered?(value, method_name) }
+
+          value.length
+        end
+
+        # The methods the BLANK axis asks a value by: ActiveModel's presence/absence validators call `blank?`
+        # and `present?`, and ActiveSupport's generic pair answers out of `empty?` behind a `respond_to?` probe.
+        # `length` is deliberately absent — blankness is not size, which is the whole reason a `String` member
+        # needs this at all.
+        ASKED_BY_THE_BLANK_AXIS = %i[blank? present? empty? respond_to?].freeze
+
+        # Whether this value's BLANKNESS is Ruby's own to answer, on exactly the terms `container_size` applies
+        # to its measurement and for the same reason: a member whose `present?` or `blank?` is its own decides
+        # for itself whether an `absence:` accepts it, and a declaration-time verdict may neither run that code
+        # nor second-guess it. Answering false stands the judgment down, which leaves the declaration legal.
+        def blankness_natively_answered?(value)
+          ASKED_BY_THE_BLANK_AXIS.all? { |method_name| natively_answered?(value, method_name) }
+        end
+
+        # Every method a check that holds a size bound asks the value by — the four measurements plus the
+        # `respond_to?` those checks select between them with. All must be Ruby's own, so the order is
+        # immaterial.
+        ASKED_BY_A_BOUNDING_CHECK = %i[length empty? blank? present? respond_to?].freeze
+
+        # `Object` and `Kernel` are admitted as owners, and neither can end up owning a MEASUREMENT here:
+        # `Object` only ever owns `blank?`/`present?` and `Kernel` only ever owns `respond_to?`, since none of
+        # them defines `length` or `empty?`. ActiveSupport's `Object#blank?` is
+        # `respond_to?(:empty?) ? !!empty? : false` and its `present?` is `!blank?`, so both answer out of the
+        # very `empty?` this method has already required to be native: for a `Set`, whose blankness AS does not
+        # specialize, that is the whole reason a member is measurable at all. `Kernel#respond_to?` is Ruby's
+        # own capability probe, which every value answers with until one carries an override.
+        def natively_answered?(value, method_name)
+          owner = Axn::Internal::NativeMethods.method_owner(value, method_name)
+          return false if owner.nil?
+
+          native_empty_owner?(owner) || ::Object.equal?(owner) || ::Kernel.equal?(owner)
         end
 
         def native_empty_owner?(owner)
@@ -1294,13 +1377,25 @@ module Axn
           tokens.all? { |token| Internal::Identity.same?(token, Internal::Identity.class_of(member)) }
         end
 
-        # The classes a position declares. A bag names them under `klass:`, which `bag_value_constraints`
-        # deliberately drops from the validator set, so a contents position hands them in directly.
-        def declared_type_tokens(validations, declared_klass)
-          return Array(declared_klass) unless nil.equal?(declared_klass)
+        # The classes a position declares: a `type:` bag's `klass:` where a bag was declared, the bare spelling
+        # otherwise, and a `declared_klass` handed in directly by a CONTENTS position — a bag names its classes
+        # under `klass:`, which `bag_value_constraints` deliberately drops from the validator set, so that
+        # caller has them already and passes them through.
+        #
+        # Every branch classifies through `ShapeGraph.type_tokens` rather than `Kernel#Array`, which DISPATCHES
+        # `to_ary`/`to_a` on whatever it is handed: a declared token is a caller's own Class or Module, and one
+        # carrying a singleton `to_ary` would have that method RUN from here — at declaration, and again from
+        # every reflection — which reflection may never do. Measured on a token whose `to_ary` returns
+        # `[String]`: it ran, and the emitted node became `{type: ["string", "null"]}` for a field declared as
+        # that token. The bag is unwrapped through `ShapeGraph.hash_or_nil` for the same reason, so a Hash
+        # subclass denying its own class cannot pick how it is read.
+        def declared_type_tokens(validations, declared_klass = nil)
+          return Axn::Internal::ShapeGraph.type_tokens(declared_klass) unless nil.equal?(declared_klass)
 
           type_opt = validations[:type]
-          Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
+          bag = Axn::Internal::ShapeGraph.hash_or_nil(type_opt)
+
+          Axn::Internal::ShapeGraph.type_tokens(nil.equal?(bag) ? type_opt : bag[:klass])
         end
 
         # The literal membership set of an `inclusion:` validator, whether declared as the hash long form
@@ -1880,12 +1975,19 @@ module Axn
           rejects_empty ? 1 : nil
         end
 
-        # The largest size this field's validators admit, or nil when they bound it nowhere. Simpler than the
-        # floor in two ways, both because a ceiling has no interaction with emptiness: only `length:` can name
-        # one (presence and the emptiness axis impose floors, never ceilings), and blank-tolerance cannot
-        # loosen one (an empty value measures 0, which every emittable ceiling admits). A GATED entry is counted
-        # as if its gate were open, the static-maximal policy every constraint here follows.
+        # The largest size this field's validators admit, or nil when they bound it nowhere. Two spellings name
+        # one, and `absence:` is the tighter of them whenever it names one at all, so it answers first: it
+        # rejects every non-blank value, so where a type's blank values are exactly its EMPTY ones it leaves
+        # size 0 as the only admissible size — the exact statement `length: { maximum: 0 }` makes. Without it a
+        # field carrying `absence:` beside a dropped floor emitted no ceiling at all, a node LOOSER than the
+        # contract it projects.
+        #
+        # Blank-tolerance cannot loosen either one (an empty value measures 0, which every emittable ceiling
+        # admits), and a GATED entry is counted as if its gate were open — the static-maximal policy every
+        # constraint here follows.
         def declared_size_maximum(validations)
+          return 0 if absence_bounds_size?(validations)
+
           length = effective_entry_options(validations[:length], shared_validation_options(validations))
           declared = Axn::Validation::Base.declared_length_ceiling(length)
 
@@ -1913,6 +2015,124 @@ module Axn
           return node if axis.nil? || axis.empty? || shaped.nil? || shaped.empty?
 
           node.merge(propertyNames: { anyOf: [axis, { enum: shaped.keys.map(&:to_s) }] })
+        end
+        # The classes whose BLANK values are exactly their EMPTY ones, so "rejects every non-blank value" and
+        # "admits size 0 only" say the same thing about them. `String` is deliberately absent and is the whole
+        # reason this is a list rather than `EMPTY_CONTAINER_CLASSES`: ActiveSupport gives it a `blank?` of its
+        # own (`BLANK_RE`), under which `"  "` is blank while `empty?` and `length` both say otherwise — so an
+        # `absence:` on a String bounds WHITESPACE, which no size key expresses, rather than size.
+        #
+        # `ActionController::Parameters` is not here either: it is identified by rendered name rather than by
+        # constant, and a list this one is read off must be comparable by identity.
+        BLANK_IS_EMPTY_CLASSES = [::Hash, ::Array].freeze
+
+        # Whether a live `absence:` bounds this declaration's SIZE — the question `declared_size_maximum` asks,
+        # and the one a guard may lean on, as opposed to the looser "is an `absence:` present".
+        #
+        # Three conditions, each load-bearing:
+        #
+        #   * the entry is LIVE — a falsy one is the disabled validator ActiveModel skips, so it forbids
+        #     nothing;
+        #   * every declared type is one whose blank values are its empty ones, since only there does the blank
+        #     axis land on the size axis at all;
+        #   * the entry is UNGATED — by a gate of its own OR by one the whole declaration carries, since either
+        #     stops it running. This is the one bound here not counted static-maximally, and the asymmetry is
+        #     between an AUTHORED bound and an INFERRED one. A `length:` ceiling is a size constraint the author
+        #     wrote, so it is emitted as written whatever gates it. A size meaning for `absence:` is one axn
+        #     infers, and it may only infer it from a check that always runs: `presence: { unless: :archived },
+        #     absence: { if: :archived }` is a working contract, and deriving a `maxItems: 0` from its
+        #     conditional half would put a ceiling on the document that the contract does not carry on the
+        #     calls where the gate is closed — most of them.
+        def absence_bounds_size?(validations)
+          return false unless absence_bounds_blankness?(validations)
+
+          blank_values_are_empty?(validations)
+        end
+
+        # The first two of those conditions on their own: a LIVE, UNGATED `absence:`, which rejects every value
+        # that is not blank whatever the declared type. Split out because the blank axis is a real constraint
+        # even where it lands nowhere on the size axis — for a `String`, `absence:` rejects `"ab"` while no size
+        # key expresses it — so the member scan asks this to know whether a non-blank member can be a witness at
+        # all (`_member_survives_the_blank_axis?`), where the ceiling derivation above needs the size question.
+        # One definition, so the two cannot disagree about which `absence:` entries count.
+        def absence_bounds_blankness?(validations)
+          entry = Axn::Validation::Base.validator_entries(validations)[:absence]
+          return false unless entry
+
+          !Axn::Validation::Base.entry_effectively_gated?(entry, Axn::Validation::Base.shared_validation_options(validations))
+        end
+
+        # Whether every value this declaration calls BLANK measures 0 — the question that decides whether the
+        # blank axis can be read as a statement about size at all. Shared with the guard that asks whether a
+        # blank value could slip past a blank-tolerant entry, so the two cannot disagree about one declaration.
+        #
+        # Only the SIZE-BEARING tokens are asked. A union emits one branch per token and `size_bounds_for` puts
+        # no bound on a branch that carries no size keyword, so a `NilClass` (or an `Integer`, or `:boolean`)
+        # can neither make an `absence:` ceiling wrong nor be constrained by one — and must not veto it either.
+        # Judging every token alike is what left `type: [Array, NilClass], presence: false, absence: true`
+        # without a ceiling on its ARRAY branch, so a non-empty array was schema-valid and runtime-invalid: the
+        # looser direction, which the emitter may never take.
+        #
+        # A `String` among them still answers false, and that is the point of asking per token rather than
+        # per branch: a String branch IS size-bearing, and `absence:` bounds whitespace there rather than size,
+        # so no ceiling can be emitted for the union at all while one member reads that way.
+        def blank_values_are_empty?(validations)
+          sized = declared_type_tokens(validations).select { |token| token_carries_a_size?(token) }
+
+          sized.any? && sized.all? { |token| blank_is_empty_class?(token) }
+        end
+
+        # Whether the branch a token emits can carry a size keyword at all, asked through the emitter's own
+        # type mapping and its own key lookup rather than an enumeration beside them — so a token whose emitted
+        # type changes cannot leave this answering the old one.
+        #
+        # A token the map does not know falls through to the permissive `"string"`, which IS size-bearing, so
+        # it vetoes. That is the right answer for an unknown token and the wrong one for `NilClass`, whose only
+        # value is `nil` — blank, and with no size to bound. `NilClass` is absent from `TYPE_MAP`, so a union
+        # naming it emits a spurious string branch (measured: `type: [Array, NilClass], presence: false` emits
+        # `anyOf: [array, string, null]` while the runtime rejects `"x"`), and this inherits that. Not corrected
+        # here: the mapping is a pre-existing looseness with a blast radius of its own — the nullability pass
+        # already contributes a `"null"` branch — and it is tracked in PRO-3233.
+        def token_carries_a_size?(token)
+          !size_ceiling_key_for(single_type_for(token, for_output: false)[:type]).nil?
+        end
+
+        def blank_is_empty_class?(token)
+          BLANK_IS_EMPTY_CLASSES.any? { |klass| klass.equal?(token) } || (defined?(Set) && ::Set.equal?(token))
+        end
+
+        # The non-size tokens whose values an `absence:` check rejects OUTRIGHT: no `true`, no Integer and no
+        # Float is blank, so a declaration bounding the blank axis to size 0 admits nothing of theirs at all —
+        # which is what makes a refusal drawn from that ceiling sound even with one of them in the union.
+        #
+        # `:boolean` and `FalseClass` are the ones deliberately absent, and they are the whole reason this list
+        # exists: `false` IS blank, so the `absence:` accepts it, and `LengthValidator` measures its rendering
+        # (`"false"`, five characters) rather than a length it has none of. A union naming either has a branch
+        # the ceiling does not bound, and the guard cannot conclude anything from it.
+        ABSENCE_REJECTS_EVERY_VALUE = [::TrueClass, ::Integer, ::Float, ::Numeric].freeze
+
+        # Whether an `absence:`-derived ceiling of 0 bounds EVERY branch this declaration names — the size
+        # guard's question, and deliberately not `blank_values_are_empty?`, which filters the union down to its
+        # size-bearing tokens.
+        #
+        # Both questions are right for their caller. The emitter needs to know what bound the ARRAY branch
+        # carries, and `maxItems: 0` is the answer there whatever a sibling admits — dropping it would leave a
+        # non-empty array schema-valid and runtime-invalid. This guard needs to know whether the DECLARATION
+        # admits anything, and a single unbounded branch means it cannot say.
+        #
+        # Three cases per token, and the middle one is why this reads as a list rather than a measurement: a
+        # token whose blank values are its empty ones is bounded (`blank_is_empty_class?`); a token no blank
+        # value of which exists is bounded vacuously, since the `absence:` rejects everything it admits; and
+        # anything else — `:boolean`, a `String`, an unrecognized class — is not bounded, so the ceiling proves
+        # nothing about it. Unknown answers "not bounded", which stands the guard down: over-refusing a working
+        # declaration is the one failure it cannot recover from.
+        def absence_ceiling_bounds_every_token?(validations)
+          declared_type_tokens(validations).all? do |token|
+            next true if blank_is_empty_class?(token)
+            next false if token_carries_a_size?(token)
+
+            ABSENCE_REJECTS_EVERY_VALUE.any? { |known| Axn::Internal::Identity.same?(known, token) }
+          end
         end
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
@@ -2080,7 +2300,7 @@ module Axn
           # in TYPE_MAP — on input unconditionally, on output only when the value serializes member-keyed.
           emitted = !for_output || shape_serializes_to_object?(validations)
           type_klass = validations.dig(:type, :klass)
-          base = emitted && type_klass.is_a?(Class) && type_klass < Data ? type_klass.members.to_h { |m| [m, {}] } : {}
+          base = emitted && strict_descendant?(type_klass, ::Data) ? type_klass.members.to_h { |m| [m, {}] } : {}
           # A non-array type contributes at ONE node (a multi-class `type:` reflects as `anyOf` branches of
           # scalar types, which name no properties), so its schema is just those properties.
           ShapePropertyPlan.new(emitted:, in_items:, shape:, container:, type_schema: { properties: base })
@@ -2146,10 +2366,11 @@ module Axn
 
         # Whether an element type is an OBJECT on the wire a client sends (input): Hash/`:params`/Data/Struct.
         def object_typed_element?(klass)
-          return true if klass == :params
-          return false unless klass.is_a?(Class)
+          return true if Axn::Internal::Identity.same?(klass, :params)
+          return false unless class_token?(klass)
 
-          klass <= Hash || klass < Data || klass < Struct
+          Axn::Internal::NativeMethods.includes_module?(klass, ::Hash) ||
+            strict_descendant?(klass, ::Data) || strict_descendant?(klass, ::Struct)
         end
 
         # The schema for what is INSIDE a container, from the classes an `of:` axis names — an Array's elements
@@ -2507,7 +2728,7 @@ module Axn
           # A Data value serializes member-keyed via to_h, so it reflects as an object — except on OUTPUT when
           # it isn't provably member-keyed (a custom as_json/to_h serialize_value would follow); leave those
           # untyped rather than promise an object.
-          if klass.is_a?(Class) && klass < Data && (!for_output || member_keyed_object_type?(klass))
+          if strict_descendant?(klass, ::Data) && (!for_output || member_keyed_object_type?(klass))
             { type: "object", properties: klass.members.to_h { |m| [m, {}] } }
           else
             json_type_for({ type: klass }, for_output:)
@@ -2561,7 +2782,14 @@ module Axn
         def model_id_property(config)
           model_opts = config.validations[:model]
           klass = model_opts[:klass]
-          klass_name = klass.is_a?(Class) ? klass.name : klass.to_s
+          # The declared class written into PROSE, which owes both halves of that obligation: the name is read
+          # natively (`ClassName.of_module` binds `Module#to_s`, so a `name`/`to_s` of the class's own cannot
+          # answer it — measured, one that raises took the whole reflection down), and its bytes are RENDERED,
+          # because a constant may hold non-UTF-8 ones that cannot be joined to axn's prose at all. The
+          # declaration guard has already refused a non-Module `model:` token, so the receiver is always a
+          # Module here; `Module#to_s` also names an ANONYMOUS class, where the `name` this replaces answered
+          # nil and left the description reading "ID of the  record".
+          klass_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of_module(klass))
           id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
           prop = { description: config.description || "ID of the #{klass_name} record" }
           [id_field, prop.compact]
@@ -2613,14 +2841,27 @@ module Axn
           end
         end
 
+        # Every question here is put to the token WITHOUT dispatching, and the reason is not only reflection's
+        # own rule that a walk may run none of a caller's code: a declaration GUARD reads this — the blank axis
+        # asks whether a declared type's branch can carry a size at all (`token_carries_a_size?`) — so a token
+        # answering for itself would decide whether a contract is refused, and one whose method raises would
+        # replace that verdict with its own exception, at class-definition time. Measured on an `Array` subclass
+        # with a singleton `hash`: `TYPE_MAP.key?(token)` ran it.
+        #
+        # So the four spellings a token could otherwise answer are each replaced by a native one. Identity
+        # (`Identity.same?`, a bound `equal?`) stands in for `==` against a known token; `Identity.kind?`
+        # (`Module#===`, C-level) for `is_a?`; `NativeMethods.includes_module?` — which reads the ancestry out
+        # of the method table — for `<`/`<=`/`>=`; and `map_type_for`/`map_format_for` scan the emitter's own
+        # maps by identity rather than looking a token up by its `hash`/`eql?`. The answers are identical for
+        # every token that does not define one of those methods, which is every token a declaration means.
         def single_type_for(klass, for_output:)
-          return { type: "boolean" } if klass == :boolean
+          return { type: "boolean" } if Axn::Internal::Identity.same?(klass, :boolean)
           # TypeValidator accepts only the singleton value for TrueClass/FalseClass, so constrain the schema
           # to it (a bare `type: "boolean"` would let a client send the other value and pass validation).
-          return { type: "boolean", enum: [true] } if klass == TrueClass
-          return { type: "boolean", enum: [false] } if klass == FalseClass
-          return { type: "string", format: "uuid" } if klass == :uuid
-          return { type: "object" } if klass == :params
+          return { type: "boolean", enum: [true] } if Axn::Internal::Identity.same?(klass, ::TrueClass)
+          return { type: "boolean", enum: [false] } if Axn::Internal::Identity.same?(klass, ::FalseClass)
+          return { type: "string", format: "uuid" } if Axn::Internal::Identity.same?(klass, :uuid)
+          return { type: "object" } if Axn::Internal::Identity.same?(klass, :params)
 
           # A declared type that ADMITS a Complex value (`type: Numeric` or `type: Complex`, i.e. Complex is
           # the class or one of its ancestors) can serialize to a JSON number (real Numerics) OR a String
@@ -2628,11 +2869,13 @@ module Axn
           # form isn't knowable from the declaration, so leave it UNTYPED on output rather than assert
           # "number" the serialized value could contradict. Input still resolves below: `Numeric` maps to
           # "number" (a JSON number is a real Numeric and validates), `Complex` to the permissive "string".
-          return {} if for_output && klass.is_a?(Class) && klass >= Complex
+          return {} if for_output && class_token?(klass) && Axn::Internal::NativeMethods.includes_module?(::Complex, klass)
 
-          if TYPE_MAP.key?(klass)
-            result = { type: TYPE_MAP[klass] }
-            result[:format] = FORMAT_MAP[klass] if FORMAT_MAP.key?(klass)
+          mapped = map_type_for(klass)
+          unless nil.equal?(mapped)
+            result = { type: mapped }
+            format = map_format_for(klass)
+            result[:format] = format unless nil.equal?(format)
             return result
           end
 
@@ -2641,7 +2884,7 @@ module Axn
           # object/string fallback. Complex is the exception: Float() rejects it, so on input it drops to
           # the permissive "string" below (a JSON client can't send a Complex anyway; output is handled
           # above).
-          return { type: "number" } if klass.is_a?(Class) && klass < Numeric && !(klass <= Complex)
+          return { type: "number" } if numeric_but_not_complex?(klass)
 
           # Unknown class: the serialized shape is only knowable at runtime (Values.serialize_value emits
           # an object for an as_json/to_h value but a string for a to_s-only one), so on output leave it
@@ -2653,13 +2896,60 @@ module Axn
           { type: "string" }
         end
 
+        # Whether the token is a Class at all, asked through `Module#===` rather than the token's own `is_a?`.
+        # The Complex and Numeric branches both need it: `Complex`'s ancestry holds `Comparable`, a MODULE, and
+        # the old `klass.is_a?(Class)` guard is what kept a declared `Comparable` out of the output-untyped
+        # branch.
+        def class_token?(klass) = Axn::Internal::Identity.kind?(klass, ::Class)
+
+        # `klass < mod` — STRICT descent — read out of the token's ancestry rather than through its own `<`.
+        # Strict matters at every call site: `Data` and `Struct` are not themselves member-keyed, only their
+        # subclasses are, and `Hash` is tested by identity separately where it counts.
+        #
+        # Establishes Class-ness FIRST, which is the precondition every `NativeMethods` module reader states:
+        # binding `ancestors` to a non-Module is a TypeError, and that would replace the verdict being decided
+        # with an error from the reader meant to protect it. The `<` this replaces raised NoMethodError on a
+        # non-Module for the same reason, so each caller guarded separately; holding the precondition here
+        # keeps the three of them from having to remember it (measured — one forgot, and a nil `type:` bag's
+        # `klass:` took the reflection down).
+        def strict_descendant?(klass, mod)
+          return false unless class_token?(klass)
+          return false if Axn::Internal::Identity.same?(klass, mod)
+
+          Axn::Internal::NativeMethods.includes_module?(klass, mod)
+        end
+
+        # A Numeric subclass other than Complex — `klass < Numeric && !(klass <= Complex)`, read out of the
+        # token's ancestry rather than through its own `<`/`<=`. STRICT descent, so `Numeric` itself falls
+        # through to `TYPE_MAP` (where it is "number" already) exactly as it did.
+        def numeric_but_not_complex?(klass)
+          return false unless class_token?(klass)
+          return false if Axn::Internal::Identity.same?(klass, ::Numeric)
+          return false unless Axn::Internal::NativeMethods.includes_module?(klass, ::Numeric)
+
+          !Axn::Internal::NativeMethods.includes_module?(klass, ::Complex)
+        end
+
+        def map_type_for(klass) = identity_lookup(TYPE_MAP, klass)
+
+        def map_format_for(klass) = identity_lookup(FORMAT_MAP, klass)
+
+        # One of the emitter's own maps, looked up by IDENTITY: `Hash#[]`/`#key?` would hash the TOKEN and
+        # compare it with `eql?`, both of which a caller's Class can define. The maps are axn's own frozen
+        # Hashes keyed by ten core classes, so the scan is bounded and its receiver is never the token. `nil`
+        # means "not in this map" — no value in either map is nil.
+        def identity_lookup(map, klass)
+          map.each { |key, value| return value if Axn::Internal::Identity.same?(key, klass) }
+
+          nil
+        end
+
         def json_type_for(validations, for_output: false)
           if validations[:type]
-            type_opt = validations[:type]
-            klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
-            type_hashes = Array(klass).map { |k| single_type_for(k, for_output:) }.uniq
+            tokens = declared_type_tokens(validations)
+            type_hashes = tokens.map { |k| single_type_for(k, for_output:) }.uniq
             node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
-            return narrow_node_to_integer(node, validations, Array(klass), for_output:)
+            return narrow_node_to_integer(node, validations, tokens, for_output:)
           end
 
           # Outbound, the SET names a type only where it passes the same equality-safety test the `enum` itself
@@ -2956,9 +3246,10 @@ module Axn
         end
 
         # The declaration-wide options every entry of a config rides alongside — the tier the per-entry
-        # judgments resolve against.
+        # judgments resolve against. The slice itself is Validation::Base's one definition, so a judgment made
+        # from a bare validations bag (the declaration guards, before any config exists) reads the same tier.
         def shared_validation_options(validations)
-          validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
+          Axn::Validation::Base.shared_validation_options(validations)
         end
 
         def nil_tolerant_validation?(key, opt, declaration_options) = Axn::Validation::Base.nil_tolerant_validation?(key, opt, declaration_options)

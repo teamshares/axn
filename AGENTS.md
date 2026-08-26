@@ -132,7 +132,8 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   The projection of a satisfiable contract must itself be satisfiable: "biased stricter" (see
   `docs/reference/class.md`) licenses a node admitting FEWER values, never one admitting NONE — an
   unsatisfiable node is the signature of the runtime and the emitter disagreeing about what a validator
-  targets, and it satisfies a directional invariant vacuously.
+  targets, and it satisfies a directional invariant vacuously. And a contract that admits nothing has no
+  honest projection at all, so refuse it at declaration rather than teaching the emitter to paper over it.
 - **Canonicalizing a value obliges you to re-audit every guard that read the raw form.** Symbolizing
   keys, defaulting an absent list to `[]`, normalizing a name — each silently disarms any downstream
   check that distinguished what you just erased. Enumerate the consumers of both forms in the same

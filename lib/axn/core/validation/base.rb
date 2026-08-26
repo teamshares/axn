@@ -78,6 +78,11 @@ module Axn
       # it to a Hash and break strict raising. Reuses AM's own canonical list so the set can't drift.
       def self.shared_validation_option_keys = _validates_default_keys
 
+      # The shared options ONE declaration carries — the tier every per-entry judgment resolves against.
+      # THE single definition, so the emitter, the declaration guards and the nil-axis judgment all read the
+      # same slice of the same bag rather than three copies of it.
+      def self.shared_validation_options(validations) = validations.slice(*shared_validation_option_keys)
+
       # The real VALIDATOR entries in a validations hash — everything that is NOT an ActiveModel shared
       # option (if:/unless:/on:/strict:/allow_blank:/allow_nil:). THE single definition of "is this a
       # validator", shared by the validator-class builder, the gate sweeps, and schema reflection, so
@@ -119,8 +124,7 @@ module Axn
         # The shared options are stripped from the ENTRY set but still govern how each entry runs, so they are
         # handed to the per-entry judgment rather than discarded: `validates` applies a declaration-wide
         # `allow_nil:`/`allow_blank:` to every validator in the call.
-        declaration_options = validations.slice(*shared_validation_option_keys)
-        v.all? { |key, opt| nil_tolerant_validation?(key, opt, declaration_options) }
+        v.all? { |key, opt| nil_tolerant_validation?(key, opt, shared_validation_options(validations)) }
       end
 
       # `declaration_options` are the shared options the entry rides alongside — required rather than defaulted,
@@ -201,8 +205,17 @@ module Axn
       # (`type: [Array, NilClass]`, `type: Object`), so TypeValidator finds the value valid and the nil is no
       # type violation at all. Union semantics are TypeValidator's own: a value matching ANY declared klass
       # passes, so one nil-admitting member admits nil.
+      #
+      # Both reads are non-dispatching, and this is a path where that matters most: every declaration guard
+      # that stands down on a nil tolerance asks this at CLASS-DEFINITION time, so a token deciding how it is
+      # read decides a guard's verdict, and one whose method raises stops the class being defined at all. The
+      # bag is classified by `ShapeGraph.hash_or_nil` rather than by asking it `is_a?(Hash)`, and the tokens by
+      # `ShapeGraph.type_tokens` rather than by `Kernel#Array`, which would dispatch the token's own
+      # `to_ary`/`to_a`.
       def self.type_admits_nil?(entry_opts)
-        klasses = Array(entry_opts.is_a?(Hash) ? entry_opts[:klass] : entry_opts)
+        bag = Axn::Internal::ShapeGraph.hash_or_nil(entry_opts)
+        klasses = Axn::Internal::ShapeGraph.type_tokens(nil.equal?(bag) ? entry_opts : bag[:klass])
+
         klasses.any? { |klass| type_klass_admits_nil?(klass) }
       end
 
@@ -325,6 +338,15 @@ module Axn
       # test for a type check that stands apart from the rest of its declaration.
       def self.entry_self_gated?(entry_opts) = entry_effective_gate_keys(entry_opts, {}).any?
 
+      # Whether an entry can be skipped at runtime AT ALL — its own nested gates and the declaration-level ones
+      # it inherits alike. The question to ask wherever what matters is "does this check run on every call",
+      # rather than "can this check be skipped independently of its siblings" (`entry_self_gated?`): a
+      # declaration-level gate is not this entry's own, but it stops the entry running just the same.
+      #
+      # `decl_gates` are the declaration's own `if:`/`unless:`, which must already be blank-canonicalized —
+      # true of any bag past `_canonicalize_blank_gates!`, which is every bag a config carries.
+      def self.entry_effectively_gated?(entry_opts, decl_gates) = entry_effective_gate_keys(entry_opts, decl_gates).any?
+
       # Whether a single validator ENTRY's options MENTION a per-validator gate key at all — blank or not
       # (contrast entry_self_gated?, which requires a NON-blank value). A blank nested gate is not inert:
       # per AM's measured per-key merge, a blank nested same-key value OVERRIDES and drops the shared
@@ -374,16 +396,28 @@ module Axn
       # open (a `maximum:` of 1 or more, or no size key at all), and `:unverifiable` for a floor AM resolves
       # per call (a Symbol/Proc).
       #
+      # Every lower bound the entry declares is weighed, not just the first one found: `LengthValidator`
+      # iterates its CHECKS and adds an error for each that fails, so `is:` and `minimum:` both run and the
+      # effective floor is the LARGER of them. Preferring `is:` hid an empty interval — `length: { is: 2,
+      # minimum: 3 }` reported 2..2 and declared, while ActiveModel rejects a value of every length (measured),
+      # and the emitted node advertised `minItems: 2` as satisfiable. A satisfiable node for a contract that
+      # admits nothing is the same emitter/runtime disagreement as its mirror, read the other way round.
+      #
+      # For a compatible pair the answer is unchanged, which is what makes this a narrowing rather than a new
+      # reading: `is: 2, minimum: 1` is still 2, since the `is:` was already the larger.
+      #
       # THE single definition of "how small a value may this length: entry be", shared by the emptiness
       # reconciliation at declaration (contract.rb) and by schema reflection's `minItems`/`minProperties`/
       # `minLength` emission, so the runtime floor and the emitted floor cannot disagree.
       def self.declared_length_floor(entry_opts)
         checks = declared_length_checks(entry_opts)
 
-        floor = checks[:is] || checks[:minimum]
+        lowers = [checks[:is], checks[:minimum]].compact
+        return :unverifiable unless lowers.all? { |bound| bound.is_a?(Numeric) }
+
+        floor = lowers.max
         max = checks[:maximum]
         return 0 if floor.nil? && max.is_a?(Numeric) && max.zero?
-        return :unverifiable unless floor.nil? || floor.is_a?(Numeric)
 
         floor
       end
@@ -398,15 +432,21 @@ module Axn
       # tolerated empty value measures 0, which every non-negative ceiling already admits, so a ceiling is exact
       # whether or not an empty value stands the entry aside.
       #
+      # Every upper bound is weighed for the same reason the floor weighs every lower one, and by the mirror
+      # rule: both checks run, so the effective ceiling is the SMALLER of `is:` and `maximum:`.
+      # `length: { is: 2, maximum: 1 }` is satisfied by nothing and used to declare.
+      # `Float::INFINITY` — ActiveModel's spelling for "no ceiling" — loses to any real bound beside it, which
+      # is what that spelling means.
+      #
       # THE single definition of "how large may this length: entry be", read by schema reflection's
       # `maxItems`/`maxProperties`/`maxLength` emission.
       def self.declared_length_ceiling(entry_opts)
         checks = declared_length_checks(entry_opts)
 
-        ceiling = checks[:is] || checks[:maximum]
-        return :unverifiable unless ceiling.nil? || ceiling.is_a?(Numeric)
+        uppers = [checks[:is], checks[:maximum]].compact
+        return :unverifiable unless uppers.all? { |bound| bound.is_a?(Numeric) }
 
-        ceiling
+        uppers.min
       end
 
       # Whether a ceiling read above is one a JSON Schema `maxItems`/`maxProperties`/`maxLength` can carry: a

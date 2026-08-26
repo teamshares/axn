@@ -54,6 +54,34 @@ module Axn
         end
       end
 
+      # The type tokens a declared `type:`/`of:` position names: a union as declared, a single token wrapped,
+      # and `[]` for no declaration at all. THE classification, so the contract's declaration guards, the
+      # nil-tolerance judgment every requiredness answer funnels through (`Validation::Base.type_admits_nil?`)
+      # and schema reflection cannot disagree about what one declaration names. Each caller unwraps its own
+      # position first — an axis reads the value as declared, a field's `type:` reads the bag's `klass:` — and
+      # hands the result here.
+      #
+      # The union-or-single-token split is `case`/`when ::Array`, never `Kernel#Array()`: `Array()` tries
+      # `to_ary` and then `to_a` before wrapping, and BOTH are the caller's own methods. A declared token is a
+      # caller's own Class or Module, so one defining either decides how it gets read — a `to_ary` returning
+      # `[String]` waves a genuinely unsupported token through as a "union" of a real class — and one that
+      # raises replaces the declaration's actionable `ArgumentError` with whatever the caller's method throws,
+      # which outside StandardError escapes every rescue meant to settle it.
+      #
+      # `nil` is the one value `Array()` special-cases (`Array(nil) == []`) rather than wrapping — kept
+      # identical here (`nil.equal?`, an identity check `nil` itself answers rather than the declared value) so
+      # "no type: at all" still renders the empty-list message every caller already has, instead of a
+      # one-token list naming `NilClass`.
+      #
+      # A Hash arriving here is wrapped like any other single token, which is what an axis position needs: a
+      # bare Hash written where a type belongs is one unsupported token, not a list of two-element Arrays.
+      def self.type_tokens(declared)
+        case declared
+        when ::Array then declared
+        else nil.equal?(declared) ? [] : [declared]
+        end
+      end
+
       # Copying a caller's container: `Hash#each` and `Kernel#dup` BOUND rather than dispatched, so a subclass
       # overriding either cannot decide what the stored contract holds — one whose `dup` returned `self`, or
       # whose `each` hid entries, otherwise left the caller's object aliased into a declared contract. Unlike a

@@ -777,14 +777,23 @@ module Axn
           # rule a field's are. The member's own BAG-level `on:` is refused earlier, by
           # `_check_member_option_keys!` above, with the reason particular to a member.
           #
-          # All five are the field path's own guards, called with the member's label where a field passes its
-          # own: a key that names no validator at all, an entry whose check cannot run, one that cannot MEAN
-          # anything at a container position, one comparing against literals no value of the declared type
-          # could be, and one forbidding literals no value of the declared type could be. The positional rule
-          # is a rule about positions, and a member is one — so a raw member is held to it exactly as the block
-          # form and a top-level field are, rather than declaring cleanly and emitting the unsatisfiable node.
-          # The first of them is not positional at all (its keys name nothing anywhere), and rides along here
-          # because this is the seam a raw member's entries pass through.
+          # All seven are the field path's own guards, called with the member's label where a field passes its
+          # own: a key that names no validator at all, an entry whose check cannot run, one asking for a
+          # strict-raising mode axn has not got, one that cannot MEAN anything at a container position, one
+          # comparing against literals no value of the declared type could be, one forbidding literals no
+          # value of the declared type could be, and one whose admissible SIZES form an empty interval. The
+          # positional rule is a rule about positions, and a member is one — so a raw member is held to it
+          # exactly as the block form and a top-level field are, rather than declaring cleanly and emitting
+          # the unsatisfiable node. The first of them is not positional at all
+          # (its keys name nothing anywhere), and rides along here because this is the seam a raw member's
+          # entries pass through.
+          #
+          # The size guard finds LESS here than on the field path, and that is correct rather than a gap: a raw
+          # member's bag is the author's own, with no inferred presence check written into it, so the
+          # non-emptiness floor that makes `absence: true` or `length: { maximum: 0 }` contradictory on a field
+          # simply is not present. Measured, those two really do admit the empty container here and reflect it
+          # exactly (`maxItems: 0`). What survives is the contradiction that needs no emptiness axis at all —
+          # `length: { minimum: 3, maximum: 2 }`, which admitted nothing and emitted `minItems: 3, maxItems: 2`.
           #
           # Tolerance comes off the member's OWN bag: nothing pushes a field's kwargs into it on this route, and
           # `allow_nil:`/`allow_blank:` are legal there (KNOWN_MEMBER_VALIDATION_KEYS), under which nil passes
@@ -800,6 +809,10 @@ module Axn
                                                          tolerance: copy.slice(:allow_nil, :allow_blank))
           _reject_vacuous_value_constraints!(copy, where: member_where,
                                                    tolerance: copy.slice(:allow_nil, :allow_blank))
+          # After that mirrored pair rather than between its halves, so the two verdicts on one set stay
+          # adjacent — and last of them, matching the field path, where the size interval is judged once the
+          # bag is settled.
+          _reject_unsatisfiable_size_interval!(copy, where: member_where)
           # Last, where the block form checks it too (after the same canonicalization), so a declaration failing
           # both is reported by the same one on either route. A raw member's `coerce:` used to reach ActiveModel
           # as a validator (`Unknown validator: 'CoerceValidator'` on every call) while `type: { coerce: true }`

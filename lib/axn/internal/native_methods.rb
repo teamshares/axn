@@ -1,5 +1,10 @@
 # frozen_string_literal: true
 
+# Membership in an ancestry is decided by identity (`includes_module?`), so a process that loaded this file
+# alone must have the comparison: `Identity` requires only `Internal::Text`, the gem's zero-require layer, so
+# naming it here adds no cycle.
+require "axn/internal/identity"
+
 module Axn
   module Internal
     # Which of a caller's object's answers are RUBY'S OWN — read from the method table, without running a line
@@ -212,7 +217,15 @@ module Axn
 
       # Whether `mod` counts `other` among its ancestors — the undispatched form of `mod < other` (which is
       # also true for `mod == other`, matching `ancestors`' own inclusion of the receiver).
-      def self.includes_module?(mod, other) = module_ancestors(mod).include?(other)
+      #
+      # Membership is decided by IDENTITY, not by `Array#include?`: that compares with `element == other`, and
+      # the FIRST element of any class's ancestry is the class itself — so a caller's class carrying its own
+      # `==` answered this membership question about itself, which is the one thing reading the ancestry
+      # natively was meant to take away from it. Module identity is the only comparison this question has: two
+      # distinct Modules are two distinct types however they compare.
+      def self.includes_module?(mod, other)
+        module_ancestors(mod).any? { |ancestor| Identity.same?(ancestor, other) }
+      end
 
       # Whether `mod`'s OWN method table declares `name`, at any visibility — read natively, and
       # deliberately NOT the same question as `declared_instance_method(mod, name)&.owner == mod`.

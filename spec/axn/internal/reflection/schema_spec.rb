@@ -5714,6 +5714,151 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop[:maxItems]).to eq(0)
     end
 
+    # `absence:` names size 0 as the only admissible size just as surely as `length: { maximum: 0 }` does —
+    # it rejects every non-blank value — so it carries the ceiling through the same derivation. Without it the
+    # node said nothing at all while the runtime admitted the empty container only: a schema LOOSER than the
+    # contract.
+    it "emits a zero ceiling for absence: alongside a dropped floor" do
+      prop = build_axn { expects :tags, type: Array, absence: true, allow_empty: true }.input_schema[:properties][:tags]
+
+      expect(prop[:maxItems]).to eq(0)
+    end
+
+    it "emits it for a Hash field on its own size key" do
+      meta = build_axn { expects :meta, type: Hash, absence: true, allow_empty: true }.input_schema[:properties][:meta]
+
+      expect(meta[:maxProperties]).to eq(0)
+    end
+
+    # ActiveSupport gives String a `blank?` of its own, under which `"  "` is blank and two characters long —
+    # so an `absence:` there bounds WHITESPACE, which no size key expresses, and reading a ceiling out of it
+    # would advertise a bound the runtime does not carry.
+    it "emits no ceiling for a String absence:, whose blank values are not its empty ones" do
+      name = build_axn { expects :name, type: String, absence: true, allow_empty: true }.input_schema[:properties][:name]
+
+      expect(name).not_to have_key(:maxLength)
+    end
+
+    # A union emits one branch per token and no bound lands on a branch with no size keyword, so a token that
+    # cannot carry the ceiling must not veto it for the tokens that can.
+    it "keeps the ceiling on the size-bearing branch of a union whose other token carries no size" do
+      prop = build_axn do
+        expects :f, type: [Array, Integer], presence: false, absence: true
+      end.input_schema[:properties][:f]
+
+      expect(prop[:anyOf]).to include(a_hash_including(type: "array", maxItems: 0))
+      expect(prop[:anyOf]).to include(a_hash_including(type: "integer"))
+      expect(prop[:anyOf].find { |b| b[:type] == "integer" }).not_to have_key(:maxItems)
+    end
+
+    # A String branch IS size-bearing, and an `absence:` bounds whitespace there rather than size — so one
+    # among the tokens takes the ceiling off the whole union rather than putting a wrong bound on that branch.
+    it "drops the ceiling from a union carrying a String" do
+      prop = build_axn do
+        expects :f, type: [Array, String], presence: false, absence: true
+      end.input_schema[:properties][:f]
+
+      expect(prop[:anyOf].map(&:keys).flatten).not_to include(:maxItems, :maxLength)
+    end
+
+    # The blank-is-empty classification the ceiling turns on reads the declared token, and a token is a
+    # caller's own Class or Module — so it is classified with `case`/`when ::Array` rather than `Kernel#Array`,
+    # which would DISPATCH `to_ary` on it. Asked of the derivation directly, since other (pre-existing) readers
+    # on the same path still use `Kernel#Array`.
+    it "classifies declared type tokens without dispatching to_ary" do
+      dispatched = []
+      token = Class.new do
+        define_singleton_method(:to_ary) do
+          dispatched << :to_ary
+          [String]
+        end
+      end
+
+      expect(described_class.declared_type_tokens({ type: token })).to eq([token])
+      expect(described_class.declared_type_tokens({ type: { klass: token } })).to eq([token])
+      expect(dispatched).to eq([])
+    end
+
+    # The same classification, asked of the nil-tolerance funnel: `Validation::Base.type_admits_nil?` is what
+    # every requiredness and nullability answer turns on AND what each declaration guard that stands down on a
+    # nil tolerance asks at class-definition time, so a token deciding how it is read there decides a guard's
+    # verdict. Asked of the derivation directly, because other (pre-existing) readers on the declaration path
+    # still use `Kernel#Array` — see PRO-3233.
+    it "judges a type entry's nil tolerance without dispatching to_ary" do
+      dispatched = []
+      token = Class.new do
+        define_singleton_method(:to_ary) do
+          dispatched << :to_ary
+          [NilClass]
+        end
+      end
+
+      expect(Axn::Validation::Base.type_admits_nil?(token)).to be(false)
+      expect(Axn::Validation::Base.type_admits_nil?({ klass: token })).to be(false)
+      expect(dispatched).to eq([])
+    end
+
+    # `single_type_for` is the emitter's type resolver AND what the blank axis reads to decide whether a
+    # declared type's branch can carry a size at all — so a declaration guard inherits every dispatch it makes.
+    # Each of the four spellings a token could answer for itself is replaced by a native one: identity for `==`,
+    # `Module#===` for `is_a?`, the ancestry out of the method table for `<`/`<=`/`>=`, and an identity scan of
+    # TYPE_MAP/FORMAT_MAP for a `Hash#key?` that would hash the token.
+    it "resolves a declared token's type without dispatching to it" do
+      dispatched = []
+      token = Class.new(Array) do
+        %i[hash eql? == is_a? < <= >= ancestors].each do |name|
+          define_singleton_method(name) do |*args, &blk|
+            dispatched << name
+            super(*args, &blk)
+          end
+        end
+      end
+
+      expect(described_class.single_type_for(token, for_output: false)).to eq({ type: "string" })
+      expect(described_class.single_type_for(token, for_output: true)).to eq({})
+      expect(dispatched).to eq([])
+    end
+
+    # The reviewer's case end to end: an `Array` subclass whose singleton `hash` RAISES. `TYPE_MAP.key?(token)`
+    # ran it from the declaration guard, so the class could not be defined — while an empty instance satisfies
+    # the contract at runtime, which is the direction a declaration guard may never err in.
+    it "declares a token whose hash raises, and accepts its empty instance" do
+      token = Class.new(Array)
+      token.define_singleton_method(:hash) { raise ArgumentError, "hash ran" }
+      token.define_singleton_method(:name) { "Token" }
+
+      action = nil
+      expect do
+        action = build_axn { expects :f, type: token, presence: false, absence: true }
+      end.not_to raise_error
+      expect(action.call(f: token.new).ok?).to be(true)
+    end
+
+    # A ceiling derived from `absence:` is one axn infers rather than one the author wrote, so it is taken only
+    # from a check that always runs — unlike a `length:` bound, which is emitted as written whatever gates it.
+    it "emits no ceiling for a GATED absence:" do
+      prop = build_axn do
+        expects :tags, type: Array, absence: { if: -> { false } }, allow_empty: true
+      end.input_schema[:properties][:tags]
+
+      expect(prop).not_to have_key(:maxItems)
+    end
+
+    it "emits it beside the nullability branch a tolerance adds" do
+      prop = build_axn { expects :tags, type: Array, absence: true, optional: true }.input_schema[:properties][:tags]
+
+      expect(prop[:type]).to eq(%w[array null])
+      expect(prop[:maxItems]).to eq(0)
+    end
+
+    # Nothing carries a size for an Integer to bound, so the ceiling the declaration names is emitted nowhere
+    # rather than onto a key that would not mean it.
+    it "emits no ceiling where the declared type has no size" do
+      prop = build_axn { expects :n, type: Integer, absence: true, presence: false }.input_schema[:properties][:n]
+
+      expect(prop.keys).not_to include(:maxItems, :maxLength, :maxProperties)
+    end
+
     it "emits the ceiling on every size-bearing branch of a union" do
       prop = build_axn { expects :f, type: [String, Array], length: { maximum: 2 } }.input_schema[:properties][:f]
 

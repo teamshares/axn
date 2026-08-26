@@ -481,6 +481,20 @@ RSpec.describe "a validator at a container position" do
         .to raise_error(ArgumentError, /inclusion:/)
     end
 
+    # A gate on the `type:` ENTRY is the opposite case, and the difference is which check the gate removes.
+    # Gating the SET leaves the type live, so the set is unreadable either way. Gating the TYPE leaves the set
+    # live and WIDENS what can arrive: a String reaches the field and the set contains it, so the declaration
+    # means something on exactly the calls where the gate is closed. Read as the entry's OWN gate, so the
+    # declaration-level spelling above keeps its policy.
+    it "stands down for a gated type: entry, which admits the values the set names" do
+      action = nil
+      expect do
+        action = build_axn { expects :tags, type: { klass: Array, if: -> { false } }, inclusion: { in: %w[a b] } }
+      end.not_to raise_error
+
+      expect(action.call(tags: "a").ok?).to be(true)
+    end
+
     it "leaves the tolerance case satisfiable on both sides, which is why tolerance stands the guard down" do
       action = build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] }, optional: true }
       prop = action.input_schema[:properties][:tags]
@@ -840,6 +854,18 @@ RSpec.describe "a validator at a container position" do
         .to raise_error(ArgumentError, /exclusion:/)
       expect { build_axn { expects :roles, type: Array, exclusion: { in: %w[admin] }, if: :flag? } }
         .to raise_error(ArgumentError, /exclusion:/)
+    end
+
+    # The vacuity mirror of the type-gate case: with the type check gated off, the String "admin" reaches the
+    # field and the forbidden set really does reject it, so the entry enforces something after all.
+    it "stands down for a gated type: entry, whose admitted values the set can forbid" do
+      action = nil
+      expect do
+        action = build_axn { expects :roles, type: { klass: Array, if: -> { false } }, exclusion: { in: %w[admin] } }
+      end.not_to raise_error
+
+      expect(action.call(roles: "admin").ok?).to be(false)
+      expect(action.call(roles: "editor").ok?).to be(true)
     end
 
     it "stands down on a length: bound that admits every size" do

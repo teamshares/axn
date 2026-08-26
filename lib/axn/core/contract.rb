@@ -3109,27 +3109,12 @@ module Axn
         # a Hash as something else entirely (an axis holding an inner contract) answers that on its own terms
         # first and never reaches this.
         #
-        # The union-or-single-token split is `case`/`when ::Array`, never `Kernel#Array()`: `Array()` tries
-        # `to_ary` and then `to_a` before wrapping, and BOTH are the caller's own methods — an object
-        # defining one decides how it gets read (its `to_ary` returning `[String]` waves a genuinely
-        # unsupported token through as a "union" of a real class), and one that raises replaces this
-        # declaration's actionable `ArgumentError` with whatever the caller's method throws, which outside
-        # StandardError escapes every rescue meant to settle it. Every consumer of a declared `type:`/`of:`
-        # token goes through this one function, so fixing the coercion here closes it at the bare axis, a
-        # bag's `klass:`, and a field's own `type:` at once.
-        #
-        # `nil` is the one value `Array()` special-cases (`Array(nil) == []`) rather than wrapping — kept
-        # identical here (`nil.equal?`, an identity check `nil` itself answers rather than the declared
-        # value) so "no type: at all" still renders the empty-list message every caller already has, instead
-        # of a one-token list naming `NilClass`.
-        def _declared_type_tokens(declared)
-          return [declared] unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
-
-          case declared
-          when ::Array then declared
-          else nil.equal?(declared) ? [] : [declared]
-          end
-        end
+        # The union-or-single-token split, and the reason it is never `Kernel#Array()`, belong to
+        # `ShapeGraph.type_tokens` — THE classification, shared with the nil-tolerance judgment and with
+        # schema reflection so no two of them can disagree about what one declaration names. Read from here
+        # for the AXIS position, where the value arrives as declared: a bare Hash written in place of a type
+        # is one unsupported token, which is what that reader answers for it.
+        def _declared_type_tokens(declared) = Internal::ShapeGraph.type_tokens(declared)
 
         # The one search for a token the runtime cannot hold a value to, shared by a field's own `type:`, the
         # bare-axis grammar and the bag's `klass:` so none of the three can drift about what a type is. Answers
@@ -3625,7 +3610,7 @@ module Axn
         # `acceptance:` entry (AM's own skip is disabled by exactly that key), turning a satisfiable contract
         # into a refused one.
         def _reject_unsatisfiable_value_constraints!(validations, where:, tolerance:, nested: false, allow_empty: nil)
-          klasses = _judgeable_type_klasses(validations[:type])
+          klasses = _judgeable_type_klasses(validations)
           return if klasses.empty?
 
           admitted = tolerance.select { |_key, value| value }
@@ -3980,7 +3965,7 @@ module Axn
         # Closed it enforces nothing, open it enforces nothing — there is no reading under which the
         # declaration means what it says.
         def _reject_vacuous_value_constraints!(validations, where:, tolerance:, nested: false)
-          klasses = _judgeable_type_klasses(validations[:type])
+          klasses = _judgeable_type_klasses(validations)
           return if klasses.empty?
 
           entries = Axn::Validation::Base.validator_entries(validations)
@@ -4160,6 +4145,469 @@ module Axn
           return true if Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank]
 
           klasses.all? { |klass| NEVER_BLANK_KLASSES.any? { |known| known.equal?(klass) } }
+        end
+
+        # A declaration whose admissible SIZES form an empty interval — a floor it imposes sitting above a
+        # ceiling it also imposes, so nothing of the declared type can satisfy it. One test closes what were
+        # four spellings of the same defect (PRO-3220): `absence:` against the non-emptiness floor a typed
+        # field carries by default, a `length:` ceiling of 0 against that same floor, a `length:` naming
+        # `minimum: 3, maximum: 2` in one entry, and an `inclusion:` set whose every member is outside the
+        # interval. They differ only in which spelling supplies which bound.
+        #
+        # Both bounds come from `Reflection::Schema`'s own derivations rather than from a re-reading beside
+        # them — the guard/projection rule in AGENTS.md — so what this refuses is exactly the pair of bounds
+        # that would have been emitted. That is also why an `if:`/`unless:` gate does not stand it down:
+        # reflection is static-maximal, so a gated bound is still emitted, and the node still carries a floor
+        # above its own ceiling.
+        #
+        # A nil tolerance DOES stand it down, and the same reasoning as the value-constraint guard applies: a
+        # tolerated nil is a passing value, and the emitted node stays satisfiable through the null branch its
+        # nullability adds. Asked through `Base.nil_accepted?`, the judgment requiredness and nullability
+        # already turn on, rather than by reading one entry's tolerance keys.
+        def _reject_unsatisfiable_size_interval!(validations, where:)
+          return if Axn::Validation::Base.nil_accepted?(validations)
+
+          _reject_blank_axis_complement!(validations, where:)
+
+          return if _bound_bearing_entry_gated?(validations)
+
+          minimum = Internal::Reflection::Schema.declared_size_minimum(validations)
+          maximum = Internal::Reflection::Schema.declared_size_maximum(validations)
+
+          _raise_empty_size_interval!(validations, where, minimum, maximum) if _empty_interval?(validations, minimum, maximum)
+          _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
+        end
+
+        # Whether the bounds this declaration derives admit no size at all — a floor above the ceiling, on a
+        # declaration whose every branch that ceiling actually bounds.
+        def _empty_interval?(validations, minimum, maximum)
+          return false unless minimum && maximum && minimum > maximum
+
+          _every_branch_is_bounded?(validations)
+        end
+
+        # Whether every branch this declaration names is one the ceiling actually bounds — the question a
+        # union makes necessary, since a value need satisfy only ONE branch and one unbounded branch is enough
+        # to sink the claim that nothing satisfies the declaration.
+        #
+        # Only an `absence:`-derived ceiling can be escaped, because it is a statement about the BLANK axis
+        # rather than the size one: it bounds a value to size 0 only where that value's blankness implies size
+        # 0. For `:boolean` it does not — `false` is blank, so the `absence:` accepts it, and LengthValidator
+        # measures its rendering rather than a length it has none of. So
+        # `type: [Array, :boolean], presence: false, absence: true, length: { minimum: 1 }` is satisfied by
+        # `false` on every call, though its Array branch admits nothing at all.
+        #
+        # An earlier cut of this tried to WITNESS that branch instead — to check that `false` satisfies the
+        # declaration and stand down only then. That does not terminate. A witness is a claim that something
+        # passes, so it owes every check in the declaration a pass, and each review round found another check
+        # it had not been asked: the author's own `length:` ceiling, then a closed `inclusion:` set, then
+        # `exclusion:`/`format:`/`numericality:`/`comparison:`/`acceptance:` — six of them measured in one
+        # sweep, with a custom `validate:` unanswerable in principle. Deciding a value against every validator
+        # in a declaration is a satisfiability solver, and building one inside a guard is the same unbounded
+        # treadmill `Internal::NativeMethods` exists to refuse.
+        #
+        # So the question is about the DECLARED TYPE, which is finite and knowable, rather than about a value:
+        # is every branch bounded. It costs three narrow refusals the witness version got right — a floor above
+        # what `false` measures, and an `is:`/`maximum:` that excludes it — and buys a rule that cannot acquire
+        # a new hole from a validator nobody thought about. Under-restriction leaves a broken contract
+        # declaring; over-restriction rejects a working one, and only the second is unrecoverable.
+        # Scoped to an absence-derived ceiling by the first line, and the existing suite is what caught its
+        # absence: a `length:` ceiling is a size bound the author wrote, so it bounds every branch by
+        # construction and this question does not arise — without the gate, `type: String,
+        # length: { minimum: 3, maximum: 2 }` stopped being refused because a String's blank values are not its
+        # empty ones.
+        def _every_branch_is_bounded?(validations)
+          return true unless Internal::Reflection::Schema.absence_bounds_size?(validations)
+
+          Internal::Reflection::Schema.absence_ceiling_bounds_every_token?(validations)
+        end
+
+        # The validator entries that can supply a bound to the size rules below, or the set they scan. Kept as a
+        # list rather than asked of each derivation in turn, because the derivations are the EMITTER's and are
+        # rightly static-maximal — the question here is a different one.
+        # `absence` is deliberately NOT here, though it does supply a ceiling. Its derivation
+        # (`Schema.absence_bounds_size?`) asks the gate question itself and answers "no ceiling" for a gated
+        # entry, so naming it here only made a gated `absence:` stand down bounds it never contributed —
+        # measured, that suppressed 21 correct refusals in the guard's product, every one of them a gated
+        # `absence:` beside an `inclusion:` set whose member the EMPTINESS floor excludes, which is a
+        # contradiction the absence entry plays no part in. The other three belong here because their
+        # derivations are the emitter's and rightly static-maximal: `declared_length_floor`/`_ceiling` count a
+        # gated bound as written, `presence_rejects_blank?` reads a gated entry's tolerance as live, and the set
+        # scan does not consult the `inclusion:` entry's own gate.
+        BOUND_BEARING_VALIDATOR_KEYS = %i[presence length inclusion].freeze
+
+        # Whether any entry that could supply a bound can be skipped on a given call — its OWN gate and any it
+        # inherits from the declaration alike, which is what makes this the only gate test the size rules need.
+        # A declaration-level `if:` reaches every entry here, so it stands the rules down through this one test
+        # rather than through a check of its own; and reaching them THROUGH the per-entry model is what keeps
+        # ActiveModel's precedence intact, since a blank nested `if:` drops the shared gate for that key and
+        # leaves the entry ungated after all (`presence: { if: nil }, absence: { if: nil }, if: -> { false }`
+        # really does enforce both checks on every call).
+        #
+        # The size rules claim "no value satisfies this contract", and a bound that is sometimes not enforced
+        # cannot support that claim:
+        # `length: { minimum: 3, maximum: 2, if: -> { false } }` really does admit `["a"]` on every call where
+        # its gate is closed, and a floor read out of a gated `presence:` is no floor on those calls either.
+        #
+        # Coarser than it strictly needs to be — one gated entry stands the whole comparison down, rather than
+        # only the bound it supplies — and deliberately so: under-restriction leaves a broken contract
+        # declaring, while over-restriction rejects a working one, and only the second is unrecoverable.
+        #
+        # This is where the size rules part company with the EMITTER, which is static-maximal and will still
+        # emit `{minItems: 3, maxItems: 2}` for the gated entry above. That node is unsatisfiable while its
+        # contract is not, which is a real defect — but it is the emitter's gate policy, it predates this
+        # guard (a gated `length:` ceiling has emitted that way since PRO-3192), and the corollary this rule
+        # enforces is about refusing a CONTRACT that admits nothing.
+        def _bound_bearing_entry_gated?(validations)
+          gates = _shared_validation_options(validations)
+          keys = BOUND_BEARING_VALIDATOR_KEYS + [Internal::FieldConfig::NON_EMPTINESS_KEY]
+
+          keys.any? do |key|
+            entry = validations[key]
+
+            entry && Axn::Validation::Base.entry_effectively_gated?(entry, gates)
+          end
+        end
+
+        # `presence:` and `absence:` are exact complements: ActiveModel's presence check errors on a `blank?`
+        # value and its absence check errors on a `present?` one (activemodel 8.1.3.1, presence.rb / absence.rb),
+        # so a declaration carrying both live admits nothing whatever the declared type — no value is blank and
+        # present at once.
+        #
+        # That last step is the assumption this rule rests on, and it is ActiveSupport's: `present?` is defined
+        # as `!blank?`, and every core class AS specializes defines the pair together. A class overriding ONE of
+        # them is outside it — a non-empty `Array` subclass answering `present? => false` satisfies both checks
+        # — but that is an assumption the whole size layer already makes rather than this rule's own: the
+        # `minItems: 1` reflection emits for a bare `presence:` is unsound against exactly the same object
+        # (measured: a subclass answering `blank? => true` with contents satisfies the emitted node and is
+        # rejected at runtime). Refusing to make it here would mean deleting the rule, since a declared `type:`
+        # admits every subclass and nothing at declaration time can see what will arrive. Asked FIRST, and
+        # separately from the size interval, because it is the one question here that needs no size reasoning:
+        # the blank axis lands on the size axis only for a type whose blank values are its empty ones, and for
+        # a `String` it does not (`"  "` is blank, and two characters long).
+        #
+        # The presence half is usually the check axn infers, which is why this is reachable from a declaration
+        # naming only `absence:` — and why `allow_empty: true` / `presence: false`, which suppress that check,
+        # are the fix rather than a workaround.
+        #
+        # A GATE on either entry stands the rule down, and this is the one place in this file where a gate
+        # rescues rather than being counted static-maximally. The reason is that the gated pair has a legitimate
+        # reading the ungated pair does not: `presence: { unless: :archived? }, absence: { if: :archived? }` is
+        # a working contract, and no structural test can tell complementary conditions from identical ones
+        # (two Procs are never comparable). Refusing it would reject a declaration that works, which this guard
+        # must never do — so it under-restricts here, and the emitted node is unaffected either way.
+        #
+        # EFFECTIVE gates, not each entry's own: the question is whether both checks run on every call, and a
+        # DECLARATION-level `if:` stops them both just as surely as a nested one stops either. (That is the
+        # opposite of what `_entry_guaranteed_to_run?` answers, and rightly — it asks whether one entry can be
+        # skipped independently of its siblings, which a shared gate never does.)
+        def _reject_blank_axis_complement!(validations, where:)
+          entries = Axn::Validation::Base.validator_entries(validations)
+          absence = entries[:absence]
+          return unless absence
+
+          # That a `presence:` entry is PRESENT is not that it rejects anything: ActiveModel skips a
+          # blank-tolerant entry outright for a blank value, and blank values are the only ones a presence
+          # check ever rejects — so `presence: { allow_blank: true }` enforces nothing and leaves `absence:`
+          # unopposed. Asked through the emitter's own `presence_rejects_blank?`, THE definition of "does an
+          # active presence check here reject every blank value", so the half this rule leans on is the same
+          # half the emitted floor is derived from.
+          #
+          # `absence:`'s own tolerances need no such test: it rejects only NON-blank values, and both
+          # `allow_blank:` and `allow_nil:` withdraw it from values it already accepts.
+          return unless Internal::Reflection::Schema.presence_rejects_blank?(validations)
+
+          gates = _shared_validation_options(validations)
+          return if [entries[:presence], absence].any? { |entry| Axn::Validation::Base.entry_effectively_gated?(entry, gates) }
+
+          # Both exits are named rather than the one that applies: by the time this runs, an inferred presence
+          # check and an authored one are the same entry (`_apply_default_presence!` writes a bare `true`, and
+          # the nil-skip pass rewrites either into an options bag), so which was written is no longer legible
+          # here — and a message that guessed would send half its readers the wrong way.
+          raise ArgumentError,
+                "presence: and absence: on #{where} admit no value at all: they are exact complements — " \
+                "presence rejects every blank value, absence rejects every value that is not blank — so " \
+                "nothing satisfies both. Drop one of the two: `allow_empty: true` (or `presence: false`) " \
+                "suppresses the non-emptiness check, including the one axn infers where a declaration " \
+                "names none."
+        end
+
+        def _raise_empty_size_interval!(validations, where, minimum, maximum)
+          authored = _size_floor_authored?(validations, minimum)
+          floor_source = authored ? "from `length:`" : "the non-emptiness check a typed field carries by default"
+          remedy = if authored
+                     "Correct the bounds so the floor does not sit above the ceiling."
+                   else
+                     "Widen the ceiling, or drop the floor with `allow_empty: true` (or `presence: false`)."
+                   end
+
+          raise ArgumentError,
+                "#{where} admits no value at all: it requires a size of at least #{minimum} (#{floor_source}) " \
+                "and at most #{maximum} (#{_size_ceiling_source(validations)}), an empty interval — so every " \
+                "value is rejected, and the reflected schema carries a floor above its own ceiling, which no " \
+                "caller can satisfy. #{remedy}"
+        end
+
+        # Whether the AUTHOR's own `length:` supplied the floor, rather than the emptiness axis — which decides
+        # both how the message names the bound and which remedy it offers, since `allow_empty:` moves one floor
+        # and not the other. The floor the emitter derived is what settles it: `declared_size_minimum` prefers
+        # an emittable `length:` floor and falls back to the 1 the non-emptiness axis imposes, so a `length:`
+        # floor that does not equal the derived minimum is one the derivation set aside (a blank-tolerant
+        # entry), leaving the axis to do the talking.
+        def _size_floor_authored?(validations, minimum)
+          declared = Axn::Validation::Base.declared_length_floor(_effective_length_options(validations))
+
+          Axn::Validation::Base.emittable_length_floor?(declared) && declared == minimum
+        end
+
+        # The ceiling's spelling, asked through the emitter's own predicate so the message cannot name one
+        # source while the derivation used the other.
+        def _size_ceiling_source(validations)
+          Internal::Reflection::Schema.absence_bounds_size?(validations) ? "from `absence:`" : "from `length:`"
+        end
+
+        # An `inclusion:` set every member of which the size bounds exclude. The same "does any member leave a
+        # value able to satisfy this" question `_reject_unsatisfiable_value_constraints!` asks of the declared
+        # TYPE, asked here of the declared sizes — and a member must clear both, since a member of the wrong
+        # type is rejected whatever its size.
+        #
+        # Only a LITERAL set is judged. A Range's bounds are not its members, so measuring them would answer a
+        # different question; every other unreadable set stands the check down, the direction this guard must
+        # prefer.
+        def _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
+          # A live `absence:` constrains the set even where it names no SIZE — on a `String` it rejects every
+          # non-blank value while no size key expresses that, so the bounds are both nil and the members are
+          # still constrained. Without this the mirror case below (`absence:` beside a non-blank member) was
+          # unreachable: the scan returned here before the member was ever weighed.
+          return if minimum.nil? && maximum.nil? && !Internal::Reflection::Schema.absence_bounds_blankness?(validations)
+
+          klasses = _judgeable_type_klasses(validations)
+          return if klasses.empty?
+
+          entry = Axn::Validation::Base.validator_entries(validations)[:inclusion]
+          return unless entry
+          return if _blank_value_bypasses_set?(validations, entry, minimum)
+
+          return unless _membership_is_the_members_own_equality?(entry)
+
+          members = Axn::Validation::Base.literal_set_members(entry)
+          return if members.nil? || members.empty?
+
+          return if members.any? { |member| _member_size_admissible?(member, klasses, minimum, maximum, validations) }
+
+          # Which axis closed the set decides the message, and the test is which one still ADMITS the member:
+          # where a member clears the size bounds and fails the blank axis, size cannot explain the refusal and
+          # its wording is actively wrong (`" "` is not outside "at least 1" — it is blank, and an `absence:` on
+          # a String names no size at all, which rendered the bounds as an empty "()"). Where the bounds exclude
+          # it too, they are the better diagnosis: for a container blank and empty are the same fact, so the
+          # size message says it in the axis the author wrote and names `allow_empty:` as the fix.
+          if members.any? { |member| _member_size_within_bounds?(member, minimum, maximum) }
+            _raise_blank_axis_closed_inclusion_set!(where, validations)
+          else
+            _raise_size_closed_inclusion_set!(where, minimum, maximum)
+          end
+        end
+
+        # The set is closed by the BLANK axis rather than by a size bound: either every member is blank and a
+        # live `presence:` rejects blank values, or every member is non-blank and a live `absence:` rejects
+        # those. Named separately from the size message because the fix differs — the author has to relax the
+        # blank check or change the members, and widening a size bound does nothing.
+        def _raise_blank_axis_closed_inclusion_set!(where, validations)
+          if Internal::Reflection::Schema.absence_bounds_blankness?(validations)
+            raise ArgumentError,
+                  "inclusion: on #{where} can never match — `absence:` rejects every value that is not blank, " \
+                  "and no member of the set is blank, so every value is rejected. Drop the `absence:`, or " \
+                  "include a blank member (\"\" for a String)."
+          end
+
+          raise ArgumentError,
+                "inclusion: on #{where} can never match — every member of the set is BLANK, and this " \
+                "declaration's presence check rejects every blank value, so every value is rejected. Note that " \
+                "for a String blankness is not emptiness: \" \" is one character long, so a size bound cannot " \
+                "express this and `minLength` does not. Allow blank values (`allow_empty: true` drops the " \
+                "presence check a typed field carries by default, or `presence: false` disables an explicit " \
+                "one), or include a non-blank member."
+        end
+
+        # Whether a BLANK value could get through without the set being consulted at all, which would make the
+        # member scan prove nothing: ActiveModel skips a blank-tolerant entry outright for such a value, so the
+        # set stops being the only way through. Whether one can actually arrive is a question about the rest of
+        # the contract rather than about this entry, asked in two steps.
+        #
+        # First, the emptiness axis, which is what the sibling guard's measured note is really about: an
+        # entry's own tolerance does not carry the field, because a live presence or non-emptiness check
+        # rejects EVERY blank value whatever its size — so `inclusion: { in: ["a"], allow_blank: true }` on a
+        # bare `type: Array` still admits nothing, the `[]` the tolerance would have let past being rejected
+        # before the set is reached. Asked through the emitter's own `empty_value_rejected?`, the same
+        # judgment the floor is derived from.
+        #
+        # Then the size bounds, and here the type decides. Where every declared type's blank values are its
+        # EMPTY ones a blank value measures 0, so a floor above 0 excludes it. For a `String` it does not:
+        # `"  "` is blank and two characters long, so a blank value of very nearly any size exists and no size
+        # bound rules one out.
+        #
+        # Read through the entry's EFFECTIVE options, so a declaration-level `allow_blank:` counts exactly as
+        # the entry's own does.
+        def _blank_value_bypasses_set?(validations, entry, minimum)
+          return false unless Axn::Validation::Base.effective_entry_options(entry, _shared_validation_options(validations))[:allow_blank]
+          return false if Internal::Reflection::Schema.empty_value_rejected?(validations)
+          return true unless Internal::Reflection::Schema.blank_values_are_empty?(validations)
+
+          minimum.nil? || minimum.zero?
+        end
+
+        # Whether ONE set member leaves a value able to satisfy the declaration: of a type the field admits,
+        # and of a size the bounds admit. Type membership reuses the shared literal judgment, which already
+        # stands down on any pair it cannot judge.
+        #
+        # Measuring the member is only evidence about the values it can MATCH if its equality is one axn
+        # vouches for, because `Array#include?` dispatches `member == candidate` — so the member decides
+        # membership itself, and one matching `[1]` while measuring 0 really does satisfy a `minimum: 1` floor.
+        #
+        # The size itself is then read through the emitter's ownership test, which answers nil for a value
+        # whose measurement is not Ruby's own.
+        #
+        # THE ASSUMPTION THIS RESTS ON, stated because it cannot be checked here: that a value MATCHING the
+        # member measures as the member does. `Array#==` compares CONTENTS, so an `Array` subclass with empty
+        # contents and a `length` of its own is matched by the member `[]` and measured by ActiveModel as
+        # whatever it says — `type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: [[]] }` is
+        # satisfied by `Class.new(Array) { def length = 3 }.new` and by no honest value (measured).
+        #
+        # The assumption is kept, and the reason is SCOPE rather than a trade. A value whose `length` contradicts
+        # its own contents is a class lying about itself, which is non-standard behaviour and not this gem's to
+        # defend against — the same line AGENTS.md draws for a foreign object's `to_sym`, `encoding` or
+        # `inspect`. Nothing here hardens against such a value; it simply is not counted as the witness that
+        # would make a declaration satisfiable.
+        #
+        # That line does NOT license refusing anything an honest value can satisfy, and the priority runs the
+        # other way round: this rule is an affordance — telling an author at declaration what they would
+        # otherwise learn on the first call — and an affordance is worth less than the freedom to write working
+        # code. Where an honest value satisfies a declaration, the rule stands down however unsatisfiable the
+        # projection looks (see the union branch at `_every_branch_is_bounded?`, where `false` is an ordinary
+        # value and the rule gives up three correct refusals to keep it). Measured, and this is the check that
+        # matters rather than the argument: across 3072 cells of the guard's product — every type, floor,
+        # ceiling and set, unions and gated entries included — against a spread holding sizes 0..6 of every
+        # container, there are ZERO refusals an honest value satisfies.
+        #
+        # What honouring the lying value would cost, for the record: 22 of the product's 76 refusals, both
+        # spellings the rule exists for among them (`absence:` on a typed field, `length: { maximum: 0 }`),
+        # since every size a declaration bounds can be answered by a value that measures itself. And the
+        # declaration would then EMIT `{type: "array", enum: [[]], minItems: 3}`, a node no document satisfies,
+        # which AGENTS.md refuses outright. Both are reasons the choice is comfortable; neither is the reason
+        # it is made.
+        #
+        # The same assumption carries the blank axis (a subclass answering `blank?` for itself) and the
+        # `minItems: 1` reflection emits for a bare `presence:`. It is the layer's, not this rule's.
+        # `spec/axn/core/validations/unsatisfiable_size_interval_spec.rb` pins it as a stated limit, with the
+        # runtime control that shows the candidate really does pass.
+        def _member_size_admissible?(member, klasses, minimum, maximum, validations)
+          return false unless klasses.any? { |klass| _literal_may_satisfy?(member, klass) }
+          return true unless _member_equality_vouched_for?(member)
+
+          _member_size_within_bounds?(member, minimum, maximum) &&
+            _member_survives_the_blank_axis?(member, validations)
+        end
+
+        # Whether a member the two tests above have cleared clears the size bounds too — the SIZE half on its
+        # own, which is also what tells the two refusal messages apart: a member this admits and the blank axis
+        # rejects is one the size bounds cannot explain. Kept separate from the equality and type stand-downs
+        # rather than folded in, because those two mean "do not judge this member at all" and must not be read
+        # as "the size bounds admit it".
+        def _member_size_within_bounds?(member, minimum, maximum)
+          size = Internal::Reflection::Schema.container_size(member)
+          return true if size.nil?
+
+          (minimum.nil? || size >= minimum) && (maximum.nil? || size <= maximum)
+        end
+
+        # Whether the member survives the BLANK axis, which the size bounds do not stand in for wherever a type
+        # has blank values that are not its empty ones. For `Array`/`Hash` they coincide and this adds nothing.
+        # For a `String` they do not, and the gap is a real one in both directions:
+        #
+        #   * `type: String, inclusion: { in: [" "] }` — the inferred `presence:` rejects the sole member for
+        #     being blank, while its length of 1 clears the floor that same check supplies. Nothing satisfies
+        #     the declaration, and it emitted `{type: "string", enum: [" "], minLength: 1}` — a node
+        #     `json_schemer` accepts `" "` against while the runtime rejects every input, so the schema told a
+        #     client to send the one value guaranteed to fail.
+        #   * `type: String, presence: false, absence: true, inclusion: { in: ["ab"] }` — the mirror. A live
+        #     `absence:` rejects every value that is not blank, so a non-blank member cannot be the witness
+        #     either.
+        #
+        # Bounded on purpose, and this is the line that keeps it from becoming the witness treadhole the union
+        # branch already fell into: a member must satisfy the checks THIS GUARD DERIVED ITS BOUNDS FROM — the
+        # blank axis and the size axis — and nothing else. A `format:` or `numericality:` beside them can also
+        # sink a member, and asking about those would be deciding a value against every validator in the
+        # declaration, which is a satisfiability solver rather than a guard. Those stay under-restrictions,
+        # the recoverable direction.
+        #
+        # Both reads are the emitter's own, so what is refused here cannot disagree with the bound that was
+        # emitted: `presence_rejects_blank?` for the floor, and `absence_bounds_blankness?` for the ceiling.
+        def _member_survives_the_blank_axis?(member, validations)
+          # Judged only where the member answers the blank axis with RUBY'S code, on the same terms
+          # `container_size` applies to its measurement: a member whose `present?` or `blank?` is its own
+          # decides for itself whether an `absence:` accepts it, and standing down leaves the declaration
+          # legal — the direction this guard must err in.
+          return true unless Internal::Reflection::Schema.blankness_natively_answered?(member)
+
+          blank = Internal::Reflection::Schema.presence_blank?(member)
+
+          return false if blank && Internal::Reflection::Schema.presence_rejects_blank?(validations)
+
+          !(!blank && Internal::Reflection::Schema.absence_bounds_blankness?(validations))
+        end
+
+        # Whether the set's own `include?` decides membership by asking a MEMBER — which is what makes vouching
+        # for that member's `==` (below) vouch for the whole operation.
+        #
+        # Two things must hold, and the second is not implied by the first.
+        #
+        # The container must be an Array. `Array#include?` dispatches `member == candidate`, so the member is
+        # the whole operation and it is one axn holds. A `Hash`- or `Set`-backed set is looked up by
+        # `hash`/`eql?`, and there the CANDIDATE supplies half the comparison — an object axn will never see at
+        # declaration, and one whose `hash` may collide with a member of a quite different size.
+        #
+        # And the `include?` that will RUN must be Array's own, asked by ownership exactly as a member's `==`
+        # is. An exact-class Array can still carry a singleton `include?`, and that spelling reaches a declared
+        # contract by a supported route: `ShapeGraph.detached_option_array` stores a FROZEN container as the
+        # caller's object rather than copying it, precisely because nothing can mutate it afterwards — so the
+        # override survives, and `Clusivity` dispatches it. (An unfrozen one never gets this far; that seam
+        # refuses a container defining methods of its own, since `dup` would drop the singleton class and the
+        # copy would answer differently from what was declared.)
+        #
+        # Read through the shared collection reader, so a bare `inclusion: [..]` and the long
+        # `inclusion: { in: [..] }` are judged as the one thing they are.
+        def _membership_is_the_members_own_equality?(entry)
+          collection = Axn::Validation::Base.declared_set_collection(entry)
+          return false unless collection.instance_of?(::Array)
+
+          ::Array.equal?(Internal::NativeMethods.method_owner(collection, :include?))
+        end
+
+        # Whether the `==` this member will actually be compared with is the one the closed equality world
+        # vouches for. Two questions, and both are needed:
+        #
+        #   * is the member's class in that world at all — asked by EXACT class, never by descent, for the
+        #     reasons `JUDGEABLE_EQUALITY_CLASSES` gives;
+        #   * does that class OWN the `==` that would run. A singleton method is invisible to the first
+        #     question — `member = []; def member.==(other) = other == [1]` is an exact `Array` whose equality
+        #     is nobody's but its own — so the effective owner is read the same way the size predicates read
+        #     theirs, through `NativeMethods.method_owner`.
+        #
+        # The owner is compared by identity, so nothing the member defines decides the question.
+        def _member_equality_vouched_for?(member)
+          klass = Internal::Identity.class_of(member)
+          return false unless _judgeable_equality?(klass)
+
+          klass.equal?(Internal::NativeMethods.method_owner(member, :==))
+        end
+
+        def _raise_size_closed_inclusion_set!(where, minimum, maximum)
+          bounds = [("at least #{minimum}" if minimum), ("at most #{maximum}" if maximum)].compact.join(" and ")
+          raise ArgumentError,
+                "inclusion: on #{where} can never match — every value in its set is outside the sizes this " \
+                "declaration admits (#{bounds}), so every value is rejected and the emitted `enum` names " \
+                "nothing the emitted size bounds allow. Widen the size bounds (`allow_empty: true` drops the " \
+                "floor a typed field carries by default), or drop the members the bounds exclude."
         end
 
         # Classes whose instances compare and equate ACROSS the family, so a literal of one can satisfy a
@@ -4397,9 +4845,31 @@ module Axn
         # for an undeclared type and for a declaration naming any pseudo-type (`:boolean`/`:uuid`/`:params`),
         # whose admissible values are not a class membership question — both stand the guard down.
         #
+        # Empty for a SELF-GATED `type:` entry too. All three callers read the declared type to rule values OUT
+        # — a set no value of the type could match, a forbidden set no value of the type could be, a member the
+        # size bounds exclude — so a type check that can be skipped while the rest of the declaration runs
+        # rules nothing out on those calls. `type: { klass: Array, if: -> { false } }, presence: false,
+        # length: { minimum: 3 }, inclusion: { in: ["abc"] }` is satisfied by `"abc"` on every call (measured):
+        # the closed gate admits the String, the set contains it, and its length clears the floor. The same
+        # reading rescues the vacuity rule's mirror — `exclusion: { in: ["admin"] }` under a gated `type: Array`
+        # really does reject the String "admin" it now admits.
+        #
+        # `entry_self_gated?`, and this is the one question that reader is right for: it asks whether the entry
+        # is skippable INDEPENDENTLY OF ITS SIBLINGS, which is exactly what makes a type check stop ruling
+        # values out while the constraint judging them still runs. A gate the whole DECLARATION carries reaches
+        # the type check and the constraint alike, so it creates no asymmetry between them and is deliberately
+        # not counted here — the three callers answer it in their own opposite ways (the size rules stand down
+        # on it; the value-constraint and vacuity rules refuse it outright, "closed the check enforces nothing,
+        # open it rejects everything", pinned in `container_position_validators_spec.rb`), and reading the
+        # effective gate here would impose one policy on all three. Measured: it did, and broke both pins.
+        #
         # Classified with `case`/`when Module`, which does not call the token's own `is_a?`.
-        def _judgeable_type_klasses(declared)
-          tokens = _declared_type_tokens_in(declared)
+        def _judgeable_type_klasses(validations)
+          entry = Axn::Validation::Base.validator_entries(validations)[:type]
+          return [] unless entry
+          return [] if Axn::Validation::Base.entry_self_gated?(entry)
+
+          tokens = _declared_type_tokens_in(entry)
           return [] if tokens.empty?
 
           tokens.all? { |token| case token when ::Module then true else false end } ? tokens : []
@@ -4809,6 +5279,11 @@ module Axn
           # answer depends on what they left behind.
           _apply_nil_skip_to_non_type_validators!(validations)
 
+          # LAST, so it judges exactly the bag each config will carry — the same bag the emitter reads its size
+          # bounds out of. Every earlier guard here reads the author's own spelling; this one reads the settled
+          # contract, because the floor it weighs is one axn itself installs (`_apply_default_presence!`).
+          _reject_unsatisfiable_size_interval!(validations, where: _declared_fields_label(fields))
+
           fields.map { |field| [field, validations] }
         end
 
@@ -5061,9 +5536,10 @@ module Axn
         end
 
         # The declaration-wide options every entry of this declaration rides alongside — the tier each per-entry
-        # judgment resolves against.
+        # judgment resolves against. Validation::Base holds the one definition, so the tier a guard here resolves
+        # against and the tier the emitter resolves against cannot drift.
         def _shared_validation_options(validations)
-          validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
+          Axn::Validation::Base.shared_validation_options(validations)
         end
 
         def _raise_emptiness_conflict!(fields, allow_empty:, spelling:, says:)
