@@ -663,14 +663,15 @@ RSpec.describe "Axn class-level schema reflection" do
         expect(schema_for(type: String, length: 3)[:minLength]).to eq(1) # the presence floor
       end
 
-      it "carries no fractional floor, which ActiveModel refuses as a bound anyway" do
-        expect(schema_for(type: Array, length: { minimum: 0.5 })[:minItems]).to eq(1) # the presence floor
+      # A fractional floor is not a shape reflection ever sees: `_reject_invalid_length_bounds!` (PRO-3233)
+      # refuses it at declaration, ahead of `expects` itself returning.
+      it "is refused at declaration rather than reaching reflection" do
+        expect { schema_for(type: Array, length: { minimum: 0.5 }) }
+          .to raise_error(ArgumentError, /length:.*has a bound ActiveModel cannot use/m)
       end
 
       it "carries the flag's own floor when the author's floor has no whole size to carry" do
         expect(schema_for(type: Array, optional: true, allow_empty: false, length: { minimum: Float::INFINITY }))
-          .to eq(type: %w[array null], minItems: 1)
-        expect(schema_for(type: Array, optional: true, allow_empty: false, length: { minimum: 0.5 }))
           .to eq(type: %w[array null], minItems: 1)
       end
 

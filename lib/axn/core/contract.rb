@@ -2887,6 +2887,9 @@ module Axn
 
           where = "an `of:` bag on #{_declared_fields_label(fields)}"
           _reject_container_position_validators!(validations, where:, nested: true)
+          # `length:` is one of `POSITIONAL_VALIDATOR_KEYS` (PRO-3193), so a bag can carry the identical bad
+          # bound a field can — same guard, same reader, this position's own `where:`.
+          _reject_invalid_length_bounds!(validations, where:)
           # No tolerance is passed, and none is read out of `validations` either (see `_bag_as_validations`):
           # a bag's `allow_nil:`/`allow_blank:` do not govern its position (PRO-3225), so honouring them here
           # would stand the guard down for a rescue that never happens — letting a contract which admits
@@ -3516,6 +3519,32 @@ module Axn
             "in `of:` (`of: { klass: String, format: ... }` for an Array's elements, " \
               "`of: { values: { ... } }` for a map's)"
           end
+        end
+
+        # A `length:` bound ActiveModel's own `LengthValidator#check_validity!` cannot use — anything other
+        # than a non-negative Integer, `Float::INFINITY`, a Symbol, or a Proc for `:is`/`:minimum`/`:maximum`.
+        # axn compiles the validator class lazily, on the first `.call` (`ValidatorClassCache`), so today such
+        # a bound declares cleanly and every call fails with AM's own opaque `ArgumentError` instead of one
+        # naming the field at the point it was declared. `length: { in: 3..2 }` is the same defect spelled as
+        # a Range: AM expands `in:`/`within:` by overwriting `:minimum`/`:maximum` with `range.min`/
+        # `range.max`, and a backwards or otherwise-empty Range resolves both to `nil` — not itself Numeric,
+        # so it is caught by the identical check without a separate case.
+        #
+        # Reads only the author's own `length:` spelling (`Axn::Validation::Base.invalid_length_bounds`), so —
+        # unlike `_reject_unsatisfiable_size_interval!` — it does not need to wait for the tolerance push-down
+        # or `_apply_default_presence!` to settle the bag first.
+        def _reject_invalid_length_bounds!(validations, where:)
+          bad = Axn::Validation::Base.invalid_length_bounds(validations[:length])
+          return if bad.empty?
+
+          offenders = bad.map { |key, bound| "#{key}: #{bound.inspect}" }.join(", ")
+          raise ArgumentError,
+                "length: on #{where} has a bound ActiveModel cannot use (#{offenders}) — :is/:minimum/:maximum " \
+                "must each be a non-negative Integer, Float::INFINITY, a Symbol, or a Proc. Declared, the class " \
+                "defines cleanly and every call raises `ArgumentError: ... must be a non-negative Integer, " \
+                "Infinity, Symbol, or Proc` from ActiveModel's own LengthValidator#check_validity! instead. A " \
+                "backwards or empty Range (`length: { in: 3..2 }`) resolves the same way, since Range#min/#max " \
+                "return nil for one."
         end
 
         # An `inclusion:` set no value of the declared type can be a member of — a contract that rejects every
@@ -5201,6 +5230,11 @@ module Axn
           # for THIS message — it carries only key names and the field label, both push-down-invariant — but it
           # is for the satisfiability guard Task 3 adds here next, whose message quotes the declared set.
           _reject_container_position_validators!(validations, where: _declared_fields_label(fields))
+
+          # Reads only the raw `length:` spelling, so it belongs beside the guards above rather than after the
+          # tolerance push-down: a `length:` bound ActiveModel cannot use fails the class the same way whatever
+          # tolerance ends up riding alongside it.
+          _reject_invalid_length_bounds!(validations, where: _declared_fields_label(fields))
 
           # The tolerance PAIR, not a collapsed boolean: the guard resolves it per entry the way `validates` does,
           # so an entry overriding one of these keeps its own value. Passed explicitly because these are

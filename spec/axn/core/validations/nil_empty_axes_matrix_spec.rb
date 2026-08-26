@@ -749,12 +749,13 @@ RSpec.describe "nil and empty axes" do
       # The axis leans only on a floor of a positive whole size — the one shape a schema floor can carry — so
       # a floor the runtime honors is never a floor the schema drops.
       #
-      # ActiveModel accepts a non-negative Integer, `Float::INFINITY`, a Symbol or a Proc as a length bound,
-      # so a fractional floor is a broken declaration whose ArgumentError surfaces at validation exactly as
-      # it does without `allow_empty:`. The axis leans on no such floor, and does not preempt its error.
-      it "leans on no fractional floor, which ActiveModel itself refuses as a bound" do
-        action = build(type: Array, optional: true, allow_empty: false, length: { minimum: 0.5 })
-        expect(action.call(v: []).exception.message).to include("must be a non-negative Integer")
+      # ActiveModel accepts a non-negative Integer, `Float::INFINITY`, a Symbol or a Proc as a length bound.
+      # A fractional floor used to be a broken declaration whose ArgumentError surfaced at validation, exactly
+      # as it does without `allow_empty:` — `_reject_invalid_length_bounds!` (PRO-3233) now refuses it at
+      # declaration instead, ahead of this axis ever reading it, so there is nothing left here to lean on.
+      it "never reaches this axis: a fractional floor is refused at declaration" do
+        expect { build(type: Array, optional: true, allow_empty: false, length: { minimum: 0.5 }) }
+          .to raise_error(ArgumentError, /length:.*has a bound ActiveModel cannot use/m)
       end
 
       it "keeps its own check alongside a floor of no whole size, which no schema floor could carry" do

@@ -456,6 +456,38 @@ module Axn
       # are for the floor.
       def self.emittable_length_ceiling?(ceiling) = ceiling.is_a?(Integer) && !ceiling.negative?
 
+      # Whether ActiveModel's own `LengthValidator#check_validity!` would accept this entry's bounds — a
+      # distinct question from the readers above, which classify a bound for SATISFIABILITY reasoning and
+      # treat anything non-Numeric as `:unverifiable` (a Symbol/Proc, resolved per call). This asks whether
+      # AM can even BUILD the validator: it raises `ArgumentError` from `check_validity!` for a bound that is
+      # none of a non-negative Integer, `Float::INFINITY`, a Symbol, or a Proc — but only when the validator
+      # class is first compiled, which axn defers to the first `.call` (`ValidatorClassCache`), so a bad bound
+      # today declares cleanly and fails every call with an opaque error instead of one at declaration.
+      #
+      # Mirrors `LengthValidator#initialize` rather than reusing `declared_length_checks`: AM expands a
+      # `within:`/`in:` Range by UNCONDITIONALLY overwriting `:minimum`/`:maximum` with `range.min`/
+      # `range.max`, so a backwards or otherwise-empty Range (`3..2`) resolves to a `nil` bound rather than
+      # raising there — `declared_length_checks` reads the same range through `begin`/`end`/`exclude_end?`
+      # for a different purpose (an open floor/ceiling) and would silently drop that `nil` instead of
+      # surfacing it. Only keys AM would actually check are read — `Hash#slice` mirrors `check_validity!`'s
+      # own `CHECKS.keys & options.keys`, key PRESENCE and not truthiness, so an explicit `nil` bound is
+      # caught rather than skipped.
+      #
+      # Returns the offending `{key => bound}` pairs, empty when every declared bound is admissible.
+      def self.invalid_length_bounds(entry_opts)
+        opts = validator_entry_options(entry_opts)
+        return {} if opts.empty?
+
+        range = opts[:within] || opts[:in]
+        opts = opts.merge(minimum: range.min, maximum: range.max) if range.is_a?(Range)
+
+        opts.slice(:is, :minimum, :maximum).reject do |_key, bound|
+          (bound.is_a?(Integer) && !bound.negative?) ||
+            bound == Float::INFINITY || bound == -Float::INFINITY ||
+            bound.is_a?(Symbol) || bound.is_a?(Proc)
+        end
+      end
+
       # The operators ActiveModel compares a value against, shared by `numericality:` and `comparison:` —
       # `NumericalityValidator`'s COMPARE_CHECKS and `ComparisonValidator`'s are the same five plus
       # `other_than:`, which is deliberately absent here: an inverted operator has no JSON Schema keyword, and
