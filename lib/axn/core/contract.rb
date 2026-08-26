@@ -4375,7 +4375,11 @@ module Axn
         # different question; every other unreadable set stands the check down, the direction this guard must
         # prefer.
         def _reject_size_closed_inclusion_set!(validations, where:, minimum:, maximum:)
-          return if minimum.nil? && maximum.nil?
+          # A live `absence:` constrains the set even where it names no SIZE — on a `String` it rejects every
+          # non-blank value while no size key expresses that, so the bounds are both nil and the members are
+          # still constrained. Without this the mirror case below (`absence:` beside a non-blank member) was
+          # unreachable: the scan returned here before the member was ever weighed.
+          return if minimum.nil? && maximum.nil? && !Internal::Reflection::Schema.absence_bounds_blankness?(validations)
 
           klasses = _judgeable_type_klasses(validations)
           return if klasses.empty?
@@ -4388,9 +4392,41 @@ module Axn
 
           members = Axn::Validation::Base.literal_set_members(entry)
           return if members.nil? || members.empty?
-          return if members.any? { |member| _member_size_admissible?(member, klasses, minimum, maximum) }
 
-          _raise_size_closed_inclusion_set!(where, minimum, maximum)
+          return if members.any? { |member| _member_size_admissible?(member, klasses, minimum, maximum, validations) }
+
+          # Which axis closed the set decides the message, and the test is which one still ADMITS the member:
+          # where a member clears the size bounds and fails the blank axis, size cannot explain the refusal and
+          # its wording is actively wrong (`" "` is not outside "at least 1" — it is blank, and an `absence:` on
+          # a String names no size at all, which rendered the bounds as an empty "()"). Where the bounds exclude
+          # it too, they are the better diagnosis: for a container blank and empty are the same fact, so the
+          # size message says it in the axis the author wrote and names `allow_empty:` as the fix.
+          if members.any? { |member| _member_size_within_bounds?(member, minimum, maximum) }
+            _raise_blank_axis_closed_inclusion_set!(where, validations)
+          else
+            _raise_size_closed_inclusion_set!(where, minimum, maximum)
+          end
+        end
+
+        # The set is closed by the BLANK axis rather than by a size bound: either every member is blank and a
+        # live `presence:` rejects blank values, or every member is non-blank and a live `absence:` rejects
+        # those. Named separately from the size message because the fix differs — the author has to relax the
+        # blank check or change the members, and widening a size bound does nothing.
+        def _raise_blank_axis_closed_inclusion_set!(where, validations)
+          if Internal::Reflection::Schema.absence_bounds_blankness?(validations)
+            raise ArgumentError,
+                  "inclusion: on #{where} can never match — `absence:` rejects every value that is not blank, " \
+                  "and no member of the set is blank, so every value is rejected. Drop the `absence:`, or " \
+                  "include a blank member (\"\" for a String)."
+          end
+
+          raise ArgumentError,
+                "inclusion: on #{where} can never match — every member of the set is BLANK, and this " \
+                "declaration's presence check rejects every blank value, so every value is rejected. Note that " \
+                "for a String blankness is not emptiness: \" \" is one character long, so a size bound cannot " \
+                "express this and `minLength` does not. Allow blank values (`allow_empty: true` drops the " \
+                "presence check a typed field carries by default, or `presence: false` disables an explicit " \
+                "one), or include a non-blank member."
         end
 
         # Whether a BLANK value could get through without the set being consulted at all, which would make the
@@ -4464,14 +4500,60 @@ module Axn
         # `minItems: 1` reflection emits for a bare `presence:`. It is the layer's, not this rule's.
         # `spec/axn/core/validations/unsatisfiable_size_interval_spec.rb` pins it as a stated limit, with the
         # runtime control that shows the candidate really does pass.
-        def _member_size_admissible?(member, klasses, minimum, maximum)
+        def _member_size_admissible?(member, klasses, minimum, maximum, validations)
           return false unless klasses.any? { |klass| _literal_may_satisfy?(member, klass) }
           return true unless _member_equality_vouched_for?(member)
 
+          _member_size_within_bounds?(member, minimum, maximum) &&
+            _member_survives_the_blank_axis?(member, validations)
+        end
+
+        # Whether a member the two tests above have cleared clears the size bounds too — the SIZE half on its
+        # own, which is also what tells the two refusal messages apart: a member this admits and the blank axis
+        # rejects is one the size bounds cannot explain. Kept separate from the equality and type stand-downs
+        # rather than folded in, because those two mean "do not judge this member at all" and must not be read
+        # as "the size bounds admit it".
+        def _member_size_within_bounds?(member, minimum, maximum)
           size = Internal::Reflection::Schema.container_size(member)
           return true if size.nil?
 
           (minimum.nil? || size >= minimum) && (maximum.nil? || size <= maximum)
+        end
+
+        # Whether the member survives the BLANK axis, which the size bounds do not stand in for wherever a type
+        # has blank values that are not its empty ones. For `Array`/`Hash` they coincide and this adds nothing.
+        # For a `String` they do not, and the gap is a real one in both directions:
+        #
+        #   * `type: String, inclusion: { in: [" "] }` — the inferred `presence:` rejects the sole member for
+        #     being blank, while its length of 1 clears the floor that same check supplies. Nothing satisfies
+        #     the declaration, and it emitted `{type: "string", enum: [" "], minLength: 1}` — a node
+        #     `json_schemer` accepts `" "` against while the runtime rejects every input, so the schema told a
+        #     client to send the one value guaranteed to fail.
+        #   * `type: String, presence: false, absence: true, inclusion: { in: ["ab"] }` — the mirror. A live
+        #     `absence:` rejects every value that is not blank, so a non-blank member cannot be the witness
+        #     either.
+        #
+        # Bounded on purpose, and this is the line that keeps it from becoming the witness treadhole the union
+        # branch already fell into: a member must satisfy the checks THIS GUARD DERIVED ITS BOUNDS FROM — the
+        # blank axis and the size axis — and nothing else. A `format:` or `numericality:` beside them can also
+        # sink a member, and asking about those would be deciding a value against every validator in the
+        # declaration, which is a satisfiability solver rather than a guard. Those stay under-restrictions,
+        # the recoverable direction.
+        #
+        # Both reads are the emitter's own, so what is refused here cannot disagree with the bound that was
+        # emitted: `presence_rejects_blank?` for the floor, and `absence_bounds_blankness?` for the ceiling.
+        def _member_survives_the_blank_axis?(member, validations)
+          # Judged only where the member answers the blank axis with RUBY'S code, on the same terms
+          # `container_size` applies to its measurement: a member whose `present?` or `blank?` is its own
+          # decides for itself whether an `absence:` accepts it, and standing down leaves the declaration
+          # legal — the direction this guard must err in.
+          return true unless Internal::Reflection::Schema.blankness_natively_answered?(member)
+
+          blank = Internal::Reflection::Schema.presence_blank?(member)
+
+          return false if blank && Internal::Reflection::Schema.presence_rejects_blank?(validations)
+
+          !(!blank && Internal::Reflection::Schema.absence_bounds_blankness?(validations))
         end
 
         # Whether the set's own `include?` decides membership by asking a MEMBER — which is what makes vouching

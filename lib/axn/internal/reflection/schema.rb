@@ -1026,6 +1026,20 @@ module Axn
           value.length
         end
 
+        # The methods the BLANK axis asks a value by: ActiveModel's presence/absence validators call `blank?`
+        # and `present?`, and ActiveSupport's generic pair answers out of `empty?` behind a `respond_to?` probe.
+        # `length` is deliberately absent — blankness is not size, which is the whole reason a `String` member
+        # needs this at all.
+        ASKED_BY_THE_BLANK_AXIS = %i[blank? present? empty? respond_to?].freeze
+
+        # Whether this value's BLANKNESS is Ruby's own to answer, on exactly the terms `container_size` applies
+        # to its measurement and for the same reason: a member whose `present?` or `blank?` is its own decides
+        # for itself whether an `absence:` accepts it, and a declaration-time verdict may neither run that code
+        # nor second-guess it. Answering false stands the judgment down, which leaves the declaration legal.
+        def blankness_natively_answered?(value)
+          ASKED_BY_THE_BLANK_AXIS.all? { |method_name| natively_answered?(value, method_name) }
+        end
+
         # Every method a check that holds a size bound asks the value by — the four measurements plus the
         # `respond_to?` those checks select between them with. All must be Ruby's own, so the order is
         # immaterial.
@@ -2030,11 +2044,22 @@ module Axn
         #     conditional half would put a ceiling on the document that the contract does not carry on the
         #     calls where the gate is closed — most of them.
         def absence_bounds_size?(validations)
-          entry = Axn::Validation::Base.validator_entries(validations)[:absence]
-          return false unless entry
-          return false if Axn::Validation::Base.entry_effectively_gated?(entry, Axn::Validation::Base.shared_validation_options(validations))
+          return false unless absence_bounds_blankness?(validations)
 
           blank_values_are_empty?(validations)
+        end
+
+        # The first two of those conditions on their own: a LIVE, UNGATED `absence:`, which rejects every value
+        # that is not blank whatever the declared type. Split out because the blank axis is a real constraint
+        # even where it lands nowhere on the size axis — for a `String`, `absence:` rejects `"ab"` while no size
+        # key expresses it — so the member scan asks this to know whether a non-blank member can be a witness at
+        # all (`_member_survives_the_blank_axis?`), where the ceiling derivation above needs the size question.
+        # One definition, so the two cannot disagree about which `absence:` entries count.
+        def absence_bounds_blankness?(validations)
+          entry = Axn::Validation::Base.validator_entries(validations)[:absence]
+          return false unless entry
+
+          !Axn::Validation::Base.entry_effectively_gated?(entry, Axn::Validation::Base.shared_validation_options(validations))
         end
 
         # Whether every value this declaration calls BLANK measures 0 — the question that decides whether the

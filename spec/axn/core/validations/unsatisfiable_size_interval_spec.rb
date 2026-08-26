@@ -519,6 +519,55 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       end
     end
 
+    # Blankness is not size, and for a `String` the two come apart: `" "` is blank and one character long. So a
+    # member can clear every size bound the declaration names and still be rejected by the check that SUPPLIED
+    # one. Measured before the fix: `type: String, inclusion: { in: [" "] }` declared, nothing passed at
+    # runtime, and it emitted `{type: "string", enum: [" "], minLength: 1}` — which `json_schemer` accepts `" "`
+    # against, so the schema named the one value guaranteed to fail on every call.
+    describe "a member the blank axis rejects while the size bounds admit it" do
+      it "refuses a blank member under a live presence check" do
+        expect { declare(type: String, inclusion: { in: [" "] }) }
+          .to raise_error(ArgumentError, /every member of the set is BLANK/)
+      end
+
+      # The mirror: `absence:` rejects every value that is NOT blank, and on a String it names no size at all,
+      # so the bounds are both nil and the member is still constrained.
+      it "refuses a non-blank member under a live absence check" do
+        expect { declare(type: String, presence: false, absence: true, inclusion: { in: %w[ab] }) }
+          .to raise_error(ArgumentError, /`absence:` rejects every value that is not blank/)
+      end
+
+      it "refuses it under allow_empty: too, which does not reach the absence check" do
+        expect { declare(type: String, allow_empty: true, absence: true, inclusion: { in: %w[ab] }) }
+          .to raise_error(ArgumentError, /`absence:` rejects every value that is not blank/)
+      end
+
+      # The controls, each a declaration that really is satisfiable and must stay legal.
+      it "declares where any member survives the axis" do
+        expect { declare(type: String, inclusion: { in: ["a", " "] }) }.not_to raise_error
+        expect { declare(type: String, presence: false, absence: true, inclusion: { in: ["", "ab"] }) }.not_to raise_error
+      end
+
+      it "declares where the blank check is disabled" do
+        action = declare(type: String, presence: false, inclusion: { in: [" "] })
+
+        expect(action.call(f: " ").ok?).to be(true)
+      end
+
+      it "stands down on a GATED absence, which rejects nothing on a closed gate" do
+        expect { declare(type: String, presence: false, absence: { if: -> { false } }, inclusion: { in: %w[ab] }) }
+          .not_to raise_error
+      end
+
+      # An Array's blank values ARE its empty ones, so the axis adds nothing there and the size bounds already
+      # said everything — this is the case the fix must not disturb.
+      it "leaves a container declaration judged by size alone" do
+        expect { declare(type: Array, inclusion: { in: [["a"]] }) }.not_to raise_error
+        expect { declare(type: Array, inclusion: { in: [[]] }) }
+          .to raise_error(ArgumentError, /outside the sizes this declaration admits/)
+      end
+    end
+
     it "stands down on a set it may not read" do
       action = declare(type: Array, inclusion: { in: :allowed_tags })
       expect(action).to be_a(Class)
@@ -640,11 +689,28 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
         expect(action.call(f: [1]).ok?).to be(true)
       end
 
-      it "stands down on a plain Array carrying a singleton length" do
+      # A singleton `length` stands the SIZE branch down — the sibling example above shows that under
+      # `presence: false` — but it does not save a declaration the BLANK axis closes independently. Here the
+      # inferred emptiness check is live and the member is empty, so every value matching it is rejected for
+      # being blank, whatever anything measures. Verified: with this guard stubbed off nothing passes at all,
+      # the member itself and a subclass reporting `length` 3 included (that one is empty, so the emptiness
+      # check rejects it too), and the node emitted is `{enum: [[]], minItems: 3}`.
+      it "still refuses a member with a singleton length that the blank axis closes anyway" do
         member = []
         def member.length = 3
 
-        expect { declare(type: Array, length: { minimum: 3 }, inclusion: { in: [member] }) }.not_to raise_error
+        expect { declare(type: Array, length: { minimum: 3 }, inclusion: { in: [member] }) }
+          .to raise_error(ArgumentError, /every member of the set is BLANK/)
+      end
+
+      # And the size stand-down is still exactly that: drop the blank-axis floor and the same declaration is
+      # legal again, because the only thing left to judge is a measurement that is not Ruby's own.
+      it "stands down on that member once the blank axis no longer closes it" do
+        member = []
+        def member.length = 3
+
+        expect { declare(type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: [member] }) }
+          .not_to raise_error
       end
 
       # `Object#blank?` is ActiveSupport's own, and answers out of the `empty?` already required native — so a
