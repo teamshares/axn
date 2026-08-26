@@ -368,8 +368,12 @@ module Axn
         include FieldOptionality
 
         # Whether the field is declared `type: :boolean` (drives the generated `?` predicate reader).
+        #
+        # `Internal::ShapeGraph.type_tokens`, not `Kernel#Array`: the declared `klass:` is the caller's own
+        # value, and `Array()` would dispatch `to_ary`/`to_a` on it — at declaration, since a boolean field's
+        # reader is defined from here (`_define_field_readers!`).
         def boolean?
-          Array(validations.dig(:type, :klass)) == [:boolean]
+          Internal::ShapeGraph.type_tokens(validations.dig(:type, :klass)) == [:boolean]
         end
 
         # Whether the declared default is applied at runtime: any non-nil default counts (`default:
@@ -1523,8 +1527,11 @@ module Axn
         # raises would replace this ArgumentError with the caller's exception — which outside StandardError
         # escapes every rescue meant to settle it. Byte-identical to the list's rendering for every class and
         # pseudo-type token.
+        #
+        # `_declared_type_tokens`, not `Array(klass)`, for the same reason as everywhere else `klass` is a raw
+        # declared token: `Array()` dispatches `to_ary`/`to_a` on it, which reflection may never do.
         def _shape_compatible_klass!(klass, requirement:)
-          klasses = Array(klass)
+          klasses = _declared_type_tokens(klass)
           return klasses.first if _shape_compatible_klass?(klass)
 
           raise ArgumentError,
@@ -1535,7 +1542,7 @@ module Axn
         # cannot gate on (`_fold_distributing_shape!`). Split out rather than restated, so "a shape can be read
         # off this class" has one definition and the refusal above cannot drift from the fallback below.
         def _shape_compatible_klass?(klass)
-          klasses = Array(klass)
+          klasses = _declared_type_tokens(klass)
           klasses.size == 1 && SHAPE_INCOMPATIBLE_TYPES.exclude?(klasses.first)
         end
 
@@ -2268,7 +2275,9 @@ module Axn
           raise ArgumentError, "coerce: must be true or false (got #{coerce.inspect})" unless [true, false].include?(coerce)
           return unless coerce
 
-          klasses = Array(type_hash[:klass])
+          # `_declared_type_tokens`, not `Array(...)`: `type_hash[:klass]` is the coerce target as the caller
+          # wrote it, so `Array()` would dispatch `to_ary`/`to_a` on it — and this runs at declaration.
+          klasses = _declared_type_tokens(type_hash[:klass])
           coercible = Axn::Internal::Coercion.coercible_klasses(type_hash)
           unsupported = klasses - coercible - [String]
 
@@ -2710,7 +2719,10 @@ module Axn
         # to prevent.
         def _reject_unusable_of_message!(bag, fields)
           return unless Internal::ShapeGraph.carries_key?(bag, :message)
-          return unless Array(bag[:klass]).empty?
+          # `_declared_type_tokens`, not `Array(...)`: this runs at declaration, over the caller's own raw
+          # `klass:`, so `Array()` would dispatch `to_ary`/`to_a` on it — a divergence from the runtime's own
+          # `Array(...).empty?` read that is exactly the point (reflection may run none of the caller's code).
+          return unless _declared_type_tokens(bag[:klass]).empty?
 
           raise ArgumentError,
                 "of: message: on #{_declared_fields_label(fields)} has nothing to describe — a `message:` " \
@@ -2767,12 +2779,13 @@ module Axn
         # a class union is what `OfValidator#matches_axis?` iterates and an empty one holds a value to nothing:
         # `of: []` (sugar for `of: { klass: [] }`) declared cleanly, waved every element through, and emitted
         # `items: { anyOf: [] }` — a schema no element satisfies — so document and runtime disagreed in the
-        # LOOSENING direction. Asked with `Array(...).empty?`, which is exactly how the runtime asks it and
-        # exactly how `_reject_unusable_of_message!` asks it, so no two of the three can disagree about which
-        # bags name a class. The other two axes are Hashes rather than lists, so presence is all there is.
+        # LOOSENING direction. Asked with `_declared_type_tokens(...).empty?`, the same emptiness question the
+        # runtime's own `Array(...).empty?` answers and `_reject_unusable_of_message!` asks alongside it — but
+        # through the seam that does not dispatch `to_ary`/`to_a` on the caller's own `klass:`, since this runs
+        # at declaration. The other two axes are Hashes rather than lists, so presence is all there is.
         def _of_axis_constrains?(bag, axis)
           return false unless Internal::ShapeGraph.carries_key?(bag, axis)
-          return !Array(bag[axis]).empty? if axis == :klass
+          return !_declared_type_tokens(bag[axis]).empty? if axis == :klass
 
           !bag[axis].nil?
         end
@@ -2915,7 +2928,8 @@ module Axn
         def _bag_as_validations(bag)
           validations = Axn::Validation::Base.validator_entries(bag.except(*BAG_GRAMMAR_KEYS))
           klass = bag[:klass]
-          return validations if Array(klass).empty?
+          # `_declared_type_tokens`, not `Array(klass)`: `klass` is the bag's raw caller-declared value.
+          return validations if _declared_type_tokens(klass).empty?
 
           # The CANONICAL `type:` shape, as a field's stored validations carry it: a bare token would be
           # normalized as a validator scalar and read under the wrong key, so every judgment that unwraps
@@ -3056,7 +3070,9 @@ module Axn
           return true if nil.equal?(declared)
           return false unless nil.equal?(Internal::ShapeGraph.hash_or_nil(declared))
 
-          Array(declared).empty?
+          # `_declared_type_tokens`, not `Array(...)` — the same reason `_axis_names_empty_union?` above gives
+          # for its own read of `declared`: a raw caller value here must not have `to_ary`/`to_a` dispatched on it.
+          _declared_type_tokens(declared).empty?
         end
 
         # The pseudo-types a declared type may name beside a real class — shared by a field's own `type:`
@@ -3275,7 +3291,8 @@ module Axn
         def _folded_element_container(bag)
           return Internal::ShapeGraph::ANY_CONTAINER unless _shape_compatible_klass?(bag[:klass])
 
-          klass = Array(bag[:klass]).first
+          # `_declared_type_tokens`, not `Array(...)`: `bag[:klass]` is the caller's own value.
+          klass = _declared_type_tokens(bag[:klass]).first
           ::Array.equal?(klass) ? Internal::ShapeGraph::ANY_CONTAINER : klass
         end
 
@@ -3295,7 +3312,8 @@ module Axn
         def _distributing_shape?(node)
           return false unless Internal::ShapeGraph.carries_key?(node, :shape)
 
-          declared = Array(_declared_type_klass(node))
+          # `_declared_type_tokens`, not `Array(...)`: `_declared_type_klass` returns the caller's raw value.
+          declared = _declared_type_tokens(_declared_type_klass(node))
           declared.size == 1 && ::Array.equal?(declared.first)
         end
 
@@ -5151,7 +5169,8 @@ module Axn
         # with no empty state there is nothing to permit. Both are declaration errors rather than silently
         # inert options.
         def _validate_allow_empty!(fields, validations)
-          klasses = Array(validations.dig(:type, :klass))
+          # `_declared_type_tokens`, not `Array(...)`: the declared `type:`/`klass:` is the caller's own value.
+          klasses = _declared_type_tokens(validations.dig(:type, :klass))
           where = fields.map(&:to_s).inspect
 
           if klasses.empty?
@@ -5416,7 +5435,8 @@ module Axn
         def _default_presence_applies?(validations, allow_empty:, tolerant:)
           return false if tolerant || allow_empty || validations.key?(:presence)
 
-          type_values = Array(validations.dig(:type, :klass))
+          # `_declared_type_tokens`, not `Array(...)`: the declared `type:`/`klass:` is the caller's own value.
+          type_values = _declared_type_tokens(validations.dig(:type, :klass))
           !(type_values.include?(:boolean) || type_values.include?(:params))
         end
 
@@ -5501,8 +5521,9 @@ module Axn
           # yet cannot answer `empty?` — an unverifiable contract — from a wrong-typed one, whose single error
           # belongs to the type check. The declaration guard has already established a `type:` is present.
           key = Internal::FieldConfig::NON_EMPTINESS_KEY
+          # `_declared_type_tokens`, not `Array(...)`: the declared `type:`/`klass:` is the caller's own value.
           validations[key] = EMPTINESS_AXIS_TOLERANCE
-                             .merge(klass: Array(validations.dig(:type, :klass)))
+                             .merge(klass: _declared_type_tokens(validations.dig(:type, :klass)))
                              .merge(authored_length.slice(:message))
         end
 
