@@ -2723,8 +2723,11 @@ module Axn
           union = node[:anyOf].is_a?(Array)
           admits = integer_admitted_by?(tokens)
           branches = union ? node[:anyOf] : [node]
+          # A branch may only be DROPPED where the declared tokens prove no Numeric can occupy the position.
+          # See `numeric_reachable_through_broad_token?` — the emitted type is not evidence on its own.
+          drop = !numeric_reachable_through_broad_token?(tokens)
           mapped = branches.filter_map do |branch|
-            numericality_branch(branch, admits, numeric_only:, only_integer:, for_output:)
+            numericality_branch(branch, admits, numeric_only:, only_integer:, for_output:, drop:)
           end
           # Every branch dropping is the CONTRACT, not a case to fall back from: `type: Float, numericality:
           # { only_integer: true }` admits nothing at all — no Float's `to_s` is an integer literal, and a JSON
@@ -2750,7 +2753,25 @@ module Axn
         # nil before any validator sees it wherever the field tolerates one, so neither option says anything
         # about nil — measured, `type: [String, Integer, NilClass], numericality: { only_numeric: true },
         # optional: true` accepts nil while rejecting every String.
-        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, for_output:)
+        # Whether some declared token is a SUPERTYPE of Numeric — `Object`, `Comparable`, `Kernel`. Such a token
+        # admits a Numeric value while `single_type_for` renders it APPROXIMATELY (`type: Object` emits a
+        # `"string"` branch), so that branch's emitted type says nothing about what the position holds, and
+        # dropping it as "names non-Numerics" emptied a contract `1` satisfies: `type: Object, numericality:
+        # { only_numeric: true }` went to `enum: []` while accepting the Integer.
+        #
+        # The same lesson as the untyped branch above, one step further: an ABSENT type is not evidence, and
+        # neither is an APPROXIMATE one. A token that is itself numeric is excluded — it emits a numeric branch,
+        # which this pass narrows rather than drops.
+        def numeric_reachable_through_broad_token?(tokens)
+          tokens.any? do |token|
+            next false unless Internal::Identity.kind?(token, ::Module)
+
+            Internal::NativeMethods.includes_module?(::Numeric, token) &&
+              !Internal::NativeMethods.includes_module?(token, ::Numeric)
+          end
+        end
+
+        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, for_output:, drop: true)
           # A branch `only_numeric:` may drop is one whose emitted type NAMES values that are not Numerics.
           # Everything else is left exactly as built — including the `"null"` branch nullability owns, a branch
           # already tagged `"integer"`, and any branch whose type is ABSENT. That last is load-bearing: a missing
@@ -2762,11 +2783,11 @@ module Axn
           # literal — so `of: { klass: [Array, Integer], numericality: { only_integer: true } }` had been
           # advertising an Array element the validator rejects on every call. The test stays on types that NAME
           # non-Numerics; an absent or unrecognized type still falls through to "keep".
-          return numeric_only || only_integer ? nil : branch if NON_NUMERIC_BRANCH_TYPES.include?(branch[:type])
+          return drop && (numeric_only || only_integer) ? nil : branch if NON_NUMERIC_BRANCH_TYPES.include?(branch[:type])
 
           case branch[:type]
           when "number" then only_integer ? number_branch_as_integer(branch, admits_integer) : branch
-          when "string" then string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:)
+          when "string" then string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:, drop:)
           else branch
           end
         end
@@ -2782,8 +2803,8 @@ module Axn
         # unreachable rather than merely narrower.
         def number_branch_as_integer(branch, admits_integer) = admits_integer ? branch.merge(type: "integer") : nil
 
-        def string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:)
-          return nil if numeric_only
+        def string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:, drop: true)
+          return nil if numeric_only && drop
           return branch unless only_integer
 
           merge_integer_literal_pattern(branch, for_output:)

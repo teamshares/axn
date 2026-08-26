@@ -5966,6 +5966,33 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       # A MISSING emitted type is not evidence the branch is non-Numeric. `type: Numeric` emits `{}` on output
       # deliberately — its values have more than one wire form — and reading that absence as proof emptied a
       # position the action satisfies perfectly well.
+      # The same lesson one step further: an ABSENT emitted type is not evidence, and neither is an APPROXIMATE
+      # one. A token that is a SUPERTYPE of Numeric — `Object`, `Comparable` — admits a Numeric value while
+      # `single_type_for` renders it as a `"string"` branch, so dropping that branch as "names non-Numerics"
+      # emptied a contract an Integer satisfies.
+      it "keeps a branch a broad token renders approximately" do
+        action = build_axn { expects :n, type: Object, numericality: { only_numeric: true } }
+
+        expect(action.call(n: 1)).to be_ok
+        expect(action.input_schema[:properties][:n]).not_to eq(enum: [])
+      end
+
+      it "reads Comparable the same way, being a supertype of Numeric too" do
+        action = build_axn { expects :n, type: Comparable, numericality: { only_numeric: true } }
+
+        expect(action.call(n: 1)).to be_ok
+        expect(action.input_schema[:properties][:n]).not_to eq(enum: [])
+      end
+
+      # The control that keeps the guard honest: an EXACT non-numeric token still empties, because there really
+      # is no value of it a Numeric can be.
+      it "still empties a lone String position, which no Numeric can occupy" do
+        action = build_axn { expects :n, type: String, numericality: { only_numeric: true } }
+
+        expect(action.call(n: "1")).not_to be_ok
+        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      end
+
       it "keeps an untyped branch, whose absent type proves nothing" do
         action = build_axn do
           exposes :n, type: Numeric, numericality: { only_numeric: true }
