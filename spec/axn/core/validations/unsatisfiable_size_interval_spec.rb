@@ -667,18 +667,18 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
           .to raise_error(ArgumentError, /can never match/)
       end
 
-      # THE STATED LIMIT, not a gap left open. Measuring the member is evidence about the values it matches
+      # THE STATED LIMIT, and the line is SCOPE. Measuring the member is evidence about the values it matches
       # only if a matching value measures as it does — and `Array#==` compares CONTENTS, so a subclass with
       # empty contents and a `length` of its own is matched by `[]` and measured by ActiveModel as whatever it
-      # says. The declaration below really is satisfiable, by that value and by nothing honest.
+      # says. That value is a class lying about itself, which is non-standard behaviour and not this gem's to
+      # defend against, so it is not counted as the witness that would make the declaration satisfiable.
       #
-      # It is refused anyway, for two measured reasons. Honouring the candidate takes 22 of the guard's 76
-      # refusals with it across the product — including `absence:` on a typed field and `length: { maximum: 0 }`,
-      # the two spellings the rule exists for — because every size a declaration bounds can be answered by a
-      # value that measures itself. And standing down is not the safe direction: the declaration then EMITS
-      # `{type: "array", enum: [[]], minItems: 3}`, a node no document satisfies, which AGENTS.md forbids
-      # outright. The over-refusal needs a value whose measurement contradicts its contents; the emission
-      # reaches every consumer of the schema.
+      # The limit is deliberately narrow: it does not license refusing what an HONEST value satisfies. This
+      # rule is an affordance — it tells an author at declaration what the first call would tell them — and an
+      # affordance is worth less than the freedom to write working code, so wherever an honest value gets
+      # through, the rule stands down (see the union branch, which gives up three correct refusals to keep
+      # `false`). Nothing honest gets through this one: measured across 3072 product cells against a spread
+      # holding sizes 0..6 of every container, no refusal is satisfied by an honest value.
       it "refuses a declaration only a value that measures itself could satisfy" do
         expect { declare(type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: [[]] }) }
           .to raise_error(ArgumentError, /can never match/)

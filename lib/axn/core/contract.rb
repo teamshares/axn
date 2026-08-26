@@ -4437,18 +4437,28 @@ module Axn
         # whatever it says — `type: Array, presence: false, length: { minimum: 3 }, inclusion: { in: [[]] }` is
         # satisfied by `Class.new(Array) { def length = 3 }.new` and by no honest value (measured).
         #
-        # The assumption is kept rather than honoured, and the measurement is why. Standing down for such a
-        # candidate is not a narrowing of this branch: across the guard's product it takes 22 of 76 refusals
-        # with it, including both spellings the rule exists for (`absence:` on a typed field and
-        # `length: { maximum: 0 }`), because every size a declaration bounds can be answered by a value that
-        # measures itself. There is no version of a size rule that survives it.
+        # The assumption is kept, and the reason is SCOPE rather than a trade. A value whose `length` contradicts
+        # its own contents is a class lying about itself, which is non-standard behaviour and not this gem's to
+        # defend against — the same line AGENTS.md draws for a foreign object's `to_sym`, `encoding` or
+        # `inspect`. Nothing here hardens against such a value; it simply is not counted as the witness that
+        # would make a declaration satisfiable.
         #
-        # Nor is standing down the safe direction here, which is the usual reason to prefer it: with this
-        # branch off, that declaration EMITS `{type: "array", enum: [[]], minItems: 3}` — a node no document
-        # satisfies — and AGENTS.md is explicit that a contract admitting nothing has no honest projection and
-        # must be refused at declaration rather than papered over by the emitter. The over-refusal is reachable
-        # only by writing a value whose measurement contradicts its contents; the emission is reachable by
-        # every caller of the schema.
+        # That line does NOT license refusing anything an honest value can satisfy, and the priority runs the
+        # other way round: this rule is an affordance — telling an author at declaration what they would
+        # otherwise learn on the first call — and an affordance is worth less than the freedom to write working
+        # code. Where an honest value satisfies a declaration, the rule stands down however unsatisfiable the
+        # projection looks (see the union branch at `_every_branch_is_bounded?`, where `false` is an ordinary
+        # value and the rule gives up three correct refusals to keep it). Measured, and this is the check that
+        # matters rather than the argument: across 3072 cells of the guard's product — every type, floor,
+        # ceiling and set, unions and gated entries included — against a spread holding sizes 0..6 of every
+        # container, there are ZERO refusals an honest value satisfies.
+        #
+        # What honouring the lying value would cost, for the record: 22 of the product's 76 refusals, both
+        # spellings the rule exists for among them (`absence:` on a typed field, `length: { maximum: 0 }`),
+        # since every size a declaration bounds can be answered by a value that measures itself. And the
+        # declaration would then EMIT `{type: "array", enum: [[]], minItems: 3}`, a node no document satisfies,
+        # which AGENTS.md refuses outright. Both are reasons the choice is comfortable; neither is the reason
+        # it is made.
         #
         # The same assumption carries the blank axis (a subclass answering `blank?` for itself) and the
         # `minItems: 1` reflection emits for a bare `presence:`. It is the layer's, not this rule's.
