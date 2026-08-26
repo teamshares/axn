@@ -145,9 +145,13 @@ module Axn
 
       # The coercible subset of a type: option's klass(es) — the single source of truth for "what does
       # this field coerce to", consulted by both the declaration-time guard and the runtime step.
+      #
+      # `ShapeGraph.type_tokens`, not `Kernel#Array`: `klass` is the caller's own declared `type:`/`klass:`
+      # token, and one of this method's two callers (`Contract#_validate_coercion!`) runs at declaration —
+      # `Array()` would dispatch `to_ary`/`to_a` on it there (PRO-3233).
       def coercible_klasses(type_opt)
         klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
-        Array(klass).select { |k| SUPPORTED.include?(k) }
+        Axn::Internal::ShapeGraph.type_tokens(klass).select { |k| SUPPORTED.include?(k) }
       end
 
       # Whether a field coerces this run: its own `coerce:` tri-state wins (explicit true/false), else the
