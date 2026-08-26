@@ -166,13 +166,19 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
     it "reflects a normalized scalar validator identically to its Hash form under a tolerance flag" do
       action = build_axn do
         expects :num, numericality: true, optional: true
-        expects :n2, numericality: { greater_than: 0 }, optional: true
+        expects :n2, numericality: {}, optional: true
+        expects :bounded, numericality: { greater_than: 0 }, optional: true
         def call; end
       end
 
       props = action.input_schema.fetch(:properties)
       expect(props.fetch(:num)).to eq(props.fetch(:n2))
       expect(props.dig(:num, :type)).to contain_exactly("number", "null")
+      # The discriminating control: `numericality: true` and `numericality: { greater_than: 0 }` are NOT the
+      # same contract — the first accepts 0 and the second rejects it — so pairing them here would assert a
+      # false equivalence, and did, for as long as a declared bound reflected nowhere (PRO-3223).
+      expect(props.fetch(:bounded)).not_to eq(props.fetch(:num))
+      expect(props.fetch(:bounded)).to include(exclusiveMinimum: 0)
     end
   end
 

@@ -194,6 +194,15 @@ module Axn
 
       private
 
+      # How this validation's SUBJECT is named in prose — for a side channel that has to say what it was doing
+      # rather than what was wrong (`ValidateValidator`'s best-effort report of a callable that raised). A named
+      # position names itself; `ContainerContents` overrides it, because the attribute a positional contract is
+      # built under is a synthetic axn owns and means nothing to the author reading the warning.
+      #
+      # Reached the way the other per-validation readers here are (`record.send(...)` from the validator), so a
+      # user-declared field name can never intercept it.
+      def _validation_subject(attribute) = "field '#{attribute}'"
+
       def _action_for_validation = @action
 
       # The nested shape walk's position, or nil at the top of one. Read off the record by

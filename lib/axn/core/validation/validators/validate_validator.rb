@@ -7,7 +7,10 @@ require "axn/internal/rendering"
 module Axn
   module Validators
     class ValidateValidator < ActiveModel::EachValidator
-      def self.apply_syntactic_sugar(value, _fields)
+      # `nested:` is required rather than defaulted: it decides which REMEDY the misuse message offers, and the
+      # two are different advice. Both call sites name it, and a third that forgot would otherwise send the
+      # author to the wrong position.
+      def self.apply_syntactic_sugar(value, _fields, nested:)
         if value.is_a?(Hash)
           # `validate:` is the CUSTOM-callable validator; a Hash form must carry the callable under
           # `:with` (`validate: { with: <callable>, message: "…" }`). A Hash without `:with` is a
@@ -21,8 +24,7 @@ module Axn
                   "`validate: { with: <callable>, message: \"...\" }` — but got a Hash with no `:with` key " \
                   "(keys: #{value.keys.inspect}). If you meant a standard validation such as an " \
                   "allowed-value set, declare it directly (e.g. `inclusion: { in: [...] }`), which constrains " \
-                  "the value at that position — on a container-typed field that is the container itself, not " \
-                  "its contents."
+                  "the value at that position — #{misuse_remedy(nested)}"
           end
 
           return value
@@ -30,6 +32,19 @@ module Axn
 
         { with: value }
       end
+
+      # Where "declare it directly" puts the validator, worded for the position the misuse was written at. In a
+      # BAG the position is already the contents, so the validator belongs in that same bag; at a FIELD the
+      # position is the container, and a constraint on its contents belongs one rung down in `of:`.
+      def self.misuse_remedy(nested)
+        if nested
+          "in a bag that is the contents, so it belongs in the same bag beside `klass:`."
+        else
+          "on a container-typed field that is the container itself, not its contents — a constraint on those " \
+            "belongs in `of:`."
+        end
+      end
+      private_class_method :misuse_remedy
 
       # Runtime backstop for a `:with`-less options Hash that bypassed the declaration guard above
       # (e.g. validations assembled directly). Mirrors the guard's guidance.
@@ -52,7 +67,9 @@ module Axn
         rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
           # Log the raised error best-effort, then surface it as this field's validation message — a
           # crashing custom validator fails the field rather than silently passing.
-          Axn::Extensions.best_effort("applying custom validation on field '#{attribute}'") { raise e }
+          # The subject is named by the validator collector rather than interpolated from the attribute: an
+          # unnamed position's attribute is a synthetic axn owns (see Validation::ContainerContents).
+          Axn::Extensions.best_effort("applying custom validation on #{record.send(:_validation_subject, attribute)}") { raise e }
 
           "failed validation: #{Axn::Internal::Rendering.exception_message(e)}"
         end

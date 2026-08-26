@@ -730,9 +730,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       # every call, which is the field path's message arriving at the wrong time and at the wrong person.
       it "rejects `of: nil` at declaration, where it used to raise on every call" do
         expect { declared_with({ type: Array, of: nil }) }
-          .to raise_error(ArgumentError, "of: must constrain something — name the contents' class with " \
-                                         "`klass:`, what is inside them with `of:`, or their members with " \
-                                         "`shape:`")
+          .to raise_error(ArgumentError, /\Aof: must constrain something — name the contents' class with `klass:`/)
       end
 
       # `of: false` is not `of: nil`: it expands to `{ klass: false }`, which NAMES something, so the

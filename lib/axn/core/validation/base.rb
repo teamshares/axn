@@ -22,9 +22,9 @@ module Axn
       # ActiveModel's own two, subclassed for the positional reading (see WholeValueClusivity). Listed here for
       # the same reason the axn-only validators are: `validates` resolves a validator by `const_get` from the
       # class being declared on, so a constant here shadows `ActiveModel::Validations::InclusionValidator` for
-      # axn's one-off validator classes — top-level field, subfield and shape member; an `of:` position cannot
-      # carry one today, since the bag's whitelist refuses `inclusion:` (PRO-3193 is where that changes) — and
-      # for nothing else the consuming app declares.
+      # axn's one-off validator classes — top-level field, subfield, shape member, and every `of:` position
+      # (PRO-3193), which `Validation::ContainerContents` inherits from `Fields` and so picks up for free —
+      # and for nothing else the consuming app declares.
       InclusionValidator = Validators::InclusionValidator
       ExclusionValidator = Validators::ExclusionValidator
 
@@ -415,6 +415,127 @@ module Axn
       # (which its LengthValidator refuses outright at validation time) are both uncarryable, exactly as they
       # are for the floor.
       def self.emittable_length_ceiling?(ceiling) = ceiling.is_a?(Integer) && !ceiling.negative?
+
+      # The operators ActiveModel compares a value against, shared by `numericality:` and `comparison:` —
+      # `NumericalityValidator`'s COMPARE_CHECKS and `ComparisonValidator`'s are the same five plus
+      # `other_than:`, which is deliberately absent here: an inverted operator has no JSON Schema keyword, and
+      # the same reasoning keeps it out of PRO-3192's satisfiability judgment.
+      NUMERIC_BOUND_KEYS = %i[greater_than greater_than_or_equal_to less_than less_than_or_equal_to equal_to].freeze
+
+      # The bounds a `numericality:`/`comparison:` entry compares against, read from the checks it actually
+      # runs — the twin of `declared_length_checks`, and THE single definition of "what does this entry bound",
+      # so the runtime bound and the emitted `minimum`/`maximum` cannot disagree about one declaration.
+      #
+      # `ranged:` is required rather than defaulted, because the answer differs by validator and a caller that
+      # omitted it would get a quietly wrong one: `numericality:` resolves an `in:` range (its `RANGE_CHECKS`
+      # is `{ in: :in? }`), while `comparison:` has no range check at all — so reading `in:` there would report
+      # a bound ActiveModel never enforces.
+      #
+      # A falsy bound is dropped, mirroring the validators' own `next unless option_value`. `0` is kept: it is
+      # a real bound, and only `nil`/`false` are falsy in Ruby.
+      def self.declared_numeric_bounds(entry_opts, ranged:)
+        opts = validator_entry_options(entry_opts)
+        bounds = opts.slice(*NUMERIC_BOUND_KEYS).select { |_key, bound| bound }
+        return bounds unless ranged
+
+        range = opts[:in]
+        return bounds unless range.is_a?(Range)
+
+        # ActiveModel enforces an `in:` range AND any explicit bound beside it, so the range is INTERSECTED
+        # into what the entry already declared rather than assigned over it: `{ greater_than_or_equal_to: 10,
+        # in: 0..100 }` is bounded below by 10, not by 0.
+        intersect_numeric_bound(bounds, :greater_than_or_equal_to, range.begin) if range.begin
+        # An exclusive end is the strict operator rather than a decremented bound: unlike a length, a numeric
+        # bound has no "one less" (`1...10` admits 9.999), so the exclusivity has to be carried as itself.
+        intersect_numeric_bound(bounds, range.exclude_end? ? :less_than : :less_than_or_equal_to, range.end) if range.end
+        bounds
+      end
+
+      # THE definition of "two of these bounds, both enforced" — the tighter one survives. A MINIMUM operator
+      # keeps the larger bound and a MAXIMUM operator the smaller, which is what enforcing both means.
+      # Comparison is guarded: bounds a caller may have written in unrelated classes (a Symbol, a Date beside an
+      # Integer) have no ordering, and there the existing bound stands rather than a `<=>` raising inside a
+      # declaration.
+      MINIMUM_BOUND_KEYS = %i[greater_than greater_than_or_equal_to].freeze
+
+      # What an intersection with no solution resolves to. Not a bound, so `emittable_numeric_bound?` refuses it
+      # and nothing is emitted for that side — the honest answer for a contract no value satisfies. Refusing
+      # such a declaration outright belongs to the contradiction detectors (PRO-3220); emitting a SATISFIABLE
+      # keyword for it, as picking either candidate would, is the one option that is simply wrong.
+      CONTRADICTORY_BOUND = :__axn_contradictory_bound__
+      private_constant :CONTRADICTORY_BOUND
+
+      # Asked rather than compared against, so the sentinel stays this module's own: reflection reads it through
+      # a predicate exactly as it reads every other judgment here, and never names the constant.
+      def self.contradictory_bound?(bound) = bound == CONTRADICTORY_BOUND
+
+      def self.intersect_numeric_bound(bounds, key, candidate)
+        existing = bounds[key]
+        return bounds[key] = candidate if existing.nil?
+        return bounds[key] if existing == CONTRADICTORY_BOUND
+
+        # `equal_to` is an equality rather than an ordering, so two different values intersect to nothing at
+        # all — there is no "tighter" of the two, and keeping either advertises a value the runtime rejects.
+        if key == :equal_to
+          return bounds[key] = existing == candidate ? existing : CONTRADICTORY_BOUND
+        end
+
+        tighter = begin
+          comparison = existing <=> candidate
+          if comparison.nil?
+            existing
+          elsif MINIMUM_BOUND_KEYS.include?(key)
+            comparison.negative? ? candidate : existing
+          else
+            comparison.positive? ? candidate : existing
+          end
+        rescue StandardError
+          existing
+        end
+        bounds[key] = tighter
+      end
+
+      # Whether a bound read above is one a JSON Schema numeric keyword can carry. A `Numeric` that is not
+      # finite (`Float::INFINITY`, ActiveModel's spelling for "no bound", and `NaN`) names no number, and a
+      # Symbol/Proc bound is resolved per call against the record — the same stand-down a Symbol `length:`
+      # bound gets. Restricted to Integer and Float on purpose: a `BigDecimal` or `Rational` bound has no
+      # single JSON number form (its `to_json` depends on the consumer's setup), so it stands down rather than
+      # emit a value the document might carry as a string.
+      # `CONTRADICTORY_BOUND` needs no branch of its own: it is a Symbol, and every Symbol — a per-call bound
+      # ActiveModel resolves against the record included — falls to the same refusal.
+      def self.emittable_numeric_bound?(bound)
+        case bound
+        when ::Integer then true
+        when ::Float then bound.finite?
+        else false
+        end
+      end
+
+      # Whether a `numericality:` entry restricts its value to whole numbers, which narrows the emitted type
+      # from "number" to "integer" even when a wider `type:` token would otherwise decide it.
+      #
+      # Only a STATIC token answers. ActiveModel resolves this option per call against the record
+      # (`resolve_value`, activemodel 7.2.2.2), so a Proc/Symbol that comes back false leaves every non-integer
+      # the entry's other options admit still in play — and reading one as a narrowing emitted a node the value
+      # it narrowed for cannot occupy: `type: [Integer, Float]` advertised `"integer"` and rejected the Float
+      # exposed under it, `type: Float` emptied to `enum: []`, and a string branch carried the integer-literal
+      # `pattern`, which rejects the `"1.5"` the validator parses happily. Unknown stands down in BOTH
+      # directions, the same refusal a Symbol/Proc numeric bound gets from `emittable_numeric_bound?`.
+      #
+      # `resolve_value`'s own reach decides what counts as dynamic: a Symbol, and anything answering `#call` —
+      # its `else` branch calls a callable too, so testing for Proc alone would miss a callable object.
+      def self.declared_only_integer?(entry_opts)
+        token = validator_entry_options(entry_opts)[:only_integer]
+        return false if token.is_a?(::Symbol) || token.respond_to?(:call)
+
+        token ? true : false
+      end
+
+      # The test `only_integer:` actually applies, handed to reflection rather than restated there: the emitted
+      # pattern has to agree with the validator that runs, and a copy in the emitter would drift from it in
+      # silence. Lives here because this is the layer that owns what ActiveModel means — `schema.rb` requires no
+      # part of ActiveModel and must keep resolving every constant it names on its own.
+      def self.integer_literal_regexp = ::ActiveModel::Validations::NumericalityValidator::INTEGER_REGEX
 
       # Whether a `format:` ENTRY would let a nil through. FormatValidator tests `value.to_s` against the
       # pattern (activemodel 7.2.2.2), so a nil is tested as the empty string and the pattern decides — with

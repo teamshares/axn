@@ -107,7 +107,12 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
 - **A validator constrains the value at the position it is declared at.** `expects` names the field's own
   value; `of:` descends a level (an Array's element, a map's `keys:`/`values:` axis); each rung of a nested
   bag names its own. So `inclusion:` on a `type: Array` field constrains the ARRAY, and a constraint on the
-  elements goes in `of:`. ActiveModel's `Clusivity` special-cases an Array value and distributes the set over
+  elements goes in `of:` — which carries the value validators for its position (PRO-3193), derived as
+  `POSITIONAL_VALIDATOR_KEYS` rather than listed: a position offers a VALUE and nothing else, so what it
+  refuses is exactly what reads something it has not got (`type:`, whose role `klass:` plays; `model:` and
+  `confirmation:`, which resolve against readers; `coerce:`, a transform; `uniqueness:`, which needs a
+  record). The same two guards judge a bag position as judge a field, reached with `klass:` in `type:`'s
+  role, so one rule covers all four positions rather than a second table that can drift. ActiveModel's `Clusivity` special-cases an Array value and distributes the set over
   its elements; axn's own `InclusionValidator`/`ExclusionValidator` (constants on `Validation::Base`) drop that branch,
   because the distributing reading has no schema spelling, inverts to nonsense under exclusion, and stops at
   depth 1. A validator with no reading at a container position is refused at declaration

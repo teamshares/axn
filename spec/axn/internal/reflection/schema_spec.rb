@@ -3460,9 +3460,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
     it "adds nil (but not \"\") to the output enum and does not widen the type" do
       # accepted divergence: outbound runtime accepts ""; the output schema's enum/type do not admit it.
+      # Numeric members are pinned with a `type:` so the set survives the outbound exactness gate below —
+      # what this example is about is the nil, not the numbers.
       klass = Class.new do
         include Axn
-        exposes :status, inclusion: { in: [1, 2] }, allow_blank: true
+        exposes :status, type: Integer, inclusion: { in: [1, 2] }, allow_blank: true
         def call = expose(status: 1)
       end
       schema = described_class.build_output(klass.external_field_configs)
@@ -3472,6 +3474,88 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop[:enum]).to match_array([1, 2, nil])
       expect(Array(prop[:type])).to include("integer", "null")
       expect(Array(prop[:type])).not_to include("string")
+    end
+
+    # An outbound enum has to hold the wire form of every value the runtime accepts, and the runtime accepts by
+    # Ruby `==` — which can identify values that SERIALIZE differently. Two DateTimes for one instant in
+    # different offsets are `==` and render as different ISO-8601 strings, so the emitted set rejects an element
+    # the action validated and serialized successfully. The same gate covers every position, the keys axis
+    # having been only the first place it showed.
+    describe "an outbound enum whose members' equality crosses the wire form" do
+      let(:utc) { DateTime.parse("2020-01-01T00:00:00+00:00") }
+      let(:offset) { DateTime.parse("2020-01-01T09:00:00+09:00") }
+
+      it "is the divergence itself: equal DateTimes, different ISO-8601" do
+        expect(utc == offset).to be true
+        expect(utc.iso8601).not_to eq(offset.iso8601)
+      end
+
+      it "stands the set down at a field" do
+        moment = utc
+        other = offset
+        action = build_axn do
+          exposes :f, type: DateTime, inclusion: { in: [moment] }
+          define_method(:call) { expose(:f, other) }
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["f"]).to eq(other.iso8601)
+        expect(action.output_schema[:properties][:f]).not_to have_key(:enum)
+      end
+
+      it "stands the set down at an element position" do
+        moment = utc
+        other = offset
+        action = build_axn do
+          exposes :f, type: Array, of: { klass: DateTime, inclusion: { in: [moment] } }
+          define_method(:call) { expose(:f, [other]) }
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :f, :items)).not_to have_key(:enum)
+      end
+
+      # Inbound is unaffected: there the set names what a client may SEND, and a set narrower than the runtime's
+      # equality is stricter, which is the licensed direction.
+      it "still emits the set inbound" do
+        moment = utc
+        action = build_axn { expects :f, type: DateTime, inclusion: { in: [moment] } }
+
+        expect(action.input_schema.dig(:properties, :f, :enum)).to eq([moment.iso8601])
+      end
+
+      # A member whose equality admits only its own type settles it without asking the position anything.
+      it "keeps a String, Symbol and pinned-numeric set at both positions" do
+        action = build_axn do
+          exposes :s, type: String, inclusion: { in: %w[a b] }
+          exposes :n, type: Integer, inclusion: { in: [1, 2] }
+          exposes :y, type: Array, of: { klass: Symbol, inclusion: { in: %i[a b] } }
+          def call = expose(s: "a", n: 1, y: [:a])
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :s, :enum)).to eq(%w[a b])
+        expect(action.output_schema.dig(:properties, :n, :enum)).to eq([1, 2])
+        expect(action.output_schema.dig(:properties, :y, :items, :enum)).to eq(%w[a b])
+      end
+    end
+
+    # The same declaration WITHOUT a `type:` admits Ruby's whole numeric tower, and `1 == 1.0` — so an action
+    # may expose `1.0`, satisfy `inclusion:`, and serialize `1.0`, which the emitted set does not contain. The
+    # set stands down outbound rather than reject the action's own output; inbound it is emitted, a set narrower
+    # than the runtime's equality being the licensed direction there.
+    it "stands an unpinned numeric set down on output, where equality crosses the wire form" do
+      klass = Class.new do
+        include Axn
+        expects :status, inclusion: { in: [1, 2] }
+        exposes :out, inclusion: { in: [1, 2] }
+        def call = expose(out: 1.0)
+      end
+
+      expect(klass.call(status: 1.0)).to be_ok
+      expect(klass.output_schema[:properties][:out]).not_to have_key(:enum)
+      expect(klass.input_schema.dig(:properties, :status, :enum)).to eq([1, 2])
     end
   end
 
@@ -5442,6 +5526,147 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
+  # `null` is a first-class JSON type, so a declared `NilClass` has an exact JSON Schema spelling. It reached
+  # `single_type_for`'s final branch instead — the "unknown Ruby class, keep a permissive string hint" fallback,
+  # whose premise ("a JSON client can't send a Ruby object anyway") is true of a PORO and false of nil.
+  #
+  # The rule the emitted `"null"` follows: it comes from the NULLABILITY decision (`nil_allowed?`), never from a
+  # type token. A token contributes a branch; whether that branch survives is the nullability question, asked
+  # once. Otherwise a required `type: [String, NilClass]` — which rejects nil, because its `presence:` entry
+  # does — would advertise `null` as acceptable, and a nullable one would advertise it twice.
+  describe "a declared NilClass token" do
+    it "reflects as null rather than the unknown-class string fallback" do
+      action = build_axn { expects :f, type: NilClass, optional: true }
+
+      expect(action.input_schema[:properties][:f]).to include(type: "null")
+    end
+
+    it "emits no emptiness floor for it (null has no size)" do
+      action = build_axn { expects :f, type: NilClass, optional: true }
+
+      expect(action.input_schema[:properties][:f]).not_to have_key(:minLength)
+    end
+
+    it "names null exactly once when the field is also nullable" do
+      action = build_axn { expects :f, type: NilClass, optional: true }
+
+      expect(action.input_schema[:properties][:f][:type]).to eq("null")
+    end
+
+    it "emits a union naming it as an anyOf branch when the field admits nil" do
+      action = build_axn { expects :f, type: [String, NilClass], optional: true }
+
+      expect(action.input_schema[:properties][:f][:anyOf]).to eq([{ type: "string" }, { type: "null" }])
+    end
+
+    # The discriminating case for "nullability decides, not the token": this field REJECTS nil at runtime (the
+    # default presence check), so the branch the token contributed must not survive into the document.
+    it "drops the branch on a required field, which rejects nil" do
+      action = build_axn { expects :f, type: [String, NilClass] }
+
+      expect(action.call(f: nil)).not_to be_ok
+      expect(action.input_schema[:properties][:f]).to include(type: "string")
+      expect(action.input_schema[:properties][:f][:anyOf]).to be_nil
+    end
+
+    # A lone `NilClass` with no tolerance admits NOTHING at runtime: the presence check rejects nil, and nothing
+    # else is a NilClass. `"null"` was emitted anyway, which advertised the single value the contract rejects —
+    # schema LOOSER than runtime, the one direction reflection may never err in. `enum: []` is the faithful node,
+    # the spelling used wherever a contract admits nothing. Refusing the declaration outright is PRO-3220's.
+    it "emits the unsatisfiable node for a required lone NilClass, which admits nothing at all" do
+      action = build_axn { expects :f, type: NilClass }
+
+      expect(action.call(f: nil)).not_to be_ok
+      expect(action.call(f: "x")).not_to be_ok
+      expect(action.call).not_to be_ok
+      expect(action.input_schema[:properties][:f]).to eq(enum: [])
+    end
+
+    it "emits it on output too, where the action cannot settle successfully either" do
+      action = build_axn do
+        exposes :f, type: NilClass
+        def call = expose(:f, nil)
+      end
+
+      expect(action.call).not_to be_ok
+      expect(action.output_schema[:properties][:f]).to eq(enum: [])
+    end
+
+    # The soundness half: every nil-TOLERANT spelling is satisfiable, so none of them may be emptied. Each of
+    # these accepts nil at runtime and keeps its `"null"`.
+    [{ optional: true }, { allow_nil: true }, { allow_blank: true }, { presence: false }].each do |tolerance|
+      it "keeps null under #{tolerance.keys.first}: #{tolerance.values.first}, which nil really does satisfy" do
+        action = build_axn { expects :f, type: NilClass, **tolerance }
+
+        expect(action.call(f: nil)).to be_ok
+        expect(action.input_schema[:properties][:f]).to include(type: "null")
+      end
+    end
+
+    context "at an of: bag position, where there is no presence check to make it inert" do
+      it "reflects an element bag's klass" do
+        action = build_axn { expects :f, type: Array, of: { klass: NilClass } }
+
+        expect(action.call(f: [nil])).to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "null")
+      end
+
+      # The position's mirror of a required field-level lone `NilClass`: a validator on the bag that rejects nil
+      # leaves the position admitting nothing at all, so the node has to say so rather than advertise `null`.
+      it "empties a lone null position another validator on the bag rejects" do
+        action = build_axn { expects :f, type: Array, of: { klass: NilClass, presence: true } }
+
+        expect(action.call(f: [nil])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to eq(enum: [])
+      end
+
+      it "empties it on output too, at a map's values axis" do
+        action = build_axn do
+          exposes :m, type: Hash, of: { values: { klass: NilClass, presence: true } }
+          def call = expose(:m, { a: nil })
+        end
+
+        expect(action.call).not_to be_ok
+        expect(action.output_schema.dig(:properties, :m, :additionalProperties)).to eq(enum: [])
+      end
+
+      it "reflects a union element bag as distinct branches" do
+        action = build_axn { expects :f, type: Array, of: { klass: [String, NilClass] } }
+
+        expect(action.call(f: ["a", nil])).to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items))
+          .to eq(anyOf: [{ type: "string" }, { type: "null" }])
+      end
+
+      it "reflects a map's values axis" do
+        action = build_axn { expects :f, type: Hash, of: { values: [Integer, NilClass] } }
+
+        expect(action.call(f: { a: nil })).to be_ok
+        expect(action.input_schema.dig(:properties, :f, :additionalProperties))
+          .to eq(anyOf: [{ type: "integer" }, { type: "null" }])
+      end
+
+      it "reflects a nested bag at depth 2" do
+        action = build_axn { expects :f, type: Array, of: { klass: Array, of: [Integer, NilClass] } }
+
+        expect(action.call(f: [[1, nil]])).to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items, :items))
+          .to eq(anyOf: [{ type: "integer" }, { type: "null" }])
+      end
+
+      it "reflects a shape member's own union" do
+        action = build_axn do
+          expects :f, type: Array, of: Hash do
+            field :s, type: [String, NilClass], allow_nil: true
+          end
+        end
+
+        expect(action.input_schema.dig(:properties, :f, :items, :properties, :s, :anyOf))
+          .to eq([{ type: "string" }, { type: "null" }])
+      end
+    end
+  end
+
   # The ceiling twin of the emptiness floor. Emitting it only shrinks the schema-valid set, so it preserves the
   # documented direction (docs/reference/class.md:270 — stricter than the runtime, never looser) by construction.
   describe "size ceilings" do
@@ -5546,6 +5771,2220 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(Axn::Validation::Base.emittable_length_ceiling?(2.5)).to be(false)
       expect(Axn::Validation::Base.emittable_length_ceiling?(:unverifiable)).to be(false)
       expect(Axn::Validation::Base.emittable_length_ceiling?(nil)).to be(false)
+    end
+  end
+
+  # `enum` (from `inclusion:`) and the size bounds (from `length:`) projected; nothing else did. A declared
+  # numeric bound was enforced at runtime and advertised nowhere, which is LOOSER than the runtime — the one
+  # direction reflection is not licensed to err in (docs/reference/class.md: stricter, never looser).
+  #
+  # Bounds are read through `Validation::Base.declared_numeric_bounds`, the same reader/mapper split
+  # `length:` uses (`declared_length_checks` -> `size_bounds_for`), so the runtime bound and the emitted
+  # bound cannot disagree about one declaration.
+  describe "numeric bounds" do
+    def prop_for(field = :n, &declaration)
+      build_axn(&declaration).input_schema[:properties][field]
+    end
+
+    it "emits exclusiveMinimum for greater_than" do
+      expect(prop_for { expects :n, type: Integer, numericality: { greater_than: 0 } })
+        .to include(exclusiveMinimum: 0)
+    end
+
+    it "emits minimum for greater_than_or_equal_to" do
+      expect(prop_for { expects :n, type: Integer, numericality: { greater_than_or_equal_to: 1 } })
+        .to include(minimum: 1)
+    end
+
+    it "emits exclusiveMaximum for less_than" do
+      expect(prop_for { expects :n, type: Integer, numericality: { less_than: 10 } })
+        .to include(exclusiveMaximum: 10)
+    end
+
+    it "emits maximum for less_than_or_equal_to" do
+      expect(prop_for { expects :n, type: Integer, numericality: { less_than_or_equal_to: 10 } })
+        .to include(maximum: 10)
+    end
+
+    it "emits both bounds when both are declared" do
+      expect(prop_for { expects :n, type: Integer, numericality: { greater_than: 0, less_than: 10 } })
+        .to include(exclusiveMinimum: 0, exclusiveMaximum: 10)
+    end
+
+    it "emits const for equal_to" do
+      expect(prop_for { expects :n, type: Integer, numericality: { equal_to: 5 } }).to include(const: 5)
+    end
+
+    it "emits a Float bound" do
+      expect(prop_for { expects :n, type: Float, numericality: { greater_than: 0.5 } })
+        .to include(exclusiveMinimum: 0.5)
+    end
+
+    # ActiveModel resolves an `in:` range through `Object#in?`, inclusive of both ends unless the range
+    # excludes its own, which is the same resolution `length:`'s range already gets.
+    it "expands an inclusive in: range into both bounds" do
+      expect(prop_for { expects :n, type: Integer, numericality: { in: 1..10 } })
+        .to include(minimum: 1, maximum: 10)
+    end
+
+    it "expands an exclusive-end in: range into an exclusiveMaximum" do
+      expect(prop_for { expects :n, type: Integer, numericality: { in: 1...10 } })
+        .to include(minimum: 1, exclusiveMaximum: 10)
+    end
+
+    it "reads the same bounds off a comparison: entry" do
+      expect(prop_for { expects :n, type: Integer, comparison: { greater_than: 0 } })
+        .to include(exclusiveMinimum: 0)
+    end
+
+    # `comparison:` has no `in:` check of its own (ActiveModel's COMPARE_CHECKS names five operators and
+    # `other_than:`), so reading a range there would emit a bound nothing enforces.
+    it "does not expand an in: range on a comparison: entry, which ActiveModel never reads" do
+      prop = prop_for { expects :n, type: Integer, comparison: { in: 1..10 } }
+
+      expect(prop).not_to have_key(:minimum)
+      expect(prop).not_to have_key(:maximum)
+    end
+
+    it "narrows the type to integer under only_integer, even when type: names a wider Numeric" do
+      expect(prop_for { expects :n, type: Numeric, numericality: { only_integer: true } })
+        .to include(type: "integer")
+    end
+
+    # A UNION had been standing down from that narrowing, which left a `"number"` branch advertising values the
+    # validator rejects. Narrowing both branches of `[Integer, Float]` converges them, so the node collapses.
+    it "narrows every numeric branch of a union, not only a lone type" do
+      action = build_axn { expects :n, type: [Integer, Float], numericality: { only_integer: true } }
+
+      expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+      expect(action.call(n: 1.5)).not_to be_ok
+      expect(action.call(n: 2)).to be_ok
+    end
+
+    # A string branch is not dropped — ActiveModel parses a numeric STRING, so `"2"` is a value the position
+    # really accepts — but it is not left unconstrained either: it carries the validator's own integer test, so
+    # it stops advertising `"abc"`. And the Float branch goes: no Float satisfies `only_integer:` (`2.0.to_s` is
+    # "2.0"), and retagging it `"integer"` had advertised the JSON `2`, which `is_a?(Float)` rejects.
+    it "patterns the string branch and drops a numeric branch no value can occupy" do
+      action = build_axn { expects :n, type: [String, Float], numericality: { only_integer: true } }
+      prop = action.input_schema[:properties][:n]
+
+      expect(prop).to eq(type: "string", pattern: "^[+-]?\\d+$", minLength: 1)
+      expect(action.call(n: "2")).to be_ok
+      expect(action.call(n: "abc")).not_to be_ok
+      expect(action.call(n: 2)).not_to be_ok
+      expect(action.call(n: 2.0)).not_to be_ok
+    end
+
+    # Every branch dropping is the CONTRACT rather than a case to fall back from. No Float's `to_s` is an
+    # integer literal and a JSON integer is not a Float, so this position admits nothing at all — restoring the
+    # node advertised `1.5` where the runtime rejects it. A node nothing satisfies is the faithful projection,
+    # on the same terms two disagreeing `equal_to:` bounds already emit `enum: []`; refusing the declaration
+    # outright belongs to the contradiction detectors, not to the emitter.
+    it "emits a node nothing satisfies where the narrowing empties the union" do
+      action = build_axn { expects :n, type: Float, numericality: { only_integer: true } }
+
+      expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      expect(action.call(n: 1.5)).not_to be_ok
+      expect(action.call(n: 2.0)).not_to be_ok
+      expect(action.call(n: 2)).not_to be_ok
+    end
+
+    # `only_numeric: true` is what makes ActiveModel demand a Numeric OBJECT rather than parse a string, so the
+    # branch that exists to carry `"2"` has nothing left to carry.
+    it "drops the string branch when only_numeric: demands a real numeric" do
+      action = build_axn do
+        expects :n, type: [String, Integer], numericality: { only_integer: true, only_numeric: true }
+      end
+
+      expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+      expect(action.call(n: 2)).to be_ok
+      expect(action.call(n: "2")).not_to be_ok
+    end
+
+    it "empties the node when only_numeric: leaves a String position nothing to hold" do
+      action = build_axn do
+        expects :n, type: String, numericality: { only_integer: true, only_numeric: true }
+      end
+
+      expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      expect(action.call(n: "2")).not_to be_ok
+    end
+
+    # `only_numeric:` narrows on its OWN, without `only_integer:` beside it — the pass used to be gated on
+    # `only_integer:`, so this whole family went unapplied and the document accepted values the validator refuses.
+    describe "only_numeric: standing without only_integer:" do
+      it "drops the string branch, which no value can occupy" do
+        action = build_axn { expects :n, type: [String, Integer], numericality: { only_numeric: true } }
+
+        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+        expect(action.call(n: 1)).to be_ok
+        expect(action.call(n: "abc")).not_to be_ok
+        # The numeric STRING is the telling one: bare `numericality:` accepts it, and `only_numeric:` does not.
+        expect(action.call(n: "1")).not_to be_ok
+      end
+
+      it "empties a lone String position it leaves nothing to hold" do
+        action = build_axn { expects :n, type: String, numericality: { only_numeric: true } }
+
+        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+        expect(action.call(n: "1")).not_to be_ok
+      end
+
+      # Not just the string branch: the option demands a Numeric OBJECT, so every branch naming values that are
+      # not Numerics is unreachable in the same way.
+      [[Array, [1]], [Hash, { a: 1 }], [TrueClass, true]].each do |(klass, value)|
+        it "drops a #{klass} branch on the same reading" do
+          action = build_axn { expects :n, type: [klass, Integer], numericality: { only_numeric: true } }
+
+          expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+          expect(action.call(n: value)).not_to be_ok
+          expect(action.call(n: 1)).to be_ok
+        end
+      end
+
+      # A narrowing that empties every TYPE branch has said nothing about nil, which the validators SKIP
+      # wherever the field tolerates one — so the node admits nil and nothing else, and the bare empty set
+      # rejected the very value the position accepts. Found by a differential scan of the emitted schema
+      # against runtime truth, not by a review.
+      it "admits nil where the emptied narrowing sits on a nullable position" do
+        action = build_axn do
+          exposes :n, type: String, numericality: { only_numeric: true }, optional: true
+          def call = expose(:n, nil)
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema[:properties][:n]).to eq(enum: [nil])
+      end
+
+      it "still empties completely where the position is NOT nullable" do
+        action = build_axn { expects :n, type: String, numericality: { only_numeric: true } }
+
+        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      end
+
+      # A MISSING emitted type is not evidence the branch is non-Numeric. `type: Numeric` emits `{}` on output
+      # deliberately — its values have more than one wire form — and reading that absence as proof emptied a
+      # position the action satisfies perfectly well.
+      # The same lesson one step further: an ABSENT emitted type is not evidence, and neither is an APPROXIMATE
+      # one. A token that is a SUPERTYPE of Numeric — `Object`, `Comparable` — admits a Numeric value while
+      # `single_type_for` renders it as a `"string"` branch, so dropping that branch as "names non-Numerics"
+      # emptied a contract an Integer satisfies.
+      it "keeps a branch a broad token renders approximately" do
+        action = build_axn { expects :n, type: Object, numericality: { only_numeric: true } }
+
+        expect(action.call(n: 1)).to be_ok
+        expect(action.input_schema[:properties][:n]).not_to eq(enum: [])
+      end
+
+      it "reads Comparable the same way, being a supertype of Numeric too" do
+        action = build_axn { expects :n, type: Comparable, numericality: { only_numeric: true } }
+
+        expect(action.call(n: 1)).to be_ok
+        expect(action.input_schema[:properties][:n]).not_to eq(enum: [])
+      end
+
+      # The control that keeps the guard honest: an EXACT non-numeric token still empties, because there really
+      # is no value of it a Numeric can be.
+      it "still empties a lone String position, which no Numeric can occupy" do
+        action = build_axn { expects :n, type: String, numericality: { only_numeric: true } }
+
+        expect(action.call(n: "1")).not_to be_ok
+        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      end
+
+      it "keeps an untyped branch, whose absent type proves nothing" do
+        action = build_axn do
+          exposes :n, type: Numeric, numericality: { only_numeric: true }
+          def call = expose(:n, 1)
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["n"]).to eq(1)
+        expect(action.output_schema[:properties][:n]).to eq({})
+      end
+
+      it "still names the type on input, where Numeric has one wire form to advertise" do
+        action = build_axn { expects :n, type: Numeric, numericality: { only_numeric: true } }
+
+        expect(action.input_schema[:properties][:n]).to eq(type: "number")
+        expect(action.call(n: 1)).to be_ok
+        expect(action.call(n: "a")).not_to be_ok
+      end
+
+      # NULLABILITY owns the null branch: ActiveModel skips a nil before any validator sees it, so neither
+      # option says anything about it and dropping it would reject a value the contract accepts.
+      it "keeps the null branch, which the validator never judges" do
+        action = build_axn do
+          expects :n, type: [String, Integer, NilClass], numericality: { only_numeric: true }, optional: true
+        end
+
+        expect(action.input_schema.dig(:properties, :n, :anyOf)).to eq([{ type: "integer" }, { type: "null" }])
+        expect(action.call(n: nil)).to be_ok
+        expect(action.call(n: "abc")).not_to be_ok
+      end
+
+      # A Proc/Symbol `only_numeric:` still narrows, and that is not an oversight: ActiveModel reads this one
+      # TRUTHILY (`options[:only_numeric] && !raw_value.is_a?(Numeric)`) rather than resolving it per call, so a
+      # callable token means the demand is always on — the opposite of `only_integer:`, which IS resolved.
+      it "narrows under a callable token, which ActiveModel reads truthily" do
+        action = build_axn { expects :n, type: [String, Integer], numericality: { only_numeric: -> { false } } }
+
+        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+        expect(action.call(n: "abc")).not_to be_ok
+        expect(action.call(n: 1)).to be_ok
+      end
+    end
+
+    # `only_integer:` drops a branch naming non-Numerics just as `only_numeric:` does — no Array, Hash or
+    # boolean satisfies either (`[1].to_s` is "[1]", `true.to_s` is "true", neither an integer literal), so the
+    # branch was advertising an element the validator rejects on every call. A String branch is the exception
+    # and survives: ActiveModel parses a numeric string, so it carries the integer test as a pattern instead.
+    describe "only_integer: reaching a branch that names non-Numerics" do
+      it "drops an Array branch at a bag position" do
+        action = build_axn { expects :f, type: Array, of: { klass: [Array, Integer], numericality: { only_integer: true } } }
+
+        expect(action.call(f: [1])).to be_ok
+        expect(action.call(f: [[1]])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "integer")
+      end
+
+      it "drops a boolean branch at a field" do
+        action = build_axn { expects :n, type: [TrueClass, FalseClass, Integer], numericality: { only_integer: true } }
+
+        expect(action.call(n: 1)).to be_ok
+        expect(action.call(n: true)).not_to be_ok
+        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+      end
+
+      it "keeps the string branch, which the validator really does parse" do
+        action = build_axn { expects :n, type: [String, Integer], numericality: { only_integer: true } }
+
+        expect(action.call(n: "2")).to be_ok
+        expect(action.input_schema.dig(:properties, :n, :anyOf))
+          .to eq([{ type: "string", pattern: "^[+-]?\\d+$", minLength: 1 }, { type: "integer" }])
+      end
+    end
+
+    # Without `only_numeric:` the string branch is exactly what keeps that position satisfiable.
+    it "keeps the string branch when only_integer: stands alone" do
+      action = build_axn { expects :n, type: [String, Integer], numericality: { only_integer: true } }
+
+      expect(action.input_schema.dig(:properties, :n, :anyOf))
+        .to eq([{ type: "string", pattern: "^[+-]?\\d+$", minLength: 1 }, { type: "integer" }])
+      expect(action.call(n: "2")).to be_ok
+    end
+
+    # `Numeric` DOES admit an Integer, so its branch narrows rather than drops — the decision is the declared
+    # token's, never the emitted type's, which is what reading `"number"` alone got wrong.
+    it "narrows rather than drops a numeric branch whose token admits an Integer" do
+      action = build_axn { expects :n, type: [String, Numeric], numericality: { only_integer: true } }
+
+      expect(action.input_schema.dig(:properties, :n, :anyOf))
+        .to eq([{ type: "string", pattern: "^[+-]?\\d+$", minLength: 1 }, { type: "integer" }])
+      expect(action.call(n: 2)).to be_ok
+      expect(action.call(n: "2")).to be_ok
+      expect(action.call(n: "abc")).not_to be_ok
+    end
+
+    # ActiveModel resolves `only_integer:` per call against the record, so a Proc/Symbol token narrows NOTHING
+    # statically: when it comes back false the validator skips the integer check entirely and every non-integer
+    # the other options admit is still accepted. Reflection may not run it, so the narrowing stands down in both
+    # directions — the same refusal a Symbol/Proc numeric bound already gets.
+    describe "a per-call only_integer: token, which proves nothing about any single call" do
+      it "leaves a union unnarrowed rather than rejecting the Float the position accepts" do
+        action = build_axn do
+          exposes :n, type: [Integer, Float], numericality: { only_integer: -> { false } }
+          def call = expose(:n, 1.5)
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(action.output_schema.dig(:properties, :n, :anyOf)).to eq([{ type: "integer" }, { type: "number" }])
+      end
+
+      it "reads a Symbol token the same way" do
+        action = build_axn do
+          exposes :n, type: [Integer, Float], numericality: { only_integer: :whole_only? }
+          def call = expose(:n, 1.5)
+          def whole_only? = false
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(action.output_schema.dig(:properties, :n, :anyOf)).to eq([{ type: "integer" }, { type: "number" }])
+      end
+
+      # The emptied-node contract is earned by a STATIC narrowing. Under a per-call token the Float branch is
+      # reachable, so emptying it advertised that nothing is acceptable at a position that took `1.5`.
+      it "does not empty a Float node the validator still admits" do
+        action = build_axn do
+          exposes :n, type: Float, numericality: { only_integer: -> { false } }
+          def call = expose(:n, 1.5)
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(action.output_schema[:properties][:n]).to eq(type: "number")
+      end
+
+      # The string branch's `pattern` is ActiveModel's own integer test translated — and with the check skipped
+      # the validator merely parses the number, so `"1.5"` passes where the emitted pattern rejects it.
+      it "omits the integer-literal pattern a string branch would otherwise carry" do
+        action = build_axn do
+          exposes :n, type: String, numericality: { only_integer: -> { false } }
+          def call = expose(:n, "1.5")
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["n"]).to eq("1.5")
+        expect(action.output_schema[:properties][:n]).not_to have_key(:pattern)
+      end
+
+      it "still narrows on a static token, which is what the per-call one is measured against" do
+        action = build_axn do
+          exposes :n, type: [Integer, Float], numericality: { only_integer: true }
+          def call = expose(:n, 2)
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema[:properties][:n]).to eq(type: "integer")
+      end
+    end
+
+    # A `length:` asks the same question a `format:` does one paragraph down, and had the same answer missing:
+    # ActiveModel measures the VALUE's own `#length` while `minLength`/`maxLength` measure the serialized string.
+    describe "an outbound length: whose subject is not the string the wire carries" do
+      it "is the divergence itself: a Time's #to_s is longer than its serialized form" do
+        moment = Time.utc(2026, 8, 25, 12)
+
+        expect(moment.to_s.length).to eq(23)
+        expect(Axn::Internal::Reflection::Values.serialize_value(moment).length).to eq(20)
+      end
+
+      it "stands the size down on output for a Time field" do
+        moment = Time.utc(2026, 8, 25, 12)
+        action = build_axn do
+          exposes :t, type: Time, length: { is: 23 }
+          define_method(:call) { expose(:t, moment) }
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["t"]).to eq("2026-08-25T12:00:00Z")
+        expect(action.output_schema[:properties][:t]).not_to have_key(:minLength)
+        expect(action.output_schema[:properties][:t]).not_to have_key(:maxLength)
+      end
+
+      it "stands it down at a bag position, which asks the same question" do
+        moment = Time.utc(2026, 8, 25, 12)
+        action = build_axn do
+          exposes :ts, type: Array, of: { klass: Time, length: { is: 23 } }
+          define_method(:call) { expose(:ts, [moment]) }
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(action.output_schema.dig(:properties, :ts, :items)).not_to have_key(:minLength)
+      end
+
+      it "keeps it for a String, which IS the string it serializes to" do
+        action = build_axn do
+          exposes :s, type: String, length: { is: 3 }
+          def call = expose(:s, "abc")
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema[:properties][:s]).to include(minLength: 3, maxLength: 3)
+      end
+
+      # A COLLECTION size is exempt by construction: the count the runtime measured is the count the serializer
+      # writes, whatever the elements themselves render as.
+      it "keeps an Array's own size, whose count survives serialization" do
+        moment = Time.utc(2026, 8, 25, 12)
+        action = build_axn do
+          exposes :ts, type: Array, of: Time, length: { is: 1 }
+          define_method(:call) { expose(:ts, [moment]) }
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema[:properties][:ts]).to include(minItems: 1, maxItems: 1)
+      end
+
+      it "still emits inbound, where the subject is the string that was sent" do
+        action = build_axn { expects :t, type: Time, length: { is: 23 } }
+
+        expect(action.input_schema[:properties][:t]).to include(minLength: 23, maxLength: 23)
+      end
+    end
+
+    # `format:` is checked by ActiveModel against `value.to_s`, and on OUTPUT that is not always the string the
+    # wire carries: the VALUE serializer renders a Time as `iso8601`. The pattern the runtime measured against
+    # "2026-08-25 12:00:00 UTC" would be measured against "2026-08-25T12:00:00Z" and reject the action's output.
+    describe "an outbound pattern whose subject is not the string the wire carries" do
+      it "is the divergence itself: a Time's #to_s is not its serialized form" do
+        moment = Time.utc(2026, 8, 25, 12)
+
+        expect(moment.to_s).to eq("2026-08-25 12:00:00 UTC")
+        expect(Axn::Internal::Reflection::Values.serialize_value(moment)).to eq("2026-08-25T12:00:00Z")
+      end
+
+      it "stands the pattern down on output for a Time position" do
+        moment = Time.utc(2026, 8, 25, 12)
+        action = build_axn do
+          exposes :f, type: Time, format: { with: / / }
+          define_method(:call) { expose(:f, moment) }
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["f"]).to eq("2026-08-25T12:00:00Z")
+        expect(action.output_schema[:properties][:f]).not_to have_key(:pattern)
+      end
+
+      it "keeps it for a String, which IS the string it serializes to" do
+        action = build_axn do
+          exposes :f, type: String, format: { with: /\Aab\z/ }
+          def call = expose(:f, "ab")
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :f, :pattern)).to eq("^ab$")
+      end
+
+      # Inbound the subject really is the string that was sent, so nothing stands down there.
+      it "still emits the pattern inbound for that same Time position" do
+        prop = prop_for(:f) { expects :f, type: Time, format: { with: / / } }
+
+        expect(prop[:pattern]).to eq(" ")
+      end
+
+      # A KEY is exempt: `canonical_wire_key` dispatches `to_s`, which is the subject the validator used.
+      it "keeps a keys-axis pattern, whose subject the key serializer shares" do
+        action = build_axn do
+          exposes :m, type: Hash, of: { keys: { klass: String, format: { with: /\A[a-z]+\z/ } }, values: Integer }
+          def call = expose(:m, { "ab" => 1 })
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(pattern: "^[a-z]+$")
+      end
+    end
+
+    # Every Numeric but Integer and Float reaches the wire through `Float()`, which ROUNDS — so a bound the Ruby
+    # value satisfies can be violated by the number actually serialized.
+    describe "an outbound bound across a lossy numeric serialization" do
+      it "stands down for a BigDecimal position, whose wire value rounds onto the bound" do
+        value = BigDecimal("0.099999999999999999")
+        action = build_axn do
+          exposes :f, type: BigDecimal, comparison: { less_than: 0.1 }
+          define_method(:call) { expose(:f, value) }
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["f"]).to eq(0.1)
+        expect(action.output_schema[:properties][:f]).not_to have_key(:exclusiveMaximum)
+      end
+
+      it "keeps it for Integer and Float, which serialize exactly" do
+        action = build_axn do
+          exposes :i, type: Integer, numericality: { less_than: 10 }
+          exposes :f, type: Float, numericality: { less_than: 10 }
+          def call = expose(i: 5, f: 5.5)
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :i, :exclusiveMaximum)).to eq(10)
+        expect(action.output_schema.dig(:properties, :f, :exclusiveMaximum)).to eq(10)
+      end
+
+      # Inbound a JSON number arrives as an Integer or Float already, so the bound is emitted regardless.
+      it "still emits the bound inbound for that same BigDecimal position" do
+        prop = prop_for(:f) { expects :f, type: BigDecimal, comparison: { less_than: 0.1 } }
+
+        expect(prop[:exclusiveMaximum]).to eq(0.1)
+      end
+    end
+
+    # Both patterns are enforced at runtime and a node has one `pattern` slot, so the declared `format:` had been
+    # overwriting the one `only_integer:` installs — and the node then advertised a value the integer test
+    # rejects. `allOf` is JSON Schema's spelling for the conjunction, and it is free at a property: the
+    # conditional `allOf` this emitter writes lives at the schema ROOT.
+    it "composes a declared format: with the integer pattern instead of replacing it" do
+      action = build_axn do
+        expects :n, type: String, numericality: { only_integer: true }, format: { with: /\A[0-9a-z]+\z/ }
+      end
+      prop = action.input_schema[:properties][:n]
+
+      expect(prop).not_to have_key(:pattern)
+      expect(prop[:allOf]).to eq([{ pattern: "^[+-]?\\d+$" }, { pattern: "^[0-9a-z]+$" }])
+      expect(action.call(n: "2")).to be_ok
+      expect(action.call(n: "abc")).not_to be_ok
+      expect(action.call(n: "2a")).not_to be_ok
+    end
+
+    # Either alone still takes the plain slot — the composition is reached only when two patterns actually meet.
+    it "leaves a lone pattern in its own slot" do
+      formatted = prop_for(:n) { expects :n, type: String, format: { with: /\A[0-9a-z]+\z/ } }
+      integral = prop_for(:n) { expects :n, type: String, numericality: { only_integer: true } }
+
+      expect(formatted[:pattern]).to eq("^[0-9a-z]+$")
+      expect(formatted).not_to have_key(:allOf)
+      expect(integral[:pattern]).to eq("^[+-]?\\d+$")
+      expect(integral).not_to have_key(:allOf)
+    end
+
+    # A union leaves the node's own `type:` unset, so a pattern written at the node sat on nothing and a union
+    # `format:` reflected nowhere at all — the string branch advertised values the validator rejects. It follows
+    # the branches now, exactly as a numeric bound already did.
+    it "writes a format: into the string branch of a union" do
+      action = build_axn { expects :n, type: [String, Integer], format: { with: /\A[0-9a-z]+\z/ } }
+
+      expect(action.input_schema.dig(:properties, :n, :anyOf))
+        .to eq([{ type: "string", minLength: 1, pattern: "^[0-9a-z]+$" }, { type: "integer" }])
+      expect(action.call(n: "ABC")).not_to be_ok
+      expect(action.call(n: "abc")).to be_ok
+      expect(action.call(n: 5)).to be_ok
+    end
+
+    # The pattern is derived from the validator that actually runs rather than restated beside it.
+    it "emits ActiveModel's own integer test, translated" do
+      prop = prop_for(:n) { expects :n, type: String, numericality: { only_integer: true } }
+
+      expect(prop[:pattern])
+        .to eq(Axn::Internal::Reflection::Pattern.ecma_source(
+                 Axn::Validation::Base.integer_literal_regexp, for_output: false
+               ))
+    end
+
+    # A pattern the TYPE resolution installed has to survive a union collapsing to one branch — the same node
+    # reached by two paths must not say two different things.
+    it "keeps the pattern when the union collapses to a single branch" do
+      collapsed = prop_for(:n) { expects :n, type: [String, Float], numericality: { only_integer: true } }
+      union = prop_for(:n) { expects :n, type: [String, Numeric], numericality: { only_integer: true } }
+
+      expect(collapsed[:pattern]).to eq(union[:anyOf].first[:pattern])
+    end
+
+    # Deduping is a CONSEQUENCE of the narrowing converging two branches, never a tidy-up of its own: a union
+    # that narrows nothing is emitted exactly as it was built, duplicate branches included.
+    it "leaves a union that narrows nothing exactly as built" do
+      prop = prop_for(:a) { expects :a, type: Hash, of: { values: { klass: [Symbol, String] } } }
+
+      expect(prop[:additionalProperties]).to eq(anyOf: [{ type: "string" }, { type: "string" }])
+    end
+
+    # The contents path builds its node from the class alone, so it has to reach the same narrowing rather than
+    # carry a second reading of it.
+    it "narrows a union at a bag position too" do
+      action = build_axn { expects :f, type: Array, of: { klass: [Integer, Float], numericality: { only_integer: true } } }
+
+      expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "integer")
+      expect(action.call(f: [1.5])).not_to be_ok
+      expect(action.call(f: [2])).to be_ok
+    end
+
+    describe "stand-downs" do
+      it "emits nothing for other_than, an inverted operator with no keyword" do
+        expect(prop_for { expects :n, type: Integer, numericality: { other_than: 5 } })
+          .not_to have_key(:const)
+      end
+
+      it "emits nothing for odd/even, a parity check with no keyword" do
+        prop = prop_for { expects :n, type: Integer, numericality: { odd: true } }
+
+        expect(prop).not_to have_key(:minimum)
+        expect(prop).not_to have_key(:multipleOf)
+      end
+
+      # ActiveModel resolves a Symbol or Proc bound per call against the record, so no fixed number expresses
+      # it — the same stand-down a Symbol `length:` bound already gets.
+      it "emits nothing for a Symbol bound" do
+        expect(prop_for { expects :n, type: Integer, numericality: { greater_than: :floor } })
+          .not_to have_key(:exclusiveMinimum)
+      end
+
+      it "emits nothing for a Proc bound" do
+        expect(prop_for { expects :n, type: Integer, numericality: { greater_than: ->(_r) { 1 } } })
+          .not_to have_key(:exclusiveMinimum)
+      end
+
+      it "emits nothing for an infinite bound, which no fixed number expresses" do
+        expect(prop_for { expects :n, type: Integer, numericality: { less_than: Float::INFINITY } })
+          .not_to have_key(:exclusiveMaximum)
+      end
+
+      # `comparison:` accepts any Comparable, so a bound may be a String or a Date. JSON Schema's numeric
+      # bound keywords take a NUMBER, so emitting one there would produce an invalid document.
+      it "emits nothing for a non-numeric comparison bound" do
+        prop = prop_for { expects :n, type: String, comparison: { greater_than: "b" } }
+
+        expect(prop).not_to have_key(:exclusiveMinimum)
+        expect(prop).not_to have_key(:minimum)
+      end
+
+      it "emits nothing on a non-numeric emitted type" do
+        expect(prop_for { expects :n, type: String, numericality: { greater_than: 0 } })
+          .not_to have_key(:exclusiveMinimum)
+      end
+
+      it "emits nothing for a disabled entry" do
+        expect(prop_for { expects :n, type: Integer, numericality: false, optional: true })
+          .not_to have_key(:exclusiveMinimum)
+      end
+    end
+
+    # A gated entry is counted as if its gate were open — the static-maximal policy every constraint in this
+    # emitter follows, since a condition can only relax enforcement at runtime, never tighten it.
+    it "emits a gated bound, static-maximally" do
+      expect(prop_for { expects :n, type: Integer, numericality: { greater_than: 0, if: -> { false } } })
+        .to include(exclusiveMinimum: 0)
+    end
+
+    it "agrees with the runtime on the same value" do
+      action = build_axn { expects :n, type: Integer, numericality: { greater_than: 0, less_than: 10 } }
+
+      expect(action.call(n: 5)).to be_ok
+      expect(action.call(n: 0)).not_to be_ok
+      expect(action.call(n: 10)).not_to be_ok
+      expect(action.input_schema[:properties][:n])
+        .to include(exclusiveMinimum: 0, exclusiveMaximum: 10)
+    end
+  end
+
+  # `pattern` was emitted nowhere, so a declared `format:` was enforced at runtime and advertised nowhere.
+  #
+  # JSON Schema's `pattern` is an ECMA-262 source with NO flags available, so a faithful translation is only
+  # sometimes possible — and the failure mode that matters is a FALSE EMIT, a pattern that means something
+  # other than the Ruby regex it came from. Standing down costs nothing (it emits nothing, which is where this
+  # started), so anything not provably translatable stands down. `Reflection::Pattern` owns that judgment.
+  describe "pattern" do
+    def prop_for(&declaration)
+      build_axn(&declaration).input_schema[:properties][:s]
+    end
+
+    it "emits an already-ECMA-shaped source unchanged" do
+      expect(prop_for { expects :s, type: String, format: { with: /[a-z]+/ } }).to include(pattern: "[a-z]+")
+    end
+
+    # `\A`/`\z` are Ruby-only. ECMA's `^`/`$` mean start/end of INPUT whenever no `m` flag is set, and a
+    # `pattern` can never set one — so the translation is exact rather than approximate.
+    it "translates \\A and \\z to the ECMA input anchors" do
+      expect(prop_for { expects :s, type: String, format: { with: /\A[A-Z]{2}\z/ } })
+        .to include(pattern: "^[A-Z]{2}$")
+    end
+
+    it "emits the bare Regexp form of format:" do
+      expect(prop_for { expects :s, type: String, format: /\Aab\z/ }).to include(pattern: "^ab$")
+    end
+
+    # Ruby's `^`/`$` are ALWAYS line anchors; ECMA's, with no flag available, are input anchors. So the
+    # emitted pattern matches a subset of what the runtime accepts — stricter, which is the documented and
+    # licensed direction, rather than a divergence.
+    # `multiline: true` is required for the declaration to RUN at all: ActiveModel's FormatValidator refuses a
+    # `^`/`$` pattern without it ("using multiline anchors … may present a security risk"), so the bare spelling
+    # raises on every call and is not a working narrowing to document.
+    it "emits a Ruby line anchor as an input anchor, which is stricter" do
+      action = build_axn { expects :s, type: String, format: { with: /^\d+$/, multiline: true } }
+
+      expect(action.call(s: "123")).to be_ok
+      expect(action.input_schema[:properties][:s]).to include(pattern: "^\\d+$")
+    end
+
+    it "notes that the bare ^/$ spelling ActiveModel refuses never reaches a call" do
+      action = build_axn { expects :s, type: String, format: { with: /^\d+$/ } }
+
+      expect(action.call(s: "123")).not_to be_ok
+      expect(action.call(s: "123").exception).to be_a(ArgumentError)
+    end
+
+    it "agrees with the runtime on the same value" do
+      action = build_axn { expects :s, type: String, format: { with: /\A[A-Z]{2}\z/ } }
+
+      expect(action.call(s: "US")).to be_ok
+      expect(action.call(s: "usa")).not_to be_ok
+      expect(action.input_schema[:properties][:s]).to include(pattern: "^[A-Z]{2}$")
+    end
+
+    it "reaches a shape member's own format:" do
+      action = build_axn do
+        expects :rows, type: Array, of: Hash do
+          field :sku, type: String, format: { with: /\A[A-Z]+\z/ }
+        end
+      end
+
+      expect(action.input_schema.dig(:properties, :rows, :items, :properties, :sku))
+        .to include(pattern: "^[A-Z]+$")
+    end
+
+    describe "stand-downs" do
+      def stands_down(&declaration)
+        expect(prop_for(&declaration)).not_to have_key(:pattern)
+      end
+
+      # Ruby sets FIXEDENCODING on ANY non-ASCII regex, so gating on `options.zero?` refused every accented
+      # or non-Latin pattern — a plausible declaration, not an exotic one. That bit pins the regex's encoding
+      # and says nothing about matching semantics, and a JSON Schema pattern is a Unicode string, so it
+      # translates faithfully. `/n` (NOENCODING) is the one encoding flag that DOES change semantics — it
+      # matches bytes rather than characters — and still stands down.
+      it "emits a non-ASCII pattern, whose FIXEDENCODING bit is not a semantic flag" do
+        prop = prop_for { expects :s, type: String, format: { with: /\A[é-ü]+\z/ } }
+
+        expect(prop).to include(pattern: "^[é-ü]+$")
+      end
+
+      it "agrees with the runtime on a non-ASCII pattern" do
+        action = build_axn { expects :s, type: String, format: { with: /\Aé+\z/ } }
+
+        expect(action.call(s: "éé")).to be_ok
+        expect(action.call(s: "ab")).not_to be_ok
+        expect(action.input_schema[:properties][:s]).to include(pattern: "^é+$")
+      end
+
+      it "stands down on /n, the one encoding flag that changes matching semantics" do
+        stands_down { expects :s, type: String, format: { with: Regexp.new("a", Regexp::NOENCODING) } }
+      end
+
+      it "stands down on a case-insensitive regex, which a pattern cannot express" do
+        stands_down { expects :s, type: String, format: { with: /abc/i } }
+      end
+
+      it "stands down on Ruby's dotall flag, which ECMA spells differently" do
+        stands_down { expects :s, type: String, format: { with: /a.b/m } }
+      end
+
+      it "stands down on extended mode, which changes what the source means" do
+        stands_down { expects :s, type: String, format: { with: / a b /x } }
+      end
+
+      # Ruby's `\s` is the ASCII whitespace set; ECMA's also includes NBSP, the Unicode Zs category and the
+      # line/paragraph separators. So an emitted `\s` accepts strings the runtime rejects — looser, the one
+      # direction reflection may not err in. `\d`/`\w` are the SAME set in both dialects and stay.
+      # Where the referenced group did not participate in the match, Ruby FAILS the backreference and ECMA
+      # matches the EMPTY STRING — so `/\A(a|(b))\2c\z/` rejects "ac" in Ruby and `^(a|(b))\2c$` accepts it.
+      # Proving participation means parsing the alternation, so they stand down.
+      #
+      # Note this divergence is invisible to a Ruby-side JSON Schema validator, which compiles `pattern` with
+      # Ruby's own engine — so it is asserted from the specification, not from a differential run.
+      # Ruby reads `\xHH` as a BYTE and ECMA as a CHARACTER, which diverges at and above 0x80 — and the
+      # multi-byte spelling is both legal and reachable: `/\xC3\xA9/` matches the single character "é" in Ruby
+      # while the same source as an ECMA pattern means the two characters "Ã©", so it would reject what the
+      # runtime accepts AND accept what it rejects. Found by sweeping the allowlist rather than by a review.
+      it "stands down on a hex escape, whose unit differs between the dialects" do
+        stands_down { expects :s, type: String, format: { with: Regexp.new("\\xC3\\xA9") } }
+      end
+
+      it "stands down on an octal escape" do
+        stands_down { expects :s, type: String, format: { with: Regexp.new("\\012") } }
+      end
+
+      # `\uHHHH` is the same codepoint in both dialects and stays. The braced `\u{…}` form is refused
+      # separately, since ECMA needs the `u` flag for it.
+      it "still emits a \\uHHHH escape, which agrees in both dialects" do
+        expect(prop_for { expects :s, type: String, format: { with: Regexp.new("\\A\\u0041\\z") } })
+          .to include(pattern: "^\\u0041$")
+      end
+
+      # A flagless ECMA pattern counts UTF-16 CODE UNITS where Ruby counts CHARACTERS — and which side that
+      # favours DEPENDS ON THE QUANTIFIER, so it cannot be licensed on input as a narrowing:
+      #
+      #   ^.$     needs 1 unit, "😀" has 2  => ECMA rejects, Ruby accepts  (stricter)
+      #   ^.{2}$  needs 2 units, "😀" has 2 => ECMA ACCEPTS, Ruby rejects  (LOOSER)
+      #
+      # Determining which applies means parsing the quantifier context, so anything able to match a character
+      # outside the BMP stands down at BOTH positions.
+      it "stands down on a counted dot, where ECMA is LOOSER than Ruby" do
+        action = build_axn { expects :s, type: String, format: { with: /\A.{2}\z/ } }
+
+        expect(action.call(s: "\u{1F600}")).not_to be_ok
+        expect(action.input_schema[:properties][:s]).not_to have_key(:pattern)
+      end
+
+      it "stands down on a dot on input as well as output" do
+        stands_down { expects :s, type: String, format: { with: /\A.\z/ } }
+      end
+
+      it "stands down on a complement escape on input" do
+        stands_down { expects :s, type: String, format: { with: /\A\D{2}\z/ } }
+      end
+
+      it "stands down on a negated class on input" do
+        stands_down { expects :s, type: String, format: { with: /\A[^a]{2}\z/ } }
+      end
+
+      # The line anchors are the one construct that stays input-licensed: `^`/`$` are ZERO-WIDTH assertions, so
+      # no code units are consumed and no quantifier can reverse the direction — Ruby's line anchors match at a
+      # strict superset of ECMA's input-anchor positions whatever surrounds them.
+      it "still emits a line anchor on input, which no quantifier can reverse" do
+        action = build_axn { expects :s, type: String, format: { with: /^\d+$/, multiline: true } }
+
+        expect(action.input_schema[:properties][:s]).to include(pattern: "^\\d+$")
+      end
+
+      # On INPUT a narrowing is licensed — the document may admit fewer values than the runtime. On OUTPUT the
+      # direction flips: the schema describes what the action PRODUCES, so a narrowing rejects values axn
+      # successfully serialized. Only translations that are EXACT survive there, which is the same reasoning
+      # `effective_validations` already applies to a self-gated entry on output.
+      describe "on output, where a narrowing rejects what the action serializes" do
+        it "stands down on a dot, whose ECMA reading excludes more than Ruby's" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A.\z/ }, allow_blank: true
+            def call = expose(:s, "\r")
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        it "stands down on a line anchor" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /^\d+$/, multiline: true }
+            def call = expose(:s, "123")
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        # A flagless ECMA pattern counts UTF-16 CODE UNITS where Ruby counts CHARACTERS, so anything that can
+        # match a character outside the BMP is a narrowing outbound: Ruby sees one character in "😀" and ECMA
+        # sees a surrogate pair. `\w`/`\d` are safe (ASCII-only, they never match one), and a BMP character
+        # like "é" is safe (one code unit either way) — it is the COMPLEMENTS and the negated classes that
+        # match astral input, plus a literal astral character in the source.
+        it "stands down on a complement escape, which matches astral input" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A\D\z/ }
+            define_method(:call) { expose(:s, "\u{1F600}") }
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        it "stands down on \\W for the same reason" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A\W\z/ }
+            define_method(:call) { expose(:s, "\u{1F600}") }
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        it "stands down on a negated character class, which has the same reach" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A[^0-9]\z/ }
+            define_method(:call) { expose(:s, "\u{1F600}") }
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        it "stands down on a literal astral character in the source" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: Regexp.new("\\A[\u{1F600}]\\z") }
+            define_method(:call) { expose(:s, "\u{1F600}") }
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).not_to have_key(:pattern)
+        end
+
+        # The controls: an ASCII-only pattern, and a BMP non-ASCII one, both still emit outbound.
+        it "still emits an ASCII-only pattern" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A\d+\z/ }
+            def call = expose(:s, "123")
+          end
+
+          expect(action.output_schema[:properties][:s]).to include(pattern: "^\\d+$")
+        end
+
+        it "still emits a BMP non-ASCII pattern, which needs no surrogate pair" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\Aé+\z/ }
+            def call = expose(:s, "éé")
+          end
+
+          expect(action.output_schema[:properties][:s]).to include(pattern: "^é+$")
+        end
+
+        it "stands down on the complements on input too, since a quantifier can reverse the direction" do
+          expect(prop_for { expects :s, type: String, format: { with: /\A\D\z/ } }).not_to have_key(:pattern)
+        end
+
+        # An EXACT translation still emits on output — the stand-down is about narrowing, not about output.
+        it "still emits an exactly-translated pattern" do
+          action = build_axn do
+            exposes :s, type: String, format: { with: /\A[A-Z]{2}\z/ }
+            def call = expose(:s, "US")
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:s]).to include(pattern: "^[A-Z]{2}$")
+        end
+
+        it "still emits the LINE ANCHOR narrowing on input, the one a quantifier cannot reverse" do
+          action = build_axn { expects :s, type: String, format: { with: /^\d+$/, multiline: true } }
+
+          expect(action.input_schema[:properties][:s]).to include(pattern: "^\\d+$")
+        end
+      end
+
+      it "stands down on a numeric backreference" do
+        stands_down { expects :s, type: String, format: { with: /\A(a|(b))\2c\z/ } }
+      end
+
+      # `input_schema` must not RAISE. The guard patterns are UTF-8, so matching them against a source in an
+      # incompatible encoding raises `Encoding::CompatibilityError` — which breaks reflection outright rather
+      # than degrading it, the one failure mode a stand-down design must not have.
+      it "stands down on a non-UTF-8 source instead of raising" do
+        euc = Regexp.new("あ".encode("EUC-JP"))
+        action = build_axn { expects :s, type: String, format: { with: euc } }
+
+        expect { action.input_schema }.not_to raise_error
+        expect(action.input_schema[:properties][:s]).not_to have_key(:pattern)
+      end
+
+      it "still emits an ASCII-only source whose Regexp declares another encoding" do
+        ascii = Regexp.new("\\Aab\\z".encode("EUC-JP"))
+        action = build_axn { expects :s, type: String, format: { with: ascii } }
+
+        expect(action.input_schema[:properties][:s]).to include(pattern: "^ab$")
+      end
+
+      # A difference INSIDE Ruby that is easy to miss: Ruby's `\w` is ASCII-only but its `\b` is Unicode-aware,
+      # while ECMA's unflagged `\b` goes through its ASCII `\w`. So Ruby REJECTS "é" here and the emitted
+      # `^\Bé\B$` would accept it.
+      it "stands down on a word-boundary escape, which Ruby reads Unicode-aware" do
+        action = build_axn { expects :s, type: String, format: { with: /\A\Bé\B\z/ } }
+
+        expect(action.call(s: "é")).not_to be_ok
+        expect(action.input_schema[:properties][:s]).not_to have_key(:pattern)
+      end
+
+      it "stands down on \\b for the same reason" do
+        stands_down { expects :s, type: String, format: { with: /\A\bab\z/ } }
+      end
+
+      # The escapes that STAY are the ones measured ASCII-only on both sides, which is what makes them safe.
+      it "still emits \\d and \\w, which are ASCII-only in both dialects" do
+        expect(prop_for { expects :s, type: String, format: { with: /\A\d\w+\z/ } })
+          .to include(pattern: "^\\d\\w+$")
+      end
+
+      it "stands down on \\s, whose character set differs between the dialects" do
+        stands_down { expects :s, type: String, format: { with: /\A\s+\z/ } }
+      end
+
+      it "stands down on \\S for the same reason" do
+        stands_down { expects :s, type: String, format: { with: /\A\S+\z/ } }
+      end
+
+      it "still emits \\d and \\w, which agree in both dialects" do
+        expect(prop_for { expects :s, type: String, format: { with: /\A\d\w+\z/ } })
+          .to include(pattern: "^\\d\\w+$")
+      end
+
+      it "stands down on \\Z, which permits a trailing newline where $ does not" do
+        stands_down { expects :s, type: String, format: { with: /\Aa\Z/ } }
+      end
+
+      it "stands down on \\h, a Ruby-only escape" do
+        stands_down { expects :s, type: String, format: { with: /\A\h+\z/ } }
+      end
+
+      it "stands down on a POSIX bracket class" do
+        stands_down { expects :s, type: String, format: { with: /[[:alpha:]]+/ } }
+      end
+
+      it "stands down on \\p, which ECMA needs a u flag for" do
+        stands_down { expects :s, type: String, format: { with: /\p{Alpha}+/ } }
+      end
+
+      it "stands down on an atomic group" do
+        stands_down { expects :s, type: String, format: { with: /(?>ab)c/ } }
+      end
+
+      it "stands down on an inline flag group" do
+        stands_down { expects :s, type: String, format: { with: /(?i)abc/ } }
+      end
+
+      it "stands down on a named capture" do
+        stands_down { expects :s, type: String, format: { with: /(?<y>\d+)/ } }
+      end
+
+      it "stands down on a possessive quantifier" do
+        stands_down { expects :s, type: String, format: { with: /a++b/ } }
+      end
+
+      # Ruby reads a `[` inside a character class as a nested class UNION (`[a[bc]]` is {a,b,c}); ECMA reads
+      # `[a[bc]` as a class containing `[` and then a literal `]`, so the emitted pattern accepts "[" which the
+      # runtime rejects. Found by sweeping the construct list rather than by a review — the escape half of this
+      # design is an allowlist, and the construct half is not, which is where these keep coming from.
+      it "stands down on a nested character-class union" do
+        stands_down { expects :s, type: String, format: { with: /\A[a[bc]]+\z/ } }
+      end
+
+      it "stands down on a nested union inside a negated class" do
+        stands_down { expects :s, type: String, format: { with: /\A[^a[b]]+\z/ } }
+      end
+
+      # The controls: two separate classes, and an ESCAPED bracket inside one, must keep emitting.
+      it "still emits two separate character classes" do
+        expect(prop_for { expects :s, type: String, format: { with: /\A[a]b[c]\z/ } })
+          .to include(pattern: "^[a]b[c]$")
+      end
+
+      it "still emits an escaped bracket inside a class" do
+        expect(prop_for { expects :s, type: String, format: { with: /\A[\[a]+\z/ } })
+          .to include(pattern: "^[\\[a]+$")
+      end
+
+      it "stands down on a class intersection" do
+        stands_down { expects :s, type: String, format: { with: /[\w&&[^a]]+/ } }
+      end
+
+      it "stands down on a braced escape ECMA needs a u flag for" do
+        stands_down { expects :s, type: String, format: { with: /\u{1F600}/ } }
+      end
+
+      # A `without:` pattern's honest spelling is `not: { pattern: ... }`, and `not:` is a single slot that
+      # `reject_null!` already writes into — two writers, one key, and the second silently clobbers the first.
+      # Booked as unemitted alongside `exclusion:`, which has the same shape.
+      it "stands down on format: { without: }" do
+        stands_down { expects :s, type: String, format: { without: /\d/ } }
+      end
+
+      it "stands down on a pattern ActiveModel resolves per call" do
+        stands_down { expects :s, type: String, format: { with: ->(_r) { /a/ } } }
+      end
+
+      it "stands down on a non-string emitted type" do
+        expect(prop_for { expects :s, type: Integer, format: { with: /\A\d+\z/ } }).not_to have_key(:pattern)
+      end
+
+      it "stands down on a disabled entry" do
+        stands_down { expects :s, type: String, format: false, optional: true }
+      end
+
+      # `{b}` is not a well-formed quantifier, so Ruby reads it as three literal characters. A strict ECMA
+      # engine may instead treat it as a parse error, which would make a consumer's validator throw on a
+      # document axn published — so the brace stands down rather than risk it.
+      it "stands down on a brace that is not a quantifier" do
+        stands_down { expects :s, type: String, format: { with: /\Aa{b}c\z/ } }
+      end
+
+      # `\A` translates to `^` only as a leading anchor. Inside an alternation its position would have to be
+      # tracked to translate safely — and inside a character class `[\A]` would become `[^]`, a negated empty
+      # class matching nothing — so anywhere but the ends, it stands down.
+      it "stands down on \\A anywhere but the start" do
+        stands_down { expects :s, type: String, format: { with: /(\Aa|b)/ } }
+      end
+
+      it "stands down on \\z anywhere but the end" do
+        stands_down { expects :s, type: String, format: { with: /a\z|b/ } }
+      end
+    end
+
+    # Lookahead and lookbehind are shared with ECMA, so they translate rather than stand down — the allowlist
+    # is not "punctuation only".
+    # Written without a `.`, which stands down on its own account (code-unit sensitivity) — the claim here is
+    # that a LOOKAHEAD survives translation, and a dot inside it would test something else.
+    it "keeps a lookahead" do
+      expect(prop_for { expects :s, type: String, format: { with: /\A(?=\w*\d)\w+\z/ } })
+        .to include(pattern: "^(?=\\w*\\d)\\w+$")
+    end
+
+    it "keeps a non-capturing group and an escaped literal" do
+      expect(prop_for { expects :s, type: String, format: { with: /\A(?:a|b)\.c\z/ } })
+        .to include(pattern: "^(?:a|b)\\.c$")
+    end
+  end
+
+  # A bag's value validators land on the node the bag describes — `items` for an Array's element,
+  # `additionalProperties` for a map's values, `propertyNames` for its keys — through the SAME projector that
+  # serves a named position, so a keyword cannot reach a field and be forgotten one rung down.
+  describe "value constraints at an of: bag position" do
+    def prop_for(field, &declaration)
+      build_axn(&declaration).input_schema[:properties][field]
+    end
+
+    it "emits pattern into items" do
+      prop = prop_for(:codes) { expects :codes, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ } } }
+
+      expect(prop[:items]).to include(type: "string", pattern: "^[A-Z]{2}$")
+    end
+
+    it "emits enum into items" do
+      prop = prop_for(:tags) { expects :tags, type: Array, of: { klass: String, inclusion: { in: %w[a b] } } }
+
+      expect(prop[:items]).to include(enum: %w[a b])
+    end
+
+    # The element's OWN length, so the string keyword — not the array's size, which is the field's `length:`.
+    it "emits the element's own size bound into items, not the array's" do
+      prop = prop_for(:codes) { expects :codes, type: Array, of: { klass: String, length: { maximum: 2 } } }
+
+      expect(prop[:items]).to include(maxLength: 2)
+      expect(prop).not_to have_key(:maxItems)
+    end
+
+    it "emits a numeric bound into items" do
+      prop = prop_for(:qtys) { expects :qtys, type: Array, of: { klass: Integer, numericality: { greater_than: 0 } } }
+
+      expect(prop[:items]).to include(type: "integer", exclusiveMinimum: 0)
+    end
+
+    it "emits into additionalProperties for a map's values axis" do
+      prop = prop_for(:counts) { expects :counts, type: Hash, of: { values: { klass: Integer, numericality: { greater_than: 0 } } } }
+
+      expect(prop[:additionalProperties]).to include(type: "integer", exclusiveMinimum: 0)
+    end
+
+    it "emits at the nested node a nested bag names" do
+      prop = prop_for(:m) { expects :m, type: Array, of: { klass: Array, of: { klass: String, format: { with: /\Ax/ } } } }
+
+      expect(prop.dig(:items, :items)).to include(type: "string", pattern: "^x")
+    end
+
+    it "agrees with the runtime on the same value" do
+      action = build_axn { expects :codes, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ } } }
+
+      expect(action.call(codes: %w[US])).to be_ok
+      expect(action.call(codes: %w[usa])).not_to be_ok
+      expect(action.input_schema.dig(:properties, :codes, :items)).to include(pattern: "^[A-Z]{2}$")
+    end
+
+    # A validator-only bag names no class, and the node was seeded from `klass:` alone — so it stayed empty,
+    # every keyword that keys off a type declined to emit, and the parent dropped `items` entirely. The FIELD
+    # path infers a type from the validators in exactly this case (`json_type_for`), so the fix is to call it
+    # rather than to write a second inference beside it.
+    describe "a validator-only bag, which names no class" do
+      it "infers a numeric type and emits the bound" do
+        action = build_axn { expects :f, type: Array, of: { numericality: { greater_than: 0 } } }
+
+        expect(action.call(f: [1])).to be_ok
+        expect(action.call(f: [-1])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to include(type: "number", exclusiveMinimum: 0)
+      end
+
+      it "narrows to integer under only_integer, as a field does" do
+        prop = prop_for(:f) { expects :f, type: Array, of: { numericality: { only_integer: true } } }
+
+        expect(prop[:items]).to include(type: "integer")
+      end
+
+      it "infers a type from an inclusion set too, matching the field path" do
+        prop = prop_for(:f) { expects :f, type: Array, of: { inclusion: { in: %w[a b] } } }
+
+        expect(prop[:items]).to include(type: "string", enum: %w[a b])
+      end
+
+      it "keeps the declared class when the bag names one" do
+        prop = prop_for(:f) { expects :f, type: Array, of: { klass: String, numericality: { greater_than: 0 } } }
+
+        # `klass:` wins, exactly as `type:` wins at a field — and a numeric bound then stands down on a
+        # non-numeric emitted type.
+        expect(prop[:items]).to include(type: "string")
+        expect(prop[:items]).not_to have_key(:exclusiveMinimum)
+      end
+
+      it "reaches a map axis too" do
+        prop = prop_for(:m) { expects :m, type: Hash, of: { values: { numericality: { greater_than: 0 } } } }
+
+        expect(prop[:additionalProperties]).to include(type: "number", exclusiveMinimum: 0)
+      end
+
+      # ActiveModel's `numericality:` accepts a numeric STRING unless `only_numeric: true` is given, so an
+      # action may expose "1" successfully and serialize it as a JSON string. On OUTPUT an inferred numeric type
+      # therefore rejects the action's own output; on input it is merely stricter, which is licensed.
+      #
+      # The gate lives in `json_type_for`, so it covers the FIELD path too — where this was a pre-existing bug
+      # that the positional inference above would otherwise have propagated.
+      describe "a numericality-inferred type on output, where a numeric string may be exposed" do
+        it "stands down at a bag position" do
+          action = build_axn do
+            exposes :codes, type: Array, of: { numericality: { greater_than: 0 } }
+            def call = expose(:codes, ["1"])
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema.dig(:properties, :codes)).not_to have_key(:items)
+        end
+
+        it "stands down at a field, which had the same bug" do
+          action = build_axn do
+            exposes :n, numericality: { greater_than: 0 }
+            def call = expose(:n, "1")
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to eq({})
+        end
+
+        # `only_numeric:` proves the value is a NUMERIC, which is not the same as a JSON number, so on its own
+        # it infers nothing on output: `Complex(1, 2)` is a Numeric that serializes as the STRING "1+2i", and an
+        # inferred `"number"` rejected output the action had produced successfully.
+        it "stands down under only_numeric: alone, which does not prove a JSON number" do
+          action = build_axn do
+            exposes :n, numericality: { greater_than: 0, only_numeric: true }
+            def call = expose(:n, 1)
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to eq({})
+        end
+
+        it "is why: a Numeric that satisfies the validator serializes as a string" do
+          action = build_axn do
+            exposes :n, numericality: { only_numeric: true }
+            def call = expose(:n, Complex(1, 2))
+          end
+          result = action.call
+
+          expect(result).to be_ok
+          expect(Axn::Extensions::Serialization.render(result)["n"]).to eq("1+2i")
+          expect(action.output_schema[:properties][:n]).to eq({})
+        end
+
+        it "reaches a bag position the same way" do
+          action = build_axn do
+            exposes :ns, type: Array, of: { numericality: { only_numeric: true } }
+            def call = expose(:ns, [Complex(1, 2)])
+          end
+          result = action.call
+
+          expect(result).to be_ok
+          expect(Axn::Extensions::Serialization.render(result)["ns"]).to eq(["1+2i"])
+          expect(action.output_schema[:properties][:ns]).not_to have_key(:items)
+        end
+
+        # Together the two options pin the value to an Integer: among Numerics only an Integer's `#to_s` is an
+        # integer literal, which is the test `only_integer:` applies. So the pair infers, and infers "integer".
+        it "infers where only_numeric: and only_integer: together pin an Integer" do
+          action = build_axn do
+            exposes :n, numericality: { only_numeric: true, only_integer: true }
+            def call = expose(:n, 7)
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to eq(type: "integer")
+        end
+
+        it "stands down again where that only_integer: is resolved per call" do
+          action = build_axn do
+            exposes :n, numericality: { only_numeric: true, only_integer: -> { false } }
+            def call = expose(:n, 1.5)
+          end
+          result = action.call
+
+          expect(result).to be_ok
+          expect(Axn::Extensions::Serialization.render(result)["n"]).to eq(1.5)
+          expect(action.output_schema[:properties][:n]).to eq({})
+        end
+
+        # The `inclusion:` branch of the same inference had the identical defect, and it is gated on the same
+        # predicate the outbound `enum` already uses rather than a second reading of it. `Integer#==` falls back
+        # to `other == self`, so a value object comparing equal to a member passes the validator and serializes
+        # as its own string — which is why the set may not name a type unless the position pins the class.
+        describe "an inclusion-inferred type on output, where a member's equality reaches another class" do
+          # A plain value object, not a hostile one: comparing equal to a Numeric is ordinary for a money type.
+          cents = Class.new do
+            attr_reader :n
+
+            def initialize(n) = @n = n
+            def ==(other) = n == (other.is_a?(self.class) ? other.n : other)
+            def to_s = "$#{n}"
+          end
+
+          # The exact rendering of an opaque object is not the point and is not asserted: it depends on which
+          # JSON core extensions are loaded (ActiveSupport's `Object#as_json` reports `instance_values`, so this
+          # renders as a Hash in a full run and as its `#to_s` without it). What matters either way is that it
+          # is NOT a JSON integer, so an inferred `"integer"` rejects it.
+          it "is the divergence itself: an Integer member matches a foreign class" do
+            expect([1].include?(cents.new(1))).to be(true)
+            expect(Axn::Internal::Reflection::Values.serialize_value(cents.new(1))).not_to be_a(Integer)
+          end
+
+          it "stands the inferred type down for a bare numeric set" do
+            action = build_axn do
+              exposes :n, inclusion: { in: [1] }
+              define_method(:call) { expose(:n, cents.new(1)) }
+            end
+            result = action.call
+
+            expect(result).to be_ok
+            expect(Axn::Extensions::Serialization.render(result)["n"]).not_to be_a(Integer)
+            expect(action.output_schema[:properties][:n]).to eq({})
+          end
+
+          it "still infers where a declared type: pins the numeric class" do
+            action = build_axn do
+              exposes :n, type: Integer, inclusion: { in: [1, 2] }
+              def call = expose(:n, 1)
+            end
+
+            expect(action.call).to be_ok
+            expect(action.output_schema[:properties][:n]).to include(type: "integer", enum: [1, 2])
+          end
+
+          # A String member cannot be `==` to a foreign class — `String#==` returns false rather than deferring —
+          # so the set names its type outbound exactly as before.
+          it "still infers from a String set, whose equality cannot reach another class" do
+            action = build_axn do
+              exposes :n, inclusion: { in: %w[a b] }
+              def call = expose(:n, "a")
+            end
+
+            expect(action.call).to be_ok
+            expect(action.output_schema[:properties][:n]).to include(type: "string", enum: %w[a b])
+          end
+
+          it "still infers on INPUT, where a narrowing is licensed" do
+            action = build_axn { expects :n, inclusion: { in: [1, 2] } }
+
+            expect(action.input_schema[:properties][:n]).to include(type: "integer", enum: [1, 2])
+          end
+        end
+
+        # The BOUND stands down under `only_numeric:` for a second, independent reason: a Numeric may be a
+        # BigDecimal, and every Numeric but Integer and Float reaches the wire through `Float()`, which rounds.
+        # Measured — `BigDecimal("1e-400")` satisfies `greater_than: 0`, serializes as `0.0`, and an emitted
+        # `exclusiveMinimum: 0` rejects the action's own output.
+        it "keeps the bound down: a Numeric the wire rounds satisfies it and the emitted node would not" do
+          action = build_axn do
+            exposes :n, numericality: { greater_than: 0, only_numeric: true }
+            def call = expose(:n, BigDecimal("1e-400"))
+          end
+          result = action.call
+
+          expect(result).to be_ok
+          expect(Axn::Extensions::Serialization.render(result)["n"]).to eq(0.0)
+          expect(action.output_schema[:properties][:n]).not_to have_key(:exclusiveMinimum)
+        end
+
+        # `const` names exactly one value, so it cannot say "this number OR null" — and a nullable position
+        # really does admit nil. Measured: the action exposes nil successfully while `const: 1` refused it,
+        # even beside a `"null"` in the node's own `type:`.
+        it "spells a nullable equal_to: as an enum, which can carry the null" do
+          action = build_axn do
+            exposes :n, type: Integer, comparison: { equal_to: 1 }, optional: true
+            def call = expose(:n, nil)
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to include(enum: [1, nil])
+          expect(action.output_schema[:properties][:n]).not_to have_key(:const)
+        end
+
+        it "keeps const where the position admits no nil" do
+          action = build_axn do
+            exposes :n, type: Integer, comparison: { equal_to: 1 }
+            def call = expose(:n, 1)
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to include(const: 1)
+        end
+
+        it "still emits when a declared type: requires a real numeric" do
+          action = build_axn do
+            exposes :n, type: Integer, numericality: { greater_than: 0 }
+            def call = expose(:n, 1)
+          end
+
+          expect(action.output_schema[:properties][:n]).to include(type: "integer", exclusiveMinimum: 0)
+        end
+
+        it "still infers on INPUT, where a narrowing is licensed" do
+          prop = prop_for(:f) { expects :f, type: Array, of: { numericality: { greater_than: 0 } } }
+
+          expect(prop[:items]).to include(type: "number", exclusiveMinimum: 0)
+        end
+
+        # A bare numeric `inclusion:` set infers NOTHING on output. The reading this used to assert — that
+        # `include?` compares by membership so "the exposed value really is an Integer" — does not hold:
+        # `include?` compares by `==`, and `Integer#==` falls back to `other == self`, so a value object
+        # comparing equal to a member passes and serializes as something that is not a JSON integer. The set
+        # names a type outbound only where the position pins the class, which is the gate the `enum` beside it
+        # already used.
+        it "stands an inclusion-inferred type down on output for a bare numeric set" do
+          action = build_axn do
+            exposes :n, inclusion: { in: [1, 2] }
+            def call = expose(:n, 1)
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to eq({})
+        end
+      end
+
+      # `format:`/`length:` alone infer nothing, at a bag position AND at a field — there is no type to infer
+      # from a pattern or a size, since both apply to more than one JSON type. Pinned as the shared limitation
+      # it is, so the asymmetry above cannot creep back unnoticed.
+      # A classless bag is legal (PRO-3193), and its node names no type — so nothing there said the position
+      # rejects nil, the parent dropped `items` entirely, and the document accepted `[null]` the positional
+      # validator refuses on every call.
+      it "rejects null at an untyped position that admits none" do
+        action = build_axn { expects :f, type: Array, of: { presence: true } }
+
+        expect(action.call(f: ["a"])).to be_ok
+        expect(action.call(f: [nil])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items)).to eq(not: { type: "null" })
+      end
+
+      # Outbound the schema may say LESS than the contract and never more, and an untyped OUTPUT position is
+      # untyped precisely because the emitter could not prove what it serializes to. Writing a claim there
+      # would be inventing one in the direction reflection may not err.
+      it "writes no such claim on output, where an untyped position is one it could not prove" do
+        action = build_axn do
+          exposes :f, type: Array, of: { presence: true }
+          def call = expose(:f, ["a"])
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema[:properties][:f]).not_to have_key(:items)
+      end
+
+      it "infers nothing from format: alone, exactly as a field does not" do
+        bagged = build_axn { expects :f, type: Array, of: { format: { with: /\Aa/ } } }
+        fielded = build_axn { expects :f, format: { with: /\Aa/ } }
+
+        # No TYPE is inferred at either position, which is the claim — neither a pattern nor a size names one
+        # JSON type. The element node is not EMPTY, though: the position still rejects nil (`nil.to_s` is `""`,
+        # which this pattern refuses), so it says that much and nothing more.
+        expect(bagged.input_schema.dig(:properties, :f, :items)).to eq(not: { type: "null" })
+        expect(bagged.input_schema.dig(:properties, :f, :items)).not_to have_key(:type)
+        expect(fielded.input_schema[:properties][:f]).to eq({})
+      end
+    end
+
+    describe "keys axis, where propertyNames earns its place" do
+      # PRO-3165 emitted nothing for `keys:` because every JSON object key is already a string, so a bare
+      # `keys: String` says nothing actionable. That reasoning holds — and stops holding the moment the axis
+      # carries a constraint a client can act on.
+      it "still emits nothing for a bare type axis" do
+        prop = prop_for(:m) { expects :m, type: Hash, of: { keys: String, values: Integer } }
+
+        expect(prop).not_to have_key(:propertyNames)
+      end
+
+      it "still emits nothing for a bag axis that only names a class" do
+        prop = prop_for(:m) { expects :m, type: Hash, of: { keys: { klass: String }, values: Integer } }
+
+        expect(prop).not_to have_key(:propertyNames)
+      end
+
+      it "emits propertyNames for a constrained keys axis" do
+        prop = prop_for(:m) do
+          expects :m, type: Hash, of: { keys: { klass: String, format: { with: /\A[a-z]+\z/ } }, values: Integer }
+        end
+
+        expect(prop[:propertyNames]).to eq(pattern: "^[a-z]+$")
+      end
+
+      # A JSON object key is always a string — but a Symbol AXIS rejects one, so on input the rendered form
+      # would name a key axn refuses. Emitted on output only, through the key serializer. The full treatment
+      # (and the Time case that showed the value serializer was the wrong renderer) is under "a keys axis emits
+      # only what a JSON property name can be" below.
+      it "emits a Symbol inclusion set on output, and stands down on input" do
+        inbound = prop_for(:m) do
+          expects :m, type: Hash, of: { keys: { klass: Symbol, inclusion: { in: %i[a b] } }, values: Integer }
+        end
+        outbound = build_axn do
+          exposes :m, type: Hash, of: { keys: { klass: Symbol, inclusion: { in: %i[a b] } }, values: Integer }
+          def call = expose(:m, { a: 1 })
+        end
+
+        expect(inbound).not_to have_key(:propertyNames)
+        expect(outbound.output_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a b])
+      end
+
+      it "emits a keys-axis length bound" do
+        prop = prop_for(:m) do
+          expects :m, type: Hash, of: { keys: { klass: String, length: { maximum: 4 } }, values: Integer }
+        end
+
+        expect(prop[:propertyNames]).to eq(maxLength: 4)
+      end
+
+      # A numeric bound survives no string-ification, so there is no `propertyNames` subschema that says it —
+      # the constraint is enforced in Ruby and reflects nowhere, exactly as PRO-3165 decided for a bare axis.
+      it "emits nothing for a keys-axis numeric bound, which no propertyNames expresses" do
+        action = build_axn do
+          expects :m, type: Hash, of: { keys: { klass: Integer, numericality: { greater_than: 0 } }, values: Integer }
+        end
+
+        expect(action.call(m: { 1 => 2 })).to be_ok
+        expect(action.call(m: { -1 => 2 })).not_to be_ok
+        expect(action.input_schema[:properties][:m]).not_to have_key(:propertyNames)
+      end
+
+      # JSON Schema's `propertyNames` applies to EVERY key, including ones `properties` matches, while the
+      # runtime EXEMPTS a shape-named key from both axes (PRO-3166). Emitting the bare constraint would make
+      # the node unsatisfiable whenever a member name fails it — required, and forbidden by propertyNames — so
+      # the emitted union is the runtime rule verbatim: a key is one the shape names, or one the axis admits.
+      it "unions the shaped key names in when a shape sits beside a constrained keys axis" do
+        prop = prop_for(:m) do
+          expects :m, type: Hash, of: { keys: { klass: String, format: { with: /\A\d+\z/ } }, values: Integer } do
+            field :label, type: Integer
+          end
+        end
+
+        expect(prop[:propertyNames]).to eq(anyOf: [{ pattern: "^\\d+$" }, { enum: ["label"] }])
+      end
+
+      # The exemption has to reach EVERY node where a shape's `properties` and a keys axis's `propertyNames`
+      # meet, not only the field's own. A nested bag composes both in `contents_node_schema`, and the block
+      # form folds into exactly that bag (PRO-3191), so both spellings land on the same node.
+      it "unions them on a NESTED shaped map too" do
+        action = build_axn do
+          expects :rows, type: Array, of: { klass: Hash,
+                                            of: { keys: { klass: String, format: { with: /\A\d+\z/ } }, values: Integer },
+                                            shape: { members: [Struct.new(:field, :validations).new(:label, { type: Integer })] } }
+        end
+
+        expect(action.input_schema.dig(:properties, :rows, :items, :propertyNames))
+          .to eq(anyOf: [{ pattern: "^\\d+$" }, { enum: ["label"] }])
+        expect(action.call(rows: [{ "label" => 1, "42" => 2 }])).to be_ok
+      end
+
+      it "unions them for the block form, which folds into the same bag" do
+        action = build_axn do
+          expects :rows, type: Array, of: { klass: Hash,
+                                            of: { keys: { klass: String, format: { with: /\A\d+\z/ } }, values: Integer } } do
+            field :label, type: Integer
+          end
+        end
+
+        expect(action.input_schema.dig(:properties, :rows, :items, :propertyNames))
+          .to eq(anyOf: [{ pattern: "^\\d+$" }, { enum: ["label"] }])
+        expect(action.call(rows: [{ "label" => 1, "42" => 2 }])).to be_ok
+      end
+
+      it "keeps that node satisfiable — the runtime accepts the exempt key the axis would reject" do
+        action = build_axn do
+          expects :m, type: Hash, of: { keys: { klass: String, format: { with: /\A\d+\z/ } }, values: Integer } do
+            field :label, type: Integer
+          end
+        end
+
+        expect(action.call(m: { "label" => 1, "42" => 2 })).to be_ok
+        expect(action.call(m: { "label" => 1, "nope" => 2 })).not_to be_ok
+      end
+    end
+
+    # The projector reads named keys, so forwarding the recursion edges to it would be inert TODAY — this
+    # pins the helper's own contract instead, since what it returns is consumed as "the constraints on this
+    # value" and `of:`/`shape:` describe a nested node rather than a keyword on this one.
+    describe "bag_value_constraints" do
+      it "keeps the value validators and drops everything that describes the position" do
+        bag = { klass: String, container: Array, message: "m", of: { klass: Integer },
+                shape: { members: [] }, format: { with: /a/ }, allow_nil: true }
+
+        expect(described_class.send(:bag_value_constraints, bag, for_output: false)).to eq(format: { with: /a/ })
+      end
+    end
+
+    describe "constraints that stay unemitted" do
+      it "emits nothing for exclusion:, as at a field" do
+        prop = prop_for(:roles) { expects :roles, type: Array, of: { klass: String, exclusion: { in: %w[admin] } } }
+
+        expect(prop[:items]).to eq(type: "string")
+      end
+
+      it "emits nothing for a validate: callable" do
+        prop = prop_for(:codes) { expects :codes, type: Array, of: { klass: String, validate: ->(v) { "no" if v == "x" } } }
+
+        expect(prop[:items]).to eq(type: "string")
+      end
+
+      it "emits nothing for acceptance:" do
+        prop = prop_for(:flags) { expects :flags, type: Array, of: { klass: String, acceptance: { accept: %w[yes] } } }
+
+        expect(prop[:items]).to eq(type: "string")
+      end
+    end
+  end
+
+  # Codex round 1 found six emission defects, all confirmed with a real JSON Schema validator. They are three
+  # root causes, not six instances, and each is fixed at the root:
+  #
+  #   * a keyword ASSIGNED where it should be RECONCILED with what is already there (enum vs a singleton type
+  #     enum; a bound from one validator vs the same bound from another; a range-derived bound vs an explicit one)
+  #   * a position's nullability HARD-CODED false, where a field's is derived
+  #   * an escape passed through whose character set differs between the two dialects
+  describe "reconciling a keyword with what is already on the node" do
+    def prop_for(field = :f, &declaration)
+      build_axn(&declaration).input_schema[:properties][field]
+    end
+
+    # `single_contents_schema` constrains TrueClass to `enum: [true]`, because the runtime accepts only the
+    # singleton. An inclusion set must narrow that, never widen it.
+    it "intersects an inclusion enum with a singleton type enum rather than replacing it" do
+      prop = prop_for { expects :f, type: Array, of: { klass: TrueClass, inclusion: { in: [true, false] } } }
+
+      expect(prop[:items]).to include(enum: [true])
+    end
+
+    # A set disjoint from the position's own type never reaches the emitter: the satisfiability guard refuses
+    # the declaration first, which is the stronger answer.
+    it "never sees a disjoint set, because the declaration is refused" do
+      expect { build_axn { expects :f, type: Array, of: { klass: TrueClass, inclusion: { in: [false] } } } }
+        .to raise_error(ArgumentError, /can never match/)
+    end
+
+    # Both validators are enforced, so the emitted bound is the STRONGEST of the two, not whichever the
+    # iteration reached last.
+    it "intersects the same bound declared by numericality: and comparison:" do
+      prop = prop_for do
+        expects :f, type: Integer, numericality: { greater_than: 10 }, comparison: { greater_than: 0 }
+      end
+
+      expect(prop).to include(exclusiveMinimum: 10)
+    end
+
+    it "intersects in the other direction too" do
+      prop = prop_for do
+        expects :f, type: Integer, numericality: { less_than: 10 }, comparison: { less_than: 100 }
+      end
+
+      expect(prop).to include(exclusiveMaximum: 10)
+    end
+
+    # The size bounds already reach every size-bearing `anyOf` branch; the numeric bounds did not, so a union
+    # emitted no bound at all and the schema accepted what the runtime rejected.
+    it "applies a numeric bound to every numeric anyOf branch" do
+      action = build_axn { expects :n, type: [Integer, Float], numericality: { greater_than: 0 } }
+
+      expect(action.call(n: -1)).not_to be_ok
+      expect(action.input_schema[:properties][:n][:anyOf])
+        .to eq([{ type: "integer", exclusiveMinimum: 0 }, { type: "number", exclusiveMinimum: 0 }])
+    end
+
+    # A branch that cannot carry the bound was left advertising values the validator rejects: the string branch
+    # accepted "abc" while ActiveModel rejected it on every call. Input reflection may be stricter than the
+    # runtime but never looser, and dropping the branch is the licensed direction — it says less than the runtime
+    # allows (ActiveModel does accept the numeric string "5"), and it cannot say more, no `minimum` applying to a
+    # JSON string. One survivor is no longer a union, so the node collapses rather than emit a one-branch anyOf.
+    it "drops a union branch that cannot carry the bound, rather than leave it lying" do
+      action = build_axn { expects :n, type: [Integer, String], numericality: { greater_than: 0 } }
+      prop = action.input_schema[:properties][:n]
+
+      expect(prop).to eq(type: "integer", exclusiveMinimum: 0)
+      expect(action.call(n: "abc")).not_to be_ok
+      expect(action.call(n: 5)).to be_ok
+    end
+
+    # The nullability branch is not dropped with them: a nil is SKIPPED by the validator rather than bounded by
+    # it, so removing that branch would reject a value the contract admits.
+    it "keeps the nullability branch, which the validator skips rather than bounds" do
+      action = build_axn { expects :n, type: [Integer, String], numericality: { greater_than: 0 }, optional: true }
+
+      expect(action.input_schema.dig(:properties, :n, :anyOf))
+        .to eq([{ type: "integer", exclusiveMinimum: 0 }, { type: "null" }])
+      expect(action.call(n: nil)).to be_ok
+    end
+
+    # The narrowing is OUTPUT-forbidden — there the schema describes what the action produces, and dropping a
+    # branch would reject a value axn serialized. Outbound there is no bound to drop in the first place: the
+    # projection stands down entirely unless the validator proves the value is numeric.
+    it "does not narrow the union on output" do
+      action = build_axn do
+        exposes :n, type: [Integer, String], numericality: { greater_than: 0 }
+        def call = expose(:n, "5")
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema[:properties][:n]).not_to include(:exclusiveMinimum)
+    end
+
+    # A union merely CONTAINING a numeric branch is not a union carrying a bound; narrowing on the former would
+    # drop the string branch of a plain `type: [String, Integer]`.
+    it "leaves a union that declares no bound at all alone" do
+      prop = prop_for(:n) { expects :n, type: [Integer, String] }
+
+      expect(prop[:anyOf]).to eq([{ type: "integer" }, { type: "string", minLength: 1 }])
+    end
+
+    it "intersects a range-derived bound with an explicitly declared one" do
+      prop = prop_for { expects :f, type: Integer, numericality: { greater_than_or_equal_to: 10, in: 0..100 } }
+
+      expect(prop).to include(minimum: 10, maximum: 100)
+    end
+
+    it "intersects a range's ceiling with an explicit one" do
+      prop = prop_for { expects :f, type: Integer, numericality: { less_than_or_equal_to: 50, in: 0..100 } }
+
+      expect(prop).to include(minimum: 0, maximum: 50)
+    end
+
+    # `equal_to` is an EQUALITY, not an ordering: two different values intersect to NOTHING. The emitted node
+    # says so, rather than saying less.
+    #
+    # That is the faithful projection, and standing down would be the papering-over PRO-3220 explicitly warns
+    # against ("the emitter is faithfully projecting a contract that is already broken, and teaching it to paper
+    # over that would hide the defect rather than close it"). The corollary in guards-and-projections.md forbids
+    # an unsatisfiable node for a SATISFIABLE contract; this contract admits nothing, and the emitter already
+    # projects that family unsatisfiably elsewhere — `length: { maximum: 0 }` on a required Array emits
+    # `minItems: 1, maxItems: 0`. Refusing the declaration outright stays PRO-3220's.
+    it "emits an unsatisfiable enum when two equality bounds contradict" do
+      action = build_axn { expects :f, type: Integer, numericality: { equal_to: 1 }, comparison: { equal_to: 2 } }
+
+      expect(action.call(f: 1)).not_to be_ok
+      expect(action.call(f: 2)).not_to be_ok
+      expect(action.input_schema[:properties][:f]).to include(enum: [])
+      expect(action.input_schema[:properties][:f]).not_to have_key(:const)
+    end
+
+    it "dominates any enum the position already carried" do
+      action = build_axn do
+        expects :f, type: Integer, inclusion: { in: [1, 2] },
+                    numericality: { equal_to: 1 }, comparison: { equal_to: 2 }
+      end
+
+      expect(action.input_schema[:properties][:f][:enum]).to eq([])
+    end
+
+    it "emits it at a bag position too" do
+      action = build_axn do
+        expects :f, type: Array, of: { klass: Integer, numericality: { equal_to: 1 }, comparison: { equal_to: 2 } }
+      end
+
+      expect(action.input_schema.dig(:properties, :f, :items)).to include(enum: [])
+    end
+
+    it "still emits const when two equality bounds agree" do
+      prop = prop_for { expects :f, type: Integer, numericality: { equal_to: 5 }, comparison: { equal_to: 5 } }
+
+      expect(prop).to include(const: 5)
+    end
+
+    it "agrees with the runtime on the value each finding named" do
+      both = build_axn { expects :f, type: Integer, numericality: { greater_than: 10 }, comparison: { greater_than: 0 } }
+      ranged = build_axn { expects :f, type: Integer, numericality: { greater_than_or_equal_to: 10, in: 0..100 } }
+
+      expect(both.call(f: 5)).not_to be_ok
+      expect(ranged.call(f: 5)).not_to be_ok
+      expect(both.input_schema[:properties][:f][:exclusiveMinimum]).to eq(10)
+      expect(ranged.input_schema[:properties][:f][:minimum]).to eq(10)
+    end
+  end
+
+  describe "a position's nullability, derived rather than assumed" do
+    def prop_for(field = :f, &declaration)
+      build_axn(&declaration).input_schema[:properties][field]
+    end
+
+    # A bag naming NilClass admits nil at that position — until another validator on the same bag rejects it.
+    # That is the same question `nil_accepted?` answers for a field, asked of the bag.
+    it "keeps the null branch when the bag admits nil" do
+      prop = prop_for { expects :f, type: Array, of: { klass: [String, NilClass] } }
+
+      expect(prop[:items]).to eq(anyOf: [{ type: "string" }, { type: "null" }])
+    end
+
+    it "drops the null branch when another validator on the bag rejects nil" do
+      action = build_axn { expects :f, type: Array, of: { klass: [String, NilClass], presence: true } }
+
+      expect(action.call(f: [nil])).not_to be_ok
+      # One surviving branch collapses onto the plain type, exactly as `apply_type_info!` does at a field.
+      expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "string", minLength: 1)
+    end
+
+    it "keeps nil in a positional enum that admits it" do
+      action = build_axn { expects :f, type: Array, of: { inclusion: { in: ["a", nil] } } }
+
+      expect(action.call(f: [nil])).to be_ok
+      expect(action.input_schema.dig(:properties, :f, :items, :enum)).to eq(["a", nil])
+    end
+
+    it "still strips nil from an enum at a position that rejects it" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: ["a", nil] } } }
+
+      expect(action.call(f: [nil])).not_to be_ok
+      expect(action.input_schema.dig(:properties, :f, :items, :enum)).to eq(["a"])
+    end
+  end
+
+  describe "a keys axis emits only what a JSON property name can be" do
+    def prop_for(field = :f, &declaration)
+      build_axn(&declaration).input_schema[:properties][field]
+    end
+
+    # A JSON object property name is always a string. A Symbol has a faithful wire form; an Integer key does
+    # not (the runtime accepts `{1 => v}`, and no `propertyNames` set can say so), so the axis stands down
+    # rather than emit a set no key can satisfy.
+    # A JSON client can only send STRING keys, and a Symbol axis rejects one — measured, `{ "a" => 1 }` fails
+    # where `{ a: 1 }` passes. So advertising `enum: ["a", "b"]` inbound tells a client to send a key axn will
+    # refuse, which is PRO-3165's "a `keys: Symbol` would be a lie on the wire" in a different costume. It
+    # stands down on input, and on OUTPUT it emits — there the serializer really does render the key as "a".
+    it "stands down on a Symbol set for INPUT, which a JSON key cannot satisfy" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { klass: Symbol, inclusion: { in: %i[a b] } }, values: Integer }
+      end
+
+      expect(prop).not_to have_key(:propertyNames)
+    end
+
+    it "emits a Symbol set on OUTPUT, through the key serializer" do
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: Symbol, inclusion: { in: %i[a b] } }, values: Integer }
+        def call = expose(:m, { a: 1 })
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a b])
+    end
+
+    # Round 11 gated the ENUM on this, which was the keyword rather than the class: a JSON key is a String, so
+    # a `keys:` axis whose declared class excludes String can never be satisfied from JSON AT ALL, and every
+    # inbound `propertyNames` keyword is equally a lie there — not just the set.
+    it "stands down entirely on input when the axis excludes String keys" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { klass: Symbol, format: { with: /\Aa\z/ } }, values: Integer }
+      end
+
+      expect(prop).not_to have_key(:propertyNames)
+    end
+
+    it "stands down for a length: on such an axis too" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { klass: Symbol, length: { maximum: 1 } }, values: Integer }
+      end
+
+      expect(prop).not_to have_key(:propertyNames)
+    end
+
+    it "still emits those keywords on OUTPUT, where the key is serialized to a String" do
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: Symbol, format: { with: /\Aa\z/ } }, values: Integer }
+        def call = expose(:m, { a: 1 })
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(pattern: "^a$")
+    end
+
+    # ...but only those keywords whose SUBJECT survives the trip. `format:` and the enum already read the wire
+    # form the serializer writes (`#to_s` and `canonical_wire_key`), so they project. `length:` does not:
+    # ActiveModel measures the key OBJECT's `#length`, while `minLength`/`maxLength` measure the property name.
+    # A class is free to have both — a path whose `#length` counts segments serializes to `"a/b"` — and then the
+    # emitted bound rejects output the action itself produced.
+    describe "a keys-axis length:, whose subject is the key object rather than its wire form" do
+      let(:segmented_key) do
+        Class.new do
+          def initialize(*parts) = @parts = parts
+          def length = @parts.length
+          def to_s = @parts.join("/")
+          def hash = to_s.hash
+          def eql?(other) = other.is_a?(self.class) && other.to_s == to_s
+        end
+      end
+
+      before { stub_const("SegmentedKey", segmented_key) }
+
+      # The divergence itself, pinned so the examples below cannot go vacuously green on a key whose two
+      # measurements happen to agree.
+      it "is a class whose #length disagrees with its serialized form" do
+        key = SegmentedKey.new("a", "b")
+
+        expect(key.length).to eq(2)
+        expect(key.to_s).to eq("a/b")
+      end
+
+      it "stands down on output, where the bound would reject the action's own serialized output" do
+        action = build_axn do
+          exposes :m, type: Hash, of: { keys: { klass: SegmentedKey, length: { is: 2 } }, values: Integer }
+          def call = expose(:m, { SegmentedKey.new("a", "b") => 1 })
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["m"].keys).to eq(["a/b"])
+        expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+      end
+
+      # `presence:` is the same defect wearing a different keyword: ActiveModel asks the key OBJECT's `blank?`,
+      # so a key that is present can still serialize to the EMPTY property name, and what `presence:` emits at a
+      # `propertyNames` node is a length floor.
+      describe "a keys-axis presence:, whose emitted floor measures the property name" do
+        let(:blank_wire_key) do
+          Class.new do
+            def to_s = ""
+            def hash = "".hash
+            def eql?(other) = other.is_a?(self.class)
+          end
+        end
+
+        before { stub_const("BlankWireKey", blank_wire_key) }
+
+        it "is a class that is present while its serialized form is empty" do
+          key = BlankWireKey.new
+
+          expect(key.blank?).to be(false)
+          expect(key.to_s).to eq("")
+        end
+
+        it "stands down on output, where the floor would reject the action's own serialized output" do
+          action = build_axn do
+            exposes :m, type: Hash, of: { keys: { klass: BlankWireKey, presence: true }, values: Integer }
+            def call = expose(:m, { BlankWireKey.new => 1 })
+          end
+          result = action.call
+
+          expect(result).to be_ok
+          expect(Axn::Extensions::Serialization.render(result)["m"].keys).to eq([""])
+          expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+        end
+
+        it "keeps the floor for a String axis, whose key IS its own wire form" do
+          action = build_axn do
+            exposes :m, type: Hash, of: { keys: { klass: String, presence: true }, values: Integer }
+            def call = expose(:m, { "a" => 1 })
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(minLength: 1)
+        end
+
+        it "keeps it inbound, where the key is the wire string itself" do
+          action = build_axn { expects :m, type: Hash, of: { keys: { klass: String, presence: true }, values: Integer } }
+
+          expect(action.input_schema.dig(:properties, :m, :propertyNames)).to eq(minLength: 1)
+        end
+      end
+
+      it "keeps a format: declared beside it, whose subject IS the #to_s the serializer writes" do
+        action = build_axn do
+          exposes :m, type: Hash, of: {
+            keys: { klass: SegmentedKey, length: { is: 2 }, format: { with: %r{\A[a-z]/[a-z]\z} } },
+            values: Integer,
+          }
+          def call = expose(:m, { SegmentedKey.new("a", "b") => 1 })
+        end
+
+        expect(action.call).to be_ok
+        expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(pattern: "^[a-z]/[a-z]$")
+      end
+
+      # A broad token ADMITS a String without guaranteeing one, and the two questions have opposite ancestry
+      # directions: `Object` is in String's ancestry, so a JSON key really can satisfy a `klass: Object` axis —
+      # but so can this key. Asking the reachability question here kept the bound on an axis that promises
+      # nothing at all about what its keys are.
+      it "stands down for a broad token that merely ADMITS a String" do
+        action = build_axn do
+          exposes :m, type: Hash, of: { keys: { klass: Object, length: { is: 2 } }, values: Integer }
+          def call = expose(:m, { SegmentedKey.new("a", "b") => 1 })
+        end
+        result = action.call
+
+        expect(result).to be_ok
+        expect(Axn::Extensions::Serialization.render(result)["m"].keys).to eq(["a/b"])
+        expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+      end
+    end
+
+    # No `klass:` means the keys may be anything, the class above included, so nothing can be promised about
+    # what their length becomes on the wire. Input is unaffected: there the key IS the string it was sent as.
+    it "stands a length: down on output for a klass-less axis, whose keys may be anything" do
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { length: { is: 2 } }, values: Integer }
+        def call = expose(:m, { "ab" => 1 })
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+      expect(prop_for(:m) { expects :m, type: Hash, of: { keys: { length: { is: 2 } }, values: Integer } })
+        .to include(propertyNames: { minLength: 2, maxLength: 2 })
+    end
+
+    # The set has the same shape of bug as the bound, one subject over: the runtime matches a key by Ruby `==`,
+    # which can identify values that serialize DIFFERENTLY. `1 == 1.0`, so an axis admitting the numeric tower
+    # accepts a `1.0` key against a member of `1` and then serializes "1.0" — a property name the emitted set
+    # does not contain. One gate answers both, rather than a keyword-by-keyword table.
+    it "stands an inclusion set down on output where Ruby equality crosses wire forms" do
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: Numeric, inclusion: { in: [1] } }, values: Integer }
+        def call = expose(:m, { 1.0 => 5 })
+      end
+      result = action.call
+
+      expect([1].include?(1.0)).to be true
+      expect(result).to be_ok
+      expect(Axn::Extensions::Serialization.render(result)["m"].keys).to eq(["1.0"])
+      expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+    end
+
+    # A String SUBCLASS is its own wire form — it IS a String — so the subtype direction keeps the projection
+    # that the supertype direction must refuse.
+    it "keeps the projection for a String subclass, which is its own wire form" do
+      stub_const("Slug", Class.new(String))
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: Slug, length: { is: 2 } }, values: Integer }
+        def call = expose(:m, { Slug.new("ab") => 1 })
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(minLength: 2, maxLength: 2)
+    end
+
+    # String and Symbol are the classes whose `#length` IS their own name's length, so the two measurements
+    # cannot come apart and the bound stays emitted.
+    it "keeps a length: on output for the classes whose #length is their serialized length" do
+      [String, Symbol, :uuid, [String, Symbol]].each do |token|
+        action = build_axn do
+          exposes :m, type: Hash, of: { keys: { klass: token, length: { is: 2 } }, values: Integer }
+        end
+
+        expect(action.output_schema.dig(:properties, :m, :propertyNames))
+          .to eq({ minLength: 2, maxLength: 2 }), "expected #{token.inspect} to keep its key length bound"
+      end
+    end
+
+    it "still emits inbound for a klass-less axis, which a String key can satisfy" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { format: { with: /\Aa\z/ } }, values: Integer }
+      end
+
+      expect(prop[:propertyNames]).to eq(pattern: "^a$")
+    end
+
+    # A `:uuid` axis is string-shaped, so a JSON key really can satisfy it.
+    it "still emits inbound for a uuid axis, whose values are Strings" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { klass: :uuid, length: { maximum: 36 } }, values: Integer }
+      end
+
+      expect(prop[:propertyNames]).to eq(maxLength: 36)
+    end
+
+    # Reflection must not hand back the objects the contract itself holds: a consumer mutating a returned
+    # member in place would change which keys the DECLARED action accepts. The value-enum path dups through
+    # `normalize_schema_literal`; this one was returning the inclusion array's own Strings.
+    # A JSON key can only ever equal a STRING member, so the reachable subset is not an approximation — it is
+    # exactly the set of JSON-supplied keys the runtime accepts. Standing down from the whole constraint
+    # instead let `{"zzz" => 1}` through the document while the runtime rejected it.
+    it "projects the reachable String subset of a mixed set" do
+      action = build_axn do
+        expects :m, type: Hash, of: { keys: { klass: [String, Integer], inclusion: { in: ["a", 1] } }, values: Integer }
+      end
+
+      expect(action.call(m: { "a" => 1 })).to be_ok
+      expect(action.call(m: { "zzz" => 1 })).not_to be_ok
+      expect(action.input_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a])
+    end
+
+    # When NO member is reachable the axis stands down rather than emitting `enum: []`, matching the class gate
+    # above — both are "no JSON key can satisfy this axis". Deliberately unlike the contradictory-equality case,
+    # which emits an unsatisfiable node: there the contract admits NOTHING, where here a Ruby caller passing
+    # `{1 => 1}` satisfies it perfectly well and only the JSON wire cannot reach it.
+    # This USED to stand the set down, on the reasoning that a Ruby caller satisfies the axis perfectly well and
+    # only the wire cannot reach it. That reasoning conflates two audiences: `input_schema` is a JSON Schema, and
+    # its reader is a JSON client, for which no key whatever satisfies this axis. Standing down told that client
+    # every key was acceptable — measured, the document accepted `{"x" => 1}` the runtime rejects, which is the
+    # one direction reflection may never err in. The empty set says what is true OF THE WIRE, and it says
+    # something useful besides: this declaration cannot be driven from JSON at all.
+    #
+    # The axis whose CLASS excludes String keeps its stand-down and is a different case — see PRO-3165 below.
+    it "admits no key when the axis is reachable from JSON but no member of its set is" do
+      action = build_axn do
+        expects :m, type: Hash, of: { keys: { klass: [String, Integer], inclusion: { in: [1, 2] } }, values: Integer }
+      end
+
+      expect(action.call(m: { 1 => 1 })).to be_ok # a Ruby caller still satisfies it
+      expect(action.call(m: { "1" => 1 })).not_to be_ok # and no JSON-supplied key does
+      expect(action.input_schema.dig(:properties, :m, :propertyNames)).to eq(enum: [])
+    end
+
+    # Outbound, the set is emitted only where the axis guarantees a key that IS its own property name. This
+    # axis does not: the emitted set would be exact here (an accepted key is the String "a" or the Integer 1,
+    # which serialize to "a" and "1"), but exactness rests on the numeric tower admitting no OTHER type that
+    # is `==` to 1, and that reasoning does not survive the next class. Saying less on output costs nothing —
+    # a missing `propertyNames` accepts what the action produces, which is the only promise output makes.
+    it "stands the set down on output for an axis whose keys are not their own wire form" do
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: [String, Integer], inclusion: { in: ["a", 1] } }, values: Integer }
+        def call = expose(:m, { "a" => 1 })
+      end
+
+      expect(action.call).to be_ok
+      expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+    end
+
+    it "detaches the emitted members from the ones the validator holds" do
+      member = +"a"
+      action = build_axn { expects :m, type: Hash, of: { keys: { klass: String, inclusion: { in: [member] } }, values: Integer } }
+      emitted = action.input_schema.dig(:properties, :m, :propertyNames, :enum)
+
+      expect(emitted.first).not_to be_equal(member)
+      emitted.first << "ZZZ"
+      expect(member).to eq("a")
+      expect(action.call(m: { "a" => 1 })).to be_ok
+    end
+
+    it "still emits a String set on input, which a JSON key CAN satisfy" do
+      prop = prop_for(:m) do
+        expects :m, type: Hash, of: { keys: { klass: String, inclusion: { in: %w[a b] } }, values: Integer }
+      end
+
+      expect(prop[:propertyNames]).to eq(enum: %w[a b])
+    end
+
+    # A map key is rendered by the KEY serializer, not the value serializer: a Time VALUE serializes as
+    # `iso8601` and a Time KEY as `to_s`. Asserted against the serializer itself rather than through an emitted
+    # enum, which is where it actually decides what the map produces — and which is what the axis emits
+    # nothing for, a Time key not being its own property name.
+    it "serializes a map key by the key serializer, not the value serializer" do
+      moment = Time.now
+      action = build_axn do
+        exposes :m, type: Hash, of: { keys: { klass: Time, inclusion: { in: [moment] } }, values: Integer }
+        define_method(:call) { expose(:m, { moment => 1 }) }
+      end
+      result = action.call
+
+      expect(result).to be_ok
+      expect(Axn::Extensions::Serialization.render(result)["m"].keys)
+        .to eq([Axn::Internal::Reflection::Values.canonical_wire_key(moment)])
+      expect(Axn::Extensions::Serialization.render(result)["m"].keys.first).not_to eq(moment.iso8601)
+      expect(action.output_schema[:properties][:m]).not_to have_key(:propertyNames)
+    end
+
+    it "stands down on a set whose members have no property-name form" do
+      action = build_axn do
+        expects :m, type: Hash, of: { keys: { klass: Integer, inclusion: { in: [1] } }, values: Integer }
+      end
+
+      expect(action.call(m: { 1 => 2 })).to be_ok
+      expect(action.input_schema[:properties][:m]).not_to have_key(:propertyNames)
+    end
+
+    # Originally asserted the opposite — "don't render half of it" — which was wrong: the half that renders is
+    # the whole of what a JSON key can reach, since a String key can never equal the Integer member. The
+    # subset is exact rather than partial. (Full treatment in "projects the reachable String subset" below.)
+    it "projects the reachable half of a mixed set rather than standing down" do
+      action = build_axn { expects :m, type: Hash, of: { keys: { inclusion: { in: ["a", 1] } }, values: Integer } }
+
+      expect(action.call(m: { "a" => 1 })).to be_ok
+      expect(action.call(m: { "zzz" => 1 })).not_to be_ok
+      expect(action.input_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a])
+    end
+
+    it "keeps the string-shaped constraints beside an unsatisfiable set" do
+      # A klass-less axis is reachable from JSON, and no member of this set is — so the set admits no key at
+      # all. The size bound still emits beside it: both are enforced, and the emitter's job is to say what the
+      # position holds rather than to tidy away a keyword the empty set already subsumes.
+      prop = prop_for(:m) do
+        expects :m, type: Hash,
+                    of: { keys: { length: { maximum: 4 }, inclusion: { in: [1, 2] } }, values: Integer }
+      end
+
+      expect(prop[:propertyNames]).to eq(maxLength: 4, enum: [])
     end
   end
 end

@@ -1197,6 +1197,32 @@ module Axn
                                           if unless on message strict
                                         ]).freeze
 
+        # What a bag says about the POSITION rather than about the value at it, read from the lists
+        # `Internal::ShapeGraph` owns rather than restated here — the validator set below is DERIVED by
+        # subtracting it, so a key added to the grammar cannot be mistaken for a validator, and a validator
+        # cannot be mistaken for grammar, because neither list is written twice.
+        BAG_GRAMMAR_KEYS =
+          (Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS + Internal::ShapeGraph::INNER_CONTRACT_EDGES).freeze
+
+        # The validators that have a reading at an unnamed position, derived rather than listed (PRO-3193).
+        #
+        # A position offers a VALUE and nothing else — no name, no sibling readers, no record — so what is
+        # refused is exactly what reads something a position has not got. `type:` because the bag already
+        # spells that `klass:`, and two spellings for one thing is what PRO-3191 retired for `shape:`;
+        # `model:` because it resolves against a `<field>_id` reader; `confirmation:` because it reads a
+        # sibling `<field>_confirmation` reader; `coerce:` because it is a transform rather than a constraint,
+        # and where a coerced element LIVES has to settle against the read-path doctrine first (PRO-2903);
+        # `uniqueness:` because it needs a record and a relation, and its disposal at every position is
+        # PRO-3219's rather than decided here.
+        #
+        # `on:` needs no entry: it leaves with the shared options, and `_reject_inner_contract_context_scope!`
+        # already refuses it by naming the real problem (axn has no validation contexts).
+        NEEDS_A_NAMED_SLOT = %i[type model confirmation coerce uniqueness].freeze
+
+        POSITIONAL_VALIDATOR_KEYS =
+          (KNOWN_VALIDATION_KEYS - NEEDS_A_NAMED_SLOT - BAG_GRAMMAR_KEYS -
+            Axn::Validation::Base.shared_validation_option_keys.to_a).freeze
+
         # What an `of:` bag may carry. `of:` and `shape:` are the recursion (PRO-3166): a bag describes one
         # unnamed position, and a position may hold a container of its own or be described by its members.
         # Everything else is refused rather than ignored — the bag reaches `OfValidator` as an EachValidator
@@ -1211,7 +1237,12 @@ module Axn
         # into every validator entry, this bag included, so a whitelist without them would refuse
         # `of: Integer, optional: true`. Whether they then do anything depends on the position, which is
         # `AXIS_INERT_OPTION_KEYS` below.
-        OF_OPTION_KEYS = (Set.new(%i[klass of shape message]) | Axn::Validation::Base.shared_validation_option_keys).freeze
+        #
+        # `POSITIONAL_VALIDATOR_KEYS` is the value-constraint half (PRO-3193): a bag is a validator SET for
+        # the position it describes, not only a type check, which is what makes the remedy PRO-3192's refusal
+        # messages point at actually exist.
+        OF_OPTION_KEYS = (Set.new(%i[klass of shape message]) | POSITIONAL_VALIDATOR_KEYS |
+                          Axn::Validation::Base.shared_validation_option_keys).freeze
 
         # The same set for the other container. A Hash's insides are two axes rather than one element position,
         # so `klass:` has no reading here and is absent: which axis it named would be a convention rather than
@@ -2336,7 +2367,9 @@ module Axn
           _reject_falsy_model_klass!(validations)
           validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
           _reject_unsupported_model_klass!(validations)
-          validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields) if validations.key?(:validate)
+          if validations.key?(:validate)
+            validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields, nested: false)
+          end
           return unless validations.key?(:of)
 
           container = _of_container!(validations)
@@ -2426,6 +2459,44 @@ module Axn
           bag.merge(container: ::Array)
         end
 
+        # A bag's own keys are canonicalized where the bag is accepted (`_symbolize_inner_bag!`, and the field
+        # path's `_symbolize_option_bags!` for the top-level one). Its VALIDATOR ENTRIES carry option bags of
+        # their own — `format: { with: … }` — and ActiveModel reads those keys as Symbols too: a String-keyed
+        # `"with"` arrives at `FormatValidator#check_validity!` as no `:with` at all and raises `ArgumentError`
+        # on EVERY call, which is the declares-cleanly-then-always-raises shape the bag grammar exists to
+        # remove. The field path already canonicalizes them one level down; this holds a bag to the same
+        # grammar, through the same function rather than a second symbolizer.
+        #
+        # Restricted to the validator entries: `of:` and `shape:` are the recursion edges and are canonicalized
+        # by the walk that descends them, and `klass:`/`message:` are not option bags at all. The symbolized
+        # bag is a NEW Hash (`_symbol_keyed_bag` builds one), so the caller's own nested Hash is never mutated.
+        def _canonicalize_positional_validator_options!(bag, fields)
+          entries = bag.slice(*POSITIONAL_VALIDATOR_KEYS)
+          return if entries.empty?
+
+          _symbolize_option_bags!(entries)
+          # DETACHED as well as symbolized, and unconditionally: `_symbolize_option_bags!` builds a new Hash only
+          # when a key actually needs converting, so the ordinary Symbol-keyed spelling took its no-op path and
+          # the caller's option bag stayed stored by reference — `opts[:in] << "b"` then widened an
+          # already-declared contract. That is the aliasing rule exactly: "nothing needs changing" is a
+          # different question from "nothing needs copying".
+          #
+          # The field path is safe because `detach_option_containers!` reaches ITS validator entries directly.
+          # A bag's entries sit one level further down, where `detached_option_bag` copies a nested Hash by
+          # reference — it detaches nested Arrays only — so the same seam is applied here, to the entries.
+          Internal::ShapeGraph.detach_option_containers!(entries)
+          entries.each { |key, value| bag[key] = value }
+          # `validate:` is the one admitted validator carrying a DSL-misuse guard of its own, and it has to run
+          # HERE as well as on the field path: without it `validate: { inclusion: … }` declared cleanly and then
+          # raised a bare `must supply :with` out of `check_validity!` on EVERY call — the
+          # declares-cleanly-then-always-raises shape this grammar exists to remove. The other three validators
+          # with a sugar step need no equivalent: `type:` and `model:` are refused at a bag position outright,
+          # and the bag's own `of:` is expanded where the bag is accepted.
+          return unless Internal::ShapeGraph.carries_key?(bag, :validate)
+
+          bag[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(bag[:validate], fields, nested: true)
+        end
+
         # The grammar EVERY inner-contract bag is held to, asked once wherever one is accepted: at an Array's
         # element position and at each of a map's two axes. One function rather than three call sequences,
         # because a bag means the same thing in all three and a check missing from one of them is a hole the
@@ -2435,12 +2506,14 @@ module Axn
         # two positions this function never sees (a field's own `shape:`, a shape MEMBER's), so it is one
         # refusal at the walk that reaches all four (`ShapeDeclaration#_reject_unshaped_shape!`).
         def _check_inner_contract_bag!(bag, fields)
+          _canonicalize_positional_validator_options!(bag, fields)
           _reject_unknown_of_keys!(bag, OF_OPTION_KEYS)
           _reject_unconstraining_of_bag!(bag)
           _reject_unsupported_of_klass!(bag)
           _reject_inner_contract_context_scope!(bag, fields)
           _reject_inner_contract_strict!(bag, fields)
           _reject_unusable_of_message!(bag, fields)
+          _reject_positional_bag_validators!(bag, fields)
         end
 
         # A bag's `klass:` is held to exactly the grammar a map's BARE axis is, by the same predicate: it plays
@@ -2783,9 +2856,68 @@ module Axn
                   "`of:` or `shape:`. (`of: []` is sugar for `of: { klass: [] }`.)"
           end
 
+          # A bag carrying only value validators constrains the position perfectly well — `of: { format: ... }`
+          # holds every element to a pattern while leaving its class open. Checked AFTER the empty-union raise
+          # above, which no other constraint can rescue: `klass: []` emits `anyOf: []`, a node nothing
+          # satisfies, so the bag is refused however much else it says.
+          return if _bag_carries_positional_validator?(bag)
+
           raise ArgumentError,
                 "of: must constrain something — name the contents' class with `klass:`, what is inside them " \
-                "with `of:`, or their members with `shape:`"
+                "with `of:`, their members with `shape:`, or their value with a validator " \
+                "(#{POSITIONAL_VALIDATOR_KEYS.map { |key| "#{key}:" }.join(', ')})"
+        end
+
+        # Whether the bag holds the value at its position to anything, as opposed to describing the position.
+        # A falsy entry is a disabled validator ActiveModel skips, so it constrains nothing.
+        def _bag_carries_positional_validator?(bag)
+          POSITIONAL_VALIDATOR_KEYS.any? { |key| Internal::ShapeGraph.carries_key?(bag, key) && bag[key] }
+        end
+
+        # PRO-3192's two positional guards, at a bag position. Reached with the bag's own value constraints and
+        # `klass:` in the role `type:` plays at a field — which is the role `klass:` already plays for the rest
+        # of the bag grammar (`_inner_of_container!`) — so ONE rule covers the field and all three bag
+        # positions. A second table here could drift from the first; a shared call cannot.
+        def _reject_positional_bag_validators!(bag, fields)
+          # Nothing to judge for a bag that names only what it holds — which is every `of: Integer` — so the
+          # ordinary declaration reaches neither guard and allocates nothing beyond the emptiness check.
+          return unless _bag_carries_positional_validator?(bag)
+
+          validations = _bag_as_validations(bag)
+
+          where = "an `of:` bag on #{_declared_fields_label(fields)}"
+          _reject_container_position_validators!(validations, where:, nested: true)
+          # No tolerance is passed, and none is read out of `validations` either (see `_bag_as_validations`):
+          # a bag's `allow_nil:`/`allow_blank:` do not govern its position (PRO-3225), so honouring them here
+          # would stand the guard down for a rescue that never happens — letting a contract which admits
+          # NOTHING declare cleanly, which is the class this guard exists to refuse. At a field the same flags
+          # DO rescue the contract, and there they still stand it down.
+          _reject_unsatisfiable_value_constraints!(validations, where:, nested: true, tolerance: {})
+          # Its mirror, in the same order the field path runs the pair: the unsatisfiable contract is reported
+          # first, so a declaration broken both ways names the defect that rejects every call ahead of the one
+          # that rejects none. Both guards run at all four positions — PRO-3192's rule is that a validator is
+          # judged where it is declared, and an INVERTED one that forbids literals no value of the position's
+          # class could be enforces nothing there just as surely as it does at a field.
+          _reject_vacuous_value_constraints!(validations, where:, nested: true, tolerance: {})
+        end
+
+        # The bag as a VALIDATIONS hash: its value constraints, with `klass:` renamed to `type:` — the role
+        # `klass:` plays for the rest of the bag grammar. Only the grammar keys are dropped by name, so a
+        # validator added to `POSITIONAL_VALIDATOR_KEYS` reaches the guards without a second edit here.
+        #
+        # The shared ActiveModel options come out through `validator_entries`, exactly as they do for the
+        # runtime's own forwarding (`OfValidator#inner_contract_validations`): they are not validators, and at a
+        # bag position they are not enforced either, so leaving them in would have `Base.nil_accepted?` read a
+        # tolerance out of the bag and reach the same wrong answer the explicit `tolerance: {}` above avoids.
+        def _bag_as_validations(bag)
+          validations = Axn::Validation::Base.validator_entries(bag.except(*BAG_GRAMMAR_KEYS))
+          klass = bag[:klass]
+          return validations if Array(klass).empty?
+
+          # The CANONICAL `type:` shape, as a field's stored validations carry it: a bare token would be
+          # normalized as a validator scalar and read under the wrong key, so every judgment that unwraps
+          # `type: { klass: … }` would see no class at all.
+          validations.merge(type: { klass: })
         end
 
         # A bag's own `of:` is held to exactly the grammar a FIELD's is, with `klass:` in `type:`'s role: the
@@ -3372,7 +3504,7 @@ module Axn
         # set still emits an unsatisfiable node.
         #
         # Every offender is named at once: an author who wrote two has one declaration to fix.
-        def _reject_container_position_validators!(validations, where:)
+        def _reject_container_position_validators!(validations, where:, nested: false)
           return unless _declares_container_type_only?(validations[:type])
 
           entries = Axn::Validation::Base.validator_entries(validations)
@@ -3385,9 +3517,20 @@ module Axn
                 "constrain a container: ActiveModel reads #{offenders.length == 1 ? 'it' : 'them'} off the " \
                 "value's Ruby string form (`format:` matches `[\"a\"].to_s`) or off a numeric coercion of it " \
                 "(`numericality:`), and a container has neither — so the check constrains punctuation or can " \
-                "never pass. A validator constrains the value at the position it is declared at. Express a " \
-                "constraint on the contents as `validate: ->(value) { ... }` — a per-element spelling inside " \
-                "`of:` is not supported yet (PRO-3193) — or drop the option."
+                "never pass. A validator constrains the value at the position it is declared at. Constrain the " \
+                "contents at THEIR own position instead — #{_contents_position_remedy(nested)} — or drop the option."
+        end
+
+        # Where the contents of the refused container live, worded for the position the refusal fired at. At a
+        # FIELD it is the field's own `of:`; inside a bag the container is already an `of:`, so the next rung
+        # down is another one. Shared by both refusals so they cannot come to name different fixes.
+        def _contents_position_remedy(nested)
+          if nested
+            "a bag naming a container takes an `of:` of its own (`of: { klass: Array, of: { format: ... } }`)"
+          else
+            "in `of:` (`of: { klass: String, format: ... }` for an Array's elements, " \
+              "`of: { values: { ... } }` for a map's)"
+          end
         end
 
         # An `inclusion:` set no value of the declared type can be a member of — a contract that rejects every
@@ -3481,7 +3624,7 @@ module Axn
         # half is merged: an explicit `allow_nil: false` riding along would change how `nil_accepted?` reads an
         # `acceptance:` entry (AM's own skip is disabled by exactly that key), turning a satisfiable contract
         # into a refused one.
-        def _reject_unsatisfiable_value_constraints!(validations, where:, tolerance:, allow_empty: nil)
+        def _reject_unsatisfiable_value_constraints!(validations, where:, tolerance:, nested: false, allow_empty: nil)
           klasses = _judgeable_type_klasses(validations[:type])
           return if klasses.empty?
 
@@ -3505,7 +3648,8 @@ module Axn
             blank_tolerant = PROJECTED_LITERAL_KEYS.include?(key) &&
                              Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank].present?
 
-            raise ArgumentError, _unsatisfiable_constraint_message(key, entry, klasses, where:, blank_tolerant:)
+            raise ArgumentError,
+                  _unsatisfiable_constraint_message(key, entry, klasses, where:, blank_tolerant:, nested:)
           end
         end
 
@@ -3536,7 +3680,7 @@ module Axn
         # The unsatisfiable message, which names the reason the set or bound matches nothing. An empty Range
         # matches nothing whatever the declared type is, so blaming the literals' TYPE there would name a defect
         # the declaration does not have.
-        def _unsatisfiable_constraint_message(key, entry, klasses, where:, blank_tolerant: false)
+        def _unsatisfiable_constraint_message(key, entry, klasses, where:, blank_tolerant: false, nested: false)
           if blank_tolerant
             return "#{key}: on #{where} can never match — nothing it compares against is of type " \
                    "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so the only value that " \
@@ -3553,9 +3697,8 @@ module Axn
           "#{key}: on #{where} can never match — nothing it compares against " \
             "is of type #{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so every " \
             "value is rejected. A validator constrains the value at the position it is declared at: compare " \
-            "against literals of the declared type, and for a constraint on a container's CONTENTS " \
-            "express it as `validate: ->(value) { ... }` (a per-element spelling inside `of:` is not " \
-            "supported yet — PRO-3193)."
+            "against literals of the declared type, and constrain a container's CONTENTS at their own " \
+            "position — #{_contents_position_remedy(nested)}."
         end
 
         # Whether the refusal being worded is about an empty Range rather than about the literals' type. Asked
@@ -3836,7 +3979,7 @@ module Axn
         # into the schema, so there is no static-maximal node to argue from. A gate can only remove the check.
         # Closed it enforces nothing, open it enforces nothing — there is no reading under which the
         # declaration means what it says.
-        def _reject_vacuous_value_constraints!(validations, where:, tolerance:)
+        def _reject_vacuous_value_constraints!(validations, where:, tolerance:, nested: false)
           klasses = _judgeable_type_klasses(validations[:type])
           return if klasses.empty?
 
@@ -3851,13 +3994,13 @@ module Axn
             witnesses = _witness_literals(key, literals, entry, tolerance, klasses)
             next if _any_literal_may_satisfy?(witnesses, klasses, cross_family: _cross_family_admissible?(key, entry))
 
-            raise ArgumentError, _vacuous_constraint_message(key, entry, klasses, where:)
+            raise ArgumentError, _vacuous_constraint_message(key, entry, klasses, where:, nested:)
           end
         end
 
         # The vacuity message, worded the way its mirror above is: an empty Range forbids nothing whatever the
         # declared type is, so naming the literals' TYPE would name a defect the declaration does not have.
-        def _vacuous_constraint_message(key, entry, klasses, where:)
+        def _vacuous_constraint_message(key, entry, klasses, where:, nested: false)
           if _empty_range_set?(key, entry)
             return "#{key}: on #{where} enforces nothing — the Range it names is empty, so it forbids no value " \
                    "at all and every value passes. Name a Range with at least one value in it (an exclusive " \
@@ -3867,9 +4010,8 @@ module Axn
           "#{key}: on #{where} enforces nothing — no value of type " \
             "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')} could be one of the " \
             "literals it forbids, so every value passes. A validator constrains the value at the " \
-            "position it is declared at: forbid literals of the declared type, and for a constraint on " \
-            "a container's CONTENTS express it as `validate: ->(value) { ... }` (a per-element spelling " \
-            "inside `of:` is not supported yet — PRO-3193)."
+            "position it is declared at: forbid literals of the declared type, and constrain a container's " \
+            "CONTENTS at their own position — #{_contents_position_remedy(nested)}."
         end
 
         # The forbidden literals that could actually be the value that FAILS. Two filters, and the second is

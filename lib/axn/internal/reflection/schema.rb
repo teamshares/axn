@@ -8,6 +8,8 @@ require "axn/internal/native_methods"
 require "axn/internal/subfield_tree"
 # A property name in an emitted schema is the canonicalization's answer, so the builder cannot load without it.
 require "axn/internal/reflection/values"
+# A `format:` field's `pattern` is this module's translation, so the builder cannot load without it either.
+require "axn/internal/reflection/pattern"
 
 # The `model:` id convention and the conditional-gate keys are both read on the build path, so the builder
 # cannot load without their owner either.
@@ -40,6 +42,10 @@ module Axn
         TYPE_MAP = {
           String => "string",
           Symbol => "string",
+          # `null` is a first-class JSON type, so a declared `NilClass` has an exact spelling here. Without the
+          # entry it reached single_type_for's unknown-class fallback and reflected as "string" — whose premise
+          # ("a JSON client can't send a Ruby object anyway") is true of a PORO and false of nil.
+          NilClass => "null",
           Integer => "integer",
           Float => "number",
           Numeric => "number",
@@ -51,6 +57,29 @@ module Axn
           DateTime => "string",
           Time => "string",
         }.freeze
+
+        # Which JSON Schema keyword each ActiveModel comparison operator becomes. The exclusive pair is the
+        # draft-06+ NUMERIC form (`exclusiveMinimum: 0`), not draft-04's boolean flag beside `minimum:`.
+        NUMERIC_BOUND_KEYS = {
+          greater_than: :exclusiveMinimum,
+          greater_than_or_equal_to: :minimum,
+          less_than: :exclusiveMaximum,
+          less_than_or_equal_to: :maximum,
+          equal_to: :const,
+        }.freeze
+
+        # The emitted types a numeric bound keyword applies to. A bound on any other type would be ignored by a
+        # validator at best and invalid at worst, so it is not emitted there at all.
+        NUMERIC_TYPES = %w[integer number].freeze
+
+        # The two entries that compare a value against a bound, and whether ActiveModel reads an `in:` range for
+        # each — `numericality:` does (`RANGE_CHECKS`), `comparison:` has no range check.
+        NUMERIC_BOUND_ENTRIES = { numericality: true, comparison: false }.freeze
+
+        # Satisfied by no value — what an unsatisfiable intersection projects to. See `apply_numeric_bounds!`.
+        EMPTY_ENUM = [].freeze
+
+        NULL_BRANCH = { type: "null" }.freeze
 
         FORMAT_MAP = {
           Date => "date",
@@ -705,7 +734,7 @@ module Axn
           # safe direction). Nil-TOLERANT entries never reject an omitted value, so a nested gate on them
           # can't affect requiredness — don't fall back on those.
           entries = Axn::Validation::Base.validator_entries(config.validations)
-          shared = shared_validation_options(config)
+          shared = shared_validation_options(config.validations)
           return nil if entries.any? { |key, opt| !nil_tolerant_validation?(key, opt, shared) && entry_mentions_gate_key?(opt) }
 
           rule = gates.values.first
@@ -1231,6 +1260,49 @@ module Axn
           members.any? { |m| m.equal?(nil) } ? members : members + [nil]
         end
 
+        # On OUTPUT an enum names what the action may PRODUCE, so it has to hold the wire form of every value the
+        # runtime accepts — and the runtime accepts by Ruby `==`, which can identify values that SERIALIZE
+        # differently. Two DateTimes for one instant in different offsets are `==` and render as different
+        # ISO-8601 strings; a Date is `==` to a DateTime at midnight and renders shorter; `1 == 1.0` renders as
+        # `1` and `1.0`. Each emits a set that rejects the action's own successful output.
+        #
+        # A member settles this for itself wherever its equality admits only its own type: a String, a Symbol,
+        # `true`, `false` and `nil` can only be `==` to a value that serializes identically, whatever class the
+        # position declares. A numeric member cannot, Ruby's tower crossing types, so it asks the position to pin
+        # exactly one numeric class — which is what keeps `type: Integer, inclusion: { in: [200, 404] }`
+        # reflecting. Anything else — a Time, a Date, an arbitrary object — stands the set down.
+        #
+        # INPUT needs no gate: there the emitted set is the values a client may SEND, and a set narrower than the
+        # runtime's equality is stricter, which is the licensed direction.
+        def output_enum_exact?(members, validations, declared_klass)
+          members.all? do |member|
+            case member
+            when ::String, ::Symbol, ::TrueClass, ::FalseClass, ::NilClass then true
+            when ::Numeric then numeric_enum_pinned?(member, validations, declared_klass)
+            else false
+            end
+          end
+        end
+
+        # Whether the position admits exactly the numeric class this member already is, so that no OTHER numeric
+        # type can be `==` to it and serialize differently. A position naming no class at all admits the whole
+        # tower and cannot pin anything.
+        def numeric_enum_pinned?(member, validations, declared_klass)
+          tokens = declared_type_tokens(validations, declared_klass)
+          return false if tokens.empty?
+
+          tokens.all? { |token| Internal::Identity.same?(token, Internal::Identity.class_of(member)) }
+        end
+
+        # The classes a position declares. A bag names them under `klass:`, which `bag_value_constraints`
+        # deliberately drops from the validator set, so a contents position hands them in directly.
+        def declared_type_tokens(validations, declared_klass)
+          return Array(declared_klass) unless nil.equal?(declared_klass)
+
+          type_opt = validations[:type]
+          Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
+        end
+
         # The literal membership set of an `inclusion:` validator, whether declared as the hash long form
         # ({ in: [...] } / { within: [...] }) or the equivalent bare-Array shorthand (inclusion: %w[a b c]).
         # The two enforce the same set at runtime, so reflection treats them identically (PRO-2944). Exact
@@ -1278,11 +1350,6 @@ module Axn
             prop[:default] = normalize_schema_literal(declared_default) if emit_default
           end
 
-          if (inclusion = config.validations[:inclusion])
-            enum_values = inclusion_enum_values(inclusion)
-            prop[:enum] = enum_for_inclusion(enum_values, nullable:) if enum_values
-          end
-
           apply_structured_schema!(prop, config, for_output:, ancestry:)
 
           # LAST, because the floor's KEY is chosen from the property's type (`minItems`/`minProperties`/
@@ -1290,7 +1357,7 @@ module Axn
           # holds the permissive fallback until `apply_structured_schema!` rewrites it to `object`. Deriving
           # the key any earlier reads an intermediate type and lands the floor under a key that cannot express
           # it. Nothing above depends on the constraint already being there.
-          apply_size_constraints!(prop, config)
+          apply_value_constraints!(prop, config.validations, nullable:, for_output:)
 
           prop
         end
@@ -1300,17 +1367,81 @@ module Axn
           if type_info[:anyOf]
             members = type_info[:anyOf]
             members = drop_uuid_format(members) if type_allows_blank?(config)
-            prop[:anyOf] = nullable ? members + [{ type: "null" }] : members
+            members = union_with_nullability(members, nullable:)
+            # Dropping a token-derived null branch can leave a single member, and a one-branch `anyOf` is a
+            # gratuitous shape change for a declaration whose node was a plain `type:` before. Collapse it back
+            # onto the single-type path, which is also what lets the emptiness floor land at the node rather than
+            # inside a lone branch. Only reachable when NOT nullable — a nullable union always keeps two.
+            if members.size == 1
+              apply_single_type!(prop, members.first, config, nullable: false)
+            else
+              prop[:anyOf] = members
+            end
           elsif type_info[:type]
-            prop[:type] = nullable ? [type_info[:type], "null"] : type_info[:type]
-            # A `type: :uuid, allow_blank: true` field accepts "" at runtime (TypeValidator treats a blank
-            # uuid as valid under allow_blank), but a strict `format: "uuid"` validator would reject "".
-            # Drop the uuid format there so the schema doesn't reject a value the contract accepts.
-            prop[:format] = type_info[:format] if type_info[:format] && !(type_info[:format] == "uuid" && type_allows_blank?(config))
-            # A singleton type (TrueClass/FalseClass) constrains the value via enum; nil joins it when nullable.
-            prop[:enum] = nullable ? type_info[:enum] + [nil] : type_info[:enum] if type_info[:enum]
+            apply_single_type!(prop, type_info, config, nullable:)
+          elsif type_info[:enum]
+            # A type_info carrying only an enum names no type and still constrains the value — which is how a
+            # contract nothing satisfies reaches the node, as `enum: []`. Nullability joins it exactly as it
+            # joins a singleton's enum above: a narrowing that empties every TYPE branch has said nothing about
+            # nil, which the validators SKIP wherever the field tolerates one. So `type: String, numericality:
+            # { only_numeric: true }, optional: true` admits nil and nothing else — measured, it exposes nil
+            # successfully — and the bare empty set rejected the very value it accepts.
+            prop[:enum] = nullable ? type_info[:enum] + [nil] : type_info[:enum]
           end
         end
+
+        def apply_single_type!(prop, type_info, config, nullable:)
+          if unsatisfiable_type?(type_info[:type], nullable:)
+            prop[:enum] = EMPTY_ENUM
+            return
+          end
+
+          prop[:type] = type_with_nullability(type_info[:type], nullable:)
+          # A `type: :uuid, allow_blank: true` field accepts "" at runtime (TypeValidator treats a blank
+          # uuid as valid under allow_blank), but a strict `format: "uuid"` validator would reject "".
+          # Drop the uuid format there so the schema doesn't reject a value the contract accepts.
+          prop[:format] = type_info[:format] if type_info[:format] && !(type_info[:format] == "uuid" && type_allows_blank?(config))
+          # A singleton type (TrueClass/FalseClass) constrains the value via enum; nil joins it when nullable.
+          prop[:enum] = nullable ? type_info[:enum] + [nil] : type_info[:enum] if type_info[:enum]
+          # A pattern the TYPE resolution put there (`only_integer:` on a string branch) travels with it. Without
+          # this it survived a union and was dropped the moment the union collapsed to one branch — the same node,
+          # reached by two paths, saying two different things. A declared `format:` still overwrites it later,
+          # one schema object having only the one slot.
+          prop[:pattern] = type_info[:pattern] if type_info[:pattern]
+        end
+
+        # Whether the emitted type admits `null` is the NULLABILITY question (`nil_allowed?`), never something a
+        # type token decides. A declared `NilClass` contributes a branch like any other token; this is where that
+        # branch is kept or dropped, so the two cannot disagree. Without it a REQUIRED `type: [String, NilClass]`
+        # would advertise `null` while its own `presence:` entry rejects nil, and a nullable one would advertise
+        # it twice.
+        def union_with_nullability(members, nullable:)
+          without_null = members.reject { |member| member[:type] == "null" }
+          return without_null + [NULL_BRANCH] if nullable
+
+          # A union of nothing BUT null cannot arise (`json_type_for` uniq's, so it would be a single type), but
+          # stripping to an empty `anyOf` would emit a node no value satisfies, so the guard is kept rather than
+          # left to an argument about reachability.
+          without_null.empty? ? members : without_null
+        end
+
+        # A lone `NilClass` keeps its `"null"` only where nullability would have added it anyway. NOT nullable,
+        # the contract admits nothing at all — nothing is a NilClass except nil, and the check that makes it
+        # non-nullable rejects nil — and `"null"` then advertised the single value the contract rejects, which is
+        # schema LOOSER than runtime, the one direction reflection may never err in. See `unsatisfiable_type?`.
+        def type_with_nullability(type, nullable:)
+          return type if type == "null"
+
+          nullable ? [type, "null"] : type
+        end
+
+        # Whether the emitted type names a contract no value satisfies, which is true of exactly one pairing: a
+        # lone `"null"` that is not nullable. `enum: []` is the faithful node for it — the spelling this emitter
+        # already uses wherever a contract admits nothing (an `only_integer:` narrowing that empties a union,
+        # two disagreeing `equal_to:` bounds) — and it is emitted INSTEAD of the type rather than beside it, so
+        # none of the keyword passes that key off a type can land on a node nothing reaches. Refusing such a
+        # declaration outright stays PRO-3220's, exactly as it does for the other two.
+        def unsatisfiable_type?(type, nullable:) = type == "null" && !nullable
 
         # The emptiness axis, as JSON Schema sees it: `minItems`/`minProperties`/`minLength` keyed off the
         # emitted type. A field rejects empty when it carries an explicit length minimum, or when the default
@@ -1321,41 +1452,385 @@ module Axn
         # follows the emitted type into a union's `anyOf` branches as well as a single `type:`.
         # For a String under `presence:` the runtime also rejects whitespace-only values, which
         # `minLength` cannot express, so the emitted constraint stays a floor rather than an exact mirror.
-        def apply_size_constraints!(prop, config)
-          minimum = declared_size_minimum(config)
-          maximum = declared_size_maximum(config)
-          return if minimum.nil? && maximum.nil?
+        # Every validator-derived keyword for ONE position's node, in one place. `build_property` runs it for a
+        # named position (a field, a subfield, a shape member) and `contents_node_schema` for an unnamed one (an
+        # Array's element, a map's axis), so a keyword cannot land at one position and be forgotten at another —
+        # which is what a mirrored copy would eventually become. The keyword each one lands on is decided by the
+        # node's own emitted `type:`, so the same call does the right thing wherever the node sits.
+        def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false, declared_klass: nil)
+          apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass:)
+          apply_size_constraints!(node, validations, for_output:, property_names:, declared_klass:)
+          apply_numeric_bounds!(node, validations, nullable:, for_output:, declared_klass:)
+          apply_pattern!(node, validations, for_output:, property_names:, declared_klass:)
+        end
 
-          if prop[:anyOf]
-            prop[:anyOf] = apply_member_size_constraints(prop[:anyOf], minimum, maximum)
+        # `enum` is INTERSECTED with whatever the node already carries, never assigned over it: a singleton type
+        # constrains itself by enum too (`TrueClass` emits `enum: [true]`, because the runtime accepts only the
+        # singleton), so overwriting it advertised `false` on a `klass: TrueClass` position the runtime rejects.
+        # Both are enforced, so the emitted set is the values that satisfy both.
+        #
+        # On a `propertyNames` node the members must additionally be renderable AS a property name — every JSON
+        # object key is a string. A Symbol has a faithful form; an Integer does not, and the runtime really does
+        # accept `{ 1 => v }`, so a set with any unrenderable member stands the ENUM down (leaving the axis's
+        # other, string-shaped constraints in place) rather than emit a set no key can satisfy.
+        def apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass: nil)
+          inclusion = validations[:inclusion]
+          return unless inclusion
+
+          values = inclusion_enum_values(inclusion)
+          return unless values
+
+          if property_names
+            values = property_name_enum(values, for_output:)
+            return if values.nil?
           else
-            prop.merge!(size_bounds_for(prop[:type], minimum, maximum))
+            return if for_output && !output_enum_exact?(values, validations, declared_klass)
+
+            values = enum_for_inclusion(values, nullable:)
+          end
+
+          existing = node[:enum]
+          node[:enum] = existing ? existing & values : values
+        end
+
+        # Whether a JSON key — always a String — could satisfy this axis's declared class. An axis naming none
+        # constrains no class and so admits one. `:uuid` is the one pseudo-type whose values ARE Strings;
+        # `:boolean` and `:params` are not, and neither is any other class unless String descends from it.
+        # The keys-axis validators whose subject is the key OBJECT rather than the property name it serializes
+        # to. See `own_wire_form?` for why these three and not the rest.
+        #
+        # `presence:` belongs here for the same reason `length:` does, and it is easy to miss because what it
+        # emits is a LENGTH keyword: ActiveModel asks the key object's own `blank?`, so an object that is present
+        # can still render as the empty property name — measured, a key whose `to_s` is `""` satisfies
+        # `presence: true`, serializes the map as `{"" => 1}`, and the emitted `propertyNames: { minLength: 1 }`
+        # rejects it. `absence:` needs no entry: it emits nothing into a `propertyNames` node at all. `format:`
+        # is deliberately absent, being the one validator whose subject IS the wire string — ActiveModel matches
+        # `value.to_s`, which is what `canonical_wire_key` dispatches for a key.
+        OBJECT_SUBJECT_KEY_VALIDATORS = %i[length inclusion presence].freeze
+        private_constant :OBJECT_SUBJECT_KEY_VALIDATORS
+
+        def axis_admits_string_key?(klass)
+          tokens = Array(klass)
+          return true if tokens.empty?
+
+          tokens.any? { |token| string_reachable_key_token?(token) }
+        end
+
+        # Whether a String key could satisfy this token — String itself, or any SUPERTYPE of it. A `klass: Object`
+        # axis answers yes, correctly: a JSON client really can send a key that satisfies it.
+        def string_reachable_key_token?(token)
+          case token
+          when ::Symbol then token == :uuid
+          # `String <= token` asked the same question, but reversing it to satisfy the linter would dispatch
+          # `>=` on a caller-supplied Module. This reads String's OWN ancestry natively instead, which is the
+          # undispatched form and the seam the error-path rules already point at.
+          else Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(::String, token)
           end
         end
+
+        # Whether every value this token admits IS the string it serializes to — String itself, or a SUBTYPE of
+        # it, plus Symbol, whose `#to_s`, `#length` and `==` are all its name's. The opposite ancestry direction
+        # from the predicate above, and deliberately not shared with it: reachability asks "could a String
+        # satisfy this position", and a broad token answers yes to that while admitting values that are not
+        # Strings at all. `Object` is the case that separates them.
+        def own_wire_string_token?(token)
+          return token == :uuid if Internal::Identity.kind?(token, ::Symbol)
+          return false unless Internal::Identity.kind?(token, ::Module)
+
+          Internal::Identity.same?(token, ::Symbol) || Internal::NativeMethods.includes_module?(token, ::String)
+        end
+
+        # Whether the axis guarantees a key that IS the property name the serializer writes. Two of the projected
+        # keywords ask about the key OBJECT rather than its wire form, and both are wrong when the two come apart:
+        #
+        #   `length:`    ActiveModel measures the object's `#length`, `minLength`/`maxLength` measure the property
+        #                name. A path whose `#length` counts segments serializes to "a/b" — runtime 2, wire 3.
+        #   `inclusion:` the runtime matches by Ruby `==`, which can identify values with DIFFERENT wire forms.
+        #                `1 == 1.0`, so a `{ in: [1] }` axis accepts a `1.0` key that serializes to "1.0" while
+        #                the emitted set holds only "1".
+        #
+        # Both reduce to one question — is the key its own wire form — so one gate answers both rather than a
+        # keyword-by-keyword table that has to be re-argued for each new keyword. `format:` is exempt by
+        # construction, not by omission: ActiveModel matches `value.to_s` and the serializer writes the same
+        # `to_s`, so its subject is the wire form already.
+        def own_wire_form?(klass)
+          tokens = Array(klass)
+          return false if tokens.empty?
+
+          tokens.all? { |token| own_wire_string_token?(token) }
+        end
+
+        # A property-name set, or nil to stand down — and the two directions are different questions.
+        #
+        # On OUTPUT the members are rendered by `Values.canonical_wire_key`, the SAME function the map's own
+        # serializer uses for a key. Reading them through the VALUE serializer instead was wrong for any type
+        # whose two renderings differ: a Time value serializes as `iso8601` and a Time KEY as `to_s`, so the
+        # emitted set named a key the map never produces.
+        #
+        # On INPUT only a String member survives. A JSON client can send nothing but string keys, and a
+        # non-String axis rejects one — measured, a `keys: Symbol` axis refuses `{ "a" => 1 }` while accepting
+        # `{ a: 1 }` — so advertising the rendered form there would tell a client to send a key axn will refuse.
+        # That is PRO-3165's "a `keys: Symbol` would be a lie on the wire", which holds for a SET exactly as it
+        # held for a bare type.
+        def property_name_enum(values, for_output:)
+          return values.map { |value| Values.canonical_wire_key(value) } if for_output
+
+          # Inbound, the REACHABLE subset rather than all-or-nothing. A JSON key is a String, so it can only
+          # ever equal a String member — which makes `["a", 1]` project to exactly `["a"]`: not an
+          # approximation, but the precise set of JSON-supplied keys the runtime accepts. Standing down from
+          # the whole constraint instead admitted every key the document said nothing about.
+          reachable = values.grep(::String)
+          # Nothing reachable, and the axis's CLASS already admits a String key — the whole inbound projection
+          # is gated on that before this runs — so the position is reachable from JSON while its set holds
+          # nothing a JSON key could equal: no key satisfies it, and `enum: []` is what says so. Standing down
+          # instead advertised every key the document was silent about, and `keys: { klass: [String, Integer],
+          # inclusion: { in: [1] } }` accepted `{"x" => 1}` while the runtime rejected it.
+          #
+          # The axis whose class excludes String is a DIFFERENT case and keeps its stand-down: there the wire
+          # cannot reach the position at all, a Ruby caller satisfies it perfectly well, and PRO-3165 already
+          # turns that whole projection away above rather than emitting a set no client can satisfy.
+          return EMPTY_ENUM if reachable.empty?
+
+          # Detached, never the inclusion array's own Strings: reflection hands these to a consumer, and one
+          # mutating a member in place would change which keys the DECLARED action accepts. The value-enum path
+          # dups through the same normalizer.
+          normalize_schema_literal(reachable)
+        end
+
+        # A declared `format:` reflects as `pattern` when the regex translates faithfully — `Reflection::Pattern`
+        # owns that judgment and returns nil to stand down, which is what the emitter did for every regex
+        # before this. Only `with:` is read: `without:`'s honest spelling is `not: { pattern: ... }`, and `not:`
+        # is a single slot `reject_null!` already writes into, so a second writer would silently clobber the
+        # first. Booked as unemitted alongside `exclusion:`, which has the same shape.
+        def apply_pattern!(prop, validations, for_output:, property_names: false, declared_klass: nil)
+          entry = Axn::Validation::Base.validator_entries(validations)[:format]
+          return unless entry
+          # ActiveModel matches `value.to_s`, and on OUTPUT that is not always the string the wire carries: the
+          # VALUE serializer renders a Time as `iso8601` and a Date as its own ISO form, so a pattern the runtime
+          # measured against `"2026-08-25 12:00:00 UTC"` is measured against `"2026-08-25T12:00:00Z"` instead and
+          # rejects output the action produced. Emitted outbound only where the value IS the string it serializes
+          # to. A KEY is exempt: `canonical_wire_key` dispatches `to_s`, the same subject the validator used.
+          return if for_output && !property_names && !own_wire_form?(declared_type_tokens(validations, declared_klass))
+
+          pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with], for_output:)
+          write_pattern_to_string_nodes!(prop, pattern) if pattern
+        end
+
+        # A union leaves the node's own `type:` unset and its branches under `anyOf`, so a pattern written at the
+        # node would sit on nothing — the same shape `write_numeric_bound!` follows for a bound, and the reason a
+        # union `format:` reflected nowhere at all while a single-type one reflected fine, leaving the string
+        # branch of `type: [String, Integer], format: …` advertising values the validator rejects.
+        def write_pattern_to_string_nodes!(node, pattern)
+          return write_pattern!(node, pattern) if Array(node[:type]).include?("string")
+          return unless node[:anyOf].is_a?(Array)
+
+          node[:anyOf] = node[:anyOf].map do |branch|
+            next branch unless Array(branch[:type]).include?("string")
+
+            branch.dup.tap { |composed| write_pattern!(composed, pattern) }
+          end
+        end
+
+        # Both patterns are enforced, so both are emitted. A node has one `pattern` slot, and a declared `format:`
+        # landing beside the one `only_integer:` installs had been overwriting it — `type: String,
+        # numericality: { only_integer: true }, format: { with: /\A[0-9a-z]+\z/ }` then advertised `"abc"`, which
+        # the runtime rejects on the integer test. `allOf` is JSON Schema's spelling for the conjunction, and it
+        # is free at a property: the conditional `allOf` this emitter writes is at the schema ROOT.
+        def write_pattern!(node, source)
+          existing = node[:pattern]
+          return node[:pattern] = source if existing.nil? || existing == source
+
+          node.delete(:pattern)
+          node[:allOf] = [{ pattern: existing }, { pattern: source }]
+        end
+
+        # The bound twin of the emptiness floor/ceiling: a declared `numericality:`/`comparison:` bound reflects
+        # as the JSON Schema keyword that means the same thing. Read through `Base.declared_numeric_bounds`, the
+        # same reader the runtime bound comes from, so the two cannot disagree about one declaration.
+        #
+        # Emitting only ever shrinks the schema-valid set, so it preserves the documented direction (stricter
+        # than the runtime, never looser) by construction — and every case a bound cannot be carried exactly
+        # stands down to emitting nothing, which is where this started.
+        # An `enum` is INTERSECTED with whatever the node already carries rather than assigned over it, the same
+        # rule `apply_inclusion_enum!` follows and for the same reason: both sets are enforced.
+        def merge_enum!(prop, values)
+          existing = prop[:enum]
+          prop[:enum] = existing ? existing & values : values
+        end
+
+        def apply_numeric_bounds!(prop, validations, nullable:, for_output:, declared_klass: nil)
+          return unless numeric_node?(prop)
+          return if for_output && !numeric_serialization_exact?(declared_type_tokens(validations, declared_klass))
+
+          entries = Axn::Validation::Base.validator_entries(validations)
+          # Both entries are enforced, so their bounds are INTERSECTED into one set before any keyword is
+          # written — assigning per entry let whichever the iteration reached last win, and emitted the weaker
+          # bound of the two (`numericality: { greater_than: 10 }, comparison: { greater_than: 0 }` advertised
+          # `exclusiveMinimum: 0` while the runtime rejected 5).
+          bounds = {}
+          NUMERIC_BOUND_ENTRIES.each do |key, ranged|
+            entry = entries[key]
+            next unless entry
+
+            Axn::Validation::Base.declared_numeric_bounds(entry, ranged:).each do |operator, bound|
+              next unless Axn::Validation::Base.emittable_numeric_bound?(bound)
+
+              Axn::Validation::Base.intersect_numeric_bound(bounds, operator, bound)
+            end
+          end
+
+          # An intersection with no solution resolves to a sentinel rather than a bound
+          # (`Base::CONTRADICTORY_BOUND`), and the node then says NOTHING SATISFIES THIS rather than saying less.
+          #
+          # That is the faithful projection, and standing down here would be the papering-over PRO-3220 warns
+          # against: the corollary in guards-and-projections.md forbids an unsatisfiable node for a SATISFIABLE
+          # contract, this contract admits nothing, and the emitter already projects that family unsatisfiably
+          # elsewhere (`length: { maximum: 0 }` on a required Array emits `minItems: 1, maxItems: 0`). Refusing
+          # the declaration outright stays PRO-3220's; being honest about it is this layer's job.
+          #
+          # `enum: []` is the spelling: it is satisfied by no value, and it composes rather than collides —
+          # intersecting it with an enum the node already carries yields `[]` either way, where `not: {}` would
+          # contend for a slot `reject_null!` already writes.
+          wrote_bound = false
+          bounds.each do |operator, bound|
+            if Axn::Validation::Base.contradictory_bound?(bound)
+              # Nullable, nil is still a passing value — the validators skip it — so the node that admits
+              # nothing ELSE must say that rather than admit nothing at all.
+              merge_enum!(prop, nullable ? [nil] : EMPTY_ENUM)
+              next
+            end
+            next unless Axn::Validation::Base.emittable_numeric_bound?(bound)
+
+            # `const` names exactly one value, so it cannot say "this number OR null", and a nullable position
+            # really does admit nil: `type: Integer, comparison: { equal_to: 1 }, optional: true` exposes nil
+            # successfully while `const: 1` rejected it, even beside a `"null"` in the node's own `type:`. The
+            # enum spelling says both, and intersects with any set the node already carries.
+            if operator == :equal_to && nullable
+              merge_enum!(prop, [bound, nil])
+              wrote_bound = true
+              next
+            end
+
+            write_numeric_bound!(prop, NUMERIC_BOUND_KEYS.fetch(operator), bound)
+            wrote_bound = true
+          end
+
+          # Only where a bound was actually written: a union merely CONTAINING a numeric branch is what
+          # `numeric_node?` answers, and narrowing on that would drop the string branch of a plain
+          # `type: [String, Integer]` that declares no bound at all.
+          restrict_union_to_bounded_branches!(prop) if wrote_bound && !for_output
+        end
+
+        # A bound can only be written onto a branch that carries a numeric type, which leaves a union's other
+        # branches advertising values the validator rejects: `type: [String, Integer], numericality: { greater_than: 0 }`
+        # accepted `"abc"` through the string branch while ActiveModel rejected it on every call. Input reflection
+        # may be STRICTER than the runtime but never looser (`docs/reference/class.md`), and a narrowing is the
+        # licensed direction — so the branches that cannot carry the bound are dropped rather than left lying.
+        # ActiveModel does accept a numeric STRING here (`"5"` passes), so this says less than the runtime allows;
+        # it cannot say more, since no `minimum` applies to a JSON string and a pattern cannot carry the bound.
+        #
+        # Output is not narrowed: there the schema describes what the action produces, and dropping a branch
+        # would reject a value axn serialized. It has no bound to drop anyway — `numericality_type_provable?`
+        # already stands the whole projection down outbound unless the validator proves the value is numeric.
+        def restrict_union_to_bounded_branches!(prop)
+          return unless prop[:anyOf].is_a?(Array)
+
+          kept = prop[:anyOf].select do |branch|
+            types = Array(branch[:type])
+            # The nullability branch stays: a nil is SKIPPED by the validator rather than bounded by it, so
+            # dropping it would reject a value the contract admits.
+            types.intersect?(NUMERIC_TYPES) || types.include?(NULL_BRANCH[:type])
+          end
+          return if kept.empty? || kept.size == prop[:anyOf].size
+
+          return prop[:anyOf] = kept unless kept.size == 1
+
+          # One survivor is no longer a union.
+          prop.delete(:anyOf)
+          prop.merge!(kept.first)
+        end
+
+        # Whether any part of this node carries a numeric type — the node's own, or a branch of a union.
+        def numeric_node?(prop)
+          return true if Array(prop[:type]).intersect?(NUMERIC_TYPES)
+
+          prop[:anyOf].is_a?(Array) && prop[:anyOf].any? { |branch| Array(branch[:type]).intersect?(NUMERIC_TYPES) }
+        end
+
+        # A union leaves `prop[:type]` unset and its branches under `anyOf`, so a bound written at the node
+        # would sit on nothing. It follows the emitted type into the branches instead — the same shape
+        # `apply_member_size_constraints` already gives the size bounds, and the reason a union `length:`
+        # reflected while a union `numericality:` silently did not.
+        def write_numeric_bound!(prop, key, bound)
+          return prop[key] = bound unless prop[:anyOf].is_a?(Array)
+
+          prop[:anyOf] = prop[:anyOf].map do |branch|
+            Array(branch[:type]).intersect?(NUMERIC_TYPES) ? branch.merge(key => bound) : branch
+          end
+        end
+
+        def apply_size_constraints!(prop, validations, for_output: false, property_names: false, declared_klass: nil)
+          minimum = declared_size_minimum(validations)
+          maximum = declared_size_maximum(validations)
+          return if minimum.nil? && maximum.nil?
+
+          strings = emit_string_size?(validations, for_output:, property_names:, declared_klass:)
+
+          if prop[:anyOf]
+            prop[:anyOf] = apply_member_size_constraints(prop[:anyOf], minimum, maximum, strings:)
+          else
+            prop.merge!(size_bounds_for(prop[:type], minimum, maximum, strings:))
+          end
+        end
+
+        # Whether a STRING size may be emitted at this position — the same question `apply_pattern!` asks, and
+        # for the same reason. ActiveModel measures the value's own `#length`, and on OUTPUT that is not always
+        # the string the wire carries: `Time.utc(2026, 8, 25, 12).to_s` is 23 characters and it serializes as the
+        # 20-character `"2026-08-25T12:00:00Z"`, so `length: { is: 23 }` accepts the value at runtime while the
+        # emitted `minLength: 23` rejects the action's own output.
+        #
+        # A COLLECTION size is exempt by construction: `minItems`/`maxItems`/`minProperties`/`maxProperties`
+        # count the elements the serializer writes, so the runtime's measurement and the document's agree however
+        # the elements themselves render. A `propertyNames` node is exempt too, exactly as it is for a pattern —
+        # a KEY's wire form is the `to_s` the validator measured, and an axis whose key is not its own wire form
+        # has already had `length:` removed by `key_axis_constraints`. Input needs no gate: the subject there is
+        # the value that was sent.
+        def emit_string_size?(validations, for_output:, property_names:, declared_klass:)
+          return true unless for_output
+          return true if property_names
+
+          own_wire_form?(declared_type_tokens(validations, declared_klass))
+        end
+
+        # The size keywords whose subject is a STRING, and so the ones the wire-form gate above governs.
+        STRING_SIZE_KEYS = %i[minLength maxLength].freeze
+        private_constant :STRING_SIZE_KEYS
 
         # A union emits one branch per member type instead of a single `type:`, and the validators reject an
         # out-of-bounds value whichever branch it takes — so each bound belongs on every branch that can carry
         # it. A branch with no size (an `integer` member) and the nullability branch carry none, decided by the
         # same per-type key lookup the single-type path uses.
-        def apply_member_size_constraints(members, minimum, maximum)
+        def apply_member_size_constraints(members, minimum, maximum, strings: true)
           members.map do |member|
-            bounds = size_bounds_for(member[:type], minimum, maximum)
+            bounds = size_bounds_for(member[:type], minimum, maximum, strings:)
             bounds.empty? ? member : member.merge(bounds)
           end
         end
 
         # The size keywords one emitted type can carry, for the bounds this field declares. Empty for a type
         # with no size, which is what keeps a bound off an `integer` branch and off `"null"`.
-        def size_bounds_for(type, minimum, maximum)
+        def size_bounds_for(type, minimum, maximum, strings: true)
           bounds = {}
-          if minimum && (floor_key = size_constraint_key_for(type))
+          if minimum && (floor_key = size_constraint_key_for(type)) && emittable_size_key?(floor_key, strings)
             bounds[floor_key] = minimum
           end
-          if maximum && (ceiling_key = size_ceiling_key_for(type))
+          if maximum && (ceiling_key = size_ceiling_key_for(type)) && emittable_size_key?(ceiling_key, strings)
             bounds[ceiling_key] = maximum
           end
           bounds
         end
+
+        def emittable_size_key?(key, strings) = strings || !STRING_SIZE_KEYS.include?(key)
 
         # The JSON Schema floor key for an emitted type, or nil for a type with no empty state. Reads the
         # single-type String and the `[T, "null"]` nullable pair alike; `"null"` is never size-bearing.
@@ -1390,14 +1865,13 @@ module Axn
         #
         # Only `length:` is consulted, never a `size:`: `size` is absent from KNOWN_VALIDATION_KEYS, so a
         # declaration carrying it raises "Unknown key(s) :size" and can never reach reflection.
-        def declared_size_minimum(config)
-          validations = config.validations
+        def declared_size_minimum(validations)
           # Whether an empty value can get through at all decides BOTH branches below: it is the floor of 1 a
           # presence/emptiness check imposes on its own, and it is what tells a blank-tolerant `length:` apart
           # from one whose blank-tolerance is moot.
           rejects_empty = empty_value_rejected?(validations)
 
-          length = effective_entry_options(validations[:length], shared_validation_options(config))
+          length = effective_entry_options(validations[:length], shared_validation_options(validations))
           if rejects_empty || !length[:allow_blank]
             declared = Axn::Validation::Base.declared_length_floor(length)
             return declared if Axn::Validation::Base.emittable_length_floor?(declared)
@@ -1411,11 +1885,34 @@ module Axn
         # one (presence and the emptiness axis impose floors, never ceilings), and blank-tolerance cannot
         # loosen one (an empty value measures 0, which every emittable ceiling admits). A GATED entry is counted
         # as if its gate were open, the static-maximal policy every constraint here follows.
-        def declared_size_maximum(config)
-          length = effective_entry_options(config.validations[:length], shared_validation_options(config))
+        def declared_size_maximum(validations)
+          length = effective_entry_options(validations[:length], shared_validation_options(validations))
           declared = Axn::Validation::Base.declared_length_ceiling(length)
 
           declared if Axn::Validation::Base.emittable_length_ceiling?(declared)
+        end
+
+        # JSON Schema's `propertyNames` applies to EVERY key of the object, `properties`-matched ones included.
+        # The runtime does the opposite for a shaped map: a key the `shape:` names is EXEMPT from both axes
+        # (Core::Contract#_derive_shaped_keys!), which is what `additionalProperties` already means and what
+        # makes combining the two options coherent. So a bare keys-axis constraint beside a shape would publish
+        # a document the runtime contradicts — and contradict it in the direction that matters, since a member
+        # is `required` and a `propertyNames` it fails forbids that key, leaving a node NO value satisfies. That
+        # is exactly the corollary PRO-3192 recorded in guards-and-projections.md.
+        #
+        # The union is the runtime rule verbatim — a key is one the shape names, or one the axis admits — so the
+        # node stays satisfiable AND stays exact, rather than being loosened to nothing or dropped.
+        # Reads the exempt set off the node's OWN emitted `properties` rather than taking a member list: the
+        # runtime derives its exempt set from the emitter's key computation in the first place (PRO-3166), so
+        # this is the same answer asked of the same source, and one helper then serves every site where the two
+        # options meet — a field's own map node, and a NESTED bag composing a `shape:` with a map `of:`, which
+        # is also where the distributing block form lands (PRO-3191 folds it into that bag).
+        def exempt_shaped_keys_from_property_names(node)
+          axis = node[:propertyNames]
+          shaped = node[:properties]
+          return node if axis.nil? || axis.empty? || shaped.nil? || shaped.empty?
+
+          node.merge(propertyNames: { anyOf: [axis, { enum: shaped.keys.map(&:to_s) }] })
         end
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
@@ -1446,6 +1943,7 @@ module Axn
             member_props, required = member_properties(shape[:members], for_output:, ancestry:)
             prop[:properties] = plan.base_properties.merge(member_props)
             prop[:required] = required unless required.empty?
+            prop.replace(exempt_shaped_keys_from_property_names(prop))
           elsif plan.in_items?
             # The plan's own type schema, not a second `contents_schema_for` call: one build, and the plan is
             # then literally what gets emitted rather than a parallel derivation of it.
@@ -1706,8 +2204,35 @@ module Axn
         # A union `klass:` keeps the merge order `apply_structured_schema!` has always used — the structural keys
         # land beside the `anyOf` at this node rather than inside each branch. Existing behavior, preserved
         # deliberately rather than corrected here.
-        def contents_node_schema(bag, for_output: false, ancestry: nil)
-          node = bag[:klass] ? contents_schema_for(bag[:klass], for_output:) : {}
+        def contents_node_schema(bag, for_output:, ancestry: nil)
+          constraints = bag_value_constraints(bag, for_output:)
+          # A declared `klass:` decides the type, exactly as `type:` does at a field. With none, the type is
+          # INFERRED from the bag's own validators — through `json_type_for`, the function the field path
+          # already uses for that, rather than a second inference beside it. Without this a validator-only bag
+          # seeded an empty node, every keyword that keys off a type declined to emit, and the parent dropped
+          # `items` altogether: `of: { numericality: { greater_than: 0 } }` rejected `-1` at runtime and
+          # advertised nothing. (`format:`/`length:` alone still infer nothing, here and at a field alike —
+          # neither a pattern nor a size names one JSON type.)
+          node = if bag[:klass]
+                   # `contents_schema_for` reads the class alone, so the `only_integer:` narrowing that
+                   # `json_type_for` applies on the other branch has to be applied here too — same helper, not a
+                   # second reading of it.
+                   narrow_node_to_integer(contents_schema_for(bag[:klass], for_output:), constraints,
+                                          Array(bag[:klass]), for_output:)
+                 else
+                   json_type_for(constraints, for_output:)
+                 end
+          # Whether the POSITION admits nil is the same question `nil_allowed?` answers for a field, asked of
+          # the bag — a `klass:` naming NilClass admits it until another validator on the same bag rejects it.
+          # Hard-coding it left `of: { klass: [String, NilClass], presence: true }` advertising a `null` branch
+          # the runtime rejects, and stripped nil from an enum at a position that accepts it.
+          nullable = bag_nullable?(bag, for_output:)
+          node = reconcile_contents_nullability(node, nullable:, for_output:)
+          # The bag's value validators (PRO-3193), through the same projector a named position uses. Applied
+          # before the member/contents merges below so a `type:` those steps install cannot be read as the type
+          # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
+          # validators constrain.
+          apply_value_constraints!(node, constraints, nullable:, for_output:, declared_klass: bag[:klass])
           node = contents_member_schema(node, bag, for_output:, ancestry:)
           inner = emitted_contents_edge(bag, :of, for_output:)
           return node if nil.equal?(inner)
@@ -1719,7 +2244,10 @@ module Axn
             if Axn::Internal::ShapeGraph.map_bag?(inner)
               # The object type is the bag's OWN `klass:` (a map bag is only ever reached from `klass: Hash`), exactly
               # as a field's map node takes its type from `type:` and its `additionalProperties` from the axis.
-              node.merge(map_values_schema(inner, for_output:, ancestry: child))
+              # The exemption runs here too, and has to: this is where a bag's `shape:` properties (merged above by
+              # `contents_member_schema`) meet the axis's `propertyNames`, so without it a shaped nested map with a
+              # constrained `keys:` axis emits a node its own required members cannot satisfy.
+              exempt_shaped_keys_from_property_names(node.merge(map_values_schema(inner, for_output:, ancestry: child)))
             else
               contents = contents_node_schema(inner, for_output:, ancestry: child)
               contents.empty? ? node : node.merge(items: contents)
@@ -1847,7 +2375,132 @@ module Axn
             else
               contents_node_schema(axis, for_output:, ancestry:)
             end
-          values.empty? ? {} : { additionalProperties: values }
+          node = values.empty? ? {} : { additionalProperties: values }
+          keys = map_keys_schema(bag, for_output:)
+          keys.empty? ? node : node.merge(propertyNames: keys)
+        end
+
+        # The `keys:` axis, as `propertyNames`. PRO-3165 emitted nothing here on the grounds that every JSON
+        # object key is already a string, so `keys: String` says nothing a client can act on and `keys: Symbol`
+        # would misdescribe the wire — and that reasoning still holds for an axis that only names a TYPE.
+        # It stops holding once the axis carries a constraint, which is what `propertyNames` is for.
+        #
+        # Only the constraints that survive the string form of a JSON key are emitted, which the projector
+        # decides for itself: it keys every keyword off the node's own emitted `type:`, and a key node's type is
+        # `"string"` whatever Ruby class the axis names. So a `format:`/`length:`/`presence:` reflects and a
+        # numeric bound does not — a Ruby Hash key may legitimately be an Integer, but no `propertyNames`
+        # subschema says "parses to an integer greater than zero", so that stays enforced-in-Ruby-only, exactly
+        # as a bare `keys: Symbol` already is.
+        # `for_output:` is threaded rather than defaulted: a self-gated validator on this axis promises nothing
+        # on output for the same reason it promises nothing at an element position, and forgetting it here is
+        # how the element-position fix stayed half-applied — one call site swept, one missed.
+        def map_keys_schema(bag, for_output:)
+          axis = Axn::Internal::ShapeGraph.hash_or_nil(bag[:keys])
+          return {} if nil.equal?(axis)
+          # A JSON object key is a String, so an axis whose declared class EXCLUDES String cannot be satisfied
+          # from JSON at all — and then every inbound keyword here is a lie, not just the set: a
+          # `keys: { klass: Symbol, format: … }` told a client to send `{"a" => 1}`, which the axis rejects on
+          # the class check before the pattern is ever consulted. Gated on the CLASS rather than per keyword,
+          # which is what round 11 got wrong by fixing only the enum. On output the key has already been
+          # serialized to a String, so the whole projection stands.
+          return {} unless for_output || axis_admits_string_key?(axis[:klass])
+
+          # The node is built with the type a JSON object key always has, so the projector keys each keyword off
+          # `"string"` — which is what decides, on its own, that a `format:`/`length:` reflects here and a
+          # numeric bound does not. The type is then dropped: `propertyNames` needs no `type: "string"` of its
+          # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
+          node = { type: "string" }
+          apply_value_constraints!(node, key_axis_constraints(axis, for_output:), nullable: false, for_output:, property_names: true)
+          node.except(:type)
+        end
+
+        # The axis's validators, less any whose subject does not survive serialization. Only the OUTPUT side can
+        # reach that mismatch: an inbound key is the wire string itself, and the reachability gate above has
+        # already turned the whole projection away for an axis that could not be satisfied from JSON at all.
+        def key_axis_constraints(axis, for_output:)
+          constraints = bag_value_constraints(axis, for_output:)
+          return constraints unless for_output
+          return constraints if own_wire_form?(axis[:klass])
+
+          constraints.except(*OBJECT_SUBJECT_KEY_VALIDATORS)
+        end
+
+        # Whether the value at a bag's position may be nil — `Base.nil_accepted?`, the same seam a field's
+        # `nil_allowed?` reads, asked of the bag's own `klass:` and validators. A bag that constrains nothing at
+        # all admits nil, exactly as an empty validator set does at a field.
+        def bag_nullable?(bag, for_output:)
+          validations = bag_value_constraints(bag, for_output:)
+          klass = bag[:klass]
+          # Synthesized in the CANONICAL `type:` shape a field's stored validations carry. A bare token would be
+          # normalized as a validator scalar and read under the wrong key entirely, so `type_admits_nil?` would
+          # see no `klass:` and call a nil-admitting union nil-rejecting.
+          validations = validations.merge(type: { klass: }) unless Array(klass).empty?
+
+          Axn::Validation::Base.nil_accepted?(validations)
+        end
+
+        # Bring the type a bag's `klass:` produced into line with the nullability derived above. A `NilClass`
+        # token contributes a `null` branch like any other token; whether it survives is the nullability
+        # question, asked once — the same rule `apply_type_info!` follows at a named position.
+        def reconcile_contents_nullability(node, nullable:, for_output: false)
+          return node if nullable
+
+          if node[:anyOf].is_a?(Array)
+            without_null = node[:anyOf].reject { |member| member[:type] == "null" }
+            return { enum: EMPTY_ENUM } if without_null.empty?
+
+            return without_null.size == 1 ? node.except(:anyOf).merge(without_null.first) : node.merge(anyOf: without_null)
+          end
+
+          # The position's mirror of a field's lone required `NilClass`: nothing but nil is a NilClass, and the
+          # validator that makes the position non-nullable rejects nil, so it admits nothing — and `{ type:
+          # "null" }` advertised the one value it rejects, letting `[null]` through a schema whose runtime
+          # refuses it. `enum: []` is the faithful node, the same spelling `unsatisfiable_type?` reaches at a
+          # field. A union that reduces to no branch at all is the same contract and now says so too, where
+          # returning the node restored the very `null` branches this just rejected.
+          return { enum: EMPTY_ENUM } if unsatisfiable_type?(node[:type], nullable:)
+
+          # A position that names no TYPE still rejects nil, and had no way of saying so: a classless bag is
+          # newly legal (PRO-3193), so `of: { presence: true }` builds an empty node, the parent then omits
+          # `items` altogether, and the document accepted `[null]` that the positional validator rejects on
+          # every call. `not: { type: "null" }` is the spelling a named field's `reject_null!` already uses for
+          # exactly this shape — an untyped node that excludes nil.
+          #
+          # Only nil. The other blanks `presence:` rejects (`""`, `[]`, `{}`, `false`) need to know that
+          # presence is WHY the position is non-nullable — a `klass:` that simply excludes NilClass says nothing
+          # about them — and that plumbing is PRO-3240's, alongside the rest of the blank axis.
+          #
+          # INBOUND only, and the asymmetry is the doctrine rather than an omission: outbound the schema may say
+          # LESS than the contract and never more, and an untyped output position is untyped precisely because
+          # the emitter could not prove what it serializes to — `of:` a Data with a custom `as_json` among them.
+          # Writing a claim there would be inventing one in the direction reflection may not err.
+          return node.merge(not: { type: "null" }) if !for_output && !node.key?(:type) && !node.key?(:anyOf) && !node.key?(:enum)
+
+          node
+        end
+
+        # A bag's value constraints: what it says about the VALUE at its position rather than about the position.
+        # Derived from the two lists `Internal::ShapeGraph` owns, so a validator admitted into the grammar
+        # reaches this projection without a second edit.
+        #
+        # The recursion edges come out even though `apply_value_constraints!` reads named keys and would ignore
+        # them: what this returns is consumed as "the constraints on this value", and `of:`/`shape:` describe a
+        # NESTED node instead — they are emitted by `contents_node_schema` and `contents_member_schema`. A
+        # projection that reads the set generically would otherwise pick them up as keywords on the wrong node.
+        # `for_output:` is REQUIRED on this and its two callers rather than defaulted, on the same terms
+        # `effective_entry_options`' `declaration_options` is: a caller that omits the tier deciding the answer
+        # gets a quietly wrong one. That is exactly how the output reduction stayed half-applied — the element
+        # position forwarded it and the keys axis silently took the default. Now the omission is an error.
+        def bag_value_constraints(bag, for_output:)
+          constraints = Axn::Validation::Base.validator_entries(bag)
+                                             .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
+                                                     *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)
+          # On OUTPUT a self-gated entry promises nothing — the action may successfully expose a value the entry
+          # would have rejected — so it is reduced away exactly as `effective_validations` reduces a named
+          # field's, and for the same reason: an output schema that rejects what the action can serialize is
+          # worse than one that says less. `emitted_contents_edge` already does this for the bag's `of:`/`shape:`
+          # edges; this is the same reduction for its validators.
+          effective_validations(constraints, for_output:)
         end
 
         def single_contents_schema(klass, for_output: false)
@@ -2005,14 +2658,22 @@ module Axn
             type_opt = validations[:type]
             klass = type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt
             type_hashes = Array(klass).map { |k| single_type_for(k, for_output:) }.uniq
-            return type_hashes.first if type_hashes.size == 1
-
-            return { anyOf: type_hashes }
+            node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
+            return narrow_node_to_integer(node, validations, Array(klass), for_output:)
           end
 
+          # Outbound, the SET names a type only where it passes the same equality-safety test the `enum` itself
+          # is gated on — one predicate for both emissions, since both turn on whether a member can be `==` to a
+          # value that serializes differently. It can: `Integer#==` falls back to `other == self`, so a value
+          # object comparing equal to `1` satisfies `inclusion: { in: [1] }` and serializes as its own string,
+          # which an inferred `"integer"` then rejects. A String/Symbol/boolean/nil member settles it alone —
+          # their `==` never matches a foreign class — while a numeric member asks the position to pin its class,
+          # which nothing reaching here has declared (a `type:` returns above, and a bag with a `klass:` takes the
+          # other branch), so a numeric set always stands down outbound. Input needs no gate: a set narrower than
+          # the runtime's equality is the licensed direction there.
           if validations[:inclusion]
             enum_values = inclusion_enum_values(validations[:inclusion])
-            if enum_values&.any?
+            if enum_values&.any? && (!for_output || output_enum_exact?(enum_values, validations, nil))
               types = enum_values.map { |v| enum_scalar_type(v) }.uniq
               return { type: types.first } if types.size == 1 && types.first
 
@@ -2021,14 +2682,190 @@ module Axn
             end
           end
 
-          if validations[:numericality]
-            numericality = validations[:numericality]
-            return { type: "integer" } if numericality.is_a?(Hash) && numericality[:only_integer]
+          if (numericality = validations[:numericality]) && numericality_type_provable?(numericality, for_output:)
+            return { type: "integer" } if Axn::Validation::Base.declared_only_integer?(numericality)
 
             return { type: "number" }
           end
 
           {}
+        end
+
+        # `only_integer:` reaches a node's branches three different ways, and each is decided from the DECLARED
+        # token rather than from the emitted type alone — reading the type alone retagged branches no value of
+        # the declared class can occupy.
+        #
+        #   a "number" branch   narrows to "integer" only where some declared token ADMITS an Integer (`Numeric`
+        #                       does; `Float` does not). Retagging a Float branch advertised the JSON integer
+        #                       `2`, which `is_a?(Float)` rejects — and no Float satisfies `only_integer:`
+        #                       anyway (`2.0.to_s` is "2.0"), so the branch is unreachable and drops out.
+        #   a "string" branch   carries ActiveModel's own integer test, translated. The validator parses a
+        #                       numeric STRING, so `"2"` passes where `"abc"` does not, and leaving the branch
+        #                       unconstrained advertised both.
+        #   anything else       is left exactly as built.
+        #
+        # Narrowing both branches of `[Integer, Float]` converges them, so the node collapses; deduping is a
+        # CONSEQUENCE of that convergence and never a tidy-up of its own, so a union that narrows nothing comes
+        # back untouched, duplicate branches included.
+        def narrow_node_to_integer(node, validations, tokens, for_output:)
+          entry = Axn::Validation::Base.validator_entries(validations)[:numericality]
+          return node unless entry
+
+          # TWO independent narrowings, either of which is enough on its own. Gating the pass on `only_integer:`
+          # alone left `only_numeric:` unapplied whenever it stood without it, so `type: [String, Integer],
+          # numericality: { only_numeric: true }` advertised a string branch no value can occupy — the validator
+          # demands a Numeric OBJECT, so `"abc"` and the numeric string `"1"` are both rejected, and the document
+          # accepted them.
+          only_integer = Axn::Validation::Base.declared_only_integer?(entry)
+          numeric_only = Axn::Validation::Base.validator_entry_options(entry)[:only_numeric] ? true : false
+          return node unless only_integer || numeric_only
+
+          union = node[:anyOf].is_a?(Array)
+          admits = integer_admitted_by?(tokens)
+          branches = union ? node[:anyOf] : [node]
+          # A branch may only be DROPPED where the declared tokens prove no Numeric can occupy the position.
+          # See `numeric_reachable_through_broad_token?` — the emitted type is not evidence on its own.
+          drop = !numeric_reachable_through_broad_token?(tokens)
+          mapped = branches.filter_map do |branch|
+            numericality_branch(branch, admits, numeric_only:, only_integer:, for_output:, drop:)
+          end
+          # Every branch dropping is the CONTRACT, not a case to fall back from: `type: Float, numericality:
+          # { only_integer: true }` admits nothing at all — no Float's `to_s` is an integer literal, and a JSON
+          # integer is not a Float — so restoring the node advertised `1.5` at a position that rejects it. A node
+          # nothing satisfies is the faithful projection here, on the same terms two disagreeing `equal_to:`
+          # bounds already emit `enum: []`. Refusing the declaration outright stays PRO-3220's.
+          return { enum: EMPTY_ENUM } if mapped.empty?
+          return node if mapped == branches
+
+          deduped = mapped.uniq
+          return deduped.first if deduped.size == 1
+
+          union ? node.merge(anyOf: deduped) : node
+        end
+
+        # What each narrowing does to ONE branch. `only_numeric:` is the blunter of the two: it makes ActiveModel
+        # demand a Numeric OBJECT rather than parse anything, so every branch naming values that are not Numerics
+        # is unreachable — a string branch (the one that existed to carry `"2"`), and equally an array, object or
+        # boolean branch, each measured as rejected. `only_integer:` is the finer one, retagging a numeric branch
+        # and translating ActiveModel's integer test onto a string branch that survived.
+        #
+        # The `"null"` branch is exempt from both, and not by omission: NULLABILITY owns it. ActiveModel skips a
+        # nil before any validator sees it wherever the field tolerates one, so neither option says anything
+        # about nil — measured, `type: [String, Integer, NilClass], numericality: { only_numeric: true },
+        # optional: true` accepts nil while rejecting every String.
+        # Whether some declared token is a SUPERTYPE of Numeric — `Object`, `Comparable`, `Kernel`. Such a token
+        # admits a Numeric value while `single_type_for` renders it APPROXIMATELY (`type: Object` emits a
+        # `"string"` branch), so that branch's emitted type says nothing about what the position holds, and
+        # dropping it as "names non-Numerics" emptied a contract `1` satisfies: `type: Object, numericality:
+        # { only_numeric: true }` went to `enum: []` while accepting the Integer.
+        #
+        # The same lesson as the untyped branch above, one step further: an ABSENT type is not evidence, and
+        # neither is an APPROXIMATE one. A token that is itself numeric is excluded — it emits a numeric branch,
+        # which this pass narrows rather than drops.
+        def numeric_reachable_through_broad_token?(tokens)
+          tokens.any? do |token|
+            next false unless Internal::Identity.kind?(token, ::Module)
+
+            Internal::NativeMethods.includes_module?(::Numeric, token) &&
+              !Internal::NativeMethods.includes_module?(token, ::Numeric)
+          end
+        end
+
+        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, for_output:, drop: true)
+          # A branch `only_numeric:` may drop is one whose emitted type NAMES values that are not Numerics.
+          # Everything else is left exactly as built — including the `"null"` branch nullability owns, a branch
+          # already tagged `"integer"`, and any branch whose type is ABSENT. That last is load-bearing: a missing
+          # type is not evidence of anything. `type: Numeric` deliberately emits `{}` on output, its values
+          # having more than one wire form, and reading that absence as proof emptied a position the action
+          # satisfies with `1` — the schema rejecting output it had produced.
+          # EITHER option drops it: no Array, Hash or boolean satisfies `only_integer:` any more than it
+          # satisfies `only_numeric:` — `[1].to_s` is `"[1]"` and `true.to_s` is `"true"`, neither an integer
+          # literal — so `of: { klass: [Array, Integer], numericality: { only_integer: true } }` had been
+          # advertising an Array element the validator rejects on every call. The test stays on types that NAME
+          # non-Numerics; an absent or unrecognized type still falls through to "keep".
+          return drop && (numeric_only || only_integer) ? nil : branch if NON_NUMERIC_BRANCH_TYPES.include?(branch[:type])
+
+          case branch[:type]
+          when "number" then only_integer ? number_branch_as_integer(branch, admits_integer) : branch
+          when "string" then string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:, drop:)
+          else branch
+          end
+        end
+
+        # The emitted types that name values no Numeric can be, and so the only branches `only_numeric:` may
+        # drop. Listed rather than derived by exclusion for exactly the reason above — an absent or unrecognized
+        # type has to fall through to "keep", not to "drop".
+        NON_NUMERIC_BRANCH_TYPES = %w[array object boolean].freeze
+        private_constant :NON_NUMERIC_BRANCH_TYPES
+
+        # A numeric branch under `only_integer:`: retagged where some declared token admits an Integer, and
+        # dropped where none does — no Float satisfies the option (`2.0.to_s` is "2.0"), so the branch is
+        # unreachable rather than merely narrower.
+        def number_branch_as_integer(branch, admits_integer) = admits_integer ? branch.merge(type: "integer") : nil
+
+        def string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:, drop: true)
+          return nil if numeric_only && drop
+          return branch unless only_integer
+
+          merge_integer_literal_pattern(branch, for_output:)
+        end
+
+        def merge_integer_literal_pattern(branch, for_output:)
+          source = Pattern.ecma_source(Axn::Validation::Base.integer_literal_regexp, for_output:)
+          return branch unless source
+
+          composed = branch.dup
+          write_pattern!(composed, source)
+          composed
+        end
+
+        # Whether the position's numbers reach the wire unchanged. A Ruby Integer and Float serialize exactly;
+        # every other Numeric is rendered through `Float()`, which ROUNDS — `BigDecimal("0.099999999999999999")`
+        # satisfies `less_than: 0.1` and then serializes AS `0.1`, which the emitted `exclusiveMaximum` rejects.
+        # A bound is outbound-honest only where that rounding cannot happen.
+        def numeric_serialization_exact?(tokens)
+          return false if tokens.empty?
+
+          tokens.all? do |token|
+            Internal::Identity.same?(token, ::Integer) || Internal::Identity.same?(token, ::Float)
+          end
+        end
+
+        # Whether a JSON integer could satisfy any of the declared tokens. Asked of Integer's OWN ancestry, the
+        # undispatched form, for the reason the key-axis gates give. No declared token at all means the caller is
+        # not describing a class union, and the narrowing behaves as it did before this distinction existed.
+        def integer_admitted_by?(tokens)
+          return true if tokens.empty?
+
+          tokens.any? do |token|
+            Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(::Integer, token)
+          end
+        end
+
+        # Whether a `numericality:` entry proves the value will SERIALIZE as a JSON number. Two different
+        # things can stop it, and it takes both options to exclude them.
+        #
+        # ActiveModel accepts a numeric STRING unless `only_numeric: true` is given — `"1"` passes
+        # `greater_than: 0`, and passes `only_integer:` too, since that reads the string form — so an exposed
+        # value may well be a String. And `only_numeric:` alone proves only that the value is a NUMERIC, which
+        # is not the same as a JSON number: `Complex(1, 2)` is a Numeric and serializes as `"1+2i"`, so the
+        # inferred `"number"` rejected output the action had produced successfully.
+        #
+        # `only_integer:` is what excludes it, and excludes it exactly: among Numerics only an Integer's `#to_s`
+        # is an integer literal (a Float's carries `.`, a Rational's `/`, a BigDecimal's `e`, a Complex's `i`),
+        # so the two options together pin the value to an Integer and the emitted type is "integer" rather than
+        # "number". It has to be a STATIC `only_integer:`, which is exactly what `declared_only_integer?` asks;
+        # `only_numeric:` needs no such test, being the one option here ActiveModel reads truthily instead of
+        # resolving per call.
+        #
+        # On INPUT none of this applies: an inferred numeric type is merely STRICTER there, which is licensed —
+        # a client is told to send `1` rather than `"1"`, and the runtime would have taken either. A declared
+        # `type:` is unaffected in both directions, being read before this and proving the class itself.
+        def numericality_type_provable?(numericality, for_output:)
+          return true unless for_output
+          return false unless Axn::Validation::Base.validator_entry_options(numericality)[:only_numeric]
+
+          Axn::Validation::Base.declared_only_integer?(numericality)
         end
 
         def enum_scalar_type(value)
@@ -2112,7 +2949,7 @@ module Axn
           some_gate = decl_gates.any? || entries.any? { |_key, opt| entry_self_gated?(opt) }
           return false unless some_gate
 
-          shared = shared_validation_options(config)
+          shared = shared_validation_options(config.validations)
           entries.all? do |key, opt|
             nil_tolerant_validation?(key, opt, shared) || entry_effective_gate_keys(opt, decl_gates).any?
           end
@@ -2120,8 +2957,8 @@ module Axn
 
         # The declaration-wide options every entry of a config rides alongside — the tier the per-entry
         # judgments resolve against.
-        def shared_validation_options(config)
-          config.validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
+        def shared_validation_options(validations)
+          validations.slice(*Axn::Validation::Base.shared_validation_option_keys)
         end
 
         def nil_tolerant_validation?(key, opt, declaration_options) = Axn::Validation::Base.nil_tolerant_validation?(key, opt, declaration_options)
@@ -2141,7 +2978,7 @@ module Axn
         # matters for dropping `format: "uuid"` — a blank-tolerant `length:`/other validator doesn't make
         # `TypeValidator` accept `""`, so the format must stay.
         def type_allows_blank?(config)
-          effective_entry_options(config.validations[:type], shared_validation_options(config))[:allow_blank] == true
+          effective_entry_options(config.validations[:type], shared_validation_options(config.validations))[:allow_blank] == true
         end
 
         # Strip `format: "uuid"` from anyOf members: a blank-tolerant uuid accepts "" at runtime, which a

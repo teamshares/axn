@@ -1,6 +1,14 @@
 # frozen_string_literal: true
 
 RSpec.describe "recursive of:" do
+  # The message grew when the bag gained value validators (PRO-3193): a bag now constrains its position with a
+  # class, with what is inside it, with its members, OR with a validator, and the fix it offers names all four.
+  # Held in one constant so the two assertions below cannot drift apart.
+  must_constrain_something =
+    "of: must constrain something — name the contents' class with `klass:`, what is inside them with `of:`, " \
+    "their members with `shape:`, or their value with a validator (absence:, acceptance:, comparison:, " \
+    "exclusion:, format:, inclusion:, length:, numericality:, presence:, validate:)"
+
   describe "an Array of Arrays" do
     let(:action) { build_axn { expects :matrix, type: Array, of: { klass: Array, of: Integer } } }
 
@@ -766,8 +774,7 @@ RSpec.describe "recursive of:" do
 
     it "still refuses a bag that constrains none of the three axes, naming all of them" do
       expect { build_axn { expects :rows, type: Array, of: { message: "nope" } } }
-        .to raise_error(ArgumentError, "of: must constrain something — name the contents' class with `klass:`, " \
-                                       "what is inside them with `of:`, or their members with `shape:`")
+        .to raise_error(ArgumentError, must_constrain_something)
     end
 
     # A shape describes what is inside a STRUCTURED value, so a bag naming a scalar class has nothing for the
@@ -1183,8 +1190,7 @@ RSpec.describe "recursive of:" do
 
     it "holds an axis bag to the same grammar an element bag is held to" do
       expect { build_axn { expects :m, type: Hash, of: { values: {} } } }
-        .to raise_error(ArgumentError, "of: must constrain something — name the contents' class with `klass:`, " \
-                                       "what is inside them with `of:`, or their members with `shape:`")
+        .to raise_error(ArgumentError, must_constrain_something)
     end
 
     it "refuses an unknown key inside an axis bag, against the element bag's own whitelist" do

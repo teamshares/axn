@@ -478,6 +478,22 @@ module Axn
       # shape beside it and the runtime asks this of every entry of every Hash it validates.
       NO_SHAPED_KEYS = [].freeze
 
+      # What a bag key SAYS, split the one way that matters: whether it describes the position or constrains
+      # the value at it. Three layers ask this and must agree — the declaration guards (which validator keys a
+      # bag may carry, and what the positional guards judge), `OfValidator` (what reaches ActiveModel as the
+      # position's contract), and reflection (which keywords land on the position's node). Each derives its own
+      # answer from these two lists rather than keeping a fourth, so a key added to the grammar cannot be
+      # admitted by one layer and dropped by another — which is the silent-ignore hole PRO-3165 closed.
+      #
+      # `klass:` is the type check `OfValidator#matches_axis?` runs and `message:` names it; `container:` and
+      # `shaped_keys:` are axn's own derivations; `keys:`/`values:` are the map's axes, handled by
+      # `validate_entries` rather than forwarded.
+      POSITION_DESCRIPTION_KEYS = %i[klass message container shaped_keys keys values].freeze
+
+      # The two recursion edges: what a position holds, and what its members are. Forwarded as the position's
+      # own contract at runtime, and emitted as a nested node — never as a keyword ON the position's node.
+      INNER_CONTRACT_EDGES = %i[of shape].freeze
+
       EMPTY_INNER_CONTRACTS = [].freeze
       private_constant :EMPTY_INNER_CONTRACTS
 

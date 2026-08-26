@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/internal/reflection/pattern"
 require "axn/internal/reflection/schema"
 require "axn/internal/reflection/values"
 require "axn/internal/reflection/property_names"
@@ -8,8 +9,11 @@ module Axn
   module Internal
     # The layer that derives a JSON view of a contract: the JSON Schema behind
     # `input_schema`/`output_schema` (Schema), the JSON-safe rendering behind
-    # Axn::Extensions::Serialization.render (Values), and the property-name rules both are judged
-    # against (PropertyNames). PropertyNames is also reached directly from the contract's own
+    # Axn::Extensions::Serialization.render (Values), the property-name rules both are judged
+    # against (PropertyNames), and the Ruby-Regexp-to-ECMA-262 translation behind a `format:` field's
+    # emitted `pattern` (Pattern).
+    #
+    # PropertyNames is also reached directly from the contract's own
     # declaration walk (duplicate-name and unrenderable-name checks, and the subfield-contradiction
     # check's dead-tolerance diagnosis in Core::Contract::SubfieldContradictions), not only from Schema.
     #

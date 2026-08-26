@@ -7,6 +7,7 @@ gemspec
 
 # These are only needed for development of Axn itself
 gem "faraday", "~> 2.0" # For client strategy testing
+gem "json_schemer", "~> 2.5" # Validates emitted schemas against a real JSON Schema engine (see schema_wire_audit_spec)
 gem "pry-byebug", "3.12.0"
 gem "rails", "> 7.0" # For Rails Engine testing
 gem "rspec", "~> 3.2"

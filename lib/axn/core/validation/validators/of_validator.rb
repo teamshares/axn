@@ -22,7 +22,9 @@ module Axn
       # a config ASSIGNED onto a class arrives here with an inner contract and no class of its own.
       def check_validity!
         return if options[:container] == ::Hash
-        return if options[:of] || options[:shape]
+        # A bag constrains the position with a class, with what is inside it, or with its own value validators
+        # (PRO-3193) — any one of the three is enough, and the declaration guard already refuses a bag with none.
+        return if inner_contract_validations(options)
 
         raise ArgumentError, "must supply :klass" if options[:klass].nil?
       end
@@ -85,7 +87,11 @@ module Axn
             field: :__axn_contents__, validations: contents,
           ),
           # The child this position's descent is about to validate against, which is the identity a cyclic
-          # graph brings back around (see `guard_contents_descent`). Never nil when `contents` is set.
+          # graph brings back around (see `guard_contents_descent`). Nil for a bag whose `contents` are only
+          # value validators (PRO-3193), which has no child at all — and the guard needs no special case for
+          # that: it keys the pair BY IDENTITY and pops on the way out, so nil is a stable key like any other,
+          # and a validator-only bag is a LEAF, so no ancestry can form through it for the guard to detect.
+          # Measured: identical behaviour with and without a bypass, at every depth up to the nesting bound.
           contents_node: contents && (bag[:of] || bag[:shape]),
         )
       end
@@ -96,11 +102,26 @@ module Axn
         PositionContract.new(klasses: Array(declared), message: nil, contents: nil, validator_class: nil, contents_node: nil)
       end
 
-      # Both edges of the position's inner contract, as a VALIDATIONS bag. Nil when it has neither.
+      # Everything the position is held to, as a VALIDATIONS bag — the two recursion edges (`of:`/`shape:`) and
+      # the value validators the bag carries (PRO-3193). Nil when it carries none of them.
+      #
+      # Derived by SUBTRACTING what describes the position (`klass:` is the type check `matches_axis?` runs,
+      # `message:` names it, `container:`/`shaped_keys:` are axn's own derivations, `keys:`/`values:` are the
+      # map's axes handled by `validate_entries`) rather than by picking out the keys to forward. Picking them
+      # out is what made this method the silent-ignore hole PRO-3165 closed at the grammar: a key the whitelist
+      # admits but this method does not forward declares cleanly, reaches ActiveModel through nothing, and
+      # constrains nothing — so the two lists have to be one list, and subtraction makes them one.
+      #
+      # The shared ActiveModel options come out through `validator_entries`, which is what "these are not
+      # validators" already means everywhere else. Whether a bag's `allow_nil:`/`allow_blank:` govern the
+      # POSITION is a separate question, and not one this method may answer by accident: axn's own tolerance
+      # push writes them into the top-level bag even on a required field, so forwarding them here would make
+      # `of: Integer` quietly admit nil elements.
       def inner_contract_validations(bag)
-        contents = {}
-        contents[:of] = bag[:of] if bag[:of]
-        contents[:shape] = bag[:shape] if bag[:shape]
+        entries = Axn::Validation::Base.validator_entries(bag)
+        contents = entries.reject do |key, value|
+          Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS.include?(key) || !value
+        end
         contents.empty? ? nil : contents
       end
 
