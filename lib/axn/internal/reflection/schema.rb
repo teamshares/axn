@@ -1363,13 +1363,25 @@ module Axn
           tokens.all? { |token| Internal::Identity.same?(token, Internal::Identity.class_of(member)) }
         end
 
-        # The classes a position declares. A bag names them under `klass:`, which `bag_value_constraints`
-        # deliberately drops from the validator set, so a contents position hands them in directly.
-        def declared_type_tokens(validations, declared_klass)
-          return Array(declared_klass) unless nil.equal?(declared_klass)
+        # The classes a position declares: a `type:` bag's `klass:` where a bag was declared, the bare spelling
+        # otherwise, and a `declared_klass` handed in directly by a CONTENTS position — a bag names its classes
+        # under `klass:`, which `bag_value_constraints` deliberately drops from the validator set, so that
+        # caller has them already and passes them through.
+        #
+        # Every branch classifies through `ShapeGraph.type_tokens` rather than `Kernel#Array`, which DISPATCHES
+        # `to_ary`/`to_a` on whatever it is handed: a declared token is a caller's own Class or Module, and one
+        # carrying a singleton `to_ary` would have that method RUN from here — at declaration, and again from
+        # every reflection — which reflection may never do. Measured on a token whose `to_ary` returns
+        # `[String]`: it ran, and the emitted node became `{type: ["string", "null"]}` for a field declared as
+        # that token. The bag is unwrapped through `ShapeGraph.hash_or_nil` for the same reason, so a Hash
+        # subclass denying its own class cannot pick how it is read.
+        def declared_type_tokens(validations, declared_klass = nil)
+          return Axn::Internal::ShapeGraph.type_tokens(declared_klass) unless nil.equal?(declared_klass)
 
           type_opt = validations[:type]
-          Array(type_opt.is_a?(Hash) ? type_opt[:klass] : type_opt)
+          bag = Axn::Internal::ShapeGraph.hash_or_nil(type_opt)
+
+          Axn::Internal::ShapeGraph.type_tokens(nil.equal?(bag) ? type_opt : bag[:klass])
         end
 
         # The literal membership set of an `inclusion:` validator, whether declared as the hash long form
@@ -2096,23 +2108,6 @@ module Axn
 
             ABSENCE_REJECTS_EVERY_VALUE.any? { |known| Axn::Internal::Identity.same?(known, token) }
           end
-        end
-
-        # The type tokens a declaration names, reading a `type:` bag's `klass:` where a bag was declared and the
-        # bare spelling otherwise.
-        #
-        # Classified through `ShapeGraph.type_tokens` rather than `Kernel#Array`, which DISPATCHES
-        # `to_ary`/`to_a` on whatever it is handed: a declared token is a caller's own Class or Module, and one
-        # carrying a singleton `to_ary` would have that method RUN from here — at declaration, and again from
-        # every reflection — which reflection may never do. Measured on a token whose `to_ary` returns
-        # `[String]`: it ran, and the emitted node became `{type: ["string", "null"]}` for a field declared as
-        # that token. The bag is unwrapped through `ShapeGraph.hash_or_nil` for the same reason, so a Hash
-        # subclass denying its own class cannot pick how it is read.
-        def declared_type_tokens(validations)
-          type_opt = validations[:type]
-          bag = Axn::Internal::ShapeGraph.hash_or_nil(type_opt)
-
-          Axn::Internal::ShapeGraph.type_tokens(nil.equal?(bag) ? type_opt : bag[:klass])
         end
 
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
