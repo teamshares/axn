@@ -49,7 +49,10 @@ RSpec.describe "the emitted schema against runtime truth" do
       "TrueClass" => TrueClass, "NilClass" => NilClass, "Numeric" => Numeric,
       "[String,Integer]" => [String, Integer], "[Integer,Float]" => [Integer, Float],
       "[String,NilClass]" => [String, NilClass], "[Array,Integer]" => [Array, Integer],
-      "[TrueClass,Integer]" => [TrueClass, Integer]
+      "[TrueClass,Integer]" => [TrueClass, Integer],
+      # Broad tokens: a SUPERTYPE of Numeric renders approximately (`Object` emits a `"string"` branch), which
+      # is the family the satisfiability example below exists to guard.
+      "Object" => Object, "Comparable" => Comparable
     }
   end
 
@@ -146,6 +149,33 @@ RSpec.describe "the emitted schema against runtime truth" do
     validator_name == "numericality:true" && tokens.any? { |t| t == String }
   end
 
+  # PRO-3240 item 4. `single_type_for` renders an UNKNOWN class as the permissive `"string"` — right for a
+  # narrow custom value class, which serializes through `to_s`, and wrong for a token like `Object` or
+  # `Comparable` that admits numbers and everything else besides. Two consequences, both pre-existing and both
+  # rooted in that one fallback rather than in any validator:
+  #
+  #   inbound         the document says `"string"` where the runtime takes an Integer, so it accepts `"a"`
+  #                   under a `numericality:` that rejects it
+  #   satisfiability  the approximate `"string"` collides with a set of non-string literals — `type: Object,
+  #                   inclusion: { in: [1, 2] }` emits `{type: "string", enum: [1, 2]}`, which nothing
+  #                   satisfies, while the runtime accepts `1`
+  #
+  # Not cheap to close: the fallback is deliberate and load-bearing (`type: Object, length: 2..5` emits
+  # `minLength` BECAUSE the node is a string), so it is the ticket's, not this file's.
+  #
+  # Scoped as narrowly as it can be. The satisfiability exclusion covers only the literal-projecting validator
+  # that collides with the type; the NARROWING family on a broad token stays audited, because that is the class
+  # this example was written for and the one that has regressed twice.
+  def broad_token?(tokens)
+    # Read through ancestry rather than `>=`, which would dispatch a comparison on a caller-supplied Module —
+    # the same reason `string_reachable_key_token?` reads String's own ancestors in the emitter.
+    tokens.any? { |t| t.is_a?(Module) && Numeric.ancestors.include?(t) && !t.ancestors.include?(Numeric) }
+  end
+
+  def known_broad_token_string_fallback?(validator_name, tokens)
+    broad_token?(tokens) && validator_name.start_with?("incl ")
+  end
+
   def each_cell
     types.each do |tname, tklass|
       validators.each do |vname, vopts|
@@ -201,6 +231,40 @@ RSpec.describe "the emitted schema against runtime truth" do
     expect(wrong).to be_empty, "these schemas reject output the action produced:\n  #{wrong.join("\n  ")}"
   end
 
+  # The corollary neither direction above catches, and the one that has bitten hardest. An emitted node that
+  # NOTHING satisfies is "stricter", so the inbound check licenses it — but `guards-and-projections.md` forbids
+  # an unsatisfiable node for a SATISFIABLE contract, and every instance so far has been a narrowing that read
+  # the emitted type as proof about the declared token: an ABSENT type (`type: Numeric` outbound), then an
+  # APPROXIMATE one (`type: Object` renders as a `"string"` branch). Both emptied a position a plain `1`
+  # satisfies. Asked of both schemas, since the same narrowings run in both directions.
+  it "never emits a node nothing satisfies for a contract something satisfies" do
+    wrong = []
+    live = 0
+
+    each_cell do |tname, tklass, vname, vopts, tolname, tol|
+      klass = declare(:in, { type: tklass }.merge(vopts).merge(tol), nil)
+      next if klass.nil?
+
+      accepted = probe_values.select do |value|
+        klass.call(n: value).ok?
+      rescue StandardError
+        false
+      end
+      next if accepted.empty? # the contract admits nothing, so an unsatisfiable node is the faithful projection
+      next if known_broad_token_string_fallback?(vname, Array(tklass))
+
+      live += 1
+      document = schemer(klass.input_schema)
+      next if probe_values.any? { |value| document.valid?({ "n" => value }) }
+
+      wrong << "#{tname} / #{vname} / #{tolname}: runtime accepts #{accepted.first.inspect}, document accepts " \
+               "nothing at all — #{klass.input_schema[:properties][:n].inspect}"
+    end
+
+    expect(live).to be > 200
+    expect(wrong).to be_empty, "these contracts are satisfiable and their schemas are not:\n  #{wrong.join("\n  ")}"
+  end
+
   # The INBOUND direction: a document looser than the runtime tells a client a value is acceptable and then
   # rejects it on every call.
   it "never accepts inbound a value the runtime rejects" do
@@ -214,6 +278,9 @@ RSpec.describe "the emitted schema against runtime truth" do
       next if inexpressible_inbound?(vname, tokens)
       next if known_unnarrowed_non_numeric_branch?(vname, tokens)
       next if known_unpatterned_numeric_string?(vname, tokens)
+      # Inbound, EVERY answer for a broad token rests on that same approximate `"string"`, so the whole row is
+      # the fallback's rather than any validator's.
+      next if broad_token?(tokens)
       next if known_blank_tolerance_floor_drop?(tolname, vname)
 
       klass = declare(:in, { type: tklass }.merge(vopts).merge(tol), nil)
