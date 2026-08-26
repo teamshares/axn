@@ -3013,8 +3013,26 @@ module Axn
           # was given: `type: [TrueClass, Integer], numericality: true` accepts neither boolean and advertised
           # both. What the options still decide is the string branch (`only_numeric:` alone can drop it) and the
           # retag of a numeric branch to "integer" (`only_integer:`).
+          options = Axn::Validation::Base.validator_entry_options(entry)
           only_integer = Axn::Validation::Base.declared_only_integer?(entry)
-          numeric_only = Axn::Validation::Base.validator_entry_options(entry)[:only_numeric] ? true : false
+          numeric_only = options[:only_numeric] ? true : false
+          # A tolerated BLANK never reaches the validator at all — ActiveModel skips a blank value before
+          # `is_number?` runs — so a branch the numeric check excludes may still be occupied by its own blank,
+          # and dropping it outright refused output the action produced (`type: :boolean, numericality:
+          # { allow_blank: true }` exposes `false` successfully). Read off the ENTRY, which is where both
+          # spellings arrive: a declaration-level `optional:` is distributed into every entry as `allow_blank:`,
+          # so this one read covers `optional:` and an entry's own `allow_blank:` alike. Truthiness is the whole
+          # test, exactly as it is for `only_numeric:` — ActiveModel reads `options[:allow_blank]` truthily
+          # rather than resolving it per call, so a Proc tolerates a blank on every call.
+          blank_tolerated = options[:allow_blank] ? true : false
+          # Skipping the validator is only half of it: the value still has to get PAST the position. A required
+          # position rejects an empty container on its own, so `type: [Array, Integer], numericality:
+          # { allow_blank: true }` admits no `[]` however blank-tolerant the entry is, and treating the entry's
+          # tolerance as the whole answer emitted a branch nothing satisfies (`enum: [[]]` beside the `minItems: 1`
+          # the same declaration writes). This is the very predicate the size FLOOR is derived from, so the branch
+          # and the floor cannot disagree about one declaration. It governs the EMPTY witnesses only — `false` is
+          # blank without being empty, which is why a required `:boolean` really does expose it.
+          empty_rejected = empty_value_rejected?(validations)
 
           union = node[:anyOf].is_a?(Array)
           admits = integer_admitted_by?(tokens)
@@ -3023,7 +3041,8 @@ module Axn
           # See `numeric_reachable_through_broad_token?` — the emitted type is not evidence on its own.
           drop = !numeric_reachable_through_broad_token?(tokens)
           mapped = branches.filter_map do |branch|
-            numericality_branch(branch, admits, numeric_only:, only_integer:, for_output:, drop:)
+            numericality_branch(branch, admits, numeric_only:, only_integer:, for_output:, drop:, blank_tolerated:,
+                                                empty_rejected:)
           end
           # Every branch dropping is the CONTRACT, not a case to fall back from: `type: Float, numericality:
           # { only_integer: true }` admits nothing at all — no Float's `to_s` is an integer literal, and a JSON
@@ -3067,7 +3086,8 @@ module Axn
           end
         end
 
-        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, for_output:, drop: true)
+        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, for_output:, drop: true, blank_tolerated: false,
+                                empty_rejected: false)
           # A branch `only_numeric:` may drop is one whose emitted type NAMES values that are not Numerics.
           # Everything else is left exactly as built — including the `"null"` branch nullability owns, a branch
           # already tagged `"integer"`, and any branch whose type is ABSENT. That last is load-bearing: a missing
@@ -3085,7 +3105,9 @@ module Axn
           # containers it rests on the same footing every spelling has always stood on — a subclass
           # reimplementing BOTH `to_s` and `to_i` to impersonate a number does satisfy the validator, and one
           # overriding `to_s` alone raises inside ActiveModel rather than passing.
-          return drop ? nil : branch if NON_NUMERIC_BRANCH_TYPES.include?(branch[:type])
+          if NON_NUMERIC_BRANCH_TYPES.include?(branch[:type])
+            return drop ? blank_witness_branch(branch, blank_tolerated, empty_rejected) : branch
+          end
 
           case branch[:type]
           when "number" then only_integer ? number_branch_as_integer(branch, admits_integer) : branch
@@ -3099,6 +3121,38 @@ module Axn
         # type has to fall through to "keep", not to "drop".
         NON_NUMERIC_BRANCH_TYPES = %w[array object boolean].freeze
         private_constant :NON_NUMERIC_BRANCH_TYPES
+
+        # The one blank each of those types can hold. Every branch the numeric check excludes has exactly one, so
+        # a blank-tolerant position narrows the branch TO it rather than losing the branch: the result names the
+        # only value that can occupy the position there, which is right in both directions at once — outbound it
+        # accepts the blank the action can expose, inbound it accepts nothing else, and the runtime agrees on
+        # both counts. `enum` is the spelling because a singleton boolean branch already uses it (`TrueClass`
+        # emits `enum: [true]`) and because `merge_enum!` composes it by intersection.
+        BLANK_BRANCH_WITNESS = { "array" => [], "object" => {}, "boolean" => false }.freeze
+        private_constant :BLANK_BRANCH_WITNESS
+
+        # `nil` — drop the branch — wherever no tolerated blank can occupy it. Two ways that happens: the
+        # position tolerates no blank at all, or the branch already names values that exclude this type's blank.
+        # The second is the `TrueClass` case and it matters: its branch is `enum: [true]`, and `true` is not
+        # blank, so nothing skips the validator there and the branch really is unreachable — while `FalseClass`
+        # names `false`, which is, and survives.
+        def blank_witness_branch(branch, blank_tolerated, empty_rejected)
+          return nil unless blank_tolerated
+          return nil unless BLANK_BRANCH_WITNESS.key?(branch[:type])
+
+          witness = BLANK_BRANCH_WITNESS.fetch(branch[:type])
+          # An EMPTY witness has to clear the position's own emptiness check, and so does an explicitly-named
+          # `false`. The one exemption is the `:boolean` pseudo-type, whose blank a REQUIRED position really does
+          # admit — measured, `expects :n, type: :boolean` accepts `false`, while `type: FalseClass` accepts
+          # nothing at all — and its branch is the one carrying no `enum`, a `FalseClass` branch naming `[false]`
+          # explicitly.
+          return nil if empty_rejected && !(false.equal?(witness) && branch[:enum].nil?)
+
+          existing = branch[:enum]
+          return nil if existing && !existing.include?(witness)
+
+          branch.merge(enum: [witness])
+        end
 
         # A numeric branch under `only_integer:`: retagged where some declared token admits an Integer, and
         # dropped where none does — no Float satisfies the option (`2.0.to_s` is "2.0"), so the branch is

@@ -6301,6 +6301,80 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(action.input_schema[:properties][:n]).to eq(type: "string", minLength: 1)
       end
 
+      # A tolerated BLANK never reaches the validator — ActiveModel skips a blank before `is_number?` runs — so a
+      # branch the numeric check excludes may still be occupied by its own blank, and dropping it outright refused
+      # output the action produced. Each droppable type has exactly ONE blank, so the branch narrows TO it rather
+      # than vanishing: right in both directions at once, since that blank is then the only value the branch
+      # admits and the runtime agrees. Skipping the validator is only half the question, though — the value still
+      # has to get past the POSITION, which is why a required position's empty container is still dropped.
+      describe "a blank the position still admits at a branch the numeric check excludes" do
+        it "narrows a boolean branch to its blank instead of dropping it" do
+          action = build_axn { exposes :n, type: :boolean, numericality: { allow_blank: true } }
+
+          expect(action.output_schema[:properties][:n]).to eq(type: "boolean", enum: [false])
+        end
+
+        it "accepts outbound the false it exposed" do
+          action = build_axn do
+            exposes :n, type: :boolean, numericality: { allow_blank: true }
+            def call = expose(:n, false)
+          end
+
+          expect(action.call).to be_ok
+        end
+
+        it "keeps only the branch whose blank survives, dropping the one whose value is not blank" do
+          action = build_axn { expects :n, type: [TrueClass, FalseClass], numericality: true, optional: true }
+
+          # `true` is not blank, so nothing skips the validator there; `false` is, so that branch stays.
+          expect(action.call(n: false)).to be_ok
+          expect(action.call(n: true)).not_to be_ok
+          expect(action.input_schema[:properties][:n]).to eq(type: %w[boolean null], enum: [false, nil])
+        end
+
+        it "narrows an Array branch to the empty array a tolerant position admits" do
+          action = build_axn { expects :n, type: [Array, Integer], numericality: true, optional: true }
+
+          expect(action.call(n: [])).to be_ok
+          expect(action.call(n: [1])).not_to be_ok
+          expect(action.input_schema.dig(:properties, :n, :anyOf))
+            .to eq([{ type: "array", enum: [[]] }, { type: "integer" }, { type: "null" }])
+        end
+
+        # The half the entry's tolerance cannot answer. A REQUIRED position rejects an empty container on its own,
+        # so no `[]` reaches the branch however blank-tolerant the entry is — and emitting the witness there would
+        # name a branch nothing satisfies, `enum: [[]]` sitting beside the `minItems: 1` the same declaration
+        # writes. Read through the very predicate the size floor comes from, so the two cannot disagree.
+        it "still drops a required position's empty container" do
+          action = build_axn { expects :n, type: [Array, Integer], numericality: { allow_blank: true } }
+
+          expect(action.call(n: [])).not_to be_ok
+          expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+        end
+
+        # `:boolean` is the one token a required position admits a blank for — measured, `type: :boolean` accepts
+        # `false` while `type: FalseClass` accepts nothing at all — so an explicitly-named `false` is held to the
+        # same emptiness question the containers are.
+        it "drops an explicitly-named false the required position refuses" do
+          action = build_axn { expects :n, type: [FalseClass, Integer], numericality: { only_numeric: true, allow_blank: true } }
+
+          expect(action.call(n: false)).not_to be_ok
+          expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+        end
+
+        # Not new with the bare spelling: `only_numeric:` had been dropping the branch too, so a blank-tolerant
+        # position under it refused the output it produced. One rule for every spelling closes that as well.
+        it "accepts outbound the false an only_numeric: position exposed" do
+          action = build_axn do
+            exposes :n, type: :boolean, numericality: { only_numeric: true, allow_blank: true }
+            def call = expose(:n, false)
+          end
+
+          expect(action.call).to be_ok
+          expect(action.output_schema[:properties][:n]).to eq(type: "boolean", enum: [false])
+        end
+      end
+
       # The boundary, and the one measured counterexample that draws it. `comparison:` is a different validator
       # with no numericality behind it, and `other_than:` is its INVERTED operator: `true != 5` passes, so the
       # boolean branch is reachable and may not be dropped. Nothing above reads a `comparison:` entry, and
