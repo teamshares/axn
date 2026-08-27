@@ -487,13 +487,24 @@ module Axn
       # keeps this guard's verdict identical to what `check_validity!` actually decides, in every case rather
       # than only the cases where the two formulas happen to agree.
       #
-      # Read through Float's OWN `==`, not whatever `bound`'s class defines: `case`/`when` below classifies
-      # with `Module#===` (never dispatched to `bound`), but Float — unlike Integer/Symbol, neither of which
-      # can be subclassed or carry a singleton method — CAN be subclassed, so confirming `bound.is_a?(Float)`
-      # still leaves its `==` a method the caller's own subclass could own. Bound so a hostile override
-      # cannot run from inside a declaration guard over the caller's own malformed data.
+      # Read through each type's OWN `==`, not whatever `bound`'s class defines: `case`/`when` below
+      # classifies with `Module#===` (never dispatched to `bound`), but Float and BigDecimal — unlike
+      # Integer/Symbol, neither of which can be subclassed or carry a singleton method — CAN be subclassed,
+      # so confirming `bound.is_a?(Float)` alone still leaves `==` a method the caller's own subclass could
+      # own. Bound so a hostile override cannot run from inside a declaration guard over the caller's own
+      # malformed data.
+      #
+      # `BigDecimal` joins the closed world on the same evidence `_declared_type_label`'s sibling guards
+      # already established for it (contract.rb's `JUDGEABLE_EQUALITY_CLASSES`): every instance is frozen at
+      # creation, so it can never carry a singleton `==`, and `BigDecimal.new` on a subclass is unavailable
+      # (raises `NoMethodError`) — so a hostile-subclass INSTANCE is not constructible through normal means
+      # either. Admitted because AM's own check accepts it: `check_validity!` tests `value ==
+      # Float::INFINITY`, and `BigDecimal("Infinity") == Float::INFINITY` is `true` (measured) — a
+      # `Float`-only guard refused a bound ActiveModel builds and enforces correctly, the direction a
+      # declaration-time guard must never err in.
       FLOAT_EQ = ::Float.instance_method(:==)
-      private_constant :FLOAT_EQ
+      BIG_DECIMAL_EQ = ::BigDecimal.instance_method(:==)
+      private_constant :FLOAT_EQ, :BIG_DECIMAL_EQ
 
       # A bound this predicate itself must not be stricter about than ActiveModel is: `check_validity!` tests
       # `is_a?(Proc)`, not `respond_to?(:call)`, so a hand-rolled callable object is refused by AM exactly as
@@ -514,6 +525,8 @@ module Axn
         case bound
         when ::Integer then !bound.negative?
         when ::Float then FLOAT_EQ.bind_call(bound, ::Float::INFINITY) || FLOAT_EQ.bind_call(bound, -::Float::INFINITY)
+        when ::BigDecimal
+          BIG_DECIMAL_EQ.bind_call(bound, ::Float::INFINITY) || BIG_DECIMAL_EQ.bind_call(bound, -::Float::INFINITY)
         when ::Symbol, ::Proc then true
         else false
         end

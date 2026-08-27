@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/testing/spec_helpers"
+require "bigdecimal"
 
 # ActiveModel's `LengthValidator#check_validity!` accepts exactly a non-negative Integer, `Float::INFINITY`
 # (either sign), a Symbol, or a Proc for `:is`/`:minimum`/`:maximum` — anything else raises `ArgumentError`
@@ -81,6 +82,9 @@ RSpec.describe "a length: option ActiveModel cannot use" do
       # Found by Codex round 6: a bound that doesn't even ANSWER is_a? used to raise NoMethodError from
       # the admissibility check itself, before the check could report it as an ordinary invalid bound.
       "a BasicObject, which does not even answer is_a?" => { minimum: BasicObject.new },
+      # A finite BigDecimal is not admissible either — matches AM, which wants a non-negative INTEGER, not
+      # any whole-valued Numeric (Codex round 8's control: only BigDecimal's own infinity is admitted).
+      "a finite BigDecimal" => { minimum: BigDecimal("5") },
     }.each do |label, spelling|
       it "refuses #{label}" do
         expect { build_axn { expects :v, type: Array, length: spelling } }.to raise_error(ArgumentError, pattern)
@@ -209,6 +213,11 @@ RSpec.describe "a length: option ActiveModel cannot use" do
       "a plain Integer minimum:/maximum: pair" => { minimum: 1, maximum: 5 },
       "0, which names size 0 as the only admissible size" => { maximum: 0 },
       "Float::INFINITY, AM's spelling for no ceiling" => { maximum: Float::INFINITY },
+      # Found by Codex round 8: a `Float`-only admissibility check refused a bound ActiveModel itself
+      # accepts and enforces — `BigDecimal("Infinity") == Float::INFINITY` is `true`, and AM's own
+      # `check_validity!` tests exactly that equality, not `bound.is_a?(Float)`.
+      "BigDecimal(\"Infinity\"), which equals Float::INFINITY" => { maximum: BigDecimal("Infinity") },
+      "BigDecimal(\"-Infinity\"), which equals -Float::INFINITY" => { minimum: BigDecimal("-Infinity") },
       "a Symbol, resolved per call" => { minimum: :min_length },
       "a Proc, resolved per call" => { maximum: ->(_record) { 5 } },
       "a well-formed in: range" => { in: 2..5 },
