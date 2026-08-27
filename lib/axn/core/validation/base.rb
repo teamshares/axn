@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/identity"
+
 module Axn
   module Validation
     # Shared kernel for the one-off ActiveModel validator classes Fields and Subfields build: the
@@ -455,6 +457,127 @@ module Axn
       # (which its LengthValidator refuses outright at validation time) are both uncarryable, exactly as they
       # are for the floor.
       def self.emittable_length_ceiling?(ceiling) = ceiling.is_a?(Integer) && !ceiling.negative?
+
+      # Whether ActiveModel's own `LengthValidator#initialize`/`check_validity!` would accept this entry — a
+      # distinct question from the readers above, which classify a bound for SATISFIABILITY reasoning and
+      # treat anything non-Numeric as `:unverifiable` (a Symbol/Proc, resolved per call). This asks whether AM
+      # can even BUILD the validator: `initialize` raises `":in and :within must be a Range"` for a non-Range
+      # `in:`/`within:`, and `check_validity!` raises for an `:is`/`:minimum`/`:maximum` that is none of a
+      # non-negative Integer, `Float::INFINITY` (either sign — AM's own check is `value == Float::INFINITY ||
+      # value == -Float::INFINITY`), a Symbol, or a Proc — but only when the validator class is first
+      # compiled, which axn defers to the first `.call` (`ValidatorClassCache`), so a bad bound today declares
+      # cleanly and fails every call with an opaque error instead of one at declaration.
+      #
+      # Mirrors `LengthValidator#initialize` line for line rather than reusing `declared_length_checks`, which
+      # serves a different purpose (an open floor/ceiling) and drops a bound whose value is falsy before this
+      # question is even asked. Two things about AM's own expansion are easy to get wrong by "simplifying" to
+      # `range.min`/`range.max`, and both were measured wrong here once already:
+      #
+      #   * `:in` wins over `:within` when an entry names both (`options.delete(:in) || options.delete(:within)`,
+      #     evaluated in that order) — the reverse precedence silently swaps which bound governs.
+      #   * AM sets `:minimum`/`:maximum` only when the range HAS that end (`if range.begin` / `if range.end`),
+      #     not unconditionally — a beginless (`..5`) or endless (`5..`) range is a legal, common `length:`
+      #     spelling (open floor or open ceiling), and calling `Range#min`/`Range#max` on the missing end
+      #     raises `RangeError` outright. Unconditional `range.min`/`range.max` therefore CRASHES at
+      #     declaration on exactly the spellings AM itself declares cleanly.
+      #
+      # `range.max` and AM's own maximum formula (`exclude_end? ? range.end - 1 : range.end`) also disagree on
+      # an EMPTY exclusive range — `(2...2).max` is `nil` (Ruby reports no maximum for an empty range), while
+      # AM's formula computes `2 - 1 = 1` regardless of emptiness. Using AM's own formula rather than `#max`
+      # keeps this guard's verdict identical to what `check_validity!` actually decides, in every case rather
+      # than only the cases where the two formulas happen to agree.
+      #
+      # Read through each type's OWN `==`, not whatever `bound`'s class defines: `case`/`when` below
+      # classifies with `Module#===` (never dispatched to `bound`), but Float and BigDecimal — unlike
+      # Integer/Symbol, neither of which can be subclassed or carry a singleton method — CAN be subclassed,
+      # so confirming `bound.is_a?(Float)` alone still leaves `==` a method the caller's own subclass could
+      # own. Bound so a hostile override cannot run from inside a declaration guard over the caller's own
+      # malformed data.
+      #
+      # `BigDecimal` joins the closed world on the same evidence `_declared_type_label`'s sibling guards
+      # already established for it (contract.rb's `JUDGEABLE_EQUALITY_CLASSES`): every instance is frozen at
+      # creation, so it can never carry a singleton `==`, and `BigDecimal.new` on a subclass is unavailable
+      # (raises `NoMethodError`) — so a hostile-subclass INSTANCE is not constructible through normal means
+      # either. Admitted because AM's own check accepts it: `check_validity!` tests `value ==
+      # Float::INFINITY`, and `BigDecimal("Infinity") == Float::INFINITY` is `true` (measured) — a
+      # `Float`-only guard refused a bound ActiveModel builds and enforces correctly, the direction a
+      # declaration-time guard must never err in.
+      FLOAT_EQ = ::Float.instance_method(:==)
+      BIG_DECIMAL_EQ = ::BigDecimal.instance_method(:==)
+      private_constant :FLOAT_EQ, :BIG_DECIMAL_EQ
+
+      # A bound this predicate itself must not be stricter about than ActiveModel is: `check_validity!` tests
+      # `is_a?(Proc)`, not `respond_to?(:call)`, so a hand-rolled callable object is refused by AM exactly as
+      # a non-Proc non-Symbol value is — measured: `length: { minimum: Class.new { def call(r) = 5 }.new }`
+      # raises AM's own `ArgumentError` at validator-build time. Accepting a broader "callable" here would
+      # let such a declaration pass this guard only to still crash on the first `.call`, the precise failure
+      # this guard exists to move to declaration.
+      #
+      # Classified with `case`/`when` rather than `is_a?`/`==` called ON the bound: this is a declaration
+      # guard reading a caller-supplied value that may not even ANSWER `is_a?` (`length: { minimum:
+      # BasicObject.new }` measured to raise `NoMethodError` here before this fix), let alone answer it
+      # honestly — and `Module#===` is asked of the KNOWN class, never dispatched to the value being
+      # classified, which is what makes it safe where `bound.is_a?(...)` is not. `Integer` and `Symbol`
+      # cannot be subclassed and cannot carry a singleton method, so a bound landing in either branch is
+      # provably the real thing and needs no further guarding; `Proc`/its subclasses need none either, since
+      # membership alone is the acceptance criterion — nothing else is called on it.
+      def self.admissible_length_bound?(bound)
+        case bound
+        when ::Integer then !bound.negative?
+        when ::Float then FLOAT_EQ.bind_call(bound, ::Float::INFINITY) || FLOAT_EQ.bind_call(bound, -::Float::INFINITY)
+        when ::BigDecimal
+          BIG_DECIMAL_EQ.bind_call(bound, ::Float::INFINITY) || BIG_DECIMAL_EQ.bind_call(bound, -::Float::INFINITY)
+        when ::Symbol, ::Proc then true
+        else false
+        end
+      end
+      private_class_method :admissible_length_bound?
+
+      # Returns the offending `{key => value}` pairs, empty when every declared bound is admissible. A bad
+      # `in:`/`within:` reports under ITS OWN key (the value is never a bound in AM's sense); an entry that
+      # ends up specifying no check AT ALL reports under `:length` (AM's OTHER `check_validity!` raise,
+      # `"Range unspecified"`, reached when `CHECKS.keys & options.keys` is empty — a falsy `in:`/`within:`
+      # with nothing else in the entry lands here, since AM's own `if range = (...)` treats a falsy alias as
+      # not given, the same skip-when-falsy idiom every AM option follows); everything else under
+      # `:is`/`:minimum`/`:maximum` — `Hash#slice` on those three mirrors `check_validity!`'s own
+      # `CHECKS.keys & options.keys`, key PRESENCE and not truthiness, so an explicit `nil` bound is caught
+      # rather than skipped.
+      def self.invalid_length_bounds(entry_opts)
+        return {} unless entry_opts
+
+        opts = validator_entry_options(entry_opts).dup
+        in_value = opts.delete(:in)
+        within_value = opts.delete(:within)
+        range = in_value || within_value
+
+        if range
+          range_key = in_value ? :in : :within
+          # `Identity.kind?`, not `range.is_a?(::Range)`: `range` is the caller's own `in:`/`within:` value,
+          # which may not even ANSWER `is_a?` (`length: { in: BasicObject.new }` measured to raise
+          # `NoMethodError` here before this fix) — the same reason `admissible_length_bound?` below reads
+          # its own values through `case`/`when` rather than dispatching to them directly.
+          return { range_key => range } unless Internal::Identity.kind?(range, ::Range)
+
+          # A Range whose endpoints admit `Range#begin`/`#end`/`#min` but not the arithmetic AM's own
+          # expansion performs on them — a String range's exclusive end has no `#-` — raises mid-computation
+          # rather than resolving to a bound this method can then judge. AM itself crashes with the SAME
+          # uncaught `NoMethodError` for `length: { in: "a"..."c" }` (measured), which is the declares-
+          # cleanly-crashes-every-call failure this method exists to convert into a clean `ArgumentError` —
+          # so a range that cannot be resolved is reported as invalid under its own key, same as a non-Range
+          # value, rather than left to raise unguarded here too.
+          begin
+            opts[:minimum] = range.min if range.begin
+            opts[:maximum] = (range.exclude_end? ? range.end - 1 : range.end) if range.end
+          rescue StandardError
+            return { range_key => range }
+          end
+        end
+
+        checks = opts.slice(:is, :minimum, :maximum)
+        return { length: entry_opts } if checks.empty?
+
+        checks.reject { |_key, bound| admissible_length_bound?(bound) }
+      end
 
       # The operators ActiveModel compares a value against, shared by `numericality:` and `comparison:` —
       # `NumericalityValidator`'s COMPARE_CHECKS and `ComparisonValidator`'s are the same five plus

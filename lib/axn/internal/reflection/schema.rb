@@ -1604,8 +1604,10 @@ module Axn
         OBJECT_SUBJECT_KEY_VALIDATORS = %i[length inclusion presence].freeze
         private_constant :OBJECT_SUBJECT_KEY_VALIDATORS
 
+        # `ShapeGraph.type_tokens`, not `Kernel#Array` — `klass` is a caller-declared axis token here, and
+        # `Array()` would dispatch `to_ary`/`to_a` on it (see `declared_type_tokens` above).
         def axis_admits_string_key?(klass)
-          tokens = Array(klass)
+          tokens = Axn::Internal::ShapeGraph.type_tokens(klass)
           return true if tokens.empty?
 
           tokens.any? { |token| string_reachable_key_token?(token) }
@@ -1648,8 +1650,10 @@ module Axn
         # keyword-by-keyword table that has to be re-argued for each new keyword. `format:` is exempt by
         # construction, not by omission: ActiveModel matches `value.to_s` and the serializer writes the same
         # `to_s`, so its subject is the wire form already.
+        # `ShapeGraph.type_tokens`, not `Kernel#Array` — `klass` is sometimes a raw axis token here too (see
+        # `axis_admits_string_key?`), and `type_tokens` is idempotent on the callers that already pass an Array.
         def own_wire_form?(klass)
-          tokens = Array(klass)
+          tokens = Axn::Internal::ShapeGraph.type_tokens(klass)
           return false if tokens.empty?
 
           tokens.all? { |token| own_wire_string_token?(token) }
@@ -2334,11 +2338,14 @@ module Axn
         # A bag that NAMES no class is the same case as no bag at all — untyped elements, which on input a client
         # sends as objects carrying the shape's members (`of: { shape: … }`, PRO-3166). On OUTPUT it stays
         # unproven, and so unemitted, for the reason any unnamed class does.
+        #
+        # `of_validations[:klass]` is the raw `of:` bag's own klass, so both this and its OUTPUT twin below read
+        # it through `ShapeGraph.type_tokens` rather than `Kernel#Array`.
         def shape_overlay_applies?(of_validations, for_output:)
           return shaped_items_serialize_to_object?(of_validations) if for_output
           return true unless of_validations # untyped elements: client sends objects with the shape members
 
-          klasses = Array(of_validations[:klass])
+          klasses = Axn::Internal::ShapeGraph.type_tokens(of_validations[:klass])
           klasses.empty? || klasses.all? { |k| object_typed_element?(k) }
         end
 
@@ -2346,7 +2353,7 @@ module Axn
         def shaped_items_serialize_to_object?(of_validations)
           return false unless of_validations
 
-          klasses = Array(of_validations[:klass])
+          klasses = Axn::Internal::ShapeGraph.type_tokens(of_validations[:klass])
           klasses.any? && klasses.all? { |k| member_keyed_object_type?(k) }
         end
 
@@ -2381,7 +2388,9 @@ module Axn
         # `OfValidator#matches_axis?` uses, so `of: []` and `of: { values: { klass: [] } }` are refused at
         # declaration rather than arriving as a position that matches everything and emits `anyOf: []`.
         def contents_schema_for(klasses, for_output: false)
-          klasses = Array(klasses)
+          # `ShapeGraph.type_tokens`, not `Kernel#Array`: a caller may hand this the raw `of:`/`values:` klass
+          # directly (`contents_node_schema` below), not only an already-tokenized list.
+          klasses = Axn::Internal::ShapeGraph.type_tokens(klasses)
           if klasses.size == 1
             single_contents_schema(klasses.first, for_output:)
           else
@@ -2439,7 +2448,7 @@ module Axn
                    # `json_type_for` applies on the other branch has to be applied here too — same helper, not a
                    # second reading of it.
                    narrow_node_under_numericality(contents_schema_for(bag[:klass], for_output:), constraints,
-                                                  Array(bag[:klass]), for_output:)
+                                                  Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), for_output:)
                  else
                    json_type_for(constraints, for_output:)
                  end
@@ -2591,7 +2600,7 @@ module Axn
           axis = Axn::Internal::ShapeGraph.hash_or_nil(bag[:values])
           values =
             if nil.equal?(axis)
-              klasses = Array(bag[:values])
+              klasses = Axn::Internal::ShapeGraph.type_tokens(bag[:values])
               klasses.empty? ? {} : contents_schema_for(klasses, for_output:)
             else
               contents_node_schema(axis, for_output:, ancestry:)
@@ -2655,7 +2664,7 @@ module Axn
           # Synthesized in the CANONICAL `type:` shape a field's stored validations carry. A bare token would be
           # normalized as a validator scalar and read under the wrong key entirely, so `type_admits_nil?` would
           # see no `klass:` and call a nil-admitting union nil-rejecting.
-          validations = validations.merge(type: { klass: }) unless Array(klass).empty?
+          validations = validations.merge(type: { klass: }) unless Axn::Internal::ShapeGraph.type_tokens(klass).empty?
 
           Axn::Validation::Base.nil_accepted?(validations)
         end
