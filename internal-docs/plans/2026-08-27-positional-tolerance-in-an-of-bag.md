@@ -19,6 +19,8 @@
 - **One definition per judgment.** Where the field path already answers a question, the bag path calls the same method rather than growing a second copy.
 - **No historical comments in code.** No "used to X / now Y", no ticket numbers as justification-by-citation, no "(Codex review)". Describe the mechanism as it stands.
 - **Run the suite with `bundle exec rspec`** from the worktree root. Full suite is ~4 minutes / 7251 examples.
+- **Locate code by name, never by this plan's line numbers.** Five tasks edit `lib/axn/core/contract.rb` in sequence, so every line reference below is stale the moment an earlier task lands. The line numbers are provenance — they say where the thing was when the plan was written. Find the method or constant by name.
+- **Two things write into an `of:` bag**, and both must stop for the bag to be author-only: the tolerance push in `_parse_field_validations`' tolerant branch, and `_apply_nil_skip_to_non_type_validators!`, which merges `allow_nil: true` into every non-`type:` entry whenever the field's `type:` rejects nil — i.e. on every *required* container field. Task 1 handles both.
 
 ---
 
@@ -27,13 +29,14 @@
 The load-bearing change. Everything else depends on a bag no longer carrying keys axn wrote.
 
 **Files:**
-- Modify: `lib/axn/core/contract.rb:5245-5273` (the tolerant branch of `_parse_field_validations`)
-- Modify: `lib/axn/core/contract.rb:2289-2308` (`_tolerance_exempt_validator?`'s comment — the exemption now works by overriding, not by skipping)
-- Modify: `lib/axn/core/contract.rb:1818-1830` (`_confirmation_companion_configs`' comment about the inherited tolerance)
-- Test: `spec/axn/core/validations/recursive_of_spec.rb:1506-1515` (rewrite), `spec/axn/core/validations/confirmation_spec.rb:118-136` (two expectations), and a new example in `spec/axn/core/validations/of_bag_value_validators_spec.rb`
+- Modify: `lib/axn/core/contract.rb` — the tolerant branch of `_parse_field_validations`
+- Modify: `lib/axn/core/contract.rb` — `_apply_nil_skip_to_non_type_validators!` (exempt `:of`)
+- Modify: `lib/axn/core/contract.rb` — `_tolerance_exempt_validator?`'s comment (the exemption now works by overriding, not by skipping)
+- Modify: `lib/axn/core/contract.rb` — `_confirmation_companion_configs`' comment about the inherited tolerance
+- Test: `spec/axn/core/validations/recursive_of_spec.rb` (rewrite the "writes the tolerance pair onto the map bag" example), `spec/axn/core/validations/confirmation_spec.rb` (the three-base-shape block), and new examples in `spec/axn/core/validations/of_bag_value_validators_spec.rb`
 
 **Interfaces:**
-- Produces: `validations` now carries `allow_blank:`/`allow_nil:` at its top level on a tolerant declaration, and no validator entry carries a copy. `Axn::Validation::Base.nil_accepted?`, `optional?`, `effective_entry_options` and every emitter read it from there unchanged — no new method.
+- Produces: `validations` carries `allow_blank:`/`allow_nil:` at its top level on a tolerant declaration, and no validator entry carries a copy. An `of:` bag carries no tolerance axn wrote, on a required or an optional field. `Axn::Validation::Base.nil_accepted?`, `optional?`, `effective_entry_options` and every emitter read it from the top level unchanged — no new method.
 
 - [ ] **Step 1: Write the failing test — the pair lands once, at the top level**
 
