@@ -1,0 +1,195 @@
+# frozen_string_literal: true
+
+require "axn/testing/spec_helpers"
+
+# `Kernel#Array` dispatches `to_ary`/`to_a` on whatever it is handed — and a declared `type:`/`klass:` token is
+# always the CALLER's own Class or Module. Every site in `contract.rb` and `schema.rb` that read a raw declared
+# token through `Array(...)` therefore ran the caller's own `to_ary` at declaration, and again on every
+# reflection call — which reflection may never do (the standing rule is that it is side-effect-free), and which
+# could silently substitute the declared type in the emitted schema. A token whose `to_ary` raised took the
+# declaration down with the CALLER's own exception instead of axn's.
+#
+# Fixed by routing every such site through `Internal::ShapeGraph.type_tokens` (`_declared_type_tokens` in
+# contract.rb) instead of `Kernel#Array`, which classifies with `case`/`when ::Array` and so never asks the
+# token for `to_ary`/`to_a`.
+RSpec.describe "declared type tokens are read without dispatching to_ary" do
+  def hostile_token(dispatched, returns: [String])
+    Class.new do
+      define_singleton_method(:to_ary) do
+        dispatched << :to_ary
+        returns
+      end
+    end
+  end
+
+  def raising_token(dispatched)
+    Class.new do
+      define_singleton_method(:to_ary) do
+        dispatched << :to_ary
+        raise "caller code ran"
+      end
+    end
+  end
+
+  # Runs the block, tolerating any declaration/runtime error the hostile token's shape may legitimately
+  # trigger for unrelated reasons (e.g. "not a coercible type") — the one thing under test is whether
+  # `to_ary` ran, not whether the declaration succeeds.
+  def expect_no_dispatch(dispatched)
+    yield
+  rescue StandardError
+    nil
+  ensure
+    expect(dispatched).to eq([])
+  end
+
+  describe "the ticket's own two confirmed sites" do
+    it "does not let a hostile to_ary substitute the emitted schema type (schema.rb json_type_for)" do
+      dispatched = []
+      # An honest anonymous class of the same shape is the control: since neither class has a JSON Schema
+      # mapping of its own, both should reflect identically — proving the decoy's `[::Integer]` (a type
+      # that WOULD reflect differently) never influenced the emitted node.
+      honest = Class.new
+      hostile = hostile_token(dispatched, returns: [Integer])
+
+      honest_schema = build_axn { expects :f, type: honest, absence: true, optional: true }.input_schema.dig(:properties, :f)
+      hostile_schema = build_axn { expects :f, type: hostile, absence: true, optional: true }.input_schema.dig(:properties, :f)
+
+      expect(dispatched).to eq([])
+      expect(hostile_schema).to eq(honest_schema)
+    end
+
+    it "does not run a hostile to_ary while deciding whether a field is :boolean (contract.rb boolean?)" do
+      dispatched = []
+      token = hostile_token(dispatched, returns: [:boolean])
+
+      expect { build_axn { expects :f, type: token } }.not_to raise_error
+      expect(dispatched).to eq([])
+    end
+
+    it "does not let a to_ary that raises take the declaration down" do
+      dispatched = []
+      token = raising_token(dispatched)
+
+      expect { build_axn { expects :f, type: token } }.not_to raise_error
+      expect(dispatched).to eq([])
+    end
+  end
+
+  # Every other newly-fixed site (PRO-3233), exercised through the DSL surface that reaches it — declared,
+  # reflected on both input and output, and called, so a dispatch anywhere in that path is caught.
+  describe "every other fixed call site" do
+    it "the allow_empty: guard reads the declared type without dispatching" do
+      dispatched = []
+      token = hostile_token(dispatched)
+
+      expect_no_dispatch(dispatched) { build_axn { expects :f, type: token, allow_empty: true } }
+    end
+
+    it "default presence + emptiness-axis reconciliation read the declared type without dispatching" do
+      dispatched = []
+      token = hostile_token(dispatched)
+
+      expect_no_dispatch(dispatched) do
+        k = build_axn do
+          expects :f, type: token, allow_empty: false, length: { minimum: 1 }
+          def call = nil
+        end
+        k.call(f: nil)
+      end
+    end
+
+    it "an of: bag's klass: axis is read without dispatching, at declaration, reflection, and a real call" do
+      dispatched = []
+      token = hostile_token(dispatched)
+
+      expect_no_dispatch(dispatched) do
+        k = build_axn do
+          expects :f, type: Array, of: { klass: token, message: "bad element" }
+          def call = nil
+        end
+        k.input_schema
+        k.output_schema
+        k.call(f: [])
+      end
+    end
+
+    # Confirmed via Codex review (PR #256): OfValidator's own PositionContract read `bag[:klass]` through
+    # `Kernel#Array` too — a validator instance is built once and memoized, but that one read still ran the
+    # token's `to_ary` on the first `.call`, and then held every element to the DECOY class it returned rather
+    # than the declared token — a runtime that disagreed with the (already-fixed) schema about what the
+    # contract actually holds elements to.
+    it "OfValidator holds elements to the declared token, not to a decoy its to_ary substitutes" do
+      dispatched = []
+      token = hostile_token(dispatched, returns: [Integer])
+
+      k = build_axn do
+        expects :f, type: Array, of: { klass: token }
+        def call = nil
+      end
+
+      result = k.call(f: ["not an integer"])
+
+      expect(dispatched).to eq([])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("is not a")
+      expect(result.exception.message).not_to include("Integer")
+    end
+
+    it "a map's values: axis is read without dispatching, at declaration, reflection, and a real call" do
+      dispatched = []
+      token = hostile_token(dispatched)
+
+      expect_no_dispatch(dispatched) do
+        k = build_axn do
+          expects :f, type: Hash, of: { values: token }
+          def call = nil
+        end
+        k.input_schema
+        k.output_schema
+        k.call(f: {})
+      end
+    end
+
+    it "shape compatibility is read without dispatching" do
+      dispatched = []
+      token = hostile_token(dispatched, returns: [Hash])
+
+      expect_no_dispatch(dispatched) do
+        build_axn { expects(:f, type: token) { field :v, type: String } }
+      end
+    end
+
+    it "a distributing shape's element container is read without dispatching" do
+      dispatched = []
+      token = hostile_token(dispatched)
+
+      expect_no_dispatch(dispatched) do
+        build_axn { expects(:f, type: Array, of: token) { field :v, type: String } }
+      end
+    end
+
+    it "coerce: sugar reads the declared type without dispatching" do
+      dispatched = []
+      token = hostile_token(dispatched, returns: [Date])
+
+      expect_no_dispatch(dispatched) { build_axn { expects :f, coerce: token } }
+    end
+
+    # Confirmed via Codex review round 5 (PR #256): `EnqueueAllOrchestrator#field_expects_enumerable?`
+    # decides whether an `enqueue_all` batch kwarg is expanded per-record or held static by reading the
+    # declared `type:`/`klass:` token through `Kernel#Array` too — the same declaration-classification
+    # question reflection and the validators ask, just for a third caller.
+    it "EnqueueAllOrchestrator reads the declared type without dispatching" do
+      dispatched = []
+      token = hostile_token(dispatched, returns: [Array])
+
+      field_config = Axn::Core::Contract::FieldConfig.new(
+        field: :f, reader_as: :f, validations: { type: { klass: token } },
+      )
+
+      Axn::Async::EnqueueAllOrchestrator.send(:field_expects_enumerable?, field_config)
+
+      expect(dispatched).to eq([])
+    end
+  end
+end

@@ -127,18 +127,6 @@ RSpec.describe "the emitted schema against runtime truth" do
 
   def numeric_token?(token) = token.is_a?(Module) && token <= Numeric
 
-  # A branch naming values that can never satisfy a `numericality:` entry is still advertised unless
-  # `only_numeric:` and `only_integer:` BOTH drop such a branch now; a bare `numericality:` does not run that
-  # pass at all, so `type: [TrueClass, Integer], numericality: true` keeps a boolean branch the runtime rejects.
-  # PRO-3240 item 2, and the half still open: narrower than it looks, since an emittable bound already triggers
-  # `restrict_union_to_bounded_branches!`, and closing it is a real gate change rather than the type-name test
-  # the other two share.
-  def unnarrowed_branch_classes = [Array, Hash, TrueClass, FalseClass]
-
-  def known_unnarrowed_non_numeric_branch?(validator_name, tokens)
-    validator_name == "numericality:true" && tokens.any? { |t| unnarrowed_branch_classes.include?(t) }
-  end
-
   # PRO-3240 item 3. A bare `numericality:` on a String position accepts a numeric string and rejects the rest,
   # and the document says nothing — so it accepts every string. The seam exists (`only_integer:` emits the exact
   # test via `merge_integer_literal_pattern`), but an EXACT pattern for bare numericality is hard: ActiveModel
@@ -276,7 +264,6 @@ RSpec.describe "the emitted schema against runtime truth" do
 
       tokens = Array(tklass)
       next if inexpressible_inbound?(vname, tokens)
-      next if known_unnarrowed_non_numeric_branch?(vname, tokens)
       next if known_unpatterned_numeric_string?(vname, tokens)
       # Inbound, EVERY answer for a broad token rests on that same approximate `"string"`, so the whole row is
       # the fallback's rather than any validator's.

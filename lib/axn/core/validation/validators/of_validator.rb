@@ -107,7 +107,11 @@ module Axn
 
         contents = inner_contract_validations(bag)
         PositionContract.new(
-          klasses: Array(bag[:klass]),
+          # `ShapeGraph.type_tokens`, not `Kernel#Array`: `bag[:klass]` is the caller's own declared token, and
+          # this classifies the DECLARATION rather than an input value — reflection already reads it through
+          # the same seam (`Schema.declared_type_tokens`), and a validator dispatching the token's own `to_ary`
+          # here would hold every element to a class reflection never advertised (PRO-3233).
+          klasses: Axn::Internal::ShapeGraph.type_tokens(bag[:klass]),
           message: bag[:message],
           contents:,
           # Built once here, exactly as ShapeValidator caches its per-member classes.
@@ -128,8 +132,8 @@ module Axn
       # A position naming a bare type — or naming nothing at all, which is an undeclared axis — constrains a
       # class and nothing else, and must allocate nothing beyond that.
       def bare_type_contract(declared)
-        PositionContract.new(klasses: Array(declared), message: nil, contents: nil, validator_class: nil,
-                             contents_node: nil, tolerance: {})
+        PositionContract.new(klasses: Axn::Internal::ShapeGraph.type_tokens(declared), message: nil, contents: nil,
+                             validator_class: nil, contents_node: nil, tolerance: {})
       end
 
       # Everything the position is held to, as a VALIDATIONS bag — the two recursion edges (`of:`/`shape:`) and
