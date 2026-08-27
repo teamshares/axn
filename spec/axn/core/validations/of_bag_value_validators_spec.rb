@@ -384,13 +384,17 @@ RSpec.describe "value validators in an of: bag" do
     end
 
     it "lets the bag's own tolerance stand the guard down, the way a field's does" do
-      expect { build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_nil: true } } }
-        .not_to raise_error
+      action = build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_nil: true } }
+
+      expect(action.call(f: [nil])).to be_ok
+      expect(action.call(f: ["a"])).not_to be_ok
     end
 
     it "does so under allow_blank: too" do
-      expect { build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_blank: true } } }
-        .not_to raise_error
+      action = build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_blank: true } }
+
+      expect(action.call(f: [""])).to be_ok
+      expect(action.call(f: ["a"])).not_to be_ok
     end
 
     # The field-level control, which must keep standing down — there the tolerance IS enforced.
