@@ -2282,8 +2282,11 @@ module Axn
           unsupported = klasses - coercible - [String]
 
           unless unsupported.empty?
+            # `_declared_type_label`, not `.inspect`: an unsupported token is the caller's own Class/Module,
+            # and this is an error-reporting path — a declared class defining its own `inspect` that raises
+            # would replace this ArgumentError with the caller's exception.
             raise ArgumentError,
-                  "coerce: does not yet support #{unsupported.map(&:inspect).join(', ')} " \
+                  "coerce: does not yet support #{unsupported.map { |k| _declared_type_label(k) }.join(', ')} " \
                   "(supported: #{Axn::Internal::Coercion::SUPPORTED.join(', ')}). " \
                   "String may accompany a coercible type as a passthrough."
           end

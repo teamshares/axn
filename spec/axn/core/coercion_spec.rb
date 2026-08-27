@@ -47,6 +47,15 @@ RSpec.describe "coerce: DSL" do
         .to raise_error(ArgumentError, /coerce: does not yet support.*BigDecimal.*supported: Date, DateTime, Time, Symbol, Integer, Float, boolean/m)
     end
 
+    # Found by Codex review (PR #256): the not-yet-supported message rendered the unsupported token with
+    # `.inspect` — a declared class's own method, which a hostile override replaces this ArgumentError with.
+    it "does not dispatch a hostile unsupported token's own inspect while reporting it" do
+      hostile = Class.new { def self.inspect = raise "hostile inspect ran" }
+
+      expect { build_axn { expects :amount, coerce: hostile } }
+        .to raise_error(ArgumentError) { |e| expect(e.message).not_to include("hostile inspect ran") }
+    end
+
     it "accepts :boolean as a coerce target" do
       action = build_axn { expects :flag, coerce: :boolean }
       type = action.internal_field_configs.first.validations[:type]
