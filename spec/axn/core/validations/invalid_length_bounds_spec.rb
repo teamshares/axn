@@ -78,6 +78,9 @@ RSpec.describe "a length: option ActiveModel cannot use" do
       # AM's own admissibility test is `is_a?(Proc)`, not `respond_to?(:call)` — a hand-rolled callable
       # is refused there exactly as any other non-Proc, non-Symbol value is (Codex round 3, rebutted).
       "a callable that is not literally a Proc" => { minimum: Class.new { def call(_record) = 5 }.new },
+      # Found by Codex round 6: a bound that doesn't even ANSWER is_a? used to raise NoMethodError from
+      # the admissibility check itself, before the check could report it as an ordinary invalid bound.
+      "a BasicObject, which does not even answer is_a?" => { minimum: BasicObject.new },
     }.each do |label, spelling|
       it "refuses #{label}" do
         expect { build_axn { expects :v, type: Array, length: spelling } }.to raise_error(ArgumentError, pattern)

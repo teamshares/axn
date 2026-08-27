@@ -485,16 +485,36 @@ module Axn
       # keeps this guard's verdict identical to what `check_validity!` actually decides, in every case rather
       # than only the cases where the two formulas happen to agree.
       #
+      # Read through Float's OWN `==`, not whatever `bound`'s class defines: `case`/`when` below classifies
+      # with `Module#===` (never dispatched to `bound`), but Float — unlike Integer/Symbol, neither of which
+      # can be subclassed or carry a singleton method — CAN be subclassed, so confirming `bound.is_a?(Float)`
+      # still leaves its `==` a method the caller's own subclass could own. Bound so a hostile override
+      # cannot run from inside a declaration guard over the caller's own malformed data.
+      FLOAT_EQ = ::Float.instance_method(:==)
+      private_constant :FLOAT_EQ
+
       # A bound this predicate itself must not be stricter about than ActiveModel is: `check_validity!` tests
       # `is_a?(Proc)`, not `respond_to?(:call)`, so a hand-rolled callable object is refused by AM exactly as
       # a non-Proc non-Symbol value is — measured: `length: { minimum: Class.new { def call(r) = 5 }.new }`
       # raises AM's own `ArgumentError` at validator-build time. Accepting a broader "callable" here would
       # let such a declaration pass this guard only to still crash on the first `.call`, the precise failure
       # this guard exists to move to declaration.
+      #
+      # Classified with `case`/`when` rather than `is_a?`/`==` called ON the bound: this is a declaration
+      # guard reading a caller-supplied value that may not even ANSWER `is_a?` (`length: { minimum:
+      # BasicObject.new }` measured to raise `NoMethodError` here before this fix), let alone answer it
+      # honestly — and `Module#===` is asked of the KNOWN class, never dispatched to the value being
+      # classified, which is what makes it safe where `bound.is_a?(...)` is not. `Integer` and `Symbol`
+      # cannot be subclassed and cannot carry a singleton method, so a bound landing in either branch is
+      # provably the real thing and needs no further guarding; `Proc`/its subclasses need none either, since
+      # membership alone is the acceptance criterion — nothing else is called on it.
       def self.admissible_length_bound?(bound)
-        (bound.is_a?(Integer) && !bound.negative?) ||
-          bound == Float::INFINITY || bound == -Float::INFINITY ||
-          bound.is_a?(Symbol) || bound.is_a?(Proc)
+        case bound
+        when ::Integer then !bound.negative?
+        when ::Float then FLOAT_EQ.bind_call(bound, ::Float::INFINITY) || FLOAT_EQ.bind_call(bound, -::Float::INFINITY)
+        when ::Symbol, ::Proc then true
+        else false
+        end
       end
       private_class_method :admissible_length_bound?
 
