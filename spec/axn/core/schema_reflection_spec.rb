@@ -659,8 +659,14 @@ RSpec.describe "Axn class-level schema reflection" do
         expect(schema_for(**opts)).to eq(type: %w[string null], minLength: 2, maxLength: 5)
       end
 
-      it "carries no floor for a bare shorthand that names none, as ActiveModel names none either" do
-        expect(schema_for(type: String, length: 3)[:minLength]).to eq(1) # the presence floor
+      # `length: 3` (a bare Integer, not wrapped as `is: 3`) names no `:is`/`:minimum`/`:maximum`/`:in`/
+      # `:within` at all — measured directly against ActiveModel: `validates :bar, length: 3` raises the
+      # same `"Range unspecified"` `ArgumentError` a `length: {}` does. Refused at declaration by
+      # `_reject_invalid_length_bounds!` (PRO-3233) rather than reaching reflection, where it never reflected
+      # a floor to begin with.
+      it "never reaches reflection: a bare shorthand that names no check is refused at declaration" do
+        expect { schema_for(type: String, length: 3) }
+          .to raise_error(ArgumentError, /length: on .* specifies no check at all/)
       end
 
       # A fractional floor is not a shape reflection ever sees: `_reject_invalid_length_bounds!` (PRO-3233)

@@ -485,16 +485,32 @@ module Axn
       # keeps this guard's verdict identical to what `check_validity!` actually decides, in every case rather
       # than only the cases where the two formulas happen to agree.
       #
+      # A bound this predicate itself must not be stricter about than ActiveModel is: `check_validity!` tests
+      # `is_a?(Proc)`, not `respond_to?(:call)`, so a hand-rolled callable object is refused by AM exactly as
+      # a non-Proc non-Symbol value is — measured: `length: { minimum: Class.new { def call(r) = 5 }.new }`
+      # raises AM's own `ArgumentError` at validator-build time. Accepting a broader "callable" here would
+      # let such a declaration pass this guard only to still crash on the first `.call`, the precise failure
+      # this guard exists to move to declaration.
+      def self.admissible_length_bound?(bound)
+        (bound.is_a?(Integer) && !bound.negative?) ||
+          bound == Float::INFINITY || bound == -Float::INFINITY ||
+          bound.is_a?(Symbol) || bound.is_a?(Proc)
+      end
+      private_class_method :admissible_length_bound?
+
       # Returns the offending `{key => value}` pairs, empty when every declared bound is admissible. A bad
-      # `in:`/`within:` reports under ITS OWN key (the value is never a bound in AM's sense), everything else
-      # under `:is`/`:minimum`/`:maximum` — `Hash#slice` on those three mirrors `check_validity!`'s own
+      # `in:`/`within:` reports under ITS OWN key (the value is never a bound in AM's sense); an entry that
+      # ends up specifying no check AT ALL reports under `:length` (AM's OTHER `check_validity!` raise,
+      # `"Range unspecified"`, reached when `CHECKS.keys & options.keys` is empty — a falsy `in:`/`within:`
+      # with nothing else in the entry lands here, since AM's own `if range = (...)` treats a falsy alias as
+      # not given, the same skip-when-falsy idiom every AM option follows); everything else under
+      # `:is`/`:minimum`/`:maximum` — `Hash#slice` on those three mirrors `check_validity!`'s own
       # `CHECKS.keys & options.keys`, key PRESENCE and not truthiness, so an explicit `nil` bound is caught
       # rather than skipped.
       def self.invalid_length_bounds(entry_opts)
-        raw = validator_entry_options(entry_opts)
-        return {} if raw.empty?
+        return {} unless entry_opts
 
-        opts = raw.dup
+        opts = validator_entry_options(entry_opts).dup
         in_value = opts.delete(:in)
         within_value = opts.delete(:within)
         range = in_value || within_value
@@ -507,11 +523,10 @@ module Axn
           opts[:maximum] = (range.exclude_end? ? range.end - 1 : range.end) if range.end
         end
 
-        opts.slice(:is, :minimum, :maximum).reject do |_key, bound|
-          (bound.is_a?(Integer) && !bound.negative?) ||
-            bound == Float::INFINITY || bound == -Float::INFINITY ||
-            bound.is_a?(Symbol) || bound.is_a?(Proc)
-        end
+        checks = opts.slice(:is, :minimum, :maximum)
+        return { length: entry_opts } if checks.empty?
+
+        checks.reject { |_key, bound| admissible_length_bound?(bound) }
       end
 
       # The operators ActiveModel compares a value against, shared by `numericality:` and `comparison:` —

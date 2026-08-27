@@ -3550,12 +3550,26 @@ module Axn
         # exactly rather than `Range#min`/`#max`, which raise outright on a beginless/endless range AM itself
         # declares cleanly).
         #
+        # A third AM raise this guard also catches: `"Range unspecified"` from `check_validity!`, reached
+        # whenever `CHECKS.keys & options.keys` ends up empty — an entry naming none of `:is`/`:minimum`/
+        # `:maximum`, or one whose only size key is a FALSY `in:`/`within:` (`length: { in: nil }`), since
+        # AM's own `if range = (options.delete(:in) || options.delete(:within))` treats a falsy alias as not
+        # given at all, the same skip-when-falsy idiom `presence: false` and every other AM option follows.
+        #
         # Reads only the author's own `length:` spelling (`Axn::Validation::Base.invalid_length_bounds`), so —
         # unlike `_reject_unsatisfiable_size_interval!` — it does not need to wait for the tolerance push-down
         # or `_apply_default_presence!` to settle the bag first.
         def _reject_invalid_length_bounds!(validations, where:)
           bad = Axn::Validation::Base.invalid_length_bounds(validations[:length])
           return if bad.empty?
+
+          if bad.key?(:length)
+            raise ArgumentError,
+                  "length: on #{where} specifies no check at all (#{bad[:length].inspect}) — declared, the " \
+                  "class defines cleanly and every call raises ActiveModel's own `ArgumentError: Range " \
+                  "unspecified. Specify the :in, :within, :maximum, :minimum, or :is option.` from " \
+                  "LengthValidator#check_validity! instead. Name a real bound, or drop length: entirely."
+          end
 
           offenders = bad.map { |key, value| "#{key}: #{value.inspect}" }.join(", ")
           raise ArgumentError,

@@ -75,10 +75,35 @@ RSpec.describe "a length: option ActiveModel cannot use" do
       "a non-Integer, non-Symbol, non-Proc minimum:" => { minimum: "3" },
       "a fractional maximum:" => { maximum: 2.5 },
       "an empty (exclusive) range" => { in: 2...2 },
+      # AM's own admissibility test is `is_a?(Proc)`, not `respond_to?(:call)` — a hand-rolled callable
+      # is refused there exactly as any other non-Proc, non-Symbol value is (Codex round 3, rebutted).
+      "a callable that is not literally a Proc" => { minimum: Class.new { def call(_record) = 5 }.new },
     }.each do |label, spelling|
       it "refuses #{label}" do
         expect { build_axn { expects :v, type: Array, length: spelling } }.to raise_error(ArgumentError, pattern)
       end
+    end
+  end
+
+  # Found by Codex review round 3 (PR #256): a falsy `in:`/`within:` with no other size key leaves the entry
+  # specifying no check at all — AM's own `if range = (options.delete(:in) || options.delete(:within))`
+  # treats a falsy alias as not given, the same skip-when-falsy idiom every other AM option follows, so
+  # nothing sets `:minimum`/`:maximum` and `check_validity!` raises its OTHER error, "Range unspecified."
+  describe "an entry that ends up specifying no check at all" do
+    {
+      "in: nil, nothing else" => { in: nil },
+      "within: false, nothing else" => { within: false },
+      "an empty bag" => {},
+    }.each do |label, spelling|
+      it "refuses #{label}" do
+        expect { build_axn { expects :v, type: Array, length: spelling } }
+          .to raise_error(ArgumentError, /length: on .* specifies no check at all/)
+      end
+    end
+
+    it "does NOT refuse a falsy in: alongside a real minimum:, which AM treats as inert rather than missing" do
+      expect { build_axn { expects :v, type: Array, presence: false, length: { in: nil, minimum: 3 } } }
+        .not_to raise_error
     end
   end
 
