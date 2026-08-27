@@ -586,4 +586,33 @@ RSpec.describe "value validators in an of: bag" do
       expect { build_axn { expects :f, type: Array, of: { format: { with: /\Aa/ } } } }.not_to raise_error
     end
   end
+
+  # A field's tolerance is a fact about the DECLARATION, so it is recorded there — once — rather than
+  # copied into every validator entry. ActiveModel applies a declaration's shared options to each
+  # validator itself (`defaults.merge(_parse_validates_options(options))`), which is the tier
+  # `effective_entry_options` and `nil_accepted?` already resolve against. Recording it per entry made
+  # axn's copies indistinguishable from an author's, which is what stopped a bag's own keys meaning the
+  # position they describe.
+  describe "where a field's tolerance is recorded" do
+    it "states the pair on the declaration and writes it into no validator entry" do
+      action = build_axn { expects :f, type: Array, of: Integer, optional: true }
+      validations = action.internal_field_configs.first.validations
+
+      expect(validations).to include(allow_blank: true, allow_nil: false)
+      expect(validations[:type]).to eq(klass: Array)
+      expect(validations[:of]).to eq(klass: Integer, container: Array)
+    end
+
+    it "keeps optional? reading true off the declaration tier alone" do
+      action = build_axn { expects :f, type: Array, of: Integer, optional: true }
+
+      expect(action.internal_field_configs.first.optional?).to be(true)
+    end
+
+    it "leaves a required field's bag free of any tolerance axn did not write" do
+      action = build_axn { expects :f, type: Array, of: Integer }
+
+      expect(action.internal_field_configs.first.validations[:of]).to eq(klass: Integer, container: Array)
+    end
+  end
 end

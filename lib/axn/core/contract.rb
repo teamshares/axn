@@ -1814,15 +1814,14 @@ module Axn
         # What it inherits is what has to match for the comparison to mean anything, since both sides of a
         # comparison must live in the same space:
         #   * `type:` (which carries the parsed `coerce:` flag — `_expand_coerce_sugar!` folds the option into
-        #     the type bag, so there is no separate key left to copy — and whatever tolerance the base's own
-        #     `optional:`/`allow_blank:`/`allow_nil:` pushed into it) keeps the emitted schema and the runtime
+        #     the type bag, so there is no separate key left to copy) keeps the emitted schema and the runtime
         #     agreeing about what the companion may be, and keeps a coerced pair comparable: a form post of
         #     `count: "5", count_confirmation: "5"` against `coerce: Integer` compares 5 to "5" and reports a
-        #     mismatch the caller cannot act on unless the companion coerces too. The inherited tolerance is
-        #     inert on the companion — an `optional:` base yields a `type:` bag carrying `allow_blank: true`
-        #     even though the companion's own `presence: true` (below) already rejects a blank value first —
-        #     but it still has to travel with `type:`, since the two live in one bag and copying one without
-        #     the other isn't an option.
+        #     mismatch the caller cannot act on unless the companion coerces too. The base's TOLERANCE is
+        #     deliberately not inherited with it: a field's tolerance is recorded on its own declaration, not
+        #     inside its type bag, and a companion that tolerated what the base tolerates would accept the
+        #     omission the companion exists to reject. So a tolerant typed base reports its missing companion
+        #     through the inherited type, exactly as a strict one does.
         #   * `preprocess:` for the same reason — a `->(s){ s.strip }` on the base alone compares "a" to " a ".
         #   * `sensitive:` because the failure mode is a LEAK: a confirmed secret whose companion logs in the
         #     clear is the whole password beside the redacted one.
@@ -2286,13 +2285,10 @@ module Axn
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 
-        # Whether a validator entry takes NO tolerance from the declaration-level `optional:`/`allow_blank:`/
-        # `allow_nil:` push-down (`_reconcile_emptiness_axis!`'s tolerant branch, below). Exactly one does.
-        # Every other validator judges the field's OWN value, so a tolerance stands it down: there is nothing
-        # to check when the value the author called optional is absent or empty. `confirmation:`'s subject is
-        # not the field's value but the RELATIONSHIP between the field and its companion, and a SUPPLIED
-        # companion is compared against the base whatever the base holds — `password: ""` (or nil) beside
-        # `password_confirmation: "x"` is a mismatch the caller must see, not a blank to wave through.
+        # Whether a validator entry must be held OUT of the declaration's `optional:`/`allow_blank:`/
+        # `allow_nil:` tolerance. Exactly one is. The pair is stated on the declaration, so `validates` applies
+        # it to every validator; an exempt entry is given an explicit `allow_blank: false, allow_nil: false`,
+        # which overrides the declaration tier per key exactly as ActiveModel's own merge order does.
         #
         # This is narrower than it looks: ActiveModel's ConfirmationValidator already returns without
         # comparing when the COMPANION is nil (measured against activemodel 7.2.2.2: `unless (confirmed =
@@ -5244,33 +5240,40 @@ module Axn
           # Push allow_blank and allow_nil to the individual validations
           if tolerant
             # ActiveModel's shared "default" options (`if:`/`unless:`/`on:`/`strict:`/`allow_blank:`/
-            # `allow_nil:`) ride the hash as sibling keys of the validators but are NOT validators —
-            # there is nothing to push tolerance into, and normalizing them as scalars would corrupt
-            # them (e.g. `if: :flag` → `if: { with: :flag, allow_blank:, allow_nil: }`, a Hash the
-            # callback machinery cannot resolve, so the gate stops deciding anything). Slice them out
-            # (reusing AM's own canonical list so the set can't drift), transform only the real
-            # validators, then restore verbatim. Core-Ruby delete (not ActiveSupport's Hash#except!):
-            # axn runs outside Rails, where that core_ext may never be loaded.
+            # `allow_nil:`/`except_on:`) ride the hash as sibling keys of the validators but are NOT
+            # validators. Sliced out (through AM's own canonical list, so the set cannot drift) and
+            # restored verbatim, because normalizing one as a scalar would corrupt it — `if: :flag` would
+            # become `if: { with: :flag }`, a Hash the callback machinery cannot resolve, so the gate would
+            # stop deciding anything. Core-Ruby delete rather than ActiveSupport's `Hash#except!`: axn runs
+            # outside Rails, where that core_ext may never be loaded.
             shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
             shared_options = validations.slice(*shared_option_keys)
             shared_option_keys.each { |key| validations.delete(key) }
-            # A snapshot of the keys: the loop reassigns entries as it goes, and WHICH validator an entry is
-            # decides whether it takes the tolerance at all, so this can't be a `transform_values!`.
+
+            # `confirmation:` is the one validator a tolerance must not reach, and it is held out by
+            # OVERRIDING the declaration tier rather than by being skipped: the pair is stated on the
+            # declaration below, so `validates` applies it to every entry, and an entry's own value wins per
+            # key (AM merges `defaults.merge(entry)`). Every other validator judges the field's own value, so
+            # a tolerance stands it down — there is nothing to check when the value the author called optional
+            # is absent. `confirmation:`'s subject is the RELATIONSHIP between the field and its companion,
+            # and a supplied companion is compared against the base whatever the base holds: `password: ""`
+            # beside `password_confirmation: "x"` is a mismatch the caller must see, not a blank to wave
+            # through. A snapshot of the keys, since the loop reassigns entries as it goes.
             validations.keys.each do |key|
               v = validations[key]
-              # A falsy validator value (`presence: false`, or a `nil`/`false` on any validator) is
-              # disabled — `validates` skips it (`next unless options`), so there is nothing to push
-              # tolerance into; pass it through unchanged (mirrors AM's own falsy-skip).
               next unless v
-              next if _tolerance_exempt_validator?(key)
+              next unless _tolerance_exempt_validator?(key)
 
-              # Any other value is normalized exactly as `validates` would (scalar → options hash),
-              # then the tolerance rides on top — so `numericality: true`, `inclusion: [..]`/`1..5`,
-              # `format: /re/`, etc. combine transparently with optional:/allow_blank:/allow_nil:,
-              # matching how they behave without a tolerance flag (PRO-2915).
-              validations[key] = { allow_blank:, allow_nil: }.merge(Axn::Validation::Base.normalize_validator_options(v))
+              validations[key] = Axn::Validation::Base.normalize_validator_options(v)
+                                                      .merge(allow_blank: false, allow_nil: false)
             end
+
             validations.merge!(shared_options)
+            # The declaration's own tier, stated once. An author who wrote the key directly among the
+            # validations is authoritative — that spelling arrived in `shared_options` above — so it is not
+            # overwritten here.
+            validations[:allow_blank] = allow_blank unless shared_options.key?(:allow_blank)
+            validations[:allow_nil] = allow_nil unless shared_options.key?(:allow_nil)
           else
             _apply_default_presence!(validations, allow_empty:, tolerant:)
           end
@@ -5292,6 +5295,13 @@ module Axn
         # raises, and its crash is surfaced as a second failure on the same field). Give every non-type
         # validator nil-tolerance so the type error stands alone. Only the type validator's own nil verdict
         # is authoritative, so it is left untouched, as are validators that already carry explicit tolerance.
+        #
+        # `:of` is exempt for a different reason than `:type` is: the flag this method writes suppresses a
+        # DERIVATIVE message on a nil field, and `:of` has no nil verdict to suppress in the first place —
+        # `OfValidator`'s `validate_elements`/`validate_entries` both `return unless value.is_a?(...)`, so the
+        # bag no-ops structurally on a nil field whether or not it carries `allow_nil:`. Writing the flag into
+        # it anyway would change nothing about a nil field while leaving axn's own write sitting in the bag —
+        # indistinguishable from tolerance an author declared inside `of:` on purpose.
         # Mutates `validations`.
         def _apply_nil_skip_to_non_type_validators!(validations)
           return unless _type_rejects_nil?(validations)
@@ -5302,7 +5312,7 @@ module Axn
           # mutating a Hash mid-iteration.
           validations.keys.each do |key|
             opt = validations[key]
-            next if key == :type || !opt || shared_option_keys.include?(key)
+            next if key == :type || key == :of || !opt || shared_option_keys.include?(key)
 
             normalized = Axn::Validation::Base.normalize_validator_options(opt)
             next if normalized.key?(:allow_nil) || normalized.key?(:allow_blank)

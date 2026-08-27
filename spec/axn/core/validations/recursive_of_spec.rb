@@ -1503,12 +1503,15 @@ RSpec.describe "recursive of:" do
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer } }, optional: true } }.not_to raise_error
     end
 
-    it "writes the tolerance pair onto the map bag and never into an axis" do
-      action = build_axn { expects :m, type: Hash, of: { values: { klass: Integer } }, optional: true }
-      bag = action.internal_field_configs.first.validations[:of]
+    it "states the tolerance pair on the declaration and writes it into neither the map bag nor an axis" do
+      action = build_axn do
+        expects :f, type: Hash, of: { values: { klass: Integer } }, optional: true
+      end
+      validations = action.internal_field_configs.first.validations
 
-      expect(bag).to include(allow_blank: true, allow_nil: false)
-      expect(bag[:values]).to eq(klass: Integer)
+      expect(validations).to include(allow_blank: true, allow_nil: false)
+      expect(validations[:of]).to eq(container: Hash, shaped_keys: [], values: { klass: Integer })
+      expect(validations[:of][:values]).not_to include(:allow_blank, :allow_nil)
     end
   end
 
