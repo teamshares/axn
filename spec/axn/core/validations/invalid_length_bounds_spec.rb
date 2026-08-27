@@ -152,6 +152,14 @@ RSpec.describe "a length: option ActiveModel cannot use" do
           .to raise_error(ArgumentError, /#{offending_key}: #{Regexp.escape(spelling[offending_key].inspect)}/)
       end
     end
+
+    # Found by Codex round 7: `range.is_a?(::Range)` raised `NoMethodError` for an `in:`/`within:` value
+    # that doesn't even ANSWER `is_a?` — the same failure shape `admissible_length_bound?` had for an
+    # individual bound (round 6), one level up in the same method.
+    it "refuses a BasicObject, which does not even answer is_a?, rather than crashing on it" do
+      expect { build_axn { expects :v, type: Array, length: { in: BasicObject.new } } }
+        .to raise_error(ArgumentError, pattern)
+    end
   end
 
   # Also found by Codex review: the first pass at this guard read the range through unconditional

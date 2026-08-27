@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "axn/internal/identity"
+
 module Axn
   module Validation
     # Shared kernel for the one-off ActiveModel validator classes Fields and Subfields build: the
@@ -537,7 +539,11 @@ module Axn
 
         if range
           range_key = in_value ? :in : :within
-          return { range_key => range } unless range.is_a?(::Range)
+          # `Identity.kind?`, not `range.is_a?(::Range)`: `range` is the caller's own `in:`/`within:` value,
+          # which may not even ANSWER `is_a?` (`length: { in: BasicObject.new }` measured to raise
+          # `NoMethodError` here before this fix) — the same reason `admissible_length_bound?` below reads
+          # its own values through `case`/`when` rather than dispatching to them directly.
+          return { range_key => range } unless Internal::Identity.kind?(range, ::Range)
 
           # A Range whose endpoints admit `Range#begin`/`#end`/`#min` but not the arithmetic AM's own
           # expansion performs on them — a String range's exclusive end has no `#-` — raises mid-computation
