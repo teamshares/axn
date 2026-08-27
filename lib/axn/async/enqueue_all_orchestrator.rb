@@ -2,6 +2,7 @@
 
 require "axn/error"
 require "axn/internal/rendering"
+require "axn/internal/shape_graph"
 
 module Axn
   module Async
@@ -423,7 +424,10 @@ module Axn
           return false unless expected_type
 
           # Handle array of types (e.g., type: [Array, Hash])
-          Array(expected_type).any? do |type|
+          #
+          # `ShapeGraph.type_tokens`, not `Kernel#Array`: `expected_type` is the caller's own declared
+          # `type:`/`klass:` token, and `Array()` would dispatch `to_ary`/`to_a` on it (PRO-3233).
+          Axn::Internal::ShapeGraph.type_tokens(expected_type).any? do |type|
             next false unless type.is_a?(Class)
 
             ENUMERABLE_TYPES.any? { |enum_type| type <= enum_type }

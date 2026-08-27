@@ -174,5 +174,22 @@ RSpec.describe "declared type tokens are read without dispatching to_ary" do
 
       expect_no_dispatch(dispatched) { build_axn { expects :f, coerce: token } }
     end
+
+    # Confirmed via Codex review round 5 (PR #256): `EnqueueAllOrchestrator#field_expects_enumerable?`
+    # decides whether an `enqueue_all` batch kwarg is expanded per-record or held static by reading the
+    # declared `type:`/`klass:` token through `Kernel#Array` too — the same declaration-classification
+    # question reflection and the validators ask, just for a third caller.
+    it "EnqueueAllOrchestrator reads the declared type without dispatching" do
+      dispatched = []
+      token = hostile_token(dispatched, returns: [Array])
+
+      field_config = Axn::Core::Contract::FieldConfig.new(
+        field: :f, reader_as: :f, validations: { type: { klass: token } },
+      )
+
+      Axn::Async::EnqueueAllOrchestrator.send(:field_expects_enumerable?, field_config)
+
+      expect(dispatched).to eq([])
+    end
   end
 end
