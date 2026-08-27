@@ -2661,17 +2661,23 @@ module Axn
         end
 
         # Bring the type a bag's `klass:` produced into line with the nullability derived above. A `NilClass`
-        # token contributes a `null` branch like any other token; whether it survives is the nullability
-        # question, asked once — the same rule `apply_type_info!` follows at a named position.
+        # token contributes a `null` branch like any other token, and now so can a position's own tolerance
+        # (PRO-3225) with no `NilClass` token in sight — `of: { klass: String, allow_nil: true }` admits nil at
+        # runtime though nothing in `klass:` said so. So this ADDS the branch a nullable position is missing,
+        # through the same two helpers `apply_type_info!` unions a field's type with (`type_with_nullability`,
+        # `union_with_nullability`) — not a second reading of "what nullable adds to a type", the same one.
         def reconcile_contents_nullability(node, nullable:, for_output: false)
-          return node if nullable
-
           if node[:anyOf].is_a?(Array)
+            return node.merge(anyOf: union_with_nullability(node[:anyOf], nullable: true)) if nullable
+
             without_null = node[:anyOf].reject { |member| member[:type] == "null" }
             return { enum: EMPTY_ENUM } if without_null.empty?
 
             return without_null.size == 1 ? node.except(:anyOf).merge(without_null.first) : node.merge(anyOf: without_null)
           end
+
+          return node.merge(type: type_with_nullability(node[:type], nullable: true)) if nullable && node.key?(:type)
+          return node if nullable
 
           # The position's mirror of a field's lone required `NilClass`: nothing but nil is a NilClass, and the
           # validator that makes the position non-nullable rejects nil, so it admits nothing — and `{ type:
@@ -2700,18 +2706,19 @@ module Axn
           node
         end
 
-        # A bag's value constraints: what it says about the VALUE at its position rather than about the position.
-        # Derived from the two lists `Internal::ShapeGraph` owns, so a validator admitted into the grammar
-        # reaches this projection without a second edit.
+        # A bag's VALUE constraints as a validations hash the field-level emitters can read: its validator
+        # entries, minus what describes the position rather than constrains it.
         #
-        # The recursion edges come out even though `apply_value_constraints!` reads named keys and would ignore
-        # them: what this returns is consumed as "the constraints on this value", and `of:`/`shape:` describe a
-        # NESTED node instead — they are emitted by `contents_node_schema` and `contents_member_schema`. A
-        # projection that reads the set generically would otherwise pick them up as keywords on the wrong node.
-        # `for_output:` is REQUIRED on this and its two callers rather than defaulted, on the same terms
-        # `effective_entry_options`' `declaration_options` is: a caller that omits the tier deciding the answer
-        # gets a quietly wrong one. That is exactly how the output reduction stayed half-applied — the element
-        # position forwarded it and the keys axis silently took the default. Now the omission is an error.
+        # The position's TOLERANCE is kept, and it is the reason this is a merge rather than a slice: it rides
+        # in as the declaration tier every emitter already resolves against (`shared_validation_options`), so
+        # nullability, the emptiness floor and the value keywords all read it here exactly as they read a
+        # field's. That is what keeps `of: { klass: String, length: { minimum: 2 }, allow_blank: true }`
+        # emitting the same shape as the field it mirrors — no floor, plus a null branch — without a second
+        # implementation of the rule.
+        #
+        # The other shared options do NOT come through. A gate is reduced away by `effective_validations` on
+        # output and means nothing to the document on input, and the context/strict options are refused at
+        # declaration.
         def bag_value_constraints(bag, for_output:)
           constraints = Axn::Validation::Base.validator_entries(bag)
                                              .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
@@ -2721,7 +2728,24 @@ module Axn
           # field's, and for the same reason: an output schema that rejects what the action can serialize is
           # worse than one that says less. `emitted_contents_edge` already does this for the bag's `of:`/`shape:`
           # edges; this is the same reduction for its validators.
+          #
+          # The merge is applied AFTER `effective_validations` so the reduction cannot drop the tolerance tier
+          # it needs to see.
+          #
+          # Only a TRUE tolerance rides in — `_canonicalize_bag_tolerance!` states `false` explicitly on every
+          # bag, but that explicit `false` is a declaration-time fact about the POSITION (kept elsewhere so a
+          # field's own tolerance can never leak into it), not a runtime fact about the VALIDATORS this hash
+          # feeds. A field's `allow_blank: false` is real here because ActiveModel merges it into every entry
+          # it builds (`declaration_defaults.merge(entry)`) and `LengthValidator#initialize` reacts to it by
+          # adding an implicit `minimum: 1` — a bag's tolerance never reaches that merge at all
+          # (`OfValidator#inner_contract_validations` excludes it from what it hands `validates`), so a bag
+          # position with a bare `length: { maximum: 4 }` never rejects `""` the way a field declaring the same
+          # `allow_blank: false` would. Forwarding the bag's `false` here fed that FIELD-only reading a fact
+          # the bag's own runtime never acts on and put `minLength: 1` on a position that accepts `""`. Nothing
+          # downstream distinguishes "false" from "absent" — every reader here asks a truthy question — so
+          # dropping it costs no other case its answer.
           effective_validations(constraints, for_output:)
+            .merge(Axn::Validation::Base.tolerance_options(bag).select { |_key, tolerant| tolerant })
         end
 
         def single_contents_schema(klass, for_output: false)

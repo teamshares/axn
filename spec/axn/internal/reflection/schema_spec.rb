@@ -7528,9 +7528,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # pins the helper's own contract instead, since what it returns is consumed as "the constraints on this
     # value" and `of:`/`shape:` describe a nested node rather than a keyword on this one.
     describe "bag_value_constraints" do
-      it "keeps the value validators and drops everything that describes the position" do
+      it "keeps the value validators and a TRUE tolerance, and drops everything else that describes the position" do
         bag = { klass: String, container: Array, message: "m", of: { klass: Integer },
                 shape: { members: [] }, format: { with: /a/ }, allow_nil: true }
+
+        expect(described_class.send(:bag_value_constraints, bag, for_output: false))
+          .to eq(format: { with: /a/ }, allow_nil: true)
+      end
+
+      # A FALSE tolerance is `_canonicalize_bag_tolerance!`'s default rather than an author's own statement, and
+      # it never reaches the validator this hash feeds — `OfValidator#inner_contract_validations` excludes it
+      # from what it hands `validates`. Forwarding it here would feed a FIELD-only reading (ActiveModel merges
+      # its declaration-wide `allow_blank: false` into every entry it builds) a fact this position's own runtime
+      # never acts on, so it is dropped rather than kept the way a genuine `true` is.
+      it "drops a FALSE tolerance, which the position's own runtime never sees" do
+        bag = { klass: String, format: { with: /a/ }, allow_nil: false, allow_blank: false }
 
         expect(described_class.send(:bag_value_constraints, bag, for_output: false)).to eq(format: { with: /a/ })
       end
@@ -8130,6 +8142,46 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
 
       expect(prop[:propertyNames]).to eq(maxLength: 4, enum: [])
+    end
+  end
+
+  # A position's tolerance is projected exactly as a FIELD's is, by the same helpers — which is the
+  # requirement, not a convenience: the field-level behaviour is precise and non-obvious (an `allow_blank`
+  # DROPS a length floor because the empty value passes, while an `allow_nil` KEEPS it because the empty value
+  # still fails), and a second implementation would drift from it.
+  describe "a tolerant of: bag's projection" do
+    def items_for(&declaration)
+      klass = build_axn(&declaration)
+      described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:f][:items]
+    end
+
+    it "adds a null branch for a nil-tolerant element position" do
+      expect(items_for { expects :f, type: Array, of: { klass: String, allow_nil: true } })
+        .to include(type: %w[string null])
+    end
+
+    it "keeps a length floor under allow_nil:, which does not admit the empty value" do
+      expect(items_for { expects :f, type: Array, of: { klass: String, length: { minimum: 2 }, allow_nil: true } })
+        .to include(type: %w[string null], minLength: 2)
+    end
+
+    it "drops the length floor under allow_blank:, which does admit the empty value" do
+      node = items_for { expects :f, type: Array, of: { klass: String, length: { minimum: 2 }, allow_blank: true } }
+
+      expect(node).to include(type: %w[string null])
+      expect(node).not_to include(:minLength)
+    end
+
+    it "leaves an untolerant position unchanged" do
+      expect(items_for { expects :f, type: Array, of: { klass: String, length: { minimum: 2 } } })
+        .to eq(type: "string", minLength: 2)
+    end
+
+    it "projects a tolerant values axis through additionalProperties" do
+      klass = build_axn { expects :f, type: Hash, of: { values: { klass: String, allow_nil: true } } }
+      node = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:f]
+
+      expect(node[:additionalProperties]).to include(type: %w[string null])
     end
   end
 end
