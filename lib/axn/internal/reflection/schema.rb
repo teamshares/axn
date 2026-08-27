@@ -2661,7 +2661,7 @@ module Axn
         end
 
         # Bring the type a bag's `klass:` produced into line with the nullability derived above. A `NilClass`
-        # token contributes a `null` branch like any other token, and now so can a position's own tolerance
+        # token contributes a `null` branch like any other token, and so can a position's own tolerance
         # (PRO-3225) with no `NilClass` token in sight — `of: { klass: String, allow_nil: true }` admits nil at
         # runtime though nothing in `klass:` said so. So this ADDS the branch a nullable position is missing,
         # through the same two helpers `apply_type_info!` unions a field's type with (`type_with_nullability`,

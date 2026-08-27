@@ -2520,7 +2520,7 @@ module Axn
         # beside it read as a contradiction the author did not declare.
         #
         # Both keys are then STATED explicitly on every bag, even one naming neither — the pair a field records
-        # is on the DECLARATION now, not copied into each validator entry (PRO-3225), and `validates` still
+        # is on the DECLARATION, not copied into each validator entry, and `validates` still
         # merges that declaration tier into every validator it builds from the same call as its own defaults
         # (`defaults.merge(entry)`, ActiveModel's own build step), `of:` included. Left implicit, a bag with no
         # tolerance of its own would silently inherit whatever the FIELD's `allow_nil:`/`allow_blank:` says —
