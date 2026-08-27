@@ -1481,8 +1481,8 @@ RSpec.describe "recursive of:" do
     end
 
     it "are refused on the keys axis, naming every offender at once" do
-      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, allow_nil: true, allow_blank: true } } } }
-        .to raise_error(ArgumentError, /\Aof: keys: does not support allow_blank:, allow_nil: on :m/)
+      expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, if: :flag, unless: :other_flag } } } }
+        .to raise_error(ArgumentError, /\Aof: keys: does not support if:, unless: on :m/)
     end
 
     it "leaves on: to the context-scope guard, which names a different problem" do
@@ -1495,9 +1495,10 @@ RSpec.describe "recursive of:" do
         .to raise_error(ArgumentError, /\A`strict:` inside an `of:` bag on :m is ActiveModel's strict-raising mode/)
     end
 
-    # The reason the ban is axis-only rather than bag-wide: axn's own tolerance push-down writes
-    # `allow_blank:`/`allow_nil:` into a validator entry, and a bag IS one at every other position. It never
-    # writes them into an axis, which is what makes the narrow ban safe.
+    # The tolerance keys are not ActiveModel options at all, so being handed to AM or not is beside the point —
+    # unlike a gate, nothing about them depends on the position being a validator entry. `AXIS_INERT_OPTION_KEYS`
+    # admits them everywhere, whether axn's own push-down writes them into a bag (this example) or an axis
+    # states one directly (see "on an axis" below).
     it "still accepts the tolerance keys axn itself writes into a bag" do
       expect { build_axn { expects :rows, type: Array, of: Integer, optional: true } }.not_to raise_error
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer } }, optional: true } }.not_to raise_error
@@ -1512,6 +1513,24 @@ RSpec.describe "recursive of:" do
       expect(validations).to include(allow_blank: true, allow_nil: false)
       expect(validations[:of]).to eq(container: Hash, shaped_keys: [], values: { klass: Integer })
       expect(validations[:of][:values]).not_to include(:allow_blank, :allow_nil)
+    end
+
+    # An axis bag is never handed to ActiveModel, which is why a GATE written there is refused: nothing reads
+    # it. Tolerance is different — `OfValidator` reads the position's tolerance itself, at every position — so
+    # an axis states it exactly as an element bag does.
+    it "accepts the tolerance pair on an axis" do
+      expect { build_axn { expects :f, type: Hash, of: { values: { klass: String, allow_nil: true } } } }
+        .not_to raise_error
+    end
+
+    it "accepts optional: on an axis" do
+      expect { build_axn { expects :f, type: Hash, of: { keys: { klass: Symbol, optional: true } } } }
+        .not_to raise_error
+    end
+
+    it "still refuses a gate on an axis, since nothing there reads one" do
+      expect { build_axn { expects :f, type: Hash, of: { values: { klass: String, if: :flag } } } }
+        .to raise_error(ArgumentError, /of: values: does not support if:/)
     end
   end
 

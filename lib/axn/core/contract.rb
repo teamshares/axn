@@ -1232,16 +1232,21 @@ module Axn
         # `on:` and `strict:` are admitted here and refused by `_reject_inner_contract_context_scope!` /
         # `_reject_inner_contract_strict!` — the bag-level twins of the field's own scans, and the ones that reach
         # a bag at every position — which name the actual problem (axn has no validation contexts, and no
-        # strict-raising mode) instead of reporting the key as unknown. The remaining shared options stay
-        # admitted because axn WRITES two of them here: the tolerance push-down merges `allow_blank:`/`allow_nil:`
-        # into every validator entry, this bag included, so a whitelist without them would refuse
-        # `of: Integer, optional: true`. Whether they then do anything depends on the position, which is
-        # `AXIS_INERT_OPTION_KEYS` below.
+        # strict-raising mode) instead of reporting the key as unknown. `except_on:` rides along admitted with
+        # the rest of the shared options and has no bag-level guard of its own yet.
+        #
+        # `allow_nil:`/`allow_blank:`/`optional:` are the position's TOLERANCE: the same three spellings a named
+        # shape member takes, meaning the same three things about the value at this position. A bag also
+        # receives `allow_blank:`/`allow_nil:` from the field-level tolerance push-down, which merges them into
+        # every validator entry including this one — so a whitelist without them would refuse
+        # `of: Integer, optional: true` on the FIELD. `_canonicalize_bag_tolerance!` folds the `optional:` sugar
+        # into the pair before any of them is read, so the pair is the only form stored. Whether `if:`/`unless:`
+        # then do anything depends on the position, which is `AXIS_INERT_OPTION_KEYS` below.
         #
         # `POSITIONAL_VALIDATOR_KEYS` is the value-constraint half (PRO-3193): a bag is a validator SET for
         # the position it describes, not only a type check, which is what makes the remedy PRO-3192's refusal
         # messages point at actually exist.
-        OF_OPTION_KEYS = (Set.new(%i[klass of shape message]) | POSITIONAL_VALIDATOR_KEYS |
+        OF_OPTION_KEYS = (Set.new(%i[klass of shape message optional]) | POSITIONAL_VALIDATOR_KEYS |
                           Axn::Validation::Base.shared_validation_option_keys).freeze
 
         # The same set for the other container. A Hash's insides are two axes rather than one element position,
@@ -2493,6 +2498,24 @@ module Axn
           bag[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(bag[:validate], fields, nested: true)
         end
 
+        # `optional:` is the sugar a NAMED position takes, canonicalized here into the pair the runtime and the
+        # emitter read — the same fold `_parse_field_configs` performs for a field (`allow_blank ||= optional`),
+        # through the same meaning: "optional" is blank-tolerance, which subsumes nil.
+        #
+        # Runs ahead of every other check on the bag, so none of them ever judges a bag carrying two spellings
+        # of one fact. Idempotent, which the walk requires: this seam runs over a shape member's bag twice, and
+        # the second pass finds the key already folded away.
+        #
+        # A FALSY `optional:` is dropped rather than written as `allow_blank: false`. It is the absence of
+        # tolerance, which is the default, and writing the negative would make an explicit `allow_nil: true`
+        # beside it read as a contradiction the author did not declare.
+        def _canonicalize_bag_tolerance!(bag)
+          return unless Internal::ShapeGraph.carries_key?(bag, :optional)
+
+          optional = bag.delete(:optional)
+          bag[:allow_blank] = true if optional
+        end
+
         # The grammar EVERY inner-contract bag is held to, asked once wherever one is accepted: at an Array's
         # element position and at each of a map's two axes. One function rather than three call sequences,
         # because a bag means the same thing in all three and a check missing from one of them is a hole the
@@ -2502,6 +2525,7 @@ module Axn
         # two positions this function never sees (a field's own `shape:`, a shape MEMBER's), so it is one
         # refusal at the walk that reaches all four (`ShapeDeclaration#_reject_unshaped_shape!`).
         def _check_inner_contract_bag!(bag, fields)
+          _canonicalize_bag_tolerance!(bag)
           _canonicalize_positional_validator_options!(bag, fields)
           _reject_unknown_of_keys!(bag, OF_OPTION_KEYS)
           _reject_unconstraining_of_bag!(bag)
@@ -2719,23 +2743,23 @@ module Axn
         # bag sits at is an ActiveModel validator entry, where AM reads these and they are live: the field's own
         # `of:` bag is an entry on the field, and a nested ELEMENT bag becomes one on the next level's
         # `ContainerContents` validator, since `OfValidator#inner_contract_validations` hands it over verbatim
-        # under `:of`. An axis bag is never handed to AM at all — `OfValidator#axis_contract` reads `klass:`,
-        # `message:`, `of:` and `shape:` and nothing else — so anything else written there is dropped rather
-        # than applied, and the axis constrains less than its declaration says. Measured:
-        # `of: { klass: Array, of: { klass: Integer, if: -> { false } } }` lets `[["x"]]` through, while
-        # `of: { values: { klass: Integer, if: -> { false } } }` still rejects `{a: "x"}`.
+        # under `:of`. An axis bag is never handed to AM at all — `OfValidator#axis_contract` reads it directly
+        # — so a GATE written there is dropped rather than applied, and the axis constrains less than its
+        # declaration says. Measured: `of: { klass: Array, of: { klass: Integer, if: -> { false } } }` lets
+        # `[["x"]]` through, while `of: { values: { klass: Integer, if: -> { false } } }` still rejects
+        # `{a: "x"}`.
         #
-        # Refused only at the axis, for the same reason `OF_OPTION_KEYS` admits them at all: axn's own tolerance
-        # push-down writes `allow_blank:`/`allow_nil:` into a validator entry, so banning them everywhere would
-        # refuse `of: Integer, optional: true`. It never writes them into an AXIS, which is what makes the
-        # narrower ban safe — verified against the stored config, where `optional: true` on a map lands the pair
-        # on the map bag and leaves the axis untouched.
+        # The TOLERANCE keys are not here, because they are not read by ActiveModel at any position: they state
+        # what the position itself admits, not a context AM gates a validator entry on. A later step makes
+        # `OfValidator` resolve them off the bag directly, at every position, so an axis will state its
+        # tolerance exactly as an element bag does.
         #
         # `on:` and `strict:` are left out because `_check_inner_contract_bag!` has already refused each a step
         # earlier, naming the real problem — axn has no validation contexts, and no strict-raising mode — both of
         # which are true at every position rather than at this one. Listing either here would offer "drop it, the
         # axis reads nothing" where the messages above name what axn does not have.
-        AXIS_INERT_OPTION_KEYS = (Axn::Validation::Base.shared_validation_option_keys - %i[on strict]).freeze
+        AXIS_INERT_OPTION_KEYS = (Axn::Validation::Base.shared_validation_option_keys -
+                                  %i[on strict allow_nil allow_blank]).freeze
 
         # Every offender at once: an author who wrote two of them has one declaration to fix. The keys are
         # axn's own frozen Symbols, so naming them runs nothing of the caller's.
