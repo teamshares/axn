@@ -3539,14 +3539,16 @@ module Axn
           end
         end
 
-        # A `length:` bound ActiveModel's own `LengthValidator#check_validity!` cannot use — anything other
-        # than a non-negative Integer, `Float::INFINITY`, a Symbol, or a Proc for `:is`/`:minimum`/`:maximum`.
-        # axn compiles the validator class lazily, on the first `.call` (`ValidatorClassCache`), so today such
-        # a bound declares cleanly and every call fails with AM's own opaque `ArgumentError` instead of one
-        # naming the field at the point it was declared. `length: { in: 3..2 }` is the same defect spelled as
-        # a Range: AM expands `in:`/`within:` by overwriting `:minimum`/`:maximum` with `range.min`/
-        # `range.max`, and a backwards or otherwise-empty Range resolves both to `nil` — not itself Numeric,
-        # so it is caught by the identical check without a separate case.
+        # A `length:` option ActiveModel's own `LengthValidator` cannot use — either a non-Range `in:`/
+        # `within:` (`initialize` requires one), or an `:is`/`:minimum`/`:maximum` that is none of a
+        # non-negative Integer, `Float::INFINITY` (either sign), a Symbol, or a Proc (`check_validity!`). axn
+        # compiles the validator class lazily, on the first `.call` (`ValidatorClassCache`), so today either
+        # declares cleanly and every call fails with AM's own opaque `ArgumentError` instead of one naming the
+        # field at the point it was declared. `length: { in: 3..2 }` is the sharpest case: a backwards or
+        # otherwise-empty Range resolves its `:minimum` to `nil` — not itself Numeric — through AM's own
+        # begin/end-gated expansion (`Axn::Validation::Base.invalid_length_bounds` mirrors that expansion
+        # exactly rather than `Range#min`/`#max`, which raise outright on a beginless/endless range AM itself
+        # declares cleanly).
         #
         # Reads only the author's own `length:` spelling (`Axn::Validation::Base.invalid_length_bounds`), so —
         # unlike `_reject_unsatisfiable_size_interval!` — it does not need to wait for the tolerance push-down
@@ -3555,14 +3557,14 @@ module Axn
           bad = Axn::Validation::Base.invalid_length_bounds(validations[:length])
           return if bad.empty?
 
-          offenders = bad.map { |key, bound| "#{key}: #{bound.inspect}" }.join(", ")
+          offenders = bad.map { |key, value| "#{key}: #{value.inspect}" }.join(", ")
           raise ArgumentError,
-                "length: on #{where} has a bound ActiveModel cannot use (#{offenders}) — :is/:minimum/:maximum " \
-                "must each be a non-negative Integer, Float::INFINITY, a Symbol, or a Proc. Declared, the class " \
-                "defines cleanly and every call raises `ArgumentError: ... must be a non-negative Integer, " \
-                "Infinity, Symbol, or Proc` from ActiveModel's own LengthValidator#check_validity! instead. A " \
-                "backwards or empty Range (`length: { in: 3..2 }`) resolves the same way, since Range#min/#max " \
-                "return nil for one."
+                "length: on #{where} has an option ActiveModel cannot use (#{offenders}) — :in:/:within: must " \
+                "each be a Range, and :is:/:minimum:/:maximum: must each be a non-negative Integer, " \
+                "Float::INFINITY, a Symbol, or a Proc. Declared, the class defines cleanly and every call " \
+                "raises ActiveModel's own opaque ArgumentError from LengthValidator#initialize/#check_validity! " \
+                "instead. A backwards or empty Range (`length: { in: 3..2 }`) resolves the same way, since it " \
+                "leaves `:minimum` (or `:maximum`) as `nil` rather than as the Range's own bound."
         end
 
         # An `inclusion:` set no value of the declared type can be a member of — a contract that rejects every

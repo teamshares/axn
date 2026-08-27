@@ -755,7 +755,7 @@ RSpec.describe "nil and empty axes" do
       # declaration instead, ahead of this axis ever reading it, so there is nothing left here to lean on.
       it "never reaches this axis: a fractional floor is refused at declaration" do
         expect { build(type: Array, optional: true, allow_empty: false, length: { minimum: 0.5 }) }
-          .to raise_error(ArgumentError, /length:.*has a bound ActiveModel cannot use/m)
+          .to raise_error(ArgumentError, /length:.*has an option ActiveModel cannot use/m)
       end
 
       it "keeps its own check alongside a floor of no whole size, which no schema floor could carry" do

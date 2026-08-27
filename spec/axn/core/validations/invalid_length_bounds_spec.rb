@@ -2,18 +2,20 @@
 
 require "axn/testing/spec_helpers"
 
-# ActiveModel's `LengthValidator#check_validity!` accepts exactly a non-negative Integer, `Float::INFINITY`, a
-# Symbol, or a Proc for `:is`/`:minimum`/`:maximum` — anything else raises `ArgumentError` from INSIDE
-# `EachValidator#initialize`. axn only reaches that code the first time the validator class is compiled
-# (`ValidatorClassCache`, on the first `.call`), so a malformed bound used to declare cleanly and fail every
-# call with that opaque error instead of one naming the field at the point it was written.
+# ActiveModel's `LengthValidator#check_validity!` accepts exactly a non-negative Integer, `Float::INFINITY`
+# (either sign), a Symbol, or a Proc for `:is`/`:minimum`/`:maximum` — anything else raises `ArgumentError`
+# from INSIDE `EachValidator#initialize`. Its own `initialize` also requires `in:`/`within:` to be a Range at
+# all. axn only reaches that code the first time the validator class is compiled (`ValidatorClassCache`, on
+# the first `.call`), so a malformed option used to declare cleanly and fail every call with that opaque error
+# instead of one naming the field at the point it was written.
 #
-# `length: { in: 3..2 }` is the same defect spelled as a Range: `LengthValidator#initialize` expands `in:`/
-# `within:` by overwriting `:minimum`/`:maximum` with `range.min`/`range.max`, and a backwards (or otherwise
-# empty) Range resolves both to `nil` — not itself Numeric, so `check_validity!` rejects it exactly as it
-# rejects any other non-admissible bound.
-RSpec.describe "a length: bound ActiveModel cannot use" do
-  let(:pattern) { /length: on .* has a bound ActiveModel cannot use/ }
+# `length: { in: 3..2 }` is the sharpest case: `LengthValidator#initialize` expands `in:`/`within:` into
+# `:minimum`/`:maximum` — but only for the end the Range HAS (`if range.begin` / `if range.end`), which is
+# what makes a beginless/endless range (`..5` / `5..`) a legal, common spelling rather than a crash — and a
+# backwards (or otherwise empty) Range resolves its `:minimum` to `nil` there, not itself Numeric, so
+# `check_validity!` rejects it exactly as it rejects any other non-admissible bound.
+RSpec.describe "a length: option ActiveModel cannot use" do
+  let(:pattern) { /length: on .* has an option ActiveModel cannot use/ }
 
   describe "the ticket's own repro: a backwards range" do
     it "is refused on a top-level expects" do
@@ -77,6 +79,67 @@ RSpec.describe "a length: bound ActiveModel cannot use" do
       it "refuses #{label}" do
         expect { build_axn { expects :v, type: Array, length: spelling } }.to raise_error(ArgumentError, pattern)
       end
+    end
+  end
+
+  # Found by Codex review (PR #256): a non-Range `in:`/`within:` fell through the original guard entirely
+  # (it only expanded a value that WAS already a Range), so it declared cleanly and crashed on the first call
+  # with ActiveModel's own `":in and :within must be a Range"` — the very failure mode this guard exists to
+  # move to declaration.
+  describe "a non-Range in:/within:" do
+    {
+      "an Integer" => { in: 3 },
+      "a String" => { within: "1..3" },
+      "an Array" => { in: [1, 3] },
+    }.each do |label, spelling|
+      it "refuses #{label}" do
+        expect { build_axn { expects :v, type: Array, length: spelling } }.to raise_error(ArgumentError, pattern)
+      end
+
+      it "names the offending key for #{label}" do
+        offending_key = spelling.keys.first
+        expect { build_axn { expects :v, type: Array, length: spelling } }
+          .to raise_error(ArgumentError, /#{offending_key}: #{Regexp.escape(spelling[offending_key].inspect)}/)
+      end
+    end
+  end
+
+  # Also found by Codex review: the first pass at this guard read the range through unconditional
+  # `Range#min`/`Range#max`, which RAISES `RangeError` for the end a beginless/endless range does not have —
+  # a regression on top of the bug being fixed, since ActiveModel itself declares both cleanly (an open floor
+  # or an open ceiling). AM's own `initialize` only sets `:minimum`/`:maximum` for the end the Range HAS
+  # (`if range.begin` / `if range.end`), which is what the guard now mirrors exactly.
+  describe "a beginless or endless range, which ActiveModel declares cleanly (regression: must not crash)" do
+    {
+      "beginless (open floor)" => (..5),
+      "endless (open ceiling)" => (5..),
+    }.each do |label, range|
+      it "declares cleanly for #{label}" do
+        expect { build_axn { expects :v, type: Array, presence: false, length: { in: range } } }.not_to raise_error
+      end
+
+      it "enforces the bound it does have, for #{label}" do
+        action = build_axn { expects :v, type: Array, presence: false, length: { in: range } }
+
+        expect(action.call(v: [1, 2, 3, 4, 5])).to be_ok
+        # A beginless range enforces no floor; an endless range enforces no ceiling — either way the OTHER
+        # bound is real, so an array of 6 fails only the beginless (ceiling: 5) case.
+        expect(action.call(v: [1, 2, 3, 4, 5, 6]).ok?).to eq(label.include?("endless"))
+      end
+    end
+  end
+
+  # `:in` wins over `:within` when both are present (`options.delete(:in) || options.delete(:within)`,
+  # evaluated in that order) — the reverse precedence would silently swap which bound actually governs.
+  describe "in:/within: precedence, matching ActiveModel's own options.delete(:in) || options.delete(:within)" do
+    it "lets a valid in: win over an invalid within:, and declares cleanly" do
+      expect { build_axn { expects :v, type: Array, presence: false, length: { in: 2..5, within: "garbage" } } }
+        .not_to raise_error
+    end
+
+    it "reports within:'s own defect only when in: is absent" do
+      expect { build_axn { expects :v, type: Array, length: { within: "garbage" } } }
+        .to raise_error(ArgumentError, /within: "garbage"/)
     end
   end
 

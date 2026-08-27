@@ -667,7 +667,7 @@ RSpec.describe "Axn class-level schema reflection" do
       # refuses it at declaration, ahead of `expects` itself returning.
       it "is refused at declaration rather than reaching reflection" do
         expect { schema_for(type: Array, length: { minimum: 0.5 }) }
-          .to raise_error(ArgumentError, /length:.*has a bound ActiveModel cannot use/m)
+          .to raise_error(ArgumentError, /length:.*has an option ActiveModel cannot use/m)
       end
 
       it "carries the flag's own floor when the author's floor has no whole size to carry" do

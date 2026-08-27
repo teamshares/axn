@@ -456,30 +456,56 @@ module Axn
       # are for the floor.
       def self.emittable_length_ceiling?(ceiling) = ceiling.is_a?(Integer) && !ceiling.negative?
 
-      # Whether ActiveModel's own `LengthValidator#check_validity!` would accept this entry's bounds — a
+      # Whether ActiveModel's own `LengthValidator#initialize`/`check_validity!` would accept this entry — a
       # distinct question from the readers above, which classify a bound for SATISFIABILITY reasoning and
-      # treat anything non-Numeric as `:unverifiable` (a Symbol/Proc, resolved per call). This asks whether
-      # AM can even BUILD the validator: it raises `ArgumentError` from `check_validity!` for a bound that is
-      # none of a non-negative Integer, `Float::INFINITY`, a Symbol, or a Proc — but only when the validator
-      # class is first compiled, which axn defers to the first `.call` (`ValidatorClassCache`), so a bad bound
-      # today declares cleanly and fails every call with an opaque error instead of one at declaration.
+      # treat anything non-Numeric as `:unverifiable` (a Symbol/Proc, resolved per call). This asks whether AM
+      # can even BUILD the validator: `initialize` raises `":in and :within must be a Range"` for a non-Range
+      # `in:`/`within:`, and `check_validity!` raises for an `:is`/`:minimum`/`:maximum` that is none of a
+      # non-negative Integer, `Float::INFINITY` (either sign — AM's own check is `value == Float::INFINITY ||
+      # value == -Float::INFINITY`), a Symbol, or a Proc — but only when the validator class is first
+      # compiled, which axn defers to the first `.call` (`ValidatorClassCache`), so a bad bound today declares
+      # cleanly and fails every call with an opaque error instead of one at declaration.
       #
-      # Mirrors `LengthValidator#initialize` rather than reusing `declared_length_checks`: AM expands a
-      # `within:`/`in:` Range by UNCONDITIONALLY overwriting `:minimum`/`:maximum` with `range.min`/
-      # `range.max`, so a backwards or otherwise-empty Range (`3..2`) resolves to a `nil` bound rather than
-      # raising there — `declared_length_checks` reads the same range through `begin`/`end`/`exclude_end?`
-      # for a different purpose (an open floor/ceiling) and would silently drop that `nil` instead of
-      # surfacing it. Only keys AM would actually check are read — `Hash#slice` mirrors `check_validity!`'s
-      # own `CHECKS.keys & options.keys`, key PRESENCE and not truthiness, so an explicit `nil` bound is
-      # caught rather than skipped.
+      # Mirrors `LengthValidator#initialize` line for line rather than reusing `declared_length_checks`, which
+      # serves a different purpose (an open floor/ceiling) and drops a bound whose value is falsy before this
+      # question is even asked. Two things about AM's own expansion are easy to get wrong by "simplifying" to
+      # `range.min`/`range.max`, and both were measured wrong here once already:
       #
-      # Returns the offending `{key => bound}` pairs, empty when every declared bound is admissible.
+      #   * `:in` wins over `:within` when an entry names both (`options.delete(:in) || options.delete(:within)`,
+      #     evaluated in that order) — the reverse precedence silently swaps which bound governs.
+      #   * AM sets `:minimum`/`:maximum` only when the range HAS that end (`if range.begin` / `if range.end`),
+      #     not unconditionally — a beginless (`..5`) or endless (`5..`) range is a legal, common `length:`
+      #     spelling (open floor or open ceiling), and calling `Range#min`/`Range#max` on the missing end
+      #     raises `RangeError` outright. Unconditional `range.min`/`range.max` therefore CRASHES at
+      #     declaration on exactly the spellings AM itself declares cleanly.
+      #
+      # `range.max` and AM's own maximum formula (`exclude_end? ? range.end - 1 : range.end`) also disagree on
+      # an EMPTY exclusive range — `(2...2).max` is `nil` (Ruby reports no maximum for an empty range), while
+      # AM's formula computes `2 - 1 = 1` regardless of emptiness. Using AM's own formula rather than `#max`
+      # keeps this guard's verdict identical to what `check_validity!` actually decides, in every case rather
+      # than only the cases where the two formulas happen to agree.
+      #
+      # Returns the offending `{key => value}` pairs, empty when every declared bound is admissible. A bad
+      # `in:`/`within:` reports under ITS OWN key (the value is never a bound in AM's sense), everything else
+      # under `:is`/`:minimum`/`:maximum` — `Hash#slice` on those three mirrors `check_validity!`'s own
+      # `CHECKS.keys & options.keys`, key PRESENCE and not truthiness, so an explicit `nil` bound is caught
+      # rather than skipped.
       def self.invalid_length_bounds(entry_opts)
-        opts = validator_entry_options(entry_opts)
-        return {} if opts.empty?
+        raw = validator_entry_options(entry_opts)
+        return {} if raw.empty?
 
-        range = opts[:within] || opts[:in]
-        opts = opts.merge(minimum: range.min, maximum: range.max) if range.is_a?(Range)
+        opts = raw.dup
+        in_value = opts.delete(:in)
+        within_value = opts.delete(:within)
+        range = in_value || within_value
+
+        if range
+          range_key = in_value ? :in : :within
+          return { range_key => range } unless range.is_a?(::Range)
+
+          opts[:minimum] = range.min if range.begin
+          opts[:maximum] = (range.exclude_end? ? range.end - 1 : range.end) if range.end
+        end
 
         opts.slice(:is, :minimum, :maximum).reject do |_key, bound|
           (bound.is_a?(Integer) && !bound.negative?) ||
