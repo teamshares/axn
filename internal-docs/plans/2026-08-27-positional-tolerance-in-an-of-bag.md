@@ -409,6 +409,8 @@ git commit -m "PRO-3225: a bag takes optional:, canonicalized into the tolerance
 
 ### Task 3: Lift the axis refusal of the tolerance pair
 
+> **MERGED INTO TASK 2 during execution.** Task 2's own "canonicalizes `optional:` at a map axis" example folds `optional:` into `allow_blank:` on an axis bag, which `AXIS_INERT_OPTION_KEYS` then refuses — so Task 2 could not go green before this task landed. The two are one change: a bag position is a bag position, and the axis is one of the four. Task 2 carries the constant narrowing and the three examples below; this task is empty. Kept here, unrenumbered, so the executed commit can still be read against the plan.
+
 **Files:**
 - Modify: `lib/axn/core/contract.rb:2727-2742` (`AXIS_INERT_OPTION_KEYS` and its comment), `:2746-2756` (`_reject_inert_axis_options!`'s message)
 - Test: `spec/axn/core/validations/recursive_of_spec.rb`
@@ -1152,6 +1154,18 @@ In `_check_inner_contract_bag!`, beside the bag's strict refusal:
           _reject_inner_contract_context_scope!(bag, fields)
           _reject_inner_contract_except_on!(bag, fields)
           _reject_inner_contract_strict!(bag, fields)
+```
+
+**Version note, measured — read before writing the tests.** axn's gemspec is `activemodel >= 7.2`, and `except_on` joined AM's shared-option list *after* 7.2. Under the locked 7.2.2.2, `Base.shared_validation_option_keys` is `[:if, :unless, :on, :allow_blank, :allow_nil, :strict]` — no `:except_on`; under 8.x it is there. So today `except_on:` declares cleanly and inert at a field entry on both versions, is refused as an *unknown key* in an element bag on 7.2 but declares cleanly on 8.x, and is refused at an axis on both. Two rules follow, and both are load-bearing rather than tidy:
+
+- `entry_declares_except_on?` must ask whether the KEY is present, never consult `shared_validation_option_keys`. A guard derived from AM's list would cover different ground on different consumers' ActiveModel.
+- `except_on` must be added **explicitly** to `OF_OPTION_KEYS`'s `Set.new(...)` literal. `_reject_unknown_of_keys!` runs ahead of the dedicated guards in `_check_inner_contract_bag!`, so without the explicit entry AM 7.2 reports "unknown key" and the dedicated message is unreachable at a bag position.
+- Do NOT write a spec assertion that depends on `AXIS_INERT_OPTION_KEYS`' *value* — it differs by AM version. Use `if:`/`unless:` for axis-refusal assertions, which are in the set on every version.
+
+Add `except_on` to `UNADVERTISED_OF_KEYS`, which is `%i[on strict]` — the keys the bag whitelist admits only so a dedicated guard can name what is actually wrong with them, held out of what `_reject_unknown_of_keys!` renders as its `"(supported: …)"` list. `except_on:` now has exactly such a guard, so it must join them; leaving it out would advertise as supported a key the very next guard refuses:
+
+```ruby
+        UNADVERTISED_OF_KEYS = %i[on except_on strict].freeze
 ```
 
 And narrow the axis set at the source, since `except_on:` now has a message that names the real problem:
