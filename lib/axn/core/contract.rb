@@ -1243,6 +1243,11 @@ module Axn
         # into the pair before any of them is read, so the pair is the only form stored. Whether `if:`/`unless:`
         # then do anything depends on the position, which is `AXIS_INERT_OPTION_KEYS` below.
         #
+        # `optional` itself is never seen by the check below — `_canonicalize_bag_tolerance!` always deletes it
+        # first — so its entry here is not a gate. It exists because `_reject_unknown_of_keys!` renders `allowed
+        # - UNADVERTISED_OF_KEYS` as the "(supported: …)" list on an unknown-key refusal; without this entry
+        # that list would advertise a grammar a typo'd sibling key could not actually match.
+        #
         # `POSITIONAL_VALIDATOR_KEYS` is the value-constraint half (PRO-3193): a bag is a validator SET for
         # the position it describes, not only a type check, which is what makes the remedy PRO-3192's refusal
         # messages point at actually exist.
