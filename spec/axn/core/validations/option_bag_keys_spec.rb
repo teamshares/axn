@@ -550,8 +550,7 @@ RSpec.describe "option bag keys" do
       action = build_axn { expects :f, type: Array, of: { klass: String, allow_nil: true } }
       bag = action.internal_field_configs.first.validations[:of]
 
-      expect(bag).to include(allow_nil: true)
-      expect(bag).not_to include(:allow_blank)
+      expect(bag).to include(allow_nil: true, allow_blank: false)
     end
 
     it "still refuses a bag that constrains nothing but its own tolerance" do

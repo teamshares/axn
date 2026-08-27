@@ -161,6 +161,16 @@ module Axn
         return true if key == :absence
         return true if key == :acceptance && acceptance_admits_nil?(opts)
         return true if key == :confirmation
+
+        # `of:` is downstream of the field's own type: OfValidator no-ops on any value that is not the
+        # declared container (`return unless value.is_a?(::Array)`/`::Hash`), nil included — a nil field is
+        # rejected by the `type:` entry beside it, or not at all, and `of:` can never independently add that
+        # rejection. `opts[:allow_nil]`/`opts[:allow_blank]` above read the bag's own pair, but that pair is
+        # the POSITION's tolerance now (PRO-3225's element/entry reading), a different question from whether
+        # the FIELD accepts nil — and `_canonicalize_bag_tolerance!` states it explicitly (even `false`) on
+        # every bag, so a tolerant field paired with an intolerant position would otherwise read here as a
+        # nil-rejecting validator and wrongly mark the field required.
+        return true if key == :of
         return true if key == :format && format_admits_nil?(opts)
         return true if key == :length && length_admits_nil?(opts)
         return true if key == :type && type_admits_nil?(opts)

@@ -2514,11 +2514,24 @@ module Axn
         # A FALSY `optional:` is dropped rather than written as `allow_blank: false`. It is the absence of
         # tolerance, which is the default, and writing the negative would make an explicit `allow_nil: true`
         # beside it read as a contradiction the author did not declare.
+        #
+        # Both keys are then STATED explicitly on every bag, even one naming neither — the pair a field records
+        # is on the DECLARATION now, not copied into each validator entry (PRO-3225), and `validates` still
+        # merges that declaration tier into every validator it builds from the same call as its own defaults
+        # (`defaults.merge(entry)`, ActiveModel's own build step), `of:` included. Left implicit, a bag with no
+        # tolerance of its own would silently inherit whatever the FIELD's `allow_nil:`/`allow_blank:` says —
+        # `optional: true` on the field would legalise a nil ELEMENT nothing at this position asked for. Writing
+        # the pair here makes the bag's own (possibly false) answer the one AM's merge cannot override: an
+        # entry's own key always wins over the tier it rides beside. The same explicit-override device
+        # `_parse_field_validations` already uses to hold `confirmation:` out of that same tier.
         def _canonicalize_bag_tolerance!(bag)
-          return unless Internal::ShapeGraph.carries_key?(bag, :optional)
+          if Internal::ShapeGraph.carries_key?(bag, :optional)
+            optional = bag.delete(:optional)
+            bag[:allow_blank] = true if optional
+          end
 
-          optional = bag.delete(:optional)
-          bag[:allow_blank] = true if optional
+          bag[:allow_nil] = !!bag[:allow_nil]
+          bag[:allow_blank] = !!bag[:allow_blank]
         end
 
         # The grammar EVERY inner-contract bag is held to, asked once wherever one is accepted: at an Array's

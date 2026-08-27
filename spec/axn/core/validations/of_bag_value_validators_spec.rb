@@ -600,7 +600,7 @@ RSpec.describe "value validators in an of: bag" do
 
       expect(validations).to include(allow_blank: true, allow_nil: false)
       expect(validations[:type]).to eq(klass: Array)
-      expect(validations[:of]).to eq(klass: Integer, container: Array)
+      expect(validations[:of]).to eq(klass: Integer, container: Array, allow_nil: false, allow_blank: false)
     end
 
     it "keeps optional? reading true off the declaration tier alone" do
@@ -609,10 +609,16 @@ RSpec.describe "value validators in an of: bag" do
       expect(action.internal_field_configs.first.optional?).to be(true)
     end
 
-    it "leaves a required field's bag free of any tolerance axn did not write" do
+    # The bag states its own `false` explicitly rather than leaving the keys absent: ActiveModel merges a
+    # declaration's shared options into every validator built from the same `validates` call, `of:`
+    # included, so an absent pair here would let the FIELD's own `allow_nil:`/`allow_blank:` — whatever a
+    # future call site sets them to — silently reach this POSITION. Stating `false` is what makes a bag
+    # with no tolerance of its own immune to that merge (PRO-3225).
+    it "states its own false pair on a required field's bag, unreachable by the field's own tolerance" do
       action = build_axn { expects :f, type: Array, of: Integer }
 
-      expect(action.internal_field_configs.first.validations[:of]).to eq(klass: Integer, container: Array)
+      expect(action.internal_field_configs.first.validations[:of])
+        .to eq(klass: Integer, container: Array, allow_nil: false, allow_blank: false)
     end
   end
 

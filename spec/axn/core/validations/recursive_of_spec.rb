@@ -1504,15 +1504,19 @@ RSpec.describe "recursive of:" do
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer } }, optional: true } }.not_to raise_error
     end
 
-    it "states the tolerance pair on the declaration and writes it into neither the map bag nor an axis" do
+    # The map bag itself carries no tolerance pair — a map has two axes and no position of its own for
+    # `optional:` to describe — but each AXIS bag states its own `false` explicitly (PRO-3225): without it,
+    # ActiveModel's declaration-tier merge would let the FIELD's `optional: true` reach the values axis's
+    # position, tolerating a nil VALUE nothing here asked for.
+    it "states the tolerance pair on the declaration, and each axis states its own false, not the field's" do
       action = build_axn do
         expects :f, type: Hash, of: { values: { klass: Integer } }, optional: true
       end
       validations = action.internal_field_configs.first.validations
 
       expect(validations).to include(allow_blank: true, allow_nil: false)
-      expect(validations[:of]).to eq(container: Hash, shaped_keys: [], values: { klass: Integer })
-      expect(validations[:of][:values]).not_to include(:allow_blank, :allow_nil)
+      expect(validations[:of]).to eq(container: Hash, shaped_keys: [],
+                                     values: { klass: Integer, allow_nil: false, allow_blank: false })
     end
 
     # An axis bag is never handed to ActiveModel, which is why a GATE written there is refused: nothing reads
