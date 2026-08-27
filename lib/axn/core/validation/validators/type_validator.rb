@@ -3,6 +3,7 @@
 require "active_model"
 
 require "axn/internal/rendering"
+require "axn/internal/shape_graph"
 
 module Axn
   module Validators
@@ -69,7 +70,9 @@ module Axn
 
       private
 
-      def types = Array(options[:klass])
+      # `ShapeGraph.type_tokens`, not `Kernel#Array`: `options[:klass]` is the caller's own declared token, read
+      # fresh on every `validate_each` — a hostile `to_ary` would run on every call rather than once (PRO-3233).
+      def types = Axn::Internal::ShapeGraph.type_tokens(options[:klass])
 
       # Named through the shared seam for the reason `OfValidator#describe_mismatch` is: interpolating a
       # declared class runs its own `to_s`, and one that raises replaces the validation failure with its

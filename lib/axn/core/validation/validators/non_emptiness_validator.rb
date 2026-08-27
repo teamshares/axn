@@ -2,6 +2,8 @@
 
 require "active_model"
 
+require "axn/internal/shape_graph"
+
 module Axn
   module Validators
     # The check `allow_empty: false` installs when nothing else in the declaration already forbids an empty
@@ -59,7 +61,8 @@ module Axn
       def unanswerable?(value)
         return false if Axn::Validators::TypeValidator.mock_value?(value)
 
-        Array(options[:klass]).any? { |klass| Axn::Validators::TypeValidator.value_matches?(value, klass:) }
+        # `ShapeGraph.type_tokens`, not `Kernel#Array`: `options[:klass]` is the caller's own declared token.
+        Axn::Internal::ShapeGraph.type_tokens(options[:klass]).any? { |klass| Axn::Validators::TypeValidator.value_matches?(value, klass:) }
       rescue TypeError
         # A `type:` that is neither a Class/Module nor a known pseudo-type is a broken declaration whose
         # TypeError belongs to the type check, where it already surfaces. Stand down rather than preempting it.

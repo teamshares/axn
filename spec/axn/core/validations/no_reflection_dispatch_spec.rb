@@ -98,25 +98,55 @@ RSpec.describe "declared type tokens are read without dispatching to_ary" do
       end
     end
 
-    it "an of: bag's klass: axis is read without dispatching, at declaration and reflection" do
+    it "an of: bag's klass: axis is read without dispatching, at declaration, reflection, and a real call" do
       dispatched = []
       token = hostile_token(dispatched)
 
       expect_no_dispatch(dispatched) do
-        k = build_axn { expects :f, type: Array, of: { klass: token, message: "bad element" } }
+        k = build_axn do
+          expects :f, type: Array, of: { klass: token, message: "bad element" }
+          def call = nil
+        end
         k.input_schema
         k.output_schema
+        k.call(f: [])
       end
     end
 
-    it "a map's values: axis is read without dispatching, at declaration and reflection" do
+    # Confirmed via Codex review (PR #256): OfValidator's own PositionContract read `bag[:klass]` through
+    # `Kernel#Array` too — a validator instance is built once and memoized, but that one read still ran the
+    # token's `to_ary` on the first `.call`, and then held every element to the DECOY class it returned rather
+    # than the declared token — a runtime that disagreed with the (already-fixed) schema about what the
+    # contract actually holds elements to.
+    it "OfValidator holds elements to the declared token, not to a decoy its to_ary substitutes" do
+      dispatched = []
+      token = hostile_token(dispatched, returns: [Integer])
+
+      k = build_axn do
+        expects :f, type: Array, of: { klass: token }
+        def call = nil
+      end
+
+      result = k.call(f: ["not an integer"])
+
+      expect(dispatched).to eq([])
+      expect(result).not_to be_ok
+      expect(result.exception.message).to include("is not a")
+      expect(result.exception.message).not_to include("Integer")
+    end
+
+    it "a map's values: axis is read without dispatching, at declaration, reflection, and a real call" do
       dispatched = []
       token = hostile_token(dispatched)
 
       expect_no_dispatch(dispatched) do
-        k = build_axn { expects :f, type: Hash, of: { values: token } }
+        k = build_axn do
+          expects :f, type: Hash, of: { values: token }
+          def call = nil
+        end
         k.input_schema
         k.output_schema
+        k.call(f: {})
       end
     end
 
