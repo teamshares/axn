@@ -2912,6 +2912,26 @@ module Axn
           POSITIONAL_VALIDATOR_KEYS.any? { |key| Internal::ShapeGraph.carries_key?(bag, key) && bag[key] }
         end
 
+        # A truthy `presence:` under a tolerance is dead machinery: the tolerance is applied to every check at
+        # the position, so the presence validator would accept exactly the values it exists to reject. Refused
+        # at declaration, at a field and at every bag position, through one function — the alternative is two
+        # statements of one rule that can come to disagree about which combinations are legal.
+        #
+        # `presence: false` is coherent and untouched: explicit suppression, the same intent as the tolerance.
+        # The tolerance is passed rather than read out of `validations`, because at a field it is still a
+        # declaration KWARG when this runs, and at a bag it is the bag's own pair.
+        def _reject_tolerant_presence!(validations, where:, tolerance:)
+          return unless tolerance[:allow_blank] || tolerance[:allow_nil]
+          return unless validations[:presence]
+
+          raise ArgumentError,
+                "optional:/allow_blank:/allow_nil: on #{where} cannot be combined with an explicit " \
+                "`presence:` — the tolerance is applied to every check at that position, so the presence " \
+                "check could never fail. For \"may be nil, but not empty\", declare `allow_empty: false` " \
+                "alongside the tolerance; otherwise declare one requiredness signal (drop the tolerance, or " \
+                "drop presence:)."
+        end
+
         # PRO-3192's two positional guards, at a bag position. Reached with the bag's own value constraints and
         # `klass:` in the role `type:` plays at a field — which is the role `klass:` already plays for the rest
         # of the bag grammar (`_inner_of_container!`) — so ONE rule covers the field and all three bag
@@ -2922,21 +2942,20 @@ module Axn
           return unless _bag_carries_positional_validator?(bag)
 
           validations = _bag_as_validations(bag)
+          tolerance = Axn::Validation::Base.tolerance_options(bag)
 
           where = "an `of:` bag on #{_declared_fields_label(fields)}"
+          _reject_tolerant_presence!(validations, where:, tolerance:)
           _reject_container_position_validators!(validations, where:, nested: true)
-          # No tolerance is passed, and none is read out of `validations` either (see `_bag_as_validations`):
-          # a bag's `allow_nil:`/`allow_blank:` do not govern its position (PRO-3225), so honouring them here
-          # would stand the guard down for a rescue that never happens — letting a contract which admits
-          # NOTHING declare cleanly, which is the class this guard exists to refuse. At a field the same flags
-          # DO rescue the contract, and there they still stand it down.
-          _reject_unsatisfiable_value_constraints!(validations, where:, nested: true, tolerance: {})
+          # The bag's own tolerance, read the way the field's is: a tolerated value PASSES, so it can rescue a
+          # contract that would otherwise admit nothing, and it discounts the literals ActiveModel would skip.
+          _reject_unsatisfiable_value_constraints!(validations, where:, nested: true, tolerance:)
           # Its mirror, in the same order the field path runs the pair: the unsatisfiable contract is reported
           # first, so a declaration broken both ways names the defect that rejects every call ahead of the one
-          # that rejects none. Both guards run at all four positions — PRO-3192's rule is that a validator is
-          # judged where it is declared, and an INVERTED one that forbids literals no value of the position's
-          # class could be enforces nothing there just as surely as it does at a field.
-          _reject_vacuous_value_constraints!(validations, where:, nested: true, tolerance: {})
+          # that rejects none. Both guards run at all four positions — a validator is judged where it is
+          # declared, and an INVERTED one that forbids literals no value of the position's class could be
+          # enforces nothing there just as surely as it does at a field.
+          _reject_vacuous_value_constraints!(validations, where:, nested: true, tolerance:)
         end
 
         # The bag as a VALIDATIONS hash: its value constraints, with `klass:` renamed to `type:` — the role
@@ -2944,9 +2963,10 @@ module Axn
         # validator added to `POSITIONAL_VALIDATOR_KEYS` reaches the guards without a second edit here.
         #
         # The shared ActiveModel options come out through `validator_entries`, exactly as they do for the
-        # runtime's own forwarding (`OfValidator#inner_contract_validations`): they are not validators, and at a
-        # bag position they are not enforced either, so leaving them in would have `Base.nil_accepted?` read a
-        # tolerance out of the bag and reach the same wrong answer the explicit `tolerance: {}` above avoids.
+        # runtime's own forwarding (`OfValidator#inner_contract_validations`): they are not validators. The
+        # position's TOLERANCE is handed to the guards separately, as the tier they resolve per entry — the
+        # same shape the field path passes — rather than left in the hash, so a guard reads it as tolerance
+        # and never as a validator.
         def _bag_as_validations(bag)
           validations = Axn::Validation::Base.validator_entries(bag.except(*BAG_GRAMMAR_KEYS))
           klass = bag[:klass]
@@ -5263,17 +5283,8 @@ module Axn
 
           tolerant = allow_blank || allow_nil
 
-          # A truthy explicit presence: can never fire under a tolerance flag — the pushed-down
-          # allow_blank/allow_nil would make the presence validator accept exactly the values it
-          # exists to reject — so the combination is dead machinery, rejected at declaration.
-          # (`presence: false` is coherent: explicit suppression, same intent as the flag.)
-          if tolerant && validations[:presence]
-            raise ArgumentError,
-                  "optional:/allow_blank:/allow_nil: cannot be combined with an explicit `presence:` — " \
-                  "the tolerance is pushed into every validator, so the presence check could never fail. " \
-                  "For \"may be nil, but not empty\", declare `allow_empty: false` alongside the tolerance; " \
-                  "otherwise declare one requiredness signal (drop the flag, or drop presence:)."
-          end
+          _reject_tolerant_presence!(validations, where: _declared_fields_label(fields),
+                                                  tolerance: { allow_nil:, allow_blank: })
 
           # Settle the emptiness axis before the push-down, while the `presence:`/`length:` entries are
           # still exactly as the author wrote them.

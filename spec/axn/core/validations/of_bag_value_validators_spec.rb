@@ -349,10 +349,10 @@ RSpec.describe "value validators in an of: bag" do
     end
 
     # At a FIELD, a tolerance flag stands the satisfiability guard down because it genuinely rescues the
-    # contract — `type: String, inclusion: { in: [1, 2] }, optional: true` really does accept nil. At a bag
-    # position it rescues nothing: a bag's `allow_nil:`/`allow_blank:` are not positional (PRO-3225), so
-    # honouring them here would let a contract that admits NOTHING declare cleanly, which is the whole class
-    # the guard exists to refuse.
+    # contract — `type: String, inclusion: { in: [1, 2] }, optional: true` really does accept nil. A bag's own
+    # `allow_nil:`/`allow_blank:` govern its POSITION the same way (PRO-3225): the tolerance is applied to
+    # every check written there, so a tolerated nil/blank really does pass the position's own contract, and
+    # the guard stands down for the same reason it does at a field.
     # The VACUITY twin, which reaches a bag position on the same terms. An inverted validator forbidding
     # literals no value of the bag's `klass:` could be enforces nothing at that position, exactly as it
     # enforces nothing at a field — so "PRO-3192's two guards" has to mean both of them here.
@@ -383,14 +383,14 @@ RSpec.describe "value validators in an of: bag" do
       expect { build_axn { expects :f, type: Array, of: { klass: String, exclusion: { in: ["admin"] } } } }.not_to raise_error
     end
 
-    it "does not let an unenforced bag tolerance stand the guard down" do
+    it "lets the bag's own tolerance stand the guard down, the way a field's does" do
       expect { build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_nil: true } } }
-        .to raise_error(ArgumentError, /can never match/)
+        .not_to raise_error
     end
 
-    it "refuses it under allow_blank: too" do
+    it "does so under allow_blank: too" do
       expect { build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_blank: true } } }
-        .to raise_error(ArgumentError, /can never match/)
+        .not_to raise_error
     end
 
     # The field-level control, which must keep standing down — there the tolerance IS enforced.
@@ -701,6 +701,35 @@ RSpec.describe "value validators in an of: bag" do
 
         expect(action.call(f: [["AB", nil]])).to be_ok
         expect(action.call(f: [nil])).not_to be_ok
+      end
+    end
+
+    describe "a contradiction the position cannot hold" do
+      # The same rule the field carries, for the same reason: the tolerance is applied to every check at the
+      # position, so the presence check could never fail. Dead machinery, refused where it is written.
+      it "refuses a tolerance beside an explicit presence: at an element position" do
+        expect { build_axn { expects :f, type: Array, of: { klass: String, presence: true, allow_blank: true } } }
+          .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+      end
+
+      it "refuses it under the optional: spelling too" do
+        expect { build_axn { expects :f, type: Array, of: { klass: String, presence: true, optional: true } } }
+          .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+      end
+
+      it "refuses it at a map axis" do
+        expect do
+          build_axn { expects :f, type: Hash, of: { values: { klass: String, presence: true, allow_nil: true } } }
+        end.to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+      end
+
+      it "still accepts a presence: with no tolerance beside it" do
+        expect { build_axn { expects :f, type: Array, of: { klass: String, presence: true } } }.not_to raise_error
+      end
+
+      it "still refuses the same contradiction at a field" do
+        expect { build_axn { expects :f, type: String, presence: true, optional: true } }
+          .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
       end
     end
   end
