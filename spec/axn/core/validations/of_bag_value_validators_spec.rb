@@ -748,4 +748,70 @@ RSpec.describe "value validators in an of: bag" do
       end
     end
   end
+
+  # A FIELD's tolerance governs the field; a POSITION's governs the position. They are separate tiers, and the
+  # thing that keeps them separate is that every bag STATES its own answer: `validates` hands a validator
+  # `declaration_defaults.merge(entry)`, so a bag that merely omitted the keys would receive the field's and
+  # `OfValidator` would read them as the position's.
+  #
+  # Every route that BUILDS an `of:` bag therefore has to be normalized, not just the ones a declaration names.
+  # The block and distributing-`shape:` forms mint their bag in `_open_distributing_bag!`, which reaches none of
+  # `_check_inner_contract_bag!`'s guards — measured: before that bag was normalized, `expects :f, type: Array,
+  # optional: true do … end` admitted a nil ELEMENT while a nil field was legal too.
+  describe "a field's tolerance never reaches a position, by every route that builds a bag" do
+    {
+      "optional:" => { optional: true },
+      "allow_blank:" => { allow_blank: true },
+      "allow_nil:" => { allow_nil: true },
+    }.each do |spelling, field_options|
+      context "with a field-level #{spelling}" do
+        it "admits the nil FIELD and still rejects a nil ELEMENT through a shape block" do
+          action = build_axn do
+            expects :f, type: Array, **field_options do
+              field :a, type: String
+            end
+          end
+
+          expect(action.call(f: nil)).to be_ok
+          expect(action.call(f: [{ a: "x" }])).to be_ok
+          expect(action.call(f: [nil])).not_to be_ok
+        end
+
+        it "admits the nil FIELD and still rejects a nil ELEMENT through an explicit of:" do
+          action = build_axn { expects :f, type: Array, of: String, **field_options }
+
+          expect(action.call(f: nil)).to be_ok
+          expect(action.call(f: %w[a])).to be_ok
+          expect(action.call(f: [nil])).not_to be_ok
+        end
+
+        it "still rejects a nil value on a map's values axis" do
+          action = build_axn { expects :f, type: Hash, of: { values: String }, **field_options }
+
+          expect(action.call(f: nil)).to be_ok
+          expect(action.call(f: { a: "x" })).to be_ok
+          expect(action.call(f: { a: nil })).not_to be_ok
+        end
+
+        it "still rejects a nil element one rung down" do
+          action = build_axn { expects :f, type: Array, of: { klass: Array, of: String }, **field_options }
+
+          expect(action.call(f: nil)).to be_ok
+          expect(action.call(f: [%w[a]])).to be_ok
+          expect(action.call(f: [[nil]])).not_to be_ok
+        end
+      end
+    end
+
+    it "states the pair on a bag the block form mints, so nothing is left for the declaration tier to fill" do
+      action = build_axn do
+        expects :f, type: Array, optional: true do
+          field :a, type: String
+        end
+      end
+
+      expect(action.internal_field_configs.first.validations[:of])
+        .to include(allow_nil: false, allow_blank: false)
+    end
+  end
 end

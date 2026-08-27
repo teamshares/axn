@@ -3382,6 +3382,13 @@ module Axn
           return if Internal::ShapeGraph.carries_key?(node, :of)
 
           node[:of] = { container: ::Array }
+          # Through the shared normalizer, because this bag is a POSITION like any other and its tolerance has to
+          # be stated rather than left absent. An absent key is not "no tolerance": `validates` hands a validator
+          # `declaration_defaults.merge(entry)`, so a field's own `optional:` would arrive inside this bag and
+          # `OfValidator` would read it as the element position's — making `expects :f, type: Array, optional: true`
+          # admit a nil ELEMENT. The bags a declaration names are normalized by `_check_inner_contract_bag!`; this
+          # one is minted here and reaches none of that, so it is normalized here.
+          _canonicalize_bag_tolerance!(node[:of])
         end
 
         # `shape:` names a Hash's own members and `of:` names its values, so on a Hash — and only on a Hash —
