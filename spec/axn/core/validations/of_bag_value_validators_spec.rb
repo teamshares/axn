@@ -672,6 +672,17 @@ RSpec.describe "value validators in an of: bag" do
         expect(action.call(rows: [{}, nil])).to be_ok
       end
 
+      # The declaration above accepts `[{}, nil]` at runtime, so the schema has to admit it too: a `shape:`
+      # merge that hard-coded `type: "object"` discarded the `null` branch nullability had just added, leaving
+      # the document reject what the runtime accepts.
+      it "emits the null branch alongside the shape's object type" do
+        action = build_axn do
+          expects :rows, type: Array, of: { klass: Hash, allow_nil: true, shape: { members: [] } }
+        end
+
+        expect(action.input_schema.dig(:properties, :rows, :items)).to include(type: %w[object null])
+      end
+
       it "leaves a bag with no tolerance rejecting a nil element" do
         action = build_axn { expects :codes, type: Array, of: { klass: String } }
 

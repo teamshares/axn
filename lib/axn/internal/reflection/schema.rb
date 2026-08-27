@@ -2543,7 +2543,13 @@ module Axn
           return node unless shape_overlay_applies?(bag, for_output:)
 
           member_props, required = member_properties(shape[:members], for_output:, ancestry:)
-          merged = node.merge(type: "object", properties: (node[:properties] || {}).merge(member_props))
+          # The object type is written back through the same nullability helper the node already carries its
+          # `null` branch through (`reconcile_contents_nullability`, above this call in `contents_node_schema`),
+          # rather than a bare "object" that would discard it: a tolerant position naming a `shape:` is where a
+          # `NilClass` union could never reach before this position could be nullable at all
+          # (`_shape_compatible_klass!` refuses one), so nothing forwarded that branch through this merge until now.
+          merged = node.merge(type: type_with_nullability("object", nullable: Array(node[:type]).include?("null")),
+                              properties: (node[:properties] || {}).merge(member_props))
           merged[:required] = required unless required.empty?
           merged
         end
@@ -2745,7 +2751,7 @@ module Axn
           # downstream distinguishes "false" from "absent" — every reader here asks a truthy question — so
           # dropping it costs no other case its answer.
           effective_validations(constraints, for_output:)
-            .merge(Axn::Validation::Base.tolerance_options(bag).select { |_key, tolerant| tolerant })
+            .merge(Axn::Validation::Base.true_tolerance_options(bag))
         end
 
         def single_contents_schema(klass, for_output: false)

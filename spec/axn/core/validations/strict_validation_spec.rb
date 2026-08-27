@@ -248,6 +248,30 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
       end.to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
     end
 
+    # A raw `ShapeConfig` member never passes through `_parse_field_validations`, so it needs its own guard call
+    # (`shape_declaration.rb`'s member guard list) rather than inheriting one from the field path — the same
+    # reason `_reject_strict_validation!` is called there. Both spellings, matching that sibling's own pair.
+    #
+    # The declaration-level spelling is caught two ways depending on the consumer's ActiveModel: on a version
+    # where `except_on:` is one of AM's own shared validation keys, `_check_member_option_keys!` never sees it
+    # as unrecognized, so this guard is what refuses it (with the dedicated message); on a version where it is
+    # not, `_check_member_option_keys!` already refuses it as an unknown key, ahead of this guard ever running.
+    # Both are ArgumentErrors naming the same broken declaration, so only that much is pinned here — a message
+    # match would tie the example to whichever list happens to be in `shared_validation_option_keys` right now.
+    it "is refused on a raw member" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { presence: true, except_on: :publish })
+
+      expect { build_axn { expects :h, type: Hash, shape: { members: [member], container: Hash } } }
+        .to raise_error(ArgumentError, /except_on/)
+    end
+
+    it "is refused inside a raw member's validator bag" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { presence: { except_on: :publish } })
+
+      expect { build_axn { expects :h, type: Hash, shape: { members: [member], container: Hash } } }
+        .to raise_error(ArgumentError, /`except_on:` inside presence: on shape member `x`/)
+    end
+
     it "leaves a supported gate alone" do
       expect { build_axn { expects :f, type: String, format: { with: /x/, if: :flag } } }.not_to raise_error
     end

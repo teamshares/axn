@@ -5110,9 +5110,16 @@ module Axn
         # no call, so the check runs on every one. Two inert options, two scans, one apiece — widening
         # `_reject_validator_context_scope!` to cover both would collapse that difference into one message that
         # cannot say which way the entry is actually dead.
+        #
+        # Refused at EVERY position a validator's options are written — a field, a subfield, an ambient subfield,
+        # an exposure, a shape member, and an `of:` bag at any depth — through the two seams that reach them:
+        # this scan for a declaration's own key and its validator entries, `_reject_inner_contract_except_on!`
+        # for a bag. Every offender is named at once: an author who wrote two of them has one declaration to fix.
         def _reject_validator_except_on!(validations, where:)
-          offenders = Axn::Validation::Base.validator_entries(validations).filter_map do |key, entry|
-            "#{key}:" if Axn::Validation::Base.entry_declares_except_on?(entry)
+          offenders = []
+          offenders << "the declaration" if Internal::ShapeGraph.carries_key?(validations, :except_on)
+          Axn::Validation::Base.validator_entries(validations).each do |key, entry|
+            offenders << "#{key}:" if Axn::Validation::Base.entry_declares_except_on?(entry)
           end
           return if offenders.empty?
 

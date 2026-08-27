@@ -105,6 +105,13 @@ module Axn
         end
       end
 
+      # The tolerance a bag actually GRANTS — `tolerance_options` above, less any key it carries as an explicit
+      # `false` (the anti-leak device `_canonicalize_bag_tolerance!` writes onto every `of:` bag, so a FIELD's
+      # tolerance can never be read off a POSITION that declared none of its own). A reader that only cares
+      # whether the position tolerates something asks THIS rather than re-deriving "true" from `tolerance_options`
+      # with its own `select`, which is what the emitter did before this existed.
+      def self.true_tolerance_options(bag) = tolerance_options(bag).select { |_key, tolerant| tolerant }
+
       # The real VALIDATOR entries in a validations hash — everything that is NOT an ActiveModel shared
       # option (if:/unless:/on:/strict:/allow_blank:/allow_nil:). THE single definition of "is this a
       # validator", shared by the validator-class builder, the gate sweeps, and schema reflection, so
@@ -157,20 +164,20 @@ module Axn
         # Judged on the options `validates` will actually hand the validator, so a declaration-wide tolerance
         # counts exactly as an entry's own does.
         opts = effective_entry_options(opt, declaration_options)
-        return true if opts[:allow_nil] || opts[:allow_blank]
-        return true if key == :absence
-        return true if key == :acceptance && acceptance_admits_nil?(opts)
-        return true if key == :confirmation
 
         # `of:` is downstream of the field's own type: OfValidator no-ops on any value that is not the
         # declared container (`return unless value.is_a?(::Array)`/`::Hash`), nil included — a nil field is
         # rejected by the `type:` entry beside it, or not at all, and `of:` can never independently add that
-        # rejection. `opts[:allow_nil]`/`opts[:allow_blank]` above read the bag's own pair, but that pair is
-        # the POSITION's tolerance (the element/entry reading), a different question from whether
-        # the FIELD accepts nil — and `_canonicalize_bag_tolerance!` states it explicitly (even `false`) on
-        # every bag, so a tolerant field paired with an intolerant position would otherwise read here as a
-        # nil-rejecting validator and wrongly mark the field required.
+        # rejection. Checked ahead of `opts[:allow_nil]`/`opts[:allow_blank]` below, which read the bag's own
+        # pair — but that pair is the POSITION's tolerance (the element/entry reading), a different question
+        # from whether the FIELD accepts nil — and `_canonicalize_bag_tolerance!` states it explicitly (even
+        # `false`) on every bag, so a tolerant field paired with an intolerant position would otherwise read
+        # here as a nil-rejecting validator and wrongly mark the field required.
         return true if key == :of
+        return true if opts[:allow_nil] || opts[:allow_blank]
+        return true if key == :absence
+        return true if key == :acceptance && acceptance_admits_nil?(opts)
+        return true if key == :confirmation
         return true if key == :format && format_admits_nil?(opts)
         return true if key == :length && length_admits_nil?(opts)
         return true if key == :type && type_admits_nil?(opts)

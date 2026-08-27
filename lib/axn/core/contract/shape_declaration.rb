@@ -777,9 +777,10 @@ module Axn
           # rule a field's are. The member's own BAG-level `on:` is refused earlier, by
           # `_check_member_option_keys!` above, with the reason particular to a member.
           #
-          # All seven are the field path's own guards, called with the member's label where a field passes its
+          # All eight are the field path's own guards, called with the member's label where a field passes its
           # own: a key that names no validator at all, an entry whose check cannot run, one asking for a
-          # strict-raising mode axn has not got, one that cannot MEAN anything at a container position, one
+          # strict-raising mode axn has not got, one naming a context to skip that axn has not got either (so
+          # the exclusion excludes nothing), one that cannot MEAN anything at a container position, one
           # comparing against literals no value of the declared type could be, one forbidding literals no
           # value of the declared type could be, and one whose admissible SIZES form an empty interval. The
           # positional rule is a rule about positions, and a member is one — so a raw member is held to it
@@ -804,6 +805,7 @@ module Axn
           _reject_unsupported_validator_keys!(copy, where: member_where)
           _reject_validator_context_scope!(copy, where: member_where)
           _reject_strict_validation!(copy, where: member_where)
+          _reject_validator_except_on!(copy, where: member_where)
           _reject_container_position_validators!(copy, where: member_where)
           _reject_unsatisfiable_value_constraints!(copy, where: member_where,
                                                          tolerance: copy.slice(:allow_nil, :allow_blank))
