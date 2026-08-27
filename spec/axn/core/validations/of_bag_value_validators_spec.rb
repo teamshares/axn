@@ -814,4 +814,46 @@ RSpec.describe "value validators in an of: bag" do
         .to include(allow_nil: false, allow_blank: false)
     end
   end
+
+  # `allow_blank:` at a position means what it means at a named one, and what it means there is whatever
+  # ActiveModel's own skip asks — `value.blank?`. A value class defining domain blankness therefore has to be
+  # answered the same way at all three, or the bag's tolerance rejects a value the author legitimised.
+  describe "a bag's allow_blank: reads blankness the way ActiveModel does" do
+    # Not a hostile class: overriding `blank?` for a domain notion of empty is ordinary ActiveSupport idiom.
+    padded = Class.new(String) do
+      def blank? = strip.empty?
+    end
+
+    let(:pattern) { { with: /\A[A-Z]{2}\z/ } }
+
+    it "tolerates a subclass whose own blank? says blank, at an element position" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true } }
+
+      expect(action.call(f: [padded.new("   ")])).to be_ok
+      expect(action.call(f: [padded.new("AB")])).to be_ok
+      expect(action.call(f: [padded.new("ab")])).not_to be_ok
+    end
+
+    it "agrees with the same declaration at a field and at a shape member" do
+      at_field = build_axn { expects :f, type: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true }
+      at_member = build_axn do
+        expects :f, type: Hash do
+          field :a, type: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true
+        end
+      end
+      at_position = build_axn { expects :f, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true } }
+      value = padded.new("   ")
+
+      expect(at_field.call(f: value)).to be_ok
+      expect(at_member.call(f: { a: value })).to be_ok
+      expect(at_position.call(f: [value])).to be_ok
+    end
+
+    it "still tolerates the exact-class blank and still rejects a non-blank mismatch" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true } }
+
+      expect(action.call(f: ["", "   "])).to be_ok
+      expect(action.call(f: ["ab"])).not_to be_ok
+    end
+  end
 end
