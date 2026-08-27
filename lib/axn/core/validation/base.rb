@@ -211,6 +211,19 @@ module Axn
       # class definition where it is true, which is the same declaration failing in one environment only.
       def self.entry_declares_strict?(entry_opts) = entry_carries_option?(entry_opts, :strict)
 
+      # Whether a validator ENTRY carries ActiveModel's `except_on:`, which names a validation context axn has
+      # not got. THE definition behind the declaration guards that refuse one at a field entry
+      # (`_reject_validator_except_on!`) and at every bag position (`_reject_inner_contract_except_on!`) — their
+      # only consumers, so no judgment downstream ever meets one.
+      #
+      # Only the key's presence is asked, for the reason `on:` asks only that: `validate` installs the gate on
+      # the key, whatever the value. The direction is the opposite of `on:`'s, though, and that is why it is a
+      # separate question rather than a widening of `entry_context_scoped?`. AM installs it as
+      # `unless: -> { Array(options[:except_on]).include?(validation_context) }`, and axn validates with no
+      # context, so `[:publish].include?(nil)` is false and the entry runs on EVERY call — the exclusion
+      # excludes nothing, where an `on:` makes the check run on nothing. Two inert options, two accounts of why.
+      def self.entry_declares_except_on?(entry_opts) = entry_carries_option?(entry_opts, :except_on)
+
       # One ENTRY, one option key, asked without dispatching to the bag — the shared read behind both refusals
       # above, because a guard a caller can invert is not a guard: `hash_or_nil` classifies with `case`/`when`
       # (which does not call the object's `is_a?`) and `carries_key?` binds `Hash#key?`. That matches how

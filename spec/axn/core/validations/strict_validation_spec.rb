@@ -221,4 +221,35 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
       expect(result.exception.message).to include("must be greater than 5").and include("is invalid")
     end
   end
+
+  # ActiveModel's other context option, and axn has no validation contexts at any position. It is inert in the
+  # OPPOSITE direction to `on:`: `validate` installs it as `unless: -> { Array(options[:except_on]).include?(
+  # validation_context) }`, and axn calls `valid?` with no context, so the exclusion excludes nothing and the
+  # entry runs on every call. An option whose only effect is to look like one.
+  describe "except_on:" do
+    it "is refused on a field's validator entry" do
+      expect { build_axn { expects :f, type: String, format: { with: /x/, except_on: :publish } } }
+        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    it "is refused inside an of: bag" do
+      expect { build_axn { expects :f, type: Array, of: { klass: String, except_on: :publish } } }
+        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    it "is refused at a map axis" do
+      expect { build_axn { expects :f, type: Hash, of: { values: { klass: String, except_on: :publish } } } }
+        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    it "is refused inside a nested bag" do
+      expect do
+        build_axn { expects :f, type: Array, of: { klass: Array, of: { klass: String, except_on: :publish } } }
+      end.to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    it "leaves a supported gate alone" do
+      expect { build_axn { expects :f, type: String, format: { with: /x/, if: :flag } } }.not_to raise_error
+    end
+  end
 end
