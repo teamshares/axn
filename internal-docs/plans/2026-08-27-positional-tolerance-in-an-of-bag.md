@@ -18,7 +18,7 @@
 - **The shared-option list is AM's own**, read through `Axn::Validation::Base.shared_validation_option_keys` (= `_validates_default_keys` = `[:if, :unless, :on, :allow_blank, :allow_nil, :strict, :except_on]`). Never restate it.
 - **One definition per judgment.** Where the field path already answers a question, the bag path calls the same method rather than growing a second copy.
 - **No historical comments in code.** No "used to X / now Y", no ticket numbers as justification-by-citation, no "(Codex review)". Describe the mechanism as it stands.
-- **Run the suite with `bundle exec rspec`** from the worktree root. Full suite is ~4 minutes / 7251 examples.
+- **Run the suite with `bundle exec rspec`** from the worktree root, in the FOREGROUND with a generous timeout (600000 ms). Full suite is ~4 minutes / 7251 examples. Do not background it and poll — that is how a run gets abandoned half-finished.
 - **Locate code by name, never by this plan's line numbers.** Five tasks edit `lib/axn/core/contract.rb` in sequence, so every line reference below is stale the moment an earlier task lands. The line numbers are provenance — they say where the thing was when the plan was written. Find the method or constant by name.
 - **Two things write into an `of:` bag**, and both must stop for the bag to be author-only: the tolerance push in `_parse_field_validations`' tolerant branch, and `_apply_nil_skip_to_non_type_validators!`, which merges `allow_nil: true` into every non-`type:` entry whenever the field's `type:` rejects nil — i.e. on every *required* container field. Task 1 handles both.
 
@@ -465,22 +465,20 @@ In `lib/axn/core/contract.rb`, replace the comment above `AXIS_INERT_OPTION_KEYS
         # what the position itself admits, and `OfValidator` resolves them off the bag directly through
         # `position_contract`. So an axis states its tolerance exactly as an element bag does.
         #
-        # `on:`, `except_on:` and `strict:` are left out because `_check_inner_contract_bag!` has already
-        # refused each a step earlier, naming the real problem — axn has no validation contexts, and no
-        # strict-raising mode — both of which are true at every position rather than at this one. Listing any of
-        # them here would offer "drop it, the axis reads nothing" where the messages above name what axn does
-        # not have.
-        AXIS_INERT_OPTION_KEYS = %i[if unless].freeze
-```
-
-Note `except_on:` moves out of this set in Task 8, where it gains a message of its own; until then it is still refused here. To keep Task 3 self-contained, write the constant as:
-
-```ruby
+        # `on:` and `strict:` are left out because `_check_inner_contract_bag!` has already refused each a step
+        # earlier, naming the real problem — axn has no validation contexts, and no strict-raising mode — both
+        # of which are true at every position rather than at this one. Listing either here would offer "drop it,
+        # the axis reads nothing" where the messages above name what axn does not have.
         AXIS_INERT_OPTION_KEYS = (Axn::Validation::Base.shared_validation_option_keys -
                                   %i[on strict allow_nil allow_blank]).freeze
 ```
 
-which is `[:if, :unless, :except_on]` today and becomes `[:if, :unless]` when Task 8 subtracts `except_on` at the source. Derive rather than list, so the set cannot drift from AM's.
+Two things to get right here, both of which the plan originally muddled:
+
+- **Derive the set, never list it.** The subtraction keeps it in step with ActiveModel's own `_validates_default_keys`; a literal `%i[if unless]` would silently stop covering a key AM adds.
+- **`except_on:` stays IN this set for now**, which is why the comment above names only `on:` and `strict:` as the ones refused elsewhere. Task 7 is what gives `except_on:` a message of its own and subtracts it here. Do not pre-empt that, and do not write a comment claiming `except_on:` is already refused a step earlier — it is not, until Task 7.
+
+The value today is therefore `[:if, :unless, :except_on]`.
 
 - [ ] **Step 4: Run the new examples**
 
