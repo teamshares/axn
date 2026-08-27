@@ -519,8 +519,19 @@ module Axn
           range_key = in_value ? :in : :within
           return { range_key => range } unless range.is_a?(::Range)
 
-          opts[:minimum] = range.min if range.begin
-          opts[:maximum] = (range.exclude_end? ? range.end - 1 : range.end) if range.end
+          # A Range whose endpoints admit `Range#begin`/`#end`/`#min` but not the arithmetic AM's own
+          # expansion performs on them — a String range's exclusive end has no `#-` — raises mid-computation
+          # rather than resolving to a bound this method can then judge. AM itself crashes with the SAME
+          # uncaught `NoMethodError` for `length: { in: "a"..."c" }` (measured), which is the declares-
+          # cleanly-crashes-every-call failure this method exists to convert into a clean `ArgumentError` —
+          # so a range that cannot be resolved is reported as invalid under its own key, same as a non-Range
+          # value, rather than left to raise unguarded here too.
+          begin
+            opts[:minimum] = range.min if range.begin
+            opts[:maximum] = (range.exclude_end? ? range.end - 1 : range.end) if range.end
+          rescue StandardError
+            return { range_key => range }
+          end
         end
 
         checks = opts.slice(:is, :minimum, :maximum)

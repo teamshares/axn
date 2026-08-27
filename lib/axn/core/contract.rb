@@ -3563,15 +3563,19 @@ module Axn
           bad = Axn::Validation::Base.invalid_length_bounds(validations[:length])
           return if bad.empty?
 
+          # `Identity.describe`, not `.inspect`: every value here is the caller's own (a raw bound, a bad
+          # `in:`/`within:`, or the whole entry), and this is an error-reporting path — dispatching a
+          # caller's `inspect` here would let it replace this ArgumentError with whatever it raises instead.
           if bad.key?(:length)
             raise ArgumentError,
-                  "length: on #{where} specifies no check at all (#{bad[:length].inspect}) — declared, the " \
-                  "class defines cleanly and every call raises ActiveModel's own `ArgumentError: Range " \
-                  "unspecified. Specify the :in, :within, :maximum, :minimum, or :is option.` from " \
-                  "LengthValidator#check_validity! instead. Name a real bound, or drop length: entirely."
+                  "length: on #{where} specifies no check at all (#{Internal::Identity.describe(bad[:length])}) " \
+                  "— declared, the class defines cleanly and every call raises ActiveModel's own " \
+                  "`ArgumentError: Range unspecified. Specify the :in, :within, :maximum, :minimum, or :is " \
+                  "option.` from LengthValidator#check_validity! instead. Name a real bound, or drop length: " \
+                  "entirely."
           end
 
-          offenders = bad.map { |key, value| "#{key}: #{value.inspect}" }.join(", ")
+          offenders = bad.map { |key, value| "#{key}: #{Internal::Identity.describe(value)}" }.join(", ")
           raise ArgumentError,
                 "length: on #{where} has an option ActiveModel cannot use (#{offenders}) — :in:/:within: must " \
                 "each be a Range, and :is:/:minimum:/:maximum: must each be a non-negative Integer, " \

@@ -107,6 +107,28 @@ RSpec.describe "a length: option ActiveModel cannot use" do
     end
   end
 
+  # Found by Codex review round 4 (PR #256): a Range whose exclusive end has no `#-` (a String range) raised
+  # an uncaught `NoMethodError` from the guard's own arithmetic, mid-computation, rather than resolving to a
+  # bound the guard could then reject cleanly — no improvement over the crash it exists to eliminate.
+  # ActiveModel itself raises the identical NoMethodError for this declaration (measured), so the fix isn't
+  # about disagreeing with AM's own verdict, only about reporting it as the clean ArgumentError this guard
+  # promises everywhere else.
+  it "refuses a Range whose exclusive end cannot be decremented, rather than crashing on it" do
+    expect { build_axn { expects :v, type: String, length: { in: "a"..."c" } } }.to raise_error(ArgumentError, pattern)
+  end
+
+  # Found in the same round: the raise message dispatched the caller's own `.inspect` to render the
+  # offending value — an error-reporting path, where AGENTS.md requires deriving message content without
+  # dispatching to the caller's own methods, since a hostile `inspect` would replace this ArgumentError with
+  # whatever it raises instead.
+  it "does not dispatch a hostile bound's own inspect while reporting it" do
+    hostile = Object.new
+    def hostile.inspect = raise "caller inspect ran"
+
+    expect { build_axn { expects :v, type: String, length: { minimum: hostile } } }
+      .to raise_error(ArgumentError) { |e| expect(e.message).not_to include("caller inspect ran") }
+  end
+
   # Found by Codex review (PR #256): a non-Range `in:`/`within:` fell through the original guard entirely
   # (it only expanded a value that WAS already a Range), so it declared cleanly and crashed on the first call
   # with ActiveModel's own `":in and :within must be a Range"` — the very failure mode this guard exists to
