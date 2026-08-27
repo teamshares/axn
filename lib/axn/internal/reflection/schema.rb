@@ -2552,12 +2552,24 @@ module Axn
           return node unless shape_overlay_applies?(bag, for_output:)
 
           member_props, required = member_properties(shape[:members], for_output:, ancestry:)
-          # The object type is written back through the same nullability helper the node already carries its
-          # `null` branch through (`reconcile_contents_nullability`, above this call in `contents_node_schema`),
-          # rather than a bare "object" that would discard it: a tolerant position naming a `shape:` is where a
-          # `NilClass` union could never reach before this position could be nullable at all
-          # (`_shape_compatible_klass!` refuses one), so nothing forwarded that branch through this merge until now.
-          merged = node.merge(type: type_with_nullability("object", nullable: Array(node[:type]).include?("null")),
+          # The object type is written back with the position's nullability rather than a bare "object" that would
+          # discard it, and the question is asked in TWO parts because neither alone is the answer.
+          #
+          # The node's own `null` branch is what `reconcile_contents_nullability` recorded a few lines up, and
+          # preserving it is the whole point. But it is not sufficient: a bag naming no class at all
+          # (`of: { shape: … }` — "these members, class unconstrained") starts from an untyped `{}` node, so a
+          # declared tolerance had nowhere to be recorded and the overlay wrote a bare "object" over a position
+          # the runtime stands down for. So an explicitly DECLARED tolerance counts on its own.
+          #
+          # `bag_nullable?` is deliberately NOT the question, though it looks like the tidier one. It reads the
+          # bag's VALUE constraints and a classless bag has none, so it calls every classless shaped position
+          # nullable — while the shape's own required members still reject a nil there. Measured: `expects :items,
+          # type: Array do field :status, type: String end` rejects `[nil]` at runtime, and answering from
+          # `bag_nullable?` emitted a document LOOSER than the contract, which is the one direction this layer
+          # must never err in.
+          nullable = Array(node[:type]).include?("null") ||
+                     Axn::Validation::Base.true_tolerance_options(bag).any?
+          merged = node.merge(type: type_with_nullability("object", nullable:),
                               properties: (node[:properties] || {}).merge(member_props))
           merged[:required] = required unless required.empty?
           merged

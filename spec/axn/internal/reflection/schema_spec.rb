@@ -8348,6 +8348,56 @@ RSpec.describe Axn::Internal::Reflection::Schema do
   # requirement, not a convenience: the field-level behaviour is precise and non-obvious (an `allow_blank`
   # DROPS a length floor because the empty value passes, while an `allow_nil` KEEPS it because the empty value
   # still fails), and a second implementation would drift from it.
+  # A bag naming no class at all — `of: { shape: … }`, "these members, class unconstrained" — starts from an
+  # untyped node, so there is no `null` branch on it for the shape overlay to preserve. The overlay therefore asks
+  # the BAG for its nullability rather than reading it back off the node, which is the same source the
+  # nullability reconciler reads and so cannot disagree with it.
+  describe "a shaped position's null branch survives the members overlay" do
+    def items_node(bag)
+      klass = build_axn { expects :f, type: Array, of: bag }
+      described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:f][:items]
+    end
+
+    it "keeps null on a classless shaped position declaring allow_nil:" do
+      expect(items_node(shape: { members: [] }, allow_nil: true)[:type]).to eq(%w[object null])
+    end
+
+    it "keeps null on a classless shaped position declaring allow_blank:" do
+      expect(items_node(shape: { members: [] }, allow_blank: true)[:type]).to eq(%w[object null])
+    end
+
+    # A classless bag that declares NO tolerance gets no null branch, even though its own empty validator set
+    # would admit one: the shape's members are what reject a nil there, and answering from the bag's value
+    # constraints alone emits a document looser than the contract for every shaped position that HAS members
+    # (`expects :items, type: Array do field :status, type: String end` rejects `[nil]`).
+    it "leaves a classless shaped position that declares no tolerance a bare object" do
+      expect(items_node(shape: { members: [] })[:type]).to eq("object")
+    end
+
+    it "keeps a distributing shape block with required members non-nullable, matching its runtime" do
+      action = build_axn do
+        expects :f, type: Array do
+          field :a, type: String
+        end
+      end
+
+      expect(action.call(f: [nil])).not_to be_ok
+      expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
+        .dig(:properties, :f, :items, :type)).to eq("object")
+    end
+
+    it "keeps null on a CLASSED shaped position declaring allow_nil:" do
+      expect(items_node(klass: Hash, shape: { members: [] }, allow_nil: true)[:type]).to eq(%w[object null])
+    end
+
+    it "leaves a classed shaped position with no tolerance a bare object" do
+      action = build_axn { expects :f, type: Array, of: { klass: Hash, shape: { members: [] } } }
+
+      expect(action.call(f: [nil])).not_to be_ok
+      expect(items_node(klass: Hash, shape: { members: [] })[:type]).to eq("object")
+    end
+  end
+
   describe "a tolerant of: bag's projection" do
     def items_for(&declaration)
       klass = build_axn(&declaration)
