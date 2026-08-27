@@ -242,6 +242,17 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
         .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
     end
 
+    it "is refused on a map carrier bag, which is canonicalized outside the shared bag seam" do
+      expect { build_axn { expects :f, type: Hash, of: { values: String, except_on: :publish } } }
+        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    it "is refused on a NESTED map carrier bag" do
+      expect do
+        build_axn { expects :f, type: Array, of: { klass: Hash, of: { values: String, except_on: :publish } } }
+      end.to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
     it "is refused inside a nested bag" do
       expect do
         build_axn { expects :f, type: Array, of: { klass: Array, of: { klass: String, except_on: :publish } } }

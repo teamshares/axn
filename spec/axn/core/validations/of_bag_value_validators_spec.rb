@@ -631,6 +631,47 @@ RSpec.describe "value validators in an of: bag" do
   # for "a nil element, alongside another validator": widening the class (`klass: [String, NilClass]`) widens
   # only the type check, and ActiveModel runs `format:`/`length:`/`inclusion:`/`numericality:` on a nil
   # regardless of what the type permits.
+  # A position's tolerance is the DECLARATION tier of the contract its contents become, so ActiveModel resolves
+  # it against each entry the way it does at a named position — `defaults.merge(entry)`, entry wins per key.
+  # Standing the whole position down instead would override the entry with the position, which is AM's
+  # precedence backwards.
+  describe "an entry may override the position's tolerance, as it may a declaration's" do
+    it "runs a validator that refused the exemption, and matches the named position" do
+      at_position = build_axn do
+        expects :f, type: Array, of: { klass: String, format: { with: /x/, allow_nil: false }, allow_nil: true }
+      end
+      at_member = build_axn do
+        expects :f, type: Hash do
+          field :a, type: String, format: { with: /x/, allow_nil: false }, allow_nil: true
+        end
+      end
+
+      expect(at_position.call(f: [nil])).not_to be_ok
+      expect(at_member.call(f: { a: nil })).not_to be_ok
+      expect(at_position.call(f: ["x"])).to be_ok
+      expect(at_position.call(f: ["zzz"])).not_to be_ok
+    end
+
+    it "still stands the position's own type check down for the tolerated value" do
+      action = build_axn do
+        expects :f, type: Array, of: { klass: String, format: { with: /x/, allow_nil: false }, allow_nil: true }
+      end
+
+      # The nil is excused from `klass: String` — the failure it reports is the format: that refused the
+      # exemption, not a type mismatch.
+      expect(action.call(f: [nil]).exception.message).to match(/is invalid/)
+      expect(action.call(f: [nil]).exception.message).not_to match(/is not a String/)
+    end
+
+    it "leaves an entry that does not override alone" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, format: { with: /x/ }, allow_nil: true } }
+
+      expect(action.call(f: [nil])).to be_ok
+      expect(action.call(f: ["x"])).to be_ok
+      expect(action.call(f: ["zzz"])).not_to be_ok
+    end
+  end
+
   describe "positional tolerance" do
     describe "an Array's element position" do
       it "admits a nil element beside another validator under allow_nil:" do

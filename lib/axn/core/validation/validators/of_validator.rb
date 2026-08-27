@@ -156,24 +156,39 @@ module Axn
         contents = entries.reject do |key, value|
           Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS.include?(key) || !value
         end
-        contents.empty? ? nil : contents
+        return nil if contents.empty?
+
+        # The position's tolerance rides along as the DECLARATION tier of the contract these contents become, so
+        # ActiveModel resolves it against each entry exactly as it does at a named position:
+        # `defaults.merge(_parse_validates_options(options))`, which lets an entry override the position per key.
+        # Standing the whole position down instead reimplemented that precedence and got it wrong in the one case
+        # where the two tiers disagree — measured, `of: { klass: String, format: { with: /x/, allow_nil: false },
+        # allow_nil: true }` skipped the `format:` that had just refused the exemption, while the equivalent named
+        # member ran it and rejected the nil.
+        #
+        # Only a TRUE tolerance is forwarded. The pair is stated explicitly on every bag, `false` included, to keep
+        # a field's tolerance from reaching the position — and forwarding those `false`s would push them onto every
+        # entry as a declaration default, overriding nothing but re-stating a default ActiveModel already holds.
+        contents.merge(Axn::Validation::Base.true_tolerance_options(bag))
       end
 
       # One position of one value: its own type check, then whatever its inner contract says about what is
-      # inside it. A position that TOLERATES the value asks nothing of it — the same standing-down `optional:`
-      # performs at a named shape member, and the only thing in ActiveModel's vocabulary that means "skip this
-      # value's other checks". Asked before the type check, because tolerance is what makes a nil legal HERE
-      # rather than a type the position happens also to admit.
+      # inside it.
       #
-      # The type verdict does NOT gate the contents check — a wrong-typed element still reports what could not
-      # be read out of it, which is what an author fixing a payload needs.
+      # A position that TOLERATES the value stands down its own TYPE check — the class it names is the thing the
+      # position itself asserts, and `allow_nil:`/`allow_blank:` are what excuse a value from it. It does NOT
+      # stand down the CONTENTS: those carry the same tolerance as their declaration tier
+      # (`inner_contract_validations`) and are judged by ActiveModel, which lets an individual entry override the
+      # position per key. Skipping them here instead would override the entry with the position, inverting AM's
+      # precedence — measured against the named position that mirrors this one.
+      #
+      # The type verdict does NOT gate the contents check either — a wrong-typed element still reports what could
+      # not be read out of it, which is what an author fixing a payload needs.
       #
       # A custom `message:` replaces the type description but the POSITION is always reported — an ordinal is
       # the only locating info an unnamed position has. Built only on the failure path.
       def validate_position(record, attribute, contract, value, position)
-        return if contract.tolerates?(value)
-
-        record.errors.add(attribute, "#{position} #{position_mismatch(contract)}") unless matches_axis?(value, contract.klasses)
+        record.errors.add(attribute, "#{position} #{position_mismatch(contract)}") if !contract.tolerates?(value) && !matches_axis?(value, contract.klasses)
         return if nil.equal?(contract.contents)
 
         add_contents_errors(record, attribute, contract, value, "#{position}: ")

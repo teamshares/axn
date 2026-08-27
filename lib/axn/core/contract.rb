@@ -1267,7 +1267,12 @@ module Axn
         # something the declaration says. `message:` is absent for the neighbouring reason — one message cannot
         # say which axis failed. It is the AXIS bag that takes one (`OF_OPTION_KEYS` carries it), which is what
         # a per-axis message needed and why the bag had to exist first (PRO-3166).
-        MAP_OF_OPTION_KEYS = (Set.new(%i[keys values]) | Axn::Validation::Base.shared_validation_option_keys).freeze
+        # `except_on` is named EXPLICITLY for the reason `OF_OPTION_KEYS` names it: it is absent from ActiveModel's
+        # shared-option list before 8.0 and present after, and the whitelist runs ahead of the dedicated guard —
+        # so without it the same declaration is refused as an unknown key on one supported ActiveModel and with
+        # the message that names the real problem on another.
+        MAP_OF_OPTION_KEYS = (Set.new(%i[keys values except_on]) |
+                              Axn::Validation::Base.shared_validation_option_keys).freeze
 
         # The two things inside a Hash, in the order a declaration reads them.
         MAP_OF_AXES = %i[keys values].freeze
@@ -3097,6 +3102,13 @@ module Axn
           raise ArgumentError, _map_axes_name_no_class_message(bag) if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
 
           _reject_inner_contract_context_scope!(bag, fields)
+          # Beside its `on:` sibling, for the reason that pair exists everywhere else: a map CARRIER bag is
+          # canonicalized here rather than by `_check_inner_contract_bag!`, so the guards that seam runs have to
+          # be named here too or the carrier is the one bag position where the key declares cleanly. It is
+          # reachable at any depth (`of: { klass: Hash, of: { values: String, except_on: :publish } }`), and only
+          # on an ActiveModel whose shared-option list carries `except_on` — the whitelist admits it there and
+          # nothing downstream reads it, which is exactly the silently-inert shape this guard exists to refuse.
+          _reject_inner_contract_except_on!(bag, fields)
           _reject_unsupported_map_axis!(bag)
           _canonicalize_map_axes!(bag, fields)
           bag.merge(container: ::Hash)
