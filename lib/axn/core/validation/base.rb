@@ -83,6 +83,28 @@ module Axn
       # same slice of the same bag rather than three copies of it.
       def self.shared_validation_options(validations) = validations.slice(*shared_validation_option_keys)
 
+      # The TOLERANCE a bag states about its own position — the two keys that mean "a value this position
+      # admits without asking anything else of it". THE single definition, shared by the runtime that stands a
+      # position down (`OfValidator#position_contract`), the declaration guards that judge a bag's validators,
+      # and the emitter that projects the position — so none of the three can disagree about what a bag
+      # tolerates.
+      #
+      # A subset of the shared options rather than all of them: the rest (`if:`/`unless:`/`on:`/`strict:`/
+      # `except_on:`) are read by ActiveModel where a bag is an entry and by nothing where it is an axis, and
+      # they say nothing about the position's value. Read non-dispatchingly, since a bag reaches this at
+      # class-definition time.
+      TOLERANCE_OPTION_KEYS = %i[allow_nil allow_blank].freeze
+
+      def self.tolerance_options(bag)
+        graph = Axn::Internal::ShapeGraph
+        hash = graph.hash_or_nil(bag)
+        return {} if nil.equal?(hash)
+
+        TOLERANCE_OPTION_KEYS.each_with_object({}) do |key, out|
+          out[key] = hash[key] if graph.carries_key?(hash, key)
+        end
+      end
+
       # The real VALIDATOR entries in a validations hash — everything that is NOT an ActiveModel shared
       # option (if:/unless:/on:/strict:/allow_blank:/allow_nil:). THE single definition of "is this a
       # validator", shared by the validator-class builder, the gate sweeps, and schema reflection, so

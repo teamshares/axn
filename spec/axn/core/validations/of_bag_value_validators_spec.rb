@@ -615,4 +615,87 @@ RSpec.describe "value validators in an of: bag" do
       expect(action.internal_field_configs.first.validations[:of]).to eq(klass: Integer, container: Array)
     end
   end
+
+  # A bag's tolerance governs the POSITION it describes: it stands that position's own checks down for a
+  # value it admits, which is what `optional:` does at a named shape member. Without it there is no spelling
+  # for "a nil element, alongside another validator": widening the class (`klass: [String, NilClass]`) widens
+  # only the type check, and ActiveModel runs `format:`/`length:`/`inclusion:`/`numericality:` on a nil
+  # regardless of what the type permits.
+  describe "positional tolerance" do
+    describe "an Array's element position" do
+      it "admits a nil element beside another validator under allow_nil:" do
+        action = build_axn do
+          expects :codes, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_nil: true }
+        end
+
+        expect(action.call(codes: ["AB", nil])).to be_ok
+        expect(action.call(codes: ["AB"])).to be_ok
+        expect(action.call(codes: ["ab"])).not_to be_ok
+        expect(action.call(codes: [1])).not_to be_ok
+      end
+
+      it "admits a blank element only under allow_blank:" do
+        nil_only = build_axn do
+          expects :codes, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_nil: true }
+        end
+        blank_too = build_axn do
+          expects :codes, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true }
+        end
+
+        expect(nil_only.call(codes: ["AB", ""])).not_to be_ok
+        expect(blank_too.call(codes: ["AB", ""])).to be_ok
+        expect(blank_too.call(codes: ["AB", nil])).to be_ok
+      end
+
+      it "stands the position's own type check down too, not only its value validators" do
+        action = build_axn { expects :codes, type: Array, of: { klass: String, allow_nil: true } }
+
+        expect(action.call(codes: ["AB", nil])).to be_ok
+        expect(action.call(codes: [1])).not_to be_ok
+      end
+
+      it "stands the position's contents descent down as well" do
+        action = build_axn do
+          expects :rows, type: Array, of: { klass: Hash, allow_nil: true, shape: { members: [] } }
+        end
+
+        expect(action.call(rows: [{}, nil])).to be_ok
+      end
+
+      it "leaves a bag with no tolerance rejecting a nil element" do
+        action = build_axn { expects :codes, type: Array, of: { klass: String } }
+
+        expect(action.call(codes: ["AB", nil])).not_to be_ok
+      end
+    end
+
+    describe "a map's axes" do
+      it "admits a nil value under the values axis's own tolerance" do
+        action = build_axn { expects :m, type: Hash, of: { values: { klass: String, allow_nil: true } } }
+
+        expect(action.call(m: { a: "x", b: nil })).to be_ok
+        expect(action.call(m: { a: 1 })).not_to be_ok
+      end
+
+      it "keeps the two axes independent" do
+        action = build_axn do
+          expects :m, type: Hash, of: { keys: { klass: Symbol }, values: { klass: String, allow_nil: true } }
+        end
+
+        expect(action.call(m: { a: nil })).to be_ok
+        expect(action.call(m: { "a" => nil })).not_to be_ok
+      end
+    end
+
+    describe "a nested bag" do
+      it "tolerates at the rung that declares it, not at its parent" do
+        action = build_axn do
+          expects :f, type: Array, of: { klass: Array, of: { klass: String, allow_nil: true } }
+        end
+
+        expect(action.call(f: [["AB", nil]])).to be_ok
+        expect(action.call(f: [nil])).not_to be_ok
+      end
+    end
+  end
 end

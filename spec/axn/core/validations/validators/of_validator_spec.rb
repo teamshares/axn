@@ -22,8 +22,17 @@ RSpec.describe Axn::Validators::OfValidator do
       expect(action.call(items: [])).to be_ok
     end
 
-    it "fails for nil element (nil is not a String)" do
-      result = action.call(items: [nil])
+    # `allow_blank: true` is stated on the declaration, not inside the `of:` bag — but ActiveModel merges a
+    # declaration's shared options into every validator it builds from the same `validates` call, `of:`
+    # included, so the position inherits it exactly as an author-written `of: { allow_blank: true }` would
+    # (PRO-3225).
+    it "admits a nil element too, since the declaration's allow_blank: true reaches the position" do
+      expect(action.call(items: [nil])).to be_ok
+    end
+
+    it "rejects a nil element when the position carries no tolerance" do
+      untolerant = build_axn { expects :items, type: Array, of: String }
+      result = untolerant.call(items: [nil])
       expect(result).not_to be_ok
       expect(result.exception.message).to match(/element at index 0/)
     end
@@ -71,11 +80,9 @@ RSpec.describe Axn::Validators::OfValidator do
       expect(action.call(items: ["not-a-uuid"])).not_to be_ok
     end
 
-    it "fails for a blank element even when the field allows blank (allow_blank governs the field, not its elements)" do
+    it "admits a blank element too, since the declaration's allow_blank: true reaches the position" do
       action = build_axn { expects :items, type: Array, of: :uuid, allow_blank: true }
-      result = action.call(items: [""])
-      expect(result).not_to be_ok
-      expect(result.exception.message).to match(/element at index 0/)
+      expect(action.call(items: [""])).to be_ok
     end
   end
 
@@ -141,8 +148,11 @@ RSpec.describe Axn::Validators::OfValidator do
   # ─── Whole-field nil / blank handling ────────────────────────────────────────
 
   describe "whole-value nil/blank handling" do
-    # Each flag governs the *field* (may it be absent?), never its *elements* — a nil
-    # element is still rejected regardless of which whole-field flag is set.
+    # A declaration's tolerance is recorded once, not per validator entry (PRO-3225) — but ActiveModel
+    # merges those declaration-level shared options into every validator built from the same `validates`
+    # call, so the same pair that lets the FIELD itself be absent also reaches the `of:` position and
+    # stands its own checks down for a value it admits, exactly as an author-written `of: { allow_nil:
+    # true }` would (`PositionContract#tolerates?`).
     context "with allow_nil" do
       let(:action) { build_axn { expects :items, type: Array, of: String, allow_nil: true } }
 
@@ -150,8 +160,12 @@ RSpec.describe Axn::Validators::OfValidator do
         expect(action.call(items: nil)).to be_ok
       end
 
-      it "still rejects a nil element inside the array" do
-        result = action.call(items: ["a", nil])
+      it "also admits a nil element inside the array" do
+        expect(action.call(items: ["a", nil])).to be_ok
+      end
+
+      it "still rejects a non-nil, non-String element" do
+        result = action.call(items: ["a", 1])
         expect(result).not_to be_ok
         expect(result.exception.message).to match(/element at index 1/)
       end
@@ -164,8 +178,12 @@ RSpec.describe Axn::Validators::OfValidator do
         expect(action.call(items: nil)).to be_ok
       end
 
-      it "still rejects a nil element inside the array" do
-        result = action.call(items: ["a", nil])
+      it "also admits a nil element inside the array" do
+        expect(action.call(items: ["a", nil])).to be_ok
+      end
+
+      it "still rejects a non-nil, non-String element" do
+        result = action.call(items: ["a", 1])
         expect(result).not_to be_ok
         expect(result.exception.message).to match(/element at index 1/)
       end
@@ -178,8 +196,12 @@ RSpec.describe Axn::Validators::OfValidator do
         expect(action.call(items: nil)).to be_ok
       end
 
-      it "still rejects a nil element inside the array" do
-        result = action.call(items: ["a", nil])
+      it "also admits a nil element inside the array" do
+        expect(action.call(items: ["a", nil])).to be_ok
+      end
+
+      it "still rejects a non-nil, non-String element" do
+        result = action.call(items: ["a", 1])
         expect(result).not_to be_ok
         expect(result.exception.message).to match(/element at index 1/)
       end
