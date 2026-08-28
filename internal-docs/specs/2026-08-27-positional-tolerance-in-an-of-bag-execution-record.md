@@ -20,6 +20,21 @@ PRO-3225. Companion to `2026-08-27-positional-tolerance-in-an-of-bag-design.md` 
 
 **The cross-version probe.** Where a gem supports a version range but CI pins one version, a guard derived from that dependency's internals can be correct on one version and a no-op on another with no test signalling it. Write a throwaway `Gemfile.<variant>` pinning the other end of the range, `bundle install`, re-run the specific probes under `BUNDLE_GEMFILE=`, then delete it. Cheap, and the only way to see this class of defect.
 
+## What was deferred, and on what grounds
+
+"It predates the branch" is not a reason to leave a bug — it says who introduced it, not whether it is worth fixing. Each deferral below rests on a stated reason that is not provenance:
+
+| deferred | ticket | why not here |
+| -- | -- | -- |
+| `presence:` beside an `allow_nil:`-only tolerance is refused, though `allow_nil:` excuses only nil | PRO-3263 | This branch made that rule SHARED across four positions. Narrowing it belongs in one place, applying to all four at once; doing it at the bag alone would break the consistency this work establishes. |
+| A keys axis whose class is not its own wire form emits no `propertyNames`, so the document accepts keys the runtime rejects | PRO-3264 | Needs a decision about what an input schema means for a map serving both JSON and Ruby callers. Untracked before this — none of PRO-3240's children cover it. |
+| `allow_blank:` beside `format:`/`inclusion:` — outbound, the document refuses the blank the runtime accepts | PRO-3244 | One central decision with three costed options; it lands at every position at once because the bag projects through the field's own emitters. A version keyed to `of:` would be a second rule for one fact. |
+| A class whose `blank?` contradicts its own contents skips a field's validators | — | Does not reproduce at a position. At a field it is ActiveModel's own preflight, and the value is lying about itself; defending against that means not reading `blank?` at all. |
+
+The line the branch actually held: fix every divergence it INTRODUCED, plus every one its own feature made newly REACHABLE — the nil-key wire form is the second kind, which is why `admit_empty_wire_key!` exists and is scoped to exactly it.
+
+Note for future citations: PRO-3240 was split and closed. The blank-tolerance class is PRO-3244, `numericality:` on a String position is PRO-3245, and the broad-token fallback is PRO-3246. Three replies on PR #257 cited PRO-3240 for something it no longer carries.
+
 ## Follow-ups this branch did not take
 
 - **An ActiveModel dimension in the CI matrix.** The matrix varies Ruby 3.2/3.3/3.4 and pins one ActiveModel. `except_on:` is the proof that AM minor versions change the shared-option list, so a contract guard can be right on one and inert on another silently. Two defects on this branch were in that class; one was found only by hand.
