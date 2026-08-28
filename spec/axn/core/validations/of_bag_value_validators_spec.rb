@@ -672,6 +672,29 @@ RSpec.describe "value validators in an of: bag" do
     end
   end
 
+  # `:uuid` is the one pseudo-type whose matcher reads the tolerance — `value.blank? ? allow_blank : match?(…)`
+  # — so a position that called the matcher without it rejected the empty UUID a named position accepts.
+  describe "a position's type check reads the tolerance the way a named one does" do
+    uuid = "123e4567-e89b-12d3-a456-426614174000"
+
+    it "accepts a blank :uuid under allow_blank:, as the field does" do
+      at_position = build_axn { expects :f, type: Array, of: { klass: :uuid, allow_blank: true } }
+      at_field = build_axn { expects :f, type: :uuid, allow_blank: true }
+
+      expect(at_position.call(f: [""])).to be_ok
+      expect(at_field.call(f: "")).to be_ok
+      expect(at_position.call(f: [uuid])).to be_ok
+      expect(at_position.call(f: ["nope"])).not_to be_ok
+    end
+
+    it "still rejects a blank :uuid without the tolerance" do
+      at_position = build_axn { expects :f, type: Array, of: { klass: :uuid } }
+
+      expect(at_position.call(f: [""])).not_to be_ok
+      expect(at_position.call(f: [uuid])).to be_ok
+    end
+  end
+
   describe "positional tolerance" do
     describe "an Array's element position" do
       it "admits a nil element beside another validator under allow_nil:" do

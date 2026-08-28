@@ -182,7 +182,7 @@ module Axn
       # A custom `message:` replaces the type description but the POSITION is always reported — an ordinal is
       # the only locating info an unnamed position has. Built only on the failure path.
       def validate_position(record, attribute, contract, value, position)
-        record.errors.add(attribute, "#{position} #{position_mismatch(contract)}") if !contract.tolerates?(value) && !matches_axis?(value, contract.klasses)
+        record.errors.add(attribute, "#{position} #{position_mismatch(contract)}") if !contract.tolerates?(value) && !matches_axis?(value, contract)
         return if nil.equal?(contract.contents)
 
         add_contents_errors(record, attribute, contract, value, "#{position}: ")
@@ -301,8 +301,17 @@ module Axn
         end
       end
 
-      def matches_axis?(value, klasses)
-        klasses.empty? || klasses.any? { |k| TypeValidator.value_matches?(value, klass: k) }
+      # The position's own type check, run on exactly the terms `TypeValidator` runs a named position's — the
+      # bag's blank tolerance included. That flag reaches only one pseudo-type, and it is load-bearing there:
+      # `:uuid` treats a blank as valid ONLY under `allow_blank:` (`value.blank? ? allow_blank : match?(…)`), so
+      # a matcher called without it rejects the empty UUID that `type: :uuid, allow_blank: true` accepts one rung
+      # up. Everything else in the matcher ignores it, so passing it costs nothing and closes the one divergence.
+      def matches_axis?(value, contract)
+        klasses = contract.klasses
+        return true if klasses.empty?
+
+        allow_blank = !!contract.tolerance[:allow_blank]
+        klasses.any? { |k| TypeValidator.value_matches?(value, klass: k, allow_blank:) }
       end
 
       # Every declared type named through the shared seam rather than interpolated: a declared class whose

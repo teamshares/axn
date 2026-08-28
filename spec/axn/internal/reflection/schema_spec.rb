@@ -8448,6 +8448,57 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
+  # A tolerated nil KEY has no null branch to travel in — a JSON property name is always a string, so it
+  # reaches the wire as `""`. Outbound the document has to admit that name or it rejects a result the action
+  # produced; inbound it must not, because a JSON caller cannot send a nil key and the `""` it can send is a
+  # genuine blank the axis's own validators reject.
+  describe "a tolerated nil map key and its empty wire form" do
+    let(:pattern) { { with: /\A[A-Z]+\z/ } }
+
+    def output_property_names(axis, value)
+      klass = Class.new do
+        include Axn
+        exposes :m, type: Hash, of: { keys: axis }
+        define_method(:call) { expose(:m, value) }
+      end
+      [klass.call, described_class.build_output(klass.external_field_configs).dig(:properties, :m, :propertyNames)]
+    end
+
+    it "withholds a pattern the serialized empty key cannot satisfy, on output" do
+      result, property_names = output_property_names({ klass: String, format: { with: /\A[A-Z]+\z/ }, allow_nil: true },
+                                                     { nil => 1 })
+
+      expect(result).to be_ok
+      # The nil key is still a nil in Ruby; it is the WIRE form the emitted document describes, and there it
+      # is the empty name — which is the whole reason the pattern cannot stand.
+      expect(JSON.parse(JSON.generate(result.m))).to eq("" => 1)
+      expect(property_names).to be_nil.or eq({})
+    end
+
+    it "widens an enum instead of dropping it" do
+      _result, property_names = output_property_names({ klass: String, inclusion: { in: %w[A B] }, allow_nil: true },
+                                                      { nil => 1 })
+
+      expect(property_names[:enum]).to include("A", "B", "")
+    end
+
+    it "leaves an untolerant axis's pattern alone" do
+      _result, property_names = output_property_names({ klass: String, format: { with: /\A[A-Z]+\z/ } }, { "AB" => 1 })
+
+      expect(property_names[:pattern]).to eq("^[A-Z]+$")
+    end
+
+    it "keeps the pattern on INPUT, where the runtime still rejects a blank key" do
+      action = build_axn do
+        expects :m, type: Hash, of: { keys: { klass: String, format: { with: /\A[A-Z]+\z/ }, allow_nil: true } }
+      end
+
+      expect(action.call(m: { "" => 1 })).not_to be_ok
+      expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
+        .dig(:properties, :m, :propertyNames, :pattern)).to eq("^[A-Z]+$")
+    end
+  end
+
   describe "a tolerant of: bag's projection" do
     def items_for(&declaration)
       klass = build_axn(&declaration)

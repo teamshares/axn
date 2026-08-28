@@ -2672,7 +2672,32 @@ module Axn
           # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
           node = { type: "string" }
           apply_value_constraints!(node, key_axis_constraints(axis, for_output:), nullable: false, for_output:, property_names: true)
+          admit_empty_wire_key!(node) if for_output && bag_nullable?(axis, for_output:)
           node.except(:type)
+        end
+
+        # A tolerated nil KEY has no null branch to travel in. Every other position expresses "and also nil" by
+        # widening its `type:`, but a JSON object's property name is always a string, so a nil key that the axis
+        # admits reaches the wire as `""` (`Values` renders it, measured: `{ nil => 1 }` serializes to
+        # `{"": 1}`). Outbound the document must therefore admit the empty name, or it rejects a result the
+        # action produced.
+        #
+        # OUTPUT only, and that asymmetry is the point: inbound, a JSON caller cannot send a nil key at all, and
+        # the `""` it CAN send is a genuine blank string the axis's own `format:`/`length:` really do reject —
+        # so widening there would advertise a key the runtime refuses.
+        #
+        # `pattern` and `minLength` are dropped rather than widened because JSON Schema cannot say "empty or
+        # matching" in one keyword — only as an `anyOf` composition, which is the shape change PRO-3240 carries
+        # for the whole blank-tolerance class. `maxLength` needs nothing: an empty name satisfies every emittable
+        # ceiling. An `enum` is WIDENED instead of dropped, since naming one more member says exactly what is
+        # true and loses nothing.
+        EMPTY_WIRE_KEY_INCOMPATIBLE = %i[pattern minLength].freeze
+        private_constant :EMPTY_WIRE_KEY_INCOMPATIBLE
+
+        def admit_empty_wire_key!(node)
+          EMPTY_WIRE_KEY_INCOMPATIBLE.each { |keyword| node.delete(keyword) }
+          node[:enum] |= [""] if node[:enum].is_a?(Array)
+          node
         end
 
         # The axis's validators, less any whose subject does not survive serialization. Only the OUTPUT side can
