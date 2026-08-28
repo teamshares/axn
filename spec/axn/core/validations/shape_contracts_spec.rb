@@ -1290,4 +1290,40 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
     end
   end
+
+  # A raw member is built without going through `_parse_field_configs`, so every rule the block form gets for
+  # free has to be stated on that route too — otherwise choosing the supported hand-built construction is a way
+  # around a declaration rule the other three positions enforce.
+  describe "a raw member is held to the tolerance-vs-presence rule the block form enforces" do
+    def raw_member_axn(validations)
+      member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations:)
+      build_axn { expects :f, type: Hash, shape: { members: [member] } }
+    end
+
+    it "refuses presence: beside allow_nil:" do
+      expect { raw_member_axn(presence: true, allow_nil: true) }
+        .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+    end
+
+    it "refuses presence: beside allow_blank:" do
+      expect { raw_member_axn(presence: true, allow_blank: true) }
+        .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+    end
+
+    it "agrees with the block member, which already refused it" do
+      expect do
+        build_axn do
+          expects :f, type: Hash do
+            field :a, presence: true, allow_nil: true
+          end
+        end
+      end
+        .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+    end
+
+    it "still accepts each half on its own" do
+      expect { raw_member_axn(presence: true) }.not_to raise_error
+      expect { raw_member_axn(type: { klass: String }, allow_nil: true) }.not_to raise_error
+    end
+  end
 end

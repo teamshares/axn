@@ -807,6 +807,12 @@ module Axn
           _reject_strict_validation!(copy, where: member_where)
           _reject_validator_except_on!(copy, where: member_where)
           _reject_container_position_validators!(copy, where: member_where)
+          # Beside the other guards a raw member shares with the field path, and for the reason they are all
+          # named here: this route builds a member without going through `_parse_field_configs`, so a rule the
+          # block form gets for free has to be stated again or the raw construction is a way around it. Measured,
+          # a hand-built `ShapeConfig` carrying `{ presence: true, allow_nil: true }` declared cleanly while the
+          # block member, the field and an `of:` position all refused it.
+          _reject_tolerant_presence!(copy, where: member_where, tolerance: copy.slice(:allow_nil, :allow_blank))
           _reject_unsatisfiable_value_constraints!(copy, where: member_where,
                                                          tolerance: copy.slice(:allow_nil, :allow_blank))
           _reject_vacuous_value_constraints!(copy, where: member_where,
