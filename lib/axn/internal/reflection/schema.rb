@@ -2567,13 +2567,20 @@ module Axn
           # type: Array do field :status, type: String end` rejects `[nil]` at runtime, and answering from
           # `bag_nullable?` emitted a document LOOSER than the contract, which is the one direction this layer
           # must never err in.
-          # Resolved against the SHAPE ENTRY, not the bag tier alone. The shape is an entry like any other, so
-          # ActiveModel lets it override the position per key — `of: { allow_nil: true, shape: { members: […],
-          # allow_nil: false } }` runs `ShapeValidator` on a nil element and rejects it as unreadable, and reading
-          # only the bag there advertised a `null` the runtime refuses: a document LOOSER than the contract, the
-          # one direction this layer must never err in.
+          # A nil reaches this position's members only if BOTH gates let it, so nullability is their CONJUNCTION.
+          # Either alone advertises a null the runtime refuses:
+          #
+          #   * `bag_nullable?` is the POSITION's gate — the bag's own `klass:` and tolerance, i.e. whether
+          #     `validate_position` stands its type check down. A tolerant shape entry cannot widen it:
+          #     `of: { klass: Hash, shape: { …, allow_nil: true } }` still reports the `klass:` mismatch for a nil
+          #     element, however willingly the shape skips itself. Asked of the BAG rather than read back off
+          #     `node[:type]`, because a bag naming no class starts from an untyped node that has no branch to
+          #     read — the reconciler had nowhere to record one.
+          #   * the SHAPE entry's own gate is the second, because the shape is an entry like any other and
+          #     ActiveModel lets it override the position per key: `of: { allow_nil: true, shape: { …,
+          #     allow_nil: false } }` runs `ShapeValidator` on the nil and rejects it as unreadable.
           shape_tolerance = Axn::Validation::Base.effective_entry_options(shape, Axn::Validation::Base.tolerance_options(bag))
-          nullable = Array(node[:type]).include?("null") ||
+          nullable = bag_nullable?(bag, for_output:) &&
                      !!(shape_tolerance[:allow_nil] || shape_tolerance[:allow_blank])
           merged = node.merge(type: type_with_nullability("object", nullable:),
                               properties: (node[:properties] || {}).merge(member_props))

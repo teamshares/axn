@@ -8379,6 +8379,27 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
         .dig(:properties, :f, :items, :type)).to eq(%w[object null])
     end
+
+    # The other half of the conjunction. A tolerant shape entry cannot WIDEN a position whose own `klass:`
+    # still rejects the nil — `validate_position` reports the type mismatch however willingly the shape skips
+    # itself — so reading the shape entry alone advertised a null the runtime refuses.
+    it "emits no null branch when a tolerant shape entry sits on a strictly typed position" do
+      m = member
+      action = build_axn { expects :f, type: Array, of: { klass: Hash, shape: { members: [m], allow_nil: true } } }
+
+      expect(action.call(f: [nil])).not_to be_ok
+      expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
+        .dig(:properties, :f, :items, :type)).to eq("object")
+    end
+
+    it "emits the null branch only when BOTH the position and the shape entry admit it" do
+      m = member
+      both = build_axn { expects :f, type: Array, of: { klass: Hash, allow_nil: true, shape: { members: [m] } } }
+
+      expect(both.call(f: [nil])).to be_ok
+      expect(described_class.build_input(both.internal_field_configs, both.subfield_configs)
+        .dig(:properties, :f, :items, :type)).to eq(%w[object null])
+    end
   end
 
   describe "a shaped position's null branch survives the members overlay" do
