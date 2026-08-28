@@ -242,6 +242,28 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
         .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
     end
 
+    # The whole trio — `on:`, `except_on:`, `strict:` — is refused at every bag position, and a map carrier
+    # reaches none of `_check_inner_contract_bag!`'s guards, so each has to be named on that path. A TOP-LEVEL
+    # carrier is covered anyway by the field's own entry scan (the field's `of:` IS an entry), which is what hid
+    # the gap: only a NESTED carrier, reached through another bag, has no scan above it.
+    it "refuses strict: on a nested map carrier, where no field-level scan reaches" do
+      expect do
+        build_axn { expects :f, type: Array, of: { klass: Hash, of: { values: String, strict: true } } }
+      end.to raise_error(ArgumentError, /`strict:`.*inside an `of:` bag/m)
+    end
+
+    it "refuses strict: on a top-level map carrier with the same message" do
+      expect { build_axn { expects :f, type: Hash, of: { values: String, strict: true } } }
+        .to raise_error(ArgumentError, /`strict:`.*inside an `of:` bag/m)
+    end
+
+    it "still admits the options a carrier legitimately carries" do
+      expect { build_axn { expects :f, type: Array, of: { klass: Hash, of: { values: String, if: :flag } } } }
+        .not_to raise_error
+      expect { build_axn { expects :f, type: Array, of: { klass: Hash, of: { values: String, allow_nil: true } } } }
+        .not_to raise_error
+    end
+
     it "is refused on a map carrier bag, which is canonicalized outside the shared bag seam" do
       expect { build_axn { expects :f, type: Hash, of: { values: String, except_on: :publish } } }
         .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)

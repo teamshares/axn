@@ -3109,6 +3109,11 @@ module Axn
           # on an ActiveModel whose shared-option list carries `except_on` — the whitelist admits it there and
           # nothing downstream reads it, which is exactly the silently-inert shape this guard exists to refuse.
           _reject_inner_contract_except_on!(bag, fields)
+          # The third of the same trio. All three are refused at every bag position, and a map carrier reaches
+          # none of `_check_inner_contract_bag!`'s guards, so each has to be named here. A TOP-LEVEL carrier is
+          # covered anyway by the field's own entry scan — the field's `of:` IS an entry — which is exactly what
+          # hid this one: only a NESTED carrier, reached through another bag, had no scan above it.
+          _reject_inner_contract_strict!(bag, fields)
           _reject_unsupported_map_axis!(bag)
           _canonicalize_map_axes!(bag, fields)
           bag.merge(container: ::Hash)
