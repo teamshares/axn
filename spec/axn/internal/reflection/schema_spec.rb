@@ -8352,6 +8352,35 @@ RSpec.describe Axn::Internal::Reflection::Schema do
   # untyped node, so there is no `null` branch on it for the shape overlay to preserve. The overlay therefore asks
   # the BAG for its nullability rather than reading it back off the node, which is the same source the
   # nullability reconciler reads and so cannot disagree with it.
+  # The shape is an ENTRY, so ActiveModel lets it override the position's tolerance per key. Nullability is
+  # derived from that resolution rather than from the bag tier alone, or the document advertises a null the
+  # runtime refuses — looser than the contract, which is the direction this layer must never err in.
+  describe "a shape entry may override the position's tolerance" do
+    let(:member) do
+      Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: String }, presence: true })
+    end
+
+    it "emits no null branch when the shape entry refuses the position's allow_nil:" do
+      # `build_axn` class_evals its block, so the member has to be captured in a local rather than read
+      # off the example group.
+      m = member
+      action = build_axn { expects :f, type: Array, of: { allow_nil: true, shape: { members: [m], allow_nil: false } } }
+
+      expect(action.call(f: [nil])).not_to be_ok
+      expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
+        .dig(:properties, :f, :items, :type)).to eq("object")
+    end
+
+    it "emits the null branch when the shape entry does not override it" do
+      m = member
+      action = build_axn { expects :f, type: Array, of: { allow_nil: true, shape: { members: [m] } } }
+
+      expect(action.call(f: [nil])).to be_ok
+      expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
+        .dig(:properties, :f, :items, :type)).to eq(%w[object null])
+    end
+  end
+
   describe "a shaped position's null branch survives the members overlay" do
     def items_node(bag)
       klass = build_axn { expects :f, type: Array, of: bag }

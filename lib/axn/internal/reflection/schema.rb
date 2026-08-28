@@ -2567,8 +2567,14 @@ module Axn
           # type: Array do field :status, type: String end` rejects `[nil]` at runtime, and answering from
           # `bag_nullable?` emitted a document LOOSER than the contract, which is the one direction this layer
           # must never err in.
+          # Resolved against the SHAPE ENTRY, not the bag tier alone. The shape is an entry like any other, so
+          # ActiveModel lets it override the position per key — `of: { allow_nil: true, shape: { members: […],
+          # allow_nil: false } }` runs `ShapeValidator` on a nil element and rejects it as unreadable, and reading
+          # only the bag there advertised a `null` the runtime refuses: a document LOOSER than the contract, the
+          # one direction this layer must never err in.
+          shape_tolerance = Axn::Validation::Base.effective_entry_options(shape, Axn::Validation::Base.tolerance_options(bag))
           nullable = Array(node[:type]).include?("null") ||
-                     Axn::Validation::Base.true_tolerance_options(bag).any?
+                     !!(shape_tolerance[:allow_nil] || shape_tolerance[:allow_blank])
           merged = node.merge(type: type_with_nullability("object", nullable:),
                               properties: (node[:properties] || {}).merge(member_props))
           merged[:required] = required unless required.empty?
