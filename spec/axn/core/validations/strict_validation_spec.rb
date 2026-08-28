@@ -221,4 +221,92 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
       expect(result.exception.message).to include("must be greater than 5").and include("is invalid")
     end
   end
+
+  # ActiveModel's other context option, and axn has no validation contexts at any position. It is inert in the
+  # OPPOSITE direction to `on:`: `validate` installs it as `unless: -> { Array(options[:except_on]).include?(
+  # validation_context) }`, and axn calls `valid?` with no context, so the exclusion excludes nothing and the
+  # entry runs on every call. An option whose only effect is to look like one.
+  describe "except_on:" do
+    it "is refused on a field's validator entry" do
+      expect { build_axn { expects :f, type: String, format: { with: /x/, except_on: :publish } } }
+        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    it "is refused inside an of: bag" do
+      expect { build_axn { expects :f, type: Array, of: { klass: String, except_on: :publish } } }
+        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    it "is refused at a map axis" do
+      expect { build_axn { expects :f, type: Hash, of: { values: { klass: String, except_on: :publish } } } }
+        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    # The whole trio — `on:`, `except_on:`, `strict:` — is refused at every bag position, and a map carrier
+    # reaches none of `_check_inner_contract_bag!`'s guards, so each has to be named on that path. A TOP-LEVEL
+    # carrier is covered anyway by the field's own entry scan (the field's `of:` IS an entry), which is what hid
+    # the gap: only a NESTED carrier, reached through another bag, has no scan above it.
+    it "refuses strict: on a nested map carrier, where no field-level scan reaches" do
+      expect do
+        build_axn { expects :f, type: Array, of: { klass: Hash, of: { values: String, strict: true } } }
+      end.to raise_error(ArgumentError, /`strict:`.*inside an `of:` bag/m)
+    end
+
+    it "refuses strict: on a top-level map carrier with the same message" do
+      expect { build_axn { expects :f, type: Hash, of: { values: String, strict: true } } }
+        .to raise_error(ArgumentError, /`strict:`.*inside an `of:` bag/m)
+    end
+
+    it "still admits the options a carrier legitimately carries" do
+      expect { build_axn { expects :f, type: Array, of: { klass: Hash, of: { values: String, if: :flag } } } }
+        .not_to raise_error
+      expect { build_axn { expects :f, type: Array, of: { klass: Hash, of: { values: String, allow_nil: true } } } }
+        .not_to raise_error
+    end
+
+    it "is refused on a map carrier bag, which is canonicalized outside the shared bag seam" do
+      expect { build_axn { expects :f, type: Hash, of: { values: String, except_on: :publish } } }
+        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    it "is refused on a NESTED map carrier bag" do
+      expect do
+        build_axn { expects :f, type: Array, of: { klass: Hash, of: { values: String, except_on: :publish } } }
+      end.to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    it "is refused inside a nested bag" do
+      expect do
+        build_axn { expects :f, type: Array, of: { klass: Array, of: { klass: String, except_on: :publish } } }
+      end.to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+    end
+
+    # A raw `ShapeConfig` member never passes through `_parse_field_validations`, so it needs its own guard call
+    # (`shape_declaration.rb`'s member guard list) rather than inheriting one from the field path — the same
+    # reason `_reject_strict_validation!` is called there. Both spellings, matching that sibling's own pair.
+    #
+    # The declaration-level spelling is caught two ways depending on the consumer's ActiveModel: on a version
+    # where `except_on:` is one of AM's own shared validation keys, `_check_member_option_keys!` never sees it
+    # as unrecognized, so this guard is what refuses it (with the dedicated message); on a version where it is
+    # not, `_check_member_option_keys!` already refuses it as an unknown key, ahead of this guard ever running.
+    # Both are ArgumentErrors naming the same broken declaration, so only that much is pinned here — a message
+    # match would tie the example to whichever list happens to be in `shared_validation_option_keys` right now.
+    it "is refused on a raw member" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { presence: true, except_on: :publish })
+
+      expect { build_axn { expects :h, type: Hash, shape: { members: [member], container: Hash } } }
+        .to raise_error(ArgumentError, /except_on/)
+    end
+
+    it "is refused inside a raw member's validator bag" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { presence: { except_on: :publish } })
+
+      expect { build_axn { expects :h, type: Hash, shape: { members: [member], container: Hash } } }
+        .to raise_error(ArgumentError, /`except_on:` inside presence: on shape member `x`/)
+    end
+
+    it "leaves a supported gate alone" do
+      expect { build_axn { expects :f, type: String, format: { with: /x/, if: :flag } } }.not_to raise_error
+    end
+  end
 end

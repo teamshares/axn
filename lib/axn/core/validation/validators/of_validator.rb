@@ -3,6 +3,7 @@
 require "active_model"
 
 require "axn/internal/cycle_guard"
+require "axn/internal/native_methods"
 require "axn/internal/shape_graph"
 
 module Axn
@@ -29,9 +30,11 @@ module Axn
         raise ArgumentError, "must supply :klass" if options[:klass].nil?
       end
 
+      # `allow_nil:`/`allow_blank:` are read as the ELEMENT position's tolerance now (`position_contract`,
+      # `PositionContract#tolerates?`), not the field's — so a nil-tolerant position must not excuse a nil
+      # FIELD by skipping this validator outright. Not load-bearing on its own either: both branches below
+      # `return unless value.is_a?(…)` and no-op on a nil field regardless.
       def validate_each(record, attribute, value)
-        return if value.nil? && (options[:allow_nil] || options[:allow_blank])
-
         options[:container] == ::Hash ? validate_entries(record, attribute, value) : validate_elements(record, attribute, value)
       end
 
@@ -59,7 +62,26 @@ module Axn
       # `validate_position` and its message ("element at index 0 is not a String" — no colon) differs in
       # punctuation from a delegated one, which is prefixed with a colon. `contents` is nil when the position
       # constrains only a class, which is the overwhelmingly common case and the one that must allocate nothing.
-      PositionContract = Data.define(:klasses, :message, :contents, :validator_class, :contents_node)
+      PositionContract = Data.define(:klasses, :message, :contents, :validator_class, :contents_node, :tolerance) do
+        # Whether this position admits the value without asking anything else of it — the positional reading of
+        # `allow_nil:`/`allow_blank:`, which is what those keys mean at a named shape member too.
+        #
+        # What this stands down is the position's OWN `klass:` check, and it stands it down for a NIL only —
+        # mirroring `TypeValidator`, which is the check a named position runs and which excuses a nil alone
+        # (`value.nil? && (allow_nil || allow_blank)`). Measured at a field: `type: String, allow_blank: true`
+        # accepts `""` and `"   "` because they ARE Strings, accepts nil because the flag excuses it, and still
+        # rejects `false` and `[]` as "is not a String" — even though ActiveModel's own `EachValidator` would
+        # skip the validator outright for every one of those, `false` included. axn's type check deliberately
+        # does not follow AM there, so neither does a position's.
+        #
+        # The position's OTHER checks are not decided here at all: the bag's value validators carry the
+        # tolerance as their declaration tier (`inner_contract_validations`) and ActiveModel applies its own
+        # blank-skip to each of them, which is what lets a value class defining domain blankness be answered at
+        # a position exactly as it is at a named one, and what lets an entry override the position per key.
+        def tolerates?(value)
+          nil.equal?(value) && !!(tolerance[:allow_nil] || tolerance[:allow_blank])
+        end
+      end
       private_constant :PositionContract
 
       # The element position's contract, read off the validator's own options — which ARE the element bag.
@@ -97,6 +119,7 @@ module Axn
           # and a validator-only bag is a LEAF, so no ancestry can form through it for the guard to detect.
           # Measured: identical behaviour with and without a bypass, at every depth up to the nesting bound.
           contents_node: contents && (bag[:of] || bag[:shape]),
+          tolerance: Axn::Validation::Base.tolerance_options(bag),
         )
       end
 
@@ -104,7 +127,7 @@ module Axn
       # class and nothing else, and must allocate nothing beyond that.
       def bare_type_contract(declared)
         PositionContract.new(klasses: Axn::Internal::ShapeGraph.type_tokens(declared), message: nil, contents: nil,
-                             validator_class: nil, contents_node: nil)
+                             validator_class: nil, contents_node: nil, tolerance: {})
       end
 
       # Everything the position is held to, as a VALIDATIONS bag — the two recursion edges (`of:`/`shape:`) and
@@ -118,31 +141,48 @@ module Axn
       # constrains nothing — so the two lists have to be one list, and subtraction makes them one.
       #
       # The shared ActiveModel options come out through `validator_entries`, which is what "these are not
-      # validators" already means everywhere else. Whether a bag's `allow_nil:`/`allow_blank:` govern the
-      # POSITION is a separate question, and not one this method may answer by accident: axn's own tolerance
-      # push writes them into the top-level bag even on a required field, so forwarding them here would make
-      # `of: Integer` quietly admit nil elements.
+      # validators" already means everywhere else. The position's TOLERANCE leaves with them, and deliberately
+      # does not travel into the forwarded contents: `validate_position` stands the whole position down for a
+      # tolerated value in one place, rather than re-expressing the same fact as a flag on every forwarded
+      # entry.
       def inner_contract_validations(bag)
         entries = Axn::Validation::Base.validator_entries(bag)
         contents = entries.reject do |key, value|
           Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS.include?(key) || !value
         end
-        contents.empty? ? nil : contents
+        return nil if contents.empty?
+
+        # The position's tolerance rides along as the DECLARATION tier of the contract these contents become, so
+        # ActiveModel resolves it against each entry exactly as it does at a named position:
+        # `defaults.merge(_parse_validates_options(options))`, which lets an entry override the position per key.
+        # Standing the whole position down instead reimplemented that precedence and got it wrong in the one case
+        # where the two tiers disagree — measured, `of: { klass: String, format: { with: /x/, allow_nil: false },
+        # allow_nil: true }` skipped the `format:` that had just refused the exemption, while the equivalent named
+        # member ran it and rejected the nil.
+        #
+        # Only a TRUE tolerance is forwarded. The pair is stated explicitly on every bag, `false` included, to keep
+        # a field's tolerance from reaching the position — and forwarding those `false`s would push them onto every
+        # entry as a declaration default, overriding nothing but re-stating a default ActiveModel already holds.
+        contents.merge(Axn::Validation::Base.true_tolerance_options(bag))
       end
 
       # One position of one value: its own type check, then whatever its inner contract says about what is
-      # inside it. The type verdict does NOT gate the contents check — a wrong-typed element still reports what
-      # could not be read out of it, which is what the pre-recursion pairing of OfValidator and ShapeValidator
-      # did (both ran, independently) and what an author fixing a payload needs.
+      # inside it.
+      #
+      # A position that TOLERATES the value stands down its own TYPE check — the class it names is the thing the
+      # position itself asserts, and `allow_nil:`/`allow_blank:` are what excuse a value from it. It does NOT
+      # stand down the CONTENTS: those carry the same tolerance as their declaration tier
+      # (`inner_contract_validations`) and are judged by ActiveModel, which lets an individual entry override the
+      # position per key. Skipping them here instead would override the entry with the position, inverting AM's
+      # precedence — measured against the named position that mirrors this one.
+      #
+      # The type verdict does NOT gate the contents check either — a wrong-typed element still reports what could
+      # not be read out of it, which is what an author fixing a payload needs.
       #
       # A custom `message:` replaces the type description but the POSITION is always reported — an ordinal is
-      # the only locating info an unnamed position has, and the thing that makes the error actionable. Built
-      # only on the failure path: `matches_axis?` is asked first, so the common case interpolates nothing.
-      #
-      # `allow_blank` governs whether the whole field may be absent (handled by `validate_each`), not whether
-      # individual elements or entries may be blank — so it is intentionally not passed to the matcher.
+      # the only locating info an unnamed position has. Built only on the failure path.
       def validate_position(record, attribute, contract, value, position)
-        record.errors.add(attribute, "#{position} #{position_mismatch(contract)}") unless matches_axis?(value, contract.klasses)
+        record.errors.add(attribute, "#{position} #{position_mismatch(contract)}") if !contract.tolerates?(value) && !matches_axis?(value, contract)
         return if nil.equal?(contract.contents)
 
         add_contents_errors(record, attribute, contract, value, "#{position}: ")
@@ -261,8 +301,17 @@ module Axn
         end
       end
 
-      def matches_axis?(value, klasses)
-        klasses.empty? || klasses.any? { |k| TypeValidator.value_matches?(value, klass: k) }
+      # The position's own type check, run on exactly the terms `TypeValidator` runs a named position's — the
+      # bag's blank tolerance included. That flag reaches only one pseudo-type, and it is load-bearing there:
+      # `:uuid` treats a blank as valid ONLY under `allow_blank:` (`value.blank? ? allow_blank : match?(…)`), so
+      # a matcher called without it rejects the empty UUID that `type: :uuid, allow_blank: true` accepts one rung
+      # up. Everything else in the matcher ignores it, so passing it costs nothing and closes the one divergence.
+      def matches_axis?(value, contract)
+        klasses = contract.klasses
+        return true if klasses.empty?
+
+        allow_blank = !!contract.tolerance[:allow_blank]
+        klasses.any? { |k| TypeValidator.value_matches?(value, klass: k, allow_blank:) }
       end
 
       # Every declared type named through the shared seam rather than interpolated: a declared class whose

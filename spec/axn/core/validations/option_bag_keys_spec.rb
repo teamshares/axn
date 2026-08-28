@@ -222,10 +222,10 @@ RSpec.describe "option bag keys" do
       end
 
       it "still refuses an option an axis bag cannot honour" do
-        axis = string_keyed(klass: Integer, allow_nil: true)
+        axis = string_keyed(klass: Integer, if: :flag)
 
         expect { build_axn { expects :m, type: Hash, of: { values: axis } } }
-          .to raise_error(ArgumentError, /of: values: does not support allow_nil:/)
+          .to raise_error(ArgumentError, /of: values: does not support if:/)
       end
 
       it "still refuses a nested bag that constrains nothing" do
@@ -513,6 +513,49 @@ RSpec.describe "option bag keys" do
 
       expect(klass.call(a: "x")).to be_ok
       expect(klass.call(a: 1)).not_to be_ok
+    end
+  end
+
+  # `optional:` is how a NAMED position spells its tolerance — a shape member takes it today, alongside
+  # `allow_nil:`/`allow_blank:`, with the granularity those names imply. A bag describes an UNNAMED position,
+  # so it takes the same three, and the sugar is canonicalized into the pair at declaration exactly as
+  # `_parse_field_configs` canonicalizes a field's (`allow_blank ||= optional`) — nothing downstream reads
+  # three keys where the field reads two.
+  describe "a bag's tolerance vocabulary" do
+    it "canonicalizes optional: into allow_blank: at an element position" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, optional: true } }
+      bag = action.internal_field_configs.first.validations[:of]
+
+      expect(bag).to include(allow_blank: true)
+      expect(bag).not_to include(:optional)
+    end
+
+    it "canonicalizes optional: at a map axis" do
+      action = build_axn { expects :f, type: Hash, of: { values: { klass: String, optional: true } } }
+      axis = action.internal_field_configs.first.validations[:of][:values]
+
+      expect(axis).to include(allow_blank: true)
+      expect(axis).not_to include(:optional)
+    end
+
+    it "canonicalizes optional: inside a nested bag" do
+      action = build_axn { expects :f, type: Array, of: { klass: Array, of: { klass: String, optional: true } } }
+      inner = action.internal_field_configs.first.validations[:of][:of]
+
+      expect(inner).to include(allow_blank: true)
+      expect(inner).not_to include(:optional)
+    end
+
+    it "leaves an author-written allow_nil: alone rather than widening it to blank" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, allow_nil: true } }
+      bag = action.internal_field_configs.first.validations[:of]
+
+      expect(bag).to include(allow_nil: true, allow_blank: false)
+    end
+
+    it "still refuses a bag that constrains nothing but its own tolerance" do
+      expect { build_axn { expects :f, type: Array, of: { optional: true } } }
+        .to raise_error(ArgumentError, /of: must constrain something/)
     end
   end
 end

@@ -7727,9 +7727,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # pins the helper's own contract instead, since what it returns is consumed as "the constraints on this
     # value" and `of:`/`shape:` describe a nested node rather than a keyword on this one.
     describe "bag_value_constraints" do
-      it "keeps the value validators and drops everything that describes the position" do
+      it "keeps the value validators and a TRUE tolerance, and drops everything else that describes the position" do
         bag = { klass: String, container: Array, message: "m", of: { klass: Integer },
                 shape: { members: [] }, format: { with: /a/ }, allow_nil: true }
+
+        expect(described_class.send(:bag_value_constraints, bag, for_output: false))
+          .to eq(format: { with: /a/ }, allow_nil: true)
+      end
+
+      # A FALSE tolerance is `_canonicalize_bag_tolerance!`'s default rather than an author's own statement, and
+      # it never reaches the validator this hash feeds — `OfValidator#inner_contract_validations` excludes it
+      # from what it hands `validates`. Forwarding it here would feed a FIELD-only reading (ActiveModel merges
+      # its declaration-wide `allow_blank: false` into every entry it builds) a fact this position's own runtime
+      # never acts on, so it is dropped rather than kept the way a genuine `true` is.
+      it "drops a FALSE tolerance, which the position's own runtime never sees" do
+        bag = { klass: String, format: { with: /a/ }, allow_nil: false, allow_blank: false }
 
         expect(described_class.send(:bag_value_constraints, bag, for_output: false)).to eq(format: { with: /a/ })
       end
@@ -8329,6 +8341,197 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
 
       expect(prop[:propertyNames]).to eq(maxLength: 4, enum: [])
+    end
+  end
+
+  # A position's tolerance is projected exactly as a FIELD's is, by the same helpers — which is the
+  # requirement, not a convenience: the field-level behaviour is precise and non-obvious (an `allow_blank`
+  # DROPS a length floor because the empty value passes, while an `allow_nil` KEEPS it because the empty value
+  # still fails), and a second implementation would drift from it.
+  # A bag naming no class at all — `of: { shape: … }`, "these members, class unconstrained" — starts from an
+  # untyped node, so there is no `null` branch on it for the shape overlay to preserve. The overlay therefore asks
+  # the BAG for its nullability rather than reading it back off the node, which is the same source the
+  # nullability reconciler reads and so cannot disagree with it.
+  # The shape is an ENTRY, so ActiveModel lets it override the position's tolerance per key. Nullability is
+  # derived from that resolution rather than from the bag tier alone, or the document advertises a null the
+  # runtime refuses — looser than the contract, which is the direction this layer must never err in.
+  describe "a shape entry may override the position's tolerance" do
+    let(:member) do
+      Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: String }, presence: true })
+    end
+
+    it "emits no null branch when the shape entry refuses the position's allow_nil:" do
+      # `build_axn` class_evals its block, so the member has to be captured in a local rather than read
+      # off the example group.
+      m = member
+      action = build_axn { expects :f, type: Array, of: { allow_nil: true, shape: { members: [m], allow_nil: false } } }
+
+      expect(action.call(f: [nil])).not_to be_ok
+      expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
+        .dig(:properties, :f, :items, :type)).to eq("object")
+    end
+
+    it "emits the null branch when the shape entry does not override it" do
+      m = member
+      action = build_axn { expects :f, type: Array, of: { allow_nil: true, shape: { members: [m] } } }
+
+      expect(action.call(f: [nil])).to be_ok
+      expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
+        .dig(:properties, :f, :items, :type)).to eq(%w[object null])
+    end
+
+    # The other half of the conjunction. A tolerant shape entry cannot WIDEN a position whose own `klass:`
+    # still rejects the nil — `validate_position` reports the type mismatch however willingly the shape skips
+    # itself — so reading the shape entry alone advertised a null the runtime refuses.
+    it "emits no null branch when a tolerant shape entry sits on a strictly typed position" do
+      m = member
+      action = build_axn { expects :f, type: Array, of: { klass: Hash, shape: { members: [m], allow_nil: true } } }
+
+      expect(action.call(f: [nil])).not_to be_ok
+      expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
+        .dig(:properties, :f, :items, :type)).to eq("object")
+    end
+
+    it "emits the null branch only when BOTH the position and the shape entry admit it" do
+      m = member
+      both = build_axn { expects :f, type: Array, of: { klass: Hash, allow_nil: true, shape: { members: [m] } } }
+
+      expect(both.call(f: [nil])).to be_ok
+      expect(described_class.build_input(both.internal_field_configs, both.subfield_configs)
+        .dig(:properties, :f, :items, :type)).to eq(%w[object null])
+    end
+  end
+
+  describe "a shaped position's null branch survives the members overlay" do
+    def items_node(bag)
+      klass = build_axn { expects :f, type: Array, of: bag }
+      described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:f][:items]
+    end
+
+    it "keeps null on a classless shaped position declaring allow_nil:" do
+      expect(items_node(shape: { members: [] }, allow_nil: true)[:type]).to eq(%w[object null])
+    end
+
+    it "keeps null on a classless shaped position declaring allow_blank:" do
+      expect(items_node(shape: { members: [] }, allow_blank: true)[:type]).to eq(%w[object null])
+    end
+
+    # A classless bag that declares NO tolerance gets no null branch, even though its own empty validator set
+    # would admit one: the shape's members are what reject a nil there, and answering from the bag's value
+    # constraints alone emits a document looser than the contract for every shaped position that HAS members
+    # (`expects :items, type: Array do field :status, type: String end` rejects `[nil]`).
+    it "leaves a classless shaped position that declares no tolerance a bare object" do
+      expect(items_node(shape: { members: [] })[:type]).to eq("object")
+    end
+
+    it "keeps a distributing shape block with required members non-nullable, matching its runtime" do
+      action = build_axn do
+        expects :f, type: Array do
+          field :a, type: String
+        end
+      end
+
+      expect(action.call(f: [nil])).not_to be_ok
+      expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
+        .dig(:properties, :f, :items, :type)).to eq("object")
+    end
+
+    it "keeps null on a CLASSED shaped position declaring allow_nil:" do
+      expect(items_node(klass: Hash, shape: { members: [] }, allow_nil: true)[:type]).to eq(%w[object null])
+    end
+
+    it "leaves a classed shaped position with no tolerance a bare object" do
+      action = build_axn { expects :f, type: Array, of: { klass: Hash, shape: { members: [] } } }
+
+      expect(action.call(f: [nil])).not_to be_ok
+      expect(items_node(klass: Hash, shape: { members: [] })[:type]).to eq("object")
+    end
+  end
+
+  # A tolerated nil KEY has no null branch to travel in — a JSON property name is always a string, so it
+  # reaches the wire as `""`. Outbound the document has to admit that name or it rejects a result the action
+  # produced; inbound it must not, because a JSON caller cannot send a nil key and the `""` it can send is a
+  # genuine blank the axis's own validators reject.
+  describe "a tolerated nil map key and its empty wire form" do
+    let(:pattern) { { with: /\A[A-Z]+\z/ } }
+
+    def output_property_names(axis, value)
+      klass = Class.new do
+        include Axn
+        exposes :m, type: Hash, of: { keys: axis }
+        define_method(:call) { expose(:m, value) }
+      end
+      [klass.call, described_class.build_output(klass.external_field_configs).dig(:properties, :m, :propertyNames)]
+    end
+
+    it "withholds a pattern the serialized empty key cannot satisfy, on output" do
+      result, property_names = output_property_names({ klass: String, format: { with: /\A[A-Z]+\z/ }, allow_nil: true },
+                                                     { nil => 1 })
+
+      expect(result).to be_ok
+      # The nil key is still a nil in Ruby; it is the WIRE form the emitted document describes, and there it
+      # is the empty name — which is the whole reason the pattern cannot stand.
+      expect(JSON.parse(JSON.generate(result.m))).to eq("" => 1)
+      expect(property_names).to be_nil.or eq({})
+    end
+
+    it "widens an enum instead of dropping it" do
+      _result, property_names = output_property_names({ klass: String, inclusion: { in: %w[A B] }, allow_nil: true },
+                                                      { nil => 1 })
+
+      expect(property_names[:enum]).to include("A", "B", "")
+    end
+
+    it "leaves an untolerant axis's pattern alone" do
+      _result, property_names = output_property_names({ klass: String, format: { with: /\A[A-Z]+\z/ } }, { "AB" => 1 })
+
+      expect(property_names[:pattern]).to eq("^[A-Z]+$")
+    end
+
+    it "keeps the pattern on INPUT, where the runtime still rejects a blank key" do
+      action = build_axn do
+        expects :m, type: Hash, of: { keys: { klass: String, format: { with: /\A[A-Z]+\z/ }, allow_nil: true } }
+      end
+
+      expect(action.call(m: { "" => 1 })).not_to be_ok
+      expect(described_class.build_input(action.internal_field_configs, action.subfield_configs)
+        .dig(:properties, :m, :propertyNames, :pattern)).to eq("^[A-Z]+$")
+    end
+  end
+
+  describe "a tolerant of: bag's projection" do
+    def items_for(&declaration)
+      klass = build_axn(&declaration)
+      described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:f][:items]
+    end
+
+    it "adds a null branch for a nil-tolerant element position" do
+      expect(items_for { expects :f, type: Array, of: { klass: String, allow_nil: true } })
+        .to include(type: %w[string null])
+    end
+
+    it "keeps a length floor under allow_nil:, which does not admit the empty value" do
+      expect(items_for { expects :f, type: Array, of: { klass: String, length: { minimum: 2 }, allow_nil: true } })
+        .to include(type: %w[string null], minLength: 2)
+    end
+
+    it "drops the length floor under allow_blank:, which does admit the empty value" do
+      node = items_for { expects :f, type: Array, of: { klass: String, length: { minimum: 2 }, allow_blank: true } }
+
+      expect(node).to include(type: %w[string null])
+      expect(node).not_to include(:minLength)
+    end
+
+    it "leaves an untolerant position unchanged" do
+      expect(items_for { expects :f, type: Array, of: { klass: String, length: { minimum: 2 } } })
+        .to eq(type: "string", minLength: 2)
+    end
+
+    it "projects a tolerant values axis through additionalProperties" do
+      klass = build_axn { expects :f, type: Hash, of: { values: { klass: String, allow_nil: true } } }
+      node = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:f]
+
+      expect(node[:additionalProperties]).to include(type: %w[string null])
     end
   end
 end

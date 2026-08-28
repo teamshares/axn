@@ -777,9 +777,10 @@ module Axn
           # rule a field's are. The member's own BAG-level `on:` is refused earlier, by
           # `_check_member_option_keys!` above, with the reason particular to a member.
           #
-          # All seven are the field path's own guards, called with the member's label where a field passes its
+          # All eight are the field path's own guards, called with the member's label where a field passes its
           # own: a key that names no validator at all, an entry whose check cannot run, one asking for a
-          # strict-raising mode axn has not got, one that cannot MEAN anything at a container position, one
+          # strict-raising mode axn has not got, one naming a context to skip that axn has not got either (so
+          # the exclusion excludes nothing), one that cannot MEAN anything at a container position, one
           # comparing against literals no value of the declared type could be, one forbidding literals no
           # value of the declared type could be, and one whose admissible SIZES form an empty interval. The
           # positional rule is a rule about positions, and a member is one — so a raw member is held to it
@@ -804,7 +805,14 @@ module Axn
           _reject_unsupported_validator_keys!(copy, where: member_where)
           _reject_validator_context_scope!(copy, where: member_where)
           _reject_strict_validation!(copy, where: member_where)
+          _reject_validator_except_on!(copy, where: member_where)
           _reject_container_position_validators!(copy, where: member_where)
+          # Beside the other guards a raw member shares with the field path, and for the reason they are all
+          # named here: this route builds a member without going through `_parse_field_configs`, so a rule the
+          # block form gets for free has to be stated again or the raw construction is a way around it. Measured,
+          # a hand-built `ShapeConfig` carrying `{ presence: true, allow_nil: true }` declared cleanly while the
+          # block member, the field and an `of:` position all refused it.
+          _reject_tolerant_presence!(copy, where: member_where, tolerance: copy.slice(:allow_nil, :allow_blank))
           _reject_unsatisfiable_value_constraints!(copy, where: member_where,
                                                          tolerance: copy.slice(:allow_nil, :allow_blank))
           _reject_vacuous_value_constraints!(copy, where: member_where,

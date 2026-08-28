@@ -116,19 +116,26 @@ RSpec.describe "confirmation:" do
 
     # Requiredness is the companion's own `presence:`, not a side effect of the inherited `type:` — so a base
     # whose type accepts nil (or declares none at all) enforces its confirmation exactly as a strict one does.
+    # WHICH clause reports it depends on whether there is a type to report through. The companion inherits the
+    # base's `type:` but not the base's tolerance (a field's tolerance is recorded on its declaration, not
+    # inside its type bag), so an inherited nil-rejecting type reports the omission itself and
+    # `_apply_nil_skip_to_non_type_validators!` relaxes the companion's `presence:` so the type error stands
+    # alone. An untyped base has no type to inherit, so its `presence:` reports.
     {
       # `proc`, not `->`: `build_axn` class_evals the block, which yields the class to it.
-      "an untyped base" => proc { expects :password, confirmation: true },
-      "an allow_nil: base" => proc { expects :password, type: String, allow_nil: true, confirmation: true },
-      "an optional: base" => proc { expects :password, type: String, optional: true, confirmation: true },
-    }.each do |label, declaration|
+      "an untyped base" => [proc { expects :password, confirmation: true }, "Password confirmation can't be blank"],
+      "an allow_nil: base" => [proc { expects :password, type: String, allow_nil: true, confirmation: true },
+                               "Password confirmation is not a String"],
+      "an optional: base" => [proc { expects :password, type: String, optional: true, confirmation: true },
+                              "Password confirmation is not a String"],
+    }.each do |label, (declaration, expected_clause)|
       context "with #{label}" do
         let(:klass) { build_axn(&declaration) }
 
         it "still requires the companion once the base is present" do
           result = klass.call(password: "s3cret")
           expect(result).not_to be_ok
-          expect(result.exception.message).to include("Password confirmation can't be blank")
+          expect(result.exception.message).to include(expected_clause)
         end
 
         it "still compares the pair" do

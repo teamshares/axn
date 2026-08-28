@@ -142,7 +142,11 @@ RSpec.describe Axn::Validators::OfValidator do
 
   describe "whole-value nil/blank handling" do
     # Each flag governs the *field* (may it be absent?), never its *elements* — a nil
-    # element is still rejected regardless of which whole-field flag is set.
+    # element is still rejected regardless of which whole-field flag is set. The field's tolerance is
+    # recorded once, on the declaration (PRO-3225), rather than copied into every validator entry — but
+    # `_canonicalize_bag_tolerance!` states the `of:` bag's OWN `allow_nil:`/`allow_blank:` explicitly
+    # (`false` where the author wrote neither), so that bag's own answer is what ActiveModel's declaration
+    # tier merges under, not what it merges the field's flag over.
     context "with allow_nil" do
       let(:action) { build_axn { expects :items, type: Array, of: String, allow_nil: true } }
 
@@ -152,6 +156,12 @@ RSpec.describe Axn::Validators::OfValidator do
 
       it "still rejects a nil element inside the array" do
         result = action.call(items: ["a", nil])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/element at index 1/)
+      end
+
+      it "still rejects a non-nil, non-String element" do
+        result = action.call(items: ["a", 1])
         expect(result).not_to be_ok
         expect(result.exception.message).to match(/element at index 1/)
       end
@@ -169,6 +179,12 @@ RSpec.describe Axn::Validators::OfValidator do
         expect(result).not_to be_ok
         expect(result.exception.message).to match(/element at index 1/)
       end
+
+      it "still rejects a non-nil, non-String element" do
+        result = action.call(items: ["a", 1])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/element at index 1/)
+      end
     end
 
     context "with optional" do
@@ -180,6 +196,12 @@ RSpec.describe Axn::Validators::OfValidator do
 
       it "still rejects a nil element inside the array" do
         result = action.call(items: ["a", nil])
+        expect(result).not_to be_ok
+        expect(result.exception.message).to match(/element at index 1/)
+      end
+
+      it "still rejects a non-nil, non-String element" do
+        result = action.call(items: ["a", 1])
         expect(result).not_to be_ok
         expect(result.exception.message).to match(/element at index 1/)
       end

@@ -1233,19 +1233,33 @@ module Axn
         # options hash, which reads the keys it knows and drops the rest, so an unrecognized key declares
         # cleanly, constrains nothing, and every value passes.
         #
-        # `on:` and `strict:` are admitted here and refused by `_reject_inner_contract_context_scope!` /
+        # `on:`, `except_on:` and `strict:` are admitted here and refused by
+        # `_reject_inner_contract_context_scope!` / `_reject_inner_contract_except_on!` /
         # `_reject_inner_contract_strict!` — the bag-level twins of the field's own scans, and the ones that reach
         # a bag at every position — which name the actual problem (axn has no validation contexts, and no
-        # strict-raising mode) instead of reporting the key as unknown. The remaining shared options stay
-        # admitted because axn WRITES two of them here: the tolerance push-down merges `allow_blank:`/`allow_nil:`
-        # into every validator entry, this bag included, so a whitelist without them would refuse
-        # `of: Integer, optional: true`. Whether they then do anything depends on the position, which is
-        # `AXIS_INERT_OPTION_KEYS` below.
+        # strict-raising mode) instead of reporting the key as unknown. `except_on:` is listed explicitly in the
+        # `Set.new(...)` below rather than left to arrive with `shared_validation_option_keys`: it joined
+        # ActiveModel's shared-option list after the gemspec's floor of 7.2, so on 7.2 it is absent from that
+        # list and would otherwise reach `_reject_unknown_of_keys!` as an unknown key — reporting the wrong
+        # defect on the older of the two supported ActiveModel lines, before the dedicated guard above ever runs.
+        #
+        # `allow_nil:`/`allow_blank:`/`optional:` are the position's TOLERANCE: the same three spellings a named
+        # shape member takes, meaning the same three things about the value at this position. A bag also
+        # receives `allow_blank:`/`allow_nil:` from the field-level tolerance push-down, which merges them into
+        # every validator entry including this one — so a whitelist without them would refuse
+        # `of: Integer, optional: true` on the FIELD. `_canonicalize_bag_tolerance!` folds the `optional:` sugar
+        # into the pair before any of them is read, so the pair is the only form stored. Whether `if:`/`unless:`
+        # then do anything depends on the position, which is `AXIS_INERT_OPTION_KEYS` below.
+        #
+        # `optional` itself is never seen by the check below — `_canonicalize_bag_tolerance!` always deletes it
+        # first — so its entry here is not a gate. It exists because `_reject_unknown_of_keys!` renders `allowed
+        # - UNADVERTISED_OF_KEYS` as the "(supported: …)" list on an unknown-key refusal; without this entry
+        # that list would advertise a grammar a typo'd sibling key could not actually match.
         #
         # `POSITIONAL_VALIDATOR_KEYS` is the value-constraint half (PRO-3193): a bag is a validator SET for
         # the position it describes, not only a type check, which is what makes the remedy PRO-3192's refusal
         # messages point at actually exist.
-        OF_OPTION_KEYS = (Set.new(%i[klass of shape message]) | POSITIONAL_VALIDATOR_KEYS |
+        OF_OPTION_KEYS = (Set.new(%i[klass of shape message optional except_on]) | POSITIONAL_VALIDATOR_KEYS |
                           Axn::Validation::Base.shared_validation_option_keys).freeze
 
         # The same set for the other container. A Hash's insides are two axes rather than one element position,
@@ -1253,7 +1267,12 @@ module Axn
         # something the declaration says. `message:` is absent for the neighbouring reason — one message cannot
         # say which axis failed. It is the AXIS bag that takes one (`OF_OPTION_KEYS` carries it), which is what
         # a per-axis message needed and why the bag had to exist first (PRO-3166).
-        MAP_OF_OPTION_KEYS = (Set.new(%i[keys values]) | Axn::Validation::Base.shared_validation_option_keys).freeze
+        # `except_on` is named EXPLICITLY for the reason `OF_OPTION_KEYS` names it: it is absent from ActiveModel's
+        # shared-option list before 8.0 and present after, and the whitelist runs ahead of the dedicated guard —
+        # so without it the same declaration is refused as an unknown key on one supported ActiveModel and with
+        # the message that names the real problem on another.
+        MAP_OF_OPTION_KEYS = (Set.new(%i[keys values except_on]) |
+                              Axn::Validation::Base.shared_validation_option_keys).freeze
 
         # The two things inside a Hash, in the order a declaration reads them.
         MAP_OF_AXES = %i[keys values].freeze
@@ -1821,15 +1840,14 @@ module Axn
         # What it inherits is what has to match for the comparison to mean anything, since both sides of a
         # comparison must live in the same space:
         #   * `type:` (which carries the parsed `coerce:` flag — `_expand_coerce_sugar!` folds the option into
-        #     the type bag, so there is no separate key left to copy — and whatever tolerance the base's own
-        #     `optional:`/`allow_blank:`/`allow_nil:` pushed into it) keeps the emitted schema and the runtime
+        #     the type bag, so there is no separate key left to copy) keeps the emitted schema and the runtime
         #     agreeing about what the companion may be, and keeps a coerced pair comparable: a form post of
         #     `count: "5", count_confirmation: "5"` against `coerce: Integer` compares 5 to "5" and reports a
-        #     mismatch the caller cannot act on unless the companion coerces too. The inherited tolerance is
-        #     inert on the companion — an `optional:` base yields a `type:` bag carrying `allow_blank: true`
-        #     even though the companion's own `presence: true` (below) already rejects a blank value first —
-        #     but it still has to travel with `type:`, since the two live in one bag and copying one without
-        #     the other isn't an option.
+        #     mismatch the caller cannot act on unless the companion coerces too. The base's TOLERANCE is
+        #     deliberately not inherited with it: a field's tolerance is recorded on its own declaration, not
+        #     inside its type bag, and a companion that tolerated what the base tolerates would accept the
+        #     omission the companion exists to reject. So a tolerant typed base reports its missing companion
+        #     through the inherited type, exactly as a strict one does.
         #   * `preprocess:` for the same reason — a `->(s){ s.strip }` on the base alone compares "a" to " a ".
         #   * `sensitive:` because the failure mode is a LEAK: a confirmed secret whose companion logs in the
         #     clear is the whole password beside the redacted one.
@@ -2298,13 +2316,10 @@ module Axn
                 "got #{klasses.map(&:inspect).join(', ')}."
         end
 
-        # Whether a validator entry takes NO tolerance from the declaration-level `optional:`/`allow_blank:`/
-        # `allow_nil:` push-down (`_reconcile_emptiness_axis!`'s tolerant branch, below). Exactly one does.
-        # Every other validator judges the field's OWN value, so a tolerance stands it down: there is nothing
-        # to check when the value the author called optional is absent or empty. `confirmation:`'s subject is
-        # not the field's value but the RELATIONSHIP between the field and its companion, and a SUPPLIED
-        # companion is compared against the base whatever the base holds — `password: ""` (or nil) beside
-        # `password_confirmation: "x"` is a mismatch the caller must see, not a blank to wave through.
+        # Whether a validator entry must be held OUT of the declaration's `optional:`/`allow_blank:`/
+        # `allow_nil:` tolerance. Exactly one is. The pair is stated on the declaration, so `validates` applies
+        # it to every validator; an exempt entry is given an explicit `allow_blank: false, allow_nil: false`,
+        # which overrides the declaration tier per key exactly as ActiveModel's own merge order does.
         #
         # This is narrower than it looks: ActiveModel's ConfirmationValidator already returns without
         # comparing when the COMPANION is nil (measured against activemodel 7.2.2.2: `unless (confirmed =
@@ -2509,6 +2524,37 @@ module Axn
           bag[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(bag[:validate], fields, nested: true)
         end
 
+        # `optional:` is the sugar a NAMED position takes, canonicalized here into the pair the runtime and the
+        # emitter read — the same fold `_parse_field_configs` performs for a field (`allow_blank ||= optional`),
+        # through the same meaning: "optional" is blank-tolerance, which subsumes nil.
+        #
+        # Runs ahead of every other check on the bag, so none of them ever judges a bag carrying two spellings
+        # of one fact. Idempotent, which the walk requires: this seam runs over a shape member's bag twice, and
+        # the second pass finds the key already folded away.
+        #
+        # A FALSY `optional:` is dropped rather than written as `allow_blank: false`. It is the absence of
+        # tolerance, which is the default, and writing the negative would make an explicit `allow_nil: true`
+        # beside it read as a contradiction the author did not declare.
+        #
+        # Both keys are then STATED explicitly on every bag, even one naming neither — the pair a field records
+        # is on the DECLARATION, not copied into each validator entry, and `validates` still
+        # merges that declaration tier into every validator it builds from the same call as its own defaults
+        # (`defaults.merge(entry)`, ActiveModel's own build step), `of:` included. Left implicit, a bag with no
+        # tolerance of its own would silently inherit whatever the FIELD's `allow_nil:`/`allow_blank:` says —
+        # `optional: true` on the field would legalise a nil ELEMENT nothing at this position asked for. Writing
+        # the pair here makes the bag's own (possibly false) answer the one AM's merge cannot override: an
+        # entry's own key always wins over the tier it rides beside. The same explicit-override device
+        # `_parse_field_validations` already uses to hold `confirmation:` out of that same tier.
+        def _canonicalize_bag_tolerance!(bag)
+          if Internal::ShapeGraph.carries_key?(bag, :optional)
+            optional = bag.delete(:optional)
+            bag[:allow_blank] = true if optional
+          end
+
+          bag[:allow_nil] = !!bag[:allow_nil]
+          bag[:allow_blank] = !!bag[:allow_blank]
+        end
+
         # The grammar EVERY inner-contract bag is held to, asked once wherever one is accepted: at an Array's
         # element position and at each of a map's two axes. One function rather than three call sequences,
         # because a bag means the same thing in all three and a check missing from one of them is a hole the
@@ -2518,11 +2564,13 @@ module Axn
         # two positions this function never sees (a field's own `shape:`, a shape MEMBER's), so it is one
         # refusal at the walk that reaches all four (`ShapeDeclaration#_reject_unshaped_shape!`).
         def _check_inner_contract_bag!(bag, fields)
+          _canonicalize_bag_tolerance!(bag)
           _canonicalize_positional_validator_options!(bag, fields)
           _reject_unknown_of_keys!(bag, OF_OPTION_KEYS)
           _reject_unconstraining_of_bag!(bag)
           _reject_unsupported_of_klass!(bag)
           _reject_inner_contract_context_scope!(bag, fields)
+          _reject_inner_contract_except_on!(bag, fields)
           _reject_inner_contract_strict!(bag, fields)
           _reject_unusable_of_message!(bag, fields)
           _reject_positional_bag_validators!(bag, fields)
@@ -2707,6 +2755,16 @@ module Axn
           _raise_strict_validation!("an `of:` bag", _declared_fields_label(fields))
         end
 
+        # The bag-level twin of the scan above, for the reason that pair exists on the context-scope and strict
+        # sides: the field's own `of:` IS an entry, so the scan sees it, but a bag nested inside one and a map's
+        # axis are reached only by the declaration walk. Asked of the bag directly here, through the same
+        # predicate the scan uses, so one rule decides it at every position.
+        def _reject_inner_contract_except_on!(bag, fields)
+          return unless Axn::Validation::Base.entry_declares_except_on?(bag)
+
+          _raise_validator_except_on!("an `of:` bag", _declared_fields_label(fields))
+        end
+
         # A `message:` replaces the type description a mismatch reports, so a bag naming no class has nothing
         # for it to replace: `OfValidator#matches_axis?` waves every value through an empty class list, the
         # mismatch branch is never reached, and the message the author wrote is never emitted. Reachable since
@@ -2738,23 +2796,23 @@ module Axn
         # bag sits at is an ActiveModel validator entry, where AM reads these and they are live: the field's own
         # `of:` bag is an entry on the field, and a nested ELEMENT bag becomes one on the next level's
         # `ContainerContents` validator, since `OfValidator#inner_contract_validations` hands it over verbatim
-        # under `:of`. An axis bag is never handed to AM at all — `OfValidator#axis_contract` reads `klass:`,
-        # `message:`, `of:` and `shape:` and nothing else — so anything else written there is dropped rather
-        # than applied, and the axis constrains less than its declaration says. Measured:
-        # `of: { klass: Array, of: { klass: Integer, if: -> { false } } }` lets `[["x"]]` through, while
-        # `of: { values: { klass: Integer, if: -> { false } } }` still rejects `{a: "x"}`.
+        # under `:of`. An axis bag is never handed to AM at all — `OfValidator#axis_contract` reads it directly
+        # — so a GATE written there is dropped rather than applied, and the axis constrains less than its
+        # declaration says. Measured: `of: { klass: Array, of: { klass: Integer, if: -> { false } } }` lets
+        # `[["x"]]` through, while `of: { values: { klass: Integer, if: -> { false } } }` still rejects
+        # `{a: "x"}`.
         #
-        # Refused only at the axis, for the same reason `OF_OPTION_KEYS` admits them at all: axn's own tolerance
-        # push-down writes `allow_blank:`/`allow_nil:` into a validator entry, so banning them everywhere would
-        # refuse `of: Integer, optional: true`. It never writes them into an AXIS, which is what makes the
-        # narrower ban safe — verified against the stored config, where `optional: true` on a map lands the pair
-        # on the map bag and leaves the axis untouched.
+        # The TOLERANCE keys are not here, because they are not read by ActiveModel at any position: they state
+        # what the position itself admits, not a context AM gates a validator entry on. A later step makes
+        # `OfValidator` resolve them off the bag directly, at every position, so an axis will state its
+        # tolerance exactly as an element bag does.
         #
-        # `on:` and `strict:` are left out because `_check_inner_contract_bag!` has already refused each a step
-        # earlier, naming the real problem — axn has no validation contexts, and no strict-raising mode — both of
-        # which are true at every position rather than at this one. Listing either here would offer "drop it, the
-        # axis reads nothing" where the messages above name what axn does not have.
-        AXIS_INERT_OPTION_KEYS = (Axn::Validation::Base.shared_validation_option_keys - %i[on strict]).freeze
+        # `on:`, `except_on:` and `strict:` are left out because `_check_inner_contract_bag!` has already refused
+        # each a step earlier, naming the real problem — axn has no validation contexts, and no strict-raising
+        # mode — both of which are true at every position rather than at this one. Listing any of them here
+        # would offer "drop it, the axis reads nothing" where the messages above name what axn does not have.
+        AXIS_INERT_OPTION_KEYS = (Axn::Validation::Base.shared_validation_option_keys -
+                                  %i[on except_on strict allow_nil allow_blank]).freeze
 
         # Every offender at once: an author who wrote two of them has one declaration to fix. The keys are
         # axn's own frozen Symbols, so naming them runs nothing of the caller's.
@@ -2890,6 +2948,26 @@ module Axn
           POSITIONAL_VALIDATOR_KEYS.any? { |key| Internal::ShapeGraph.carries_key?(bag, key) && bag[key] }
         end
 
+        # A truthy `presence:` under a tolerance is dead machinery: the tolerance is applied to every check at
+        # the position, so the presence validator would accept exactly the values it exists to reject. Refused
+        # at declaration, at a field and at every bag position, through one function — the alternative is two
+        # statements of one rule that can come to disagree about which combinations are legal.
+        #
+        # `presence: false` is coherent and untouched: explicit suppression, the same intent as the tolerance.
+        # The tolerance is passed rather than read out of `validations`, because at a field it is still a
+        # declaration KWARG when this runs, and at a bag it is the bag's own pair.
+        def _reject_tolerant_presence!(validations, where:, tolerance:)
+          return unless tolerance[:allow_blank] || tolerance[:allow_nil]
+          return unless validations[:presence]
+
+          raise ArgumentError,
+                "optional:/allow_blank:/allow_nil: on #{where} cannot be combined with an explicit " \
+                "`presence:` — the tolerance is applied to every check at that position, so the presence " \
+                "check could never fail. For \"may be nil, but not empty\", declare `allow_empty: false` " \
+                "alongside the tolerance; otherwise declare one requiredness signal (drop the tolerance, or " \
+                "drop presence:)."
+        end
+
         # PRO-3192's two positional guards, at a bag position. Reached with the bag's own value constraints and
         # `klass:` in the role `type:` plays at a field — which is the role `klass:` already plays for the rest
         # of the bag grammar (`_inner_of_container!`) — so ONE rule covers the field and all three bag
@@ -2900,24 +2978,23 @@ module Axn
           return unless _bag_carries_positional_validator?(bag)
 
           validations = _bag_as_validations(bag)
+          tolerance = Axn::Validation::Base.tolerance_options(bag)
 
           where = "an `of:` bag on #{_declared_fields_label(fields)}"
+          _reject_tolerant_presence!(validations, where:, tolerance:)
           _reject_container_position_validators!(validations, where:, nested: true)
           # `length:` is one of `POSITIONAL_VALIDATOR_KEYS` (PRO-3193), so a bag can carry the identical bad
           # bound a field can — same guard, same reader, this position's own `where:`.
           _reject_invalid_length_bounds!(validations, where:)
-          # No tolerance is passed, and none is read out of `validations` either (see `_bag_as_validations`):
-          # a bag's `allow_nil:`/`allow_blank:` do not govern its position (PRO-3225), so honouring them here
-          # would stand the guard down for a rescue that never happens — letting a contract which admits
-          # NOTHING declare cleanly, which is the class this guard exists to refuse. At a field the same flags
-          # DO rescue the contract, and there they still stand it down.
-          _reject_unsatisfiable_value_constraints!(validations, where:, nested: true, tolerance: {})
+          # The bag's own tolerance, read the way the field's is: a tolerated value PASSES, so it can rescue a
+          # contract that would otherwise admit nothing, and it discounts the literals ActiveModel would skip.
+          _reject_unsatisfiable_value_constraints!(validations, where:, nested: true, tolerance:)
           # Its mirror, in the same order the field path runs the pair: the unsatisfiable contract is reported
           # first, so a declaration broken both ways names the defect that rejects every call ahead of the one
-          # that rejects none. Both guards run at all four positions — PRO-3192's rule is that a validator is
-          # judged where it is declared, and an INVERTED one that forbids literals no value of the position's
-          # class could be enforces nothing there just as surely as it does at a field.
-          _reject_vacuous_value_constraints!(validations, where:, nested: true, tolerance: {})
+          # that rejects none. Both guards run at all four positions — a validator is judged where it is
+          # declared, and an INVERTED one that forbids literals no value of the position's class could be
+          # enforces nothing there just as surely as it does at a field.
+          _reject_vacuous_value_constraints!(validations, where:, nested: true, tolerance:)
         end
 
         # The bag as a VALIDATIONS hash: its value constraints, with `klass:` renamed to `type:` — the role
@@ -2925,9 +3002,10 @@ module Axn
         # validator added to `POSITIONAL_VALIDATOR_KEYS` reaches the guards without a second edit here.
         #
         # The shared ActiveModel options come out through `validator_entries`, exactly as they do for the
-        # runtime's own forwarding (`OfValidator#inner_contract_validations`): they are not validators, and at a
-        # bag position they are not enforced either, so leaving them in would have `Base.nil_accepted?` read a
-        # tolerance out of the bag and reach the same wrong answer the explicit `tolerance: {}` above avoids.
+        # runtime's own forwarding (`OfValidator#inner_contract_validations`): they are not validators. The
+        # position's TOLERANCE is handed to the guards separately, as the tier they resolve per entry — the
+        # same shape the field path passes — rather than left in the hash, so a guard reads it as tolerance
+        # and never as a validator.
         def _bag_as_validations(bag)
           validations = Axn::Validation::Base.validator_entries(bag.except(*BAG_GRAMMAR_KEYS))
           klass = bag[:klass]
@@ -3024,6 +3102,18 @@ module Axn
           raise ArgumentError, _map_axes_name_no_class_message(bag) if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
 
           _reject_inner_contract_context_scope!(bag, fields)
+          # Beside its `on:` sibling, for the reason that pair exists everywhere else: a map CARRIER bag is
+          # canonicalized here rather than by `_check_inner_contract_bag!`, so the guards that seam runs have to
+          # be named here too or the carrier is the one bag position where the key declares cleanly. It is
+          # reachable at any depth (`of: { klass: Hash, of: { values: String, except_on: :publish } }`), and only
+          # on an ActiveModel whose shared-option list carries `except_on` — the whitelist admits it there and
+          # nothing downstream reads it, which is exactly the silently-inert shape this guard exists to refuse.
+          _reject_inner_contract_except_on!(bag, fields)
+          # The third of the same trio. All three are refused at every bag position, and a map carrier reaches
+          # none of `_check_inner_contract_bag!`'s guards, so each has to be named here. A TOP-LEVEL carrier is
+          # covered anyway by the field's own entry scan — the field's `of:` IS an entry — which is exactly what
+          # hid this one: only a NESTED carrier, reached through another bag, had no scan above it.
+          _reject_inner_contract_strict!(bag, fields)
           _reject_unsupported_map_axis!(bag)
           _canonicalize_map_axes!(bag, fields)
           bag.merge(container: ::Hash)
@@ -3333,6 +3423,13 @@ module Axn
           return if Internal::ShapeGraph.carries_key?(node, :of)
 
           node[:of] = { container: ::Array }
+          # Through the shared normalizer, because this bag is a POSITION like any other and its tolerance has to
+          # be stated rather than left absent. An absent key is not "no tolerance": `validates` hands a validator
+          # `declaration_defaults.merge(entry)`, so a field's own `optional:` would arrive inside this bag and
+          # `OfValidator` would read it as the element position's — making `expects :f, type: Array, optional: true`
+          # admit a nil ELEMENT. The bags a declaration names are normalized by `_check_inner_contract_bag!`; this
+          # one is minted here and reaches none of that, so it is normalized here.
+          _canonicalize_bag_tolerance!(node[:of])
         end
 
         # `shape:` names a Hash's own members and `of:` names its values, so on a Hash — and only on a Hash —
@@ -3375,7 +3472,7 @@ module Axn
         end
 
         # Bag keys admitted by the whitelist only so a dedicated guard can name what is actually wrong with them.
-        UNADVERTISED_OF_KEYS = %i[on strict].freeze
+        UNADVERTISED_OF_KEYS = %i[on except_on strict].freeze
         private_constant :UNADVERTISED_OF_KEYS
 
         # Every offender at once: an author who wrote two of them has one declaration to fix, not two rounds
@@ -3384,11 +3481,11 @@ module Axn
           offenders = bag.keys.reject { |key| allowed.include?(key) }
           return if offenders.empty?
 
-          # `on:` and `strict:` sit in the whitelist so `_reject_inner_contract_context_scope!` /
-          # `_reject_inner_contract_strict!` can name the real problem (axn has no validation contexts, and no
-          # strict-raising mode) instead of reporting either as unknown — but both are left out of what this
-          # ADVERTISES, since a key this line calls supported and the next line refuses is not one to point an
-          # author at.
+          # `on:`, `except_on:` and `strict:` sit in the whitelist so `_reject_inner_contract_context_scope!` /
+          # `_reject_inner_contract_except_on!` / `_reject_inner_contract_strict!` can name the real problem
+          # (axn has no validation contexts, and no strict-raising mode) instead of reporting any of them as
+          # unknown — but all three are left out of what this ADVERTISES, since a key this line calls supported
+          # and the next line refuses is not one to point an author at.
           supported = allowed.reject { |key| UNADVERTISED_OF_KEYS.include?(key) }
           raise ArgumentError,
                 "of: does not support #{offenders.map { |key| _of_key_label(key) }.join(', ')} " \
@@ -5102,6 +5199,27 @@ module Axn
           _raise_strict_validation!(offenders.join(" / "), where)
         end
 
+        # `except_on:`'s entry scan, the sibling of the one above: same shape, opposite direction. `on:` makes
+        # the check ActiveModel installs run on no call; `except_on:` makes the exclusion it installs exclude
+        # no call, so the check runs on every one. Two inert options, two scans, one apiece — widening
+        # `_reject_validator_context_scope!` to cover both would collapse that difference into one message that
+        # cannot say which way the entry is actually dead.
+        #
+        # Refused at EVERY position a validator's options are written — a field, a subfield, an ambient subfield,
+        # an exposure, a shape member, and an `of:` bag at any depth — through the two seams that reach them:
+        # this scan for a declaration's own key and its validator entries, `_reject_inner_contract_except_on!`
+        # for a bag. Every offender is named at once: an author who wrote two of them has one declaration to fix.
+        def _reject_validator_except_on!(validations, where:)
+          offenders = []
+          offenders << "the declaration" if Internal::ShapeGraph.carries_key?(validations, :except_on)
+          Axn::Validation::Base.validator_entries(validations).each do |key, entry|
+            offenders << "#{key}:" if Axn::Validation::Base.entry_declares_except_on?(entry)
+          end
+          return if offenders.empty?
+
+          _raise_validator_except_on!(offenders.join(" / "), where)
+        end
+
         # The one sentence, shared by the entry scan above and by the bag check that reaches the positions it
         # cannot see (`_reject_inner_contract_strict!`) — the same split, and for the same reason, as the
         # context-scope pair below. `inside` is where the `strict:` was written, so the message names the thing
@@ -5127,6 +5245,17 @@ module Axn
                 "Axn has no validation contexts: drop `on:`, or gate the check with `if:`/`unless:`, which axn " \
                 "does support. (A DECLARATION-level `on:` is axn's subfield parent — `expects :zip, on: :address` " \
                 "— and is unaffected.)"
+        end
+
+        # The one sentence, shared by the entry scan (`_reject_validator_except_on!`) and the bag check that
+        # reaches the positions it cannot see (`_reject_inner_contract_except_on!`). `inside` is where the
+        # `except_on:` was written, so the message names the thing the author has to edit.
+        def _raise_validator_except_on!(inside, where)
+          raise ArgumentError,
+                "`except_on:` inside #{inside} on #{where} names an ActiveModel validation context to skip, " \
+                "and axn validates with no context — so the exclusion excludes nothing and the check runs on " \
+                "every call, which is what it would do with the option absent. Axn has no validation " \
+                "contexts: drop `except_on:`, or gate the check with `if:`/`unless:`, which axn does support."
         end
 
         # Pseudo-types (Symbol type names) whose values can be empty. `:params` is Hash-backed; `:boolean`
@@ -5264,8 +5393,12 @@ module Axn
           # by construction) and nothing nested, so unlike its neighbours it has no dependency on the
           # canonicalization above.
           _reject_unsupported_validator_keys!(validations, where: _declared_fields_label(fields))
-          _reject_validator_context_scope!(validations, where: fields.map(&:to_s).inspect)
-          _reject_strict_validation!(validations, where: fields.map(&:to_s).inspect)
+          # Computed once and reused for the three refusals below (context-scope, except_on, strict): the same
+          # text names the same declaration in every one of them.
+          declaration_where = fields.map(&:to_s).inspect
+          _reject_validator_context_scope!(validations, where: declaration_where)
+          _reject_validator_except_on!(validations, where: declaration_where)
+          _reject_strict_validation!(validations, where: declaration_where)
 
           # Beside the context-scope refusal: both refuse a validator that cannot do what the declaration says,
           # ahead of every consumer of this bag. Placement ahead of the tolerance push-down is not load-bearing
@@ -5301,17 +5434,8 @@ module Axn
 
           tolerant = allow_blank || allow_nil
 
-          # A truthy explicit presence: can never fire under a tolerance flag — the pushed-down
-          # allow_blank/allow_nil would make the presence validator accept exactly the values it
-          # exists to reject — so the combination is dead machinery, rejected at declaration.
-          # (`presence: false` is coherent: explicit suppression, same intent as the flag.)
-          if tolerant && validations[:presence]
-            raise ArgumentError,
-                  "optional:/allow_blank:/allow_nil: cannot be combined with an explicit `presence:` — " \
-                  "the tolerance is pushed into every validator, so the presence check could never fail. " \
-                  "For \"may be nil, but not empty\", declare `allow_empty: false` alongside the tolerance; " \
-                  "otherwise declare one requiredness signal (drop the flag, or drop presence:)."
-          end
+          _reject_tolerant_presence!(validations, where: _declared_fields_label(fields),
+                                                  tolerance: { allow_nil:, allow_blank: })
 
           # Settle the emptiness axis before the push-down, while the `presence:`/`length:` entries are
           # still exactly as the author wrote them.
@@ -5320,33 +5444,40 @@ module Axn
           # Push allow_blank and allow_nil to the individual validations
           if tolerant
             # ActiveModel's shared "default" options (`if:`/`unless:`/`on:`/`strict:`/`allow_blank:`/
-            # `allow_nil:`) ride the hash as sibling keys of the validators but are NOT validators —
-            # there is nothing to push tolerance into, and normalizing them as scalars would corrupt
-            # them (e.g. `if: :flag` → `if: { with: :flag, allow_blank:, allow_nil: }`, a Hash the
-            # callback machinery cannot resolve, so the gate stops deciding anything). Slice them out
-            # (reusing AM's own canonical list so the set can't drift), transform only the real
-            # validators, then restore verbatim. Core-Ruby delete (not ActiveSupport's Hash#except!):
-            # axn runs outside Rails, where that core_ext may never be loaded.
+            # `allow_nil:`/`except_on:`) ride the hash as sibling keys of the validators but are NOT
+            # validators. Sliced out (through AM's own canonical list, so the set cannot drift) and
+            # restored verbatim, because normalizing one as a scalar would corrupt it — `if: :flag` would
+            # become `if: { with: :flag }`, a Hash the callback machinery cannot resolve, so the gate would
+            # stop deciding anything. Core-Ruby delete rather than ActiveSupport's `Hash#except!`: axn runs
+            # outside Rails, where that core_ext may never be loaded.
             shared_option_keys = Axn::Validation::Base.shared_validation_option_keys
             shared_options = validations.slice(*shared_option_keys)
             shared_option_keys.each { |key| validations.delete(key) }
-            # A snapshot of the keys: the loop reassigns entries as it goes, and WHICH validator an entry is
-            # decides whether it takes the tolerance at all, so this can't be a `transform_values!`.
+
+            # `confirmation:` is the one validator a tolerance must not reach, and it is held out by
+            # OVERRIDING the declaration tier rather than by being skipped: the pair is stated on the
+            # declaration below, so `validates` applies it to every entry, and an entry's own value wins per
+            # key (AM merges `defaults.merge(entry)`). Every other validator judges the field's own value, so
+            # a tolerance stands it down — there is nothing to check when the value the author called optional
+            # is absent. `confirmation:`'s subject is the RELATIONSHIP between the field and its companion,
+            # and a supplied companion is compared against the base whatever the base holds: `password: ""`
+            # beside `password_confirmation: "x"` is a mismatch the caller must see, not a blank to wave
+            # through. A snapshot of the keys, since the loop reassigns entries as it goes.
             validations.keys.each do |key|
               v = validations[key]
-              # A falsy validator value (`presence: false`, or a `nil`/`false` on any validator) is
-              # disabled — `validates` skips it (`next unless options`), so there is nothing to push
-              # tolerance into; pass it through unchanged (mirrors AM's own falsy-skip).
               next unless v
-              next if _tolerance_exempt_validator?(key)
+              next unless _tolerance_exempt_validator?(key)
 
-              # Any other value is normalized exactly as `validates` would (scalar → options hash),
-              # then the tolerance rides on top — so `numericality: true`, `inclusion: [..]`/`1..5`,
-              # `format: /re/`, etc. combine transparently with optional:/allow_blank:/allow_nil:,
-              # matching how they behave without a tolerance flag (PRO-2915).
-              validations[key] = { allow_blank:, allow_nil: }.merge(Axn::Validation::Base.normalize_validator_options(v))
+              validations[key] = Axn::Validation::Base.normalize_validator_options(v)
+                                                      .merge(allow_blank: false, allow_nil: false)
             end
+
             validations.merge!(shared_options)
+            # The declaration's own tier, stated once. An author who wrote the key directly among the
+            # validations is authoritative — that spelling arrived in `shared_options` above — so it is not
+            # overwritten here.
+            validations[:allow_blank] = allow_blank unless shared_options.key?(:allow_blank)
+            validations[:allow_nil] = allow_nil unless shared_options.key?(:allow_nil)
           else
             _apply_default_presence!(validations, allow_empty:, tolerant:)
           end
@@ -5368,6 +5499,13 @@ module Axn
         # raises, and its crash is surfaced as a second failure on the same field). Give every non-type
         # validator nil-tolerance so the type error stands alone. Only the type validator's own nil verdict
         # is authoritative, so it is left untouched, as are validators that already carry explicit tolerance.
+        #
+        # `:of` is exempt for a different reason than `:type` is: the flag this method writes suppresses a
+        # DERIVATIVE message on a nil field, and `:of` has no nil verdict to suppress in the first place —
+        # `OfValidator`'s `validate_elements`/`validate_entries` both `return unless value.is_a?(...)`, so the
+        # bag no-ops structurally on a nil field whether or not it carries `allow_nil:`. Writing the flag into
+        # it anyway would change nothing about a nil field while leaving axn's own write sitting in the bag —
+        # indistinguishable from tolerance an author declared inside `of:` on purpose.
         # Mutates `validations`.
         def _apply_nil_skip_to_non_type_validators!(validations)
           return unless _type_rejects_nil?(validations)
@@ -5378,7 +5516,7 @@ module Axn
           # mutating a Hash mid-iteration.
           validations.keys.each do |key|
             opt = validations[key]
-            next if key == :type || !opt || shared_option_keys.include?(key)
+            next if key == :type || key == :of || !opt || shared_option_keys.include?(key)
 
             normalized = Axn::Validation::Base.normalize_validator_options(opt)
             next if normalized.key?(:allow_nil) || normalized.key?(:allow_blank)

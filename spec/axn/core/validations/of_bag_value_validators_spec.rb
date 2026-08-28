@@ -349,10 +349,10 @@ RSpec.describe "value validators in an of: bag" do
     end
 
     # At a FIELD, a tolerance flag stands the satisfiability guard down because it genuinely rescues the
-    # contract — `type: String, inclusion: { in: [1, 2] }, optional: true` really does accept nil. At a bag
-    # position it rescues nothing: a bag's `allow_nil:`/`allow_blank:` are not positional (PRO-3225), so
-    # honouring them here would let a contract that admits NOTHING declare cleanly, which is the whole class
-    # the guard exists to refuse.
+    # contract — `type: String, inclusion: { in: [1, 2] }, optional: true` really does accept nil. A bag's own
+    # `allow_nil:`/`allow_blank:` govern its POSITION the same way (PRO-3225): the tolerance is applied to
+    # every check written there, so a tolerated nil/blank really does pass the position's own contract, and
+    # the guard stands down for the same reason it does at a field.
     # The VACUITY twin, which reaches a bag position on the same terms. An inverted validator forbidding
     # literals no value of the bag's `klass:` could be enforces nothing at that position, exactly as it
     # enforces nothing at a field — so "PRO-3192's two guards" has to mean both of them here.
@@ -383,14 +383,18 @@ RSpec.describe "value validators in an of: bag" do
       expect { build_axn { expects :f, type: Array, of: { klass: String, exclusion: { in: ["admin"] } } } }.not_to raise_error
     end
 
-    it "does not let an unenforced bag tolerance stand the guard down" do
-      expect { build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_nil: true } } }
-        .to raise_error(ArgumentError, /can never match/)
+    it "lets the bag's own tolerance stand the guard down, the way a field's does" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_nil: true } }
+
+      expect(action.call(f: [nil])).to be_ok
+      expect(action.call(f: ["a"])).not_to be_ok
     end
 
-    it "refuses it under allow_blank: too" do
-      expect { build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_blank: true } } }
-        .to raise_error(ArgumentError, /can never match/)
+    it "does so under allow_blank: too" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, inclusion: { in: [1, 2] }, allow_blank: true } }
+
+      expect(action.call(f: [""])).to be_ok
+      expect(action.call(f: ["a"])).not_to be_ok
     end
 
     # The field-level control, which must keep standing down — there the tolerance IS enforced.
@@ -584,6 +588,370 @@ RSpec.describe "value validators in an of: bag" do
 
     it "accepts a bag whose only constraint is a validator" do
       expect { build_axn { expects :f, type: Array, of: { format: { with: /\Aa/ } } } }.not_to raise_error
+    end
+  end
+
+  # A field's tolerance is a fact about the DECLARATION, so it is recorded there — once — rather than
+  # copied into every validator entry. ActiveModel applies a declaration's shared options to each
+  # validator itself (`defaults.merge(_parse_validates_options(options))`), which is the tier
+  # `effective_entry_options` and `nil_accepted?` already resolve against. Recording it per entry made
+  # axn's copies indistinguishable from an author's, which is what stopped a bag's own keys meaning the
+  # position they describe.
+  describe "where a field's tolerance is recorded" do
+    it "states the pair on the declaration and writes it into no validator entry" do
+      action = build_axn { expects :f, type: Array, of: Integer, optional: true }
+      validations = action.internal_field_configs.first.validations
+
+      expect(validations).to include(allow_blank: true, allow_nil: false)
+      expect(validations[:type]).to eq(klass: Array)
+      expect(validations[:of]).to eq(klass: Integer, container: Array, allow_nil: false, allow_blank: false)
+    end
+
+    it "keeps optional? reading true off the declaration tier alone" do
+      action = build_axn { expects :f, type: Array, of: Integer, optional: true }
+
+      expect(action.internal_field_configs.first.optional?).to be(true)
+    end
+
+    # The bag states its own `false` explicitly rather than leaving the keys absent: ActiveModel merges a
+    # declaration's shared options into every validator built from the same `validates` call, `of:`
+    # included, so an absent pair here would let the FIELD's own `allow_nil:`/`allow_blank:` — whatever a
+    # future call site sets them to — silently reach this POSITION. Stating `false` is what makes a bag
+    # with no tolerance of its own immune to that merge (PRO-3225).
+    it "states its own false pair on a required field's bag, unreachable by the field's own tolerance" do
+      action = build_axn { expects :f, type: Array, of: Integer }
+
+      expect(action.internal_field_configs.first.validations[:of])
+        .to eq(klass: Integer, container: Array, allow_nil: false, allow_blank: false)
+    end
+  end
+
+  # A bag's tolerance governs the POSITION it describes: it stands that position's own checks down for a
+  # value it admits, which is what `optional:` does at a named shape member. Without it there is no spelling
+  # for "a nil element, alongside another validator": widening the class (`klass: [String, NilClass]`) widens
+  # only the type check, and ActiveModel runs `format:`/`length:`/`inclusion:`/`numericality:` on a nil
+  # regardless of what the type permits.
+  # A position's tolerance is the DECLARATION tier of the contract its contents become, so ActiveModel resolves
+  # it against each entry the way it does at a named position — `defaults.merge(entry)`, entry wins per key.
+  # Standing the whole position down instead would override the entry with the position, which is AM's
+  # precedence backwards.
+  describe "an entry may override the position's tolerance, as it may a declaration's" do
+    it "runs a validator that refused the exemption, and matches the named position" do
+      at_position = build_axn do
+        expects :f, type: Array, of: { klass: String, format: { with: /x/, allow_nil: false }, allow_nil: true }
+      end
+      at_member = build_axn do
+        expects :f, type: Hash do
+          field :a, type: String, format: { with: /x/, allow_nil: false }, allow_nil: true
+        end
+      end
+
+      expect(at_position.call(f: [nil])).not_to be_ok
+      expect(at_member.call(f: { a: nil })).not_to be_ok
+      expect(at_position.call(f: ["x"])).to be_ok
+      expect(at_position.call(f: ["zzz"])).not_to be_ok
+    end
+
+    it "still stands the position's own type check down for the tolerated value" do
+      action = build_axn do
+        expects :f, type: Array, of: { klass: String, format: { with: /x/, allow_nil: false }, allow_nil: true }
+      end
+
+      # The nil is excused from `klass: String` — the failure it reports is the format: that refused the
+      # exemption, not a type mismatch.
+      expect(action.call(f: [nil]).exception.message).to match(/is invalid/)
+      expect(action.call(f: [nil]).exception.message).not_to match(/is not a String/)
+    end
+
+    it "leaves an entry that does not override alone" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, format: { with: /x/ }, allow_nil: true } }
+
+      expect(action.call(f: [nil])).to be_ok
+      expect(action.call(f: ["x"])).to be_ok
+      expect(action.call(f: ["zzz"])).not_to be_ok
+    end
+  end
+
+  # `:uuid` is the one pseudo-type whose matcher reads the tolerance — `value.blank? ? allow_blank : match?(…)`
+  # — so a position that called the matcher without it rejected the empty UUID a named position accepts.
+  describe "a position's type check reads the tolerance the way a named one does" do
+    uuid = "123e4567-e89b-12d3-a456-426614174000"
+
+    it "accepts a blank :uuid under allow_blank:, as the field does" do
+      at_position = build_axn { expects :f, type: Array, of: { klass: :uuid, allow_blank: true } }
+      at_field = build_axn { expects :f, type: :uuid, allow_blank: true }
+
+      expect(at_position.call(f: [""])).to be_ok
+      expect(at_field.call(f: "")).to be_ok
+      expect(at_position.call(f: [uuid])).to be_ok
+      expect(at_position.call(f: ["nope"])).not_to be_ok
+    end
+
+    it "still rejects a blank :uuid without the tolerance" do
+      at_position = build_axn { expects :f, type: Array, of: { klass: :uuid } }
+
+      expect(at_position.call(f: [""])).not_to be_ok
+      expect(at_position.call(f: [uuid])).to be_ok
+    end
+  end
+
+  describe "positional tolerance" do
+    describe "an Array's element position" do
+      it "admits a nil element beside another validator under allow_nil:" do
+        action = build_axn do
+          expects :codes, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_nil: true }
+        end
+
+        expect(action.call(codes: ["AB", nil])).to be_ok
+        expect(action.call(codes: ["AB"])).to be_ok
+        expect(action.call(codes: ["ab"])).not_to be_ok
+        expect(action.call(codes: [1])).not_to be_ok
+      end
+
+      it "admits a blank element only under allow_blank:" do
+        nil_only = build_axn do
+          expects :codes, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_nil: true }
+        end
+        blank_too = build_axn do
+          expects :codes, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true }
+        end
+
+        expect(nil_only.call(codes: ["AB", ""])).not_to be_ok
+        expect(blank_too.call(codes: ["AB", ""])).to be_ok
+        expect(blank_too.call(codes: ["AB", nil])).to be_ok
+      end
+
+      it "stands the position's own type check down too, not only its value validators" do
+        action = build_axn { expects :codes, type: Array, of: { klass: String, allow_nil: true } }
+
+        expect(action.call(codes: ["AB", nil])).to be_ok
+        expect(action.call(codes: [1])).not_to be_ok
+      end
+
+      it "stands the position's contents descent down as well" do
+        action = build_axn do
+          expects :rows, type: Array, of: { klass: Hash, allow_nil: true, shape: { members: [] } }
+        end
+
+        expect(action.call(rows: [{}, nil])).to be_ok
+      end
+
+      # The declaration above accepts `[{}, nil]` at runtime, so the schema has to admit it too: a `shape:`
+      # merge that hard-coded `type: "object"` discarded the `null` branch nullability had just added, leaving
+      # the document reject what the runtime accepts.
+      it "emits the null branch alongside the shape's object type" do
+        action = build_axn do
+          expects :rows, type: Array, of: { klass: Hash, allow_nil: true, shape: { members: [] } }
+        end
+
+        expect(action.input_schema.dig(:properties, :rows, :items)).to include(type: %w[object null])
+      end
+
+      it "leaves a bag with no tolerance rejecting a nil element" do
+        action = build_axn { expects :codes, type: Array, of: { klass: String } }
+
+        expect(action.call(codes: ["AB", nil])).not_to be_ok
+      end
+    end
+
+    describe "a map's axes" do
+      it "admits a nil value under the values axis's own tolerance" do
+        action = build_axn { expects :m, type: Hash, of: { values: { klass: String, allow_nil: true } } }
+
+        expect(action.call(m: { a: "x", b: nil })).to be_ok
+        expect(action.call(m: { a: 1 })).not_to be_ok
+      end
+
+      it "keeps the two axes independent" do
+        action = build_axn do
+          expects :m, type: Hash, of: { keys: { klass: Symbol }, values: { klass: String, allow_nil: true } }
+        end
+
+        expect(action.call(m: { a: nil })).to be_ok
+        expect(action.call(m: { "a" => nil })).not_to be_ok
+      end
+    end
+
+    describe "a nested bag" do
+      it "tolerates at the rung that declares it, not at its parent" do
+        action = build_axn do
+          expects :f, type: Array, of: { klass: Array, of: { klass: String, allow_nil: true } }
+        end
+
+        expect(action.call(f: [["AB", nil]])).to be_ok
+        expect(action.call(f: [nil])).not_to be_ok
+      end
+    end
+
+    describe "a contradiction the position cannot hold" do
+      # The same rule the field carries, for the same reason: the tolerance is applied to every check at the
+      # position, so the presence check could never fail. Dead machinery, refused where it is written.
+      it "refuses a tolerance beside an explicit presence: at an element position" do
+        expect { build_axn { expects :f, type: Array, of: { klass: String, presence: true, allow_blank: true } } }
+          .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+      end
+
+      it "refuses it under the optional: spelling too" do
+        expect { build_axn { expects :f, type: Array, of: { klass: String, presence: true, optional: true } } }
+          .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+      end
+
+      it "refuses it at a map axis" do
+        expect do
+          build_axn { expects :f, type: Hash, of: { values: { klass: String, presence: true, allow_nil: true } } }
+        end.to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+      end
+
+      it "still accepts a presence: with no tolerance beside it" do
+        expect { build_axn { expects :f, type: Array, of: { klass: String, presence: true } } }.not_to raise_error
+      end
+
+      it "still refuses the same contradiction at a field" do
+        expect { build_axn { expects :f, type: String, presence: true, optional: true } }
+          .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+      end
+    end
+  end
+
+  # A FIELD's tolerance governs the field; a POSITION's governs the position. They are separate tiers, and the
+  # thing that keeps them separate is that every bag STATES its own answer: `validates` hands a validator
+  # `declaration_defaults.merge(entry)`, so a bag that merely omitted the keys would receive the field's and
+  # `OfValidator` would read them as the position's.
+  #
+  # Every route that BUILDS an `of:` bag therefore has to be normalized, not just the ones a declaration names.
+  # The block and distributing-`shape:` forms mint their bag in `_open_distributing_bag!`, which reaches none of
+  # `_check_inner_contract_bag!`'s guards — measured: before that bag was normalized, `expects :f, type: Array,
+  # optional: true do … end` admitted a nil ELEMENT while a nil field was legal too.
+  describe "a field's tolerance never reaches a position, by every route that builds a bag" do
+    {
+      "optional:" => { optional: true },
+      "allow_blank:" => { allow_blank: true },
+      "allow_nil:" => { allow_nil: true },
+    }.each do |spelling, field_options|
+      context "with a field-level #{spelling}" do
+        it "admits the nil FIELD and still rejects a nil ELEMENT through a shape block" do
+          action = build_axn do
+            expects :f, type: Array, **field_options do
+              field :a, type: String
+            end
+          end
+
+          expect(action.call(f: nil)).to be_ok
+          expect(action.call(f: [{ a: "x" }])).to be_ok
+          expect(action.call(f: [nil])).not_to be_ok
+        end
+
+        it "admits the nil FIELD and still rejects a nil ELEMENT through an explicit of:" do
+          action = build_axn { expects :f, type: Array, of: String, **field_options }
+
+          expect(action.call(f: nil)).to be_ok
+          expect(action.call(f: %w[a])).to be_ok
+          expect(action.call(f: [nil])).not_to be_ok
+        end
+
+        it "still rejects a nil value on a map's values axis" do
+          action = build_axn { expects :f, type: Hash, of: { values: String }, **field_options }
+
+          expect(action.call(f: nil)).to be_ok
+          expect(action.call(f: { a: "x" })).to be_ok
+          expect(action.call(f: { a: nil })).not_to be_ok
+        end
+
+        it "still rejects a nil element one rung down" do
+          action = build_axn { expects :f, type: Array, of: { klass: Array, of: String }, **field_options }
+
+          expect(action.call(f: nil)).to be_ok
+          expect(action.call(f: [%w[a]])).to be_ok
+          expect(action.call(f: [[nil]])).not_to be_ok
+        end
+      end
+    end
+
+    it "states the pair on a bag the block form mints, so nothing is left for the declaration tier to fill" do
+      action = build_axn do
+        expects :f, type: Array, optional: true do
+          field :a, type: String
+        end
+      end
+
+      expect(action.internal_field_configs.first.validations[:of])
+        .to include(allow_nil: false, allow_blank: false)
+    end
+  end
+
+  # `allow_blank:` at a position means what it means at a named one, and what it means there is whatever
+  # ActiveModel's own skip asks — `value.blank?`. A value class defining domain blankness therefore has to be
+  # answered the same way at all three, or the bag's tolerance rejects a value the author legitimised.
+  # `allow_blank:` at a position must decide the position's own `klass:` check exactly as `TypeValidator`
+  # decides a named one's: a NIL is excused, and every other blank is judged on its merits. ActiveModel's own
+  # `EachValidator` would skip the validator outright for `false` and `[]` too; axn's type check deliberately
+  # does not follow it there, so neither does a position's — otherwise an outbound position accepts a `false`
+  # its own emitted schema rejects.
+  describe "a position's type check agrees with a field's across the whole blank spectrum" do
+    blank_spectrum = {
+      "false" => false,
+      "empty string" => "",
+      "whitespace string" => "   ",
+      "nil" => nil,
+      "empty array" => [],
+      "a non-blank string" => "x",
+    }
+
+    blank_spectrum.each do |label, value|
+      it "agrees for #{label}" do
+        at_position = build_axn { expects :f, type: Array, of: { klass: String, allow_blank: true } }
+        at_field = build_axn { expects :f, type: String, allow_blank: true }
+
+        expect(at_position.call(f: [value]).ok?).to eq(at_field.call(f: value).ok?)
+      end
+    end
+
+    it "rejects a blank the type check refuses, outbound, so the emitted schema is not looser than the result" do
+      action = build_axn do
+        exposes :items, type: Array, of: { klass: String, allow_blank: true }
+        def call = expose(:items, [false])
+      end
+
+      expect(action.call).not_to be_ok
+    end
+  end
+
+  describe "a bag's allow_blank: reads blankness the way ActiveModel does" do
+    # Not a hostile class: overriding `blank?` for a domain notion of empty is ordinary ActiveSupport idiom.
+    padded = Class.new(String) do
+      def blank? = strip.empty?
+    end
+
+    let(:pattern) { { with: /\A[A-Z]{2}\z/ } }
+
+    it "tolerates a subclass whose own blank? says blank, at an element position" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true } }
+
+      expect(action.call(f: [padded.new("   ")])).to be_ok
+      expect(action.call(f: [padded.new("AB")])).to be_ok
+      expect(action.call(f: [padded.new("ab")])).not_to be_ok
+    end
+
+    it "agrees with the same declaration at a field and at a shape member" do
+      at_field = build_axn { expects :f, type: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true }
+      at_member = build_axn do
+        expects :f, type: Hash do
+          field :a, type: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true
+        end
+      end
+      at_position = build_axn { expects :f, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true } }
+      value = padded.new("   ")
+
+      expect(at_field.call(f: value)).to be_ok
+      expect(at_member.call(f: { a: value })).to be_ok
+      expect(at_position.call(f: [value])).to be_ok
+    end
+
+    it "still tolerates the exact-class blank and still rejects a non-blank mismatch" do
+      action = build_axn { expects :f, type: Array, of: { klass: String, format: { with: /\A[A-Z]{2}\z/ }, allow_blank: true } }
+
+      expect(action.call(f: ["", "   "])).to be_ok
+      expect(action.call(f: ["ab"])).not_to be_ok
     end
   end
 end

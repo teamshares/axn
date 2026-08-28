@@ -2552,7 +2552,38 @@ module Axn
           return node unless shape_overlay_applies?(bag, for_output:)
 
           member_props, required = member_properties(shape[:members], for_output:, ancestry:)
-          merged = node.merge(type: "object", properties: (node[:properties] || {}).merge(member_props))
+          # The object type is written back with the position's nullability rather than a bare "object" that would
+          # discard it, and the question is asked in TWO parts because neither alone is the answer.
+          #
+          # The node's own `null` branch is what `reconcile_contents_nullability` recorded a few lines up, and
+          # preserving it is the whole point. But it is not sufficient: a bag naming no class at all
+          # (`of: { shape: … }` — "these members, class unconstrained") starts from an untyped `{}` node, so a
+          # declared tolerance had nowhere to be recorded and the overlay wrote a bare "object" over a position
+          # the runtime stands down for. So an explicitly DECLARED tolerance counts on its own.
+          #
+          # `bag_nullable?` is deliberately NOT the question, though it looks like the tidier one. It reads the
+          # bag's VALUE constraints and a classless bag has none, so it calls every classless shaped position
+          # nullable — while the shape's own required members still reject a nil there. Measured: `expects :items,
+          # type: Array do field :status, type: String end` rejects `[nil]` at runtime, and answering from
+          # `bag_nullable?` emitted a document LOOSER than the contract, which is the one direction this layer
+          # must never err in.
+          # A nil reaches this position's members only if BOTH gates let it, so nullability is their CONJUNCTION.
+          # Either alone advertises a null the runtime refuses:
+          #
+          #   * `bag_nullable?` is the POSITION's gate — the bag's own `klass:` and tolerance, i.e. whether
+          #     `validate_position` stands its type check down. A tolerant shape entry cannot widen it:
+          #     `of: { klass: Hash, shape: { …, allow_nil: true } }` still reports the `klass:` mismatch for a nil
+          #     element, however willingly the shape skips itself. Asked of the BAG rather than read back off
+          #     `node[:type]`, because a bag naming no class starts from an untyped node that has no branch to
+          #     read — the reconciler had nowhere to record one.
+          #   * the SHAPE entry's own gate is the second, because the shape is an entry like any other and
+          #     ActiveModel lets it override the position per key: `of: { allow_nil: true, shape: { …,
+          #     allow_nil: false } }` runs `ShapeValidator` on the nil and rejects it as unreadable.
+          shape_tolerance = Axn::Validation::Base.effective_entry_options(shape, Axn::Validation::Base.tolerance_options(bag))
+          nullable = bag_nullable?(bag, for_output:) &&
+                     !!(shape_tolerance[:allow_nil] || shape_tolerance[:allow_blank])
+          merged = node.merge(type: type_with_nullability("object", nullable:),
+                              properties: (node[:properties] || {}).merge(member_props))
           merged[:required] = required unless required.empty?
           merged
         end
@@ -2641,7 +2672,32 @@ module Axn
           # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
           node = { type: "string" }
           apply_value_constraints!(node, key_axis_constraints(axis, for_output:), nullable: false, for_output:, property_names: true)
+          admit_empty_wire_key!(node) if for_output && bag_nullable?(axis, for_output:)
           node.except(:type)
+        end
+
+        # A tolerated nil KEY has no null branch to travel in. Every other position expresses "and also nil" by
+        # widening its `type:`, but a JSON object's property name is always a string, so a nil key that the axis
+        # admits reaches the wire as `""` (`Values` renders it, measured: `{ nil => 1 }` serializes to
+        # `{"": 1}`). Outbound the document must therefore admit the empty name, or it rejects a result the
+        # action produced.
+        #
+        # OUTPUT only, and that asymmetry is the point: inbound, a JSON caller cannot send a nil key at all, and
+        # the `""` it CAN send is a genuine blank string the axis's own `format:`/`length:` really do reject —
+        # so widening there would advertise a key the runtime refuses.
+        #
+        # `pattern` and `minLength` are dropped rather than widened because JSON Schema cannot say "empty or
+        # matching" in one keyword — only as an `anyOf` composition, which is the shape change PRO-3240 carries
+        # for the whole blank-tolerance class. `maxLength` needs nothing: an empty name satisfies every emittable
+        # ceiling. An `enum` is WIDENED instead of dropped, since naming one more member says exactly what is
+        # true and loses nothing.
+        EMPTY_WIRE_KEY_INCOMPATIBLE = %i[pattern minLength].freeze
+        private_constant :EMPTY_WIRE_KEY_INCOMPATIBLE
+
+        def admit_empty_wire_key!(node)
+          EMPTY_WIRE_KEY_INCOMPATIBLE.each { |keyword| node.delete(keyword) }
+          node[:enum] |= [""] if node[:enum].is_a?(Array)
+          node
         end
 
         # The axis's validators, less any whose subject does not survive serialization. Only the OUTPUT side can
@@ -2670,17 +2726,23 @@ module Axn
         end
 
         # Bring the type a bag's `klass:` produced into line with the nullability derived above. A `NilClass`
-        # token contributes a `null` branch like any other token; whether it survives is the nullability
-        # question, asked once — the same rule `apply_type_info!` follows at a named position.
+        # token contributes a `null` branch like any other token, and so can a position's own tolerance
+        # (PRO-3225) with no `NilClass` token in sight — `of: { klass: String, allow_nil: true }` admits nil at
+        # runtime though nothing in `klass:` said so. So this ADDS the branch a nullable position is missing,
+        # through the same two helpers `apply_type_info!` unions a field's type with (`type_with_nullability`,
+        # `union_with_nullability`) — not a second reading of "what nullable adds to a type", the same one.
         def reconcile_contents_nullability(node, nullable:, for_output: false)
-          return node if nullable
-
           if node[:anyOf].is_a?(Array)
+            return node.merge(anyOf: union_with_nullability(node[:anyOf], nullable: true)) if nullable
+
             without_null = node[:anyOf].reject { |member| member[:type] == "null" }
             return { enum: EMPTY_ENUM } if without_null.empty?
 
             return without_null.size == 1 ? node.except(:anyOf).merge(without_null.first) : node.merge(anyOf: without_null)
           end
+
+          return node.merge(type: type_with_nullability(node[:type], nullable: true)) if nullable && node.key?(:type)
+          return node if nullable
 
           # The position's mirror of a field's lone required `NilClass`: nothing but nil is a NilClass, and the
           # validator that makes the position non-nullable rejects nil, so it admits nothing — and `{ type:
@@ -2709,18 +2771,19 @@ module Axn
           node
         end
 
-        # A bag's value constraints: what it says about the VALUE at its position rather than about the position.
-        # Derived from the two lists `Internal::ShapeGraph` owns, so a validator admitted into the grammar
-        # reaches this projection without a second edit.
+        # A bag's VALUE constraints as a validations hash the field-level emitters can read: its validator
+        # entries, minus what describes the position rather than constrains it.
         #
-        # The recursion edges come out even though `apply_value_constraints!` reads named keys and would ignore
-        # them: what this returns is consumed as "the constraints on this value", and `of:`/`shape:` describe a
-        # NESTED node instead — they are emitted by `contents_node_schema` and `contents_member_schema`. A
-        # projection that reads the set generically would otherwise pick them up as keywords on the wrong node.
-        # `for_output:` is REQUIRED on this and its two callers rather than defaulted, on the same terms
-        # `effective_entry_options`' `declaration_options` is: a caller that omits the tier deciding the answer
-        # gets a quietly wrong one. That is exactly how the output reduction stayed half-applied — the element
-        # position forwarded it and the keys axis silently took the default. Now the omission is an error.
+        # The position's TOLERANCE is kept, and it is the reason this is a merge rather than a slice: it rides
+        # in as the declaration tier every emitter already resolves against (`shared_validation_options`), so
+        # nullability, the emptiness floor and the value keywords all read it here exactly as they read a
+        # field's. That is what keeps `of: { klass: String, length: { minimum: 2 }, allow_blank: true }`
+        # emitting the same shape as the field it mirrors — no floor, plus a null branch — without a second
+        # implementation of the rule.
+        #
+        # The other shared options do NOT come through. A gate is reduced away by `effective_validations` on
+        # output and means nothing to the document on input, and the context/strict options are refused at
+        # declaration.
         def bag_value_constraints(bag, for_output:)
           constraints = Axn::Validation::Base.validator_entries(bag)
                                              .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
@@ -2730,7 +2793,24 @@ module Axn
           # field's, and for the same reason: an output schema that rejects what the action can serialize is
           # worse than one that says less. `emitted_contents_edge` already does this for the bag's `of:`/`shape:`
           # edges; this is the same reduction for its validators.
+          #
+          # The merge is applied AFTER `effective_validations` so the reduction cannot drop the tolerance tier
+          # it needs to see.
+          #
+          # Only a TRUE tolerance rides in — `_canonicalize_bag_tolerance!` states `false` explicitly on every
+          # bag, but that explicit `false` is a declaration-time fact about the POSITION (kept elsewhere so a
+          # field's own tolerance can never leak into it), not a runtime fact about the VALIDATORS this hash
+          # feeds. A field's `allow_blank: false` is real here because ActiveModel merges it into every entry
+          # it builds (`declaration_defaults.merge(entry)`) and `LengthValidator#initialize` reacts to it by
+          # adding an implicit `minimum: 1` — a bag's tolerance never reaches that merge at all
+          # (`OfValidator#inner_contract_validations` excludes it from what it hands `validates`), so a bag
+          # position with a bare `length: { maximum: 4 }` never rejects `""` the way a field declaring the same
+          # `allow_blank: false` would. Forwarding the bag's `false` here fed that FIELD-only reading a fact
+          # the bag's own runtime never acts on and put `minLength: 1` on a position that accepts `""`. Nothing
+          # downstream distinguishes "false" from "absent" — every reader here asks a truthy question — so
+          # dropping it costs no other case its answer.
           effective_validations(constraints, for_output:)
+            .merge(Axn::Validation::Base.true_tolerance_options(bag))
         end
 
         def single_contents_schema(klass, for_output: false)
@@ -3022,16 +3102,21 @@ module Axn
           # was given: `type: [TrueClass, Integer], numericality: true` accepts neither boolean and advertised
           # both. What the options still decide is the string branch (`only_numeric:` alone can drop it) and the
           # retag of a numeric branch to "integer" (`only_integer:`).
-          options = Axn::Validation::Base.validator_entry_options(entry)
+          # Resolved across BOTH tiers, the way `validates` builds a validator's options
+          # (`defaults.merge(_parse_validates_options(options))`): a declaration-level `optional:`/`allow_blank:`
+          # is recorded once on the declaration rather than copied into each entry, so an entry-only read answers
+          # a field's tolerance wrongly. Every other tolerance judgment here goes through this same seam
+          # (`presence_rejects_blank?`, `declared_size_minimum`), which is what keeps the branch and the size
+          # floor from disagreeing about one declaration.
+          options = Axn::Validation::Base.effective_entry_options(entry, Axn::Validation::Base.shared_validation_options(validations))
           only_integer = Axn::Validation::Base.declared_only_integer?(entry)
           numeric_only = options[:only_numeric] ? true : false
           # A tolerated BLANK never reaches the validator at all — ActiveModel skips a blank value before
           # `is_number?` runs — so a branch the numeric check excludes may still be occupied by its own blank,
           # and dropping it outright refused output the action produced (`type: :boolean, numericality:
-          # { allow_blank: true }` exposes `false` successfully). Read off the ENTRY, which is where both
-          # spellings arrive: a declaration-level `optional:` is distributed into every entry as `allow_blank:`,
-          # so this one read covers `optional:` and an entry's own `allow_blank:` alike. Truthiness is the whole
-          # test, exactly as it is for `only_numeric:` — ActiveModel reads `options[:allow_blank]` truthily
+          # { allow_blank: true }` exposes `false` successfully). Read off the options resolved above, so the
+          # declaration-level `optional:` and an entry's own `allow_blank:` are covered by one read. Truthiness is
+          # the whole test, exactly as it is for `only_numeric:` — ActiveModel reads `options[:allow_blank]` truthily
           # rather than resolving it per call, so a Proc tolerates a blank on every call.
           blank_tolerated = options[:allow_blank] ? true : false
           # Skipping the validator is only half of it: the value still has to get PAST the position. A required
