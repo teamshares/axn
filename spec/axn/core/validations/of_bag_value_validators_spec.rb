@@ -859,6 +859,40 @@ RSpec.describe "value validators in an of: bag" do
   # `allow_blank:` at a position means what it means at a named one, and what it means there is whatever
   # ActiveModel's own skip asks — `value.blank?`. A value class defining domain blankness therefore has to be
   # answered the same way at all three, or the bag's tolerance rejects a value the author legitimised.
+  # `allow_blank:` at a position must decide the position's own `klass:` check exactly as `TypeValidator`
+  # decides a named one's: a NIL is excused, and every other blank is judged on its merits. ActiveModel's own
+  # `EachValidator` would skip the validator outright for `false` and `[]` too; axn's type check deliberately
+  # does not follow it there, so neither does a position's — otherwise an outbound position accepts a `false`
+  # its own emitted schema rejects.
+  describe "a position's type check agrees with a field's across the whole blank spectrum" do
+    blank_spectrum = {
+      "false" => false,
+      "empty string" => "",
+      "whitespace string" => "   ",
+      "nil" => nil,
+      "empty array" => [],
+      "a non-blank string" => "x",
+    }
+
+    blank_spectrum.each do |label, value|
+      it "agrees for #{label}" do
+        at_position = build_axn { expects :f, type: Array, of: { klass: String, allow_blank: true } }
+        at_field = build_axn { expects :f, type: String, allow_blank: true }
+
+        expect(at_position.call(f: [value]).ok?).to eq(at_field.call(f: value).ok?)
+      end
+    end
+
+    it "rejects a blank the type check refuses, outbound, so the emitted schema is not looser than the result" do
+      action = build_axn do
+        exposes :items, type: Array, of: { klass: String, allow_blank: true }
+        def call = expose(:items, [false])
+      end
+
+      expect(action.call).not_to be_ok
+    end
+  end
+
   describe "a bag's allow_blank: reads blankness the way ActiveModel does" do
     # Not a hostile class: overriding `blank?` for a domain notion of empty is ordinary ActiveSupport idiom.
     padded = Class.new(String) do

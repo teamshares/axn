@@ -66,26 +66,20 @@ module Axn
         # Whether this position admits the value without asking anything else of it — the positional reading of
         # `allow_nil:`/`allow_blank:`, which is what those keys mean at a named shape member too.
         #
-        # Blankness is `value.blank?` — dispatched, and deliberately so, because the whole promise of a bag's
-        # `allow_blank:` is that it means at this position what it means at a named one, and what it means there
-        # is whatever ActiveModel's `EachValidator` skip asks (`value.blank?`, activemodel 7.2.2.2). A value class
-        # defining domain blankness is answered here exactly as it is one rung up: measured, a `String` subclass
-        # whose `blank?` is `strip.empty?` is accepted under `allow_blank:` at a field and at a shape member, so a
-        # position that read it any other way would reject a value the author legitimised.
+        # What this stands down is the position's OWN `klass:` check, and it stands it down for a NIL only —
+        # mirroring `TypeValidator`, which is the check a named position runs and which excuses a nil alone
+        # (`value.nil? && (allow_nil || allow_blank)`). Measured at a field: `type: String, allow_blank: true`
+        # accepts `""` and `"   "` because they ARE Strings, accepts nil because the flag excuses it, and still
+        # rejects `false` and `[]` as "is not a String" — even though ActiveModel's own `EachValidator` would
+        # skip the validator outright for every one of those, `false` included. axn's type check deliberately
+        # does not follow AM there, so neither does a position's.
         #
-        # This is the one place that asks blankness by dispatch. `Internal::NativeMethods.blank_literal?` is the
-        # right question at the DECLARATION-time sites (`_reject_vacuous_value_constraints!` and its neighbour),
-        # where the caller DISCOUNTS a declared literal and a false "blank" would silently drop a constraint
-        # ActiveModel really enforces — so answering NOT blank is the safe direction there. Here the caller stands
-        # a runtime check DOWN, which inverts that: answering NOT blank rejects a value ActiveModel would have
-        # skipped. Same doctrine, opposite safe direction, because the consequence of being wrong is opposite.
-        #
-        # Nil is asked by identity, because `allow_nil:` alone tolerates nil while `allow_blank:` subsumes it —
-        # the same two-key reading `nil_tolerant_validation?` applies at a field.
+        # The position's OTHER checks are not decided here at all: the bag's value validators carry the
+        # tolerance as their declaration tier (`inner_contract_validations`) and ActiveModel applies its own
+        # blank-skip to each of them, which is what lets a value class defining domain blankness be answered at
+        # a position exactly as it is at a named one, and what lets an entry override the position per key.
         def tolerates?(value)
-          return true if nil.equal?(value) && (tolerance[:allow_nil] || tolerance[:allow_blank])
-
-          !!tolerance[:allow_blank] && value.blank?
+          nil.equal?(value) && !!(tolerance[:allow_nil] || tolerance[:allow_blank])
         end
       end
       private_constant :PositionContract
