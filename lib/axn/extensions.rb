@@ -163,6 +163,23 @@ module Axn
         end
       end
 
+      # The dev-loud re-raise `best_effort` uses internally, promoted so a caller with its own
+      # rescue/report/reraise guard (a tool adapter's never-raises boundary, `Axn::Tools::AdapterSerialization
+      # #guard_tool_response`) can reuse the SAME native-reraise discipline rather than a second
+      # hand-copied one. `raise` dispatches the 0-arg `#exception` on whatever object it is handed —
+      # Ruby has no re-raise that skips it, a bare `raise` in a rescue included, once the object is
+      # named explicitly rather than left implicit — so a class that answers that dispatch with a
+      # DIFFERENT object, or by raising, is never handed to a bare `raise exception` here. Hands
+      # `raise` the exception itself whenever doing so re-raises THAT object faithfully
+      # (`Internal::NativeMethods.native_exception_reraise?`), and axn's own error naming it
+      # (`Axn::ReraiseFailed`, carrying the original as `cause`) when it would not.
+      #
+      # `desc` names the intent ("resolving webhook subscribers", "Axn::MCP tool response mapping") the
+      # same way `best_effort`'s does; a non-String is named by its class rather than raising.
+      def reraise_for_dev(exception, desc)
+        _reraise_for_dev(exception, desc)
+      end
+
       private
 
       # Warn about a swallowed exception and return nil (best_effort's documented failure return).

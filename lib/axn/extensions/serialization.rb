@@ -5,6 +5,7 @@
 # load of this file would NameError on the first call rather than at require time.
 require "axn/internal/reflection/values"
 require "axn/internal/reflection/property_names"
+require "axn/internal/identity"
 
 module Axn
   module Extensions
@@ -31,7 +32,15 @@ module Axn
       # Raises Axn::Extensions::Serialization::UnserializableValue (an ArgumentError) naming the path to the
       # offending value, so an adapter's existing `rescue StandardError` maps it to an error response.
       def render(result, reject_opaque: false)
-        action_class = result.__action__.class
+        # Read through a bound `Object#class` (`Internal::Identity.class_of`), not a dispatched
+        # `.class` — `result.__action__` is a user-authored action instance, and nothing stops it
+        # defining its own `#class` (axn's method-shadowing guards reserve `call`/`_run`/`initialize`,
+        # not `class`). A dispatched `.class` returning a DIFFERENT class would fetch that OTHER
+        # class's `external_field_configs` below and read those field names off THIS result instead
+        # of its own — reproduced: a class with `def class = OtherToolClass` rendered a field
+        # `OtherToolClass` declared and this action never exposed, silently returning `nil` for it
+        # rather than raising.
+        action_class = Axn::Internal::Identity.class_of(result.__action__)
         # The outbound property-name rules run before the first render of a class, not only before a schema:
         # a render-only adapter would otherwise learn about a collision from serialize_exposed's runtime
         # defense on a live call, which is a last line rather than a substitute for telling the author. Costs

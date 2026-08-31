@@ -37,4 +37,195 @@ RSpec.describe Axn::Tools::AdapterRoots do
     expect { build_source.config.tool_roots = %w[../secrets] }
       .to raise_error(ArgumentError, /too broad/)
   end
+
+  describe ".tool_roots_default" do
+    def build_source_with_default(default)
+      Module.new do
+        extend Axn::Configurable
+        extend Axn::Tools::AdapterRoots
+        tool_roots_default(default)
+      end
+    end
+
+    it "sets the adapter's own default, replacing core's empty one" do
+      expect(build_source_with_default(%w[agent_tools]).config.tool_roots).to eq(%w[agent_tools])
+    end
+
+    it "validates the default EAGERLY, at declaration, not at the first read" do
+      expect { build_source_with_default(%w[app]) }
+        .to raise_error(ArgumentError, /too broad/)
+    end
+
+    it "still lets an explicit assignment win over the adapter's default" do
+      source = build_source_with_default(%w[agent_tools])
+      source.config.tool_roots = %w[custom_tools]
+      expect(source.config.tool_roots).to eq(%w[custom_tools])
+    end
+
+    it "still validates an explicit assignment with the same broad-path guard" do
+      source = build_source_with_default(%w[agent_tools])
+      expect { source.config.tool_roots = %w[actions] }
+        .to raise_error(ArgumentError, /too broad/)
+    end
+
+    it "returns to the ADAPTER's default on reset, not core's []" do
+      source = build_source_with_default(%w[agent_tools])
+      source.config.tool_roots = %w[custom_tools]
+      source.config.reset!(:tool_roots)
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+
+    it "does not share one mutable default array across adapters, even when they pass the same object" do
+      shared_default = %w[agent_tools]
+      first = build_source_with_default(shared_default)
+      second = build_source_with_default(shared_default)
+
+      first.config.tool_roots << "mutated"
+
+      expect(second.config.tool_roots).to eq(%w[agent_tools])
+      expect(shared_default).to eq(%w[agent_tools])
+    end
+
+    it "detaches the stored default from the caller's own array (Codex #259, P1)" do
+      caller_owned = %w[agent_tools]
+      source = build_source_with_default(caller_owned)
+
+      caller_owned << "actions" # a broad root, never validated against THIS array
+
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+
+    it "detaches each element too, so mutating a caller-held string can't corrupt an already-declared default" do
+      root = +"agent_tools"
+      caller_owned = [root]
+      source = build_source_with_default(caller_owned)
+
+      root.replace("actions") # mutate the caller's own String object in place
+
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+
+    it "detaches via a BOUND native String#-@, not dispatched, so a subclass can't fake detachment (Codex #259, P2)" do
+      # A String subclass overriding -@ (and, adversarially, dup/freeze too) to return `self` would
+      # make a dispatched `-entry` a no-op detachment: `entry.is_a?(String)` in validate! admits any
+      # subclass, so this is reachable without any hostile bypass of the declared contract.
+      evil_class = Class.new(String) do
+        def -@ = self
+        def dup = self
+        def freeze = self
+      end
+      original = evil_class.new("agent_tools")
+      source = build_source_with_default([original])
+
+      original.replace("actions")
+
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+
+    it "detaches the OUTER array via bound native Array#each too, not value.map/each (Codex #259, P2)" do
+      # An Array subclass overriding map/each/freeze/dup to return `self` unmodified would store the
+      # caller's own, still-mutable array outright -- the element-level String#-@ fix alone doesn't
+      # help, since the block that applies it would never run. validate!'s value.is_a?(Array) admits
+      # any subclass, so this is reachable the same way the element-level bypass was.
+      evil_array = Class.new(Array) do
+        def map(*) = self
+        def each(*) = self
+        def freeze = self
+        def dup = self
+      end
+      original = evil_array.new(["agent_tools"])
+      source = build_source_with_default(original)
+
+      original << "actions"
+
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+
+    it "validates through the SAME bound iteration the copy step uses, not a dispatched each/all? (Codex #259, P2)" do
+      # An Array subclass whose #each silently yields nothing would make validate!'s broad-root loop
+      # examine zero entries while the array genuinely holds one -- a real "actions" entry sailed
+      # through unexamined and was then copied into the stored default anyway by the bound copy
+      # step, which correctly bypasses the very same override and sees what validation didn't.
+      silent_array = Class.new(Array) do
+        def each(*) = self
+        def all?(*) = true
+      end
+      hostile = silent_array.new(["actions"])
+
+      expect { build_source_with_default(hostile) }
+        .to raise_error(ArgumentError, /too broad/)
+    end
+
+    it "converts each entry to a genuinely PLAIN String, not a subclass instance (Codex #259, P2)" do
+      # Bound String#-@ preserves the receiver's CLASS -- a subclass survives its own dup. A
+      # subclass with a STATEFUL #to_s (answering "agent_tools" once, "actions" later) would still
+      # pass validate!'s broad-root check against one answer while the stored copy -- still an
+      # instance of that subclass -- goes on to answer something else wherever it's read later.
+      stateful = Class.new(String) do
+        def initialize(*)
+          super
+          @calls = 0
+        end
+
+        def to_s
+          @calls += 1
+          @calls <= 1 ? "agent_tools" : "actions"
+        end
+      end
+      hostile = stateful.new("agent_tools")
+
+      source = build_source_with_default([hostile])
+      stored = source.config.tool_roots.first
+
+      expect(stored.class).to eq(String) # not `stateful` -- no subclass method survives
+      expect(stored.to_s).to eq("agent_tools")
+      expect(stored.to_s).to eq("agent_tools") # stable on a second read, unlike the original
+    end
+
+    it "canonicalizes from the TRUE underlying bytes, not a lying #to_s (Codex #259, P2)" do
+      lying = Class.new(String) do
+        # lies about its own content
+        def to_s = "agent_tools"
+      end
+      hostile = lying.new("actions") # true underlying bytes are "actions"
+
+      expect { build_source_with_default([hostile]) }
+        .to raise_error(ArgumentError, /too broad/)
+    end
+
+    it "does not let a hostile #inspect replace the ArgumentError with whatever it raises (Codex #259, P2)" do
+      # A non-String entry (42) triggers the type-check message, which names the WHOLE array --
+      # Array#inspect dispatches #inspect on every element, so a hostile element's override could
+      # break message construction for the whole call, not just its own entry.
+      boom_inspect = Class.new(String) do
+        def inspect = raise("inspect exploded")
+      end
+      hostile = [42, boom_inspect.new("agent_tools")]
+
+      expect { build_source_with_default(hostile) }
+        .to raise_error(ArgumentError, /must be an Array of Strings/)
+    end
+
+    it "still lets an explicit assignment win after the default was detached" do
+      source = build_source_with_default(%w[agent_tools])
+      source.config.tool_roots = %w[custom_tools]
+      expect(source.config.tool_roots).to eq(%w[custom_tools])
+    end
+
+    it "takes effect even when config.tool_roots was already read (and cached) beforehand (Codex #259, P2)" do
+      # Config#_read caches a default into @values on first read. If something reads
+      # config.tool_roots before tool_roots_default runs, replacing the Setting struct alone leaves
+      # the STALE cached [] answering every subsequent read -- only reset!/an explicit assignment
+      # would clear it. tool_roots_default must force the fresh default in directly.
+      source = Module.new do
+        extend Axn::Configurable
+        extend Axn::Tools::AdapterRoots
+      end
+
+      source.config.tool_roots # cache the stale [] default before the adapter declares its own
+      source.tool_roots_default(%w[agent_tools])
+
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+  end
 end

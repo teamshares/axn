@@ -48,6 +48,11 @@ GemName.wrap(axn_class, **opts)  # one Axn -> the transport's native tool object
 - **Directory membership is optional.** `extend Axn::Tools::AdapterRoots` → a validated `tool_roots`
   setting the registry reads. Its `validate!` reuses core's broad-path guard (rejects `app`/`actions`/`.`/`..`).
   The reference gems don't adopt it (they use explicit `tool`/`configure`); add it only if it fits.
+- **Shipping a non-empty default root? Call `tool_roots_default %w[agent_tools]`** — don't re-declare
+  `setting :tool_roots` by hand, which means hand-copying `AdapterRoots.validate!`'s lambda too.
+  `tool_roots_default` validates EAGERLY at the call site (fails at gem load, not at the registry's first
+  read) and re-declares through the normal `setting` path, so an app's own assignment still wins and
+  `config.reset!(:tool_roots)` returns to the adapter's default, not core's `[]`.
 
 Source: `lib/axn/tools.rb` (`.register_adapter`, `.for`, `.versions`), `lib/axn/tools/registry.rb` (membership,
 eager-load), `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb` (`tool` DSL, `tool_name`).
@@ -107,8 +112,13 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/internal/reflection/schema
   (does it define its own `to_h`/`as_json`), and a field's declared `type:` is only a lower bound on what
   could show up there — a subclass or a singleton method can make an otherwise-opaque declared type render
   cleanly. A check keyed on the declared class alone would refuse programs that run correctly.
+- **If `reject_opaque:` is per-tool (usually is), call `YourAdapter.serialize_exposed(result)` instead of
+  `render` directly.** `Axn::Tools::AdapterSerialization` bundles the declaration and the
+  resolve-then-render chain — see Per-adapter configuration below. `render(result, reject_opaque:
+  config.reject_opaque)` reading the flag off the gem-wide `config` is the mistake this exists to
+  prevent: it ignores any per-tool `configure(:key)` / `tool key: { … }` override.
 
-Source: `lib/axn/extensions/serialization.rb` (the renderer itself is `lib/axn/internal/reflection/values.rb`, core-internal).
+Source: `lib/axn/extensions/serialization.rb` (the renderer itself is `lib/axn/internal/reflection/values.rb`, core-internal), `lib/axn/tools/adapter_serialization.rb`.
 
 ## Per-adapter configuration
 
@@ -121,8 +131,15 @@ Source: `lib/axn/extensions/serialization.rb` (the renderer itself is `lib/axn/i
 - A **render toggle** (structured serialized `exposes` vs. the Axn's message) is a common per-adapter
   setting. `axn-mcp` and `axn-ruby_llm` both name it `present_as` (`:structured` / `:message`) — reuse the
   name/values if you have the concept. It's adapter-specific, not core (an `axn-http_api` has no such toggle).
+- **`reject_opaque_exposed_values` is shared — declare it with `extend Axn::Tools::AdapterSerialization` +
+  `declare_reject_opaque_exposed_values! default: <bool>`**, not a hand-written `setting`. `default:` is a
+  REQUIRED kwarg with no core-picked value: an HTTP adapter with a published `output_schema` wants `true`
+  (axn-openapi); an LLM-facing adapter usually wants `false` — ugly-but-honest beats a failed call
+  (axn-mcp, axn-ruby_llm). Never fix the default in a shared declaration; parameterize it.
+- **The transport-mapping step needs its own never-raises guard — use `guard_tool_response`,** from the
+  same mixin. See Invocation & result → response below.
 
-Source: `lib/axn/configurable.rb` (`config_namespace`, `resolve_override_for`, `overrides`).
+Source: `lib/axn/configurable.rb` (`config_namespace`, `resolve_override_for`, `overrides`), `lib/axn/tools/adapter_serialization.rb`.
 
 ## Extension registry
 
@@ -151,8 +168,17 @@ Source: `lib/axn/extensions/config.rb`, `lib/axn/core/semantic_hints.rb`.
   `fail!("…", standalone: true)`.
 - For per-field inbound detail: `Axn::Tools::Invoker.input_invalid?(result)` and
   `result.exception.field_errors`.
+- **Never let the mapping step escape.** `axn_class.call` (via the Invoker) never raises, but the
+  result→response mapping AFTER it — `serialize_exposed`/render, your own response-building code — runs
+  outside core's executor and CAN raise. Wrap just that step:
+  `YourAdapter.guard_tool_response(axn_class, on_error: ->(e) { your_error_response }) { map_result_to_response }`.
+  It reports through `Axn.config.on_exception`, re-raises when `Axn::Extensions.raises_in_dev?`, and
+  otherwise calls `on_error` with the exception so you build the transport-native error response (this
+  method never constructs one). **Scope it to the mapping only — never to `axn_class.call`** (already
+  reports its own exceptions; wrapping both double-reports).
 
-Source: `lib/axn/extensions.rb` (`owned_failure?`), `lib/axn/tools/invoker.rb`, `lib/axn/result.rb`.
+Source: `lib/axn/extensions.rb` (`owned_failure?`), `lib/axn/tools/invoker.rb`, `lib/axn/result.rb`,
+`lib/axn/tools/adapter_serialization.rb` (`guard_tool_response`).
 
 ## Error boundary
 
@@ -260,6 +286,8 @@ Core source entry points (resolve with `bundle show axn`):
 - `lib/axn/extensions.rb` — `Axn::Extensions.best_effort`, `.config`, `.owned_failure?` (extension-author surface).
 - `lib/axn/tools/registry.rb`, `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb` —
   membership, `tool_name`.
+- `lib/axn/tools/adapter_serialization.rb` — `declare_reject_opaque_exposed_values!`,
+  `serialize_exposed`, `guard_tool_response`.
 - `lib/axn/core/schema_reflection.rb`, `lib/axn/internal/reflection/schema.rb`, `lib/axn/internal/reflection/values.rb` — reflection.
 - `lib/axn/configurable.rb` — `config_namespace`, `resolve_override_for`, `overrides`.
 - `lib/axn/tools/invoker.rb` — the tool call path.
