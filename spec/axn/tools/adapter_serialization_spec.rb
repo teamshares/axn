@@ -56,6 +56,19 @@ RSpec.describe Axn::Tools::AdapterSerialization do
       end.to raise_error(ArgumentError, /default/)
     end
 
+    it "rejects a non-boolean literal default EAGERLY, at declaration (Codex #259, P2)" do
+      # A String "false" is truthy in Ruby, so an unchecked literal default would silently flip
+      # serialize_exposed's reject_opaque: to "on" for every tool -- the opposite of author intent --
+      # with no raise anywhere until someone noticed the wrong behavior downstream.
+      expect do
+        Module.new do
+          extend Axn::Configurable
+          extend Axn::Tools::AdapterSerialization
+          declare_reject_opaque_exposed_values!(default: "false")
+        end
+      end.to raise_error(ArgumentError, /must be true or false/)
+    end
+
     it "rejects a non-boolean value" do
       adapter = build_adapter(default: false)
       expect { adapter.config.reject_opaque_exposed_values = "yes" }
@@ -179,6 +192,45 @@ RSpec.describe Axn::Tools::AdapterSerialization do
       result = adapter.guard_tool_response(axn_class, on_error: ->(_e) { :handled_despite_broken_reporter }) { raise "boom" }
 
       expect(result).to eq(:handled_despite_broken_reporter)
+    end
+
+    it "does not double-invoke a broken reporter for one mapping failure (Codex #259, P2)" do
+      # best_effort's default report_ignored: true routes a reporter's OWN failure to
+      # on_ignored_exception, which -- left at its default -- routes right back to the same
+      # broken on_exception. Axn::Extensions.reporting? cannot catch this: while_reporting's
+      # ensure already cleared the flag by the time the raise unwinds back out to this guard's
+      # rescue, so an unguarded best_effort call here would invoke the broken reporter twice.
+      calls = 0
+      allow(Axn.config).to receive(:on_exception) do |*, **|
+        calls += 1
+        raise "reporter is broken"
+      end
+
+      adapter.guard_tool_response(axn_class, on_error: ->(_e) { :handled }) { raise "boom" }
+
+      expect(calls).to eq(1)
+    end
+
+    it "reports (rather than silently swallowing) when on_error itself raises, then re-raises it (Codex #259, P2)" do
+      reported = []
+      allow(Axn.config).to receive(:on_exception) { |e, **| reported << e }
+
+      expect do
+        adapter.guard_tool_response(axn_class, on_error: ->(_e) { raise "on_error is broken" }) { raise "boom" }
+      end.to raise_error(RuntimeError, "on_error is broken")
+
+      expect(reported.map(&:message)).to eq(["boom", "on_error is broken"])
+    end
+
+    it "does not double-report to a working reporter when on_error itself raises" do
+      reported = []
+      allow(Axn.config).to receive(:on_exception) { |e, **| reported << e }
+
+      expect do
+        adapter.guard_tool_response(axn_class, on_error: ->(_e) { raise "on_error is broken" }) { raise "boom" }
+      end.to raise_error(RuntimeError)
+
+      expect(reported.size).to eq(2) # the original mapping failure, and on_error's own failure -- never more
     end
 
     it "does not double-report when wrapping a mapping step over an already-settled failed Result" do

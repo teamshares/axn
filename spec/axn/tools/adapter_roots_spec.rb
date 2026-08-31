@@ -85,5 +85,30 @@ RSpec.describe Axn::Tools::AdapterRoots do
       expect(second.config.tool_roots).to eq(%w[agent_tools])
       expect(shared_default).to eq(%w[agent_tools])
     end
+
+    it "detaches the stored default from the caller's own array (Codex #259, P1)" do
+      caller_owned = %w[agent_tools]
+      source = build_source_with_default(caller_owned)
+
+      caller_owned << "actions" # a broad root, never validated against THIS array
+
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+
+    it "detaches each element too, so mutating a caller-held string can't corrupt an already-declared default" do
+      root = +"agent_tools"
+      caller_owned = [root]
+      source = build_source_with_default(caller_owned)
+
+      root.replace("actions") # mutate the caller's own String object in place
+
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+
+    it "still lets an explicit assignment win after the default was detached" do
+      source = build_source_with_default(%w[agent_tools])
+      source.config.tool_roots = %w[custom_tools]
+      expect(source.config.tool_roots).to eq(%w[custom_tools])
+    end
   end
 end

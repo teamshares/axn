@@ -36,9 +36,23 @@ module Axn
       # same mechanism that gives it `validate!`'s sibling `self.extended` hook, which Ruby calls
       # automatically and which is never itself extended onto anything). `self` here is the adapter
       # module doing the extending, so `setting` below resolves to ITS OWN `Axn::Configurable#setting`.
+      # Stores a DETACHED, frozen copy — never the caller's own array — so a reference the caller
+      # still holds cannot retroactively widen an already-validated default. `Setting#default` is
+      # stored as-is with no copy of its own; without this, `roots = %w[agent_tools];
+      # tool_roots_default(roots); roots << "actions"` would leave `"actions"` sitting in the
+      # default having never been validated (validate! ran once, before the mutation, against the
+      # OLD array), and `roots.first.replace("actions")` would corrupt the already-declared default
+      # in place even later, since `Config#dup_default`'s `default.dup` only copies the array
+      # shell — the element STRINGS inside stay shared. `String#-@` (unary minus) returns a frozen,
+      # deduplicated copy per element, so no string in the stored default is the caller's own
+      # object; freezing the array closes the append case. A frozen container is safe to store
+      # directly: `dup_default` still hands back a fresh, unfrozen Array on every read (`Array#dup`
+      # never carries over frozen state), so callers keep seeing an ordinary mutable Array — only
+      # the STORED default is armored against the caller's own reference.
       def tool_roots_default(value)
         AdapterRoots.validate!(value)
-        setting :tool_roots, default: value, validate: VALIDATE
+        detached = value.map(&:-@).freeze
+        setting :tool_roots, default: detached, validate: VALIDATE
       end
 
       # Returns true when valid; raises ArgumentError with a specific message otherwise. Raising from

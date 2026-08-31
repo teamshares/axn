@@ -24,7 +24,19 @@ module Axn
       # (Axn::Configurable::PerClassOverrides#_define_override_methods), and `config_namespace`'s own
       # lock guard raises a clear "declare it before any overridable setting" message if the order is
       # wrong, so this method adds no separate check for it.
+      # `default:` is validated against the same `[true, false]` allowlist `one_of:` enforces on
+      # every later ASSIGNMENT — but `Axn::Configurable#setting` never validates its own literal
+      # `default:`, only a subsequent write. Left unchecked, `declare_reject_opaque_exposed_values!
+      # default: "false"` (a String, not the Boolean `false`) would install cleanly and read back as
+      # `"false"` — which `serialize_exposed`'s `reject_opaque:` treats by TRUTHINESS, so a plain
+      # non-boolean typo would silently turn ON strict rejection for every tool, the opposite of what
+      # `default: false` was written to mean, with no raise anywhere until a caller noticed the wrong
+      # behavior. Checked here so the mistake fails at gem load instead.
       def declare_reject_opaque_exposed_values!(default:)
+        unless [true, false].include?(default)
+          raise ArgumentError, "declare_reject_opaque_exposed_values! default: must be true or false; got #{default.inspect}"
+        end
+
         setting :reject_opaque_exposed_values, default:, one_of: [true, false], overridable: true
       end
 
@@ -66,23 +78,50 @@ module Axn
       # error response — that response shape is adapter-specific (an `MCP::Tool::Response`, a Hash, an
       # HTTP `Dispatch`), so it is never this method's job to construct one.
       #
+      # `report_ignored: false` on that `best_effort` call: this guard IS "a guard wrapping the
+      # global exception report" (`best_effort`'s own doc for the flag), so the default
+      # `report_ignored: true` would hand a broken reporter's OWN failure to
+      # `Axn.config.on_ignored_exception` — which, left at ITS default, routes right back to the
+      # same broken `on_exception`. `Axn::Extensions.reporting?` cannot catch this the way it catches
+      # a handler re-entering itself mid-call: `while_reporting`'s `ensure` already cleared the flag
+      # by the time the raised exception unwinds back out to this `rescue`, so an unguarded
+      # `best_effort` here reports one mapping failure through a broken reporter TWICE.
+      #
+      # `on_error` is called OUTSIDE that `best_effort` (adapter-authored response-building code, not
+      # a side channel `best_effort` is meant to guard), but it must not defeat this method's own
+      # never-raises promise either: a raise from it is code this method invoked, not a caller
+      # holding its own guard, so it gets the same report-then-propagate treatment. There is
+      # genuinely no substitute response to fall back to here — the whole reason `on_error` exists is
+      # that only the adapter knows its transport's error shape — so the best this can do is make the
+      # second failure OBSERVABLE (report it) rather than let it escape as a silent, undiagnosable
+      # double fault.
+      #
       # Rescues `StandardError` plus `Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR`
       # (`SystemStackError`, `ScriptError`) — the same allowlist `Core::Executor` settles onto a
       # result, reused rather than a fourth ad-hoc breadth: `result`'s own `as_json`/`to_h` is
       # arbitrary caller code and free to recurse, so a runaway there is `SystemStackError`, not
-      # `StandardError`.
+      # `StandardError`. Both rescues below share the same breadth for the same reason.
       def guard_tool_response(axn_class, on_error:)
         yield
       rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
         adapter_name = Axn::Internal::Rendering.module_name(self)
 
-        Axn::Extensions.best_effort("#{adapter_name} tool response mapping", action: axn_class) do
+        Axn::Extensions.best_effort("#{adapter_name} tool response mapping", action: axn_class, report_ignored: false) do
           Axn.config.on_exception(e, action: axn_class, context: { source: adapter_name })
         end
 
         Axn::Extensions.reraise_for_dev(e, "#{adapter_name} tool response mapping") if Axn::Extensions.raises_in_dev?
 
-        on_error.call(e)
+        begin
+          on_error.call(e)
+        rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => on_error_failure
+          Axn::Extensions.best_effort("#{adapter_name} tool response mapping (building the fallback response)",
+                                      action: axn_class, report_ignored: false) do
+            Axn.config.on_exception(on_error_failure, action: axn_class, context: { source: adapter_name })
+          end
+
+          raise
+        end
       end
     end
   end
