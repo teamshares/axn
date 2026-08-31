@@ -69,6 +69,20 @@ RSpec.describe Axn::Tools::AdapterSerialization do
       end.to raise_error(ArgumentError, /must be true or false/)
     end
 
+    it "does not let a hostile #inspect replace the ArgumentError with whatever it raises (Codex #259, P2)" do
+      boom_inspect = Class.new do
+        def inspect = raise("inspect exploded")
+      end
+
+      expect do
+        Module.new do
+          extend Axn::Configurable
+          extend Axn::Tools::AdapterSerialization
+          declare_reject_opaque_exposed_values!(default: boom_inspect.new)
+        end
+      end.to raise_error(ArgumentError, /must be true or false/)
+    end
+
     it "rejects a non-boolean value" do
       adapter = build_adapter(default: false)
       expect { adapter.config.reject_opaque_exposed_values = "yes" }

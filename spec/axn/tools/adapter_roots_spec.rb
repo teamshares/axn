@@ -193,6 +193,19 @@ RSpec.describe Axn::Tools::AdapterRoots do
         .to raise_error(ArgumentError, /too broad/)
     end
 
+    it "does not let a hostile #inspect replace the ArgumentError with whatever it raises (Codex #259, P2)" do
+      # A non-String entry (42) triggers the type-check message, which names the WHOLE array --
+      # Array#inspect dispatches #inspect on every element, so a hostile element's override could
+      # break message construction for the whole call, not just its own entry.
+      boom_inspect = Class.new(String) do
+        def inspect = raise("inspect exploded")
+      end
+      hostile = [42, boom_inspect.new("agent_tools")]
+
+      expect { build_source_with_default(hostile) }
+        .to raise_error(ArgumentError, /must be an Array of Strings/)
+    end
+
     it "still lets an explicit assignment win after the default was detached" do
       source = build_source_with_default(%w[agent_tools])
       source.config.tool_roots = %w[custom_tools]

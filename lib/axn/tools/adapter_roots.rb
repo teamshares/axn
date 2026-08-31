@@ -125,17 +125,28 @@ module Axn
       # entry" means, or hardening ONE of them past the other reopens the hole a step later. Element
       # types are checked the same bound way (`Identity.kind?`, not `entry.is_a?(String)`) for the
       # same reason, one level down.
+      #
+      # Every value named in a message here goes through `Identity.describe` (`value.inspect` guarded
+      # by a `rescue Exception`, falling back to a bound class name), never a raw `.inspect` — an
+      # entry that reached this point already passed the type check, but a real `String` SUBCLASS
+      # can still override `#inspect` to raise, which would replace this method's own `ArgumentError`
+      # with whatever that override raised instead. `Setting#validate!` already uses the same
+      # renderer for its own "got invalid value" messages; reused here rather than a second copy.
       def self.validate!(value)
-        raise ArgumentError, "tool_roots must be an Array of Strings; got #{value.inspect}" unless Axn::Internal::Identity.kind?(value, ::Array)
+        unless Axn::Internal::Identity.kind?(value, ::Array)
+          raise ArgumentError, "tool_roots must be an Array of Strings; got #{Axn::Internal::Identity.describe(value)}"
+        end
 
         NATIVE_ARRAY_EACH.bind_call(value) do |entry|
-          raise ArgumentError, "tool_roots must be an Array of Strings; got #{value.inspect}" unless Axn::Internal::Identity.kind?(entry, ::String)
+          unless Axn::Internal::Identity.kind?(entry, ::String)
+            raise ArgumentError, "tool_roots must be an Array of Strings; got #{Axn::Internal::Identity.describe(value)}"
+          end
 
           next unless Axn::Configuration.broad_tool_root?(entry)
 
           raise ArgumentError,
-                "tool_roots entry #{entry.inspect} is too broad: it resolves to the project root, escapes " \
-                "via `..`, or ends in a broad directory (`actions`/`app`) that would auto-expose every " \
+                "tool_roots entry #{Axn::Internal::Identity.describe(entry)} is too broad: it resolves to the project " \
+                "root, escapes via `..`, or ends in a broad directory (`actions`/`app`) that would auto-expose every " \
                 "business action. Use a dedicated narrow subdir such as `agent_tools` or `actions/tools`."
         end
 
@@ -160,11 +171,15 @@ module Axn
       # a subclass instance — for the frozen/deduped result `tool_roots_default` goes on to validate
       # and store.
       def self._detach_roots(value)
-        raise ArgumentError, "tool_roots must be an Array of Strings; got #{value.inspect}" unless Axn::Internal::Identity.kind?(value, ::Array)
+        unless Axn::Internal::Identity.kind?(value, ::Array)
+          raise ArgumentError, "tool_roots must be an Array of Strings; got #{Axn::Internal::Identity.describe(value)}"
+        end
 
         detached = []
         NATIVE_ARRAY_EACH.bind_call(value) do |entry|
-          raise ArgumentError, "tool_roots must be an Array of Strings; got #{value.inspect}" unless Axn::Internal::Identity.kind?(entry, ::String)
+          unless Axn::Internal::Identity.kind?(entry, ::String)
+            raise ArgumentError, "tool_roots must be an Array of Strings; got #{Axn::Internal::Identity.describe(value)}"
+          end
 
           detached << NATIVE_STRING_MINUS.bind_call(::String.new(entry))
         end

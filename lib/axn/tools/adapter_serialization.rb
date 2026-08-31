@@ -34,7 +34,12 @@ module Axn
       # behavior. Checked here so the mistake fails at gem load instead.
       def declare_reject_opaque_exposed_values!(default:)
         unless [true, false].include?(default)
-          raise ArgumentError, "declare_reject_opaque_exposed_values! default: must be true or false; got #{default.inspect}"
+          # Axn::Internal::Identity.describe, not a raw `.inspect` -- `default` failed the boolean
+          # check above, so it could be any caller-supplied object, and one overriding `#inspect` to
+          # raise would replace this ArgumentError with whatever that override raised instead.
+          raise ArgumentError,
+                "declare_reject_opaque_exposed_values! default: must be true or false; " \
+                "got #{Axn::Internal::Identity.describe(default)}"
         end
 
         setting :reject_opaque_exposed_values, default:, one_of: [true, false], overridable: true
