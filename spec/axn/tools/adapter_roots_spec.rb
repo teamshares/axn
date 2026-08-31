@@ -141,6 +141,21 @@ RSpec.describe Axn::Tools::AdapterRoots do
       expect(source.config.tool_roots).to eq(%w[agent_tools])
     end
 
+    it "validates through the SAME bound iteration the copy step uses, not a dispatched each/all? (Codex #259, P2)" do
+      # An Array subclass whose #each silently yields nothing would make validate!'s broad-root loop
+      # examine zero entries while the array genuinely holds one -- a real "actions" entry sailed
+      # through unexamined and was then copied into the stored default anyway by the bound copy
+      # step, which correctly bypasses the very same override and sees what validation didn't.
+      silent_array = Class.new(Array) do
+        def each(*) = self
+        def all?(*) = true
+      end
+      hostile = silent_array.new(["actions"])
+
+      expect { build_source_with_default(hostile) }
+        .to raise_error(ArgumentError, /too broad/)
+    end
+
     it "still lets an explicit assignment win after the default was detached" do
       source = build_source_with_default(%w[agent_tools])
       source.config.tool_roots = %w[custom_tools]

@@ -102,12 +102,23 @@ module Axn
       # Returns true when valid; raises ArgumentError with a specific message otherwise. Raising from
       # a `validate:` lambda propagates through Setting#validate! (Axn::Configurable), so a bad root
       # fails at assignment rather than with the generic "got invalid value".
+      #
+      # Walks `value` through the SAME bound `NATIVE_ARRAY_EACH` `tool_roots_default` copies through,
+      # not a dispatched `value.each`/`value.all?` — an `Array` subclass overriding `each` to yield
+      # NOTHING would otherwise make this loop silently check zero entries while still genuinely
+      # containing one (`each` returning early is not the same question as the array being empty),
+      # so a real `"actions"` entry passed this check unexamined and was then copied into the stored
+      # default anyway by the bound copy step, which — correctly bypassing the very same override —
+      # sees the entry this validation didn't. Validation and copying must agree on what "every
+      # entry" means, or hardening ONE of them past the other reopens the hole a step later. Element
+      # types are checked the same bound way (`Identity.kind?`, not `entry.is_a?(String)`) for the
+      # same reason, one level down.
       def self.validate!(value)
-        unless value.is_a?(Array) && value.all? { |entry| entry.is_a?(String) }
-          raise ArgumentError, "tool_roots must be an Array of Strings; got #{value.inspect}"
-        end
+        raise ArgumentError, "tool_roots must be an Array of Strings; got #{value.inspect}" unless Axn::Internal::Identity.kind?(value, ::Array)
 
-        value.each do |entry|
+        NATIVE_ARRAY_EACH.bind_call(value) do |entry|
+          raise ArgumentError, "tool_roots must be an Array of Strings; got #{value.inspect}" unless Axn::Internal::Identity.kind?(entry, ::String)
+
           next unless Axn::Configuration.broad_tool_root?(entry)
 
           raise ArgumentError,
