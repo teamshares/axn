@@ -49,10 +49,23 @@ module Axn
       # directly: `dup_default` still hands back a fresh, unfrozen Array on every read (`Array#dup`
       # never carries over frozen state), so callers keep seeing an ordinary mutable Array — only
       # the STORED default is armored against the caller's own reference.
+      #
+      # Also clears any already-cached value (`config.reset!(:tool_roots)`), not only replacing the
+      # `Setting` struct. `Config#_read` caches a default into `@values` on FIRST read
+      # (`setting.dup_default`) and every read after that returns the SAME cached object — so if
+      # anything in the same class body reads `config.tool_roots` before this method runs, that stale
+      # `[]` sits cached and keeps answering even after the Setting is replaced, since replacing the
+      # Setting alone never touches `@values`. `reset!` deletes the cache entry so the next read
+      # recomputes from the (now freshly-declared) Setting via the ordinary `dup_default` path —
+      # reusing the existing reset machinery rather than re-deriving its dup/freeze handling here.
+      # This cannot clobber a genuinely later app-level override: an app can only reach `configure {
+      # |c| c.tool_roots = ... }` once the whole adapter module has finished loading, strictly AFTER
+      # this method (called from within that same load) has already run.
       def tool_roots_default(value)
         AdapterRoots.validate!(value)
         detached = value.map(&:-@).freeze
         setting :tool_roots, default: detached, validate: VALIDATE
+        config.reset!(:tool_roots)
       end
 
       # Returns true when valid; raises ArgumentError with a specific message otherwise. Raising from

@@ -110,5 +110,21 @@ RSpec.describe Axn::Tools::AdapterRoots do
       source.config.tool_roots = %w[custom_tools]
       expect(source.config.tool_roots).to eq(%w[custom_tools])
     end
+
+    it "takes effect even when config.tool_roots was already read (and cached) beforehand (Codex #259, P2)" do
+      # Config#_read caches a default into @values on first read. If something reads
+      # config.tool_roots before tool_roots_default runs, replacing the Setting struct alone leaves
+      # the STALE cached [] answering every subsequent read -- only reset!/an explicit assignment
+      # would clear it. tool_roots_default must force the fresh default in directly.
+      source = Module.new do
+        extend Axn::Configurable
+        extend Axn::Tools::AdapterRoots
+      end
+
+      source.config.tool_roots # cache the stale [] default before the adapter declares its own
+      source.tool_roots_default(%w[agent_tools])
+
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
   end
 end
