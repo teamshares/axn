@@ -8,8 +8,37 @@ module Axn
     # reuses core's single broad-path guard so no adapter can widen a root to `app/`, `.`, `actions`,
     # or a `..` traversal that would bulk-expose every business action.
     module AdapterRoots
+      # The single written copy of the broad-root guard, referenced by both `self.extended`'s
+      # `validate:` and `tool_roots_default` below — so an adapter that widens the shipped default
+      # (`tool_roots_default %w[agent_tools]`) still runs the exact validation an app's own assignment
+      # would, rather than a second hand-copied lambda that could drift from this one.
+      VALIDATE = ->(value) { AdapterRoots.validate!(value) }
+      private_constant :VALIDATE
+
       def self.extended(base)
-        base.setting :tool_roots, default: [], validate: ->(value) { AdapterRoots.validate!(value) }
+        base.setting :tool_roots, default: [], validate: VALIDATE
+      end
+
+      # Re-declares `tool_roots` with a non-empty default, for an adapter that wants its own
+      # `agent_tools`-style directory convention without hand-copying the validate lambda (the
+      # duplication this method exists to remove — every adapter needed it purely to change core's
+      # conservative `[]` default). Validates the default EAGERLY, at the call site, so a broad
+      # default (`tool_roots_default %w[app]`) fails at gem load — same "fail at declaration, not
+      # runtime" discipline as an app's own assignment gets, rather than surfacing only the first time
+      # the registry reads `config.tool_roots`.
+      #
+      # Re-declares via the public `setting` (Axn::Configurable's `setting` replaces a same-named
+      # entry in the module's own settings bag), so an app's later `config.tool_roots = [...]` still
+      # wins, and `config.reset!(:tool_roots)` returns to THIS default rather than core's `[]`.
+      #
+      # An INSTANCE method, deliberately, not `self.tool_roots_default` — `extend Axn::Tools::AdapterRoots`
+      # installs a module's instance methods as singleton methods of the extending adapter module (the
+      # same mechanism that gives it `validate!`'s sibling `self.extended` hook, which Ruby calls
+      # automatically and which is never itself extended onto anything). `self` here is the adapter
+      # module doing the extending, so `setting` below resolves to ITS OWN `Axn::Configurable#setting`.
+      def tool_roots_default(value)
+        AdapterRoots.validate!(value)
+        setting :tool_roots, default: value, validate: VALIDATE
       end
 
       # Returns true when valid; raises ArgumentError with a specific message otherwise. Raising from

@@ -79,6 +79,19 @@ Axn::MCP.configure { |c| c.tool_roots = %w[agent_tools] }
 
 `AdapterRoots.validate!` reuses core's single broad-path guard, so a root that resolves to the project root, escapes via `..`, or ends in a bulk directory (`app`, `actions`) is rejected at assignment — no adapter can accidentally expose every business action. Directory membership is a convenience the reference gems don't currently adopt (they rely on explicit `tool`/`configure`); add it only if directory discovery fits your transport.
 
+**Shipping a non-empty default root? Use `tool_roots_default`, don't re-declare the setting.** Core's own default is the conservative `[]` — a knob whose whole validation exists to stop bulk-exposing business actions shouldn't default to auto-exposing anything. But an adapter that ships an `agent_tools`-style convention (so an Axn under `app/agent_tools/` is exposed with no explicit `tool` line) needs a non-empty default, and re-declaring `setting :tool_roots` by hand means hand-copying `AdapterRoots.validate!`'s lambda too — every reference adapter used to do exactly that, and it's the copy this method removes:
+
+```ruby
+module Axn::MCP
+  extend Axn::Configurable
+  extend Axn::Tools::AdapterRoots
+  config_namespace :mcp
+  tool_roots_default %w[agent_tools]
+end
+```
+
+`tool_roots_default` validates the value **eagerly**, at the call site — `tool_roots_default %w[app]` raises when the gem loads, not the first time the registry reads `config.tool_roots` — and re-declares through the same `setting` an app's own assignment goes through, so an app's later `configure { |c| c.tool_roots = [...] }` still wins, and `config.reset!(:tool_roots)` returns to the adapter's default rather than core's `[]`.
+
 ## Naming & description
 
 **Names come from `axn_class.tool_name(:your_key)` — never roll your own.** `tool_name` is the canonical, provider-safe derivation (honors an explicit `tool name:`, strips configured prefixes, snake_cases, restricts to `[a-z0-9_]`, and is never blank). The *same Axn must yield the same name across every adapter*, so a client sees one stable identity regardless of transport. **Pass your adapter key.** `Axn::Tools.for` sorts and groups the set by `tool_name(:your_key)` (collapsing to the latest [version](#versioning) per name), and a per-adapter `tool your_key: { name: "…" }` override is only returned when you pass the key — the zero-arg `tool_name` deliberately ignores per-adapter overrides. So an adapter that reads the zero-arg form would publish a *different* name than the registry grouped on:
@@ -121,14 +134,28 @@ Three rules keep adapters interoperable:
 To render a successful `Axn::Result`'s exposed values into a JSON-safe hash, use `Axn::Extensions::Serialization.render` — don't hand-roll it (it handles Symbol/BigDecimal/Time/`as_json`-vs-`to_h` edge cases so the output validates against the reflected `output_schema`):
 
 ```ruby
-# An MCP or LLM tool adapter
 exposed = Axn::Extensions::Serialization.render(result)
-
-# An HTTP adapter, which must not ship an undeclared rendering in a response body
-exposed = Axn::Extensions::Serialization.render(result, reject_opaque: config.reject_opaque)
+exposed = Axn::Extensions::Serialization.render(result, reject_opaque: true) # e.g. a published HTTP contract
 ```
 
 You don't pass the field configs: `render` derives them from the result's own action class, so a rendered body always covers exactly the declared `exposes` — and therefore always matches `output_schema`. Rendering a subset isn't supported, deliberately; a partial body would contradict the schema the same adapter published.
+
+**If `reject_opaque:` is a per-tool setting (it usually is — see [Per-adapter configuration](#per-adapter-configuration) below), call `YourAdapter.serialize_exposed(result)` instead of `render` directly.** `Axn::Tools::AdapterSerialization` (mixed in alongside `AdapterRoots`) bundles the declaration and the resolve-then-render chain, so there is one fewer place to get the resolution wrong:
+
+```ruby
+module Axn::MCP
+  extend Axn::Configurable
+  extend Axn::Tools::AdapterRoots
+  extend Axn::Tools::AdapterSerialization
+  config_namespace :mcp
+  declare_reject_opaque_exposed_values! default: false   # axn-openapi: default: true
+end
+
+# wherever a result becomes a response
+exposed = Axn::MCP.serialize_exposed(result)
+```
+
+Reaching for `Axn::Extensions::Serialization.render(result, reject_opaque: config.reject_opaque)` directly — reading the flag off the gem-wide `config` — is the mistake this method exists to prevent: `config.x` ignores a per-tool `configure(:mcp) { |c| c.reject_opaque_exposed_values = ... }` or `tool mcp: { reject_opaque_exposed_values: ... }` override entirely, silently applying the gem-wide value to every tool regardless of what an individual action declared. `serialize_exposed` takes only the result — the axn class it resolves against is derived from `result.__action__.class`, so there is no argument through which a caller could resolve one class's override while rendering a different class's result.
 
 Where the rendering actually happens — `Axn::Internal::Reflection::Values` — is core-internal, exactly like `Axn::Internal::Reflection::Schema`. `render` is the declared entry point; the module's helpers are private, and what stays public is there for core's own callers rather than for an adapter.
 
@@ -184,6 +211,21 @@ Per-class writes are the action author's `configure(:key) { |c| c.x = … }` / `
 
 A **render toggle** — structured serialized `exposes` vs. the Axn's human message — is a common per-adapter setting. Both `axn-mcp` and `axn-ruby_llm` call it `present_as` with values `:structured` / `:message`; if your transport has the concept, **reuse the name and values**. Note it's *adapter-specific*, not core: an `axn-http_api` wouldn't have it (a REST response is always structured). Resolve it per-class via `resolve_override_for` as above.
 
+### `reject_opaque_exposed_values`
+
+Every tool-serving adapter needs this knob (see [Value serialization](#value-serialization) above), so don't declare it by hand with `setting` — call `declare_reject_opaque_exposed_values!` from `Axn::Tools::AdapterSerialization` instead:
+
+```ruby
+module Axn::MCP
+  extend Axn::Configurable
+  extend Axn::Tools::AdapterSerialization   # alongside AdapterRoots
+  config_namespace :mcp                     # must come first — an overridable setting locks the namespace
+  declare_reject_opaque_exposed_values! default: false
+end
+```
+
+`default:` is a **required** keyword with no method default — core deliberately never picks one, because the correct value is a transport question: a published HTTP contract with a declared `output_schema` should reject a rendering its author never declared (`default: true`), while an LLM-facing adapter is usually better off shipping an ugly-but-honest string than failing the whole call (`default: false`). This declares the setting `overridable: true` and is what `serialize_exposed` resolves against — you never call `resolve_override_for(axn_class, :reject_opaque_exposed_values)` yourself.
+
 ## Extension registry
 
 For transport-only vocabulary that core doesn't know about, extend the registry rather than patching core. `Axn::Extensions.config.register_semantic_hint(*hints)` adds allowed [`semantic_hints`](/reference/class) values so an author can declare them on a tool:
@@ -222,7 +264,7 @@ Map the `Result` to your transport response from these members:
 ```ruby
 result = invoker.call(axn_class, model_args, ambient_context: server_context || {})
 if result.ok?
-  present_as == :message ? result.message : Axn::Extensions::Serialization.render(result)
+  present_as == :message ? result.message : Axn::MCP.serialize_exposed(result)
 else
   { error: result.error }        # surface result.error, never result.exception
 end
@@ -235,6 +277,22 @@ Two rules:
 - **`Axn::Extensions::Tracing.annotate_span(**attrs)` / `.current_span`** give you the `axn.call` span axn's own tracer opened for the action currently running — the seam to use if your gem needs to write vendor-namespaced OTel attributes (`gen_ai.*`, `db.*`, …) it can't know at declaration time, instead of reaching for `OpenTelemetry::Trace.current_span` (which resolves through ambient, mutable process state and is not reliable — see [Annotating the span from your own code](/reference/configuration#annotating-the-span-from-your-own-code)). `axn-ruby_llm`'s `record_otel_attributes!` is the reference use.
 
 For inbound-validation detail (which argument the model got wrong), the Invoker exposes `Axn::Tools::Invoker.input_invalid?(result)` and `result.exception.field_errors` — see [Tool Invoker](/reference/tool-invoker#per-field-detail).
+
+### Never let the mapping escape
+
+The snippet above has a gap: `axn_class.call` (run through the Invoker) never raises — core catches the action body's own exceptions into a failed `Result` and pages `on_exception` itself — but the mapping step *after* it runs entirely outside core's executor. `serialize_exposed`/`render` can raise (a value with no honest JSON form), and so can your own response-building code (a structure past your encoder's `max_nesting`, or a plain gem bug). Left unguarded, that exception escapes `.call` on every transport and breaks axn's "author once, call anywhere" contract — a business failure never raises, but a transport bug would.
+
+Wrap just the mapping step in `guard_tool_response`, from the same `Axn::Tools::AdapterSerialization` mixin as `serialize_exposed`:
+
+```ruby
+Axn::MCP.guard_tool_response(axn_class, on_error: ->(_e) { Serializer.error_response(ADAPTER_FAILURE_MESSAGE) }) do
+  Serializer.result_to_response(result, present_as:)
+end
+```
+
+On a raise it reports through `Axn.config.on_exception` for observability, re-raises when `Axn::Extensions.raises_in_dev?` so a real bug surfaces loudly in development instead of being silently masked, and otherwise calls `on_error` with the exception so your adapter builds its own transport-native error response (an `MCP::Tool::Response`, a plain Hash, an HTTP `Dispatch` — this is never core's job to construct).
+
+**Scope it to the mapping only — never to `axn_class.call` itself.** The wrapped Axn's own call already reports its own exceptions; wrapping both would page `on_exception` twice for one failure.
 
 ## Error boundary
 

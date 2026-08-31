@@ -34,6 +34,7 @@ require "axn/internal/reflection"
 require "axn/tools/version_group"
 require "axn/tools/registry"
 require "axn/tools/adapter_roots"
+require "axn/tools/adapter_serialization"
 require "axn/tools/invoker"
 require "axn/tools"
 

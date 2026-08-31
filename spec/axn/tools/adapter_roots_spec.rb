@@ -37,4 +37,53 @@ RSpec.describe Axn::Tools::AdapterRoots do
     expect { build_source.config.tool_roots = %w[../secrets] }
       .to raise_error(ArgumentError, /too broad/)
   end
+
+  describe ".tool_roots_default" do
+    def build_source_with_default(default)
+      Module.new do
+        extend Axn::Configurable
+        extend Axn::Tools::AdapterRoots
+        tool_roots_default(default)
+      end
+    end
+
+    it "sets the adapter's own default, replacing core's empty one" do
+      expect(build_source_with_default(%w[agent_tools]).config.tool_roots).to eq(%w[agent_tools])
+    end
+
+    it "validates the default EAGERLY, at declaration, not at the first read" do
+      expect { build_source_with_default(%w[app]) }
+        .to raise_error(ArgumentError, /too broad/)
+    end
+
+    it "still lets an explicit assignment win over the adapter's default" do
+      source = build_source_with_default(%w[agent_tools])
+      source.config.tool_roots = %w[custom_tools]
+      expect(source.config.tool_roots).to eq(%w[custom_tools])
+    end
+
+    it "still validates an explicit assignment with the same broad-path guard" do
+      source = build_source_with_default(%w[agent_tools])
+      expect { source.config.tool_roots = %w[actions] }
+        .to raise_error(ArgumentError, /too broad/)
+    end
+
+    it "returns to the ADAPTER's default on reset, not core's []" do
+      source = build_source_with_default(%w[agent_tools])
+      source.config.tool_roots = %w[custom_tools]
+      source.config.reset!(:tool_roots)
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+
+    it "does not share one mutable default array across adapters, even when they pass the same object" do
+      shared_default = %w[agent_tools]
+      first = build_source_with_default(shared_default)
+      second = build_source_with_default(shared_default)
+
+      first.config.tool_roots << "mutated"
+
+      expect(second.config.tool_roots).to eq(%w[agent_tools])
+      expect(shared_default).to eq(%w[agent_tools])
+    end
+  end
 end
