@@ -411,5 +411,41 @@ RSpec.describe "Axn::Internal::Tracing.current_span" do
 
       expect(seen).to be_nil
     end
+
+    it "refuses a span belonging to a different fiber even with no scheduler installed (PRO-3278 round-2 review)" do
+      # `isolation_unsafe?` only sees a Fiber SCHEDULER mismatch — manually interleaved Fibers (no
+      # scheduler at all) share `Thread.current`, and so share `_current_axn_stack` under
+      # `isolation_level == :thread` regardless. Reproduced directly: fiber A pushes and yields
+      # mid-body, fiber B pushes and yields mid-body, A resumes — `Core::NestingTracking.current_axn`
+      # genuinely resolves to B's action, not A's. `current_span` must still refuse to hand back B's
+      # span to A: it tags each published span with the thread+fiber that set it and checks that tag
+      # against the actual caller, independent of whatever `current_axn` (wrongly) resolved to.
+      expect(Fiber.scheduler).to be_nil # confirms no scheduler is involved in this reproduction at all
+
+      span_a = Object.new.tap { |s| s.define_singleton_method(:set_attribute) { |*, **| } }
+      span_b = Object.new.tap { |s| s.define_singleton_method(:set_attribute) { |*, **| } }
+      seen_by_a = :unset
+
+      klass_a = build_axn do
+        define_method(:call) do
+          Fiber.yield
+          seen_by_a = Axn::Internal::Tracing.current_span
+        end
+      end
+      klass_b = build_axn { define_method(:call) { Fiber.yield } }
+
+      Axn.config.tracer = Class.new { define_method(:in_span) { |*, **, &block| block.call(span_a) } }.new
+      fiber_a = Fiber.new { klass_a.call }
+
+      Axn.config.tracer = Class.new { define_method(:in_span) { |*, **, &block| block.call(span_b) } }.new
+      fiber_b = Fiber.new { klass_b.call }
+
+      fiber_a.resume # push A onto the shared stack, then suspend before A's own pop
+      fiber_b.resume # push B on top, then suspend before B's own pop — stack is now [A, B]
+      fiber_a.resume # A resumes; current_axn wrongly resolves to B, but current_span must still refuse it
+
+      expect(seen_by_a).to be_nil
+      expect(seen_by_a).not_to equal(span_b)
+    end
   end
 end

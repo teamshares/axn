@@ -670,7 +670,15 @@ module Axn
       # could read it too — a free consequence of the ordering, not a separate mechanism.
       def with_current_span(span)
         ivar = Internal::Tracing::SPAN_IVAR
-        Internal::NativeMethods.ivar_set(@action, ivar, span)
+        # Tagged with the calling thread+fiber, not just the span. `Core::NestingTracking._current_axn_stack`
+        # is a THREAD-shared Array under `isolation_level == :thread`, and manually-interleaved Fibers with
+        # no scheduler installed (so `NestingTracking.isolation_unsafe?` cannot see them at all) can leave it
+        # holding another fiber's action on top when this one resumes (PRO-3278 review, reproduced directly:
+        # fiber A pushes, yields; fiber B pushes, yields; A resumes and `current_axn` returns B). That is a
+        # `NestingTracking` stack-correctness problem this method cannot fix — but `current_span` can refuse
+        # to hand back a span belonging to an action whose OWN recorded caller isn't the one asking, which is
+        # exactly what `Internal::Tracing.current_span` checks below.
+        Internal::NativeMethods.ivar_set(@action, ivar, [span, Thread.current, Fiber.current].freeze)
         yield
       ensure
         # `frozen?` gated FIRST: `remove_instance_variable` cannot mutate a frozen object at all, so an

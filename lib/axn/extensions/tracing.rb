@@ -6,6 +6,13 @@
 require "axn/internal/tracing"
 require "axn/extensions"
 
+# `current_span` reaches Core::NestingTracking, which needs ActiveSupport — required here (this facade,
+# not `axn/internal/tracing.rb`) so that file's own pre-existing standalone-loadability stays untouched
+# by a method it never calls (see that file's comment). A real Bundler-managed consumer already has
+# ActiveSupport reachable as one of axn's own gemspec dependencies; this only makes the require explicit
+# rather than relying on load-order luck.
+require "axn/core/nesting_tracking"
+
 module Axn
   module Extensions
     # The `axn.call` span, published for a downstream gem that must write vendor-namespaced attributes

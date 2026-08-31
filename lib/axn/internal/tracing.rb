@@ -11,9 +11,14 @@ require "axn/extensions"
 # rely on the umbrella entrypoint having loaded the version first.
 require "axn/version"
 
-# current_span reaches Core::NestingTracking for "who is running" — a runtime reference this component
-# cannot rely on the umbrella entrypoint having loaded first, the same reason as the two requires above.
-require "axn/core/nesting_tracking"
+# `current_span` reaches Core::NestingTracking for "who is running" — a genuine runtime reference,
+# deliberately NOT required here: `Core::NestingTracking` needs ActiveSupport (a third-party gem), and
+# this file's own standalone-loadability is tested (component_loading_spec.rb) by loading it ALONE and
+# calling `supports_record_exception_option?`, which never touches NestingTracking at all. Requiring it
+# here would make merely LOADING this file — regardless of which method gets called — pull in
+# ActiveSupport eagerly, which broke that pre-existing guarantee when tried (PRO-3278 review). Callers
+# that need `current_span` to actually WORK get the require from `axn/extensions/tracing.rb`, the public
+# facade that defines the only supported way to reach it.
 
 module Axn
   module Internal
@@ -115,16 +120,36 @@ module Axn
         # write real attributes onto a trace it does not own. Refusing to answer degrades to exactly
         # that pre-existing failure mode (nothing written) instead of a new, worse one.
         #
+        # A SECOND, independent check below the first: `isolation_unsafe?` only sees a Fiber SCHEDULER
+        # mismatch, but the same shared-stack hazard is reachable with no scheduler at all — Fibers
+        # created and `.resume`d by hand, with no scheduler ever installed, still share `Thread.current`,
+        # and so still share `_current_axn_stack` under `isolation_level == :thread` (PRO-3278 review,
+        # reproduced directly: fiber A pushes and yields mid-body, fiber B pushes and yields, A resumes
+        # and `current_axn` returns B). That is a `NestingTracking` stack-correctness gap this method
+        # cannot repair — `_current_axn_stack` genuinely may hold the wrong action on top — but it does
+        # not have to trust the action `current_axn` hands back: `with_current_span` tags the span with
+        # the thread+fiber that published it, and this refuses to return one tagged for a DIFFERENT
+        # fiber than the one actually asking. B's span was tagged with B's fiber identity, not A's, so
+        # A reading it here — even though `current_axn` wrongly resolved to B — gets nil instead of a
+        # span it would silently misattribute.
+        #
         # nil is the honest answer whenever `Core::NestingTracking.current_axn` is nil (no action
-        # running at all) or that action never had a span published for it — no tracer configured, the
-        # tracer never yielded, the tracer yielded `nil`, or the untraced fallback ran the action.
+        # running at all), that action never had a span published for it (no tracer configured, the
+        # tracer never yielded, the tracer yielded `nil`, or the untraced fallback ran the action), or
+        # the published span belongs to a different thread/fiber than the one calling now.
         def current_span
           return nil if Axn::Core::NestingTracking.isolation_unsafe?
 
           action = Axn::Core::NestingTracking.current_axn
           return nil unless action
 
-          Internal::NativeMethods.ivar_get(action, SPAN_IVAR)
+          tagged = Internal::NativeMethods.ivar_get(action, SPAN_IVAR)
+          return nil unless tagged
+
+          span, thread, fiber = tagged
+          return nil unless Identity.same?(thread, Thread.current) && Identity.same?(fiber, Fiber.current)
+
+          span
         end
 
         # Drops the auto-detection and capability memos, for specs that swap the OpenTelemetry
