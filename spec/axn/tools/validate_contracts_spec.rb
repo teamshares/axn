@@ -599,6 +599,54 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     end
   end
 
+  # The control for the decision recorded on `Axn::Tools.validate_contracts!`'s own doc comment: a
+  # declared-opaque `exposes` type is deliberately NOT rejected here, because the declared type is only a
+  # lower bound on what the runtime value's own class will be. If that rejected check were ever added to
+  # this method, this example would start raising for a tool whose actual exposed values render fine --
+  # which is exactly the false positive the decision exists to avoid. Paired with
+  # spec/axn/extensions/serialization_spec.rb's render-level examples, which pin the OTHER half: the same
+  # opaque-typed field renders cleanly under `reject_opaque: true` when the runtime value is a renderable
+  # subclass.
+  describe "a declared-opaque exposes type" do
+    def opaque_base
+      stub_const("ToolContractsSpec::OpaqueBase", Class.new do
+        def initialize
+          @a = 1
+        end
+      end)
+    end
+
+    def opaque_typed_tool(declared_type:, instantiate_with:, name: "ToolContractsSpec::OpaqueTyped", adapters: [:mcp])
+      stub_const(name, Class.new do
+        include Axn
+        tool(*adapters)
+        exposes :thing, type: declared_type
+
+        define_method(:call) { expose(thing: instantiate_with.new) }
+      end)
+    end
+
+    it "does not reject a tool whose exposed type is statically opaque" do
+      base = opaque_base
+      Axn::Tools.register_adapter(:mcp)
+      opaque_typed_tool(declared_type: base, instantiate_with: base)
+
+      expect { Axn::Tools.validate_contracts! }.not_to raise_error
+    end
+
+    it "still renders fine when the actual exposed value is a renderable subclass of the declared type" do
+      base = opaque_base
+      renderable_subclass = Class.new(base) { def to_h = { a: 1 } }
+      klass = opaque_typed_tool(declared_type: base, instantiate_with: renderable_subclass,
+                                name: "ToolContractsSpec::OpaqueTypedRenderable")
+
+      Axn::Tools.register_adapter(:mcp)
+      Axn::Tools.validate_contracts!
+
+      expect(Axn::Extensions::Serialization.render(klass.call, reject_opaque: true)).to eq("thing" => { "a" => 1 })
+    end
+  end
+
   describe "Registry.tool_classes" do
     # The registry is process-global, so this asserts membership rather than an exact set: another spec's named
     # tool class may legitimately still be defined.

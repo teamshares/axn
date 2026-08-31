@@ -103,6 +103,10 @@ Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/internal/reflection/schema
   pre-pass — it drifts from the renderer.
 - Keep the two guarantees apart: encodability is unconditional, declared-shape is what the flag buys.
   `reject_opaque: false` never means "might not be JSON" — that is why it isn't named `strict:`.
+- This is call-time by construction, not a boot check: the verdict is about the exposed VALUE's own class
+  (does it define its own `to_h`/`as_json`), and a field's declared `type:` is only a lower bound on what
+  could show up there — a subclass or a singleton method can make an otherwise-opaque declared type render
+  cleanly. A check keyed on the declared class alone would refuse programs that run correctly.
 
 Source: `lib/axn/extensions/serialization.rb` (the renderer itself is `lib/axn/internal/reflection/values.rb`, core-internal).
 
