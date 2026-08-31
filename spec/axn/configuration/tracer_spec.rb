@@ -231,6 +231,16 @@ RSpec.describe "Axn.config.tracer" do
       expect(runs.size).to eq(1)
     end
 
+    # PRO-3278: the untraced fallback that runs the action here must not leave `current_span` reading
+    # a stale or ancestor span — there was never one to publish for this attempt at all.
+    it "leaves Axn::Extensions::Tracing.current_span nil for the untraced fallback run" do
+      Axn.config.tracer = Class.new { def in_span(*, **) = :never_yielded }.new
+      seen = :unset
+      build_axn { define_method(:call) { seen = Axn::Extensions::Tracing.current_span } }.call
+
+      expect(seen).to be_nil
+    end
+
     it "runs the action exactly once when in_span yields twice" do
       Axn.config.tracer = Class.new do
         define_method(:in_span) do |*, **, &block|
@@ -241,6 +251,23 @@ RSpec.describe "Axn.config.tracer" do
 
       expect(counting_axn.call).to be_ok
       expect(runs.size).to eq(1)
+    end
+
+    # PRO-3278: the SECOND yield's span must never overwrite the first — only the run the action
+    # actually happened inside may ever be observable as `current_span`.
+    it "sees only the first yield's span through Axn::Extensions::Tracing.current_span when in_span yields twice" do
+      seen = []
+      first_span = Object.new.tap { |s| s.define_singleton_method(:set_attribute) { |*, **| } }
+      second_span = Object.new.tap { |s| s.define_singleton_method(:set_attribute) { |*, **| } }
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          block.call(first_span)
+          block.call(second_span)
+        end
+      end.new
+      build_axn { define_method(:call) { seen << Axn::Extensions::Tracing.current_span } }.call
+
+      expect(seen).to eq([first_span])
     end
 
     it "does not stamp an outcome on a span the action never ran inside" do
@@ -676,6 +703,26 @@ RSpec.describe "Axn.config.tracer" do
 
       expect(counting_axn.call).to be_ok
       expect(runs.size).to eq(1)
+    ensure
+      workers.each { |worker| worker.join rescue nil } # rubocop:disable Style/RescueModifier
+    end
+
+    # PRO-3278: the refused worker's yield must not publish a span the untraced fallback — running on
+    # the CALLING thread, with no ivar set on it — could then misreport as its own.
+    it "leaves Axn::Extensions::Tracing.current_span nil on the calling thread when a tracer hands the block to a worker" do
+      workers = []
+      seen = :unset
+      Axn.config.tracer = Class.new do
+        define_method(:in_span) do |*, **, &block|
+          span = Object.new.tap { |s| s.define_singleton_method(:set_attribute) { |*, **| } }
+          workers << Thread.new { block.call(span) }
+          sleep 0.05
+          :returned_early
+        end
+      end.new
+      build_axn { define_method(:call) { seen = Axn::Extensions::Tracing.current_span } }.call
+
+      expect(seen).to be_nil
     ensure
       workers.each { |worker| worker.join rescue nil } # rubocop:disable Style/RescueModifier
     end

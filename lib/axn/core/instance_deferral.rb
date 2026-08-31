@@ -23,9 +23,10 @@ module Axn
       SHIM_RECORD_IVAR = :@__axn_deferral_shim_record
       ACKNOWLEDGED_IVAR = :@__axn_acknowledged_deferrals
       ANNOUNCED_IVAR = :@__axn_deferrals_announced
-      KERNEL_IVAR_GET = ::Kernel.instance_method(:instance_variable_get)
-      KERNEL_IVAR_SET = ::Kernel.instance_method(:instance_variable_set)
-      private_constant :KERNEL_IVAR_GET, :KERNEL_IVAR_SET
+
+      # Bound `instance_variable_get`/`_set`, reached through `Internal::NativeMethods` (the one place every
+      # other bound Kernel/Module operation lives) rather than a local copy — see that module's comment on
+      # `ivar_get`/`ivar_set` for why these are bound at all.
 
       NO_DEFERRALS = {}.freeze
 
@@ -80,7 +81,7 @@ module Axn
       # which nothing later re-derives. Same for the announcement's (see `announce_deferrals!`), which records a
       # side effect already committed.
       def self.assert_dispatchable_names_free!(klass)
-        return if KERNEL_IVAR_GET.bind_call(klass, AXN_CHOSE_SUPERCLASS_IVAR)
+        return if Internal::NativeMethods.ivar_get(klass, AXN_CHOSE_SUPERCLASS_IVAR)
 
         Axn::Internal::NameOwnership::UNSURRENDERABLE.each do |name|
           owner = MethodShadowing.core_shadowed_definer(klass, name)
@@ -110,7 +111,7 @@ module Axn
       #
       # A class-level ivar, which a subclass does not inherit: a `class Mine < SomeMountedAxn` is a class the
       # user wrote, and it is asked the question like any other.
-      def self.axn_chose_superclass!(klass) = KERNEL_IVAR_SET.bind_call(klass, AXN_CHOSE_SUPERCLASS_IVAR, true)
+      def self.axn_chose_superclass!(klass) = Internal::NativeMethods.ivar_set(klass, AXN_CHOSE_SUPERCLASS_IVAR, true)
 
       # What `include Axn` contributes: a wrapper for every name the class's own hierarchy already owned.
       def self.install(base)
@@ -139,10 +140,10 @@ module Axn
         return state unless state.nil?
 
         state = { shim: ::Module.new, definers: {}, captured: {} }
-        KERNEL_IVAR_SET.bind_call(klass, DEFERRALS_IVAR, state)
+        Internal::NativeMethods.ivar_set(klass, DEFERRALS_IVAR, state)
         # The same record object, reachable from the shim as well as from the class, so a caller holding only
         # the module a lookup landed on can ask what it stands for without searching for it.
-        KERNEL_IVAR_SET.bind_call(state[:shim], SHIM_RECORD_IVAR, state)
+        Internal::NativeMethods.ivar_set(state[:shim], SHIM_RECORD_IVAR, state)
         Axn::Internal::NativeMethods.include_module(klass, state[:shim])
         state
       end
@@ -178,13 +179,13 @@ module Axn
       # class to add `prefer_inherited` after it has already executed announces nothing new, and silences
       # nothing either — the line for that name is already written.
       def self.announce_deferrals!(klass)
-        return if KERNEL_IVAR_GET.bind_call(klass, ANNOUNCED_IVAR)
+        return if Internal::NativeMethods.ivar_get(klass, ANNOUNCED_IVAR)
 
-        KERNEL_IVAR_SET.bind_call(klass, ANNOUNCED_IVAR, true)
+        Internal::NativeMethods.ivar_set(klass, ANNOUNCED_IVAR, true)
         acknowledged = []
         settled = {}
         Axn::Internal::NativeMethods.module_ancestors(klass).each do |mod|
-          acknowledged.concat(KERNEL_IVAR_GET.bind_call(mod, ACKNOWLEDGED_IVAR) || [])
+          acknowledged.concat(Internal::NativeMethods.ivar_get(mod, ACKNOWLEDGED_IVAR) || [])
           state = _state(mod)
           next if state.nil?
 
@@ -307,11 +308,11 @@ module Axn
       # change, the shim's own record to read — a class may own a record while the name asked about is answered
       # by an ancestor's, which is exactly the shape `prefer_axn` on a subclass produces.
       def self.definer_behind(owner, name)
-        record = KERNEL_IVAR_GET.bind_call(owner, SHIM_RECORD_IVAR)
+        record = Internal::NativeMethods.ivar_get(owner, SHIM_RECORD_IVAR)
         record && record[:definers][name]
       end
 
-      def self._state(klass) = KERNEL_IVAR_GET.bind_call(klass, DEFERRALS_IVAR)
+      def self._state(klass) = Internal::NativeMethods.ivar_get(klass, DEFERRALS_IVAR)
       private_class_method :_state
 
       # Reached through `send` from `ClassMethods`, as `_prefer_axn!` below is, because both are axn's own
@@ -394,10 +395,10 @@ module Axn
       # Per name and per class, so acknowledging one deferral says nothing about the others, and a sibling that
       # said nothing still hears about its own.
       def self._acknowledge(klass, name)
-        acknowledged = KERNEL_IVAR_GET.bind_call(klass, ACKNOWLEDGED_IVAR)
+        acknowledged = Internal::NativeMethods.ivar_get(klass, ACKNOWLEDGED_IVAR)
         if acknowledged.nil?
           acknowledged = []
-          KERNEL_IVAR_SET.bind_call(klass, ACKNOWLEDGED_IVAR, acknowledged)
+          Internal::NativeMethods.ivar_set(klass, ACKNOWLEDGED_IVAR, acknowledged)
         end
         acknowledged << name unless acknowledged.include?(name)
       end

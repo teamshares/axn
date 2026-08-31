@@ -8,6 +8,11 @@ module Axn
         ActiveSupport::IsolatedExecutionState[:_axn_stack] ||= []
       end
 
+      # The action instance whose call is innermost right now, or nil outside any action — read by
+      # `Internal::Tracing.current_span` (PRO-3278) so a consumer can identify its own axn.call span
+      # without a `.last` spelled at each call site.
+      def self.current_axn = _current_axn_stack.last
+
       # Tracks nesting of axn calls for logging/debugging purposes
       def self.tracking(axn)
         # Opening a fresh call tree (empty stack): clear any per-execution exception bookkeeping that
@@ -69,6 +74,17 @@ module Axn
       def self._reset_isolation_warning!
         remove_instance_variable(:@_isolation_mismatch_warned) if instance_variable_defined?(:@_isolation_mismatch_warned)
       end
+
+      # Whether the fiber-scheduler/isolation_level mismatch above has already been detected (and warned
+      # about) in this process. `_current_axn_stack` — and so `current_axn` — is unreliable once this is
+      # true: it is shared, unlocked, across concurrent fibers on one thread, and `.last` can already answer
+      # with a different fiber's action. `Internal::Tracing.current_span` (PRO-3278) gates on this rather
+      # than trust `current_axn` blindly, because handing a consumer a span under this condition risks
+      # something worse than the wrong log prefix the mismatch already costs elsewhere — a live span
+      # belonging to an unrelated, concurrently-running action. Nothing here REPAIRS the underlying shared
+      # state (nothing safely can, see `_warn_if_fiber_isolation_mismatch`'s own comment); this only stops a
+      # consumer from trusting an answer axn already knows may not be its own.
+      def self.isolation_unsafe? = !!@_isolation_mismatch_warned
 
       # Reached only from `tracking` above. `_current_axn_stack` stays public: the executor, the call
       # logger and the exception-context builder all read it as `NestingTracking._current_axn_stack`.

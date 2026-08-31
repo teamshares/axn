@@ -11,9 +11,18 @@ require "axn/extensions"
 # rely on the umbrella entrypoint having loaded the version first.
 require "axn/version"
 
+# current_span reaches Core::NestingTracking for "who is running" — a runtime reference this component
+# cannot rely on the umbrella entrypoint having loaded first, the same reason as the two requires above.
+require "axn/core/nesting_tracking"
+
 module Axn
   module Internal
     module Tracing
+      # The ivar `Core::Executor#with_current_span` publishes the `axn.call` span under, for the
+      # duration of the action's own execution — not `private_constant`, because the executor writes
+      # through this same constant rather than each side naming its own copy of the ivar.
+      SPAN_IVAR = :@__axn_call_span
+
       class << self
         # The OpenTelemetry tracer, when OpenTelemetry is loaded. Mechanism only: whether axn traces
         # at all, and with which tracer, is Axn.config.tracer's decision. The presence check runs on
@@ -89,6 +98,33 @@ module Axn
           # slot for it.
           @probe_entry = [tracer, supported].freeze
           supported
+        end
+
+        # The span axn's tracer yielded for the innermost currently-executing action, or nil — read
+        # directly off the action instance rather than through OpenTelemetry's own ambient
+        # `Trace.current_span`, which resolves through `OpenTelemetry::Context.current` and so through
+        # whatever else in the process has touched that process-wide, mutable state between when axn
+        # opened its span and now (verified against the Datadog OTel bridge in production; the general
+        # failure isn't specific to it — see PRO-3278). The two answers can disagree, and this one is
+        # the span the CURRENT action actually ran inside, never an ancestor's and never a sibling's.
+        #
+        # `isolation_unsafe?` gated first: under the known fiber-scheduler/isolation_level mismatch,
+        # `Core::NestingTracking._current_axn_stack` is shared, unlocked, across concurrent fibers on
+        # one thread, so `.last` can already answer with a different fiber's action. Handing back that
+        # action's span would be worse than today's silent ambient-lookup failure — a consumer would
+        # write real attributes onto a trace it does not own. Refusing to answer degrades to exactly
+        # that pre-existing failure mode (nothing written) instead of a new, worse one.
+        #
+        # nil is the honest answer whenever `Core::NestingTracking.current_axn` is nil (no action
+        # running at all) or that action never had a span published for it — no tracer configured, the
+        # tracer never yielded, the tracer yielded `nil`, or the untraced fallback ran the action.
+        def current_span
+          return nil if Axn::Core::NestingTracking.isolation_unsafe?
+
+          action = Axn::Core::NestingTracking.current_axn
+          return nil unless action
+
+          Internal::NativeMethods.ivar_get(action, SPAN_IVAR)
         end
 
         # Drops the auto-detection and capability memos, for specs that swap the OpenTelemetry

@@ -362,6 +362,29 @@ A tracer that is not OpenTelemetry's receives the span, its `axn.resource` / `ax
 
 An object that is neither `nil` nor responds to `#in_span` is rejected at assignment, naming the `#in_span` contract in the raised `ArgumentError`. The one exception is a value that cannot be asked: a `BasicObject`-based proxy has no `respond_to?`, and no reflection method reaches it, so axn accepts it rather than rejecting a legitimate wrapper over a real tracer. If such a proxy turns out to lack `in_span`, that surfaces on the first traced call — logged, with the action running untraced — instead of at assignment.
 
+### Annotating the span from your own code
+
+axn already holds a direct reference to the span it opened for the currently-executing action — `Axn::Extensions::Tracing` exposes it, so a consumer never has to ask OpenTelemetry what is ambiently current:
+
+```ruby
+Axn::Extensions::Tracing.annotate_span("gen_ai.request.model" => "gpt-4o-mini", "gen_ai.usage.input_tokens" => 42)
+Axn::Extensions::Tracing.current_span # => the span, or nil
+```
+
+`annotate_span` is the documented default: it no-ops (no exception) when there is no span, skips a `nil` value (not a valid OTel attribute), and converts a Symbol key to a String (OTel attribute keys are Strings) — reach for `current_span` directly only when you need more than setting attributes.
+
+This is for a **gem** writing vendor-namespaced attributes it cannot know at declaration time (`gen_ai.*`, `db.*`, …). An **app** annotating its own domain data should use the [`tag`/`dimension` DSL](#tagging-spans-with-domain-context-tag-dimension) instead — declared once, resolved into every sink (the span, the notification payload, logs, `emit_metrics`, the exception report, Sidekiq job tags), not just the span.
+
+Both methods answer `nil` for the innermost currently-executing action's own span **only**, never an ancestor's: if this action's own `in_span` never yielded — no tracer configured, the tracer returned or raised before yielding, or the call ran through the untraced fallback — the answer is `nil` even when an enclosing parent action has a live span of its own. Handing back an ancestor's span there would be the same class of bug this seam exists to close: attributes landing on a span that isn't the one you think.
+
+The span is valid only for the duration of the action's own body. A reference held past the call has already ended — don't call `finish` on it, and don't cache it for later.
+
+::: tip Why not `OpenTelemetry::Trace.current_span`?
+That resolves through `OpenTelemetry::Context.current` — ambient, mutable, process-wide state that anything else running between when axn opened its span and now can move. This is not hypothetical: with the Datadog OTel bridge installed, a native instrumentation's own context handling can leave a stale trace active mid-chain, so the ambient lookup can answer with a sibling's already-closed span or a fully-invalid sentinel depending on exactly when it's asked. `Axn::Extensions::Tracing.current_span` sidesteps the question — it is the span axn's own tracer yielded, not a guess about what's currently active.
+:::
+
+Under the [fiber-scheduler/`isolation_level` mismatch](/advanced/concurrency) axn already warns about once, both methods return `nil` rather than risk handing back a different, concurrently-running action's live span — the per-execution state that mismatch already corrupts is exactly what a correct answer here would depend on. Handing back the wrong span (a consumer silently annotating a trace it doesn't own) would be worse than the pre-existing failure mode (no attributes written at all), so it degrades to that instead.
+
 ### Basic Setup
 
 If you just want OpenTelemetry spans (without sending to an APM provider), install the API gem:
