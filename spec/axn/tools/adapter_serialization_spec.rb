@@ -241,6 +241,19 @@ RSpec.describe Axn::Tools::AdapterSerialization do
       expect(reported.map(&:message)).to eq(["boom", "on_error is broken"])
     end
 
+    it "re-raises on_error's own failure through the safe reraise path, not a bare raise (Codex #259, P2)" do
+      # A bare `raise` inside the rescue would re-raise $! -- but Ruby dispatches #exception even for
+      # a zero-arg raise, so a class overriding it (adapter-authored on_error code, not trusted) could
+      # substitute a different exception or mask the failure outright.
+      hijacking = Class.new(StandardError) do
+        def exception(*) = RuntimeError.new("HIJACKED")
+      end
+
+      expect do
+        adapter.guard_tool_response(axn_class, on_error: ->(_e) { raise hijacking, "on_error broke" }) { raise "boom" }
+      end.to raise_error(Axn::ReraiseFailed) { |e| expect(e.cause).to be_a(hijacking) }
+    end
+
     it "does not double-report to a working reporter when on_error itself raises" do
       reported = []
       allow(Axn.config).to receive(:on_exception) { |e, **| reported << e }

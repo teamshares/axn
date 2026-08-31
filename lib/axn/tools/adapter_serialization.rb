@@ -130,7 +130,15 @@ module Axn
             Axn.config.on_exception(on_error_failure, action: axn_class, context: { source: adapter_name })
           end
 
-          raise
+          # A bare `raise` here would re-raise `$!`, but that is NOT dispatch-free the way the doc
+          # above claims for `e`: Ruby calls `#exception` on the currently-active exception even for
+          # a zero-arg `raise` -- `on_error` is adapter-authored code, and a class overriding
+          # `#exception` to return a different object (or raise) would replace or mask the reported
+          # `on_error_failure` right here. `reraise_for_dev` is the established safe path for this
+          # exact hazard (native dispatch only when trustworthy, an axn-owned wrapper otherwise) --
+          # called unconditionally here, not gated on `raises_in_dev?`, since there is no fallback
+          # left to swallow into regardless of environment.
+          Axn::Extensions.reraise_for_dev(on_error_failure, "#{desc} (building the fallback response)")
         end
       end
     end
