@@ -23,6 +23,17 @@ module Axn
       # lookup on the receiver's class, so an overridden `-@` (or a hostile `dup`/`freeze` it might
       # lean on) is never consulted — the same "ask ownership via a bound reader, never a caller's
       # own dispatch" convention AGENTS.md's error-reporting seam already follows.
+      #
+      # Bound `-@` alone is NOT enough, though: it preserves the receiver's CLASS (a subclass
+      # survives its own `dup`), so a `String` subclass with a STATEFUL `#to_s` (answering
+      # `"agent_tools"` the first time and `"actions"` afterward) would still pass `validate!`'s
+      # broad-root check against one answer and later render a DIFFERENT one wherever the stored
+      # root is actually used — the class survives, the hazard survives with it. `self._detach_roots`
+      # below converts to a genuinely PLAIN `::String` first (via `String.new`, which copies the
+      # argument's bytes directly rather than calling its `#to_s`/`#to_str`), so there is no
+      # subclass method left to answer differently on a later call — only then is bound `-@` (now
+      # dispatching Ruby's OWN base implementation, since the receiver is no longer a subclass
+      # instance at all) applied for the frozen/deduped copy.
       NATIVE_STRING_MINUS = ::String.instance_method(:-@)
       private_constant :NATIVE_STRING_MINUS
 
@@ -91,10 +102,11 @@ module Axn
       # |c| c.tool_roots = ... }` once the whole adapter module has finished loading, strictly AFTER
       # this method (called from within that same load) has already run.
       def tool_roots_default(value)
-        AdapterRoots.validate!(value)
-        detached = []
-        NATIVE_ARRAY_EACH.bind_call(value) { |entry| detached << NATIVE_STRING_MINUS.bind_call(entry) }
-        detached.freeze
+        detached = AdapterRoots.send(:_detach_roots, value)
+        # Validate the ALREADY-CANONICALIZED array, not `value` itself: a stateful entry's
+        # broad-root verdict must be checked against the exact plain-String representation that
+        # ends up stored, never a separate live read of the original object (see `_detach_roots`).
+        AdapterRoots.validate!(detached)
         setting :tool_roots, default: detached, validate: VALIDATE
         config.reset!(:tool_roots)
       end
@@ -129,6 +141,36 @@ module Axn
 
         true
       end
+
+      # `tool_roots_default`'s own canonicalization step, kept as a class method (called via
+      # `AdapterRoots.send(:_detach_roots, value)` — an explicit-receiver, private cross-call, since
+      # it belongs to `AdapterRoots` itself rather than the extending adapter). Converts every entry
+      # to a genuinely PLAIN, frozen `::String` before anything is validated or stored.
+      #
+      # Bound `-@` alone (as used for the element-level detachment above) preserves the entry's
+      # CLASS: a `String` subclass survives its own `dup`. A subclass with a STATEFUL `#to_s` —
+      # answering `"agent_tools"` once and `"actions"` on a later call — would still pass
+      # `validate!`'s broad-root check against ONE answer while the STORED copy (still an instance
+      # of that subclass) goes on to answer something ELSE wherever the root is actually read later
+      # — the class survived, so the hazard survived with it. `::String.new(entry)` copies the
+      # argument's underlying BYTES directly rather than calling its `#to_s`/`#to_str` (verified: a
+      # stateful override never fires during the copy), producing a genuine `::String` with no
+      # subclass method left to answer differently on a later call. Bound `-@` is applied to THAT
+      # plain copy — dispatching Ruby's own base implementation now, since the receiver is no longer
+      # a subclass instance — for the frozen/deduped result `tool_roots_default` goes on to validate
+      # and store.
+      def self._detach_roots(value)
+        raise ArgumentError, "tool_roots must be an Array of Strings; got #{value.inspect}" unless Axn::Internal::Identity.kind?(value, ::Array)
+
+        detached = []
+        NATIVE_ARRAY_EACH.bind_call(value) do |entry|
+          raise ArgumentError, "tool_roots must be an Array of Strings; got #{value.inspect}" unless Axn::Internal::Identity.kind?(entry, ::String)
+
+          detached << NATIVE_STRING_MINUS.bind_call(::String.new(entry))
+        end
+        detached.freeze
+      end
+      private_class_method :_detach_roots
     end
   end
 end

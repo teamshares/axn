@@ -156,6 +156,43 @@ RSpec.describe Axn::Tools::AdapterRoots do
         .to raise_error(ArgumentError, /too broad/)
     end
 
+    it "converts each entry to a genuinely PLAIN String, not a subclass instance (Codex #259, P2)" do
+      # Bound String#-@ preserves the receiver's CLASS -- a subclass survives its own dup. A
+      # subclass with a STATEFUL #to_s (answering "agent_tools" once, "actions" later) would still
+      # pass validate!'s broad-root check against one answer while the stored copy -- still an
+      # instance of that subclass -- goes on to answer something else wherever it's read later.
+      stateful = Class.new(String) do
+        def initialize(*)
+          super
+          @calls = 0
+        end
+
+        def to_s
+          @calls += 1
+          @calls <= 1 ? "agent_tools" : "actions"
+        end
+      end
+      hostile = stateful.new("agent_tools")
+
+      source = build_source_with_default([hostile])
+      stored = source.config.tool_roots.first
+
+      expect(stored.class).to eq(String) # not `stateful` -- no subclass method survives
+      expect(stored.to_s).to eq("agent_tools")
+      expect(stored.to_s).to eq("agent_tools") # stable on a second read, unlike the original
+    end
+
+    it "canonicalizes from the TRUE underlying bytes, not a lying #to_s (Codex #259, P2)" do
+      lying = Class.new(String) do
+        # lies about its own content
+        def to_s = "agent_tools"
+      end
+      hostile = lying.new("actions") # true underlying bytes are "actions"
+
+      expect { build_source_with_default([hostile]) }
+        .to raise_error(ArgumentError, /too broad/)
+    end
+
     it "still lets an explicit assignment win after the default was detached" do
       source = build_source_with_default(%w[agent_tools])
       source.config.tool_roots = %w[custom_tools]
