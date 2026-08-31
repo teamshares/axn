@@ -105,6 +105,23 @@ RSpec.describe Axn::Tools::AdapterRoots do
       expect(source.config.tool_roots).to eq(%w[agent_tools])
     end
 
+    it "detaches via a BOUND native String#-@, not dispatched, so a subclass can't fake detachment (Codex #259, P2)" do
+      # A String subclass overriding -@ (and, adversarially, dup/freeze too) to return `self` would
+      # make a dispatched `-entry` a no-op detachment: `entry.is_a?(String)` in validate! admits any
+      # subclass, so this is reachable without any hostile bypass of the declared contract.
+      evil_class = Class.new(String) do
+        def -@ = self
+        def dup = self
+        def freeze = self
+      end
+      original = evil_class.new("agent_tools")
+      source = build_source_with_default([original])
+
+      original.replace("actions")
+
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+
     it "still lets an explicit assignment win after the default was detached" do
       source = build_source_with_default(%w[agent_tools])
       source.config.tool_roots = %w[custom_tools]
