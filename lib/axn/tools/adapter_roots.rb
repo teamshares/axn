@@ -26,6 +26,17 @@ module Axn
       NATIVE_STRING_MINUS = ::String.instance_method(:-@)
       private_constant :NATIVE_STRING_MINUS
 
+      # Bound for the same reason, one level up: `value.is_a?(Array)` in `validate!` admits an
+      # `Array` SUBCLASS, and one overriding `map`/`each`/`freeze` to return `self` unmodified would
+      # make `tool_roots_default` store the caller's own, still-mutable array outright — the
+      # element-level fix above alone doesn't help, since the block that applies it would never run.
+      # `Array#each`, bound, iterates the receiver's REAL underlying storage directly, ignoring
+      # whatever the subclass's own `each`/`map` do — building the detached copy into a fresh literal
+      # `[]` (never `value`'s own class) is what makes the RESULT a plain, unsubclassed Array too, so
+      # its own subsequent `.freeze` is never at the mercy of an override either.
+      NATIVE_ARRAY_EACH = ::Array.instance_method(:each)
+      private_constant :NATIVE_ARRAY_EACH
+
       def self.extended(base)
         base.setting :tool_roots, default: [], validate: VALIDATE
       end
@@ -55,14 +66,18 @@ module Axn
       # OLD array), and `roots.first.replace("actions")` would corrupt the already-declared default
       # in place even later, since `Config#dup_default`'s `default.dup` only copies the array
       # shell — the element STRINGS inside stay shared. Native `String#-@` (unary minus, bound via
-      # `NATIVE_STRING_MINUS` below rather than dispatched as `-entry` — see that constant) returns a
-      # frozen, deduplicated copy per element, so no string in the stored default is the caller's own
-      # object; freezing the array closes the append case. A frozen container is safe to store
-      # directly: `dup_default`'s `default.dup` still hands back a fresh, unfrozen Array the FIRST
-      # time `config.tool_roots` is read after declaration (`Array#dup` never carries over frozen
-      # state), and that dup — not the frozen `detached` array itself — is what stays cached for
-      # every read after that, so callers keep seeing an ordinary mutable Array. Only the STORED
-      # default is armored against the caller's own reference.
+      # `NATIVE_STRING_MINUS` — see that constant) returns a frozen, deduplicated copy per element, so
+      # no string in the stored default is the caller's own object; the copy is built into a fresh
+      # LITERAL `[]` — iterated via bound `Array#each` (`NATIVE_ARRAY_EACH`), never `value.map`/
+      # `value.each` — rather than derived from `value` itself, so the RESULT is a plain,
+      # never-subclassed Array whose own subsequent `.freeze` can't be at the mercy of an override
+      # either (see `NATIVE_ARRAY_EACH`'s own comment for why `value`'s own iteration can't be
+      # trusted). A frozen container is safe to store directly: `dup_default`'s `default.dup` still
+      # hands back a fresh, unfrozen Array the FIRST time `config.tool_roots` is read after
+      # declaration (`Array#dup` never carries over frozen state), and that dup — not the frozen
+      # `detached` array itself — is what stays cached for every read after that, so callers keep
+      # seeing an ordinary mutable Array. Only the STORED default is armored against the caller's own
+      # reference.
       #
       # Also clears any already-cached value (`config.reset!(:tool_roots)`), not only replacing the
       # `Setting` struct. `Config#_read` caches a default into `@values` on FIRST read
@@ -77,7 +92,9 @@ module Axn
       # this method (called from within that same load) has already run.
       def tool_roots_default(value)
         AdapterRoots.validate!(value)
-        detached = value.map { |entry| NATIVE_STRING_MINUS.bind_call(entry) }.freeze
+        detached = []
+        NATIVE_ARRAY_EACH.bind_call(value) { |entry| detached << NATIVE_STRING_MINUS.bind_call(entry) }
+        detached.freeze
         setting :tool_roots, default: detached, validate: VALIDATE
         config.reset!(:tool_roots)
       end

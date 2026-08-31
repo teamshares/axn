@@ -122,6 +122,25 @@ RSpec.describe Axn::Tools::AdapterRoots do
       expect(source.config.tool_roots).to eq(%w[agent_tools])
     end
 
+    it "detaches the OUTER array via bound native Array#each too, not value.map/each (Codex #259, P2)" do
+      # An Array subclass overriding map/each/freeze/dup to return `self` unmodified would store the
+      # caller's own, still-mutable array outright -- the element-level String#-@ fix alone doesn't
+      # help, since the block that applies it would never run. validate!'s value.is_a?(Array) admits
+      # any subclass, so this is reachable the same way the element-level bypass was.
+      evil_array = Class.new(Array) do
+        def map(*) = self
+        def each(*) = self
+        def freeze = self
+        def dup = self
+      end
+      original = evil_array.new(["agent_tools"])
+      source = build_source_with_default(original)
+
+      original << "actions"
+
+      expect(source.config.tool_roots).to eq(%w[agent_tools])
+    end
+
     it "still lets an explicit assignment win after the default was detached" do
       source = build_source_with_default(%w[agent_tools])
       source.config.tool_roots = %w[custom_tools]
