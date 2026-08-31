@@ -83,5 +83,48 @@ RSpec.describe Axn::Extensions::Serialization do
       expect { described_class.render(result, reject_opaque: true) }
         .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`owner`/)
     end
+
+    # The opacity verdict is about the RUNTIME VALUE's singleton class, not the field's declared `type:` — a
+    # declared type is only ever a lower bound on what could show up. These two examples are the boundary a
+    # declaration-time check (rejected as unsound: see lib/axn/tools.rb's validate_contracts! doc comment)
+    # would get wrong.
+    it "raises under reject_opaque: true when the exposed value's own class has no to_h/as_json" do
+      opaque_base = Class.new do
+        def initialize
+          @a = 1
+        end
+      end
+      klass = Class.new do
+        include Axn
+        auto_log false
+        exposes :thing, type: opaque_base
+
+        define_method(:call) { expose(thing: opaque_base.new) }
+      end
+
+      expect { described_class.render(klass.call, reject_opaque: true) }
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`thing`/)
+    end
+
+    it "renders cleanly under reject_opaque: true when the exposed value is a SUBCLASS of the declared " \
+       "type that defines its own to_h" do
+      opaque_base = Class.new do
+        def initialize
+          @a = 1
+        end
+      end
+      subclass_with_to_h = Class.new(opaque_base) do
+        def to_h = { a: 1 }
+      end
+      klass = Class.new do
+        include Axn
+        auto_log false
+        exposes :thing, type: opaque_base
+
+        define_method(:call) { expose(thing: subclass_with_to_h.new) }
+      end
+
+      expect(described_class.render(klass.call, reject_opaque: true)).to eq("thing" => { "a" => 1 })
+    end
   end
 end

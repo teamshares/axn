@@ -77,6 +77,14 @@ module Axn
       #
       # None of these makes an invalid contract reachable with no error at all: every gap falls back to the first
       # projection, which is where every non-tool axn is validated anyway.
+      #
+      # WHAT THIS DELIBERATELY DOES NOT COVER: whether a field's declared `type:` will serialize under
+      # `reject_opaque` (Axn::Extensions::Serialization). That verdict is about a RUNTIME VALUE's singleton
+      # class — a value with no own `as_json`/`to_h` — not about the declared type, and the two can disagree
+      # in the safe direction: a field declared `type: SomeBase` renders cleanly if the actual value is a
+      # subclass, or a singleton, carrying its own `to_h`. A check keyed on the declared class alone would
+      # refuse a program that runs correctly, so this stays a call-time concern, decided against the one value
+      # that is actually there.
       def validate_contracts!
         Registry.tool_classes.each do |klass|
           # BOTH sides go through PropertyNames rather than through `input_schema`/`output_schema`. Those names
