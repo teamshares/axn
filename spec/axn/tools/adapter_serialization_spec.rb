@@ -186,6 +186,25 @@ RSpec.describe Axn::Tools::AdapterSerialization do
       end.to raise_error(RuntimeError, "dev boom")
     end
 
+    it "surfaces the ORIGINAL mapping failure in dev even when the reporter is broken, and never calls it (Codex #259, P2)" do
+      # The dev-loud check must run BEFORE reporting: reporting first would mean best_effort's own
+      # dev-loud reraise fires on the REPORTER's exception (since the reporter raised inside a
+      # best_effort block that is itself dev-loud), masking the actual mapping bug this guard exists
+      # to expose. Checking raises_in_dev? first means the reporter is never even invoked on that path.
+      allow(Axn::Extensions).to receive(:raises_in_dev?).and_return(true)
+      reporter_calls = 0
+      allow(Axn.config).to receive(:on_exception) do |*, **|
+        reporter_calls += 1
+        raise "reporter broken"
+      end
+
+      expect do
+        adapter.guard_tool_response(axn_class, on_error: ->(_e) { :should_not_happen }) { raise "ORIGINAL mapping bug" }
+      end.to raise_error(RuntimeError, "ORIGINAL mapping bug")
+
+      expect(reporter_calls).to eq(0)
+    end
+
     it "still calls on_error (outside dev) when the on_exception reporter itself raises" do
       allow(Axn.config).to receive(:on_exception).and_raise(RuntimeError, "reporter broken")
 

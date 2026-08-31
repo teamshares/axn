@@ -70,15 +70,25 @@ module Axn
       # call to it), which already reports its own exceptions; wrapping both would page `on_exception`
       # twice for one failure.
       #
-      # On a raise: reports through `Axn.config.on_exception` for observability (inside
-      # `Axn::Extensions.best_effort`, so a reporter that itself raises cannot break this guard's own
-      # never-raises contract), then re-raises when `Axn::Extensions.raises_in_dev?` so a real bug
-      # surfaces loudly in development rather than being silently masked as a generic tool error, and
-      # otherwise calls `on_error` with the exception so the caller builds its own transport-native
-      # error response — that response shape is adapter-specific (an `MCP::Tool::Response`, a Hash, an
-      # HTTP `Dispatch`), so it is never this method's job to construct one.
+      # On a raise: re-raises when `Axn::Extensions.raises_in_dev?` so a real bug surfaces loudly in
+      # development rather than being silently masked as a generic tool error; otherwise reports
+      # through `Axn.config.on_exception` for observability (inside `Axn::Extensions.best_effort`, so
+      # a reporter that itself raises cannot break this guard's own never-raises contract) and calls
+      # `on_error` with the exception so the caller builds its own transport-native error response —
+      # that response shape is adapter-specific (an `MCP::Tool::Response`, a Hash, an HTTP
+      # `Dispatch`), so it is never this method's job to construct one.
       #
-      # `report_ignored: false` on that `best_effort` call: this guard IS "a guard wrapping the
+      # The dev-loud check runs FIRST, before any report — matching `Extensions._warn_and_swallow`'s
+      # own precedent (the dev-loud raise supersedes reporting there too, since the raise itself IS
+      # the notification) rather than diverging from it. This ordering is load-bearing, not
+      # cosmetic: reporting first would mean that when the CONFIGURED reporter is itself broken,
+      # `best_effort`'s own dev-loud reraise fires on the REPORTER's exception before this method
+      # ever reaches its own reraise of the original mapping failure `e` — so development would
+      # surface "reporter broken" instead of the actual bug this guard exists to expose. Checking
+      # `raises_in_dev?` first and reraising `e` immediately means the reporter is never even
+      # invoked on that path, so it cannot mask anything.
+      #
+      # `report_ignored: false` on the `best_effort` call: this guard IS "a guard wrapping the
       # global exception report" (`best_effort`'s own doc for the flag), so the default
       # `report_ignored: true` would hand a broken reporter's OWN failure to
       # `Axn.config.on_ignored_exception` — which, left at ITS default, routes right back to the
@@ -105,18 +115,18 @@ module Axn
         yield
       rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
         adapter_name = Axn::Internal::Rendering.module_name(self)
+        desc = "#{adapter_name} tool response mapping"
 
-        Axn::Extensions.best_effort("#{adapter_name} tool response mapping", action: axn_class, report_ignored: false) do
+        Axn::Extensions.reraise_for_dev(e, desc) if Axn::Extensions.raises_in_dev?
+
+        Axn::Extensions.best_effort(desc, action: axn_class, report_ignored: false) do
           Axn.config.on_exception(e, action: axn_class, context: { source: adapter_name })
         end
-
-        Axn::Extensions.reraise_for_dev(e, "#{adapter_name} tool response mapping") if Axn::Extensions.raises_in_dev?
 
         begin
           on_error.call(e)
         rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => on_error_failure
-          Axn::Extensions.best_effort("#{adapter_name} tool response mapping (building the fallback response)",
-                                      action: axn_class, report_ignored: false) do
+          Axn::Extensions.best_effort("#{desc} (building the fallback response)", action: axn_class, report_ignored: false) do
             Axn.config.on_exception(on_error_failure, action: axn_class, context: { source: adapter_name })
           end
 
