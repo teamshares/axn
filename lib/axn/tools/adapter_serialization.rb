@@ -46,13 +46,21 @@ module Axn
       # its own; `resolve_override_for` reads the override store directly and falls back through the
       # gem-wide config to the declared default).
       #
-      # Takes ONLY the result, not an axn class: the class is derived from `result.__action__.class`,
-      # so resolving one class's override while rendering a DIFFERENT class's result — the only way to
-      # skip resolution by accident — is structurally impossible, the same reasoning that dropped
-      # `Axn::Extensions::Serialization.render`'s field-config argument (a rendered body must match
-      # the result it came from).
+      # Takes ONLY the result, not an axn class: the class is derived from `result.__action__`'s OWN
+      # class, so resolving one class's override while rendering a DIFFERENT class's result — the
+      # only way to skip resolution by accident — is structurally impossible, the same reasoning
+      # that dropped `Axn::Extensions::Serialization.render`'s field-config argument (a rendered body
+      # must match the result it came from).
+      #
+      # Read through `Internal::Identity.class_of` (a bound `Object#class`), not a dispatched
+      # `.class` — the action instance is user-authored code, and nothing stops it defining its own
+      # `#class` (Ruby allows it; axn's method-shadowing guards reserve `call`/`_run`/`initialize`,
+      # not `class`). A hijacked `#class` pointing at a DIFFERENT tool's class would resolve THIS
+      # tool's `reject_opaque_exposed_values` against that other tool's setting instead of its own —
+      # reproduced: a strict tool whose action defined `def class = LenientTool` rendered an opaque
+      # value it should have refused, resolving the lenient tool's override instead of its own.
       def serialize_exposed(result)
-        axn_class = result.__action__.class
+        axn_class = Axn::Internal::Identity.class_of(result.__action__)
         Axn::Extensions::Serialization.render(
           result,
           reject_opaque: resolve_override_for(axn_class, :reject_opaque_exposed_values),

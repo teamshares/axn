@@ -126,5 +126,32 @@ RSpec.describe Axn::Extensions::Serialization do
 
       expect(described_class.render(klass.call, reject_opaque: true)).to eq("thing" => { "a" => 1 })
     end
+
+    it "derives the action's class through a bound reader, not a dispatched #class (Codex #259, P2)" do
+      # result.__action__ is a user-authored action instance -- nothing stops it defining its own
+      # #class (axn's method-shadowing guards reserve call/_run/initialize, not class). A dispatched
+      # .class returning a DIFFERENT class would fetch THAT class's external_field_configs instead of
+      # this action's own -- other_tool shares the :count name (so axn's OWN internal exposure check,
+      # which also reads self.class, doesn't fail first) but ALSO declares an :extra field klass
+      # never does; reproduced pre-fix: render tried result.public_send(:extra) against klass's real
+      # result and raised NoMethodError, rather than rendering this action's own single exposure.
+      other_tool = Class.new do
+        include Axn
+        auto_log false
+        exposes :count, type: Integer
+        exposes :extra, optional: true
+        def call = expose(count: 999)
+      end
+
+      klass = Class.new do
+        include Axn
+        auto_log false
+        exposes :count, type: Integer
+        def call = expose(count: 3)
+      end
+      klass.define_method(:class) { other_tool }
+
+      expect(described_class.render(klass.call)).to eq("count" => 3)
+    end
   end
 end

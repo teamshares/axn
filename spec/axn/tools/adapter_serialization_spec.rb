@@ -136,6 +136,22 @@ RSpec.describe Axn::Tools::AdapterSerialization do
       # accidentally resolve strict_tool's override while rendering lenient_tool's result.
       expect(adapter.serialize_exposed(lenient_tool.call)["owner"]).to match(/\A#<Object:0x[0-9a-f]+>\z/)
     end
+
+    it "resolves against the action's REAL class, not a dispatched #class an action instance could override (Codex #259, P2)" do
+      # A hijacked #class pointing at a different tool's class would resolve THIS tool's
+      # reject_opaque_exposed_values against that OTHER tool's setting instead of its own.
+      adapter = build_adapter(default: false)
+
+      lenient_tool = build_opaque_tool # never configures adapter -- resolves to the gem-wide false
+
+      strict_tool = build_opaque_tool
+      strict_tool.include(adapter.overrides)
+      strict_tool.configure(adapter.config_namespace) { |c| c.reject_opaque_exposed_values = true }
+      strict_tool.define_method(:class) { lenient_tool }
+
+      expect { adapter.serialize_exposed(strict_tool.call) }
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+    end
   end
 
   describe ".guard_tool_response" do
