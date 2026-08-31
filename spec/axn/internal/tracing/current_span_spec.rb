@@ -269,6 +269,27 @@ RSpec.describe "Axn::Internal::Tracing.current_span" do
     ensure
       ActiveSupport::Notifications.unsubscribe(subscriber)
     end
+
+    it "does not raise when an action freezes itself mid-body, though the ended span is unavoidably retained" do
+      # `remove_instance_variable` cannot mutate a frozen object at all, so cleanup checks `frozen?`
+      # first and skips rather than raising (PRO-3278 review). This does not — cannot — actually free
+      # the ivar: nothing can strip state off an object Ruby has frozen. The freeze itself already
+      # breaks other axn machinery unrelated to this seam (`Executor#action_result_finalized?`'s own
+      # memoization raises `FrozenError`, reproduced identically on the pre-PR baseline) — out of scope
+      # here; this only confirms the span cleanup added by this PR is not what's escaping.
+      Axn.config.tracer = distinct_span_tracer
+      captured_action = nil
+      subscriber = ActiveSupport::Notifications.subscribe("axn.call") { |*, payload| captured_action = payload[:action] }
+      klass = build_axn { define_method(:call) { freeze } }
+
+      expect { klass.call }.to raise_error(FrozenError) # the pre-existing, unrelated crash
+
+      expect(captured_action).not_to be_nil
+      expect(captured_action).to be_frozen
+      expect(Axn::Internal::NativeMethods.ivar_get(captured_action, Axn::Internal::Tracing::SPAN_IVAR)).not_to be_nil
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
   end
 
   describe "where it can be read from" do

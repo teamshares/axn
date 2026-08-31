@@ -673,7 +673,14 @@ module Axn
         Internal::NativeMethods.ivar_set(@action, ivar, span)
         yield
       ensure
-        Internal::NativeMethods.ivar_remove(@action, ivar) if Internal::NativeMethods.ivar_defined?(@action, ivar)
+        # `frozen?` gated FIRST: `remove_instance_variable` cannot mutate a frozen object at all, so an
+        # action that freezes itself mid-body (legal, if unusual, Ruby) would otherwise have this raise
+        # `FrozenError` every time — swallowed by `guarding_observer` incidentally rather than by design,
+        # and leaving the ended span on the instance regardless (nothing can remove it from a frozen
+        # object). Checking first makes that an explicit, silent no-op instead of a raise this method
+        # happens to survive only because its caller absorbs it.
+        removable = Internal::NativeMethods.ivar_defined?(@action, ivar) && !Internal::NativeMethods.frozen?(@action)
+        Internal::NativeMethods.ivar_remove(@action, ivar) if removable
       end
 
       def finalize_span(span)

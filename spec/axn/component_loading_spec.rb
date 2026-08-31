@@ -64,6 +64,21 @@ RSpec.describe "loading config components in isolation" do
     expect(out).to eq("false")
   end
 
+  it "returns nil rather than NameError for current_span when only axn/extensions/tracing is loaded" do
+    # `current_span` reaches Core::NestingTracking, which touches ActiveSupport::IsolatedExecutionState
+    # — every OTHER caller of that module was reached only after the umbrella `axn` entrypoint (which
+    # requires "active_support") had already loaded. `Axn::Extensions::Tracing` is the first path that
+    # can reach it standalone (PRO-3278 review finding), so this component owes the require for itself.
+    out, status = load_in_fresh_process(<<~RUBY)
+      require "axn/extensions/tracing"
+
+      print Axn::Extensions::Tracing.current_span.inspect
+    RUBY
+
+    expect(status).to be_success, "expected a clean load, got: #{out}"
+    expect(out).to eq("nil")
+  end
+
   it "raises ArgumentError, not NoMethodError, for a String validate: reason when only axn/configurable is loaded" do
     out, status = load_in_fresh_process(<<~RUBY)
       require "axn/configurable"
