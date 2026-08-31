@@ -305,6 +305,21 @@ module Axn
       #   completion-side hook (log_after, the timing ensure) runs inside the action's own block but
       #                                 after the result settled — an unwind there is a side channel
       #                                 failing on its way out, so keep the settled result
+      #   recording the span reference  after yield, before the notification fires (PRO-3278): a raise
+      #                                 here — reachable only by freezing an action instance before its
+      #                                 OWN `_run`, which the private constructor and per-call `new`
+      #                                 make unreachable through `.call` — propagates like any other
+      #                                 before-notification failure. The action still runs via the
+      #                                 untraced fallback; the `axn.call` notification for this attempt
+      #                                 does not, because `claim_notification` was already consumed here
+      #                                 and the fallback will not re-enter a notification it believes ran
+      #   clearing the span reference   guarded by `ivar_defined?`, so there is nothing to undo if the
+      #                                 set above never happened, and it runs in ITS OWN wrapping
+      #                                 `ensure` (`with_current_span`) rather than a line inside this
+      #                                 one, so it cannot replace an in-flight exception from span
+      #                                 finalization's own `ensure` below with one about its own
+      #                                 bookkeeping — and is guaranteed to run even when that exception
+      #                                 propagates past it
       #   span finalization             skip it unless the action ran inside that span
       #   span missing an optional method  attempt the call and tolerate absence; never ask
       #                                   respond_to?, which a proxy cannot answer or answers wrongly
@@ -604,7 +619,7 @@ module Axn
           # `run_action`, immediately before it begins.
           next unless attempt.claim_notification
 
-          begin
+          with_current_span(span) do
             instrument_block.call
           ensure
             # Only describe a span the action actually ran inside. If `instrument` exited before
@@ -632,6 +647,48 @@ module Axn
             attempt.observe { finalize_span(span) } if attempt.settled? && attempt.originating_context?
           end
         end
+      end
+
+      # Publishes the span this action's own `in_span` call opened, readable via
+      # `Internal::Tracing.current_span` (PRO-3278) for the duration of the yielded block, and removes
+      # it afterward regardless of how that block ends.
+      #
+      # Called strictly AFTER both `originating_context?` and `claim_notification` above, not merely
+      # nearby: an off-context yield (a worker thread or fiber a misbehaving tracer handed the block to)
+      # is refused before reaching here, so it can never publish a span onto the shared action object
+      # that the untraced fallback — running on the CALLER's own context — would then misreport as its
+      # own; and a double-yielding tracer's second span can never overwrite the first, because the second
+      # yield fails `claim_notification` and never reaches this call at all.
+      #
+      # A wrapping method rather than a line inside the existing `ensure`, so the removal is guaranteed
+      # even when `finalize_span` itself raises. `attempt.observe { finalize_span(span) }` re-raises a
+      # signal from the span's own methods by design (`ActionAttempt#observe` records rather than
+      # swallows one) — a second statement placed after that call in the SAME `ensure` block would never
+      # run on that path, but Ruby still runs this method's own `ensure` after the exception propagates
+      # past the block it wraps. The same wrapping keeps the span visible for the whole of
+      # `finalize_span`'s own execution, so anything reached from there (a `tag`/`dimension` resolver)
+      # could read it too — a free consequence of the ordering, not a separate mechanism.
+      def with_current_span(span)
+        ivar = Internal::Tracing::SPAN_IVAR
+        # Tagged with the calling thread+fiber, not just the span. `Core::NestingTracking._current_axn_stack`
+        # is a THREAD-shared Array under `isolation_level == :thread`, and manually-interleaved Fibers with
+        # no scheduler installed (so `NestingTracking.isolation_unsafe?` cannot see them at all) can leave it
+        # holding another fiber's action on top when this one resumes (PRO-3278 review, reproduced directly:
+        # fiber A pushes, yields; fiber B pushes, yields; A resumes and `current_axn` returns B). That is a
+        # `NestingTracking` stack-correctness problem this method cannot fix — but `current_span` can refuse
+        # to hand back a span belonging to an action whose OWN recorded caller isn't the one asking, which is
+        # exactly what `Internal::Tracing.current_span` checks below.
+        Internal::NativeMethods.ivar_set(@action, ivar, [span, Thread.current, Fiber.current].freeze)
+        yield
+      ensure
+        # `frozen?` gated FIRST: `remove_instance_variable` cannot mutate a frozen object at all, so an
+        # action that freezes itself mid-body (legal, if unusual, Ruby) would otherwise have this raise
+        # `FrozenError` every time — swallowed by `guarding_observer` incidentally rather than by design,
+        # and leaving the ended span on the instance regardless (nothing can remove it from a frozen
+        # object). Checking first makes that an explicit, silent no-op instead of a raise this method
+        # happens to survive only because its caller absorbs it.
+        removable = Internal::NativeMethods.ivar_defined?(@action, ivar) && !Internal::NativeMethods.frozen?(@action)
+        Internal::NativeMethods.ivar_remove(@action, ivar) if removable
       end
 
       def finalize_span(span)

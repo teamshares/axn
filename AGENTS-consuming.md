@@ -92,6 +92,7 @@ See <https://teamshares.github.io/axn/reference/tool-invoker>.
 | `done!("msg", **kw)` | Abort now as **success** (early return); skips remaining `call` + `after` hooks. |
 | `log("msg", level: :info)` | Log via `Axn.config.logger`, prefixed with the class name. |
 | field readers | Read any `expects` field by name; `result.<field>` reads exposures (rare inside `call`). |
+| `Axn::Extensions::Tracing.annotate_span(**attrs)` | Write vendor-namespaced OTel attributes onto axn's own `axn.call` span — for a gem, not an app (apps use `tag`/`dimension`); never `OpenTelemetry::Trace.current_span`. |
 
 If you declare `exposes :x` you must `expose x: …` on every success path — **unless** `x` is also an
 `expects` field, in which case Axn auto-copies it (see Gotchas). Outbound validation still runs on

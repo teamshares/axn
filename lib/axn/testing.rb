@@ -43,7 +43,11 @@ module Axn
       #
       # Two further pieces of per-execution state need nothing here: Internal::ExceptionClassification
       # and Internal::CarriedPresentation both store in ActiveSupport::IsolatedExecutionState and are
-      # already reset by NestingTracking when the outermost action finishes.
+      # already reset by NestingTracking when the outermost action finishes. A third needs nothing for
+      # a different reason: the `axn.call` span reference (PRO-3278, `Internal::Tracing::SPAN_IVAR`)
+      # lives as an ivar on the action INSTANCE, not in any process-global or IsolatedExecutionState
+      # store, and the executor's own `ensure` (`Core::Executor#with_current_span`) clears it before
+      # the call returns — there is no derived memo here for a reset to drop.
       def reset!
         Axn::Internal::Tracing.reset!
         Axn::Async::Adapters::Sidekiq::AutoConfigure.reset_validation! if defined?(Axn::Async::Adapters::Sidekiq::AutoConfigure)

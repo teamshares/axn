@@ -174,6 +174,20 @@ Source: `lib/axn/extensions.rb` (`owned_failure?`), `lib/axn/tools/invoker.rb`, 
 
 Source: `lib/axn/error.rb`.
 
+## Span annotation
+
+If your gem needs to write vendor-namespaced OTel attributes it can't know at declaration time
+(`gen_ai.*`, `db.*`, …), use `Axn::Extensions::Tracing.annotate_span(**attrs)` — never
+`OpenTelemetry::Trace.current_span`. That resolves through `OpenTelemetry::Context.current`, ambient
+process-wide state anything else running mid-chain can move (verified against the Datadog OTel bridge in
+production, PRO-3278); `annotate_span` is the span axn's own tracer opened for the action currently
+running, direct, no guessing. It no-ops (no raise) when there is no span, skips a `nil` value, and
+converts a Symbol key to a String. `axn-ruby_llm`'s `record_otel_attributes!` is the reference use.
+`Axn::Extensions::Tracing.current_span` is the raw accessor for anything beyond attributes — valid only
+for the duration of the action's own body; don't hold it past the call.
+
+Source: `lib/axn/extensions/tracing.rb`, `docs/reference/configuration.md#annotating-the-span-from-your-own-code`.
+
 ## ambient_context
 
 Server/session data (`current_user`, `company`) an author declares via `expects :user_id, on: :ambient_context`.

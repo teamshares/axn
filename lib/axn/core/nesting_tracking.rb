@@ -1,5 +1,12 @@
 # frozen_string_literal: true
 
+# `_current_axn_stack` reaches ActiveSupport::IsolatedExecutionState, which nothing here used to make a
+# load-order requirement of: every existing caller was reached only after the umbrella `axn` entrypoint
+# (which requires "active_support") had already loaded. `Axn::Extensions::Tracing`'s standalone-loadable
+# facade (PRO-3278) is the first path that can reach this module without that entrypoint ever having
+# run, so it is declared explicitly here rather than left implicit.
+require "active_support"
+
 module Axn
   module Core
     module NestingTracking
@@ -7,6 +14,11 @@ module Axn
       def self._current_axn_stack
         ActiveSupport::IsolatedExecutionState[:_axn_stack] ||= []
       end
+
+      # The action instance whose call is innermost right now, or nil outside any action — read by
+      # `Internal::Tracing.current_span` (PRO-3278) so a consumer can identify its own axn.call span
+      # without a `.last` spelled at each call site.
+      def self.current_axn = _current_axn_stack.last
 
       # Tracks nesting of axn calls for logging/debugging purposes
       def self.tracking(axn)
@@ -68,6 +80,30 @@ module Axn
       # the caller it exists for: Axn::Testing.reset! is the supported entry point.
       def self._reset_isolation_warning!
         remove_instance_variable(:@_isolation_mismatch_warned) if instance_variable_defined?(:@_isolation_mismatch_warned)
+      end
+
+      # Whether the CURRENT thread's execution context has the fiber-scheduler/isolation_level mismatch
+      # `_warn_if_fiber_isolation_mismatch` warns about — re-derived live from the same two conditions
+      # that warning checks, not read off `@_isolation_mismatch_warned`. That ivar is process-wide and
+      # sticky (set once, on whichever thread first tripped it, and never cleared), while `Fiber.scheduler`
+      # is per-thread: a hybrid process running some threads under a scheduler and others without one
+      # would have this answer PERMANENTLY true for every thread for the rest of the process the moment
+      # any ONE scheduler-bearing thread tripped it once — including the ordinary threads `IsolatedExecutionState`
+      # isolates correctly, where nothing is actually unsafe. Re-checking live scopes the answer to the
+      # thread actually asking.
+      #
+      # Under the true mismatch, `_current_axn_stack` — and so `current_axn` — is unreliable: it is
+      # shared, unlocked, across concurrent fibers on one thread, and `.last` can already answer with a
+      # different fiber's action. `Internal::Tracing.current_span` (PRO-3278) gates on this rather than
+      # trust `current_axn` blindly, because handing a consumer a span under this condition risks
+      # something worse than the wrong log prefix the mismatch already costs elsewhere — a live span
+      # belonging to an unrelated, concurrently-running action. Nothing here REPAIRS the underlying shared
+      # state (nothing safely can, see `_warn_if_fiber_isolation_mismatch`'s own comment); this only stops a
+      # consumer from trusting an answer axn already knows may not be its own.
+      def self.isolation_unsafe?
+        return false unless Fiber.respond_to?(:scheduler) && Fiber.scheduler
+
+        ActiveSupport::IsolatedExecutionState.isolation_level == :thread
       end
 
       # Reached only from `tracking` above. `_current_axn_stack` stays public: the executor, the call

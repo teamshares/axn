@@ -55,6 +55,10 @@ module Axn
       KERNEL_CLASS = ::Kernel.instance_method(:class)
       KERNEL_FROZEN = ::Kernel.instance_method(:frozen?)
       KERNEL_SINGLETON_CLASS = ::Kernel.instance_method(:singleton_class)
+      KERNEL_IVAR_GET = ::Kernel.instance_method(:instance_variable_get)
+      KERNEL_IVAR_SET = ::Kernel.instance_method(:instance_variable_set)
+      KERNEL_IVAR_DEFINED = ::Kernel.instance_method(:instance_variable_defined?)
+      KERNEL_IVAR_REMOVE = ::Kernel.instance_method(:remove_instance_variable)
       MODULE_ANCESTORS = ::Module.instance_method(:ancestors)
       MODULE_DEFINE_METHOD = ::Module.instance_method(:define_method)
       MODULE_INCLUDE = ::Module.instance_method(:include)
@@ -77,6 +81,7 @@ module Axn
       UNBOUND_METHOD_SUPER_METHOD = ::UnboundMethod.instance_method(:super_method)
       private_constant :SYMBOL_ENCODING, :UNBOUND_METHOD_SUPER_METHOD
       private_constant :ARRAY_EMPTY, :HASH_EMPTY, :SET_EMPTY
+      private_constant :KERNEL_IVAR_GET, :KERNEL_IVAR_SET, :KERNEL_IVAR_DEFINED, :KERNEL_IVAR_REMOVE
       private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
                        :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS, :MODULE_METHOD_DEFINED,
@@ -198,6 +203,24 @@ module Axn
       def self.native_exception_reraise?(error) = _object_owns_none?(error, EXCEPTION_DISPATCH)
 
       def self.frozen?(value) = KERNEL_FROZEN.bind_call(value)
+
+      # Instance-variable access, bound — for reaching into a CALLER-SUPPLIED object (an action instance is
+      # always the caller's own class) rather than the caller sabotaging only itself. `instance_variable_get`/
+      # `_set`/`_defined?`/`remove_instance_variable` are ordinary overridable `Kernel` methods — unlike
+      # `frozen?`/`class`/`singleton_class` they carry no special status, so a class that redefines one (or
+      # answers it via `method_missing`) would otherwise get to decide what axn's own framework state reads
+      # back as, or silently keep axn from storing it at all. The exact precedent for binding this specific
+      # pair already lives in `Core::InstanceDeferral::KERNEL_IVAR_GET`/`KERNEL_IVAR_SET` — this module is
+      # where every other bound Kernel/Module operation already lives, so both are collapsed into one place
+      # here and `InstanceDeferral` reaches these instead of keeping its own copy.
+      #
+      # The WRITE side is bound for the same reason as the read: a no-op `instance_variable_set` would make a
+      # seam built on this (the `axn.call` span reference, PRO-3278) silently return nil for that one action's
+      # own calls, which is a framework-state failure hiding behind what would look like an ordinary absence.
+      def self.ivar_get(value, name) = KERNEL_IVAR_GET.bind_call(value, name)
+      def self.ivar_set(value, name, val) = KERNEL_IVAR_SET.bind_call(value, name, val)
+      def self.ivar_defined?(value, name) = KERNEL_IVAR_DEFINED.bind_call(value, name)
+      def self.ivar_remove(value, name) = KERNEL_IVAR_REMOVE.bind_call(value, name)
 
       # Whether a MODULE defines a public instance method — read out of its method table, not asked of it. A
       # declared type is a caller's class or module, and `public_method_defined?` is as overridable as anything
