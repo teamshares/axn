@@ -3,7 +3,46 @@
 require "bundler/gem_tasks"
 require "rspec/core/rake_task"
 
-RSpec::Core::RakeTask.new(:spec)
+# The commit loop. CI, `verify` and `spec_full` run every example, so this lane is a LATENCY choice
+# and never a coverage one — a `:slow` spec is deferred to merge time, not skipped. That is what makes
+# the tag cheap to apply, and the question it asks is about the MISTAKE, not the spec:
+#
+#   Could you introduce this regression WITHOUT editing the thing under test? If yes, the loop has to
+#   catch it, because nothing else will tell you before CI does. If no — you would have to be working
+#   in that exact area, where you would run the file directly (unfiltered, by design) — defer it.
+#
+# So the slow lane holds the cross-product probes (exploratory nets over ground the fast lane already
+# asserts case-by-case: `degenerate_literals_spec`, `unsatisfiable_size_interval_spec`,
+# `container_position_validators_spec`, `schema_spec`), `spec/bin/` (audits the gem generator, which
+# ships with no gem and cannot regress `lib/`), the strategy load-order specs, and the block that
+# builds objects lying about their own class. Each is reachable only by editing its own subject.
+#
+# `standalone_require_spec` stays in the fast lane as the one deliberate exception, because a missing
+# require is the mistake you make WHILE EDITING SOMETHING ELSE — add a constant reference, and the
+# require lives in another file. `spec_helper` preloads axn, so nothing else here can see it, and the
+# failure surfaces first in a downstream adapter gem's load path. Parallelising its probes took it
+# from ~8s to ~3.5s, so it now costs the loop ~1.6s.
+#
+# Cost only ever triggers the question. A spec slow from a one-time eager-load does not qualify (the
+# cost migrates to whichever example runs first), and one costly example among cheap ones does not
+# make its group taggable — tag the narrowest block that carries the cost.
+#
+# Running the two lanes as separate processes is FASTER than one process running the same examples: a
+# probe declares thousands of anonymous classes, which slows every example sharing its process after
+# it. A tag filter excludes EXAMPLES, not files — both lanes still load all 226 spec files (283
+# top-level groups, measured), so the file-load-time strategy and tool-adapter registrations this
+# suite depends on happen identically whichever lane you run.
+RSpec::Core::RakeTask.new(:spec) do |t|
+  t.rspec_opts = "--tag '~slow'"
+end
+
+desc "Run only the :slow specs (the cross-product probes and the gem-generator specs) — ~2.5 min"
+RSpec::Core::RakeTask.new(:spec_slow) do |t|
+  t.rspec_opts = "--tag slow"
+end
+
+desc "Run the whole library suite — both lanes"
+task spec_full: %i[spec spec_slow]
 
 # RuboCop specs (separate from main specs to avoid loading RuboCop unnecessarily)
 task :spec_rubocop do
@@ -31,7 +70,7 @@ RuboCop::RakeTask.new
 task default: %i[spec rubocop]
 task rails_specs: %i[spec_rails]
 task rubocop_specs: %i[spec_rubocop]
-task all_specs: %i[spec spec_rubocop spec_rails]
+task all_specs: %i[spec_full spec_rubocop spec_rails]
 task specs: %i[all_specs]
 
 # Integration verification for async adapters (requires Redis for Sidekiq)
@@ -42,7 +81,7 @@ task :verify_async do
 end
 
 desc "Run all verification checks (specs, rubocop, async integration)"
-task verify: %i[spec spec_rubocop spec_rails rubocop verify_async] do
+task verify: %i[spec_full spec_rubocop spec_rails rubocop verify_async] do
   puts ""
   puts "=" * 60
   puts "✅ All verification checks passed!"

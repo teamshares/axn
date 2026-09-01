@@ -298,6 +298,25 @@ The rules it backs:
   finder for `model:` behavior; mirror Rails-specific behavior in `spec_rails/dummy_app/`.
 - Run `bundle exec rspec` and the relevant `spec_rails` specs; verify against real output before
   claiming done.
+- **Lanes.** `rake spec` is the commit loop (~20s) and runs everything NOT tagged `:slow`;
+  `rake spec_slow` runs exactly the complement (~3 min); `rake spec_full` runs both, as do
+  `rake all_specs`, `rake verify`, and CI. Running a file directly is unfiltered,
+  so `bundle exec rspec <a slow file>` still runs it while you edit that code.
+- **`:slow` is a latency choice, never a coverage one.** CI, `rake verify` and `rake spec_full` run
+  every example, so a tagged spec is deferred to merge time, not skipped.
+- **Tag on the MISTAKE, not the spec: could you introduce this regression without editing the thing
+  under test?** If yes it belongs in the fast lane, because nothing will tell you before CI. If no —
+  you'd have to be working in that area, where you'd run the file directly — defer it. That puts the
+  cross-product probes, `spec/bin/` (the gem generator, which cannot regress `lib/`), the strategy
+  load-order specs, and the lying-object block in the slow lane.
+- **`standalone_require_spec` is the deliberate exception**, kept in the fast lane because a missing
+  require is the mistake you make *while editing something else*: `spec_helper` preloads axn so
+  nothing else here can see it, and it surfaces first in a downstream gem's load path.
+- **Cost only triggers the question.** A spec slow from a one-time eager-load doesn't qualify (the
+  cost migrates to whichever example runs first), and one costly example among cheap ones doesn't make
+  its group taggable — tag the narrowest block carrying the cost.
+- Untagged is the default, so a new spec lands in the fast lane unless you say otherwise. Filtering
+  drops examples but still LOADS every spec file, so load-time registration is unaffected by the lane.
 - **Auditing a guard's coverage: mutate it.** Remove or invert the guard, re-run the suite, and if it stays
   green the guard is unguarded. Note what this *cannot* find: removing a guard makes a legal-behaviour
   assertion pass more easily, never fail, so mutation says nothing about the **controls** — the examples

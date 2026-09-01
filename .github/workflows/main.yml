@@ -25,8 +25,13 @@ jobs:
       with:
         ruby-version: ${{ matrix.ruby }}
         bundler-cache: true
+    # spec_full, not spec: `rake spec` is the fast local lane (everything not tagged `:slow`) and CI
+    # must run every example. Both lanes belong in THIS job rather than a second one — another job
+    # fans out to one required-status-check context per matrix entry, each needing a ruleset update
+    # in lockstep, and it would buy no wall clock: `spec_full` runs the two lanes in separate
+    # processes, which is faster than one process running the same examples (see the Rakefile).
     - name: Run main specs
-      run: bundle exec rake spec
+      run: bundle exec rake spec_full
     - name: Run RuboCop linting
       run: bundle exec rake rubocop
 

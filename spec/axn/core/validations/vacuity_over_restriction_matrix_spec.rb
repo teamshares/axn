@@ -30,7 +30,7 @@ require "date"
 # spellings and the satisfiability direction, which found a second: the satisfiability guard ignored
 # `allow_blank`, so it refused `type: Array, presence: false, inclusion: { in: [1], allow_blank: true }`, which
 # accepts `[]` and rejects `["a"]`.
-RSpec.describe "the vacuity and satisfiability guards never refuse a declaration that enforces something" do
+RSpec.describe "the vacuity and satisfiability guards never refuse a declaration that enforces something", :slow do
   # Ordinary values only. A subclass that lies about its own blankness or equality can defeat any static
   # judgment, and axn does not hold itself responsible for one — see the guards' own stand-down rules.
   let(:candidates_by_type) do

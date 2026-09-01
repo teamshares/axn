@@ -36,20 +36,40 @@ module StandaloneRequireProbe
   @answers = {}
 
   # `[loaded_files, gaps]` for a process that required `file` and nothing else, each gap `[file, reference, nesting]`.
-  def self.probe(file)
-    @answers[file] ||= begin
-      out, status = Open3.capture2e(RbConfig.ruby, "-e", PROGRAM, "--", file, chdir: ROOT)
-      raise "loading #{file} alone failed: #{out}" unless status.success?
+  def self.probe(file) = @answers[file] ||= run_probe(file)
 
-      rows = out.lines.map { |line| line.chomp.split("\t") }
-      [rows.select { |kind,| kind == "loaded" }.map(&:last),
-       rows.select { |kind,| kind == "gap" }.map { |_kind, *gap| gap }]
+  def self.run_probe(file)
+    out, status = Open3.capture2e(RbConfig.ruby, "-e", PROGRAM, "--", file, chdir: ROOT)
+    raise "loading #{file} alone failed: #{out}" unless status.success?
+
+    rows = out.lines.map { |line| line.chomp.split("\t") }
+    [rows.select { |kind,| kind == "loaded" }.map(&:last),
+     rows.select { |kind,| kind == "gap" }.map { |_kind, *gap| gap }]
+  end
+
+  # Probes are one independent subprocess each, so a whole set is answered CONCURRENTLY. Every thread spends its
+  # life waiting on a Ruby rather than running one, so they overlap despite the GVL — walking a dozen files
+  # serially is the difference between ~5s and ~1s, and this file stays in the fast lane on that margin.
+  # Answers are stored from the calling thread, so `@answers` is only ever written here.
+  def self.warm(files)
+    pending = files.uniq - @answers.keys
+    return if pending.empty?
+
+    pending.map { |file| Thread.new { [file, run_probe(file)] } }.each do |thread|
+      file, answer = thread.value
+      @answers[file] = answer
     end
   end
 
   # Every axn file an entry point's load pulls in, the entry points included — read from the loads themselves, so
-  # a new require joins the set rather than needing to be listed.
-  def self.loaded_files = ENTRY_POINTS.flat_map { |entry| probe(entry).first }.uniq
+  # a new require joins the set rather than needing to be listed. Both waves are warmed, since every caller goes
+  # on to ask `gaps_loaded_alone` about each file it returns.
+  def self.loaded_files
+    warm(ENTRY_POINTS)
+    ENTRY_POINTS.flat_map { |entry| probe(entry).first }.uniq.tap do |files|
+      warm(files.map { |file| file.delete_suffix(".rb") })
+    end
+  end
 
   def self.gaps_loaded_alone(file) = probe(file.delete_suffix(".rb")).last.select { |gap_file,| gap_file == file }
 
