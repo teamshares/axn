@@ -5,14 +5,25 @@ require "rspec/core/rake_task"
 
 # The commit loop. `:slow` marks specs whose cost is STRUCTURAL rather than incidental — a
 # cross-product probe that enumerates a grid of declarations, a spec that spawns a Ruby per example,
-# a block that builds adversarial objects. Eight such sites hold ~90% of the suite's wall clock in
-# ~1.5% of its examples, so excluding them takes this task from ~5 min to ~20s while leaving the
-# behaviour they re-cover asserted case-by-case by their companion files.
+# a block that builds adversarial objects. The tagged sites hold ~85% of the suite's wall clock in ~2%
+# of its examples, so excluding them takes this task from ~5 min to ~20s.
+#
+# What the fast lane gives up is the test each tag has to pass. A probe re-covers ground its companion
+# already asserts case-by-case (`schema_wire_audit` names `schema_spec`, `unsatisfiable_size_soundness`
+# names `unsatisfiable_size_interval`), so nothing is lost. A site with NO companion is only taggable
+# when its subject is not the library's runtime behaviour — `spec/bin/` audits the gem GENERATOR, a
+# dev-only tool absent from the packaged gem, which cannot regress `lib/`. `standalone_require_spec`
+# fails both tests and is deliberately NOT tagged: it has no companion, and `spec_helper` preloads all
+# of axn, so no other spec in this suite can observe a missing require. It is ~8s well spent.
 #
 # Nothing is skipped, only deferred: `spec_slow` runs exactly the complement and `spec_full` runs
 # both, as do CI, `all_specs`, and `verify` — which gates `build`, and so `release`. Running the two
 # lanes as separate processes is also FASTER than one process running the same examples: a probe
 # declares thousands of anonymous classes, which slows every example sharing its process afterwards.
+#
+# A tag filter excludes EXAMPLES, not files: both lanes still load all 226 spec files (283 top-level
+# groups, measured), so the file-load-time registrations this suite depends on — strategies and tool
+# adapters, which cannot re-register once required — happen identically whichever lane you run.
 # The filter lives here rather than in .rspec on purpose: `bundle exec rspec <a slow file>` must
 # still run it when you are actively editing that code, and a repo-wide default would silently
 # report zero examples instead.

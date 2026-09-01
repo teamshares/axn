@@ -64,7 +64,7 @@ end
 # because these are runtime references.
 #
 # So each case runs in a fresh Ruby that requires exactly one entry point and then exercises it.
-RSpec.describe "standalone require completeness", :slow do
+RSpec.describe "standalone require completeness" do
   # The references a standalone load legitimately cannot resolve, in two kinds — and neither is a missing require,
   # because the reverse require is either a CYCLE or a layer inversion:
   #

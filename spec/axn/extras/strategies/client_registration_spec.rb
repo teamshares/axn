@@ -9,7 +9,7 @@ require "open3"
 # That gate was observable only in a process that loaded axn BEFORE faraday, and — `require` being idempotent —
 # only once per process. Hence a fresh Ruby per example: this suite has both gems loaded, and re-requiring the
 # strategy file here would no-op.
-RSpec.describe "Axn::Extras::Strategies::Client registration", :slow do
+RSpec.describe "Axn::Extras::Strategies::Client registration" do
   def repo_root = File.expand_path("../../../..", __dir__)
 
   # `RUBYOPT` carries bundler's `-rbundler/setup`, so the child resolves the same bundle this suite runs against —
@@ -19,7 +19,7 @@ RSpec.describe "Axn::Extras::Strategies::Client registration", :slow do
     [out, status]
   end
 
-  it "registers the strategy in a process that has not loaded faraday" do
+  it "registers the strategy in a process that has not loaded faraday", :slow do
     out, status = run(<<~RUBY)
       require "axn"
       raise "faraday was already loaded, so this proves nothing" if defined?(Faraday)
@@ -30,7 +30,7 @@ RSpec.describe "Axn::Extras::Strategies::Client registration", :slow do
     expect(out).to eq("true")
   end
 
-  it "resolves `use :client` when axn was loaded before faraday" do
+  it "resolves `use :client` when axn was loaded before faraday", :slow do
     out, status = run(<<~RUBY)
       require "axn"
       klass = Class.new do
@@ -44,7 +44,7 @@ RSpec.describe "Axn::Extras::Strategies::Client registration", :slow do
     expect(out).to eq('["faraday loaded", "Faraday::Connection"]')
   end
 
-  describe "when faraday cannot be loaded" do
+  describe "when faraday cannot be loaded", :slow do
     # A bundle without the gem, simulated at the one boundary that decides it: `require "faraday"` raises what
     # Ruby raises for an absent file, path included. In a fresh process, so the constant is genuinely not defined
     # either — a stub inside this suite would leave `Faraday` loaded and could pass for the wrong reason.
