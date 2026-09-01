@@ -302,18 +302,20 @@ The rules it backs:
   `rake spec_slow` runs exactly the complement (~3 min); `rake spec_full` runs both, as do
   `rake all_specs`, `rake verify`, and CI. Running a file directly is unfiltered,
   so `bundle exec rspec <a slow file>` still runs it while you edit that code.
-- **Tag `:slow` for structural cost, not incidental slowness** — a probe enumerating a cross-product
-  of declarations, a spec spawning a Ruby per example, a block building adversarial objects. A spec
-  that is merely slow because it happens to trigger a one-time eager-load does NOT qualify: the cost
-  just migrates to whichever example runs first. Tag the narrowest block that carries the cost, never
-  a whole file when one group inside it is the expensive part — an outer tag silently takes the cheap
-  in-process examples with it.
-- **Before tagging, ask what the fast lane gives up.** Tagging is free where a companion file already
-  asserts the same behaviour case-by-case (each probe names its own). With no companion, tag only if
-  the subject is not the library's runtime behaviour — `spec/bin/` audits the dev-only gem generator,
-  which cannot regress `lib/`. If a spec has no companion AND guards runtime behaviour nothing else
-  can see, it belongs in the fast lane whatever it costs (`standalone_require_spec`, ~8s: `spec_helper`
-  preloads axn, so no other spec can observe a missing require).
+- **Tag `:slow` by what KIND of check a spec is, not by how long it takes.** Only two kinds qualify.
+  An *exploratory probe* enumerates a space to find cells nobody anticipated (generated cases, real
+  runtime as oracle); the behaviours it covers are asserted case-by-case elsewhere in the fast lane,
+  so it is a merge-time net. *Dev-only tooling* (`spec/bin/`) audits the gem generator, which cannot
+  regress `lib/`.
+- **Everything else stays in the fast lane however slow it is.** A specific behavioural check pins one
+  known regression, so dropping it lets exactly that bug return silently — `standalone_require_spec`
+  (~8s) and `client_registration_spec` (~3.5s) are both untagged for this reason: `spec_helper`
+  preloads axn and `client_spec` repopulates the strategy registry itself, so nothing else in the
+  suite can see a missing require or a re-gated `:client` registration.
+- **Cost triggers the question; it never answers it.** A spec slow only from a one-time eager-load
+  does not qualify (the cost migrates to whichever example runs first), and neither does one costly
+  example among cheap ones — tag the narrowest block that carries the cost, and if that block is
+  mostly cheap specific checks, don't tag it at all.
 - Untagged is the default, so a new spec lands in the fast lane unless you say otherwise. Filtering
   drops examples but still LOADS every spec file, so load-time registration is unaffected by the lane.
 - **Auditing a guard's coverage: mutate it.** Remove or invert the guard, re-run the suite, and if it stays

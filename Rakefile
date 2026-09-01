@@ -3,18 +3,30 @@
 require "bundler/gem_tasks"
 require "rspec/core/rake_task"
 
-# The commit loop. `:slow` marks specs whose cost is STRUCTURAL rather than incidental — a
-# cross-product probe that enumerates a grid of declarations, a spec that spawns a Ruby per example,
-# a block that builds adversarial objects. The tagged sites hold ~85% of the suite's wall clock in ~2%
-# of its examples, so excluding them takes this task from ~5 min to ~20s.
+# The commit loop. `:slow` marks the two kinds of spec the fast lane can do without, and the test is
+# what KIND of check a spec is — not merely how long it takes.
 #
-# What the fast lane gives up is the test each tag has to pass. A probe re-covers ground its companion
-# already asserts case-by-case (`schema_wire_audit` names `schema_spec`, `unsatisfiable_size_soundness`
-# names `unsatisfiable_size_interval`), so nothing is lost. A site with NO companion is only taggable
-# when its subject is not the library's runtime behaviour — `spec/bin/` audits the gem GENERATOR, a
-# dev-only tool absent from the packaged gem, which cannot regress `lib/`. `standalone_require_spec`
-# fails both tests and is deliberately NOT tagged: it has no companion, and `spec_helper` preloads all
-# of axn, so no other spec in this suite can observe a missing require. It is ~8s well spent.
+#   An EXPLORATORY PROBE enumerates a space (declared type x literal x tolerance x spelling) looking
+#   for cells nobody anticipated, measuring each against the real runtime or a real JSON Schema
+#   engine. Its cases are generated rather than written, the behaviours it covers are asserted
+#   case-by-case elsewhere in the fast lane (`degenerate_literals_spec`,
+#   `unsatisfiable_size_interval_spec`, `container_position_validators_spec`, `schema_spec`), and its
+#   marginal value is against CHANGED guard code. That makes it a merge-time net, not a commit check.
+#
+#   DEV-ONLY TOOLING (`spec/bin/`) audits the gem generator, which ships with no gem and cannot
+#   regress `lib/`. Tagged on subject, not cost — it is only ~4s.
+#
+# Everything else stays in the fast lane however slow it is, because a SPECIFIC BEHAVIOURAL CHECK
+# pins one known regression: drop it from the loop and that exact bug can come back silently.
+# `standalone_require_spec` (~8s) and `client_registration_spec` (~3.5s) are the load-bearing cases —
+# `spec_helper` preloads axn and `client_spec` repopulates the strategy registry itself, so no other
+# spec can observe a missing require or a re-gated `:client` registration.
+#
+# Cost is a trigger for asking the question, never the answer to it. A spec that is merely slow from
+# a one-time eager-load does not qualify at all: the cost just migrates to whichever example runs
+# first. Neither does an expensive example sitting among cheap ones — in the property-name block, 56
+# of 76 examples run under 0.05s, so tagging the group to save ~6 of them took 70 specific checks out
+# of the loop with it.
 #
 # Nothing is skipped, only deferred: `spec_slow` runs exactly the complement and `spec_full` runs
 # both, as do CI, `all_specs`, and `verify` — which gates `build`, and so `release`. Running the two
@@ -24,14 +36,11 @@ require "rspec/core/rake_task"
 # A tag filter excludes EXAMPLES, not files: both lanes still load all 226 spec files (283 top-level
 # groups, measured), so the file-load-time registrations this suite depends on — strategies and tool
 # adapters, which cannot re-register once required — happen identically whichever lane you run.
-# The filter lives here rather than in .rspec on purpose: `bundle exec rspec <a slow file>` must
-# still run it when you are actively editing that code, and a repo-wide default would silently
-# report zero examples instead.
 RSpec::Core::RakeTask.new(:spec) do |t|
   t.rspec_opts = "--tag '~slow'"
 end
 
-desc "Run only the :slow specs (cross-product probes, subprocess specs) — several minutes"
+desc "Run only the :slow specs (the cross-product probes and the gem-generator specs) — ~2.5 min"
 RSpec::Core::RakeTask.new(:spec_slow) do |t|
   t.rspec_opts = "--tag slow"
 end
