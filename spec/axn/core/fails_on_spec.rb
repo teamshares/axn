@@ -100,6 +100,26 @@ RSpec.describe "fails_on" do
       end
       expect(action.call.error).to eq("Something went wrong")
     end
+
+    # Codex review finding (PR #261): `Array(exceptions)` returns the CALLER'S array unchanged when
+    # one was passed. Classification already guards against this (`entry.classes` is a frozen dup),
+    # but the message gate's closure was reading the bare `classes` local -- the caller's own,
+    # mutable array -- so mutating it after `fails_on` returned made classification (still correct,
+    # via `entry.classes`) and the message (now checking a different class list) disagree.
+    it "the wired message is unaffected by mutating the caller's array after fails_on returns" do
+      classes = [ArgumentError]
+      action = build_axn do
+        fails_on classes, "gated message"
+        def call = raise ArgumentError, "raw"
+      end
+
+      classes << TypeError
+      classes.delete(ArgumentError)
+
+      result = action.call
+      expect(result.outcome).to be_failure
+      expect(result.error).to eq("gated message")
+    end
   end
 
   describe "standalone: forwarding" do

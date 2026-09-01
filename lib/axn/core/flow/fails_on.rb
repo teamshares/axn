@@ -78,7 +78,12 @@ module Axn
             # period, whether or not a message is declared.
             if message || block
               message_gate = lambda { |exception:|
-                next false unless classes.any? { |klass| Axn::Internal::Identity.kind?(exception, klass) }
+                # `entry.classes`, NOT the bare `classes` local -- that's `Array(exceptions)`, the
+                # CALLER'S own array when one was passed (see the aliasing note above `entry_matcher`).
+                # Closing over it here would let classification (which reads the frozen `entry.classes`)
+                # and this gate disagree the moment a caller mutates the array they originally handed
+                # `fails_on` after the fact.
+                next false unless entry.classes.any? { |klass| Axn::Internal::Identity.kind?(exception, klass) }
                 next true if entry_matcher.nil?
 
                 cached = Axn::Internal::FailsOnVerdicts.fetch(exception, entry)

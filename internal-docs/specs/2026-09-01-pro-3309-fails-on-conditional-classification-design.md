@@ -89,9 +89,9 @@ itself) would run the user's condition a second time, unpredictably, depending o
 Keeping the static fallback means the executor's own evaluation is the only one that ever runs user
 code, regardless of what reads `outcome` afterward or in what order.
 
-## Three bugs found by Codex review, and the fixes
+## Four bugs found by Codex review, and the fixes
 
-All three are real, confirmed by direct execution before and after — not accepted on the
+All four are real, confirmed by direct execution before and after — not accepted on the
 reviewer's prose.
 
 ### 1. A reentrant `result.outcome` read froze in the wrong answer, permanently
@@ -169,6 +169,20 @@ underneath and so raise straight into `#call`'s own `best_effort`) — *before* 
 This holds the "Invoker owns the swallow policy, callers don't re-guard" rule (error-paths.md):
 Invoker still decides what to catch and when; a caller reading back *what happened* is a different
 question from adding a second catch on top.
+
+### 4. The message gate closed over the caller's own (mutable) array
+
+Decision 1's own aliasing note — `Array(exceptions)` returns the caller's array unchanged when one
+was passed, so `entry.classes` stores a `.dup.freeze` copy rather than the bare `classes` local —
+was applied to the `Entry` but not to `message_gate`'s closure, which kept reading `classes`
+directly. Classification (`_fails_on?`, reading `entry.classes`) and the message gate (reading the
+live `classes` local) therefore had two DIFFERENT views of "which classes this declaration covers"
+whenever the caller mutated the array they originally passed after `fails_on` returned — verified
+live: `fails_on classes, "msg"` then `classes.delete(ArgumentError); classes << TypeError` made an
+`ArgumentError` still classify as a failure (correct, via the frozen `entry.classes`) while losing
+its message (wrong, the gate's `classes.any?` now checking the mutated array). Fix: the gate reads
+`entry.classes` too — the same aliasing guard decision 1 already stated, now actually applied
+everywhere the classes list is read, not just where it's stored.
 
 ## Declaration-time guards
 
