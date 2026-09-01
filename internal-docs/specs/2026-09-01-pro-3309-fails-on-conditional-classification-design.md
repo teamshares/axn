@@ -136,9 +136,12 @@ conditional entry's verdict as it computes it; the wired message's gate reads th
 re-invoking `if_condition`/`unless_condition` — falling back to a fresh `entry_matcher.call` only if
 somehow the cache is empty (defensive; in the shipped settle order this cache is always already
 populated by the time any message resolves, since `_fails_on?` runs synchronously earlier in the
-same `_settle_exception!`). Net effect: the condition runs **at most once per exception, full stop**
-— a strictly better story than the original design's "once with no message, twice with one," and one
-that makes the two-evaluation class of bug structurally impossible rather than merely rare.
+same `_settle_exception!`). Net effect: the condition runs **at most once per exception, per settling
+action** — a strictly better story than the original design's "once with no message, twice with one,"
+and one that makes the two-evaluation class of bug structurally impossible rather than merely rare.
+(This "full stop" claim was overclaimed until fix 8: a declaration inherited and consulted at more
+than one nested settlement level always got exactly one evaluation per level, never zero, but two
+DIFFERENT levels are two different evaluations — the guarantee is per-level, not literally global.)
 
 ### 3. A raising `unless:` rule reclassified instead of staying inert
 
