@@ -432,6 +432,50 @@ RSpec.describe "fails_on" do
       end
     end
 
+    # Codex review finding (PR #261): a condition that reads `result.outcome` reentrant -- DURING its
+    # own evaluation, not from a later callback -- used to see `finalized?` already true (set by
+    # `__record_exception` before classification ran) and memoize whatever `outcome` resolved to at
+    # that moment, permanently, even after classification then decided the opposite. Fixed by
+    # deferring `Context#__finalize!` until classification is fully decided and recorded.
+    describe "a condition that reads result.outcome reentrant, during its own evaluation" do
+      it "does not permanently freeze in the pre-classification answer" do
+        action = build_axn do
+          fails_on ArgumentError, if: lambda {
+            result.outcome # reentrant read, mid-classification
+            true
+          }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(result.outcome).to be_failure
+        expect(result.outcome.to_s).to eq("failure")
+      end
+    end
+
+    # Codex review finding (PR #261): before FailsOnVerdicts, `fails_on X, "msg", if: cond` evaluated
+    # `cond` independently for classification (in `_fails_on?`) and for the wired message (via the
+    # generic error/success Matcher pipeline) -- so a `cond` that wasn't perfectly pure could
+    # classify one way and present the other. Fixed by caching the first evaluation's verdict and
+    # reusing it for the message gate, so the condition runs at most once per exception.
+    describe "classification and the message it gates can never disagree" do
+      it "a condition returning a different answer on a hypothetical second call still gets ONE consistent verdict" do
+        calls = 0
+        action = build_axn do
+          fails_on ArgumentError, "Unable to submit", if: lambda {
+            calls += 1
+            calls == 1
+          }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(calls).to eq(1)
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("Unable to submit")
+      end
+    end
+
     describe "evaluation count" do
       it "evaluates the condition exactly once per call with no message, and adds nothing on later reads" do
         counter = []
@@ -452,7 +496,11 @@ RSpec.describe "fails_on" do
         expect(counter.size).to eq(1)
       end
 
-      it "evaluates the condition exactly twice per call with a message (classification + message resolution)" do
+      # The message gate reuses the SAME verdict classification already computed (FailsOnVerdicts),
+      # rather than re-invoking the condition -- so a message changes nothing about the count. This
+      # also means classification and the message it gates can never disagree, even for a condition
+      # that isn't perfectly pure (a counter, a clock): there is only ever one answer to disagree with.
+      it "evaluates the condition exactly once per call EVEN WITH a message declared -- classification and the message share one verdict" do
         counter = []
         action = build_axn do
           fails_on ArgumentError, "Unable to submit", if: lambda {
@@ -463,12 +511,13 @@ RSpec.describe "fails_on" do
         end
 
         result = action.call
-        expect(counter.size).to eq(2)
+        expect(counter.size).to eq(1)
+        expect(result.error).to eq("Unable to submit")
 
         3.times { result.error }
         3.times { result.outcome }
         result.inspect
-        expect(counter.size).to eq(2)
+        expect(counter.size).to eq(1)
       end
 
       it "reading outcome repeatedly after a CLOSED gate adds zero further evaluations" do

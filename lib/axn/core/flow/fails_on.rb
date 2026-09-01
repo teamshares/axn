@@ -60,18 +60,37 @@ module Axn
             # `classes.dup.freeze`: `Array(exceptions)` returns the CALLER'S array unchanged when one was
             # passed, so storing it bare would alias a declaration to an array the caller still owns.
             entry_matcher = if_condition.nil? && unless_condition.nil? ? nil : Handlers::Matcher.build(if: if_condition, unless: unless_condition)
-            self._fails_on_entries = (_fails_on_entries + [Entry.new(classes: classes.dup.freeze, matcher: entry_matcher)]).freeze
+            entry = Entry.new(classes: classes.dup.freeze, matcher: entry_matcher)
+            self._fails_on_entries = (_fails_on_entries + [entry]).freeze
 
-            # Wire the message through the existing `error` DSL when provided. Uses an OR proc
-            # (not `if: classes`) because `if:` with an array matches via `all?` (AND). The class
-            # gate is prepended to the caller's own `if:` rules (still ANDed, `Matcher#matches?`'s
-            # existing semantics) so a message never surfaces for an exception this declaration
-            # didn't actually reclassify -- gating classification without also gating the message
-            # would let the failure-shaped text render on a call that still pages. standalone: is
-            # forwarded verbatim (nil = the DSL's conditional default: an attached reason).
+            # Wire the message through the existing `error` DSL when provided, gated so a message
+            # never surfaces for an exception this declaration didn't actually reclassify -- gating
+            # classification without also gating the message would let the failure-shaped text render
+            # on a call that still pages. standalone: is forwarded verbatim (nil = the DSL's
+            # conditional default: an attached reason).
+            #
+            # The gate reads `_fails_on?`'s CACHED verdict (`FailsOnVerdicts`) rather than
+            # re-invoking `if_condition`/`unless_condition` itself: both run synchronously within one
+            # `_settle_exception!` (classification, then message resolution via presentation
+            # stamping), so a condition that isn't perfectly pure -- a counter, a clock, anything
+            # stateful -- would otherwise risk classifying one way and presenting the other. Reusing
+            # the verdict makes that impossible: the condition runs at most once per exception,
+            # period, whether or not a message is declared.
             if message || block
-              class_gate = ->(exception:) { classes.any? { |klass| Axn::Internal::Identity.kind?(exception, klass) } }
-              error(message, if: [class_gate, *Array(if_condition)], unless: unless_condition, standalone:, &block)
+              message_gate = lambda { |exception:|
+                next false unless classes.any? { |klass| Axn::Internal::Identity.kind?(exception, klass) }
+                next true if entry_matcher.nil?
+
+                cached = Axn::Internal::FailsOnVerdicts.fetch(exception, entry)
+                next cached unless cached.nil?
+
+                # Defensive only: `_fails_on?` always runs first in the settle path this ships with,
+                # so the cache should already be populated by the time any message resolves. `self`
+                # here is the action (Invoker instance_execs this proc), same receiver `_fails_on?`
+                # itself would be called with.
+                entry_matcher.call(exception:, action: self)
+              }
+              error(message, if: message_gate, standalone:, &block)
             end
 
             true
@@ -85,12 +104,18 @@ module Axn
           #
           # `action:` is required, not defaulted -- a call site that forgets it raises loudly instead
           # of silently treating every conditional entry as a non-match.
+          #
+          # Records each conditional entry's verdict (`FailsOnVerdicts`) as it's computed, so a
+          # declared message's own gate (built in `fails_on` above) can reuse the SAME answer instead
+          # of asking the condition again -- the condition runs at most once per exception either way.
           def _fails_on?(exception, action:)
             _fails_on_entries.any? do |entry|
               next false unless entry.classes.any? { |klass| Axn::Internal::Identity.kind?(exception, klass) }
               next true if entry.matcher.nil?
 
-              entry.matcher.call(exception:, action:)
+              verdict = entry.matcher.call(exception:, action:)
+              Axn::Internal::FailsOnVerdicts.record!(exception, entry, verdict)
+              verdict
             end
           end
 

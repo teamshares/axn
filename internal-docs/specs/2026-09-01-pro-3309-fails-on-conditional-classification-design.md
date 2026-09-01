@@ -81,15 +81,63 @@ context flag set immediately after `__record_exception`, never `_fails_on?` itse
 ## `Result#outcome` becomes memoizable
 
 Once the reorder holds, every classification term is fixed by the time `finalized?` is observably
-true (which is the *first* line of `_settle_exception!`, before the hoisted classify block even
-runs). So `outcome` is memoized exactly like `#error`/`#success` (`return _resolve_outcome unless
+true. So `outcome` is memoized exactly like `#error`/`#success` (`return _resolve_outcome unless
 finalized?`; memoize once). The static-only `_unconditionally_fails_on?` split still matters even
 under memoization: if `Result#outcome`'s first read reached for the *full* `_fails_on?`, a first
 read landing anywhere other than inside `_settle_exception!` (which never calls `Result#outcome`
 itself) would run the user's condition a second time, unpredictably, depending on read order.
 Keeping the static fallback means the executor's own evaluation is the only one that ever runs user
-code — measured at exactly once per call with no message, twice with one (classification + message
-resolution) — regardless of what reads `outcome` afterward or in what order.
+code, regardless of what reads `outcome` afterward or in what order.
+
+## Two bugs found by Codex review, and the fixes
+
+Both are real, confirmed by direct execution before and after — not accepted on the reviewer's
+prose.
+
+### 1. A reentrant `result.outcome` read froze in the wrong answer, permanently
+
+The first cut of this design finalized the context (`Context#__record_exception`, called at the top
+of `_settle_exception!`) *before* the classify block ran — "the first line of `_settle_exception!`,
+before the hoisted classify block even runs" was the claim, and it was wrong: finalization happened
+before classification, not after. So a `fails_on if:` condition that read `result.outcome`
+reentrant — during its *own* evaluation, not from a later callback — saw `finalized?` already true
+while the verdict was still being decided, and `outcome`'s new memoization cached whatever it
+resolved to at that moment (`"exception"`, since neither the context flag nor the sticky set was
+set yet). Once classification then decided `true`, the memoized value never recomputed: `outcome`
+stayed `"exception"` forever, contradicting the `on_failure` callback that had already fired.
+
+Fix: `Context#__record_exception` no longer sets `@finalized`, only `@exception`/`@failure` (`ok?`
+is unaffected — it only reads `@failure`). `_settle_exception!` calls the pre-existing
+`Context#__finalize!` explicitly, immediately after the classify block decides and records its
+verdict — so `finalized?` only becomes observably true once there is an actual verdict to freeze
+in. During the classify window itself, `outcome` keeps recomputing live (the pre-memoization
+behavior), exactly as `#error`/`#success` already do pre-finalization elsewhere. The only other
+caller of `__record_exception` (`Axn::Result.error`'s test-mocking constructor) needed no change:
+the exception there is rescued *inside* the user's block, so the surrounding Factory-built action's
+own normal-completion path (`@context.__finalize!` at the end of a non-raising `call`) still
+finalizes it, just a few lines later in the same synchronous call.
+
+### 2. Classification and the message it gates could disagree
+
+`fails_on X, "msg", if: cond` evaluated `cond` twice — once in `_fails_on?` (classification), once
+more when the wired message resolved (a *separate* Matcher built from `[class_gate,
+*Array(if_condition)]` and handed to `error(...)`). For a `cond` that isn't perfectly pure (a
+counter, a clock, anything stateful), the two evaluations could disagree: classified as a failure
+but the message falls back to the generic default (the failure-condition branch not being hit the
+second time), or the reverse — reported as an exception while still surfacing the failure-only
+message.
+
+Fix: `Internal::FailsOnVerdicts`, a small identity-keyed cache mirroring the existing
+`ExceptionClassification`/`CarriedPresentation` pattern exactly (scoped via
+`IsolatedExecutionState`, `compare_by_identity` at both levels since a `fails_on` `Entry` is a
+`Data.define` with structural `==`, reset when the nesting stack empties). `_fails_on?` records each
+conditional entry's verdict as it computes it; the wired message's gate reads that cache instead of
+re-invoking `if_condition`/`unless_condition` — falling back to a fresh `entry_matcher.call` only if
+somehow the cache is empty (defensive; in the shipped settle order this cache is always already
+populated by the time any message resolves, since `_fails_on?` runs synchronously earlier in the
+same `_settle_exception!`). Net effect: the condition runs **at most once per exception, full stop**
+— a strictly better story than the original design's "once with no message, twice with one," and one
+that makes the two-evaluation class of bug structurally impossible rather than merely rare.
 
 ## Declaration-time guards
 

@@ -961,10 +961,19 @@ module Axn
           @context.__classify_as_failure!
         end
 
+        # Finalize NOW that classification is fully decided — not a moment earlier. `__record_exception`
+        # deliberately left this false: a `fails_on if:` condition can read `result.outcome` reentrant
+        # (directly, or via a Symbol action method), and `outcome` memoizes once `finalized?` is true.
+        # Finalizing before the verdict above existed would let that reentrant read freeze in whatever
+        # `outcome` resolved to mid-classification — permanently, since nothing re-evaluates a memoized
+        # value. From here on `finalized?` is true and every read (this settlement's own presentation
+        # resolution and callbacks, and every later caller) sees the real, fully-decided verdict.
+        @context.__finalize!
+
         # Resolve + stamp the presentation BEFORE dispatching any callbacks, so an on_error/on_failure
         # filter or body that reads exception.message observes the same resolved string as result.error
-        # and the call!-raised exception — not the raw reason. (Context is finalized by __record_exception
-        # above, so result.error memoizes here.)
+        # and the call!-raised exception — not the raw reason. (Context is finalized above, so
+        # result.error memoizes here.)
         _resolve_and_stamp_presentation(e)
 
         @action_class._dispatch_callbacks(:error, action: @action, exception: e)

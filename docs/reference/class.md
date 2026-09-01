@@ -1012,6 +1012,8 @@ A message declared alongside `if:`/`unless:` is gated by the *same* condition �
 
 Unlike `standalone:`, **`if:`/`unless:` is fully meaningful with no message at all** — it gates classification, not presentation. `error`/`fail!` messages are unaffected either way.
 
+A condition runs **at most once per exception** — classification and a declared message share the same verdict rather than each asking the condition separately, so the two can never disagree even for a condition that isn't perfectly deterministic (though it should be: reach for a pure, cheap check).
+
 A literal boolean is rejected at declaration (`fails_on X, if: false` or `if: true`) rather than silently doing the opposite of what it looks like: `Matcher`'s "no condition" convention treats a bare falsey value as *always matches*, so `if: false` would mean **always** reclassify, and a bare `true` isn't a recognized rule shape at all, so it would silently mean **never** (with a runtime warning). For a decision you can make when the class loads — like the ticket-motivating "only in staging" case — guard the declaration itself instead: `fails_on ActiveRecord::RecordNotFound if Rails.env.staging?`. `if:`/`unless:` earns its keep on state only known at **call** time: the exception's own attributes, the action's inputs, a per-request flag.
 
 A Symbol condition resolves against a **public** action method only (a private method falls through to constant lookup, fails that too, and reads as "no match" with a warning) — the same resolution `error`/`success`/callbacks already use.
