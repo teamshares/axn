@@ -783,6 +783,21 @@ RSpec.describe "fails_on" do
             .to raise_error(ArgumentError, /cannot apply/)
         end
 
+        # Codex review finding (PR #261), round 8: the mirror case -- an object with `to_proc`/
+        # `arity` but no `#call` used to pass `applicable?` (it satisfies `Invoker.callable?`) yet
+        # was never actually routed to `apply_callable` at runtime (`#matches?`'s own dispatch checks
+        # `respond_to?(:call)` first), so the declaration was silently accepted and the gate silently
+        # never matched -- the opposite of "fail at declaration." See matcher_spec.rb for the
+        # shared-layer fix and both directions of this asymmetry.
+        it "rejects a to_proc+arity-only object that has no #call (would never be routed to apply_callable)" do
+          to_proc_and_arity_only = Object.new
+          def to_proc_and_arity_only.to_proc = -> { true }
+          def to_proc_and_arity_only.arity = 0
+
+          expect { build_axn { fails_on ArgumentError, if: to_proc_and_arity_only } }
+            .to raise_error(ArgumentError, /cannot apply/)
+        end
+
         it "rejects a boolean nested inside an array" do
           expect { build_axn { fails_on ArgumentError, if: [:some_method, false] } }
             .to raise_error(ArgumentError, /not a boolean/)

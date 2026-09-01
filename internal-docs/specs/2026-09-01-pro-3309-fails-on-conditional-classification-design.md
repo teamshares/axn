@@ -89,9 +89,9 @@ itself) would run the user's condition a second time, unpredictably, depending o
 Keeping the static fallback means the executor's own evaluation is the only one that ever runs user
 code, regardless of what reads `outcome` afterward or in what order.
 
-## Nine bugs found across review and self-review, and the fixes
+## Ten bugs found across review and self-review, and the fixes
 
-All nine are real, confirmed by direct execution before and after — not accepted on prose alone,
+All ten are real, confirmed by direct execution before and after — not accepted on prose alone,
 the reviewer's or my own. One reviewer-suggested remedy (fix 8) was itself verified wrong before
 being replaced with a different fix. One adjacent, pre-existing, out-of-scope gap (found while
 verifying fix 9) was reported rather than patched.
@@ -321,6 +321,26 @@ OR chain, so a hostile override would have raised on every `outcome` read before
 ticket's changes existed. Reported (with a regression spec documenting exactly what IS and isn't
 fixed) rather than patched, per the hostile-object-audit doctrine (error-paths.md) — closing it
 would mean hardening `Axn::ValidationError.user_facing?` itself, unrelated to `fails_on`.
+
+### 10. `.applicable?` only guarded one of two asymmetries between routing and invocation
+
+Decision 6's `applicable?` already documented one asymmetry — a `#call`-only object passes
+`#matches?`'s own routing check (`respond_to?(:call)`) but fails `Invoker.callable?`
+(`to_proc`+`arity`), reaches `apply_callable`, and comes back as itself (truthy) via
+`Invoker#literal_value` — and guarded against it by requiring `Invoker.callable?` at declaration.
+What it missed is the MIRROR case: an object with `to_proc`/`arity` but no `call` satisfies
+`Invoker.callable?` (so `applicable?` admitted it) but fails `#matches?`'s OWN routing check, so it
+is never routed to `apply_callable` at all — it falls through every branch to `handle_invalid` and
+reads as a silent, permanent non-match. Verified live: such a rule passed declaration cleanly and
+the gate never fired at runtime, the "silently do nothing" failure `applicable?`'s whole purpose is
+to prevent, just via the other route.
+
+Fix: `applicable?` now requires BOTH checks — `rule.respond_to?(:call) && Invoker.callable?(rule)`
+— since a rule needs to clear the ROUTING check to ever reach `apply_callable`, and the INVOCATION
+check to actually be called once it's there. Both directions of the asymmetry are now pinned in
+`matcher_spec.rb`, documenting each shape's actual `#matches?`/`Invoker` runtime behavior (an
+unconditional match for `#call`-only, an unconditional non-match for `to_proc`+`arity`-only) so a
+future edit can't silently reintroduce either gap without a test noticing.
 
 ## Declaration-time guards
 

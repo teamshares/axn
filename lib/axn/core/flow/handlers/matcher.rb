@@ -10,15 +10,23 @@ module Axn
         class SingleRuleMatcher
           # The rule forms a DECLARATION may admit, for a caller that wants to reject an unusable rule
           # at class-definition time rather than let it fall through to `handle_invalid` at run time.
-          # Narrower than `#matches?`'s own `callable?` on purpose: that one is a bare
-          # `respond_to?(:call)`, but `Invoker` needs `to_proc`/`arity` to actually invoke it — a
-          # `#call`-only object fails both, falls through to `Invoker#literal_value`, and comes back
-          # AS ITSELF, i.e. truthy: an unconditional match. For a gate deciding whether a bug gets
-          # reported, "always matches" is the wrong way to be wrong, so a declaration admits only what
-          # Invoker can actually invoke — the same seam `step` uses for the same reason
-          # (mounting_strategies/step.rb).
+          # Requires BOTH of the two, genuinely different "callable" checks this class straddles,
+          # because either alone admits a shape the other rejects at RUN time:
+          #   - `#matches?`'s own `callable?` (bare `respond_to?(:call)`) decides whether a rule is
+          #     even ROUTED to `apply_callable` at all. An object with `to_proc`/`arity` but no `call`
+          #     passes `Invoker.callable?` yet never reaches `apply_callable` in the first place --
+          #     it falls through every branch to `handle_invalid` and is silently inert (verified
+          #     live), which is exactly the "fail at declaration, not silently do nothing" rule this
+          #     guard exists to uphold.
+          #   - `Invoker.callable?` (`to_proc` + `arity`) decides whether Invoker can actually INVOKE
+          #     what gets routed there. A `#call`-only object passes the routing check but fails this
+          #     one, falls through Invoker's OWN dispatch to `Invoker#literal_value`, and comes back
+          #     AS ITSELF, i.e. truthy: an unconditional match, silently -- the worse direction for a
+          #     gate deciding whether a bug gets reported.
+          # A declaration admits only a shape that clears both, matching the seam `step` uses for the
+          # same reason (mounting_strategies/step.rb).
           def self.applicable?(rule)
-            Invoker.callable?(rule) || rule.is_a?(Symbol) || rule.is_a?(String) || (rule.is_a?(Class) && rule <= Exception)
+            (rule.respond_to?(:call) && Invoker.callable?(rule)) || rule.is_a?(Symbol) || rule.is_a?(String) || (rule.is_a?(Class) && rule <= Exception)
           end
 
           # Distinguishes "the rule raised and Invoker swallowed it" from "the rule genuinely returned

@@ -35,12 +35,17 @@ RSpec.describe Axn::Core::Flow::Handlers::SingleRuleMatcher do
       call_only = Object.new
       def call_only.call = true
 
+      to_proc_and_arity_only = Object.new
+      def to_proc_and_arity_only.to_proc = -> { true }
+      def to_proc_and_arity_only.arity = 0
+
       {
         "a plain Integer" => 42,
         "a Regexp" => /re/,
         "a boolean (true)" => true,
         "a boolean (false)" => false,
         "a #call-only object (no to_proc/arity)" => call_only,
+        "a to_proc+arity-only object (no #call)" => to_proc_and_arity_only,
       }.each do |label, rule|
         it "does not admit #{label}" do
           expect(described_class.applicable?(rule)).to be(false)
@@ -48,20 +53,32 @@ RSpec.describe Axn::Core::Flow::Handlers::SingleRuleMatcher do
       end
     end
 
-    # The one deliberate asymmetry: #matches?'s own `callable?` is a bare `respond_to?(:call)`, wider
-    # than Invoker's `to_proc`+`arity` requirement. A #call-only object therefore reaches
-    # `apply_callable`, which calls `Invoker.call` -- Invoker itself falls through to `literal_value`
-    # (neither Symbol nor Invoker-callable), returning the object itself, which is truthy: an
-    # unconditional match, silently. `.applicable?` refuses this shape so a DECLARATION can't produce
-    # it, but the underlying #matches? behavior for `error`/`success` (which don't pre-validate) is
-    # unchanged -- pinned here so a future edit doesn't accidentally "fix" it without noticing the
-    # rest of the DSL depends on the old behavior.
+    # Two deliberate, OPPOSITE asymmetries between `#matches?`'s own routing check (bare
+    # `respond_to?(:call)`) and `Invoker.callable?` (`to_proc` + `arity`) -- `.applicable?` requires
+    # BOTH, so a declaration can't produce EITHER shape, but each one's underlying #matches?/Invoker
+    # behavior (relevant to `error`/`success`, which don't pre-validate) is pinned here so a future
+    # edit doesn't accidentally "fix" one without noticing the rest of the DSL depends on it.
     it "documents the #call-only asymmetry: #matches? treats it as an unconditional match" do
       call_only = Object.new
       def call_only.call = true
 
       expect(described_class.applicable?(call_only)).to be(false)
       expect(described_class.new(call_only).call(exception: ArgumentError.new, action:)).to be(true)
+    end
+
+    # Codex review finding (PR #261), round 8: the MIRROR asymmetry. An object with `to_proc`/`arity`
+    # but no `#call` passes `Invoker.callable?` (so it WOULD be invocable once routed there) but fails
+    # `#matches?`'s own `respond_to?(:call)` routing check -- so it never reaches `apply_callable` at
+    # all, falls through every branch to `handle_invalid`, and reads as a silent non-match instead of
+    # raising at declaration. `.applicable?` used to check only `Invoker.callable?`, admitting this
+    # shape; it now requires `respond_to?(:call)` too.
+    it "documents the to_proc+arity-only asymmetry: #matches? treats it as an unconditional non-match (handle_invalid)" do
+      to_proc_and_arity_only = Object.new
+      def to_proc_and_arity_only.to_proc = -> { true }
+      def to_proc_and_arity_only.arity = 0
+
+      expect(described_class.applicable?(to_proc_and_arity_only)).to be(false)
+      expect(described_class.new(to_proc_and_arity_only).call(exception: ArgumentError.new, action:)).to be(false)
     end
   end
 
