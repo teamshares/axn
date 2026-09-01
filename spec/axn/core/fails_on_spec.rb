@@ -226,4 +226,403 @@ RSpec.describe "fails_on" do
       end
     end
   end
+
+  describe "conditional classification (if:/unless:)" do
+    describe "if:" do
+      it "reclassifies when the condition is true" do
+        action = build_axn do
+          fails_on ArgumentError, if: -> { true }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(result.outcome).to be_failure
+        expect(Axn.config).not_to have_received(:on_exception)
+      end
+
+      it "does not reclassify when the condition is false, and still reports globally" do
+        action = build_axn do
+          fails_on ArgumentError, if: -> { false }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(result.outcome).to be_exception
+        expect(Axn.config).to have_received(:on_exception)
+      end
+
+      it "resolves a Symbol against a public action method" do
+        action = build_axn do
+          fails_on ArgumentError, if: :reclassify?
+          def reclassify? = true
+          def call = raise ArgumentError, "boom"
+        end
+
+        expect(action.call.outcome).to be_failure
+      end
+
+      # Pre-existing `Handlers::SingleRuleMatcher` behavior (shared with `error`/`success`/callbacks),
+      # not something this ticket changes: the Symbol-resolves-to-an-action-method check uses a
+      # PUBLIC-only `respond_to?`, so a private method name falls through to the constant-lookup
+      # branch, fails that too, and reads as "no match" (with a warning logged) rather than an error.
+      # Worth knowing since `fails_on if: :some_private_predicate?` is a natural spelling to reach for.
+      it "does NOT resolve a Symbol naming a private action method -- falls through to no match" do
+        action = build_axn do
+          fails_on ArgumentError, if: :reclassify?
+          def call = raise ArgumentError, "boom"
+
+          private
+
+          def reclassify? = true
+        end
+
+        expect(action.call.outcome).to be_exception
+      end
+
+      it "self inside the condition is the action -- reads an expects reader" do
+        action = build_axn do
+          expects :allow_reclassify, type: :boolean
+          fails_on ArgumentError, if: -> { allow_reclassify }
+          def call = raise ArgumentError, "boom"
+        end
+
+        expect(action.call(allow_reclassify: true).outcome).to be_failure
+        expect(action.call(allow_reclassify: false).outcome).to be_exception
+      end
+    end
+
+    describe "unless:" do
+      it "does not reclassify when the condition is true" do
+        action = build_axn do
+          fails_on ArgumentError, unless: -> { true }
+          def call = raise ArgumentError, "boom"
+        end
+
+        expect(action.call.outcome).to be_exception
+      end
+
+      it "reclassifies when the condition is false" do
+        action = build_axn do
+          fails_on ArgumentError, unless: -> { false }
+          def call = raise ArgumentError, "boom"
+        end
+
+        expect(action.call.outcome).to be_failure
+      end
+    end
+
+    describe "if: and unless: combined (ANDed)" do
+      [
+        [true, false, :failure],
+        [true, true, :exception],
+        [false, false, :exception],
+        [false, true, :exception],
+      ].each do |if_val, unless_val, expected|
+        it "if: #{if_val}, unless: #{unless_val} -> #{expected}" do
+          action = build_axn do
+            fails_on ArgumentError, if: -> { if_val }, unless: -> { unless_val }
+            def call = raise ArgumentError, "boom"
+          end
+
+          expect(action.call.outcome.to_sym).to eq(expected)
+        end
+      end
+    end
+
+    describe "condition receivers" do
+      it "a 1-arity proc receives the exception positionally" do
+        action = build_axn do
+          fails_on ArgumentError, if: ->(e) { e.message == "boom" }
+          def call = raise ArgumentError, "boom"
+        end
+
+        expect(action.call.outcome).to be_failure
+      end
+
+      it "a proc with an exception: kwarg receives it as a kwarg" do
+        action = build_axn do
+          fails_on ArgumentError, if: ->(exception:) { exception.message == "boom" }
+          def call = raise ArgumentError, "boom"
+        end
+
+        expect(action.call.outcome).to be_failure
+      end
+    end
+
+    describe "message composition" do
+      it "applies the wired message when the gate is open" do
+        action = build_axn do
+          fails_on ArgumentError, "Unable to submit", if: -> { true }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("Unable to submit")
+      end
+
+      # The ticket's headline footgun: before if:, a condition INSIDE the message proc looked like it
+      # gated reclassification too -- it never did. Now if: gates both together: a closed gate means
+      # the exception stays unreclassified AND the message never surfaces.
+      it "does not apply the wired message when the gate is closed" do
+        action = build_axn do
+          fails_on ArgumentError, "Unable to submit", if: -> { false }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(result.outcome).to be_exception
+        expect(result.error).to eq("Something went wrong")
+        expect(Axn.config).to have_received(:on_exception)
+      end
+
+      it "composes standalone: true with an open if: gate" do
+        action = build_axn do
+          error "Couldn't save widget"
+          fails_on ArgumentError, "Unable to submit", standalone: true, if: -> { true }
+          def call = raise ArgumentError, "boom"
+        end
+
+        expect(action.call.error).to eq("Unable to submit")
+      end
+    end
+
+    describe "multiple entries OR" do
+      it "an unconditional declaration still reclassifies even when a later conditional one on the same class is closed" do
+        action = build_axn do
+          fails_on ArgumentError
+          fails_on ArgumentError, if: -> { false }
+          def call = raise ArgumentError, "boom"
+        end
+
+        expect(action.call.outcome).to be_failure
+      end
+    end
+
+    # Regression coverage for the executor reorder: the verdict is recorded BEFORE presentation
+    # resolution and the :error callback dispatch, so both windows read the finished answer rather
+    # than re-deriving (or worse, running) the condition themselves.
+    describe "the declaring action's own settlement windows read the recorded verdict" do
+      it "reads outcome as failure inside its own on_error" do
+        observed = nil
+        action = build_axn do
+          fails_on ArgumentError, if: -> { true }
+          on_error { observed = result.outcome.to_s }
+          def call = raise ArgumentError, "boom"
+        end
+
+        action.call
+        expect(observed).to eq("failure")
+      end
+
+      it "reads outcome as failure inside message resolution (presentation stamping), for any declared handler" do
+        observed = nil
+        action = build_axn do
+          fails_on ArgumentError, if: -> { true }
+          error do |e|
+            observed = result.outcome.to_s
+            "handled: #{e.message}"
+          end
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(observed).to eq("failure")
+        expect(result.error).to eq("handled: boom")
+      end
+    end
+
+    describe "evaluation count" do
+      it "evaluates the condition exactly once per call with no message, and adds nothing on later reads" do
+        counter = []
+        action = build_axn do
+          fails_on ArgumentError, if: lambda {
+            counter << 1
+            true
+          }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(counter.size).to eq(1)
+
+        3.times { result.error }
+        3.times { result.outcome }
+        result.inspect
+        expect(counter.size).to eq(1)
+      end
+
+      it "evaluates the condition exactly twice per call with a message (classification + message resolution)" do
+        counter = []
+        action = build_axn do
+          fails_on ArgumentError, "Unable to submit", if: lambda {
+            counter << 1
+            true
+          }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(counter.size).to eq(2)
+
+        3.times { result.error }
+        3.times { result.outcome }
+        result.inspect
+        expect(counter.size).to eq(2)
+      end
+
+      it "reading outcome repeatedly after a CLOSED gate adds zero further evaluations" do
+        counter = []
+        action = build_axn do
+          fails_on ArgumentError, if: lambda {
+            counter << 1
+            false
+          }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        after_call = counter.size
+
+        10.times { result.outcome }
+        result.inspect
+
+        expect(counter.size).to eq(after_call)
+      end
+    end
+
+    describe "stickiness" do
+      it "an inner action whose gate is closed does not classify, and the report still fires" do
+        stub_const("InnerClosedGate", build_axn do
+          fails_on(ArgumentError, if: -> { false })
+          def call = raise(ArgumentError, "boom")
+        end)
+        stub_const("OuterOfClosedGate", build_axn { def call = InnerClosedGate.call! })
+
+        result = OuterOfClosedGate.call
+        expect(result.outcome).to be_exception
+        expect(Axn.config).to have_received(:on_exception)
+      end
+
+      it "an inner action's open-gate classification is sticky to an ancestor with no fails_on of its own" do
+        stub_const("InnerOpenGate", build_axn do
+          fails_on(ArgumentError, if: -> { true })
+          def call = raise(ArgumentError, "boom")
+        end)
+        stub_const("OuterOfOpenGate", build_axn { def call = InnerOpenGate.call! })
+
+        result = OuterOfOpenGate.call
+        expect(result.outcome).to be_failure
+      end
+
+      it "an ancestor's own condition is never consulted for an exception already classified by an inner action" do
+        ancestor_evaluations = []
+        stub_const("InnerAlreadyClassified", build_axn do
+          fails_on(ArgumentError, if: -> { true })
+          def call = raise(ArgumentError, "boom")
+        end)
+        stub_const("OuterWithOwnGate", build_axn do
+          recorder = ancestor_evaluations
+          fails_on(ArgumentError, if: lambda {
+            recorder << 1
+            true
+          })
+          define_method(:call) { InnerAlreadyClassified.call! }
+        end)
+
+        result = OuterWithOwnGate.call
+        expect(result.outcome).to be_failure
+        expect(ancestor_evaluations).to be_empty
+      end
+    end
+
+    describe "declaration guards" do
+      describe "rejected forms" do
+        it "rejects if: false (would mean always reclassify)" do
+          expect { build_axn { fails_on ArgumentError, if: false } }
+            .to raise_error(ArgumentError, /not a boolean/)
+        end
+
+        it "rejects if: true (would mean never reclassify)" do
+          expect { build_axn { fails_on ArgumentError, if: true } }
+            .to raise_error(ArgumentError, /not a boolean/)
+        end
+
+        it "rejects unless: false" do
+          expect { build_axn { fails_on ArgumentError, unless: false } }
+            .to raise_error(ArgumentError, /not a boolean/)
+        end
+
+        it "rejects unless: true" do
+          expect { build_axn { fails_on ArgumentError, unless: true } }
+            .to raise_error(ArgumentError, /not a boolean/)
+        end
+
+        it "treats if: nil as not given (no error, unconditional)" do
+          expect { build_axn { fails_on ArgumentError, if: nil } }.not_to raise_error
+        end
+
+        it "rejects if: [] (empty condition)" do
+          expect { build_axn { fails_on ArgumentError, if: [] } }
+            .to raise_error(ArgumentError, /cannot be an empty condition/)
+        end
+
+        it "rejects an unusable rule shape (a plain Integer)" do
+          expect { build_axn { fails_on ArgumentError, if: 42 } }
+            .to raise_error(ArgumentError, /cannot apply 42/)
+        end
+
+        it "rejects an unusable rule shape (a Regexp)" do
+          expect { build_axn { fails_on ArgumentError, if: /re/ } }
+            .to raise_error(ArgumentError, /cannot apply/)
+        end
+
+        it "rejects a #call-only object (not invokable by Invoker)" do
+          call_only = Object.new
+          def call_only.call = true
+
+          expect { build_axn { fails_on ArgumentError, if: call_only } }
+            .to raise_error(ArgumentError, /cannot apply/)
+        end
+
+        it "rejects a boolean nested inside an array" do
+          expect { build_axn { fails_on ArgumentError, if: [:some_method, false] } }
+            .to raise_error(ArgumentError, /not a boolean/)
+        end
+      end
+
+      describe "accepted forms" do
+        it "accepts a Proc" do
+          expect { build_axn { fails_on ArgumentError, if: -> { true } } }.not_to raise_error
+        end
+
+        it "accepts a Symbol" do
+          expect { build_axn { fails_on ArgumentError, if: :some_method } }.not_to raise_error
+        end
+
+        it "accepts a String naming a constant" do
+          expect { build_axn { fails_on ArgumentError, if: "ArgumentError" } }.not_to raise_error
+        end
+
+        it "accepts an Exception class" do
+          expect { build_axn { fails_on ArgumentError, if: TypeError } }.not_to raise_error
+        end
+
+        it "accepts an array of valid rules" do
+          expect { build_axn { fails_on ArgumentError, if: [:some_method, -> { true }] } }.not_to raise_error
+        end
+      end
+    end
+
+    describe "if:/unless: with no message (deliberately not rejected -- the opposite of standalone:)" do
+      it "is fully meaningful alone" do
+        action = build_axn do
+          fails_on ArgumentError, if: -> { true }
+          def call = raise ArgumentError, "boom"
+        end
+
+        expect(action.call.outcome).to be_failure
+      end
+    end
+  end
 end

@@ -934,6 +934,33 @@ module Axn
 
         @context.__record_exception(e)
 
+        # Classify BEFORE resolving the presentation or dispatching any callback. `fails_on if:`/
+        # `unless:` runs USER code, so the verdict gets exactly one author and one evaluation: decided
+        # and recorded here, before anything downstream can observe it. An on_error callback, message
+        # resolution, and every later `result.outcome` then read a RECORD (the context flag / sticky
+        # set below) rather than re-deriving the answer — which is what lets `Result#outcome` stay
+        # undispatched (it reads only the static fallback; see `_unconditionally_fails_on?`) and,
+        # relatedly, memoizable once finalized.
+        #
+        # `_fails_on?` is LAST in the OR because it's the only term that can run user code: an
+        # Axn::Failure, an already-sticky classification, and a user-facing violation all short-circuit
+        # it first. That also means an ancestor's condition is never consulted for an exception an
+        # inner action already classified — stickiness flows outward, and an ancestor cannot un-classify.
+        settled_as_failure = Internal::Identity.kind?(e, Failure) ||
+                             Internal::ExceptionClassification.failure?(e) ||
+                             Axn::ValidationError.user_facing?(e) ||
+                             @action_class._fails_on?(e, action: @action)
+
+        if settled_as_failure
+          # Make a `fails_on` (or user-facing `expects ..., user_facing:`) classification sticky to this
+          # exception object (per call tree), so it stays a failure (fires on_failure, no report) as it
+          # propagates through ancestor `call!`s — mirroring how Axn::Failure is sticky via its class.
+          # Also record it on this result's context so result.outcome reports `failure` after the
+          # per-execution set is cleared.
+          Internal::ExceptionClassification.mark_failure!(e) unless Internal::Identity.kind?(e, Failure)
+          @context.__classify_as_failure!
+        end
+
         # Resolve + stamp the presentation BEFORE dispatching any callbacks, so an on_error/on_failure
         # filter or body that reads exception.message observes the same resolved string as result.error
         # and the call!-raised exception — not the raw reason. (Context is finalized by __record_exception
@@ -942,15 +969,7 @@ module Axn
 
         @action_class._dispatch_callbacks(:error, action: @action, exception: e)
 
-        if Internal::Identity.kind?(e, Failure) || @action_class._fails_on?(e) || Internal::ExceptionClassification.failure?(e) ||
-           Axn::ValidationError.user_facing?(e)
-          # Make a `fails_on` (or user-facing `expects ..., user_facing:`) classification sticky to this
-          # exception object (per call tree), so it stays a failure (fires on_failure, no report) as it
-          # propagates through ancestor `call!`s — mirroring how Axn::Failure is sticky via its class.
-          # Also record it on this result's context so result.outcome reports `failure` after the
-          # per-execution set is cleared.
-          Internal::ExceptionClassification.mark_failure!(e) unless Internal::Identity.kind?(e, Failure)
-          @context.__classify_as_failure!
+        if settled_as_failure
           @action_class._dispatch_callbacks(:failure, action: @action, exception: e)
         else
           trigger_on_exception(e)

@@ -8,6 +8,19 @@ module Axn
     module Flow
       module Handlers
         class SingleRuleMatcher
+          # The rule forms a DECLARATION may admit, for a caller that wants to reject an unusable rule
+          # at class-definition time rather than let it fall through to `handle_invalid` at run time.
+          # Narrower than `#matches?`'s own `callable?` on purpose: that one is a bare
+          # `respond_to?(:call)`, but `Invoker` needs `to_proc`/`arity` to actually invoke it — a
+          # `#call`-only object fails both, falls through to `Invoker#literal_value`, and comes back
+          # AS ITSELF, i.e. truthy: an unconditional match. For a gate deciding whether a bug gets
+          # reported, "always matches" is the wrong way to be wrong, so a declaration admits only what
+          # Invoker can actually invoke — the same seam `step` uses for the same reason
+          # (mounting_strategies/step.rb).
+          def self.applicable?(rule)
+            Invoker.callable?(rule) || rule.is_a?(Symbol) || rule.is_a?(String) || (rule.is_a?(Class) && rule <= Exception)
+          end
+
           def initialize(rule, invert: false)
             @rule = rule
             @invert = invert

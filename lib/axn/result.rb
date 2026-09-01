@@ -78,30 +78,20 @@ module Axn
       OUTCOME_EXCEPTION = "exception",
     ].freeze
 
-    # Deliberately NOT memoized (unlike #error/#success): outcome reflects classification state that
-    # can finalize at different points during dispatch (records #2/#3 below), so a value read early —
-    # e.g. by an ancestor's on_error before this level's context flag is set — must not be frozen in.
-    # The recompute is cheap: it short-circuits on the common paths and only allocates a StringInquirer.
+    # Memoized once finalized, on the same terms as #error/#success (`finalized?` guards a
+    # pre-finalization read, which still recomputes live). This used to be deliberately unmemoized,
+    # because classification could finalize at different points during dispatch — but `finalized?`
+    # is set as the FIRST thing `_settle_exception!` does, before it decides failure-vs-exception and
+    # before any callback/presentation resolution runs, so every classification term below (ancestry,
+    # the context flag, the sticky set, the static fails_on fallback) is already fixed by the time
+    # `finalized?` is observably true. A conditional `fails_on if:`/`unless:` gate is the one term
+    # that ever had genuine timing to worry about, and it's pinned by that same ordering (see
+    # `_settle_exception!` and `_unconditionally_fails_on?` below) before this could ever read it.
     def outcome
-      label = if Axn::Internal::Identity.kind?(exception, Axn::Failure)
-                OUTCOME_FAILURE
-              elsif exception
-                # Three records of "this settled as a failure", in priority order:
-                #   1. context flag — durable; survives after the per-execution set is cleared.
-                #   2. live classification set — set as soon as ANY action (this one or a nested one,
-                #      sticky) classifies the exception. Covers the window where an ancestor's `on_error`
-                #      reads outcome *before* the executor sets the context flag on this level.
-                #   3. `_fails_on?` — defensive recompute.
-                failure = @context.__classified_as_failure? ||
-                          Internal::ExceptionClassification.failure?(exception) ||
-                          action.class._fails_on?(exception) ||
-                          Axn::ValidationError.user_facing?(exception)
-                failure ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
-              else
-                OUTCOME_SUCCESS
-              end
+      return _resolve_outcome unless finalized?
 
-      ActiveSupport::StringInquirer.new(label)
+      @__resolved_outcome = _resolve_outcome unless defined?(@__resolved_outcome)
+      @__resolved_outcome
     end
 
     # Internal accessor for the underlying action instance (used by introspection and tests). It is a
@@ -143,6 +133,32 @@ module Axn
     end
 
     private
+
+    def _resolve_outcome
+      label = if Axn::Internal::Identity.kind?(exception, Axn::Failure)
+                OUTCOME_FAILURE
+              elsif exception
+                # Three records of "this settled as a failure", in priority order:
+                #   1. context flag — durable; survives after the per-execution set is cleared.
+                #   2. live classification set — set as soon as ANY action (this one or a nested one,
+                #      sticky) classifies the exception. Covers the window where an ancestor's `on_error`
+                #      reads outcome *before* the executor sets the context flag on this level.
+                #   3. `_unconditionally_fails_on?` — defensive recompute, static entries only. Reads no
+                #      conditional entry: a conditional verdict is decided and recorded exactly once, by
+                #      `_settle_exception!`, before this could ever be reached — this stays undispatched
+                #      (no user code) so `outcome` can be read from `inspect`/logging/pattern-match, or
+                #      memoized above, without re-running a caller's `fails_on if:`/`unless:` proc.
+                failure = @context.__classified_as_failure? ||
+                          Internal::ExceptionClassification.failure?(exception) ||
+                          action.class._unconditionally_fails_on?(exception) ||
+                          Axn::ValidationError.user_facing?(exception)
+                failure ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
+              else
+                OUTCOME_SUCCESS
+              end
+
+      ActiveSupport::StringInquirer.new(label)
+    end
 
     # A pattern match binds the outcome as a plain Symbol; the public reader answers a StringInquirer.
     def _outcome_symbol = outcome.to_sym

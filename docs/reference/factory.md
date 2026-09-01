@@ -71,7 +71,7 @@ Every option below is optional. The builder-specific options shape the class its
 
 ### `fails_on:`
 
-A bare exception class is one matcher. An array is a **list** of specs. Within a spec, a run of exception classes becomes a single matcher over all of them; anything else is `[exceptions, message]` with a trailing Hash forwarded as keywords (e.g. `standalone:`).
+A bare exception class is one matcher. An array is a **list** of specs. Within a spec, a run of exception classes becomes a single matcher over all of them; anything else is `[exceptions, message]` with a trailing Hash forwarded as keywords — `standalone:` and the conditional [`if:`/`unless:`](/reference/class#conditional-reclassification-if-unless) alike.
 
 ```ruby
 fails_on: MyError                            # one matcher
@@ -79,6 +79,8 @@ fails_on: [TimeoutError, NetworkError]       # two matchers (one class each)
 fails_on: [[TimeoutError, NetworkError]]     # one matcher covering both
 fails_on: [[MyError, "please retry", { standalone: true }]]
 fails_on: [[[NetA, NetB], "network down"]]   # one matcher over both, shared message
+fails_on: [[MyError, { if: -> { retryable? } }]]           # conditional, no message
+fails_on: [[MyError, "please retry", { if: -> { retryable? } }]] # conditional, with a message
 ```
 
 ### `tag:` / `dimension:`

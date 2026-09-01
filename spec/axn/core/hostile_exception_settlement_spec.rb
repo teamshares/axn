@@ -72,6 +72,39 @@ RSpec.describe "settling an exception that answers type questions for itself" do
     end
   end
 
+  # A `fails_on if:`/`unless:` gate runs USER code (unlike everything else in this file, which is
+  # undispatched ancestry) -- so it is a genuinely different hazard: not "the exception lies about its
+  # own type," but "the caller's own condition proc breaks." `Handlers::Invoker`'s error policy already
+  # owns this (see error-paths.md): a swallowable raise warns and reads as no match; anything else
+  # propagates, exactly like any other matcher.
+  describe "a `fails_on` condition that raises" do
+    it "a StandardError from the condition is swallowed, warned, and read as no match -- settlement completes and still reports" do
+      fired = []
+      action = build_axn do
+        fails_on(ArgumentError, if: -> { raise "boom in condition" })
+        on_exception { fired << :exception }
+        on_error { fired << :error }
+        on_failure { fired << :failure }
+      end.tap { |a| a.define_method(:call) { raise ArgumentError, "the real exception" } }
+
+      result = nil
+      expect { result = action.call }.not_to raise_error
+
+      expect(result.outcome.exception?).to be(true)
+      expect(result.exception.message).to eq("the real exception")
+      expect(fired).to contain_exactly(:error, :exception)
+    end
+
+    it "an exception outside StandardError/SystemStackError/ScriptError from the condition escapes .call" do
+      unswallowable_from_condition = Class.new(Exception) # rubocop:disable Lint/InheritException
+      action = build_axn do
+        fails_on(ArgumentError, if: -> { raise unswallowable_from_condition, "boom in condition" })
+      end.tap { |a| a.define_method(:call) { raise ArgumentError, "the real exception" } }
+
+      expect { action.call }.to raise_error(unswallowable_from_condition, "boom in condition")
+    end
+  end
+
   # The declared-handler match is the same question in a different place: `SingleRuleMatcher` resolves an
   # exception-class rule against the exception, and which handler wins decides the message a caller reads.
   describe "matching a declared `error` handler by exception class" do

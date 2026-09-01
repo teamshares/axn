@@ -509,6 +509,37 @@ fails_on(ActiveRecord::RecordInvalid, standalone: true, &:message)  # message st
 
 The message integrates with the standard message DSL (ordering, base/reason semantics, etc.), so it composes with — and can be overridden by — your other `error` declarations. It also accepts `standalone:`, forwarded to that wired `error`: by default the message attaches as a reason under any declared base `error` headline (e.g. `"Couldn't save order: Unable to submit"`); `standalone: true` makes it replace the base instead, so the message stands alone. (`standalone:` only configures that wired message, so passing it with no message/block raises — there's nothing to configure.)
 
+### Gating reclassification itself with `if:`/`unless:`
+
+Every `fails_on` example so far reclassifies **unconditionally**: the moment the class matches, the exception is a failure. `if:`/`unless:` add a runtime gate on that decision, evaluated at settlement against the action instance — the same mechanism `error`/`success`/callbacks already use (a Symbol naming an action method, a callable receiving the exception, a String naming a constant, an Exception class, or an array of these; `if:` and `unless:` combine with AND):
+
+```ruby
+fails_on ActiveRecord::RecordNotFound, if: -> { current_tenant.tolerate_missing_records? }
+fails_on ActiveRecord::RecordInvalid, unless: :critical_write?
+```
+
+::: warning A condition *inside* the message only shapes text — it never gates reclassification
+This is the footgun `if:`/`unless:` exists to close. `fails_on X, &:message` composed with a conditional inside the block, or a separately-declared `error if: cond`, decides which **string** `result.error` resolves to — the exception is reclassified into the failure bucket either way, condition or no condition. If you want a condition to also control *whether the exception is reclassified at all* (and therefore whether it's globally reported), it has to be `fails_on`'s own `if:`/`unless:`, not a condition living inside the message:
+
+```ruby
+# WRONG — reclassifies unconditionally; the condition only changes the message text
+fails_on(RecordNotFound) { |e| "Not found" if some_condition }
+
+# RIGHT — the condition gates classification; a closed gate means still-reported, no message either
+fails_on RecordNotFound, "Not found", if: -> { some_condition }
+```
+:::
+
+Unlike `standalone:`, `if:`/`unless:` is meaningful with **no** message at all — it is entirely about classification, not presentation. When a message *is* declared alongside a condition, the message is gated by the same condition: a closed gate means the exception stays unreclassified **and** the message never surfaces, so `result.error` falls back to your base `error` (or the generic default) exactly as if `fails_on` weren't there.
+
+A literal boolean is rejected at declaration — `fails_on X, if: false` reads like "only sometimes" but the underlying matcher's "no condition" convention treats a bare falsey value as *always matches*, so it would silently mean the opposite of what it looks like (and a bare `true` isn't a recognized condition shape at all, silently meaning *never*, with a runtime warning). For a decision you can make once, when the class loads — `Rails.env`, a compile-time feature flag — guard the declaration itself instead:
+
+```ruby
+fails_on ActiveRecord::RecordNotFound if Rails.env.staging?
+```
+
+`if:`/`unless:` earns its keep on state that's only known **per call**: the exception's own attributes, the action's inputs, a per-tenant or per-request setting — not on anything already decided by the time the class is defined.
+
 ::: tip `result.error` never leaks `exception.message` by default
 When you reclassify but declare **no** message, `result.error` resolves to your base `error` (or the generic `"Something went wrong"`) — **not** the exception's own `#message`. That separation is deliberate: a foreign exception's `#message` is a technical string (e.g. `"Validation failed: Email can't be blank"`, or a raw `Faraday` error body) and stays on `result.exception` for debugging, out of the user-facing presentation.
 

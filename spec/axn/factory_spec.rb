@@ -695,7 +695,7 @@ RSpec.shared_examples "can build Axns from callables" do
         result = axn.call
         expect(result).not_to be_ok
         expect(result.exception).to be_a(err_class)
-        expect(axn._fails_on_matchers).to include(err_class)
+        expect(axn._fails_on_entries.flat_map(&:classes)).to include(err_class)
       end
     end
 
@@ -706,7 +706,7 @@ RSpec.shared_examples "can build Axns from callables" do
       let(:callable) { -> {} }
 
       it "registers a matcher for each class" do
-        expect(axn._fails_on_matchers).to include(err_a, err_b)
+        expect(axn._fails_on_entries.flat_map(&:classes)).to include(err_a, err_b)
       end
     end
 
@@ -733,7 +733,7 @@ RSpec.shared_examples "can build Axns from callables" do
       end
 
       it "registers a single matcher over both classes with the shared message" do
-        expect(axn._fails_on_matchers).to include(err_a, err_b)
+        expect(axn._fails_on_entries.flat_map(&:classes)).to include(err_a, err_b)
         expect(axn.call.error).to eq("shared failure")
       end
     end
@@ -745,6 +745,49 @@ RSpec.shared_examples "can build Axns from callables" do
 
       it "raises at declaration rather than silently dropping the extra" do
         expect { axn }.to raise_error(ArgumentError, /Invalid fails_on spec/)
+      end
+    end
+
+    context "with a conditional spec (trailing Hash carries if:)" do
+      let(:err_class) { Class.new(StandardError) }
+      let(:kwargs) { { fails_on: [[err_class, { if: -> { true } }]] } }
+      let(:callable) do
+        boom = err_class
+        -> { raise boom, "kaboom" }
+      end
+
+      it "reaches the DSL and gates classification" do
+        result = axn.call
+        expect(result).not_to be_ok
+        expect(result.outcome).to be_failure
+      end
+    end
+
+    context "with a conditional spec carrying a message too" do
+      let(:err_class) { Class.new(StandardError) }
+      let(:kwargs) { { fails_on: [[err_class, "gated message", { if: -> { false } }]] } }
+      let(:callable) do
+        boom = err_class
+        -> { raise boom, "kaboom" }
+      end
+
+      it "leaves the exception unreclassified and the message unapplied when the gate is closed" do
+        result = axn.call
+        expect(result.outcome).to be_exception
+      end
+    end
+
+    context "with a conditional spec sharing one gate across both classes" do
+      let(:err_a) { Class.new(StandardError) }
+      let(:err_b) { Class.new(StandardError) }
+      let(:kwargs) { { fails_on: [[[err_a, err_b], nil, { if: -> { true } }]] } }
+      let(:callable) do
+        boom = err_b
+        -> { raise boom, "kaboom" }
+      end
+
+      it "gates both classes with one matcher" do
+        expect(axn.call.outcome).to be_failure
       end
     end
 
