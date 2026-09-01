@@ -89,9 +89,9 @@ itself) would run the user's condition a second time, unpredictably, depending o
 Keeping the static fallback means the executor's own evaluation is the only one that ever runs user
 code, regardless of what reads `outcome` afterward or in what order.
 
-## Four bugs found by Codex review, and the fixes
+## Five bugs found by Codex review, and the fixes
 
-All four are real, confirmed by direct execution before and after — not accepted on the
+All five are real, confirmed by direct execution before and after — not accepted on the
 reviewer's prose.
 
 ### 1. A reentrant `result.outcome` read froze in the wrong answer, permanently
@@ -183,6 +183,40 @@ live: `fails_on classes, "msg"` then `classes.delete(ArgumentError); classes << 
 its message (wrong, the gate's `classes.any?` now checking the mutated array). Fix: the gate reads
 `entry.classes` too — the same aliasing guard decision 1 already stated, now actually applied
 everywhere the classes list is read, not just where it's stored.
+
+### 5. A reentrant `result.error`/`.message`/`.inspect` read inside the condition recursed unboundedly, and could permanently poison the message
+
+`message_gate`'s cache-miss fallback (`entry_matcher.call(exception:, action: self)`, justified as
+"defensive only... the cache should already be populated") was wrong on both counts. A condition
+that reads `result.error`/`.message`/`.inspect` reentrant — during its *own* evaluation — resolves
+LIVE (`finalized?` is still false at that point, by decision 3's own design), which walks every
+declared `error` handler including this entry's OWN wired message, mid-classification — a genuine,
+reachable cache miss, not a hypothetical one. Falling back to re-invoking the condition there
+doesn't just cost an extra evaluation: the re-invoked condition can *itself* read `result.error`
+again, recursing. Measured: 254 nested calls before hitting whatever incidentally bounded it, for a
+condition as simple as `-> { result.error; true }`.
+
+Fix, part one (per the reviewer's own suggested remedy): a cache miss now means "not decided yet,"
+read as a plain `false` — `Axn::Internal::FailsOnVerdicts.fetch(exception, entry) || false` — never
+re-invoking the condition. This alone closes the recursion (confirmed: exactly 1 call), but not the
+whole finding — with only this half applied, `outcome` still correctly settled `"failure"` while
+`result.error` stayed **permanently** stuck on the generic fallback, exactly the disagreement the
+reviewer named.
+
+The second layer: `Result#_error_resolver` memoizes unconditionally (`@_error_resolver ||= ...`),
+and the `MessageResolver` it builds separately memoizes its OWN `matched_reason` ("a resolver is
+single-use... run once, not twice"). The reentrant read is the FIRST ever call to `.error` on this
+result, so it builds and permanently caches both — freezing in the premature "no match" answer
+computed while classification was still mid-flight, before `FailsOnVerdicts` had anything to
+`fetch`. Every later call, including the real one after classification finishes, reused that same
+frozen resolver and its already-decided (wrong) `matched_reason` — `Result#error`'s OWN `finalized?`
+gate on `@__resolved_error` never got a chance to matter, because the resolver **underneath** it was
+already poisoned. Fix: `_error_resolver` now defers its memoization to `finalized?`, mirroring
+`outcome`/`#error` — a throwaway resolver per pre-finalization read (isolated, discarded), one real
+memoized resolver from the first post-finalization read onward. `_error_from_declared_source?`
+(`TransparentBubbling`) and `_resolve_and_stamp_presentation`'s own `result.error` call — the two
+real "share one pass" callers the original comment was written for — are both already
+post-finalization by construction, so neither loses anything.
 
 ## Declaration-time guards
 

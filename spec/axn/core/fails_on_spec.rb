@@ -501,6 +501,41 @@ RSpec.describe "fails_on" do
       end
     end
 
+    # Codex review finding (PR #261): a condition that reads `result.error`/`.message`/`.inspect`
+    # reentrant -- during its own evaluation -- resolves LIVE (finalized? is still false at that
+    # point), which walks every declared `error` handler including this entry's own wired message,
+    # mid-classification: a cache miss on `FailsOnVerdicts` used to fall back to invoking the
+    # condition AGAIN, unbounded (measured: 254 nested calls before this fix). Fixed in two parts:
+    # (1) a cache miss now reads as a plain "not a match yet" rather than re-invoking the condition,
+    # and (2) `Result#_error_resolver` (which memoizes `MessageResolver#matched_reason` -- "a
+    # resolver is single-use") now defers that memoization until finalized, so the reentrant read's
+    # premature "no match" can't get permanently baked in and outlive the real, later verdict.
+    describe "a condition that reads result.error / .message / .inspect reentrant, during its own evaluation" do
+      {
+        "result.error" => :error.to_proc,
+        "result.message" => :message.to_proc,
+        "result.inspect" => :inspect.to_proc,
+      }.each do |label, reentrant_read|
+        it "runs the condition exactly once and resolves the real message, for a reentrant #{label} read" do
+          calls = 0
+          read = reentrant_read
+          action = build_axn do
+            fails_on ArgumentError, "gated message", if: lambda {
+              calls += 1
+              read.call(result)
+              true
+            }
+            def call = raise ArgumentError, "boom"
+          end
+
+          result = action.call
+          expect(calls).to eq(1)
+          expect(result.outcome).to be_failure
+          expect(result.error).to eq("gated message")
+        end
+      end
+    end
+
     # Codex review finding (PR #261): before FailsOnVerdicts, `fails_on X, "msg", if: cond` evaluated
     # `cond` independently for classification (in `_fails_on?`) and for the wired message (via the
     # generic error/success Matcher pipeline) -- so a `cond` that wasn't perfectly pure could

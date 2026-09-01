@@ -188,10 +188,24 @@ module Axn
       @__singleton.alias_method predicate_name, field
     end
 
-    # Memoized so resolution and _error_from_declared_source? share one resolver instance — message
-    # blocks (and base resolution) run once, not twice. Only built when there's an exception (error
-    # resolution is gated on !ok?), and exception/registry are fixed for a Result's lifetime.
-    def _error_resolver = @_error_resolver ||= _msg_resolver(:error, exception:)
+    # Memoized ONCE FINALIZED, on the same terms as #error/#outcome — so resolution and
+    # _error_from_declared_source? share one resolver instance and a message block (or base
+    # resolution) runs once, not twice. Both of those legitimate multi-callers are already
+    # post-finalization by construction (`_error_from_declared_source?` runs from `TransparentBubbling`,
+    # reached only after `.call!` returns; `_resolve_and_stamp_presentation` runs after the executor
+    # finalizes). Pre-finalization, a resolver is built FRESH every read instead: a `fails_on if:`
+    # condition that reads `result.error`/`.message`/`.inspect` reentrant -- during its own
+    # evaluation, before classification is recorded -- would otherwise permanently poison the ONE
+    # memoized resolver's OWN `matched_reason` with whatever it resolved to mid-classification
+    # (a real, verified case: the exception settled `failure` correctly but `result.error` stayed
+    # stuck on the generic fallback forever after). A throwaway resolver per pre-finalization read
+    # means that reentrant read can't contaminate anything the real, post-finalization resolution
+    # goes on to compute.
+    def _error_resolver
+      return _msg_resolver(:error, exception:) unless finalized?
+
+      @_error_resolver ||= _msg_resolver(:error, exception:)
+    end
 
     # Whether result.error came from a declared base/reason rather than the bare generic fallback.
     # The executor uses this to decide whether an unexpected exception's presentation is worth

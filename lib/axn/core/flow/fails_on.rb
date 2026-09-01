@@ -86,14 +86,18 @@ module Axn
                 next false unless entry.classes.any? { |klass| Axn::Internal::Identity.kind?(exception, klass) }
                 next true if entry_matcher.nil?
 
-                cached = Axn::Internal::FailsOnVerdicts.fetch(exception, entry)
-                next cached unless cached.nil?
-
-                # Defensive only: `_fails_on?` always runs first in the settle path this ships with,
-                # so the cache should already be populated by the time any message resolves. `self`
-                # here is the action (Invoker instance_execs this proc), same receiver `_fails_on?`
-                # itself would be called with.
-                entry_matcher.call(exception:, action: self)
+                # A cache miss means classification for THIS entry hasn't finished yet -- reachable
+                # not just before `_fails_on?` has run at all, but REENTRANT: a condition that reads
+                # `result.error`/`.message`/`.inspect` during its own evaluation resolves live
+                # (finalized? is still false at that point -- see the executor's settle order), which
+                # walks every declared `error` handler INCLUDING this one, mid-classification. Falling
+                # back to invoking `entry_matcher` again here doesn't just cost an extra evaluation:
+                # it recurses into the SAME condition, which can itself read result.error again,
+                # unbounded (confirmed: 254 nested calls before this fix). Treating a miss as "not
+                # a match yet" instead is what "the condition runs at most once" actually requires --
+                # a genuine miss is never wrong to read as false, since classification's OWN read of
+                # this same verdict is the one that will actually record it moments later.
+                Axn::Internal::FailsOnVerdicts.fetch(exception, entry) || false
               }
               error(message, if: message_gate, standalone:, &block)
             end
