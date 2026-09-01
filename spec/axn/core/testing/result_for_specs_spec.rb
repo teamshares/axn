@@ -88,6 +88,36 @@ RSpec.describe "Action spec helpers" do
       expect(result.outcome.failure?).to be false
       expect(result.outcome.exception?).to be true
     end
+
+    # `outcome` memoizes once finalized (mirroring #error/#success) -- every classification term it
+    # reads is fixed by the time `finalized?` is observably true, so a second read must return the
+    # exact same object, not merely an equal one.
+    describe "memoization" do
+      it "returns the same StringInquirer object across repeated reads, for success" do
+        result = Axn::Result.ok
+        expect(result.outcome).to equal(result.outcome)
+      end
+
+      it "returns the same StringInquirer object across repeated reads, for a plain failure" do
+        result = Axn::Result.error
+        expect(result.outcome).to equal(result.outcome)
+      end
+
+      it "returns the same StringInquirer object across repeated reads, for an exception outcome" do
+        result = Axn::Result.error { raise "error" }
+        expect(result.outcome).to equal(result.outcome)
+      end
+
+      it "returns the same StringInquirer object across repeated reads, for a fails_on-conditional exception" do
+        action = build_axn do
+          fails_on ArgumentError, if: -> { true }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(result.outcome).to equal(result.outcome)
+      end
+    end
   end
 
   describe "Axn::Result#elapsed_time" do

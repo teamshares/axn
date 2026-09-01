@@ -15,7 +15,16 @@ module Axn
         module Invoker
           extend self
 
-          def call(action:, handler:, exception: nil, operation: "executing handler", allow_flow_control: false)
+          # `on_swallow:` is what a handler's return value becomes when a raise is swallowed below —
+          # `nil` by default, which is indistinguishable from a handler that genuinely returned `nil`.
+          # That's fine for most callers (a nil callback return, a nil message body), but a caller
+          # that INVERTS the result (`SingleRuleMatcher`'s `unless:`) needs to tell "swallowed" apart
+          # from "genuinely falsy": inverting a genuine `false` is correct (the exclusion doesn't
+          # apply, so it's a match), but inverting "the rule blew up" must never turn a broken rule
+          # into a match. This stays the ONE swallow policy — Invoker still decides what to catch and
+          # when — a caller opting into a distinct sentinel changes nothing about that, only what it
+          # reads back afterward.
+          def call(action:, handler:, exception: nil, operation: "executing handler", allow_flow_control: false, on_swallow: nil)
             return call_symbol_handler(action:, symbol: handler, exception:) if symbol?(handler)
             return call_callable_handler(action:, callable: handler, exception:) if callable?(handler)
 
@@ -24,8 +33,10 @@ module Axn
             raise if allow_flow_control
 
             Axn::Extensions.best_effort(operation, action:) { raise $ERROR_INFO }
+            on_swallow
           rescue StandardError => e
             Axn::Extensions.best_effort(operation, action:) { raise e }
+            on_swallow
           rescue Exception => e # rubocop:disable Lint/RescueException
             # A handler that blows the stack (or hits an unfinished method) is a bug in the HANDLER, and
             # must not become the action's outcome. This matters most on the settle path: a callback
@@ -36,6 +47,7 @@ module Axn
             raise unless Axn::Extensions.swallowable?(e)
 
             Axn::Extensions.best_effort(operation, action:) { raise e }
+            on_swallow
           end
 
           # Public so the contract DSL can validate a declared handler against the same notion of

@@ -8,6 +8,34 @@ module Axn
     module Flow
       module Handlers
         class SingleRuleMatcher
+          # The rule forms a DECLARATION may admit, for a caller that wants to reject an unusable rule
+          # at class-definition time rather than let it fall through to `handle_invalid` at run time.
+          # Requires BOTH of the two, genuinely different "callable" checks this class straddles,
+          # because either alone admits a shape the other rejects at RUN time:
+          #   - `#matches?`'s own `callable?` (bare `respond_to?(:call)`) decides whether a rule is
+          #     even ROUTED to `apply_callable` at all. An object with `to_proc`/`arity` but no `call`
+          #     passes `Invoker.callable?` yet never reaches `apply_callable` in the first place --
+          #     it falls through every branch to `handle_invalid` and is silently inert (verified
+          #     live), which is exactly the "fail at declaration, not silently do nothing" rule this
+          #     guard exists to uphold.
+          #   - `Invoker.callable?` (`to_proc` + `arity`) decides whether Invoker can actually INVOKE
+          #     what gets routed there. A `#call`-only object passes the routing check but fails this
+          #     one, falls through Invoker's OWN dispatch to `Invoker#literal_value`, and comes back
+          #     AS ITSELF, i.e. truthy: an unconditional match, silently -- the worse direction for a
+          #     gate deciding whether a bug gets reported.
+          # A declaration admits only a shape that clears both, matching the seam `step` uses for the
+          # same reason (mounting_strategies/step.rb).
+          def self.applicable?(rule)
+            (rule.respond_to?(:call) && Invoker.callable?(rule)) || rule.is_a?(Symbol) || rule.is_a?(String) || (rule.is_a?(Class) && rule <= Exception)
+          end
+
+          # Distinguishes "the rule raised and Invoker swallowed it" from "the rule genuinely returned
+          # a falsy value" -- see `#call`. `Invoker.call`'s default swallow-return is `nil`, which a
+          # legitimate callable/Symbol answer can ALSO be, so this is passed as `on_swallow:` rather
+          # than inferred from the return value.
+          SWALLOWED = Object.new.freeze
+          private_constant :SWALLOWED
+
           def initialize(rule, invert: false)
             @rule = rule
             @invert = invert
@@ -21,10 +49,19 @@ module Axn
             # since on_success/error matchers are evaluated inside the executor's boundary, letting one
             # through would settle a SUCCESSFUL action as an exception carrying the matcher's own bug.
             # A broken matcher is loud in the log and inert in its effect; it never rewrites the outcome.
-            Axn::Extensions.best_effort("determining if handler applies to exception", action:) do
-              result = matches?(exception:, action:)
-              @invert ? !result : result
+            result = Axn::Extensions.best_effort("determining if handler applies to exception", action:) do
+              matches?(exception:, action:)
             end
+
+            # `result.nil?` covers a rule that raised OUTSIDE Invoker (apply_string/apply_exception_class
+            # have no Invoker underneath, so their raise reaches straight to the best_effort above, which
+            # returns nil); `SWALLOWED` covers one Invoker itself absorbed. Either way: never a match,
+            # REGARDLESS of `@invert` -- inverting "the rule blew up" into "unless: passes" would turn a
+            # broken condition into a silent reclassification (and, for `fails_on`, a suppressed report).
+            # Only a rule that genuinely RAN gets inverted; a swallowed one never reaches that ?:.
+            return false if result.nil? || Axn::Internal::Identity.same?(result, SWALLOWED)
+
+            @invert ? !result : result
           end
 
           private
@@ -44,12 +81,18 @@ module Axn
           def exception_class? = @rule.is_a?(Class) && @rule <= Exception
 
           def apply_callable(action:, exception:)
-            !!Invoker.call(action:, handler: @rule, exception:, operation: "determining if handler applies to exception")
+            result = Invoker.call(action:, handler: @rule, exception:, operation: "determining if handler applies to exception", on_swallow: SWALLOWED)
+            return SWALLOWED if Axn::Internal::Identity.same?(result, SWALLOWED)
+
+            !!result
           end
 
           def apply_symbol(action:, exception:)
             if action.respond_to?(@rule)
-              !!Invoker.call(action:, handler: @rule, exception:, operation: "determining if handler applies to exception")
+              result = Invoker.call(action:, handler: @rule, exception:, operation: "determining if handler applies to exception", on_swallow: SWALLOWED)
+              return SWALLOWED if Axn::Internal::Identity.same?(result, SWALLOWED)
+
+              !!result
             else
               begin
                 klass = Object.const_get(@rule.to_s)
@@ -58,7 +101,11 @@ module Axn
                 Axn::Internal::ActionState.log(action,
                                                "Ignoring apparently-invalid matcher #{@rule.inspect} -- neither action method nor constant found",
                                                level: :warn)
-                false
+                # SWALLOWED, not a bare `false`: this Symbol never resolved to anything -- the rule
+                # never genuinely ran, so it must be inert regardless of `@invert`, the same as a
+                # raise (see `#call`). A bare `false` here would still get INVERTED for `unless:`, so
+                # an unresolved/typo'd `unless: :predicate?` would reclassify instead of staying inert.
+                SWALLOWED
               end
             end
           end
@@ -80,7 +127,9 @@ module Axn
             Axn::Internal::ActionState.log(action,
                                            "Ignoring apparently-invalid matcher #{@rule.inspect} -- could not find way to apply it",
                                            level: :warn)
-            false
+            # SWALLOWED, not a bare `false` -- same reasoning as apply_symbol's NameError branch: the
+            # rule never ran, so it must be inert regardless of `@invert`.
+            SWALLOWED
           end
         end
 

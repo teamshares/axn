@@ -78,30 +78,20 @@ module Axn
       OUTCOME_EXCEPTION = "exception",
     ].freeze
 
-    # Deliberately NOT memoized (unlike #error/#success): outcome reflects classification state that
-    # can finalize at different points during dispatch (records #2/#3 below), so a value read early —
-    # e.g. by an ancestor's on_error before this level's context flag is set — must not be frozen in.
-    # The recompute is cheap: it short-circuits on the common paths and only allocates a StringInquirer.
+    # Memoized once finalized, on the same terms as #error/#success (`finalized?` guards a
+    # pre-finalization read, which still recomputes live). This used to be deliberately unmemoized,
+    # because classification could finalize at different points during dispatch — but `finalized?`
+    # is set as the FIRST thing `_settle_exception!` does, before it decides failure-vs-exception and
+    # before any callback/presentation resolution runs, so every classification term below (ancestry,
+    # the context flag, the sticky set, the static fails_on fallback) is already fixed by the time
+    # `finalized?` is observably true. A conditional `fails_on if:`/`unless:` gate is the one term
+    # that ever had genuine timing to worry about, and it's pinned by that same ordering (see
+    # `_settle_exception!` and `_unconditionally_fails_on?` below) before this could ever read it.
     def outcome
-      label = if Axn::Internal::Identity.kind?(exception, Axn::Failure)
-                OUTCOME_FAILURE
-              elsif exception
-                # Three records of "this settled as a failure", in priority order:
-                #   1. context flag — durable; survives after the per-execution set is cleared.
-                #   2. live classification set — set as soon as ANY action (this one or a nested one,
-                #      sticky) classifies the exception. Covers the window where an ancestor's `on_error`
-                #      reads outcome *before* the executor sets the context flag on this level.
-                #   3. `_fails_on?` — defensive recompute.
-                failure = @context.__classified_as_failure? ||
-                          Internal::ExceptionClassification.failure?(exception) ||
-                          action.class._fails_on?(exception) ||
-                          Axn::ValidationError.user_facing?(exception)
-                failure ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
-              else
-                OUTCOME_SUCCESS
-              end
+      return _resolve_outcome unless finalized?
 
-      ActiveSupport::StringInquirer.new(label)
+      @__resolved_outcome = _resolve_outcome unless defined?(@__resolved_outcome)
+      @__resolved_outcome
     end
 
     # Internal accessor for the underlying action instance (used by introspection and tests). It is a
@@ -144,6 +134,32 @@ module Axn
 
     private
 
+    def _resolve_outcome
+      label = if Axn::Internal::Identity.kind?(exception, Axn::Failure)
+                OUTCOME_FAILURE
+              elsif exception
+                # Three records of "this settled as a failure", in priority order:
+                #   1. context flag — durable; survives after the per-execution set is cleared.
+                #   2. live classification set — set as soon as ANY action (this one or a nested one,
+                #      sticky) classifies the exception. Covers the window where an ancestor's `on_error`
+                #      reads outcome *before* the executor sets the context flag on this level.
+                #   3. `_unconditionally_fails_on?` — defensive recompute, static entries only. Reads no
+                #      conditional entry: a conditional verdict is decided and recorded exactly once, by
+                #      `_settle_exception!`, before this could ever be reached — this stays undispatched
+                #      (no user code) so `outcome` can be read from `inspect`/logging/pattern-match, or
+                #      memoized above, without re-running a caller's `fails_on if:`/`unless:` proc.
+                failure = @context.__classified_as_failure? ||
+                          Internal::ExceptionClassification.failure?(exception) ||
+                          action.class._unconditionally_fails_on?(exception) ||
+                          Axn::ValidationError.user_facing?(exception)
+                failure ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
+              else
+                OUTCOME_SUCCESS
+              end
+
+      ActiveSupport::StringInquirer.new(label)
+    end
+
     # A pattern match binds the outcome as a plain Symbol; the public reader answers a StringInquirer.
     def _outcome_symbol = outcome.to_sym
 
@@ -172,10 +188,24 @@ module Axn
       @__singleton.alias_method predicate_name, field
     end
 
-    # Memoized so resolution and _error_from_declared_source? share one resolver instance — message
-    # blocks (and base resolution) run once, not twice. Only built when there's an exception (error
-    # resolution is gated on !ok?), and exception/registry are fixed for a Result's lifetime.
-    def _error_resolver = @_error_resolver ||= _msg_resolver(:error, exception:)
+    # Memoized ONCE FINALIZED, on the same terms as #error/#outcome — so resolution and
+    # _error_from_declared_source? share one resolver instance and a message block (or base
+    # resolution) runs once, not twice. Both of those legitimate multi-callers are already
+    # post-finalization by construction (`_error_from_declared_source?` runs from `TransparentBubbling`,
+    # reached only after `.call!` returns; `_resolve_and_stamp_presentation` runs after the executor
+    # finalizes). Pre-finalization, a resolver is built FRESH every read instead: a `fails_on if:`
+    # condition that reads `result.error`/`.message`/`.inspect` reentrant -- during its own
+    # evaluation, before classification is recorded -- would otherwise permanently poison the ONE
+    # memoized resolver's OWN `matched_reason` with whatever it resolved to mid-classification
+    # (a real, verified case: the exception settled `failure` correctly but `result.error` stayed
+    # stuck on the generic fallback forever after). A throwaway resolver per pre-finalization read
+    # means that reentrant read can't contaminate anything the real, post-finalization resolution
+    # goes on to compute.
+    def _error_resolver
+      return _msg_resolver(:error, exception:) unless finalized?
+
+      @_error_resolver ||= _msg_resolver(:error, exception:)
+    end
 
     # Whether result.error came from a declared base/reason rather than the bare generic fallback.
     # The executor uses this to decide whether an unexpected exception's presentation is worth

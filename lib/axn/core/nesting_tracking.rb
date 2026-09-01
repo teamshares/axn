@@ -29,6 +29,7 @@ module Axn
         if _current_axn_stack.empty?
           Axn::Internal::ExceptionClassification.reset!
           Axn::Internal::CarriedPresentation.reset!
+          Axn::Internal::FailsOnVerdicts.reset!
           _warn_if_fiber_isolation_mismatch
         end
         _current_axn_stack.push(axn)
@@ -36,11 +37,12 @@ module Axn
       ensure
         _current_axn_stack.pop
         # Outermost action finished: clear per-execution exception bookkeeping so the same exception
-        # object re-raised by a later, independent run starts fresh (report dedup + fails_on
-        # stickiness are scoped to one call tree).
+        # object re-raised by a later, independent run starts fresh (report dedup, fails_on
+        # stickiness, and a fails_on condition's cached verdict are all scoped to one call tree).
         if _current_axn_stack.empty?
           Axn::Internal::ExceptionClassification.reset!
           Axn::Internal::CarriedPresentation.reset!
+          Axn::Internal::FailsOnVerdicts.reset!
         end
       end
 

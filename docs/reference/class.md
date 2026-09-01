@@ -989,6 +989,7 @@ class SubmitOrder
   # fails_on(ActiveRecord::RecordInvalid) { |e| e.message }     # block (receives the exception)
   # fails_on [RecordInvalid, RecordNotUnique], "Couldn't save"
   # fails_on RecordInvalid, "Unable to submit", standalone: true # message replaces the base headline
+  # fails_on ActiveRecord::RecordNotFound, if: -> { Rails.env.staging? } # gate CLASSIFICATION itself
 
   def call = order.save!
 end
@@ -996,7 +997,28 @@ end
 
 Reclassification only means anything for an exception axn settles onto a result. A signal, an `exit`, `NoMemoryError`, and a library's own control-flow signal are [raised straight through `.call`](/usage/using#common-case) and never reach classification, so naming one here would be inert — it **raises `ArgumentError` at class definition** instead of silently doing nothing. (`fails_on Exception` is still accepted.)
 
-Signature: `fails_on(exceptions, message = nil, standalone: nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base/reason attachment and ordering). `standalone:` is forwarded to that wired `error`: omitted (the default) the message attaches as a reason under any declared base `error`; `standalone: true` makes it replace the base headline instead — the same knob [`error`](#message-matching-order) itself exposes. Because it only configures the wired message, passing `standalone:` (`true` or `false`) without a message/block raises at declaration rather than silently doing nothing. See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation.
+Signature: `fails_on(exceptions, message = nil, standalone: nil, if: nil, unless: nil, &block)` — `exceptions` is an Exception class or array of classes; the optional message/block is wired through the [`error`](#message-matching-order) DSL (so it composes with base/reason attachment and ordering). `standalone:` is forwarded to that wired `error`: omitted (the default) the message attaches as a reason under any declared base `error`; `standalone: true` makes it replace the base headline instead — the same knob [`error`](#message-matching-order) itself exposes. Because it only configures the wired message, passing `standalone:` (`true` or `false`) without a message/block raises at declaration rather than silently doing nothing. See [Reclassifying exceptions as failures](/usage/writing#reclassifying-exceptions-as-failures) for the full explanation.
+
+### Conditional reclassification (`if:`/`unless:`) {#conditional-reclassification-if-unless}
+
+`if:`/`unless:` gate **classification itself** — whether the exception is reclassified into the failure bucket at all — evaluated at settlement time against the action instance (same mechanism as [`error`/`success`/callbacks](#message-matching-order): a Symbol naming an action method, a callable (`instance_exec`'d, receiving the exception positionally or as `exception:`), a String naming a constant, an Exception class, or an array of any of those, ANDed both within and across `if:`/`unless:`). This is a **separate concern** from `message`/`&block`, which only shape the text once classification has already happened:
+
+```ruby
+fails_on ActiveRecord::RecordNotFound, if: ->(exception:) { exception.record_type_class.retryable? }
+fails_on ActiveRecord::RecordInvalid, if: :interactive?   # reads an action method/reader
+```
+
+A message declared alongside `if:`/`unless:` is gated by the *same* condition — it never surfaces for an exception this declaration didn't actually reclassify, so a closed gate means both no reclassification **and** no message.
+
+Unlike `standalone:`, **`if:`/`unless:` is fully meaningful with no message at all** — it gates classification, not presentation. `error`/`fail!` messages are unaffected either way.
+
+A condition runs **at most once per exception, per action instance that settles it** — classification and a declared message share the same verdict rather than each asking the condition separately, so the two can never disagree even for a condition that isn't perfectly deterministic (though it should be: reach for a pure, cheap check). An inherited `fails_on` declaration consulted by more than one nested action (e.g. a subclass re-raising into another action that shares the same declaration) evaluates independently at each level, against that level's own action — never reusing a different level's answer.
+
+A literal boolean is rejected at declaration (`fails_on X, if: false` or `if: true`) rather than silently doing the opposite of what it looks like: `Matcher`'s "no condition" convention treats a bare falsey value as *always matches*, so `if: false` would mean **always** reclassify, and a bare `true` isn't a recognized rule shape at all, so it would silently mean **never** (with a runtime warning). For a decision you can make when the class loads — for example, only reclassifying in one environment — guard the declaration itself instead: `fails_on ActiveRecord::RecordNotFound if Rails.env.staging?`. `if:`/`unless:` earns its keep on state only known at **call** time: the exception's own attributes, the action's inputs, a per-request flag.
+
+A Symbol condition resolves against a **public** action method only (a private method falls through to constant lookup, fails that too, and reads as "no match" with a warning) — the same resolution `error`/`success`/callbacks already use.
+
+A condition that **raises** never reclassifies, for `if:` *or* `unless:` — a broken condition is always inert, warned and logged, never a match either way.
 
 ## Contract reflection (`.input_schema` / `.output_schema`)
 

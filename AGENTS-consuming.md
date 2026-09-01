@@ -211,6 +211,9 @@ reported to `Axn.config.on_exception`. Key consequences:
   the idiom for the "save an ActiveRecord model" case — a plain action plus
   `fails_on ActiveRecord::RecordInvalid, &:message` surfaces the record's validation errors as the
   failure message (and, e.g., `fails_on Stripe::CardError, &:message` for a card-declined message).
+  `if:`/`unless:` (evaluated against the action at settlement, same mechanism as `error`/callbacks)
+  gate the reclassification itself, not just the message — a condition living *inside* the message
+  block never did that, which is the footgun `if:`/`unless:` exist to close.
 - **`expects` violations are dev-facing by default** → exception bucket, pages, generic
   `"Something went wrong"`. A missing required input is your bug. Mark a genuinely caller-supplied
   field `user_facing: true` (or a String/Symbol/Proc message) to move *its* violations to the

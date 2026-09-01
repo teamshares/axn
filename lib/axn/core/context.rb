@@ -39,10 +39,17 @@ module Axn
 
       def __early_completion? = @early_completion || false
 
+      # Deliberately does NOT finalize. `_settle_exception!` still has to decide failure-vs-exception
+      # after this runs — via `fails_on if:`/`unless:`, which can call arbitrary user code, including
+      # a condition that reads `result.outcome` reentrant. If `finalized?` were already true here,
+      # that reentrant read would memoize whatever `outcome` resolves to BEFORE classification is
+      # decided — permanently, since a memoized value never recomputes. The executor finalizes
+      # explicitly (`__finalize!`) once classification is fully decided and recorded, so `outcome`
+      # keeps recomputing live until there is an actual verdict to freeze in. `ok?`/`exception` are
+      # unaffected: `@failure`/`@exception` are set here, same as before.
       def __record_exception(e)
         @exception = e
         @failure = true
-        @finalized = true
       end
 
       # Recorded by the executor when an exception settles as a *failure* (a `fail!`, a `fails_on` match,
