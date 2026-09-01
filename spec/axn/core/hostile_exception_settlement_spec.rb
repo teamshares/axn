@@ -105,6 +105,39 @@ RSpec.describe "settling an exception that answers type questions for itself" do
     end
   end
 
+  # Codex review finding (PR #261), round 7: deferring `__finalize!` until classification is decided
+  # (so a reentrant `result.outcome` read never freezes in a pre-classification answer -- see
+  # fails_on_spec.rb) opened a window of its own: `Axn::ValidationError.user_facing?` -- one of the
+  # OR terms deciding classification -- dispatches the exception's OWN `#user_facing?`, and a hostile
+  # override raising there escapes `_settle_exception!` entirely, past the explicit `__finalize!`
+  # call. `_settle_exception`'s outer rescue then warns-and-swallows a result that never finalized,
+  # which (per this file's own premise) breaks completion logging/tracing/metrics gated on
+  # `finalized?`. Fixed with an `ensure` in `_settle_exception!` that finalizes unconditionally.
+  #
+  # NOTE (found while verifying, deliberately NOT fixed here -- out of this ticket's scope): this
+  # hostile class also makes `result.outcome` itself raise, on every read, forever -- because
+  # `Axn::ValidationError.user_facing?` dispatches `exception.user_facing?`, which is NOT the
+  # undispatched-ancestry pattern this whole file is about. That gap predates this PR: the OLD,
+  # never-memoized `outcome` had the identical unguarded dispatch, so a hostile `user_facing?`
+  # override would have raised on every read of `result.outcome` before any of this ticket's changes
+  # existed. Reported rather than patched, per the hostile-object-audit doctrine (error-paths.md).
+  describe "a hostile ValidationError subclass whose #user_facing? raises during classification" do
+    it "still finalizes the result (completion logging/tracing/metrics are not left permanently stuck)" do
+      hostile_validation_error = Class.new(Axn::ValidationError) do
+        def initialize = super([], user_facing: false)
+        def user_facing? = raise("boom in user_facing?")
+      end
+
+      action = build_axn { define_method(:call) { raise hostile_validation_error } }
+
+      result = nil
+      expect { result = action.call }.not_to raise_error
+
+      expect(result.finalized?).to be(true)
+      expect(result.ok?).to be(false)
+    end
+  end
+
   # The declared-handler match is the same question in a different place: `SingleRuleMatcher` resolves an
   # exception-class rule against the exception, and which handler wins decides the message a caller reads.
   describe "matching a declared `error` handler by exception class" do

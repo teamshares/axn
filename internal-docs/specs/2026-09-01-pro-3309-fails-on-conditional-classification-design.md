@@ -89,11 +89,12 @@ itself) would run the user's condition a second time, unpredictably, depending o
 Keeping the static fallback means the executor's own evaluation is the only one that ever runs user
 code, regardless of what reads `outcome` afterward or in what order.
 
-## Eight bugs found across review and self-review, and the fixes
+## Nine bugs found across review and self-review, and the fixes
 
-All eight are real, confirmed by direct execution before and after — not accepted on prose alone,
+All nine are real, confirmed by direct execution before and after — not accepted on prose alone,
 the reviewer's or my own. One reviewer-suggested remedy (fix 8) was itself verified wrong before
-being replaced with a different fix.
+being replaced with a different fix. One adjacent, pre-existing, out-of-scope gap (found while
+verifying fix 9) was reported rather than patched.
 
 ### 1. A reentrant `result.outcome` read froze in the wrong answer, permanently
 
@@ -288,6 +289,38 @@ parameter, `self` (the settling action, via `Invoker`'s `instance_exec`) inside 
 settlement level gets its own cache slot for the same inherited entry, so the two instances' verdicts
 can never collide, each one's condition still runs at most once **for that level**, and each level's
 own message resolves against its own classification rather than a different action's.
+
+### 9. A raise from a different OR term during classification left the result permanently unfinalized
+
+Decision 3's hoist (defer `Context#__finalize!` until classification decides) closed the
+`result.outcome` reentrancy hazard, but opened a narrower one of its own: `Axn::ValidationError.
+user_facing?` — one of the OTHER terms in the same `settled_as_failure` OR chain, pre-existing and
+untouched by this ticket — dispatches the exception's own `#user_facing?`. A hostile `ValidationError`
+subclass overriding that to raise escapes `_settle_exception!` entirely, past the explicit
+`__finalize!` call at the end of the classify block. `_settle_exception`'s outer rescue then
+warns-and-swallows a result that never finalized — and per this file's own stated premise
+(`hostile_exception_settlement_spec.rb`), that breaks anything gated on `finalized?`: completion
+logging, tracing, and metrics. `Handlers::Matcher`/`Invoker` already guard `_fails_on?`'s own user
+code (fix 3's whole point); this term has no equivalent guard and predates `fails_on` entirely — it
+was simply never exercised while `__finalize!` ran unconditionally as the first line of
+`__record_exception`, before decision 3 moved it.
+
+Fix: `_settle_exception!` gained an `ensure` that finalizes unconditionally. `__finalize!` is
+idempotent, so this costs nothing on the happy path (already true by the time it runs) and
+guarantees the result is never stuck permanently unfinalized on any exit path — including one where
+something upstream of `__record_exception` itself lets an unswallowable exception through, which is
+harmless since the whole `.call` is escaping uncaught in that case and no caller ever reads the
+result.
+
+**Found but deliberately not fixed, out of scope**: the same hostile override also makes
+`result.outcome` itself raise, on every subsequent read, forever — because `Axn::ValidationError.
+user_facing?`'s `exception.user_facing?` dispatch is not the undispatched-ancestry pattern
+`hostile_exception_settlement_spec.rb`'s whole premise describes. Verified this predates the PR
+entirely: the OLD, never-memoized `outcome` called the identical unguarded `user_facing?` in its own
+OR chain, so a hostile override would have raised on every `outcome` read before any of this
+ticket's changes existed. Reported (with a regression spec documenting exactly what IS and isn't
+fixed) rather than patched, per the hostile-object-audit doctrine (error-paths.md) — closing it
+would mean hardening `Axn::ValidationError.user_facing?` itself, unrelated to `fails_on`.
 
 ## Declaration-time guards
 

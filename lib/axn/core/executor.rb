@@ -946,6 +946,16 @@ module Axn
         # Axn::Failure, an already-sticky classification, and a user-facing violation all short-circuit
         # it first. That also means an ancestor's condition is never consulted for an exception an
         # inner action already classified — stickiness flows outward, and an ancestor cannot un-classify.
+        # `ensure` (below), not just the explicit call after this block, because every term here can
+        # run caller code: `_fails_on?` is guarded internally (Handlers::Matcher's best_effort), but
+        # `Axn::ValidationError.user_facing?` dispatches the exception's OWN `#user_facing?` -- a
+        # hostile subclass overriding it to raise escapes this method entirely, past the explicit
+        # `__finalize!` below, and `_settle_exception`'s outer rescue then warns-and-swallows a
+        # RESULT THAT NEVER FINALIZED. Not hypothetical: verified live that this leaves `finalized?`
+        # permanently false, so `Result#outcome` (never able to memoize) re-executes the SAME hostile
+        # `user_facing?` on every subsequent read, raising again each time a caller merely reads the
+        # settled result. The `ensure` is the safety net; the explicit call stays for ORDERING (it
+        # must run before presentation/callbacks on the happy path, not merely "eventually").
         settled_as_failure = Internal::Identity.kind?(e, Failure) ||
                              Internal::ExceptionClassification.failure?(e) ||
                              Axn::ValidationError.user_facing?(e) ||
@@ -983,6 +993,18 @@ module Axn
         else
           trigger_on_exception(e)
         end
+      ensure
+        # Safety net for the classify window: if something between `__record_exception` and the
+        # explicit `__finalize!` above raised a swallowable error (see the comment on
+        # `settled_as_failure`), this method returns here without ever having reached that explicit
+        # call, and `_settle_exception`'s outer rescue only warns-and-swallows -- it does not retry
+        # anything in here. `__finalize!` is idempotent (`@finalized = true`), so running it
+        # unconditionally on every exit path costs nothing on the happy path (already true by the
+        # time this runs) and guarantees the result never gets stuck permanently unfinalized on the
+        # unhappy one. Equally harmless if something upstream of `__record_exception` itself
+        # (`apply_defaults!`'s best_effort) let something unswallowable through: the whole `.call` is
+        # escaping uncaught in that case, so no caller ever reads this result's `finalized?` at all.
+        @context.__finalize!
       end
 
       # Resolve THIS level's presentation NOW (memoizing it on the result) and, for an Axn-owned
