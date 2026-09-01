@@ -89,10 +89,10 @@ itself) would run the user's condition a second time, unpredictably, depending o
 Keeping the static fallback means the executor's own evaluation is the only one that ever runs user
 code, regardless of what reads `outcome` afterward or in what order.
 
-## Five bugs found by Codex review, and the fixes
+## Six bugs found across review and self-review, and the fixes
 
-All five are real, confirmed by direct execution before and after — not accepted on the
-reviewer's prose.
+All six are real, confirmed by direct execution before and after — not accepted on prose alone,
+the reviewer's or my own.
 
 ### 1. A reentrant `result.outcome` read froze in the wrong answer, permanently
 
@@ -217,6 +217,32 @@ memoized resolver from the first post-finalization read onward. `_error_from_dec
 (`TransparentBubbling`) and `_resolve_and_stamp_presentation`'s own `result.error` call — the two
 real "share one pass" callers the original comment was written for — are both already
 post-finalization by construction, so neither loses anything.
+
+### 6. A later same-class entry's message went cold once an earlier entry already matched (self-review, not Codex)
+
+Found reviewing this very file after fix 5, not from a review round: `_fails_on?` originally
+short-circuited on the first matching entry (`_fails_on_entries.any? { ... }`). Classification
+stayed correct regardless (an OR is an OR either way), but a SECOND `fails_on` declaration sharing
+the same class as an earlier one never got its own condition evaluated at all once the earlier entry
+already matched — so its `FailsOnVerdicts` entry was never populated, and its own `message_gate`
+read that empty cache as "no match" (the same safe default fix 5 gave a genuine miss), even when the
+second entry's condition was genuinely true. Verified live:
+
+```ruby
+fails_on ArgumentError                                      # unconditional, matches (and used to short-circuit) first
+fails_on ArgumentError, "second entry message", if: -> { true }
+```
+
+reclassified correctly (`outcome == "failure"`) but resolved `result.error` to the generic default,
+never `"second entry message"`, even though its `if:` is unconditionally true. This is a genuine
+behavioral regression against the OLD (pre-ticket) `fails_on`, where each declaration's message gate
+was an INDEPENDENT proc checking only its own class list — nothing coupled one declaration's message
+to whether ANOTHER declaration happened to be consulted first.
+
+Fix: `_fails_on?` no longer short-circuits. Every entry whose class matches gets its condition
+evaluated (and cached) exactly once, and the overall verdict is the OR of all of them — so an early
+match no longer starves a later entry's own cache, and each entry's "runs at most once" guarantee
+(fix 2) now holds per-entry rather than only for whichever entry happens to be consulted first.
 
 ## Declaration-time guards
 

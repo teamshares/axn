@@ -445,6 +445,26 @@ RSpec.describe "fails_on" do
 
         expect(action.call.outcome).to be_failure
       end
+
+      # Self-review finding (not from Codex): `_fails_on?` originally short-circuited on the first
+      # matching entry (`.any? { ... }`). Classification stayed correct either way (an OR is an OR),
+      # but a LATER entry sharing the same class never got its own condition evaluated at all when
+      # an earlier entry already matched -- so its `FailsOnVerdicts` cache stayed empty, and its own
+      # message_gate read that as "no match" (the safe default for a genuine miss) even when the
+      # later entry's condition was genuinely true. Fixed by evaluating every matching-class entry
+      # (never short-circuiting), so each one's condition still runs exactly once and its message
+      # can still apply regardless of which entry actually caused the reclassification.
+      it "a later entry's own message still applies even though an earlier entry on the same class already matched" do
+        action = build_axn do
+          fails_on ArgumentError # no message, unconditional -- matches (and would short-circuit) first
+          fails_on ArgumentError, "second entry message", if: -> { true }
+          def call = raise ArgumentError, "boom"
+        end
+
+        result = action.call
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("second entry message")
+      end
     end
 
     # Regression coverage for the executor reorder: the verdict is recorded BEFORE presentation

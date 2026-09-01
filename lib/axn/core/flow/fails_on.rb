@@ -117,15 +117,31 @@ module Axn
           # Records each conditional entry's verdict (`FailsOnVerdicts`) as it's computed, so a
           # declared message's own gate (built in `fails_on` above) can reuse the SAME answer instead
           # of asking the condition again -- the condition runs at most once per exception either way.
+          #
+          # Deliberately does NOT short-circuit on the first match (no `.any? { ... }` early exit):
+          # two `fails_on` declarations can share a class, and each one's message is gated by its OWN
+          # entry's cached verdict. Stopping at the first match would leave every LATER matching
+          # entry's condition never evaluated at all -- an empty cache its own message_gate would
+          # then read as "no match" (the safe default for a genuine miss), even when that entry's
+          # condition is genuinely true. Every matching-class entry gets exactly one evaluation
+          # either way; this only changes whether entries AFTER the first match also get theirs.
           def _fails_on?(exception, action:)
-            _fails_on_entries.any? do |entry|
-              next false unless entry.classes.any? { |klass| Axn::Internal::Identity.kind?(exception, klass) }
-              next true if entry.matcher.nil?
+            matched = false
+
+            _fails_on_entries.each do |entry|
+              next unless entry.classes.any? { |klass| Axn::Internal::Identity.kind?(exception, klass) }
+
+              if entry.matcher.nil?
+                matched = true
+                next
+              end
 
               verdict = entry.matcher.call(exception:, action:)
               Axn::Internal::FailsOnVerdicts.record!(exception, entry, verdict)
-              verdict
+              matched ||= verdict
             end
+
+            matched
           end
 
           # Static entries only -- undispatched (Internal::Identity.kind?), runs no user code. This is
