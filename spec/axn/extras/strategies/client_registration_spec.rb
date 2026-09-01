@@ -9,7 +9,7 @@ require "open3"
 # That gate was observable only in a process that loaded axn BEFORE faraday, and — `require` being idempotent —
 # only once per process. Hence a fresh Ruby per example: this suite has both gems loaded, and re-requiring the
 # strategy file here would no-op.
-RSpec.describe "Axn::Extras::Strategies::Client registration" do
+RSpec.describe "Axn::Extras::Strategies::Client registration", :slow do
   def repo_root = File.expand_path("../../../..", __dir__)
 
   # `RUBYOPT` carries bundler's `-rbundler/setup`, so the child resolves the same bundle this suite runs against —

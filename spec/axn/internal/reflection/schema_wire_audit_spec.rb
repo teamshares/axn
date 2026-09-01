@@ -31,7 +31,7 @@ require "json"
 # place: it compiles `pattern` with RUBY's regex engine, where a real consumer uses ECMA-262. So the pattern
 # TRANSLATION cannot be audited here and is covered by its own unit specs; what is audited is whether a pattern
 # is emitted at a position whose values cannot satisfy it.
-RSpec.describe "the emitted schema against runtime truth" do
+RSpec.describe "the emitted schema against runtime truth", :slow do
   # Deliberately not `build_axn`: this needs the class object itself for its schemas, and a fresh one per cell.
   def declare(direction, decl, value)
     Class.new do

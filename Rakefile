@@ -3,7 +3,30 @@
 require "bundler/gem_tasks"
 require "rspec/core/rake_task"
 
-RSpec::Core::RakeTask.new(:spec)
+# The commit loop. `:slow` marks specs whose cost is STRUCTURAL rather than incidental — a
+# cross-product probe that enumerates a grid of declarations, a spec that spawns a Ruby per example,
+# a block that builds adversarial objects. Eight such sites hold ~90% of the suite's wall clock in
+# ~1.5% of its examples, so excluding them takes this task from ~5 min to ~20s while leaving the
+# behaviour they re-cover asserted case-by-case by their companion files.
+#
+# Nothing is skipped, only deferred: `spec_slow` runs exactly the complement and `spec_full` runs
+# both, as do CI, `all_specs`, and `verify` — which gates `build`, and so `release`. Running the two
+# lanes as separate processes is also FASTER than one process running the same examples: a probe
+# declares thousands of anonymous classes, which slows every example sharing its process afterwards.
+# The filter lives here rather than in .rspec on purpose: `bundle exec rspec <a slow file>` must
+# still run it when you are actively editing that code, and a repo-wide default would silently
+# report zero examples instead.
+RSpec::Core::RakeTask.new(:spec) do |t|
+  t.rspec_opts = "--tag '~slow'"
+end
+
+desc "Run only the :slow specs (cross-product probes, subprocess specs) — several minutes"
+RSpec::Core::RakeTask.new(:spec_slow) do |t|
+  t.rspec_opts = "--tag slow"
+end
+
+desc "Run the whole library suite — both lanes"
+task spec_full: %i[spec spec_slow]
 
 # RuboCop specs (separate from main specs to avoid loading RuboCop unnecessarily)
 task :spec_rubocop do
@@ -31,7 +54,7 @@ RuboCop::RakeTask.new
 task default: %i[spec rubocop]
 task rails_specs: %i[spec_rails]
 task rubocop_specs: %i[spec_rubocop]
-task all_specs: %i[spec spec_rubocop spec_rails]
+task all_specs: %i[spec_full spec_rubocop spec_rails]
 task specs: %i[all_specs]
 
 # Integration verification for async adapters (requires Redis for Sidekiq)
@@ -42,7 +65,7 @@ task :verify_async do
 end
 
 desc "Run all verification checks (specs, rubocop, async integration)"
-task verify: %i[spec spec_rubocop spec_rails rubocop verify_async] do
+task verify: %i[spec_full spec_rubocop spec_rails rubocop verify_async] do
   puts ""
   puts "=" * 60
   puts "✅ All verification checks passed!"

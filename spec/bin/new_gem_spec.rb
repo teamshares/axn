@@ -10,7 +10,7 @@ require_relative "../../bin/support/gem_generator"
 # The generator is a dev-only tool (bin/, absent from the packaged gem). It shells out to
 # `bundle gem NAME` (offline, ~1s) and lays the canonical axn delta on top, so a fresh
 # downstream gem starts conformant instead of being reverse-engineered from an existing one.
-RSpec.describe GemGenerator do
+RSpec.describe GemGenerator, :slow do
   def read(relative) = File.read(File.join(@gem_dir, relative))
   def exist?(relative) = File.exist?(File.join(@gem_dir, relative))
 

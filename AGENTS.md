@@ -298,6 +298,16 @@ The rules it backs:
   finder for `model:` behavior; mirror Rails-specific behavior in `spec_rails/dummy_app/`.
 - Run `bundle exec rspec` and the relevant `spec_rails` specs; verify against real output before
   claiming done.
+- **Lanes.** `rake spec` is the commit loop (~20s) and runs everything NOT tagged `:slow`;
+  `rake spec_slow` runs exactly the complement (~3 min); `rake spec_full` runs both, as do
+  `rake all_specs`, `rake verify`, and CI. Running a file directly is unfiltered,
+  so `bundle exec rspec <a slow file>` still runs it while you edit that code.
+- **Tag `:slow` for structural cost, not incidental slowness** — a probe enumerating a cross-product
+  of declarations, a spec spawning a Ruby per example, a block building adversarial objects. A spec
+  that is merely slow because it happens to trigger a one-time eager-load does NOT qualify: the cost
+  just migrates to whichever example runs first. Tag the narrowest block that carries the cost rather
+  than the whole file, and only where a companion file already asserts the same behaviour
+  case-by-case. Untagged is the default, so a new spec lands in the fast lane unless you say otherwise.
 - **Auditing a guard's coverage: mutate it.** Remove or invert the guard, re-run the suite, and if it stays
   green the guard is unguarded. Note what this *cannot* find: removing a guard makes a legal-behaviour
   assertion pass more easily, never fail, so mutation says nothing about the **controls** — the examples

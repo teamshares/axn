@@ -9,7 +9,7 @@ require_relative "../../bin/support/gem_conformance"
 # The conformance auditor reports how far an existing gem has drifted from the shared conventions.
 # A freshly generated gem is the standard, so it must pass every check; each drift below is a
 # mutation of that baseline that a real pre-generator gem might exhibit.
-RSpec.describe GemConformance do
+RSpec.describe GemConformance, :slow do
   # One conformant baseline for the whole file (rails: :none keeps generation fast).
   before(:context) do
     @parent = Dir.mktmpdir("axn-conform")

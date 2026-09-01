@@ -109,7 +109,7 @@ module SizeSoundness
   end
 end
 
-RSpec.describe "the empty-interval guard's soundness" do
+RSpec.describe "the empty-interval guard's soundness", :slow do
   # The same declaration, with this one class's guard replaced by a no-op. Defined on the action's own
   # singleton, so nothing leaks to any other example.
   def build_unguarded(**opts)
