@@ -89,10 +89,10 @@ itself) would run the user's condition a second time, unpredictably, depending o
 Keeping the static fallback means the executor's own evaluation is the only one that ever runs user
 code, regardless of what reads `outcome` afterward or in what order.
 
-## Two bugs found by Codex review, and the fixes
+## Three bugs found by Codex review, and the fixes
 
-Both are real, confirmed by direct execution before and after — not accepted on the reviewer's
-prose.
+All three are real, confirmed by direct execution before and after — not accepted on the
+reviewer's prose.
 
 ### 1. A reentrant `result.outcome` read froze in the wrong answer, permanently
 
@@ -138,6 +138,37 @@ populated by the time any message resolves, since `_fails_on?` runs synchronousl
 same `_settle_exception!`). Net effect: the condition runs **at most once per exception, full stop**
 — a strictly better story than the original design's "once with no message, twice with one," and one
 that makes the two-evaluation class of bug structurally impossible rather than merely rare.
+
+### 3. A raising `unless:` rule reclassified instead of staying inert
+
+Not a `fails_on`-specific bug — it lives in the shared `Handlers::SingleRuleMatcher`/`Invoker`
+machinery this ticket reuses (decision 2), and would have been latent in `error`/`success`/callback
+`unless:` all along had `fails_on` not made the consequence severe enough to surface it.
+
+`apply_callable`/`apply_symbol` call `!!Invoker.call(...)`. When the rule raises, `Invoker.call`
+swallows it (warns, returns `nil` — `best_effort`'s documented failure return) and `!!nil` coerces
+to a definite `false` *before* `SingleRuleMatcher#call` ever sees it. For an `if:` rule that's
+exactly the documented "a broken condition fails in the safe direction" — `false` means no match
+either way. But `SingleRuleMatcher#call` then applies `@invert` to that `false`: `unless:` rules are
+built with `invert: true`, so a *swallowed raise* got inverted to `true` — a match — turning "the
+condition blew up" into "the exclusion doesn't apply, so reclassify." For `fails_on X, unless:
+raising_cond`, that meant a genuine bug got silently reclassified as a failure and the global report
+suppressed — a materially worse outcome than the equivalent `if:` case, and the exact opposite of
+the policy this ticket's own decision 2 asserted (and had only verified for `if:`, never `unless:`).
+
+The two evaluations of `Invoker.call`'s swallow return — `nil` for "genuinely returned nil" and
+`nil` for "raised and got swallowed" — are indistinguishable by design; every caller before this one
+only needed "something/nothing happened," never "did this raise." Fix: `Invoker.call` gained an
+`on_swallow:` kwarg (default `nil`, so the four other call sites are untouched) returned in place of
+`nil` specifically on the swallow path. `SingleRuleMatcher` passes a private sentinel
+(`SWALLOWED = Object.new.freeze`) and checks for it (via `Internal::Identity.same?`, undispatched —
+the checked value could be anything a hostile rule handed back) in `apply_callable`/`apply_symbol`,
+propagating it up through `matches?`; `#call` then short-circuits to `false` on either that sentinel
+or a bare `nil` (the latter covering `apply_string`/`apply_exception_class`, which have no `Invoker`
+underneath and so raise straight into `#call`'s own `best_effort`) — *before* applying `@invert`.
+This holds the "Invoker owns the swallow policy, callers don't re-guard" rule (error-paths.md):
+Invoker still decides what to catch and when; a caller reading back *what happened* is a different
+question from adding a second catch on top.
 
 ## Declaration-time guards
 

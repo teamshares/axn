@@ -309,6 +309,34 @@ RSpec.describe "fails_on" do
 
         expect(action.call.outcome).to be_failure
       end
+
+      # Codex review finding (PR #261): a raising unless: rule was coerced to a definite `false`
+      # ("no match") and then INVERTED to `true` ("match") -- turning a broken condition into a
+      # silent reclassification that suppressed the global report for a genuine bug. Fixed at the
+      # shared Handlers::Matcher layer (see matcher_spec.rb); this pins the fails_on-visible
+      # consequence specifically, since it's the one place this silently swallows a real report.
+      it "a raising condition stays inert -- the exception is NOT reclassified, and still reports" do
+        action = build_axn do
+          fails_on ArgumentError, unless: -> { raise "boom in unless condition" }
+          def call = raise ArgumentError, "a real bug"
+        end
+
+        result = action.call
+        expect(result.outcome).to be_exception
+        expect(Axn.config).to have_received(:on_exception)
+      end
+
+      it "a raising Symbol condition stays inert too" do
+        action = build_axn do
+          fails_on ArgumentError, unless: :broken_predicate?
+          def broken_predicate? = raise("boom")
+          def call = raise ArgumentError, "a real bug"
+        end
+
+        result = action.call
+        expect(result.outcome).to be_exception
+        expect(Axn.config).to have_received(:on_exception)
+      end
     end
 
     describe "if: and unless: combined (ANDed)" do

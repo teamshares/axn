@@ -34,6 +34,29 @@ set is open-ended (any gem can define a direct `Exception` subclass), and member
 nothing swallows them. Absorbing one silently breaks whatever it signals, which is far harder to
 trace than an unrecognized bug escaping `.call`.
 
+### `Invoker.call`'s swallow return is ambiguous by design — and one caller needed to un-ambiguate it
+
+`Invoker.call` returns `nil` when it swallows a raised exception (`best_effort`'s documented failure
+return). Every existing caller before PRO-3309 treated a `nil` return as "no answer" regardless of
+*why* it was nil — a nil callback return and a nil message body are both simply "nothing happened,"
+so the ambiguity between "the handler raised" and "the handler genuinely returned nil" never
+mattered.
+
+`Handlers::SingleRuleMatcher` broke that assumption the moment it started INVERTING the result for
+`unless:` rules: inverting a genuine `false` is correct (the exclusion doesn't apply, so it's a
+match), but inverting "the rule blew up" must never become a match — a broken `unless:` condition
+silently reclassifying a real bug into a reported-nowhere failure (`fails_on X, unless: cond` with a
+raising `cond`) is a materially worse outcome than the same bug in an `if:` rule, where "swallowed →
+false → no match" already happens to be the safe direction with no inversion involved.
+
+The fix stays inside the one-swallow-policy rule rather than breaking it: `Invoker.call` gained an
+`on_swallow:` kwarg (default `nil`, so every other caller is unaffected), returned in place of `nil`
+specifically when a raise was caught. `SingleRuleMatcher` passes its own private sentinel and checks
+for it (via `Internal::Identity.same?`, undispatched — the checked value could be anything a hostile
+rule handed back) BEFORE applying `@invert`, short-circuiting to `false` regardless of inversion.
+Invoker still decides what to catch and when; a caller that needs to know it happened just gets to
+ask, which is a different thing from adding a second guard on top.
+
 ## Don't dispatch to caller methods while reporting a failure
 
 Separate the caller code a walk **requires** from caller code invoked while **reporting** a

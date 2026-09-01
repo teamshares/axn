@@ -484,6 +484,32 @@ RSpec.describe Axn do
           end
         end
 
+        # Codex review finding (PR #261): an `unless:` rule that raises was coerced to a definite
+        # `false` ("no match") and then INVERTED to `true` ("match"), so the message applied as if
+        # the exclusion had genuinely evaluated false -- the opposite of "a broken condition is
+        # inert." Fixed at the shared Handlers::Matcher layer (see matcher_spec.rb); this pins the
+        # consequence for the plain `error`/`success` DSL, not just fails_on.
+        context "when the unless: condition raises" do
+          it "the message does NOT apply -- a raising unless: is inert, not inverted to a match" do
+            action = build_axn do
+              error "Custom error", unless: -> { raise "boom" }
+              def call = raise "a real bug"
+            end
+
+            expect(action.call.error).to eq("Something went wrong")
+          end
+
+          it "same for a raising Symbol predicate" do
+            action = build_axn do
+              error "Custom error", unless: :broken_predicate?
+              def broken_predicate? = raise("boom")
+              def call = raise "a real bug"
+            end
+
+            expect(action.call.error).to eq("Something went wrong")
+          end
+        end
+
         context "when both if and unless are provided" do
           it "accepts success with if: and unless: together (ANDed: every condition must pass)" do
             action = build_axn do

@@ -21,6 +21,13 @@ module Axn
             Invoker.callable?(rule) || rule.is_a?(Symbol) || rule.is_a?(String) || (rule.is_a?(Class) && rule <= Exception)
           end
 
+          # Distinguishes "the rule raised and Invoker swallowed it" from "the rule genuinely returned
+          # a falsy value" -- see `#call`. `Invoker.call`'s default swallow-return is `nil`, which a
+          # legitimate callable/Symbol answer can ALSO be, so this is passed as `on_swallow:` rather
+          # than inferred from the return value.
+          SWALLOWED = Object.new.freeze
+          private_constant :SWALLOWED
+
           def initialize(rule, invert: false)
             @rule = rule
             @invert = invert
@@ -34,10 +41,19 @@ module Axn
             # since on_success/error matchers are evaluated inside the executor's boundary, letting one
             # through would settle a SUCCESSFUL action as an exception carrying the matcher's own bug.
             # A broken matcher is loud in the log and inert in its effect; it never rewrites the outcome.
-            Axn::Extensions.best_effort("determining if handler applies to exception", action:) do
-              result = matches?(exception:, action:)
-              @invert ? !result : result
+            result = Axn::Extensions.best_effort("determining if handler applies to exception", action:) do
+              matches?(exception:, action:)
             end
+
+            # `result.nil?` covers a rule that raised OUTSIDE Invoker (apply_string/apply_exception_class
+            # have no Invoker underneath, so their raise reaches straight to the best_effort above, which
+            # returns nil); `SWALLOWED` covers one Invoker itself absorbed. Either way: never a match,
+            # REGARDLESS of `@invert` -- inverting "the rule blew up" into "unless: passes" would turn a
+            # broken condition into a silent reclassification (and, for `fails_on`, a suppressed report).
+            # Only a rule that genuinely RAN gets inverted; a swallowed one never reaches that ?:.
+            return false if result.nil? || Axn::Internal::Identity.same?(result, SWALLOWED)
+
+            @invert ? !result : result
           end
 
           private
@@ -57,12 +73,18 @@ module Axn
           def exception_class? = @rule.is_a?(Class) && @rule <= Exception
 
           def apply_callable(action:, exception:)
-            !!Invoker.call(action:, handler: @rule, exception:, operation: "determining if handler applies to exception")
+            result = Invoker.call(action:, handler: @rule, exception:, operation: "determining if handler applies to exception", on_swallow: SWALLOWED)
+            return SWALLOWED if Axn::Internal::Identity.same?(result, SWALLOWED)
+
+            !!result
           end
 
           def apply_symbol(action:, exception:)
             if action.respond_to?(@rule)
-              !!Invoker.call(action:, handler: @rule, exception:, operation: "determining if handler applies to exception")
+              result = Invoker.call(action:, handler: @rule, exception:, operation: "determining if handler applies to exception", on_swallow: SWALLOWED)
+              return SWALLOWED if Axn::Internal::Identity.same?(result, SWALLOWED)
+
+              !!result
             else
               begin
                 klass = Object.const_get(@rule.to_s)

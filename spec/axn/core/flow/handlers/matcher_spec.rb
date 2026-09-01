@@ -64,4 +64,44 @@ RSpec.describe Axn::Core::Flow::Handlers::SingleRuleMatcher do
       expect(described_class.new(call_only).call(exception: ArgumentError.new, action:)).to be(true)
     end
   end
+
+  # Codex review finding (PR #261): a rule that raises is swallowed and coerced to a definite
+  # `false` by `apply_callable`/`apply_symbol` (`!!Invoker.call(...)`) BEFORE `#call` gets a chance
+  # to invert it -- so `invert: true` (`unless:`) turned "the rule blew up" into "the exclusion
+  # doesn't apply, so it's a match", the opposite of "a broken condition is inert." Fixed by having
+  # `Invoker.call`'s `on_swallow:` report a distinct sentinel through `apply_callable`/`apply_symbol`,
+  # so `#call` can tell "swallowed" apart from "genuinely returned falsy" and skip the invert.
+  describe "invert: true (unless:) with a raising rule" do
+    let(:action) do
+      Class.new do
+        def broken_predicate? = raise("boom")
+      end.new
+    end
+    let(:exception) { ArgumentError.new("boom") }
+
+    it "a raising Proc stays false (no match), not inverted to true" do
+      matcher = described_class.new(-> { raise "boom" }, invert: true)
+      expect(matcher.call(exception:, action:)).to be(false)
+    end
+
+    it "a raising Symbol (action method) stays false (no match), not inverted to true" do
+      matcher = described_class.new(:broken_predicate?, invert: true)
+      expect(matcher.call(exception:, action:)).to be(false)
+    end
+
+    it "a genuinely false rule still inverts to true (control: the fix doesn't touch honest results)" do
+      matcher = described_class.new(-> { false }, invert: true)
+      expect(matcher.call(exception:, action:)).to be(true)
+    end
+
+    it "a genuinely true rule still inverts to false (control)" do
+      matcher = described_class.new(-> { true }, invert: true)
+      expect(matcher.call(exception:, action:)).to be(false)
+    end
+
+    it "invert: false (if:) is unaffected either way -- a raising rule was already false, not inverted" do
+      matcher = described_class.new(-> { raise "boom" })
+      expect(matcher.call(exception:, action:)).to be(false)
+    end
+  end
 end
