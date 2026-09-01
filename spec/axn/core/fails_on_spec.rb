@@ -357,6 +357,25 @@ RSpec.describe "fails_on" do
         expect(result.outcome).to be_exception
         expect(Axn.config).to have_received(:on_exception)
       end
+
+      # Codex review finding (PR #261), round 6: a DIFFERENT path to the same class of bug as
+      # above. `unless: :typo'd_symbol` -- one that names neither an action method nor a real
+      # constant -- falls through `apply_symbol`'s NameError-rescue branch, which logged a warning
+      # and returned a bare `false`, not the SWALLOWED sentinel. `#call` only special-cased `nil`/
+      # `SWALLOWED` before inverting, so this bare `false` got treated as a GENUINE answer and
+      # inverted to `true` for `unless:` -- an unresolved Symbol silently reclassified a real bug
+      # exactly like a raising one did. Fixed by returning SWALLOWED there too (and from
+      # `handle_invalid`, the other "rule never ran" path) -- see matcher_spec.rb.
+      it "an unresolved Symbol (names neither a method nor a constant) stays inert too" do
+        action = build_axn do
+          fails_on ArgumentError, unless: :this_method_does_not_exist_anywhere_zzz
+          def call = raise ArgumentError, "a real bug"
+        end
+
+        result = action.call
+        expect(result.outcome).to be_exception
+        expect(Axn.config).to have_received(:on_exception)
+      end
     end
 
     describe "if: and unless: combined (ANDed)" do
@@ -685,6 +704,33 @@ RSpec.describe "fails_on" do
         result = OuterWithOwnGate.call
         expect(result.outcome).to be_failure
         expect(ancestor_evaluations).to be_empty
+      end
+
+      # Codex review finding (PR #261), round 6: `_fails_on_entries` is a `class_attribute`, so a
+      # subclass INHERITS the same `Entry` object its base declared. When the inner (subclassed)
+      # action's OWN evaluation of that shared entry is false (no sticky classification recorded),
+      # the exception bubbles to an outer action that ALSO shares the entry -- and its condition
+      # must be evaluated again, against the OUTER's own `self`, not silently reuse the inner
+      # action's (different instance, different verdict) answer. `FailsOnVerdicts` is keyed by
+      # `(exception, action, entry)`, not just `(exception, entry)`, precisely so the two levels get
+      # independent cache slots and neither the classification nor the message one level resolves
+      # can be corrupted by what a DIFFERENT action instance answered for the same entry.
+      it "an inherited entry's condition is evaluated independently at each settlement level, against each level's own self" do
+        calls = []
+        base = build_axn do
+          fails_on ArgumentError, "gated", if: lambda {
+            calls << self
+            instance_of?(OuterLevel)
+          }
+        end
+        stub_const("InnerLevel", Class.new(base) { def call = raise(ArgumentError, "boom") })
+        stub_const("OuterLevel", Class.new(base) { define_method(:call) { InnerLevel.call! } })
+
+        result = OuterLevel.call
+        expect(calls.map(&:class)).to eq([InnerLevel, OuterLevel])
+        expect(result.outcome).to be_failure
+        expect(result.error).to eq("gated")
+        expect(Axn.config).to have_received(:on_exception) # the inner level already reported it as a bug
       end
     end
 

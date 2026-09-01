@@ -104,4 +104,28 @@ RSpec.describe Axn::Core::Flow::Handlers::SingleRuleMatcher do
       expect(matcher.call(exception:, action:)).to be(false)
     end
   end
+
+  # Codex review finding (PR #261), round 6: a rule that never RUNS at all -- an unresolved Symbol
+  # (names neither an action method nor a real constant), or any shape `handle_invalid` catches --
+  # was ALSO coerced to a bare `false` (via the NameError-rescue branch, or handle_invalid's own
+  # literal `false`) rather than the SWALLOWED sentinel, so it suffered the exact same invert bug as
+  # a raising rule: `unless:` turned "never ran" into "match."
+  describe "invert: true (unless:) with a rule that never runs" do
+    let(:action) do
+      Class.new do
+        def some_method = true
+      end.new
+    end
+    let(:exception) { ArgumentError.new("boom") }
+
+    it "an unresolved Symbol (no such method, no such constant) stays false, not inverted to true" do
+      matcher = described_class.new(:this_symbol_names_nothing_at_all_zzz, invert: true)
+      expect(matcher.call(exception:, action:)).to be(false)
+    end
+
+    it "an unrecognized rule shape (handle_invalid) stays false, not inverted to true" do
+      matcher = described_class.new(Object.new, invert: true)
+      expect(matcher.call(exception:, action:)).to be(false)
+    end
+  end
 end

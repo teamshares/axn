@@ -89,10 +89,11 @@ itself) would run the user's condition a second time, unpredictably, depending o
 Keeping the static fallback means the executor's own evaluation is the only one that ever runs user
 code, regardless of what reads `outcome` afterward or in what order.
 
-## Six bugs found across review and self-review, and the fixes
+## Eight bugs found across review and self-review, and the fixes
 
-All six are real, confirmed by direct execution before and after — not accepted on prose alone,
-the reviewer's or my own.
+All eight are real, confirmed by direct execution before and after — not accepted on prose alone,
+the reviewer's or my own. One reviewer-suggested remedy (fix 8) was itself verified wrong before
+being replaced with a different fix.
 
 ### 1. A reentrant `result.outcome` read froze in the wrong answer, permanently
 
@@ -243,6 +244,47 @@ Fix: `_fails_on?` no longer short-circuits. Every entry whose class matches gets
 evaluated (and cached) exactly once, and the overall verdict is the OR of all of them — so an early
 match no longer starves a later entry's own cache, and each entry's "runs at most once" guarantee
 (fix 2) now holds per-entry rather than only for whichever entry happens to be consulted first.
+
+(Fix 6 landed one commit ahead of the review round that independently found the identical bug and
+proposed the identical remedy — replied on that thread noting it was already fixed.)
+
+### 7. A rule that never RAN (not just one that raised) suffered the same invert bug as fix 3
+
+Fix 3 closed the "raised, swallowed, then inverted" path via a `SWALLOWED` sentinel threaded through
+`Invoker.call`'s `on_swallow:` — but two OTHER "the rule never produced a real answer" paths still
+returned a bare `false`, not the sentinel: `apply_symbol`'s `rescue NameError` branch (a Symbol
+naming neither an action method nor a real constant) and `handle_invalid` (a rule shape none of
+`apply_callable`/`apply_symbol`/`apply_string`/`apply_exception_class` can apply). Both warn and log,
+then return `false` directly — and `#call`'s guard only special-cased `nil`/`SWALLOWED` before
+inverting, so this bare `false` read as a GENUINE answer and got inverted for `unless:`. Verified
+live: `fails_on ArgumentError, unless: :this_method_does_not_exist_anywhere` on a genuine
+`ArgumentError` silently reclassified it and suppressed the report — a typo'd `unless:` symbol is
+exactly the kind of mistake this should have caught, not amplified. Fix: both paths now return
+`SWALLOWED` instead of `false`, closing the same class of bug fix 3 closed, for the paths fix 3
+didn't reach.
+
+### 8. An inherited `fails_on` entry's verdict from one settlement level leaked into another
+
+`FailsOnVerdicts` keyed on `(exception, entry)` only. `_fails_on_entries` is a `class_attribute`, so
+a subclass inherits the SAME `Entry` object its base declared — meaning the same cache slot could be
+written by TWO DIFFERENT settling action instances: an inner (subclassed) action whose own
+evaluation of the shared entry comes back false (so nothing marks the exception sticky), bubbling
+via `call!` to an outer action that shares the same entry and gets asked again. The reviewer's
+suggested remedy — consult the cache before invoking the matcher at all — would have been WRONG here
+on inspection, not just incomplete: it would make the OUTER action's classification silently reuse
+the INNER action's verdict (a DIFFERENT `self`, decision 2's own action-scoping violated) instead of
+evaluating its own condition against its own action at all. Verified live that the two levels
+legitimately need independent answers: a condition keyed to `self.class` returned `false` for the
+inner subclass and `true` for the outer one, and the CORRECT behavior is exactly axn's existing,
+tested, documented "mixed outcome" shape for unconditional `fails_on` (reported once as a bug at the
+level that didn't classify it, `outcome == "failure"` at a level that did) — extended to the
+conditional case, not a new failure mode.
+
+Fix: `FailsOnVerdicts` now keys on `(exception, action, entry)` — `action` from `_fails_on?`'s own
+parameter, `self` (the settling action, via `Invoker`'s `instance_exec`) inside `message_gate`. Each
+settlement level gets its own cache slot for the same inherited entry, so the two instances' verdicts
+can never collide, each one's condition still runs at most once **for that level**, and each level's
+own message resolves against its own classification rather than a different action's.
 
 ## Declaration-time guards
 

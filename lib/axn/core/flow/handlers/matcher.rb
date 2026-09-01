@@ -93,7 +93,11 @@ module Axn
                 Axn::Internal::ActionState.log(action,
                                                "Ignoring apparently-invalid matcher #{@rule.inspect} -- neither action method nor constant found",
                                                level: :warn)
-                false
+                # SWALLOWED, not a bare `false`: this Symbol never resolved to anything -- the rule
+                # never genuinely ran, so it must be inert regardless of `@invert`, the same as a
+                # raise (see `#call`). A bare `false` here would still get INVERTED for `unless:`, so
+                # an unresolved/typo'd `unless: :predicate?` would reclassify instead of staying inert.
+                SWALLOWED
               end
             end
           end
@@ -115,7 +119,9 @@ module Axn
             Axn::Internal::ActionState.log(action,
                                            "Ignoring apparently-invalid matcher #{@rule.inspect} -- could not find way to apply it",
                                            level: :warn)
-            false
+            # SWALLOWED, not a bare `false` -- same reasoning as apply_symbol's NameError branch: the
+            # rule never ran, so it must be inert regardless of `@invert`.
+            SWALLOWED
           end
         end
 

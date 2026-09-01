@@ -97,7 +97,12 @@ module Axn
                 # a match yet" instead is what "the condition runs at most once" actually requires --
                 # a genuine miss is never wrong to read as false, since classification's OWN read of
                 # this same verdict is the one that will actually record it moments later.
-                Axn::Internal::FailsOnVerdicts.fetch(exception, entry) || false
+                #
+                # Keyed by `self` (the settling action, via Invoker's instance_exec) as well as the
+                # exception and entry: an inherited entry can be consulted at more than one
+                # settlement level for the same exception, and each level's verdict belongs to that
+                # level's OWN action instance, never a different one's.
+                Axn::Internal::FailsOnVerdicts.fetch(exception, self, entry) || false
               }
               error(message, if: message_gate, standalone:, &block)
             end
@@ -137,7 +142,7 @@ module Axn
               end
 
               verdict = entry.matcher.call(exception:, action:)
-              Axn::Internal::FailsOnVerdicts.record!(exception, entry, verdict)
+              Axn::Internal::FailsOnVerdicts.record!(exception, action, entry, verdict)
               matched ||= verdict
             end
 
