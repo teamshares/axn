@@ -2324,7 +2324,7 @@ RSpec.describe "declaration-time property name collisions" do
     # about its own type, about which readers it has, or about whether two names are equal — must not be able
     # to make the guard skip a member the schema still emits, or to replace this error with one of its own.
     # Every question below is therefore answered from the real class and the real method table.
-    describe "a shape supplied raw, by objects that lie about themselves" do
+    describe "a shape supplied raw, by objects that lie about themselves", :slow do
       # A Hash subclass denying that it is a Hash. `is_a?` is overridable, so a type test that dispatches it
       # skips the whole member walk — while reflection consumes the shape regardless and emits the property
       # twice, which is the exact defect this check exists to prevent.

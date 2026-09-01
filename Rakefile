@@ -3,39 +3,35 @@
 require "bundler/gem_tasks"
 require "rspec/core/rake_task"
 
-# The commit loop. `:slow` marks the two kinds of spec the fast lane can do without, and the test is
-# what KIND of check a spec is — not merely how long it takes.
+# The commit loop. CI, `verify` and `spec_full` run every example, so this lane is a LATENCY choice
+# and never a coverage one — a `:slow` spec is deferred to merge time, not skipped. That is what makes
+# the tag cheap to apply, and the question it asks is about the MISTAKE, not the spec:
 #
-#   An EXPLORATORY PROBE enumerates a space (declared type x literal x tolerance x spelling) looking
-#   for cells nobody anticipated, measuring each against the real runtime or a real JSON Schema
-#   engine. Its cases are generated rather than written, the behaviours it covers are asserted
-#   case-by-case elsewhere in the fast lane (`degenerate_literals_spec`,
-#   `unsatisfiable_size_interval_spec`, `container_position_validators_spec`, `schema_spec`), and its
-#   marginal value is against CHANGED guard code. That makes it a merge-time net, not a commit check.
+#   Could you introduce this regression WITHOUT editing the thing under test? If yes, the loop has to
+#   catch it, because nothing else will tell you before CI does. If no — you would have to be working
+#   in that exact area, where you would run the file directly (unfiltered, by design) — defer it.
 #
-#   DEV-ONLY TOOLING (`spec/bin/`) audits the gem generator, which ships with no gem and cannot
-#   regress `lib/`. Tagged on subject, not cost — it is only ~4s.
+# So the slow lane holds the cross-product probes (exploratory nets over ground the fast lane already
+# asserts case-by-case: `degenerate_literals_spec`, `unsatisfiable_size_interval_spec`,
+# `container_position_validators_spec`, `schema_spec`), `spec/bin/` (audits the gem generator, which
+# ships with no gem and cannot regress `lib/`), the strategy load-order specs, and the block that
+# builds objects lying about their own class. Each is reachable only by editing its own subject.
 #
-# Everything else stays in the fast lane however slow it is, because a SPECIFIC BEHAVIOURAL CHECK
-# pins one known regression: drop it from the loop and that exact bug can come back silently.
-# `standalone_require_spec` (~8s) and `client_registration_spec` (~3.5s) are the load-bearing cases —
-# `spec_helper` preloads axn and `client_spec` repopulates the strategy registry itself, so no other
-# spec can observe a missing require or a re-gated `:client` registration.
+# `standalone_require_spec` stays in the fast lane as the one deliberate exception, because a missing
+# require is the mistake you make WHILE EDITING SOMETHING ELSE — add a constant reference, and the
+# require lives in another file. `spec_helper` preloads axn, so nothing else here can see it, and the
+# failure surfaces first in a downstream adapter gem's load path. Parallelising its probes took it
+# from ~8s to ~3.5s, so it now costs the loop ~1.6s.
 #
-# Cost is a trigger for asking the question, never the answer to it. A spec that is merely slow from
-# a one-time eager-load does not qualify at all: the cost just migrates to whichever example runs
-# first. Neither does an expensive example sitting among cheap ones — in the property-name block, 56
-# of 76 examples run under 0.05s, so tagging the group to save ~6 of them took 70 specific checks out
-# of the loop with it.
+# Cost only ever triggers the question. A spec slow from a one-time eager-load does not qualify (the
+# cost migrates to whichever example runs first), and one costly example among cheap ones does not
+# make its group taggable — tag the narrowest block that carries the cost.
 #
-# Nothing is skipped, only deferred: `spec_slow` runs exactly the complement and `spec_full` runs
-# both, as do CI, `all_specs`, and `verify` — which gates `build`, and so `release`. Running the two
-# lanes as separate processes is also FASTER than one process running the same examples: a probe
-# declares thousands of anonymous classes, which slows every example sharing its process afterwards.
-#
-# A tag filter excludes EXAMPLES, not files: both lanes still load all 226 spec files (283 top-level
-# groups, measured), so the file-load-time registrations this suite depends on — strategies and tool
-# adapters, which cannot re-register once required — happen identically whichever lane you run.
+# Running the two lanes as separate processes is FASTER than one process running the same examples: a
+# probe declares thousands of anonymous classes, which slows every example sharing its process after
+# it. A tag filter excludes EXAMPLES, not files — both lanes still load all 226 spec files (283
+# top-level groups, measured), so the file-load-time strategy and tool-adapter registrations this
+# suite depends on happen identically whichever lane you run.
 RSpec::Core::RakeTask.new(:spec) do |t|
   t.rspec_opts = "--tag '~slow'"
 end
