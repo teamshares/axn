@@ -112,7 +112,8 @@ RSpec.describe "settling an exception that answers type questions for itself" do
   # override raising there escapes `_settle_exception!` entirely, past the explicit `__finalize!`
   # call. `_settle_exception`'s outer rescue then warns-and-swallows a result that never finalized,
   # which (per this file's own premise) breaks completion logging/tracing/metrics gated on
-  # `finalized?`. Fixed with an `ensure` in `_settle_exception!` that finalizes unconditionally.
+  # `finalized?`. Fixed with an `ensure` in `_settle_exception!` that finalizes when the exception has
+  # actually been recorded (see round 9 below for why "unconditionally" was the wrong shape).
   #
   # NOTE (found while verifying, deliberately NOT fixed here -- out of this ticket's scope): this
   # hostile class also makes `result.outcome` itself raise, on every read, forever -- because
@@ -135,6 +136,34 @@ RSpec.describe "settling an exception that answers type questions for itself" do
 
       expect(result.finalized?).to be(true)
       expect(result.ok?).to be(false)
+    end
+  end
+
+  # Codex review finding (PR #261), round 9: the round-7 fix ("finalize unconditionally in an
+  # `ensure`") was ITSELF wrong in the other direction. `apply_defaults!(:outbound)`'s own
+  # `best_effort`, at the TOP of `_settle_exception!`, runs BEFORE `__record_exception` -- so a
+  # pass-through signal (`Interrupt`, `Timeout::ExitException`) escaping THERE reaches the `ensure`
+  # with the context completely untouched (`@exception` still nil, `@failure` still false from
+  # `Context#initialize`). Finalizing unconditionally there marks that untouched context as a
+  # FINISHED SUCCESS while the signal is still unwinding -- verified live: `finalized?` and `ok?`
+  # both read `true` on a call that was aborted before it ever recorded anything. An outer `ensure`
+  # (tracing, logging) reading the result during that same unwind would report a false success for
+  # an abandoned call. Fixed by gating the `ensure`'s finalize on `@context.exception` being present
+  # -- i.e. only finalizing once `__record_exception` has actually run.
+  describe "a pass-through signal escaping before the exception is even recorded" do
+    it "does NOT finalize the result as a false success" do
+      action = build_axn { def call = raise ArgumentError, "the real bug" }
+      result_ref = nil
+
+      allow_any_instance_of(Axn::Core::Executor).to receive(:apply_defaults!) do |executor, direction|
+        result_ref = Axn::Internal::ActionState.result(executor.instance_variable_get(:@action))
+        raise Interrupt if direction == :outbound
+      end
+
+      expect { action.call }.to raise_error(Interrupt)
+
+      expect(result_ref.finalized?).to be(false)
+      expect(result_ref.exception).to be_nil
     end
   end
 

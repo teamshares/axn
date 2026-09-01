@@ -89,12 +89,13 @@ itself) would run the user's condition a second time, unpredictably, depending o
 Keeping the static fallback means the executor's own evaluation is the only one that ever runs user
 code, regardless of what reads `outcome` afterward or in what order.
 
-## Ten bugs found across review and self-review, and the fixes
+## Eleven bugs found across review and self-review, and the fixes
 
-All ten are real, confirmed by direct execution before and after — not accepted on prose alone,
-the reviewer's or my own. One reviewer-suggested remedy (fix 8) was itself verified wrong before
-being replaced with a different fix. One adjacent, pre-existing, out-of-scope gap (found while
-verifying fix 9) was reported rather than patched.
+All eleven are real, confirmed by direct execution before and after — not accepted on prose alone,
+the reviewer's or my own. Two of MY OWN suggested remedies (fix 8's rejected alternative, and fix
+9's first cut, corrected by fix 11) were verified wrong before landing the actual fix — same
+standard applied to a reviewer's proposal and to my own. One adjacent, pre-existing, out-of-scope
+gap (found while verifying fix 9) was reported rather than patched.
 
 ### 1. A reentrant `result.outcome` read froze in the wrong answer, permanently
 
@@ -305,12 +306,12 @@ code (fix 3's whole point); this term has no equivalent guard and predates `fail
 was simply never exercised while `__finalize!` ran unconditionally as the first line of
 `__record_exception`, before decision 3 moved it.
 
-Fix: `_settle_exception!` gained an `ensure` that finalizes unconditionally. `__finalize!` is
-idempotent, so this costs nothing on the happy path (already true by the time it runs) and
-guarantees the result is never stuck permanently unfinalized on any exit path — including one where
-something upstream of `__record_exception` itself lets an unswallowable exception through, which is
-harmless since the whole `.call` is escaping uncaught in that case and no caller ever reads the
-result.
+Fix: `_settle_exception!` gained an `ensure` that finalizes. `__finalize!` is idempotent, so this
+costs nothing on the happy path (already true by the time it runs) and guarantees the result is
+never stuck permanently unfinalized on this exit path. (The FIRST cut of this fix finalized
+unconditionally, reasoning that anything upstream of `__record_exception` letting an unswallowable
+exception through was harmless since no caller would read the result — round 9, below, found that
+reasoning wrong and the fix was narrowed.)
 
 **Found but deliberately not fixed, out of scope**: the same hostile override also makes
 `result.outcome` itself raise, on every subsequent read, forever — because `Axn::ValidationError.
@@ -341,6 +342,26 @@ check to actually be called once it's there. Both directions of the asymmetry ar
 `matcher_spec.rb`, documenting each shape's actual `#matches?`/`Invoker` runtime behavior (an
 unconditional match for `#call`-only, an unconditional non-match for `to_proc`+`arity`-only) so a
 future edit can't silently reintroduce either gap without a test noticing.
+
+### 11. Fix 9's own remedy was wrong in the opposite direction: it could finalize a call that never started
+
+Fix 9's first cut finalized unconditionally in `_settle_exception!`'s `ensure`, reasoning that a
+pass-through signal (`Interrupt`, `Timeout::ExitException`) escaping *upstream* of
+`__record_exception` — from `apply_defaults!(:outbound)`'s own `best_effort`, the very first
+statement in the method — was harmless, since "the whole `.call` is escaping uncaught... no caller
+ever reads the result." That reasoning was wrong: Ruby's `ensure` runs during the UNWIND, before the
+signal has finished propagating out of `.call`, and an outer layer (tracing, logging) with its own
+`ensure` reads the result *during that same unwind*. Verified live (stubbing `apply_defaults!` to
+raise `Interrupt`, since a genuinely-raising outbound default proc turned out not to reach this path
+eagerly): `finalized?` and `ok?` both came back `true` on a context that was never touched at all
+(`@exception` still nil, `@failure` still `false` from `Context#initialize`) — a FALSE SUCCESS for
+an action a signal aborted before it ever recorded anything.
+
+Fix: gate the `ensure`'s finalize on `@context.exception` — non-nil only once `__record_exception`
+has actually run. This keeps fix 9's original guarantee (a classification-window raise still
+finalizes, since `__record_exception` already ran by then) while no longer finalizing a context that
+was never touched at all. Both directions are now pinned as separate specs in
+`hostile_exception_settlement_spec.rb`.
 
 ## Declaration-time guards
 

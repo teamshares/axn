@@ -998,13 +998,21 @@ module Axn
         # explicit `__finalize!` above raised a swallowable error (see the comment on
         # `settled_as_failure`), this method returns here without ever having reached that explicit
         # call, and `_settle_exception`'s outer rescue only warns-and-swallows -- it does not retry
-        # anything in here. `__finalize!` is idempotent (`@finalized = true`), so running it
-        # unconditionally on every exit path costs nothing on the happy path (already true by the
-        # time this runs) and guarantees the result never gets stuck permanently unfinalized on the
-        # unhappy one. Equally harmless if something upstream of `__record_exception` itself
-        # (`apply_defaults!`'s best_effort) let something unswallowable through: the whole `.call` is
-        # escaping uncaught in that case, so no caller ever reads this result's `finalized?` at all.
-        @context.__finalize!
+        # anything in here. `__finalize!` is idempotent (`@finalized = true`), so running it again
+        # here costs nothing on the happy path (already true by the time this runs) and guarantees
+        # the result never gets stuck permanently unfinalized on the unhappy one.
+        #
+        # Gated on `@context.exception` (only set by `__record_exception`, the line right before the
+        # classify block) rather than unconditional: `apply_defaults!(:outbound)`'s own best_effort,
+        # ABOVE `__record_exception`, can let a pass-through signal (`Interrupt`,
+        # `Timeout::ExitException`) escape before this method ever records anything. Finalizing
+        # unconditionally there marked an untouched context (`@exception` still nil, `@failure` still
+        # false from `Context#initialize`) as a FINISHED SUCCESS while the signal was still unwinding
+        # -- verified live: `finalized?` and `ok?` both read `true` on a call that never even reached
+        # its own exception. An outer `ensure` (tracing, logging) reading the result during that same
+        # unwind would report a false success for an abandoned call instead of recognizing it as
+        # unsettled. Only finalize here once there is something this level actually settled.
+        @context.__finalize! if @context.exception
       end
 
       # Resolve THIS level's presentation NOW (memoizing it on the result) and, for an Axn-owned
