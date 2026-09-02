@@ -32,6 +32,64 @@ RSpec.describe "Axn.config.on_ignored_exception" do
     end
   end
 
+  # The hook's default route hands every ignored exception to `on_exception`, so anything axn's own
+  # machinery swallows on a HEALTHY call arrives in the consumer's error reporter as though their code
+  # raised it. That makes "a successful call reports nothing" a contract of the guard layer and not
+  # merely a property of the current implementation: a new `best_effort` around a read that routinely
+  # fails would be a per-call report for every consumer, and the reporter is the last place that is
+  # noticed. Asserted through the handlers themselves rather than by counting raises, because the
+  # handler is what a consumer actually wires up.
+  describe "an ordinary successful call" do
+    let(:child) do
+      build_axn do
+        expects :name
+        exposes :greeting
+        def call = expose(:greeting, "Hello, #{name}!")
+      end
+    end
+
+    # Deliberately exercises the layers that own a `best_effort` guard — contract resolution, the hook
+    # and callback chains, logging, and a child action's own full pass — rather than a bare `def call`.
+    let(:parent) do
+      inner = child
+      build_axn do
+        expects :name, type: String
+        expects :count, type: Integer, default: 2
+        exposes :greeting, :child_greeting
+
+        before { @started = true }
+        after { expose(:greeting, "#{name} x#{count}") }
+        on_success { @finished = true }
+
+        define_method(:call) do
+          result = inner.call(name:)
+          expose(:child_greeting, result.greeting)
+        end
+      end
+    end
+
+    it "reports nothing through either handler" do
+      Axn.config.on_exception = reporter
+      Axn.config.on_ignored_exception = reporter
+
+      result = parent.call(name: "Ada")
+
+      expect(result).to be_ok
+      expect(result.child_greeting).to eq("Hello, Ada!")
+      expect(reports).to be_empty
+    end
+
+    # The explicit handler alone, since the default route is what makes the above indirect: with
+    # `on_exception` unset there is nothing for a swallow to fall through to, so a report here is
+    # unambiguously a swallow and not a routing artifact.
+    it "reports nothing to an explicit handler with no on_exception configured" do
+      Axn.config.on_ignored_exception = reporter
+
+      expect(parent.call(name: "Ada")).to be_ok
+      expect(reports).to be_empty
+    end
+  end
+
   describe "routing" do
     it "defaults to the configured on_exception handler" do
       Axn.config.on_exception = reporter

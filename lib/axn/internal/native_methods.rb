@@ -359,7 +359,18 @@ module Axn
       # Same precondition as that one, for the same reason: the caller must have established that `mod` IS a
       # Module undispatched, since binding this to anything else is a TypeError — exactly the replaced-verdict
       # failure a bound read exists to prevent.
+      # Absence is settled by `instance_method_reachable?` before the resolver is reached, because
+      # `Module#instance_method` reports it by RAISING and an exception is not a cheap verdict: it carries a
+      # `Thread::Backtrace`, the largest single allocation this lookup can make, and absence is the ORDINARY
+      # answer for most of the callers here (`NameOwnership.owner_within` asks about every declared field on
+      # every facade construction). The predicate pair spans exactly the range the resolver does — any
+      # visibility, whole ancestry, an `undef_method` entry absent in both — so it costs no verdict.
+      #
+      # The rescue stays because the two reads are separate lookups: it is what keeps the nil absence policy
+      # when the name is removed between them.
       def self.declared_instance_method(mod, name)
+        return nil unless instance_method_reachable?(mod, name)
+
         MODULE_INSTANCE_METHOD.bind_call(mod, name)
       rescue ::NameError
         nil
@@ -386,9 +397,9 @@ module Axn
       #
       # Two reads because Ruby splits the range: `method_defined?` answers for public and protected,
       # `private_method_defined?` for the rest, and a non-public definition is reached by a dispatch from
-      # inside just as a public one is from outside. Predicates rather than `declared_instance_method(...).nil?`
-      # because absence is the ordinary answer here — every name in a fixed set, asked of every class — and
-      # that reader pays a NameError for each one.
+      # inside just as a public one is from outside. Together they are the whole of the resolver's range, which
+      # is what lets `declared_instance_method` stand this in front of the raising lookup; a caller wanting only
+      # the boolean asks here directly and never materializes an UnboundMethod it would discard.
       #
       # Same Module precondition as the readers above.
       def self.instance_method_reachable?(mod, name)
@@ -425,8 +436,14 @@ module Axn
       #
       # The cost of asking the complete question is that reading the singleton class materializes an empty one,
       # exactly as in `own_array_methods`, and nothing observes the difference.
+      # Gated on the reachability predicate for the same reason as `declared_instance_method`, and against the
+      # same method table this then resolves against — reading it twice would materialize the singleton class
+      # twice and could answer about two different tables.
       def self.declared_method(value, name)
-        MODULE_INSTANCE_METHOD.bind_call(method_table(value), name)
+        table = method_table(value)
+        return nil unless instance_method_reachable?(table, name)
+
+        MODULE_INSTANCE_METHOD.bind_call(table, name)
       rescue ::NameError
         nil
       end

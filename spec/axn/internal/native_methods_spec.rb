@@ -561,3 +561,65 @@ RSpec.describe Axn::Internal::NativeMethods, ".includes_module?" do
     expect(described_class.includes_module?(liar, Numeric)).to be(false)
   end
 end
+
+# Both undispatched lookups resolve a name the ancestry may not hold, and for most of their callers
+# ABSENCE IS THE ORDINARY ANSWER, not a corner: the facade asks whether its own class already answers
+# to each declared field on every construction, `ShapeGraph` asks every member for optional attributes a
+# minimal member does not carry, and `facade_inspector` asks for a `to_fs` that exists in no process
+# without ActiveSupport. `Module#instance_method` reports absence by RAISING, and an exception is not a
+# cheap verdict — it carries a `Thread::Backtrace`, which is the largest single allocation either lookup
+# can make. So absence has to be settled by the predicate twin BEFORE the raising resolver is reached.
+#
+# Counted rather than benchmarked: the raise is what allocates, so the invariant is "no exception is
+# constructed", which is exact and machine-independent where a byte count is neither.
+RSpec.describe Axn::Internal::NativeMethods, "the cost of an absent name" do
+  def nameerror_raises(&probe)
+    count = 0
+    tracer = TracePoint.new(:raise) { |tp| count += 1 if tp.raised_exception.is_a?(NameError) }
+    tracer.enable(&probe)
+    count
+  end
+
+  it "settles a module-level absence without constructing an exception" do
+    mod = Module.new { def present = 1 }
+
+    expect(nameerror_raises { described_class.declared_instance_method(mod, :nope_not_here) }).to eq(0)
+    expect(described_class.declared_instance_method(mod, :nope_not_here)).to be_nil
+  end
+
+  it "settles a value-level absence without constructing an exception" do
+    value = Class.new { def present = 1 }.new
+
+    expect(nameerror_raises { described_class.declared_method(value, :nope_not_here) }).to eq(0)
+    expect(described_class.declared_method(value, :nope_not_here)).to be_nil
+  end
+
+  # The one axis on which a cheaper absence check could disagree with the resolver, in the UNSAFE
+  # direction: an `undef_method` entry is not a definition, and a reader that reported the shadowed
+  # implementation instead would tell a caller a method it cannot dispatch is still in force. Both
+  # `method_defined?` and `instance_method` treat it as absent, which is why the predicate may stand in
+  # front of the resolver at all.
+  it "settles an undef'd name as absent, and without an exception either" do
+    klass = Class.new(String) { undef_method :to_s }
+
+    expect(nameerror_raises { described_class.declared_instance_method(klass, :to_s) }).to eq(0)
+    expect(described_class.declared_instance_method(klass, :to_s)).to be_nil
+  end
+
+  # A PRESENT name at every visibility still resolves — the predicate pair spans exactly the range the
+  # resolver does, so gating it costs no verdict.
+  it "still resolves a present name at every visibility" do
+    klass = Class.new do
+      def pub = 1
+      def prot = 2
+      def priv = 3
+
+      protected :prot
+      private :priv
+    end
+
+    %i[pub prot priv].each do |name|
+      expect(described_class.declared_instance_method(klass, name)&.owner).to equal(klass), "expected to find #{name}"
+    end
+  end
+end
