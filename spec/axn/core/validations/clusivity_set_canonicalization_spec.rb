@@ -426,7 +426,9 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
     # Nothing on the axis may be READ unless its method table is the whole truth and holds no `call` at all —
     # reading a set the runtime never compares against is what refuses a working contract.
     it "reads members only from a container whose table is authoritative and callable-free" do
-      readable = { plain: true, public_call: false, private_call: false,
+      # `private_call` is readable: visibility is decidable from the method table, ActiveModel will not call a
+      # non-public `call`, and so the container really does compare against the members it holds.
+      readable = { plain: true, public_call: false, private_call: true,
                    method_missing_call: false, method_missing_only: false }
 
       readable.each do |kind, may_read|

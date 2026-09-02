@@ -95,11 +95,12 @@ module Axn
       #     members ARE the contract, stored by reference, lets the caller change an already-declared class by
       #     mutating what they still hold. Refusing instead costs an author a `freeze`, which the message names.
       #
-      # Permissive: every doubtful shape answers true, so the guards read nothing they might be wrong about.
+      # Permissive only where it has to be: certainty plus the shapes that cannot be decided without dispatch.
+      # Visibility IS decidable from the method table, so a NON-public `call` is not a doubtful case at all —
+      # ActiveModel will not call it, the container compares against its own members, and reading them is both
+      # safe and the only way the refusals they earn keep firing.
       def possibly_resolved_per_call?(collection)
-        return true unless Axn::Internal::NativeMethods.declared_method(collection, :call).nil?
-
-        own_dispatch_hooks?(collection)
+        certainly_resolved_per_call?(collection) || own_dispatch_hooks?(collection)
       end
 
       # Strict: only a PUBLIC `call` in the method table, which is exactly what `respond_to?(:call)` answers
