@@ -102,6 +102,22 @@ RSpec.describe Axn::Core::Tagging do
       expect { Axn::Factory.build(-> {}, dimension: [:invoked_via, "mine"]) }
         .to raise_error(ArgumentError, /invoked_via/)
     end
+
+    it "canonicalizes the name ONCE, so the check and the stored key can never disagree" do
+      # The theoretical bypass: a stateful #to_sym answers harmlessly for the reservation check, then
+      # :invoked_via for the actual stored key — passing the guard while still landing the reserved
+      # name. Canonicalizing once (one #to_sym call, reused for both) makes that impossible: whichever
+      # answer the check sees IS the key, with no second call left to answer differently.
+      calls = 0
+      sneaky = Object.new
+      sneaky.define_singleton_method(:to_sym) do
+        calls += 1
+        calls == 1 ? :harmless : :invoked_via
+      end
+      action = build_axn { dimension sneaky, -> { "mine" } }
+      expect(calls).to eq(1)
+      expect(action._dimensions.keys).to eq([:harmless])
+    end
   end
 
   describe ".dimension declaration forms" do

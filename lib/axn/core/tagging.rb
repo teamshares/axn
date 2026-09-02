@@ -148,8 +148,12 @@ module Axn
           raise ArgumentError, "from: must be one of #{PHASES.inspect}" unless PHASES.include?(from)
           raise ArgumentError, "expected a name and a single resolver" unless args.size.between?(1, 2)
 
-          name = args.first
-          if name.to_sym == Internal::CurrentEntryPoint::DIMENSION_NAME
+          # Canonicalized ONCE and reused for both the reservation check and the stored key — never
+          # re-derived from the caller's object, which a stateful #to_sym could answer differently on
+          # a second call (a harmless name for the check, :invoked_via for the actual key), bypassing
+          # the guard below entirely.
+          name = args.first.to_sym
+          if name == Internal::CurrentEntryPoint::DIMENSION_NAME
             raise ArgumentError,
                   "#{Internal::CurrentEntryPoint::DIMENSION_NAME.inspect} is a reserved facet name — " \
                   "axn stamps it ambiently (Axn::Extensions::InvokedVia / Axn::Tools::Invoker) to " \
@@ -166,7 +170,7 @@ module Axn
             resolver = args.last
           end
 
-          { name.to_sym => Facet.new(resolver:, from:) }
+          { name => Facet.new(resolver:, from:) }
         end
       end
     end

@@ -22,7 +22,7 @@ If your gem also enqueues a Sidekiq job from inside the block (`SomeAxn.call_asy
 
 ## Why not just declare a `dimension`?
 
-`dimension :invoked_via, -> { "webhooks" }` on your gem's own Axn classes would work for calls that stay inside your gem — but it wouldn't reach the app-authored handler an inbound trigger goes on to call, and it can't distinguish two different calls to the *same* class based on how each one arrived. If your gem only ever dispatches Axns it authors itself, and doesn't need per-call granularity, a plain `dimension` declared once on your gem's base class is simpler and is the right tool — reach for `Axn::Extensions::InvokedVia` when the call crosses into code you don't own, or when the same class needs a different value depending on the call.
+`dimension :source, -> { "webhooks" }` on your gem's own Axn classes would work for calls that stay inside your gem — but it wouldn't reach the app-authored handler an inbound trigger goes on to call, and it can't distinguish two different calls to the *same* class based on how each one arrived. If your gem only ever dispatches Axns it authors itself, and doesn't need per-call granularity, a plain `dimension` declared once on your gem's base class is simpler and is the right tool — reach for `Axn::Extensions::InvokedVia` when the call crosses into code you don't own, or when the same class needs a different value depending on the call. (Not `dimension :invoked_via` itself, though — see below.)
 
 `invoked_via` itself is reserved: no class may declare `dimension :invoked_via` or `tag :invoked_via` — `Axn::Extensions::InvokedVia` is the only way to set it, so a dashboard built on it can trust the value always means what this recipe says.
 
