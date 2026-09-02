@@ -114,6 +114,15 @@ module Axn
         reader.bind_call(collection)
       end
 
+      # Whether the collection is one of those containers AT ALL, regardless of whether its members may be read
+      # out. Kept separate from the reader above because the two answer different questions and only one of them
+      # needs the caller's traversal: WHERE a set is written is a question about the spelling, while WHAT its
+      # members are is a question about the container's own code.
+      def hash_keyed_container?(collection)
+        klass = Axn::Internal::Identity.class_of(collection)
+        HASH_KEYED_MEMBER_READERS.any? { |candidate, _| candidate.equal?(klass) }
+      end
+
       # Rewrites a clusivity set written in a hash-keyed container into its members, so ONE equality decides
       # membership wherever the declaration is read (PRO-3319).
       #
@@ -161,7 +170,14 @@ module Axn
 
         if nil.equal?(options)
           members = hash_keyed_set_members(entry)
-          return members.nil? ? entry : { in: members }
+          return { in: members } if members
+          # A container whose members must not be read still needs the long form, and does not need reading to
+          # get it: the shorthand is a SPELLING that ActiveModel maps only for a Range or an Array, so leaving a
+          # bare Set as written sent it to `with:` and raised `ArgumentError` on every call. Wrapping the
+          # collection itself keeps its own `include?` answering membership while making the spelling valid.
+          return { in: entry } if hash_keyed_container?(entry)
+
+          return entry
         end
 
         key = declared_set_key(options, keys: CLUSIVITY_SET_KEYS)

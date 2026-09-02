@@ -3800,7 +3800,7 @@ module Axn
 
             literals = _judgeable_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?
-            next if _constraint_satisfiable?(key, literals, klasses)
+            next if _constraint_satisfiable?(key, literals, klasses, cross_family: _cross_family_admissible?(key, entry))
 
             # Whether a blank would have passed decides only the WORDING here: the refusal itself is settled by
             # the projection invariant above, which no runtime-passing blank can satisfy.
@@ -4151,7 +4151,7 @@ module Axn
             next if literals.nil?
 
             witnesses = _witness_literals(key, literals, entry, tolerance, klasses)
-            next if _any_literal_may_satisfy?(witnesses, klasses)
+            next if _any_literal_may_satisfy?(witnesses, klasses, cross_family: _cross_family_admissible?(key, entry))
 
             raise ArgumentError, _vacuous_constraint_message(key, entry, klasses, where:, nested:)
           end
@@ -4837,9 +4837,10 @@ module Axn
         # declared token is one — so nothing here asks a caller-supplied token what it is. The LITERAL's class is
         # read through `Internal::Identity`, and membership is compared by identity, so neither side's own
         # methods decide a declaration.
-        def _literal_may_satisfy?(literal, klass)
+        def _literal_may_satisfy?(literal, klass, cross_family: true)
           return true if Validators::TypeValidator.value_matches?(literal, klass:)
           return true unless _judgeable_equality?(Internal::Identity.class_of(literal)) && _judgeable_equality?(klass)
+          return false unless cross_family
 
           CROSS_COMPARABLE_FAMILIES.any? do |family|
             family.any? { |root| Internal::NativeMethods.includes_module?(klass, root) } &&
@@ -4882,14 +4883,14 @@ module Axn
         # branch must satisfy EVERY bound: `type: [Array, Hash], comparison: { equal_to: [], greater_than: {} }`
         # has an Array-satisfiable bound and a Hash-satisfiable bound and admits nothing, because no value is
         # both. For a SET, one branch and one member is all a value needs, so either order reads the same.
-        def _constraint_satisfiable?(key, literals, klasses)
+        def _constraint_satisfiable?(key, literals, klasses, cross_family: true)
           if key == :comparison
             return klasses.any? do |klass|
-              literals.all? { |literal| _literal_may_satisfy?(literal, klass) }
+              literals.all? { |literal| _literal_may_satisfy?(literal, klass, cross_family:) }
             end
           end
 
-          _any_literal_may_satisfy?(literals, klasses)
+          _any_literal_may_satisfy?(literals, klasses, cross_family:)
         end
 
         # The SET quantifier on its own, because both guards ask for it and neither owns it: one literal
@@ -4897,8 +4898,36 @@ module Axn
         # guard reads it as "some value can pass"; the vacuity guard negates it, reading "no value can fail".
         # An empty literal list answers false either way — nothing to match — which is what makes
         # `inclusion: { in: [] }` unsatisfiable and `exclusion: { in: [] }` vacuous by the same line.
-        def _any_literal_may_satisfy?(literals, klasses)
-          literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
+        def _any_literal_may_satisfy?(literals, klasses, cross_family: true)
+          literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass, cross_family:) } }
+        end
+
+        # Whether a literal of a DIFFERENT class in the same cross-comparable family can match this entry —
+        # true for everything except a set still keyed by hash identity when the guards read it.
+        #
+        # `Clusivity` calls the collection's own `include?`, so the COLLECTION decides which equality applies.
+        # An Array compares with `==`, under which the families really do cross (`[1].include?(1.0)` is true).
+        # A `Set` and a `Hash` (whose members are its keys) look the member up by `hash` + `eql?`, and `eql?`
+        # never crosses a family — measured: `Set[1].include?(1.0)` and `{1 => true}.include?(1.0)` are both
+        # false while `1 == 1.0` is true. Widening there predicts a match ActiveModel will not make, in both
+        # directions: `type: Float, inclusion: { in: Set[1] }` rejects every Float, and its `exclusion:` mirror
+        # forbids none.
+        #
+        # The declaration rewrite (PRO-3319) reads most such sets out into their members, and one that has been
+        # read out is an Array by the time this runs — so what still reaches here is exactly the containers the
+        # rewrite STOOD DOWN on: one answering something with code of its own, whose `include?` is therefore its
+        # own and stays hash-keyed. Deleting this along with the rewrite was measured wrong: it left
+        # `type: Float, inclusion: { in: <a Set carrying any singleton method> }` declaring while every Float is
+        # rejected, and the `exclusion:` mirror declaring while nothing is forbidden.
+        #
+        # Everything else — `acceptance:` (read through `Array()`), a `comparison:` bound, a Range's bounds
+        # (`cover?`, decided by `<=>`) — compares by operator, so the families cross as before.
+        #
+        # Exact-class through `Internal::Identity`, so neither the collection nor its members decide it.
+        def _cross_family_admissible?(key, entry)
+          return true unless CLUSIVITY_KEYS.include?(key)
+
+          !Axn::Validation::Base.hash_keyed_container?(Axn::Validation::Base.declared_set_collection(entry))
         end
 
         def _judgeable_constraint_literals(key, entry, option_keys, klasses)

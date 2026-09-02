@@ -198,6 +198,50 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
   # The rewrite decides how a declaration READS, so it must run none of the caller's code to make that
   # decision: a singleton `instance_of?`, `keys` or `to_a` could otherwise suppress it, raise while the action
   # class is still being defined, or substitute members and silently rewrite the contract.
+  # A container the rewrite stands down on keeps `hash`/`eql?` membership, so everything that reasons about it
+  # has to keep reading it that way too — the bare spelling must still become the long form (which needs no
+  # traversal), and the guards must keep the hash-keyed discriminator they apply to any set they cannot widen.
+  describe "a container the rewrite stands down on" do
+    def decorated_set
+      set = Set[1]
+      set.define_singleton_method(:unrelated_helper) { :noop }
+      set
+    end
+
+    it "still gets the long form from the bare spelling, so it does not raise on every call" do
+      values = decorated_set
+      action = build_axn { expects :v, type: Integer, inclusion: values }
+
+      expect(action.call(v: 1)).to be_ok
+      expect(action.call(v: 2)).not_to be_ok
+    end
+
+    it "keeps its own membership rather than being read out by the wrap" do
+      values = decorated_set
+      action = build_axn { expects :v, type: Integer, inclusion: values }
+
+      expect(action.internal_field_configs.first.validations.dig(:inclusion, :in)).to be(values)
+    end
+
+    it "is still judged by the guards under hash-keyed semantics" do
+      included = decorated_set
+      excluded = decorated_set
+
+      expect { build_axn { expects :v, type: Float, inclusion: { in: included } } }
+        .to raise_error(ArgumentError, /inclusion: on :v can never match/)
+      expect { build_axn { expects :v, type: Float, exclusion: { in: excluded } } }
+        .to raise_error(ArgumentError, /exclusion: on :v enforces nothing/)
+    end
+
+    # The refusals above are earned, which is what makes keeping them right: the runtime really does reject
+    # every Float through the decorated Set's own `hash`/`eql?` lookup, and really does forbid none.
+    it "refuses those because the runtime genuinely enforces nothing there" do
+      values = decorated_set
+      expect(values.include?(1.0)).to be(false)
+      expect([1].include?(1.0)).to be(true)
+    end
+  end
+
   describe "a container carrying code of its own" do
     it "is left to answer its own membership rather than being read out" do
       values = Set[1]
