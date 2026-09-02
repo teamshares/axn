@@ -103,7 +103,24 @@ RSpec.describe "invoked_via ambient dimension" do
         child.call
         captured << Axn::Internal::CurrentEntryPoint.current
       end
-      expect(captured).to eq(%i[mcp mcp])
+      # Coerced through Core::Tagging.coerce at `with`-entry, same as any resolved facet.
+      expect(captured).to eq(%w[mcp mcp])
+    end
+
+    it "reports the SAME value for two calls even when the caller mutates their own source between them" do
+      # The realistic version of the divergence Codex flagged: no access to axn internals needed — an
+      # ordinary caller reusing a mutable buffer across two calls inside one `with` block. Coercing and
+      # duping ONCE at `with`-entry (Axn::Extensions::InvokedVia.with), before the value is ever stored,
+      # is what decouples every executor in the tree from whatever the caller does to `source` next.
+      source = +"mcp"
+      first = build_axn { def call; end }
+      second = build_axn { def call; end }
+      Axn::Extensions::InvokedVia.with(source) do
+        first.call
+        source.replace("mutated")
+        second.call
+      end
+      expect(notifications.map { |n| n[:dimensions] }).to eq([{ invoked_via: "mcp" }, { invoked_via: "mcp" }])
     end
 
     it "does not leak past the block — a call after it ends is unstamped" do
@@ -163,6 +180,21 @@ RSpec.describe "invoked_via ambient dimension" do
       action = build_axn { def call; end }
       Axn::Extensions::InvokedVia.with(false) { action.call }
       expect(notifications.first[:dimensions]).to eq(invoked_via: false)
+    end
+  end
+
+  describe "a value that fails to coerce" do
+    it "does not raise — .call still returns a Result, just unstamped" do
+      # Coercion runs in Axn::Extensions::InvokedVia.with, guarded by best_effort — a hostile object
+      # whose #to_s raises must not turn this side channel into `.call` raising directly, since the
+      # coercion happens in Executor#initialize, before `run` ever reaches the exception boundary.
+      hostile = Object.new
+      hostile.define_singleton_method(:to_s) { raise "boom" }
+      action = build_axn { def call; end }
+      result = nil
+      expect { Axn::Extensions::InvokedVia.with(hostile) { result = action.call } }.not_to raise_error
+      expect(result).to be_ok
+      expect(notifications.first).not_to have_key(:dimensions)
     end
   end
 end

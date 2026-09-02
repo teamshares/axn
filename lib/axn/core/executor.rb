@@ -231,8 +231,20 @@ module Axn
         # value before it's ever read. Capturing in `initialize` — the first line of this call's
         # pipeline (`run`'s `NestingTracking.tracking`, `with_tracing`, and everything else all run
         # strictly after this constructor returns) — closes that window regardless of what runs next.
+        #
+        # No coerce here: Axn::Extensions::InvokedVia.with already coerced the value to an OTel-legal
+        # type ONCE, before storing it — so every executor in the tree resolves from the exact same
+        # already-legal value, rather than each re-coercing its own copy from a reference the caller is
+        # free to keep mutating between calls (which would make a root and a nested call inside the
+        # same block disagree, defeating the whole point of a subtree-wide stamp).
+        #
+        # Still `dup_value` HERE, though — matching how `Tagging.dup_facets` re-dups at every sink
+        # boundary rather than trusting a single upstream copy to stay pristine forever. The one
+        # upstream dup decouples the stored value from the CALLER's object at `with`-entry; this one
+        # decouples THIS executor's own reported value from whatever anything else does to the shared
+        # holder for the rest of the tree's lifetime (its own body included).
         ambient = Internal::CurrentEntryPoint.current
-        @ambient_dimensions = ambient.nil? ? {} : { Internal::CurrentEntryPoint::DIMENSION_NAME => Core::Tagging.dup_value(Core::Tagging.coerce(ambient)) }
+        @ambient_dimensions = ambient.nil? ? {} : { Internal::CurrentEntryPoint::DIMENSION_NAME => Core::Tagging.dup_value(ambient) }
       end
 
       def run

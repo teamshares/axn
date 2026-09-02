@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/internal/current_entry_point"
+require "axn/core/tagging"
 require "axn/extensions"
 
 module Axn
@@ -24,8 +25,25 @@ module Axn
     module InvokedVia
       module_function
 
+      # Coerced and duped through Core::Tagging's own helpers — the same treatment a declared facet's
+      # resolved value gets — ONCE here, rather than by each Executor that later reads it. That is load
+      # bearing, not just tidy: every axn in the wrapped tree is meant to report the identical value
+      # (subtree semantics), and a caller is free to keep mutating whatever mutable object they passed
+      # in after this call returns — reusing a buffer between two `.call`s inside the same block needs
+      # no access to axn internals at all. Detaching from the caller's object HERE, before it is ever
+      # stored, means every executor in the tree — however many calls happen inside the block, however
+      # the caller's own object changes afterward — reads the exact same already-safe value rather than
+      # re-deriving its own copy from a reference that may have moved on by the time it looks.
+      #
+      # Wrapped in best_effort for the same reason `Core::Tagging.resolve` guards each facet's own
+      # resolver: an object whose #to_s raises must not turn a side channel into `.call` raising
+      # directly (it runs in Executor#initialize, before `run` ever reaches the exception boundary) —
+      # `nil` (best_effort's failure return) leaves the tree unstamped rather than broken.
       def with(value, &)
-        Axn::Internal::CurrentEntryPoint.with(value, &)
+        safe_value = Axn::Extensions.best_effort("coercing the invoked_via stamp") do
+          Core::Tagging.dup_value(Core::Tagging.coerce(value))
+        end
+        Axn::Internal::CurrentEntryPoint.with(safe_value, &)
       end
     end
   end

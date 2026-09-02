@@ -189,7 +189,8 @@ RSpec.describe Axn::Tools::Invoker do
         define_method(:call) { seen = Axn::Internal::CurrentEntryPoint.current }
       end
       described_class.new(adapter: :mcp).call(parent, {})
-      expect(seen).to eq(:mcp)
+      # Coerced through Core::Tagging.coerce, same as any resolved facet — a Symbol stringifies.
+      expect(seen).to eq("mcp")
     end
 
     it "stamps nothing when adapter: is omitted (backward compatible)" do
