@@ -326,6 +326,51 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
     it "leaves the guards with nothing to read" do
       expect(Axn::Validation::Base.literal_set_members({ in: callable_set })).to be_nil
     end
+
+    # ActiveModel asks `respond_to?(:call)`, which consults `respond_to_missing?` — so a `call` reached through
+    # `method_missing` is dispatched at runtime while the method table says the name is absent. A container
+    # declaring either hook therefore has no authoritative table, and must be read by nothing.
+    describe "reached through method_missing" do
+      def proxy_set
+        set = Set["x"]
+        set.define_singleton_method(:respond_to_missing?) { |name, _priv = false| name == :call }
+        set.define_singleton_method(:method_missing) { |name, *args| name == :call ? [1] : super(name, *args) }
+        set.freeze
+      end
+
+      it "is dispatched by the runtime even though the method table says otherwise" do
+        set = proxy_set
+        expect(set.respond_to?(:call)).to be(true)
+        expect(Axn::Internal::NativeMethods.declared_method(set, :call)).to be_nil
+      end
+
+      it "is not refused on the strength of the elements it holds" do
+        %i[inclusion exclusion].each do |key|
+          set = proxy_set
+          expect { build_axn { expects :v, type: Integer, **{ key => { in: set } } } }.not_to raise_error
+        end
+      end
+
+      it "compares against what the proxy returns" do
+        set = proxy_set
+        action = build_axn { expects :v, type: Integer, inclusion: { in: set } }
+
+        expect(action.call(v: 1)).to be_ok
+        expect(action.call(v: "x")).not_to be_ok
+      end
+
+      # The stand-down is scoped to the hooks, not to "carries any code": Ruby owns both hooks for an ordinary
+      # value, so a container with nothing but an unrelated helper keeps an authoritative table and keeps being
+      # judged — which is what preserves the earned refusals above it.
+      it "does not stand the guards down for a container carrying only an unrelated method" do
+        set = Set[1]
+        set.define_singleton_method(:unrelated_helper) { 1 }
+        set.freeze
+
+        expect { build_axn { expects :v, type: Float, inclusion: { in: set } } }
+          .to raise_error(ArgumentError, /inclusion: on :v can never match/)
+      end
+    end
   end
 
   describe "a container carrying code of its own" do

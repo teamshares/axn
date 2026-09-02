@@ -82,11 +82,35 @@ module Axn
       # "no Integer here" while the runtime compares against `[1]` — which is the one direction a
       # declaration-time guard may not err in.
       #
-      # Asked by OWNERSHIP rather than `respond_to?`, so a `respond_to_missing?` of the caller's cannot answer
-      # it, and so the question runs none of their code.
+      # Asked by OWNERSHIP rather than `respond_to?`, so the question runs none of the caller's code — and
+      # `respond_to?` is exactly what must not be dispatched here, since a `respond_to_missing?` of theirs
+      # would then be answering whether their own set gets judged.
+      #
+      # Two ways a collection can be callable, and the method table only shows one. ActiveModel asks
+      # `respond_to?(:call)`, which consults `respond_to_missing?` — so a `call` reached through
+      # `method_missing` is dispatched by the runtime while the table says the name is absent (measured: a
+      # frozen `Set["x"]` with those two hooks accepts `1` and rejects `"x"`, yet `declared_method(:call)` is
+      # nil). A container declaring either hook is therefore treated as POSSIBLY callable and read by nothing:
+      # its table is not the whole truth about it, and the cost of being wrong runs only one way — standing
+      # down admits a contract the guards might have refused, while judging one wrongly refuses a contract that
+      # works.
+      #
+      # Ordinary values are unaffected, since Ruby owns both hooks for them (`BasicObject#method_missing`,
+      # `Kernel#respond_to_missing?`) — so a Set carrying nothing but an unrelated helper still has an
+      # authoritative table and is still judged.
       def dynamically_resolved?(collection)
-        !Axn::Internal::NativeMethods.declared_method(collection, :call).nil?
+        return true unless Axn::Internal::NativeMethods.declared_method(collection, :call).nil?
+
+        DISPATCH_HOOKS.any? do |hook|
+          owner = Axn::Internal::NativeMethods.method_owner(collection, hook)
+          owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+        end
       end
+
+      # The hooks through which a name absent from the method table can still be dispatched, and the owners
+      # Ruby itself supplies them from — anything else means the caller took one over.
+      DISPATCH_HOOKS = %i[method_missing respond_to_missing?].freeze
+      NATIVE_DISPATCH_HOOK_OWNERS = [::BasicObject, ::Kernel, ::Object].freeze
 
       # The two validators that name a set of values the field's own value is compared AGAINST. THE single
       # definition, so the canonicalization below and the declaration guards (contract.rb `CLUSIVITY_KEYS`)
