@@ -11,8 +11,10 @@
 !/tmp/benchmark_reports/.last_release
 .DS_Store
 
-# rspec failure tracking
+# rspec failure tracking (`.rspec_status.<lane>` holds the per-lane run times the parallel lanes
+# balance their chunks from — see RUN_PARALLEL_LANE in the Rakefile)
 .rspec_status
+.rspec_status.*
 
 # vitepress — matched at any depth, because a build run from the repo root writes
 # `.vitepress/cache` beside the config rather than under `docs/`

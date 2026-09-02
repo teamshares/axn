@@ -10,7 +10,13 @@ $LOAD_PATH.unshift(File.expand_path(__dir__))
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
-  config.example_status_persistence_file_path = ".rspec_status"
+  # Per-lane when the Rakefile asks for it, because flatware balances its chunks from these recorded
+  # run times and one shared file makes it balance the wrong lane's numbers: every spec file is in
+  # `files_to_run` for both lanes, so the slow lane's timings make the handful of `:slow`-heavy files
+  # look like the most expensive work in the FAST lane — where they contribute no examples at all.
+  # Measured, that gave five workers a single (empty) file each and crushed 222 files into the other
+  # seven. Defaults to the shared file, so a plain `bundle exec rspec` and `--only-failures` are unchanged.
+  config.example_status_persistence_file_path = ENV.fetch("AXN_RSPEC_STATUS_FILE", ".rspec_status")
 
   # Disable RSpec exposing methods globally on `Module` and `main`
   config.disable_monkey_patching!
@@ -54,6 +60,23 @@ RSpec.configure do |config|
   # place rather than leaving any caller still holding a reference to a Hash `.all` returned earlier
   # pointing at a now-discarded object.
   config.after { Axn::Strategies.all.replace(registered_strategies) }
+
+  # The nesting stack is process-wide state that `NestingTracking.tracking` pops in an `ensure`, so a
+  # frame outliving its example means something escaped that wrapper — a suspended Fiber abandoned
+  # mid-body is the way it happens. One stranded frame silently rewrites `axn_stack`, log prefixes and
+  # carried presentation for every example that runs afterwards, and whether that matters depends
+  # entirely on execution order: a leak is invisible in defined order and poisons ~30 examples under a
+  # reversed or randomised one. Fail the example that caused it rather than the innocent examples
+  # downstream, and drain the stack so one leak doesn't cascade into a wall of unrelated failures.
+  config.after do
+    stack = Axn::Core::NestingTracking._current_axn_stack
+    next if stack.empty?
+
+    depth = stack.size
+    stack.clear
+    raise "Leaked #{depth} axn nesting-stack frame(s). Something entered an action without unwinding it " \
+          "(an abandoned suspended Fiber is the usual cause) — drain it before the example ends."
+  end
 end
 
 # The inbound context facade an action's field readers resolve through. It is a private implementation
