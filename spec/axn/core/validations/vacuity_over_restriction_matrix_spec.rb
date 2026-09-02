@@ -91,7 +91,16 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
 
   # A bare ActiveModel model carrying the entry as axn really installs it — axn's own Clusivity validators for
   # inclusion/exclusion, ActiveModel's own for everything else.
+  #
+  # The entry is canonicalized first, because "as axn really installs it" includes the declaration-time rewrite
+  # that reads a hash-keyed set out into its members (PRO-3319). Without this the oracle would answer for a
+  # runtime axn no longer has — `Set[1].include?(BigDecimal("1"))` rather than `[1].include?(...)` — and the
+  # audit would be weakest at exactly the spellings that rewrite touches, quietly unable to see an
+  # over-restriction on any of them.
   def probe_model(entry)
+    entry = entry.dup
+    Axn::Validation::Base.canonicalize_clusivity_sets!(entry)
+
     model = Class.new do
       include ActiveModel::Validations
       attr_accessor :v
@@ -198,13 +207,21 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
 
   # {spelling => [entry, validator_key]} for one literal/tolerance/context combination. The inverted spellings
   # are audited for vacuity, the non-inverted ones for satisfiability, which is exactly how the guards split.
+  # All three containers a set can be written in are walked, because the declaration rewrite that unifies them
+  # is the thing under audit: a regression there would show up as one container's spelling refusing where its
+  # siblings do not. The bare shorthand (`inclusion: Set[literal]`) is deliberately NOT a fourth spelling — it
+  # canonicalizes to the very same entry as the long form, so it would audit an identical contract at the cost
+  # of a third of this product's runtime. `clusivity_set_canonicalization_spec` asserts that equivalence
+  # directly instead.
   def spellings_for(literal, tolerance, context)
     {
       "exclusion (Array set)" => [{ exclusion: { in: [literal] }.merge(tolerance) }, :exclusion],
       "exclusion (Set set)" => [{ exclusion: { in: Set[literal] }.merge(tolerance) }, :exclusion],
+      "exclusion (Hash set)" => [{ exclusion: { in: { literal => true } }.merge(tolerance) }, :exclusion],
       "comparison other_than" => [{ comparison: { other_than: literal }.merge(tolerance) }, :comparison],
       "inclusion (Array set)" => [{ inclusion: { in: [literal] }.merge(tolerance) }, :inclusion],
       "inclusion (Set set)" => [{ inclusion: { in: Set[literal] }.merge(tolerance) }, :inclusion],
+      "inclusion (Hash set)" => [{ inclusion: { in: { literal => true } }.merge(tolerance) }, :inclusion],
       "comparison equal_to" => [{ comparison: { equal_to: literal }.merge(tolerance) }, :comparison],
       "comparison greater_than" => [{ comparison: { greater_than: literal }.merge(tolerance) }, :comparison],
     }.transform_values { |entry, key| [context.merge(entry), key] }

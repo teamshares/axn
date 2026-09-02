@@ -380,13 +380,17 @@ RSpec.describe "a validator at a container position" do
       expect { build_axn { expects :d, type: Date, comparison: { greater_than: Time.now } } }.not_to raise_error
     end
 
-    it "refuses a hash-keyed inclusion set whose member only matches across a numeric family" do
-      # The mirror of the exclusion case: `Set[1].include?(1.0)` and `{1 => true}.include?(1.0)` are both
-      # false, so these reject every Float. Only an Array set makes the families cross.
-      expect { build_axn { expects :n, type: Float, inclusion: { in: Set[1] } } }
-        .to raise_error(ArgumentError, /inclusion:/)
-      expect { build_axn { expects :n, type: Float, inclusion: { in: { 1 => true } } } }
-        .to raise_error(ArgumentError, /inclusion:/)
+    it "stands down on a hash-keyed inclusion set whose member matches across a numeric family" do
+      # A Set and a Hash set are read out into their members at declaration (PRO-3319), so membership is decided
+      # by `==` wherever it is spelled and the families cross exactly as they do for an Array set. Asserted
+      # against the runtime as well as the declaration, since standing down is only right if a value really does
+      # pass: the guard's one unforgivable error is refusing a declaration that enforces something.
+      [Set[1], { 1 => true }].each do |set|
+        action = nil
+        expect { action = build_axn { expects :n, type: Float, inclusion: { in: set } } }.not_to raise_error
+        expect(action.call(n: 1.0).ok?).to be(true)
+        expect(action.call(n: 2.0).ok?).to be(false)
+      end
     end
 
     it "admits a hash-keyed set whose member IS of the declared type" do
@@ -818,17 +822,15 @@ RSpec.describe "a validator at a container position" do
       expect(set_action.call(n: Float::NAN).ok?).to be(false)
     end
 
-    it "refuses a hash-keyed set whose only member matches across a numeric family" do
-      # `Clusivity` calls the collection's own `include?`, and a Set/Hash looks the member up by `hash` +
-      # `eql?`, which never crosses a family: `Set[1].include?(1.0)` is false while `[1].include?(1.0)` is
-      # true. So the Array spelling forbids a Float and these two forbid nothing.
-      expect { build_axn { expects :n, type: Float, exclusion: { in: Set[1] } } }
-        .to raise_error(ArgumentError, /exclusion:/)
-      expect { build_axn { expects :n, type: Float, exclusion: { in: { 1 => true } } } }
-        .to raise_error(ArgumentError, /exclusion:/)
-
-      # The Array spelling of the same set really does forbid `1.0`, and still declares.
-      expect(build_axn { expects :n, type: Float, exclusion: { in: [1] } }.call(n: 1.0).ok?).to be(false)
+    it "stands down on a hash-keyed set whose only member matches across a numeric family" do
+      # The vacuity mirror of the inclusion case above. A Set and a Hash set are read out into their members at
+      # declaration (PRO-3319), so all three spellings forbid `1.0` and none of them enforces nothing.
+      [Set[1], { 1 => true }, [1]].each do |set|
+        action = nil
+        expect { action = build_axn { expects :n, type: Float, exclusion: { in: set } } }.not_to raise_error
+        expect(action.call(n: 1.0).ok?).to be(false)
+        expect(action.call(n: 2.0).ok?).to be(true)
+      end
     end
 
     it "keeps a hash-keyed set whose member IS of the declared type" do

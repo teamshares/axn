@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/internal/identity"
+require "axn/core/validation/clusivity_sets"
 
 module Axn
   module Validation
@@ -10,6 +11,12 @@ module Axn
     # (`_action_for_validation`).
     class Base
       include ActiveModel::Validations
+
+      # The clusivity-set cluster — where a set lives in an entry, which of its members axn may read, and the
+      # declaration-time rewrite that gives every container one membership reading. Extended rather than
+      # inlined so this kernel stays the single surface consumers ask (`Base.literal_set_members`, …) while the
+      # concern keeps a file of its own.
+      extend ClusivitySets
 
       # NOTE: exposing the validators as constants here (rather than registering them globally)
       # scopes them to axn's own one-off validator classes, so they can't affect the consuming
@@ -285,69 +292,6 @@ module Axn
         # preempting that error here. Scoped to this one call so an unrelated TypeError still propagates.
         true
       end
-
-      # WHERE a clusivity set lives, for one validator entry: under one of `keys:` in the hash long form
-      # (`in:`/`within:` for inclusion/exclusion, `accept:` for acceptance), or the bare collection itself in
-      # the shorthand (`inclusion: %w[a b]`). The two enforce the same set at runtime, so every consumer reads
-      # them identically. THE single definition of that location, shared by the nil-membership judgment below,
-      # the declaration-time satisfiability guard (contract.rb `_reject_unsatisfiable_value_constraints!`), and schema
-      # reflection's `enum` (`Schema.inclusion_enum_values`), so no two can disagree about which collection one
-      # entry names.
-      def self.declared_set_collection(opt, keys: %i[in within])
-        return keys.filter_map { |key| opt[key] }.first if opt.is_a?(Hash)
-
-        opt
-      end
-
-      # The MEMBERS of a clusivity set, when they are members axn may read: a literal in-memory Array or Set, or
-      # a Hash (whose `include?` tests KEYS, so the keys are the members). Nil — "can't tell" — for everything
-      # else, because a judgment on a set must stay side-effect-free: a dynamic collection (a Symbol or Proc
-      # resolved against the record at validation time, an `ActiveRecord::Relation` whose `include?` would query
-      # the database) is never read, and neither is an Array SUBCLASS, which could override the traversal.
-      # Exact-class throughout (`instance_of?`), for the reason reflection's own read is (PRO-2944).
-      #
-      # THE single definition of "which members can be judged", shared by the nil-membership judgment below and
-      # by the declaration-time satisfiability guard, so the two cannot read one declaration differently.
-      def self.literal_set_members(opt, keys: %i[in within])
-        collection = declared_set_collection(opt, keys:)
-        members = collection.instance_of?(Hash) ? collection.keys : collection
-        return nil unless literal_set_collection?(members)
-
-        members
-      rescue StandardError
-        nil
-      end
-
-      # Whether a collection is one axn may read its members out of directly: an in-memory Array or Set, and
-      # exactly those classes rather than any descendant, since a subclass could override the traversal. THE
-      # single definition of that admissibility test, shared by the reader above and by the satisfiability
-      # guard's `acceptance:` branch (contract.rb), which reads its set under a different rule
-      # (`AcceptanceValidator` tests `Array(accept).include?(value)`) but admits exactly the same shapes.
-      def self.literal_set_collection?(collection)
-        collection.instance_of?(::Array) || (defined?(Set) && collection.instance_of?(::Set))
-      end
-
-      # Tri-state: nil = can't tell; true/false = nil's membership in the set. Only inspected for in-memory
-      # literal collections: reflection must stay side-effect-free, so a dynamic collection (e.g. an
-      # ActiveRecord::Relation, whose `include?` would query the database) is treated as unknown (nil).
-      # Detection is identity-based (`equal?(nil)`), never `include?`/`==`: an element with a custom `==`
-      # could itself run user code. A Range's bounds are Comparable, so nil is never a member.
-      # rubocop:disable Style/ReturnNilInPredicateMethodDefinition
-      #
-      # `keys:` names where the set lives in the long form, so the one judgment serves every validator that
-      # compares a value against a literal set — `in:`/`within:` for inclusion/exclusion, `accept:` for
-      # acceptance.
-      def self.set_includes_nil?(opt, keys: %i[in within])
-        return false if declared_set_collection(opt, keys:).is_a?(Range)
-
-        members = literal_set_members(opt, keys:)
-        return nil if members.nil?
-
-        members.any? { |element| element.equal?(nil) }
-      rescue StandardError
-        nil
-      end
-      # rubocop:enable Style/ReturnNilInPredicateMethodDefinition
 
       # The value of one ActiveModel shared default option (`:if`/`:unless`/`:on`/`:strict`/…) as it
       # applies to a single validator ENTRY. `validates` builds each validator's options as

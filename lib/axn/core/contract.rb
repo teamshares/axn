@@ -2389,6 +2389,7 @@ module Axn
         # `of:` beside `type: String` never applies at all, while `of: nil` reached `check_validity!` and
         # raised on every call instead of at the author.
         def _canonicalize_validator_options!(validations, fields)
+          Axn::Validation::Base.canonicalize_clusivity_sets!(validations)
           validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
           _reject_unsupported_type_klass!(validations)
           _reject_falsy_model_klass!(validations)
@@ -2512,6 +2513,11 @@ module Axn
           # A bag's entries sit one level further down, where `detached_option_bag` copies a nested Hash by
           # reference — it detaches nested Arrays only — so the same seam is applied here, to the entries.
           Internal::ShapeGraph.detach_option_containers!(entries)
+          # The bag-position mirror of the field path's own call (`_canonicalize_validator_options!`), so a
+          # clusivity set means the same thing at an `of:` position as it does at a named one. Ordered after the
+          # detachment to read alongside it rather than out of necessity: the rewrite builds a new members Array
+          # and a new options Hash either way, so it aliases nothing whichever order the two run in.
+          Axn::Validation::Base.canonicalize_clusivity_sets!(entries)
           entries.each { |key, value| bag[key] = value }
           # `validate:` is the one admitted validator carrying a DSL-misuse guard of its own, and it has to run
           # HERE as well as on the field path: without it `validate: { inclusion: … }` declared cleanly and then
@@ -3751,9 +3757,10 @@ module Axn
         # `<=>` is not — see `_judgeable_constraint_literals` for the measured difference.
         EQUALITY_COMPARISON_KEYS = %i[equal_to].freeze
 
-        # The two validators whose membership is decided by the COLLECTION's own `include?` rather than by an
-        # operator, and so the only ones whose equality depends on which collection was written.
-        CLUSIVITY_KEYS = %i[inclusion exclusion].freeze
+        # The two validators that name a set the value is compared against, rather than an operator's bound.
+        # The declaration canonicalization owns the definition, so the guards and the rewrite that feeds them
+        # cannot come to name different validators.
+        CLUSIVITY_KEYS = Axn::Validation::ClusivitySets::CLUSIVITY_KEYS
 
         # AcceptanceValidator's own default set, used when an entry names none (`acceptance: true`) — so
         # `type: Integer, acceptance: true` is judged against what it will really be compared with and refused,
@@ -3793,7 +3800,7 @@ module Axn
 
             literals = _judgeable_constraint_literals(key, entry, option_keys, klasses)
             next if literals.nil?
-            next if _constraint_satisfiable?(key, literals, klasses, cross_family: _cross_family_admissible?(key, entry))
+            next if _constraint_satisfiable?(key, literals, klasses)
 
             # Whether a blank would have passed decides only the WORDING here: the refusal itself is settled by
             # the projection invariant above, which no runtime-passing blank can satisfy.
@@ -4144,7 +4151,7 @@ module Axn
             next if literals.nil?
 
             witnesses = _witness_literals(key, literals, entry, tolerance, klasses)
-            next if _any_literal_may_satisfy?(witnesses, klasses, cross_family: _cross_family_admissible?(key, entry))
+            next if _any_literal_may_satisfy?(witnesses, klasses)
 
             raise ArgumentError, _vacuous_constraint_message(key, entry, klasses, where:, nested:)
           end
@@ -4826,10 +4833,9 @@ module Axn
         # declared token is one — so nothing here asks a caller-supplied token what it is. The LITERAL's class is
         # read through `Internal::Identity`, and membership is compared by identity, so neither side's own
         # methods decide a declaration.
-        def _literal_may_satisfy?(literal, klass, cross_family: true)
+        def _literal_may_satisfy?(literal, klass)
           return true if Validators::TypeValidator.value_matches?(literal, klass:)
           return true unless _judgeable_equality?(Internal::Identity.class_of(literal)) && _judgeable_equality?(klass)
-          return false unless cross_family
 
           CROSS_COMPARABLE_FAMILIES.any? do |family|
             family.any? { |root| Internal::NativeMethods.includes_module?(klass, root) } &&
@@ -4872,14 +4878,14 @@ module Axn
         # branch must satisfy EVERY bound: `type: [Array, Hash], comparison: { equal_to: [], greater_than: {} }`
         # has an Array-satisfiable bound and a Hash-satisfiable bound and admits nothing, because no value is
         # both. For a SET, one branch and one member is all a value needs, so either order reads the same.
-        def _constraint_satisfiable?(key, literals, klasses, cross_family: true)
+        def _constraint_satisfiable?(key, literals, klasses)
           if key == :comparison
             return klasses.any? do |klass|
-              literals.all? { |literal| _literal_may_satisfy?(literal, klass, cross_family:) }
+              literals.all? { |literal| _literal_may_satisfy?(literal, klass) }
             end
           end
 
-          _any_literal_may_satisfy?(literals, klasses, cross_family:)
+          _any_literal_may_satisfy?(literals, klasses)
         end
 
         # The SET quantifier on its own, because both guards ask for it and neither owns it: one literal
@@ -4887,29 +4893,8 @@ module Axn
         # guard reads it as "some value can pass"; the vacuity guard negates it, reading "no value can fail".
         # An empty literal list answers false either way — nothing to match — which is what makes
         # `inclusion: { in: [] }` unsatisfiable and `exclusion: { in: [] }` vacuous by the same line.
-        def _any_literal_may_satisfy?(literals, klasses, cross_family: true)
-          literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass, cross_family:) } }
-        end
-
-        # Whether a literal of a DIFFERENT class in the same cross-comparable family can match this entry —
-        # true for everything except a set whose `include?` is keyed by hash identity.
-        #
-        # `Clusivity` calls the collection's own `include?`, so the COLLECTION decides which equality applies.
-        # An Array compares with `==`, under which the families really do cross (`[1].include?(1.0)` is true).
-        # A `Set` and a `Hash` (whose members are its keys) look the member up by `hash` + `eql?`, and `eql?`
-        # never crosses a family — measured: `Set[1].include?(1.0)` and `{1 => true}.include?(1.0)` are both
-        # false while `1 == 1.0` is true. Widening there predicts a match ActiveModel will not make, in both
-        # directions: `type: Float, inclusion: { in: Set[1] }` rejects every Float, and its `exclusion:` mirror
-        # forbids none. Everything else — `acceptance:` (read through `Array()`), a `comparison:` bound, a
-        # Range's bounds (`cover?`, decided by `<=>`) — compares by operator, so the families cross as before.
-        #
-        # Exact-class through `Internal::Identity`, so neither the collection nor its members decide it.
-        def _cross_family_admissible?(key, entry)
-          return true unless CLUSIVITY_KEYS.include?(key)
-
-          collection = Axn::Validation::Base.declared_set_collection(entry)
-          klass = Internal::Identity.class_of(collection)
-          !(klass.equal?(::Hash) || (defined?(Set) && klass.equal?(::Set)))
+        def _any_literal_may_satisfy?(literals, klasses)
+          literals.any? { |literal| klasses.any? { |klass| _literal_may_satisfy?(literal, klass) } }
         end
 
         def _judgeable_constraint_literals(key, entry, option_keys, klasses)
