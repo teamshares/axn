@@ -25,11 +25,18 @@ jobs:
       with:
         ruby-version: ${{ matrix.ruby }}
         bundler-cache: true
-    # spec_full, not spec: `rake spec` is the fast local lane (everything not tagged `:slow`) and CI
-    # must run every example. Both lanes belong in THIS job rather than a second one — another job
-    # fans out to one required-status-check context per matrix entry, each needing a ruleset update
-    # in lockstep, and it would buy no wall clock: `spec_full` runs the two lanes in separate
-    # processes, which is faster than one process running the same examples (see the Rakefile).
+    # spec_full, not spec: `rake spec` is the fast lane (everything not tagged `:slow`) and CI must run
+    # every example. Both lanes belong in THIS job rather than a second one — another job fans out to
+    # one required-status-check context per matrix entry, each needing a ruleset update in lockstep,
+    # and it would buy no wall clock: `spec_full` runs the two lanes in separate processes, which is
+    # faster than one process running the same examples (see the Rakefile).
+    #
+    # Both lanes are PARALLEL here (flatware, one job of whole spec files per core), so CI is not the
+    # place where the load-everything, defined-order property is checked — `rake verify` is, which is
+    # what `rake release` runs before it pushes a gem. CI trades that for the feedback speed, backed by
+    # the count guard that fails the lane if the workers' examples don't sum to the single-process
+    # total. Nothing here pins the worker count: it defaults to `Etc.nprocessors`, so a runner with
+    # more cores just uses them.
     - name: Run main specs
       run: bundle exec rake spec_full
     - name: Run RuboCop linting

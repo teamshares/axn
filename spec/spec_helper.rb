@@ -10,7 +10,13 @@ $LOAD_PATH.unshift(File.expand_path(__dir__))
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
-  config.example_status_persistence_file_path = ".rspec_status"
+  # Per-lane when the Rakefile asks for it, because flatware balances its chunks from these recorded
+  # run times and one shared file makes it balance the wrong lane's numbers: every spec file is in
+  # `files_to_run` for both lanes, so the slow lane's timings make the handful of `:slow`-heavy files
+  # look like the most expensive work in the FAST lane — where they contribute no examples at all.
+  # Measured, that gave five workers a single (empty) file each and crushed 222 files into the other
+  # seven. Defaults to the shared file, so a plain `bundle exec rspec` and `--only-failures` are unchanged.
+  config.example_status_persistence_file_path = ENV.fetch("AXN_RSPEC_STATUS_FILE", ".rspec_status")
 
   # Disable RSpec exposing methods globally on `Module` and `main`
   config.disable_monkey_patching!

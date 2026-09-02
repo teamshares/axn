@@ -2,6 +2,7 @@
 
 require "bundler/gem_tasks"
 require "rspec/core/rake_task"
+require "etc"
 
 # The commit loop. CI, `verify` and `spec_full` run every example, so this lane is a LATENCY choice
 # and never a coverage one — a `:slow` spec is deferred to merge time, not skipped. That is what makes
@@ -29,20 +30,124 @@ require "rspec/core/rake_task"
 #
 # Running the two lanes as separate processes is FASTER than one process running the same examples: a
 # probe declares thousands of anonymous classes, which slows every example sharing its process after
-# it. A tag filter excludes EXAMPLES, not files — both lanes still load all 226 spec files (283
-# top-level groups, measured), so the file-load-time strategy and tool-adapter registrations this
-# suite depends on happen identically whichever lane you run.
-RSpec::Core::RakeTask.new(:spec) do |t|
-  t.rspec_opts = "--tag '~slow'"
-end
+# it. A tag filter excludes EXAMPLES, not files, so a SERIAL lane still loads all 222 spec files (282
+# top-level groups, measured) and the file-load-time strategy and tool-adapter registrations this suite
+# depends on happen identically whichever lane you run.
+#
+# WORKERS LOAD ONLY THEIR OWN CHUNK. flatware splits the lane into one job of whole spec files per
+# worker, so that load-everything property holds for a serial run and NOT for a parallel one — which is
+# why `verify` (and so `rake release`) runs the serial suite, and why the serial tasks below are a
+# supported way to run any lane, not a debugging curiosity.
+#
+# Two things make chunking safe enough to be the default everywhere else. First, splitting by whole
+# FILE means a shared example group can never be separated from the group that includes it — the
+# failure mode where `it_behaves_like` is assigned to one shard and its parent to another, running in
+# neither and still reporting green, is unreachable when the file is the unit. Second, every parallel
+# lane asserts that the workers' example counts sum to the single-process total, so a shard that goes
+# missing is a hard failure rather than a smaller green number nobody reads.
+#
+# What chunking DOES change is which examples share a process, and therefore which run before which.
+# The suite is order-independent (`--order random` and a reversed file order are both green, and
+# spec_helper fails any example that leaks an axn nesting-stack frame), so that reordering is safe —
+# but it is a property to keep, not an accident. A spec that depends on another file's side effect
+# passes serially and fails only in whichever chunking happens to separate them.
+SPEC_WORKERS = -> { Integer(ENV.fetch("AXN_SPEC_WORKERS", Etc.nprocessors)) }
 
-desc "Run only the :slow specs (the cross-product probes and the gem-generator specs) — ~2.5 min"
-RSpec::Core::RakeTask.new(:spec_slow) do |t|
-  t.rspec_opts = "--tag slow"
-end
+# Runs one lane across cores, then proves nothing went missing in the split.
+#
+# The expectation is a `--dry-run` of the same lane in ONE process: it loads every spec file and
+# enumerates without executing, which is the number the workers have to add up to. It costs ~1.8s and
+# runs concurrently with the lane, so it finishes well inside the parallel run's shadow instead of
+# being added to it. The actual count comes from the workers themselves (see
+# `spec/support/parallel_example_counter.rb`) rather than from the runner's own summary line — a runner
+# that lost a worker would report a self-consistent total either way, so a check derived from its
+# arithmetic would agree with it exactly when it is wrong.
+#
+# Loaded here for the one constant naming the channel the workers report through, so the env var is
+# spelled once rather than on both sides of the process boundary.
+require_relative "spec/support/parallel_example_counter"
+
+RUN_PARALLEL_LANE = lambda { |tag:, lane:|
+  require "json"
+  require "tmpdir"
+
+  workers = SPEC_WORKERS.call
+
+  Dir.mktmpdir("axn-spec-counts") do |dir|
+    expectation = Thread.new do
+      out = File.join(dir, "expected.json")
+      # Its own status file: `--dry-run` records every example as passing in no time at all, which
+      # would otherwise flatten the timings the next run balances on.
+      env = { "AXN_RSPEC_STATUS_FILE" => File.join(dir, "dry_run_status") }
+      next nil unless system(env, "bundle", "exec", "rspec", "--tag", tag, "--dry-run", "--format", "json", "--out", out)
+
+      JSON.parse(File.read(out)).dig("summary", "example_count")
+    end
+
+    ran = system(
+      {
+        AxnParallelExampleCounter::COUNT_DIR_ENV => dir,
+        "AXN_RSPEC_STATUS_FILE" => ".rspec_status.#{lane}",
+      },
+      "bundle", "exec", "flatware", "rspec", "--workers", workers.to_s, "--",
+      "--tag", tag,
+      "--require", "./spec/support/parallel_example_counter",
+      "--format", "AxnParallelExampleCounter"
+    )
+
+    counts   = Dir[File.join(dir, "*.count")].map { |f| Integer(File.read(f)) }
+    actual   = counts.sum
+    expected = expectation.value
+
+    # No worker reported at all: the runner never got as far as splitting the lane, so this is its own
+    # failure rather than a sharding bug. Worth its own branch because flatware's Thor-based CLI exits
+    # 0 on its own usage errors, which makes `ran` useless for catching it — without this, a runner
+    # that never started reads as "sharding lost 7362 examples".
+    abort(<<~MSG) if counts.empty? && expected.to_i.positive?
+      The parallel spec runner produced no results at all — see its output above.
+      This lane holds #{expected} example(s); none of them ran, so nothing was verified.
+    MSG
+
+    # Ahead of the pass/fail verdict deliberately: if the split lost examples, that verdict is not
+    # trustworthy in either direction, so the sharding bug is the thing to report.
+    if expected && actual != expected
+      abort <<~MSG
+        Parallel sharding lost or duplicated examples.
+          #{counts.size} worker(s) ran #{actual} example(s) (#{counts.sort.reverse.join(', ')})
+          one process loads #{expected}
+        Re-run this lane serially (`rake spec_serial` / `rake spec_slow_serial`) to get a trustworthy result.
+      MSG
+    end
+
+    warn "WARNING: could not compute the single-process example count; ran #{actual} across #{counts.size} worker(s)." if expected.nil?
+
+    exit(1) unless ran
+  end
+}
+
+desc "The commit loop — everything not tagged :slow, across cores"
+task(:spec) { RUN_PARALLEL_LANE.call(tag: "~slow", lane: "fast") }
+
+desc "Run only the :slow specs (the cross-product probes and the gem-generator specs), across cores"
+task(:spec_slow) { RUN_PARALLEL_LANE.call(tag: "slow", lane: "slow") }
 
 desc "Run the whole library suite — both lanes"
 task spec_full: %i[spec spec_slow]
+
+# One process, every spec file loaded, defined order. `verify` runs these rather than the parallel
+# lanes above, so the run that gates a release is the one where load-everything still holds.
+desc "The commit loop in ONE process — the serial escape hatch when a parallel result looks wrong"
+RSpec::Core::RakeTask.new(:spec_serial) do |t|
+  t.rspec_opts = "--tag '~slow'"
+end
+
+desc "The :slow lane in ONE process"
+RSpec::Core::RakeTask.new(:spec_slow_serial) do |t|
+  t.rspec_opts = "--tag slow"
+end
+
+desc "Run the whole library suite in ONE process per lane — the load-everything, defined-order run"
+task spec_full_serial: %i[spec_serial spec_slow_serial]
 
 # RuboCop specs (separate from main specs to avoid loading RuboCop unnecessarily)
 task :spec_rubocop do
@@ -80,8 +185,12 @@ task :verify_async do
   end
 end
 
+# `spec_full_serial`, not `spec_full`: this is the gate `rake release` runs (via build), and it is the
+# one place the load-everything, defined-order run is worth the extra ~100s. CI runs the parallel lanes
+# for the feedback, so a chunk-order regression that somehow survives both the count guard and the
+# nesting-stack guard still cannot reach a released gem.
 desc "Run all verification checks (specs, rubocop, async integration)"
-task verify: %i[spec_full spec_rubocop spec_rails rubocop verify_async] do
+task verify: %i[spec_full_serial spec_rubocop spec_rails rubocop verify_async] do
   puts ""
   puts "=" * 60
   puts "✅ All verification checks passed!"

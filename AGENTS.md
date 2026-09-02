@@ -298,10 +298,14 @@ The rules it backs:
   finder for `model:` behavior; mirror Rails-specific behavior in `spec_rails/dummy_app/`.
 - Run `bundle exec rspec` and the relevant `spec_rails` specs; verify against real output before
   claiming done.
-- **Lanes.** `rake spec` is the commit loop (~20s) and runs everything NOT tagged `:slow`;
-  `rake spec_slow` runs exactly the complement (~3 min); `rake spec_full` runs both, as do
-  `rake all_specs`, `rake verify`, and CI. Running a file directly is unfiltered,
+- **Lanes.** `rake spec` is the commit loop (~7s) and runs everything NOT tagged `:slow`;
+  `rake spec_slow` runs exactly the complement (~60s); `rake spec_full` runs both, as do
+  `rake all_specs`, CI, and `rake verify` (serially — see below). Running a file directly is unfiltered,
   so `bundle exec rspec <a slow file>` still runs it while you edit that code.
+- **Both lanes run across cores** (flatware, `Etc.nprocessors` workers, `AXN_SPEC_WORKERS` to
+  override) — measured 3.6x on each. `rake spec_serial` / `rake spec_slow_serial` / `rake
+  spec_full_serial` are the same lanes in one process, and are what to reach for when a parallel
+  result looks wrong.
 - **`:slow` is a latency choice, never a coverage one.** CI, `rake verify` and `rake spec_full` run
   every example, so a tagged spec is deferred to merge time, not skipped.
 - **Tag on the MISTAKE, not the spec: could you introduce this regression without editing the thing
@@ -315,8 +319,28 @@ The rules it backs:
 - **Cost only triggers the question.** A spec slow from a one-time eager-load doesn't qualify (the
   cost migrates to whichever example runs first), and one costly example among cheap ones doesn't make
   its group taggable — tag the narrowest block carrying the cost.
-- Untagged is the default, so a new spec lands in the fast lane unless you say otherwise. Filtering
-  drops examples but still LOADS every spec file, so load-time registration is unaffected by the lane.
+- **Adding a spec? Ask the tagging question before you call it done.** Untagged is the default, so a
+  new spec joins the commit loop whether or not anyone thought about it — and at ~7s the loop has no
+  room to absorb a structurally-expensive one. Apply the MISTAKE test above; if it earns `:slow`, tag
+  the narrowest block carrying the cost, not the whole file. Parallelism raises the bar rather than
+  lowering it: 12 workers hide a slow spec in the aggregate wall clock, so the cost lands on whichever
+  worker draws it and is easy to miss. Tag filtering drops examples but still LOADS every spec file,
+  so the lane you pick never changes load-time registration.
+- **Parallel workers load only their own chunk** — that is the deliberate answer, not an accident.
+  Each worker gets a job of whole spec files, so it loads those and no others, and the
+  load-everything property holds only for the serial tasks. `rake verify` (and so `rake release`)
+  runs `spec_full_serial` for exactly that reason; CI runs the parallel lanes and trades the property
+  for feedback speed. Two things make that trade safe: splitting by whole FILE means a shared example
+  group can never be separated from the group including it (the failure where `it_behaves_like` lands
+  in one shard and its parent in another, runs in neither, and still reports green is unreachable),
+  and every parallel lane fails unless the workers' example counts sum to the single-process total.
+- **Keep the suite order-independent.** Chunking changes which examples share a process and so which
+  run before which; `--order random` and a reversed file order are both green today, and spec_helper
+  fails any example that leaks an axn nesting-stack frame. A spec that depends on another file's side
+  effect passes serially and fails only in whichever chunking separates them — so if you need
+  process-wide state, drain it in an `after` rather than relying on who ran first. One abandoned
+  suspended `Fiber` still holding a nesting-stack frame is enough to break 30 examples under a
+  reversed order while staying green in defined order — that is the shape to watch for.
 - **Auditing a guard's coverage: mutate it.** Remove or invert the guard, re-run the suite, and if it stays
   green the guard is unguarded. Note what this *cannot* find: removing a guard makes a legal-behaviour
   assertion pass more easily, never fail, so mutation says nothing about the **controls** — the examples
