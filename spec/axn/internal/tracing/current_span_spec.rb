@@ -444,6 +444,13 @@ RSpec.describe "Axn::Internal::Tracing.current_span" do
       fiber_b.resume # push B on top, then suspend before B's own pop — stack is now [A, B]
       fiber_a.resume # A resumes; current_axn wrongly resolves to B, but current_span must still refuse it
 
+      # A's `ensure` pops the TOP of the shared stack — B's frame, not its own — so A's frame is what
+      # remains here (verified: depth 1, and it is A's). Resume B so its own `ensure` pops that and the
+      # stack lands back at zero. Without this the abandoned Fiber strands a frame for the rest of the
+      # PROCESS, which silently prepends a phantom entry to `axn_stack` in every example that runs
+      # afterwards — invisible in defined order, ~30 failures under a reversed or randomised one.
+      fiber_b.resume
+
       expect(seen_by_a).to be_nil
       expect(seen_by_a).not_to equal(span_b)
     end
