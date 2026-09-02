@@ -373,6 +373,78 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
     end
   end
 
+  # The whole callability axis at once, because four consecutive review rounds each found a different shape on
+  # it and each single-case fix broke a neighbour. What ActiveModel does is decided by `respond_to?(:call)`,
+  # which axn may not dispatch, so it approximates by ownership — and an approximation has doubtful cases that
+  # the two decisions turning on it need to resolve OPPOSITE ways. This walks the product and states the whole
+  # rule: a container is refused exactly when it is unfrozen, carries code of its own, and is not certainly
+  # resolved per call by ActiveModel.
+  describe "the callability axis" do
+    def variant(kind, frozen:)
+      set = Set[1]
+      case kind
+      when :public_call then set.define_singleton_method(:call) { |_record = nil| [99] }
+      when :private_call
+        set.define_singleton_method(:call) { |_record = nil| [99] }
+        set.singleton_class.send(:private, :call)
+      when :method_missing_call
+        set.define_singleton_method(:respond_to_missing?) { |name, _priv = false| name == :call }
+        set.define_singleton_method(:method_missing) { |name, *args| name == :call ? [99] : super(name, *args) }
+      when :method_missing_only
+        set.define_singleton_method(:respond_to_missing?) { |_name, _priv = false| false }
+        set.define_singleton_method(:method_missing) { |name, *args| super(name, *args) }
+      end
+      frozen ? set.freeze : set
+    end
+
+    # kind => whether an UNFROZEN one is refused. Frozen is never refused: nothing can mutate it, so the
+    # aliasing rule has nothing to bite on.
+    {
+      plain: false,             # no code of its own — read out into an Array and copied
+      public_call: false,       # certainly resolved per call, so its members are not the contract
+      private_call: true,       # found in the table but never called by ActiveModel: a static set, aliased
+      method_missing_call: true,  # might be resolved per call, but axn cannot establish it without dispatch
+      method_missing_only: true,  # indistinguishable from the line above, and resolves the same way
+    }.each do |kind, refused_when_mutable|
+      it "#{refused_when_mutable ? 'refuses' : 'accepts'} an unfrozen #{kind} container" do
+        set = variant(kind, frozen: false)
+        declare = -> { build_axn { expects :v, type: Integer, inclusion: { in: set } } }
+
+        if refused_when_mutable
+          expect { declare.call }.to raise_error(ArgumentError, /defines methods of its own/)
+        else
+          expect { declare.call }.not_to raise_error
+        end
+      end
+
+      it "accepts a frozen #{kind} container" do
+        set = variant(kind, frozen: true)
+        expect { build_axn { expects :v, type: Integer, inclusion: { in: set } } }.not_to raise_error
+      end
+    end
+
+    # Nothing on the axis may be READ unless its method table is the whole truth and holds no `call` at all —
+    # reading a set the runtime never compares against is what refuses a working contract.
+    it "reads members only from a container whose table is authoritative and callable-free" do
+      readable = { plain: true, public_call: false, private_call: false,
+                   method_missing_call: false, method_missing_only: false }
+
+      readable.each do |kind, may_read|
+        members = Axn::Validation::Base.literal_set_members({ in: variant(kind, frozen: true) })
+        expect(members.nil?).to be(!may_read), "#{kind}: expected may_read=#{may_read}"
+      end
+    end
+
+    # And the strict predicate must track ActiveModel's own answer wherever ActiveModel's answer is knowable
+    # without dispatch — which is every shape whose `call` lives in the method table.
+    it "matches ActiveModel's own callability test on every method-table shape" do
+      %i[plain public_call private_call].each do |kind|
+        set = variant(kind, frozen: true)
+        expect(Axn::Validation::Base.certainly_resolved_per_call?(set)).to be(set.respond_to?(:call)), kind.to_s
+      end
+    end
+  end
+
   describe "a container carrying code of its own" do
     # The distinguishing case: an Array that CLAIMS to be a Hash. Classified by `Identity.class_of` it is an
     # Array and is left alone; classified by dispatch it would have its keys read with `Hash#keys`, which an

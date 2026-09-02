@@ -52,7 +52,7 @@ module Axn
       # by the declaration-time satisfiability guard, so the two cannot read one declaration differently.
       def literal_set_members(opt, keys: %i[in within])
         collection = declared_set_collection(opt, keys:)
-        return nil if dynamically_resolved?(collection)
+        return nil if possibly_resolved_per_call?(collection)
 
         members = Axn::Internal::Identity.class_of(collection).equal?(::Hash) ? HASH_KEYS_READER.bind_call(collection) : collection
         return nil unless literal_set_collection?(members)
@@ -72,35 +72,50 @@ module Axn
         klass.equal?(::Array) || (defined?(Set) && klass.equal?(::Set))
       end
 
-      # Whether ActiveModel will RESOLVE this collection per call rather than treat it as the set itself.
-      # `Clusivity#resolve_value` runs a Proc, sends a Symbol, and — in its final branch — calls ANY value
-      # answering `call`, handing the result to `include?`. So a collection carrying a `call` names no static
-      # members at all: what it compares against is decided per record, and the elements it happens to hold are
-      # not the set. Measured: a frozen `Set["x"]` whose `call` returns `[1]` accepts `1` and rejects `"x"`.
+      # Whether ActiveModel might RESOLVE this collection per call rather than compare against the members it
+      # holds. `Clusivity#resolve_value` runs a Proc, sends a Symbol, and — in its final branch — calls any
+      # value answering `respond_to?(:call)`, handing the result to `include?`. A collection it resolves names
+      # no static members at all: what it compares against is decided per record.
       #
-      # Reading such a collection statically is what made a guard refuse a working contract — the elements say
-      # "no Integer here" while the runtime compares against `[1]` — which is the one direction a
-      # declaration-time guard may not err in.
+      # TWO predicates rather than one, and the split is the point. `respond_to?` is the question ActiveModel
+      # asks, and it is the one question axn may not ask — dispatching it lets a caller's `respond_to_missing?`
+      # decide whether their own set gets judged, while the class is still being defined. So axn approximates
+      # it by OWNERSHIP, and an approximation of a boolean has doubtful cases: a `call` reached only through
+      # `method_missing` is indistinguishable, without dispatch, from a `method_missing` that does not answer to
+      # `call` at all — measured, both leave the method table empty while ActiveModel answers true for one and
+      # false for the other.
       #
-      # Asked by OWNERSHIP rather than `respond_to?`, so the question runs none of the caller's code — and
-      # `respond_to?` is exactly what must not be dispatched here, since a `respond_to_missing?` of theirs
-      # would then be answering whether their own set gets judged.
+      # The two decisions that turn on it need those doubtful cases to fall OPPOSITE ways, which is why one
+      # predicate cannot serve both:
       #
-      # Two ways a collection can be callable, and the method table only shows one. ActiveModel asks
-      # `respond_to?(:call)`, which consults `respond_to_missing?` — so a `call` reached through
-      # `method_missing` is dispatched by the runtime while the table says the name is absent (measured: a
-      # frozen `Set["x"]` with those two hooks accepts `1` and rejects `"x"`, yet `declared_method(:call)` is
-      # nil). A container declaring either hook is therefore treated as POSSIBLY callable and read by nothing:
-      # its table is not the whole truth about it, and the cost of being wrong runs only one way — standing
-      # down admits a contract the guards might have refused, while judging one wrongly refuses a contract that
-      # works.
+      #   * READING the members. Doubt must answer "do not read": reading a set the runtime never compares
+      #     against makes a guard refuse a contract that works, and that is the one error a declaration-time
+      #     guard may not make. Standing down instead costs a refusal that would have been earned.
+      #   * Exempting it from the ALIASING refusal. Doubt must answer "do not exempt": a collection whose
+      #     members ARE the contract, stored by reference, lets the caller change an already-declared class by
+      #     mutating what they still hold. Refusing instead costs an author a `freeze`, which the message names.
       #
-      # Ordinary values are unaffected, since Ruby owns both hooks for them (`BasicObject#method_missing`,
-      # `Kernel#respond_to_missing?`) — so a Set carrying nothing but an unrelated helper still has an
-      # authoritative table and is still judged.
-      def dynamically_resolved?(collection)
+      # Permissive: every doubtful shape answers true, so the guards read nothing they might be wrong about.
+      def possibly_resolved_per_call?(collection)
         return true unless Axn::Internal::NativeMethods.declared_method(collection, :call).nil?
 
+        own_dispatch_hooks?(collection)
+      end
+
+      # Strict: only a PUBLIC `call` in the method table, which is exactly what `respond_to?(:call)` answers
+      # true for without consulting a hook (measured across a public, private and `method_missing`-backed
+      # `call`). A private one is found by the table but never called by ActiveModel, so a collection carrying
+      # one is a static set like any other and must not slip past the aliasing refusal.
+      def certainly_resolved_per_call?(collection)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, :call)
+        !owner.nil? && Axn::Internal::NativeMethods.public_instance_method?(owner, :call)
+      end
+
+      # Whether the collection's method table is the whole truth about it. Ruby owns both hooks for an ordinary
+      # value (`BasicObject#method_missing`, `Kernel#respond_to_missing?`), so a container carrying nothing but
+      # an unrelated helper keeps an authoritative table — which is what preserves the refusals a decorated but
+      # genuinely static set earns.
+      def own_dispatch_hooks?(collection)
         DISPATCH_HOOKS.any? do |hook|
           owner = Axn::Internal::NativeMethods.method_owner(collection, hook)
           owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
@@ -248,7 +263,7 @@ module Axn
           members = hash_keyed_set_members(entry)
           return { in: members } if members
 
-          reject_unreadable_mutable_container!(entry, key, where) if hash_keyed_container?(entry) && !dynamically_resolved?(entry)
+          reject_unreadable_mutable_container!(entry, key, where) if hash_keyed_container?(entry) && !certainly_resolved_per_call?(entry)
           # A container whose members must not be read still needs the long form, and does not need reading to
           # get it: the shorthand is a SPELLING that ActiveModel maps only for a Range or an Array, so leaving a
           # bare Set as written sent it to `with:` and raised `ArgumentError` on every call. Wrapping the
@@ -265,7 +280,7 @@ module Axn
         members = hash_keyed_set_members(collection)
         return options.merge(set_key => members) if members
 
-        reject_unreadable_mutable_container!(collection, key, where) if hash_keyed_container?(collection) && !dynamically_resolved?(collection)
+        reject_unreadable_mutable_container!(collection, key, where) if hash_keyed_container?(collection) && !certainly_resolved_per_call?(collection)
         entry
       end
 
