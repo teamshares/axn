@@ -175,6 +175,65 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
     end
   end
 
+  # ActiveModel picks the delimiter by TRUTHINESS (`options[:in] || options[:within]`), not by which key is
+  # present, so a canonicalization keyed on presence rewrote nothing here and left this one spelling deciding
+  # membership by `hash`/`eql?` while every reader judged the `within` set by `==`.
+  describe "which of `in:`/`within:` names the set" do
+    it "follows ActiveModel's truthiness precedence when `in:` is present but falsy" do
+      [nil, false].each do |falsy|
+        action = build_axn { expects :v, type: BigDecimal, inclusion: { in: falsy, within: Set[1] } }
+        expect(action.call(v: BigDecimal("1"))).to be_ok, "`in: #{falsy.inspect}` did not fall through to `within:`"
+        expect(action.call(v: BigDecimal("0"))).not_to be_ok
+      end
+    end
+
+    it "agrees with the collection reader the guards use" do
+      entry = { in: nil, within: Set[1] }
+      canonical = Axn::Validation::Base.canonical_clusivity_entry(entry)
+
+      expect(Axn::Validation::Base.declared_set_collection(canonical)).to eq([1])
+    end
+  end
+
+  # The rewrite decides how a declaration READS, so it must run none of the caller's code to make that
+  # decision: a singleton `instance_of?`, `keys` or `to_a` could otherwise suppress it, raise while the action
+  # class is still being defined, or substitute members and silently rewrite the contract.
+  describe "a container carrying code of its own" do
+    it "is left to answer its own membership rather than being read out" do
+      values = Set[1]
+      values.define_singleton_method(:to_a) { [99] }
+      action = build_axn { expects :v, type: Integer, inclusion: { in: values } }
+
+      expect(action.internal_field_configs.first.validations.dig(:inclusion, :in)).to be(values)
+      expect(action.call(v: 1)).to be_ok
+      expect(action.call(v: 99)).not_to be_ok
+    end
+
+    it "cannot take the declaration down with a raising singleton reader" do
+      values = Set[1]
+      values.define_singleton_method(:to_a) { raise "traversal ran" }
+      values.define_singleton_method(:instance_of?) { |_| raise "classification ran" }
+
+      expect { build_axn { expects :v, type: Integer, inclusion: { in: values } } }.not_to raise_error
+    end
+
+    # The distinguishing case: an Array that CLAIMS to be a Hash. Classified by `Identity.class_of` it is an
+    # Array and is left alone; classified by dispatch it would have its keys read with `Hash#keys`, which an
+    # Array cannot answer — so this fails loudly if the classification ever goes back to asking the object.
+    # Frozen, which is the documented route by which a container carrying its own methods reaches a declared
+    # contract at all — `detached_option_array` stores a frozen one as the caller's object and refuses an
+    # unfrozen one outright.
+    it "does not let a lying `instance_of?` choose the reader" do
+      liar = [1]
+      liar.define_singleton_method(:instance_of?) { |klass| klass == Hash }
+      liar.freeze
+      action = nil
+
+      expect { action = build_axn { expects :v, type: Integer, inclusion: { in: liar } } }.not_to raise_error
+      expect(action.call(v: 1)).to be_ok
+    end
+  end
+
   # A Set SUBCLASS is deliberately left alone: its traversal is its own, so axn cannot read its members without
   # running the subclass's code, and the closed-world rule everywhere else in the guards applies here too.
   # It keeps ActiveModel's own behaviour, which is what it had before.

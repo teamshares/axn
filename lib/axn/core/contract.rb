@@ -4750,9 +4750,13 @@ module Axn
         #
         # Read through the shared collection reader, so a bare `inclusion: [..]` and the long
         # `inclusion: { in: [..] }` are judged as the one thing they are.
+        # The class is established through `Internal::Identity` and compared by identity, never by asking the
+        # collection what it is: this runs while the action class is still being defined, and a container
+        # carrying its own `instance_of?` would otherwise decide the judgment — or take the declaration down
+        # with it — from inside the guard that exists to judge that container.
         def _membership_is_the_members_own_equality?(entry)
           collection = Axn::Validation::Base.declared_set_collection(entry)
-          return false unless collection.instance_of?(::Array)
+          return false unless ::Array.equal?(Internal::Identity.class_of(collection))
 
           ::Array.equal?(Internal::NativeMethods.method_owner(collection, :include?))
         end

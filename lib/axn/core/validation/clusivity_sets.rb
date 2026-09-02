@@ -19,9 +19,24 @@ module Axn
       # reflection's `enum` (`Schema.inclusion_enum_values`), so no two can disagree about which collection one
       # entry names.
       def declared_set_collection(opt, keys: %i[in within])
-        return keys.filter_map { |key| opt[key] }.first if opt.is_a?(Hash)
+        return opt unless opt.is_a?(Hash)
 
-        opt
+        key = declared_set_key(opt, keys:)
+        key && opt[key]
+      end
+
+      # WHICH of `keys:` names the set, for an entry in the hash long form — the first one holding a TRUTHY
+      # value, which is the precedence ActiveModel itself applies (`@delimiter ||= options[:in] ||
+      # options[:within]`, activemodel clusivity.rb). Presence is the wrong question and the difference is
+      # reachable: `{ in: nil, within: Set[1] }` carries `:in` while ActiveModel validates against `:within`,
+      # so a canonicalization keyed on presence would rewrite nothing and leave that spelling deciding
+      # membership by `hash`/`eql?` while every reader here judged the `within` set by `==` — the very
+      # divergence the rewrite exists to remove, surviving in one spelling.
+      #
+      # Shared with the collection reader above rather than respelled, so the two cannot come to disagree
+      # about which of the two keys a declaration named.
+      def declared_set_key(opt, keys: %i[in within])
+        keys.find { |key| opt[key] }
       end
 
       # The MEMBERS of a clusivity set, when they are members axn may read: a literal in-memory Array or Set, or
@@ -29,13 +44,15 @@ module Axn
       # else, because a judgment on a set must stay side-effect-free: a dynamic collection (a Symbol or Proc
       # resolved against the record at validation time, an `ActiveRecord::Relation` whose `include?` would query
       # the database) is never read, and neither is an Array SUBCLASS, which could override the traversal.
-      # Exact-class throughout (`instance_of?`), for the reason reflection's own read is (PRO-2944).
+      # Exact-class throughout, for the reason reflection's own read is (PRO-2944) — established through
+      # `Identity.class_of` and compared by identity, so the collection is never asked what it is, and a Hash's
+      # keys come out through a bound native reader rather than a `keys` the caller may own.
       #
       # THE single definition of "which members can be judged", shared by the nil-membership judgment below and
       # by the declaration-time satisfiability guard, so the two cannot read one declaration differently.
       def literal_set_members(opt, keys: %i[in within])
         collection = declared_set_collection(opt, keys:)
-        members = collection.instance_of?(Hash) ? collection.keys : collection
+        members = Axn::Internal::Identity.class_of(collection).equal?(::Hash) ? HASH_KEYS_READER.bind_call(collection) : collection
         return nil unless literal_set_collection?(members)
 
         members
@@ -49,7 +66,8 @@ module Axn
       # guard's `acceptance:` branch (contract.rb), which reads its set under a different rule
       # (`AcceptanceValidator` tests `Array(accept).include?(value)`) but admits exactly the same shapes.
       def literal_set_collection?(collection)
-        collection.instance_of?(::Array) || (defined?(Set) && collection.instance_of?(::Set))
+        klass = Axn::Internal::Identity.class_of(collection)
+        klass.equal?(::Array) || (defined?(Set) && klass.equal?(::Set))
       end
 
       # The two validators that name a set of values the field's own value is compared AGAINST. THE single
@@ -61,20 +79,39 @@ module Axn
       # Where a clusivity entry's set sits in the hash long form. `accept:` is absent for the reason above.
       CLUSIVITY_SET_KEYS = %i[in within].freeze
 
-      # A collection whose `include?` is keyed by HASH IDENTITY rather than by `==`, read out as its members —
-      # or nil for one that already compares by `==` (an Array), names a span rather than members (a Range), or
-      # is not axn's to read (a Symbol or Proc resolved per call, an `ActiveRecord::Relation`, a SUBCLASS whose
-      # traversal is its own).
-      #
-      # A Hash's members are its keys, which is what its `include?` tests.
-      #
-      # Exact-class (`instance_of?`) for the reason every other set read here is: a descendant could override
-      # the traversal this reads through, and axn does not run a caller's code to canonicalize a declaration.
-      def hash_keyed_set_members(collection)
-        return collection.keys if collection.instance_of?(::Hash)
-        return collection.to_a if defined?(Set) && collection.instance_of?(::Set)
+      # The reader that yields each hash-keyed container's MEMBERS — a Hash's keys, which is what its `include?`
+      # tests, and a Set's elements. Unbound and bound per call, so the members are read by Ruby's own
+      # implementation and never by a `keys`/`to_a` the caller put on the object.
+      HASH_KEYS_READER = ::Hash.instance_method(:keys)
 
-        nil
+      HASH_KEYED_MEMBER_READERS = [
+        [::Hash, HASH_KEYS_READER],
+        (defined?(Set) ? [::Set, ::Set.instance_method(:to_a)] : nil),
+      ].compact.freeze
+
+      # A collection whose `include?` is keyed by HASH IDENTITY rather than by `==`, read out as its members —
+      # or nil for one this must not rewrite: one that already compares by `==` (an Array), one naming a span
+      # rather than members (a Range), one that is not axn's to read (a Symbol or Proc resolved per call, an
+      # `ActiveRecord::Relation`, a SUBCLASS whose traversal is its own), and one that answers ANYTHING with
+      # code of its own.
+      #
+      # Nothing here dispatches on the caller's object. The class is established through `Identity.class_of`
+      # (a bound `Kernel#class`) and compared by identity, and the members come out through an unbound native
+      # reader — because this decides how a declaration READS, so a singleton `instance_of?`, `keys` or `to_a`
+      # would otherwise let caller code suppress the rewrite, raise while the action class is still being
+      # defined, or substitute members and silently rewrite the contract.
+      #
+      # The ownership stand-down is the same rule the option copy applies to an Array container
+      # (`ShapeGraph.detached_option_array`), asked through the same walk: a container's own behaviour is part
+      # of what a declaration MEANS, so one carrying its own `include?` keeps deciding its own membership
+      # rather than having axn answer for it.
+      def hash_keyed_set_members(collection)
+        klass = Axn::Internal::Identity.class_of(collection)
+        _, reader = HASH_KEYED_MEMBER_READERS.find { |candidate, _| candidate.equal?(klass) }
+        return nil if reader.nil?
+        return nil unless Axn::Internal::NativeMethods.own_container_methods(collection, klass).empty?
+
+        reader.bind_call(collection)
       end
 
       # Rewrites a clusivity set written in a hash-keyed container into its members, so ONE equality decides
@@ -127,7 +164,7 @@ module Axn
           return members.nil? ? entry : { in: members }
         end
 
-        key = CLUSIVITY_SET_KEYS.find { |candidate| graph.carries_key?(options, candidate) }
+        key = declared_set_key(options, keys: CLUSIVITY_SET_KEYS)
         return entry if key.nil?
 
         members = hash_keyed_set_members(options[key])
