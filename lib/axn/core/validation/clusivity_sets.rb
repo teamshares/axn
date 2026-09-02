@@ -184,21 +184,14 @@ module Axn
       # Rewrites a clusivity set written in a hash-keyed container into its members, so ONE equality decides
       # membership wherever the declaration is read (PRO-3319).
       #
-      # `Clusivity` calls the collection's own `include?`, so the container used to choose the equality: an
-      # Array compares with `==` and crosses the numeric family (`[1].include?(BigDecimal("1"))`), while a Set
-      # and a Hash look the value up by `hash` + `eql?` and do not. That made the same literal enforce two
-      # different contracts depending on how it was spelled, left the declaration guards judging one of the two
-      # readings, and dropped the set from the emitted `enum` (which admits only an Array).
+      # `Clusivity` calls the collection's own `include?`, so the CONTAINER decides which equality applies: an
+      # Array compares with `==` and crosses the numeric family (`[1].include?(BigDecimal("1"))` is true), while
+      # a Set and a Hash look the member up by `hash` + `eql?`, which never crosses one. Reading the members out
+      # here is what leaves the runtime, the declaration guards and the emitted `enum` judging one set rather
+      # than three — by construction, not by keeping three readings in agreement.
       #
-      # It was not even a STABLE reading. A Ruby Hash of eight or fewer entries keeps only an 8-bit hint of each
-      # key's hash and falls through to `eql?` when the hint matches; `BigDecimal#eql?` is aliased to `#==`, so
-      # `Set[1].include?(BigDecimal("1"))` was true in roughly one process in 256, decided by the hash seed, and
-      # false again once the set passed eight members.
-      #
-      # Canonicalizing at declaration is what makes the guards, the runtime and the schema agree by
-      # construction rather than by coincidence — they all read the same Array. The members are read into a NEW
-      # Array and merged into a NEW options Hash, so neither the caller's collection nor their bag becomes the
-      # declaration's storage.
+      # The members are read into a NEW Array and merged into a NEW options Hash, so neither the caller's
+      # collection nor their bag becomes the declaration's storage.
       #
       # Mutates `validations`, and only for a key it actually rewrites. A falsy entry is a disabled validator
       # ActiveModel skips, which names no set at all.
@@ -249,9 +242,9 @@ module Axn
               "it afterwards)."
       end
 
-      # ONE clusivity entry, canonicalized. The bare shorthand becomes the long form its members belong in —
-      # ActiveModel's own `_parse_validates_options` maps only a Range or an Array to `{ in: }`, so a bare Set
-      # became `{ with: … }`, reached `check_validity!` with no delimiter at all, and raised on EVERY call.
+      # ONE clusivity entry, canonicalized. The bare shorthand becomes the long form its members belong in:
+      # ActiveModel's `_parse_validates_options` maps only a Range or an Array to `{ in: }` and everything else
+      # to `{ with: }`, which reaches `check_validity!` with no delimiter and raises on every call.
       #
       # The entry is returned unchanged — by identity, which is how the caller knows not to write — whenever
       # there is nothing to rewrite: an Array or Range set, a collection axn may not read, or a long form

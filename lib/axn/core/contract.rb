@@ -4913,12 +4913,9 @@ module Axn
         # directions: `type: Float, inclusion: { in: Set[1] }` rejects every Float, and its `exclusion:` mirror
         # forbids none.
         #
-        # The declaration rewrite (PRO-3319) reads most such sets out into their members, and one that has been
-        # read out is an Array by the time this runs — so what still reaches here is exactly the containers the
-        # rewrite STOOD DOWN on: one answering something with code of its own, whose `include?` is therefore its
-        # own and stays hash-keyed. Deleting this along with the rewrite was measured wrong: it left
-        # `type: Float, inclusion: { in: <a Set carrying any singleton method> }` declaring while every Float is
-        # rejected, and the `exclusion:` mirror declaring while nothing is forbidden.
+        # A set the declaration rewrite could read (PRO-3319) is an Array by the time this runs, so what reaches
+        # here is exactly what the rewrite stands down on: a container answering something with code of its own,
+        # whose `include?` is therefore its own and stays hash-keyed.
         #
         # Everything else — `acceptance:` (read through `Array()`), a `comparison:` bound, a Range's bounds
         # (`cover?`, decided by `<=>`) — compares by operator, so the families cross as before.
