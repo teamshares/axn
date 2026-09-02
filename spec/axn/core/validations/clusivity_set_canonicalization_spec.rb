@@ -201,66 +201,87 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
   # A container the rewrite stands down on keeps `hash`/`eql?` membership, so everything that reasons about it
   # has to keep reading it that way too — the bare spelling must still become the long form (which needs no
   # traversal), and the guards must keep the hash-keyed discriminator they apply to any set they cannot widen.
-  describe "a container the rewrite stands down on" do
-    def decorated_set
+  # A container whose members axn may not read gets the same three outcomes the option copy already gives an
+  # Array container (`ShapeGraph.detached_option_array`): read out and copied where that is faithful, stored
+  # as-is when FROZEN, and refused when it is neither — because a declared contract must be axn's own, and a
+  # set the caller still holds and can still mutate would change an already-declared class retroactively.
+  describe "a container whose members may not be read" do
+    def decorated_set(freeze: false)
       set = Set[1]
       set.define_singleton_method(:unrelated_helper) { :noop }
-      set
+      freeze ? set.freeze : set
     end
 
-    it "still gets the long form from the bare spelling, so it does not raise on every call" do
+    # Both spellings, because refusing one while the other declared and aliased would be one declaration with
+    # two answers — the split this whole rewrite exists to remove.
+    it "is refused while unfrozen, in either spelling" do
+      bare = decorated_set
+      long = decorated_set
+
+      expect { build_axn { expects :v, type: Integer, inclusion: bare } }
+        .to raise_error(ArgumentError, /defines methods of its own.*neither read its members out nor copy it/m)
+      expect { build_axn { expects :v, type: Integer, inclusion: { in: long } } }
+        .to raise_error(ArgumentError, /defines methods of its own/)
+    end
+
+    it "names the offending method and the escape" do
       values = decorated_set
-      action = build_axn { expects :v, type: Integer, inclusion: values }
 
-      expect(action.call(v: 1)).to be_ok
-      expect(action.call(v: 2)).not_to be_ok
+      expect { build_axn { expects :v, type: Integer, inclusion: { in: values } } }
+        .to raise_error(ArgumentError, /`:unrelated_helper`.*freeze this container/m)
     end
 
-    it "keeps its own membership rather than being read out by the wrap" do
-      values = decorated_set
-      action = build_axn { expects :v, type: Integer, inclusion: values }
+    # Frozen is the documented exception: nothing can mutate it afterwards, which is the property a copy would
+    # have bought. It keeps answering its own membership, and the bare spelling still gets the long form it
+    # needs — which requires no traversal, since that is a question about the spelling rather than the members.
+    describe "when frozen" do
+      it "is stored as the caller's object and keeps its own membership" do
+        values = decorated_set(freeze: true)
+        action = build_axn { expects :v, type: Integer, inclusion: { in: values } }
 
-      expect(action.internal_field_configs.first.validations.dig(:inclusion, :in)).to be(values)
-    end
+        expect(action.internal_field_configs.first.validations.dig(:inclusion, :in)).to be(values)
+        expect(action.call(v: 1)).to be_ok
+        expect(action.call(v: 2)).not_to be_ok
+      end
 
-    it "is still judged by the guards under hash-keyed semantics" do
-      included = decorated_set
-      excluded = decorated_set
+      it "gets the long form from the bare spelling instead of raising on every call" do
+        values = decorated_set(freeze: true)
+        action = build_axn { expects :v, type: Integer, inclusion: values }
 
-      expect { build_axn { expects :v, type: Float, inclusion: { in: included } } }
-        .to raise_error(ArgumentError, /inclusion: on :v can never match/)
-      expect { build_axn { expects :v, type: Float, exclusion: { in: excluded } } }
-        .to raise_error(ArgumentError, /exclusion: on :v enforces nothing/)
-    end
+        expect(action.call(v: 1)).to be_ok
+        expect(action.call(v: 2)).not_to be_ok
+      end
 
-    # The refusals above are earned, which is what makes keeping them right: the runtime really does reject
-    # every Float through the decorated Set's own `hash`/`eql?` lookup, and really does forbid none.
-    it "refuses those because the runtime genuinely enforces nothing there" do
-      values = decorated_set
-      expect(values.include?(1.0)).to be(false)
-      expect([1].include?(1.0)).to be(true)
+      it "is still judged by the guards under hash-keyed semantics" do
+        included = decorated_set(freeze: true)
+        excluded = decorated_set(freeze: true)
+
+        expect { build_axn { expects :v, type: Float, inclusion: { in: included } } }
+          .to raise_error(ArgumentError, /inclusion: on :v can never match/)
+        expect { build_axn { expects :v, type: Float, exclusion: { in: excluded } } }
+          .to raise_error(ArgumentError, /exclusion: on :v enforces nothing/)
+      end
+
+      # Those two refusals are EARNED, which is what makes keeping them right rather than merely conservative:
+      # the runtime really does reject every Float through the container's own `hash`/`eql?` lookup, and really
+      # does forbid none.
+      it "refuses those because the runtime genuinely enforces nothing there" do
+        expect(decorated_set(freeze: true).include?(1.0)).to be(false)
+        expect([1].include?(1.0)).to be(true)
+      end
+
+      it "never runs the caller's readers to reach any of that" do
+        values = Set[1]
+        values.define_singleton_method(:to_a) { raise "traversal ran" }
+        values.define_singleton_method(:instance_of?) { |_| raise "classification ran" }
+        values.freeze
+
+        expect { build_axn { expects :v, type: Integer, inclusion: { in: values } } }.not_to raise_error
+      end
     end
   end
 
   describe "a container carrying code of its own" do
-    it "is left to answer its own membership rather than being read out" do
-      values = Set[1]
-      values.define_singleton_method(:to_a) { [99] }
-      action = build_axn { expects :v, type: Integer, inclusion: { in: values } }
-
-      expect(action.internal_field_configs.first.validations.dig(:inclusion, :in)).to be(values)
-      expect(action.call(v: 1)).to be_ok
-      expect(action.call(v: 99)).not_to be_ok
-    end
-
-    it "cannot take the declaration down with a raising singleton reader" do
-      values = Set[1]
-      values.define_singleton_method(:to_a) { raise "traversal ran" }
-      values.define_singleton_method(:instance_of?) { |_| raise "classification ran" }
-
-      expect { build_axn { expects :v, type: Integer, inclusion: { in: values } } }.not_to raise_error
-    end
-
     # The distinguishing case: an Array that CLAIMS to be a Hash. Classified by `Identity.class_of` it is an
     # Array and is left alone; classified by dispatch it would have its keys read with `Hash#keys`, which an
     # Array cannot answer — so this fails loudly if the classification ever goes back to asking the object.

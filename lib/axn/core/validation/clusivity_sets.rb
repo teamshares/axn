@@ -144,7 +144,7 @@ module Axn
       #
       # Mutates `validations`, and only for a key it actually rewrites. A falsy entry is a disabled validator
       # ActiveModel skips, which names no set at all.
-      def canonicalize_clusivity_sets!(validations)
+      def canonicalize_clusivity_sets!(validations, where: nil)
         graph = Axn::Internal::ShapeGraph
         CLUSIVITY_KEYS.each do |key|
           next unless graph.carries_key?(validations, key)
@@ -152,9 +152,43 @@ module Axn
           entry = validations[key]
           next unless entry
 
-          canonical = canonical_clusivity_entry(entry)
+          canonical = canonical_clusivity_entry(entry, key:, where:)
           validations[key] = canonical unless canonical.equal?(entry)
         end
+      end
+
+      # A hash-keyed container axn may not read its members out of, and may not copy either, is REFUSED rather
+      # than stored — the aliasing rule, with the same exception and the same escape the option copy already
+      # applies to an Array container (`ShapeGraph.detached_option_array`).
+      #
+      # A declared contract must be axn's own, so a set the caller still holds and can still mutate would
+      # change an already-declared class retroactively: appending `2` to it makes a value the contract rejected
+      # start passing. Copying is not open here for the reason it is not open there — `dup` drops the singleton
+      # class, so the copy would answer membership differently from the object that was declared — and reading
+      # the members out is exactly what the container's own code has ruled out.
+      #
+      # FROZEN is the exception and the escape: nothing can mutate it afterwards, which is the same property a
+      # copy would buy, so a frozen one is stored as the caller's object and keeps answering its own membership.
+      #
+      # Asked of BOTH spellings. Refusing only the shorthand would leave `inclusion: set` refused while
+      # `inclusion: { in: set }` declared and aliased — one declaration, two answers, which is the split this
+      # whole rewrite exists to remove.
+      def reject_unreadable_mutable_container!(collection, key, where)
+        return if Axn::Internal::NativeMethods.frozen?(collection)
+
+        klass = Axn::Internal::Identity.class_of(collection)
+        own = Axn::Internal::NativeMethods.own_container_methods(collection, klass)
+        return if own.empty?
+
+        raise ArgumentError,
+              "the #{key}: set#{where ? " on #{where}" : ''} (of class " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(collection)}) defines methods " \
+              "of its own (#{Axn::Internal::ShapeGraph.describe_own_methods(own)}), so axn can neither read its " \
+              "members out nor copy it. A declared contract is axn's own, so that mutating what you still hold " \
+              "cannot change it afterwards — and reading the members would run your code, while `dup` drops the " \
+              "singleton class and would answer membership differently from what you declared. Supply a plain " \
+              "Set or Array, or freeze this container (a frozen one is stored as-is, since nothing can mutate " \
+              "it afterwards)."
       end
 
       # ONE clusivity entry, canonicalized. The bare shorthand becomes the long form its members belong in —
@@ -164,13 +198,15 @@ module Axn
       # The entry is returned unchanged — by identity, which is how the caller knows not to write — whenever
       # there is nothing to rewrite: an Array or Range set, a collection axn may not read, or a long form
       # naming no set at all.
-      def canonical_clusivity_entry(entry)
+      def canonical_clusivity_entry(entry, key: :inclusion, where: nil)
         graph = Axn::Internal::ShapeGraph
         options = graph.hash_or_nil(entry)
 
         if nil.equal?(options)
           members = hash_keyed_set_members(entry)
           return { in: members } if members
+
+          reject_unreadable_mutable_container!(entry, key, where) if hash_keyed_container?(entry)
           # A container whose members must not be read still needs the long form, and does not need reading to
           # get it: the shorthand is a SPELLING that ActiveModel maps only for a Range or an Array, so leaving a
           # bare Set as written sent it to `with:` and raised `ArgumentError` on every call. Wrapping the
@@ -180,11 +216,15 @@ module Axn
           return entry
         end
 
-        key = declared_set_key(options, keys: CLUSIVITY_SET_KEYS)
-        return entry if key.nil?
+        set_key = declared_set_key(options, keys: CLUSIVITY_SET_KEYS)
+        return entry if set_key.nil?
 
-        members = hash_keyed_set_members(options[key])
-        members.nil? ? entry : options.merge(key => members)
+        collection = options[set_key]
+        members = hash_keyed_set_members(collection)
+        return options.merge(set_key => members) if members
+
+        reject_unreadable_mutable_container!(collection, key, where) if hash_keyed_container?(collection)
+        entry
       end
 
       # Tri-state: nil = can't tell; true/false = nil's membership in the set. Only inspected for in-memory

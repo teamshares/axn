@@ -2389,7 +2389,7 @@ module Axn
         # `of:` beside `type: String` never applies at all, while `of: nil` reached `check_validity!` and
         # raised on every call instead of at the author.
         def _canonicalize_validator_options!(validations, fields)
-          Axn::Validation::Base.canonicalize_clusivity_sets!(validations)
+          Axn::Validation::Base.canonicalize_clusivity_sets!(validations, where: _declared_fields_label(fields))
           validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
           _reject_unsupported_type_klass!(validations)
           _reject_falsy_model_klass!(validations)
@@ -2517,7 +2517,7 @@ module Axn
           # clusivity set means the same thing at an `of:` position as it does at a named one. Ordered after the
           # detachment to read alongside it rather than out of necessity: the rewrite builds a new members Array
           # and a new options Hash either way, so it aliases nothing whichever order the two run in.
-          Axn::Validation::Base.canonicalize_clusivity_sets!(entries)
+          Axn::Validation::Base.canonicalize_clusivity_sets!(entries, where: _declared_fields_label(fields))
           entries.each { |key, value| bag[key] = value }
           # `validate:` is the one admitted validator carrying a DSL-misuse guard of its own, and it has to run
           # HERE as well as on the field path: without it `validate: { inclusion: … }` declared cleanly and then
