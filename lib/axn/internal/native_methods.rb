@@ -164,11 +164,20 @@ module Axn
       # table is indistinguishable from Ruby's implementation by any question about owners, so this says "nothing
       # below ::Array adds code", and an app that redefines `Array#include?` globally has changed what every
       # Array means, copy and original alike.
-      def self.own_array_methods(value)
-        native = MODULE_ANCESTORS.bind_call(::Array)
+      def self.own_array_methods(value) = own_container_methods(value, ::Array)
+
+      # The same question at any core container class, because it is one question: the clusivity
+      # canonicalization asks it of a `Hash` and a `Set` before reading their members out (PRO-3319), where the
+      # option copy asks it of an `Array`. Taking the baseline class as an argument is what keeps that one walk
+      # one method rather than three copies of it drifting apart.
+      #
+      # `klass` is the caller's ESTABLISHED exact class — read through `Identity.class_of`, never asked of the
+      # value — so this never decides what the value is, only what code it adds below that.
+      def self.own_container_methods(value, klass)
+        native = MODULE_ANCESTORS.bind_call(klass)
         names = []
         MODULE_ANCESTORS.bind_call(KERNEL_SINGLETON_CLASS.bind_call(value)).each do |mod|
-          break if ::Array.equal?(mod)
+          break if klass.equal?(mod)
           next if native.include?(mod)
 
           names.concat(MODULE_INSTANCE_METHODS.bind_call(mod, false))

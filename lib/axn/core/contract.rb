@@ -2389,6 +2389,7 @@ module Axn
         # `of:` beside `type: String` never applies at all, while `of: nil` reached `check_validity!` and
         # raised on every call instead of at the author.
         def _canonicalize_validator_options!(validations, fields)
+          Axn::Validation::Base.canonicalize_clusivity_sets!(validations, where: _declared_fields_label(fields))
           validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
           _reject_unsupported_type_klass!(validations)
           _reject_falsy_model_klass!(validations)
@@ -2512,6 +2513,11 @@ module Axn
           # A bag's entries sit one level further down, where `detached_option_bag` copies a nested Hash by
           # reference — it detaches nested Arrays only — so the same seam is applied here, to the entries.
           Internal::ShapeGraph.detach_option_containers!(entries)
+          # The bag-position mirror of the field path's own call (`_canonicalize_validator_options!`), so a
+          # clusivity set means the same thing at an `of:` position as it does at a named one. Ordered after the
+          # detachment to read alongside it rather than out of necessity: the rewrite builds a new members Array
+          # and a new options Hash either way, so it aliases nothing whichever order the two run in.
+          Axn::Validation::Base.canonicalize_clusivity_sets!(entries, where: _declared_fields_label(fields))
           entries.each { |key, value| bag[key] = value }
           # `validate:` is the one admitted validator carrying a DSL-misuse guard of its own, and it has to run
           # HERE as well as on the field path: without it `validate: { inclusion: … }` declared cleanly and then
@@ -3751,9 +3757,10 @@ module Axn
         # `<=>` is not — see `_judgeable_constraint_literals` for the measured difference.
         EQUALITY_COMPARISON_KEYS = %i[equal_to].freeze
 
-        # The two validators whose membership is decided by the COLLECTION's own `include?` rather than by an
-        # operator, and so the only ones whose equality depends on which collection was written.
-        CLUSIVITY_KEYS = %i[inclusion exclusion].freeze
+        # The two validators that name a set the value is compared against, rather than an operator's bound.
+        # The declaration canonicalization owns the definition, so the guards and the rewrite that feeds them
+        # cannot come to name different validators.
+        CLUSIVITY_KEYS = Axn::Validation::ClusivitySets::CLUSIVITY_KEYS
 
         # AcceptanceValidator's own default set, used when an entry names none (`acceptance: true`) — so
         # `type: Integer, acceptance: true` is judged against what it will really be compared with and refused,
@@ -4743,9 +4750,13 @@ module Axn
         #
         # Read through the shared collection reader, so a bare `inclusion: [..]` and the long
         # `inclusion: { in: [..] }` are judged as the one thing they are.
+        # The class is established through `Internal::Identity` and compared by identity, never by asking the
+        # collection what it is: this runs while the action class is still being defined, and a container
+        # carrying its own `instance_of?` would otherwise decide the judgment — or take the declaration down
+        # with it — from inside the guard that exists to judge that container.
         def _membership_is_the_members_own_equality?(entry)
           collection = Axn::Validation::Base.declared_set_collection(entry)
-          return false unless collection.instance_of?(::Array)
+          return false unless ::Array.equal?(Internal::Identity.class_of(collection))
 
           ::Array.equal?(Internal::NativeMethods.method_owner(collection, :include?))
         end
@@ -4892,7 +4903,7 @@ module Axn
         end
 
         # Whether a literal of a DIFFERENT class in the same cross-comparable family can match this entry —
-        # true for everything except a set whose `include?` is keyed by hash identity.
+        # true for everything except a set still keyed by hash identity when the guards read it.
         #
         # `Clusivity` calls the collection's own `include?`, so the COLLECTION decides which equality applies.
         # An Array compares with `==`, under which the families really do cross (`[1].include?(1.0)` is true).
@@ -4900,16 +4911,20 @@ module Axn
         # never crosses a family — measured: `Set[1].include?(1.0)` and `{1 => true}.include?(1.0)` are both
         # false while `1 == 1.0` is true. Widening there predicts a match ActiveModel will not make, in both
         # directions: `type: Float, inclusion: { in: Set[1] }` rejects every Float, and its `exclusion:` mirror
-        # forbids none. Everything else — `acceptance:` (read through `Array()`), a `comparison:` bound, a
-        # Range's bounds (`cover?`, decided by `<=>`) — compares by operator, so the families cross as before.
+        # forbids none.
+        #
+        # A set the declaration rewrite could read (PRO-3319) is an Array by the time this runs, so what reaches
+        # here is exactly what the rewrite stands down on: a container answering something with code of its own,
+        # whose `include?` is therefore its own and stays hash-keyed.
+        #
+        # Everything else — `acceptance:` (read through `Array()`), a `comparison:` bound, a Range's bounds
+        # (`cover?`, decided by `<=>`) — compares by operator, so the families cross as before.
         #
         # Exact-class through `Internal::Identity`, so neither the collection nor its members decide it.
         def _cross_family_admissible?(key, entry)
           return true unless CLUSIVITY_KEYS.include?(key)
 
-          collection = Axn::Validation::Base.declared_set_collection(entry)
-          klass = Internal::Identity.class_of(collection)
-          !(klass.equal?(::Hash) || (defined?(Set) && klass.equal?(::Set)))
+          !Axn::Validation::Base.hash_keyed_container?(Axn::Validation::Base.declared_set_collection(entry))
         end
 
         def _judgeable_constraint_literals(key, entry, option_keys, klasses)

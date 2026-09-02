@@ -257,17 +257,20 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       end
     end
 
-    # Which operation decides membership depends on the set's own container, and only one of them is an
-    # operation axn holds at declaration: `Array#include?` dispatches `member == candidate`, while a Hash or a
-    # Set is looked up by `hash`/`eql?` — where the CANDIDATE supplies half the comparison and may collide with
-    # a member of an entirely different size.
-    describe "a set whose container decides membership some other way" do
-      it "stands down on a Hash-backed set" do
-        expect { declare(type: Array, inclusion: { in: { [] => 1 } }) }.not_to raise_error
-      end
+    # The container a set is written in no longer decides which operation answers membership: a Set and a Hash
+    # set are read out into their members at declaration (PRO-3319), so `member == candidate` is what runs for
+    # every spelling and the size the members carry is the size the check really admits.
+    describe "a set whose container used to decide membership some other way" do
+      [["an Array-backed set", [[]]], ["a Hash-backed set", { [] => 1 }], ["a Set-backed set", Set[[]]]].each do |label, set|
+        it "refuses #{label} alike" do
+          expect { declare(type: Array, inclusion: { in: set }) }
+            .to raise_error(ArgumentError, /inclusion: on :f can never match/)
+        end
 
-      it "stands down on a Set-backed set" do
-        expect { declare(type: Array, inclusion: { in: Set[[]] }) }.not_to raise_error
+        it "keeps #{label} once the floor it collides with is dropped" do
+          action = declare(type: Array, presence: false, inclusion: { in: set })
+          expect(action.call(f: []).ok?).to be(true)
+        end
       end
 
       # An exact Array can still carry a singleton `include?`, and a FROZEN one reaches a declared contract

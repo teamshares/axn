@@ -869,12 +869,29 @@ RSpec.describe "declaration-time property name collisions" do
         expect(accepts_c?(klass)).to be(true)
       end
 
-      # A membership container that is not an Array reaches this path and is stored as the caller's OBJECT — not
-      # copied, and so not refused either: nothing of axn's answers membership, the caller's own object does, so
-      # the divergence above is unreachable. What remains is the aliasing the copy exists to prevent, recorded
-      # here rather than claimed closed. A `Range` is frozen by construction and so is unaffected.
-      it "records the residue: a Set membership container stays the caller's own object" do
+      # A Set is read out into its MEMBERS at declaration (PRO-3319), so it is no longer stored as the caller's
+      # object and the aliasing the copy exists to prevent is closed here too — the members land in an Array of
+      # axn's own, which is also what lets reflection emit them as an `enum`.
+      it "detaches a Set membership container into its members" do
         values = Set.new(%w[a])
+        klass = declared_with(values)
+        stored = klass.internal_field_configs.first.validations.dig(:inclusion, :in)
+
+        expect(stored).to eq(%w[a])
+        expect(stored).not_to be(values)
+        expect(accepts_c?(klass)).to be(false)
+        values << "c"
+        expect(accepts_c?(klass)).to be(false)
+      end
+
+      # A membership container axn may NOT read its members out of reaches this path and is stored as the
+      # caller's OBJECT — not copied, and so not refused either: nothing of axn's answers membership, the
+      # caller's own object does, so the divergence above is unreachable. What remains is the aliasing the copy
+      # exists to prevent, recorded here rather than claimed closed. A Set SUBCLASS is one such container: its
+      # traversal is its own, so canonicalizing would have to run the subclass's code. A `Range` is frozen by
+      # construction and so is unaffected.
+      it "records the residue: a Set subclass stays the caller's own object" do
+        values = Class.new(Set).new(%w[a])
         klass = declared_with(values)
 
         expect(klass.internal_field_configs.first.validations.dig(:inclusion, :in)).to be(values)

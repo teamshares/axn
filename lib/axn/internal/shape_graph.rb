@@ -270,13 +270,16 @@ module Axn
 
       # The first few offending names, so the author is pointed at the method to move or the object to freeze
       # rather than at a rule. Sorted for a stable message, and capped because a rich subclass has dozens.
+      #
+      # Public because the clusivity canonicalization refuses the same shape for the same reason (PRO-3319) and
+      # must word it identically — one rendering rather than two that drift.
       def self.describe_own_methods(names)
         shown = names.uniq.sort
         rendered = shown.first(3).map { |name| "`#{Axn::Internal::Reflection::PropertyNames.inspect_field_name(name)}`" }.join(", ")
         shown.size > 3 ? "#{rendered}, and #{shown.size - 3} more" : rendered
       end
 
-      private_class_method :detached_option_bag, :detached_option_array, :describe_own_methods
+      private_class_method :detached_option_bag, :detached_option_array
 
       # How deep a shape graph may nest, for every walk of one. Deep enough that no shape anyone writes by hand
       # can reach it — a hand-written block nests one level per `do…end`, and a schema nested 64 objects deep is
