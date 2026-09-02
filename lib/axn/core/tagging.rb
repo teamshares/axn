@@ -4,6 +4,7 @@
 # needed at RUNTIME (not load time), so relying on that order means a NameError on first use for
 # any load path that does not go through it.
 require "axn/internal/cycle_guard"
+require "axn/internal/current_entry_point"
 require "axn/extensions"
 
 module Axn
@@ -148,6 +149,13 @@ module Axn
           raise ArgumentError, "expected a name and a single resolver" unless args.size.between?(1, 2)
 
           name = args.first
+          if name.to_sym == Internal::CurrentEntryPoint::DIMENSION_NAME
+            raise ArgumentError,
+                  "#{Internal::CurrentEntryPoint::DIMENSION_NAME.inspect} is a reserved facet name — " \
+                  "axn stamps it ambiently (Axn::Extensions::InvokedVia / Axn::Tools::Invoker) to " \
+                  "record how a call tree was invoked. Declare your own facet under a different name."
+          end
+
           if block
             raise ArgumentError, "provide a resolver as a positional value OR a block, not both" if args.size == 2
 

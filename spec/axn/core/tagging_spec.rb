@@ -79,6 +79,31 @@ RSpec.describe Axn::Core::Tagging do
     end
   end
 
+  describe "reserved facet names" do
+    # invoked_via is stamped ambiently by Axn::Extensions::InvokedVia (Axn::Tools::Invoker for tool
+    # adapters) — no action may declare it itself, or a class-level facet could collide with the
+    # framework's own dimension.
+    it "raises when a class declares dimension :invoked_via" do
+      expect { build_axn { dimension :invoked_via, -> { "mine" } } }
+        .to raise_error(ArgumentError, /invoked_via/)
+    end
+
+    it "raises when a class declares tag :invoked_via" do
+      expect { build_axn { tag :invoked_via, -> { "mine" } } }
+        .to raise_error(ArgumentError, /invoked_via/)
+    end
+
+    it "raises for the string form too" do
+      expect { build_axn { dimension "invoked_via", -> { "mine" } } }
+        .to raise_error(ArgumentError, /invoked_via/)
+    end
+
+    it "raises via the Factory dimension: kwarg (routes through the same DSL method)" do
+      expect { Axn::Factory.build(-> {}, dimension: [:invoked_via, "mine"]) }
+        .to raise_error(ArgumentError, /invoked_via/)
+    end
+  end
+
   describe ".dimension declaration forms" do
     it "accepts a name + block" do
       action = build_axn { dimension(:x) { "value" } }

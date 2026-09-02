@@ -170,4 +170,44 @@ RSpec.describe Axn::Tools::Invoker do
     described_class.new(user_facing_input_errors: true).call(action, { name: "ada", age: 36 })
     expect(Axn::Internal::CurrentCallOptions.current).to be_nil
   end
+
+  describe "adapter: (invoked_via dimension)" do
+    it "stamps the call with the adapter key when given" do
+      captured = nil
+      Axn.configure { |c| c.emit_metrics = proc { |dimensions:| captured = dimensions } }
+      described_class.new(adapter: :mcp).call(action, { name: "ada", age: 36 })
+      expect(captured).to eq(invoked_via: :mcp)
+    ensure
+      Axn.configure { |c| c.emit_metrics = nil }
+    end
+
+    it "stamps the whole call tree, not just the invoked action" do
+      seen = nil
+      parent = Class.new do
+        include Axn
+        define_method(:call) { seen = Axn::Internal::CurrentEntryPoint.current }
+      end
+      described_class.new(adapter: :mcp).call(parent, {})
+      expect(seen).to eq(:mcp)
+    end
+
+    it "stamps nothing when adapter: is omitted (backward compatible)" do
+      seen = :unset
+      sensing = Class.new do
+        include Axn
+        define_method(:call) { seen = Axn::Internal::CurrentEntryPoint.current }
+      end
+      described_class.new.call(sensing, {})
+      expect(seen).to be_nil
+    end
+
+    it "clears the stamp after the call, even on failure" do
+      failing = Class.new do
+        include Axn
+        def call = fail!("nope")
+      end
+      described_class.new(adapter: :mcp).call(failing, {})
+      expect(Axn::Internal::CurrentEntryPoint.current).to be_nil
+    end
+  end
 end

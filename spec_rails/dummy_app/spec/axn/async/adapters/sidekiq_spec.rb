@@ -455,6 +455,19 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(last_job_tags.call).to be_nil
     end
 
+    it "surfaces the ambient invoked_via stamp as a job tag, even with no facets declared" do
+      Axn::Extensions::InvokedVia.with(:mcp) do
+        Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
+      end
+      expect(last_job_tags.call).to contain_exactly("invoked_via:mcp")
+    end
+
+    it "adds no invoked_via tag once the stamped block has ended" do
+      Axn::Extensions::InvokedVia.with(:mcp) {}
+      Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
+      expect(last_job_tags.call).to be_nil
+    end
+
     it "unions facet tags with the worker's static sidekiq_options tags" do
       Actions::Async::TestActionSidekiqTaggedWithStatic.call_async(company_id: 42)
       expect(last_job_tags.call).to contain_exactly("static", "company_id:42")

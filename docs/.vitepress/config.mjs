@@ -65,6 +65,7 @@ export default defineConfig({
           { text: 'Suppressing Duplicate Async Reports', link: '/recipes/suppressing-duplicate-async-reports' },
           { text: 'Configuration for Axn-based Gems', link: '/recipes/gem-configuration' },
           { text: 'Authoring a Tool-Adapter Gem', link: '/recipes/authoring-tool-adapters' },
+          { text: 'Declaring an Entry Point', link: '/recipes/declaring-entry-points' },
           { text: 'Running Without Rails', link: '/recipes/running-without-rails' },
         ]
       },

@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "axn/internal/current_entry_point"
+require "axn/extensions/invoked_via"
+
 module Axn
   module Tools
     # The sanctioned entry point for running an Axn AS A TOOL. Holds an adapter's chosen profile and
@@ -19,7 +22,13 @@ module Axn
       # the mcp adapter extracts itself and passes in as the trusted ambient_context.
       RESERVED_INPUT_KEYS = %i[ambient_context].freeze
 
-      def initialize(user_facing_input_errors: false, reject_undeclared_inputs: false)
+      # adapter: the registered adapter key (:mcp, :ruby_llm, :openapi, ...) this Invoker dispatches
+      # for. Stamped as the invoked_via dimension (Axn::Extensions::InvokedVia) around every call, so a
+      # Datadog dashboard can separate tool-driven traffic from ordinary direct calls with no per-call
+      # work on the adapter's part. Optional and nil by default so an existing `Invoker.new(...)` call
+      # in a gem that hasn't been updated yet keeps its current, unstamped behavior exactly.
+      def initialize(adapter: nil, user_facing_input_errors: false, reject_undeclared_inputs: false)
+        @adapter = adapter
         @user_facing_input_errors = user_facing_input_errors
         @reject_undeclared_inputs = reject_undeclared_inputs
       end
@@ -30,12 +39,14 @@ module Axn
         clean = args.reject { |key, _| RESERVED_INPUT_KEYS.include?(key.to_sym) }
         clean = clean.merge(ambient_context:) unless ambient_context.equal?(NOT_SET)
 
-        Axn::Internal::CurrentCallOptions.with(
-          coerce_input_types: true,
-          user_facing_input_errors: @user_facing_input_errors,
-          reject_undeclared_inputs: @reject_undeclared_inputs,
-        ) do
-          axn_class.call(**clean)
+        _with_invoked_via_stamp do
+          Axn::Internal::CurrentCallOptions.with(
+            coerce_input_types: true,
+            user_facing_input_errors: @user_facing_input_errors,
+            reject_undeclared_inputs: @reject_undeclared_inputs,
+          ) do
+            axn_class.call(**clean)
+          end
         end
       end
 
@@ -47,6 +58,19 @@ module Axn
       # its generic error rather than telling the model "Invalid tool arguments" for an infra bug.
       # False for a `fail!`, an outbound violation, or any other raised exception.
       def self.input_invalid?(result) = Axn::ValidationError.user_facing?(result.exception)
+
+      private
+
+      # Skips the stamp entirely (not `.with(nil)`) when no adapter: was given. Not just an
+      # optimization: `.with(nil)` would OVERRIDE whatever an outer caller already stamped for the
+      # duration of this call — an Invoker nested inside an already-stamped tree (a tool that itself
+      # dispatches a further tool call) would incorrectly blank the ambient value for itself and its
+      # descendants. Skipping leaves an outer stamp, if any, untouched.
+      def _with_invoked_via_stamp(&)
+        return yield unless @adapter
+
+        Axn::Extensions::InvokedVia.with(@adapter, &)
+      end
     end
   end
 end
