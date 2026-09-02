@@ -462,6 +462,13 @@ RSpec.describe "Axn::Async with Sidekiq adapter", :sidekiq do
       expect(last_job_tags.call).to contain_exactly("invoked_via:mcp")
     end
 
+    it "surfaces a `false` ambient stamp as a job tag (presence is a nil check, not truthiness)" do
+      Axn::Extensions::InvokedVia.with(false) do
+        Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)
+      end
+      expect(last_job_tags.call).to contain_exactly("invoked_via:false")
+    end
+
     it "adds no invoked_via tag once the stamped block has ended" do
       Axn::Extensions::InvokedVia.with(:mcp) {}
       Actions::Async::TestActionSidekiq.call_async(name: "World", age: 25)

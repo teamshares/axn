@@ -139,4 +139,12 @@ RSpec.describe "invoked_via ambient dimension" do
       expect(notifications.first[:dimensions]).to eq(invoked_via: "mcp")
     end
   end
+
+  describe "a `false` stamp" do
+    it "is present — checked via nil?, not truthiness" do
+      action = build_axn { def call; end }
+      Axn::Extensions::InvokedVia.with(false) { action.call }
+      expect(notifications.first[:dimensions]).to eq(invoked_via: false)
+    end
+  end
 end

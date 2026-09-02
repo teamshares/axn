@@ -152,8 +152,14 @@ module Axn
             # (Internal::CurrentEntryPoint) — enqueuing from inside a stamped call tree (e.g. an MCP
             # tool handler firing call_async) must produce a job tag even when this class declares no
             # dimension of its own. `_tags` has no ambient counterpart, so the :tag leg is unchanged.
+            #
+            # Presence check is `!nil?`, not truthiness: `false` is a legal stamp value (as legal as
+            # any other Core::Tagging.coerce-preserved boolean), and _ambient_dimensions in the
+            # executor already tests `.nil?` rather than truthiness for exactly this reason — a
+            # truthy check here would silently drop the job tag for `InvokedVia.with(false)` while
+            # every other sink (span, payload, emit_metrics, log, exception context) still reports it.
             has_facets_to_resolve = (sources.include?(:tag) && _tags.any?) ||
-                                    (sources.include?(:dimension) && (_dimensions.any? || Axn::Internal::CurrentEntryPoint.current))
+                                    (sources.include?(:dimension) && (_dimensions.any? || !Axn::Internal::CurrentEntryPoint.current.nil?))
             return [] unless has_facets_to_resolve
 
             # Empty list on any failure (best_effort yields nil) — never breaks the enqueue, and the
