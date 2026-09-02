@@ -99,27 +99,35 @@ RUN_PARALLEL_LANE = lambda { |tag:, lane:|
     actual   = counts.sum
     expected = expectation.value
 
+    # The reference count is the entire basis of the checks below, so failing to compute it is a hard
+    # failure and never a warning: a lane nothing could verify must not be able to report success.
+    # This is also the more fragile of the two runs, and fragile in a way that matters — it loads every
+    # spec file into ONE process, which is exactly where an order-dependent load failure surfaces while
+    # isolated worker shards stay green. Warning and carrying on would hand back a pass for the one
+    # arrangement the guard exists to catch.
+    abort(<<~MSG) if expected.nil?
+      Could not compute the single-process example count for this lane — its dry run (above) failed.
+      #{counts.size} worker(s) ran #{actual} example(s), but there is nothing to compare that against,
+      so this run verified nothing. Re-run serially (`rake spec_serial` / `rake spec_slow_serial`).
+    MSG
+
     # No worker reported at all: the runner never got as far as splitting the lane, so this is its own
     # failure rather than a sharding bug. Worth its own branch because flatware's Thor-based CLI exits
     # 0 on its own usage errors, which makes `ran` useless for catching it — without this, a runner
     # that never started reads as "sharding lost 7362 examples".
-    abort(<<~MSG) if counts.empty? && expected.to_i.positive?
+    abort(<<~MSG) if counts.empty? && expected.positive?
       The parallel spec runner produced no results at all — see its output above.
       This lane holds #{expected} example(s); none of them ran, so nothing was verified.
     MSG
 
     # Ahead of the pass/fail verdict deliberately: if the split lost examples, that verdict is not
     # trustworthy in either direction, so the sharding bug is the thing to report.
-    if expected && actual != expected
-      abort <<~MSG
-        Parallel sharding lost or duplicated examples.
-          #{counts.size} worker(s) ran #{actual} example(s) (#{counts.sort.reverse.join(', ')})
-          one process loads #{expected}
-        Re-run this lane serially (`rake spec_serial` / `rake spec_slow_serial`) to get a trustworthy result.
-      MSG
-    end
-
-    warn "WARNING: could not compute the single-process example count; ran #{actual} across #{counts.size} worker(s)." if expected.nil?
+    abort(<<~MSG) if actual != expected
+      Parallel sharding lost or duplicated examples.
+        #{counts.size} worker(s) ran #{actual} example(s) (#{counts.sort.reverse.join(', ')})
+        one process loads #{expected}
+      Re-run this lane serially (`rake spec_serial` / `rake spec_slow_serial`) to get a trustworthy result.
+    MSG
 
     exit(1) unless ran
   end
