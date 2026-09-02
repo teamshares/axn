@@ -39,12 +39,26 @@ module Axn
       # resolver: an object whose #to_s raises must not turn a side channel into `.call` raising
       # directly (it runs in Executor#initialize, before `run` ever reaches the exception boundary) —
       # `nil` (best_effort's failure return) leaves the tree unstamped rather than broken.
+      #
+      # `nil` is preserved rather than run through `coerce` — `Tagging.coerce(nil)` falls to its
+      # `else value.to_s` branch and returns `""`, which is a value, not an absence: every sink would
+      # stamp an empty `invoked_via` (including a real Sidekiq job tag) for what both
+      # `Invoker.new(adapter: nil)` and a declared facet returning nil treat as "no stamp at all."
+      # `false` is unaffected — it matches `coerce`'s own `String, true, false` branch and passes
+      # through as a legal, present value, same as it always has.
       def with(value, &)
-        safe_value = Axn::Extensions.best_effort("coercing the invoked_via stamp") do
-          Core::Tagging.dup_value(Core::Tagging.coerce(value))
-        end
+        safe_value = _safe_value(value)
         Axn::Internal::CurrentEntryPoint.with(safe_value, &)
       end
+
+      def _safe_value(value)
+        return nil if value.nil?
+
+        Axn::Extensions.best_effort("coercing the invoked_via stamp") do
+          Core::Tagging.dup_value(Core::Tagging.coerce(value))
+        end
+      end
+      private_class_method :_safe_value
     end
   end
 end

@@ -183,6 +183,17 @@ RSpec.describe "invoked_via ambient dimension" do
     end
   end
 
+  describe "a `nil` stamp" do
+    it "means absent, not coerced into an empty-string dimension" do
+      # Core::Tagging.coerce(nil) falls to its `else value.to_s` branch and returns "" — a value, not
+      # an absence. InvokedVia.with must special-case nil before coercing, matching how
+      # Invoker.new(adapter: nil) and a declared facet returning nil both mean "no stamp at all."
+      action = build_axn { def call; end }
+      Axn::Extensions::InvokedVia.with(nil) { action.call }
+      expect(notifications.first).not_to have_key(:dimensions)
+    end
+  end
+
   describe "a value that fails to coerce" do
     it "does not raise — .call still returns a Result, just unstamped" do
       # Coercion runs in Axn::Extensions::InvokedVia.with, guarded by best_effort — a hostile object
