@@ -281,6 +281,53 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
     end
   end
 
+  # `Clusivity#resolve_value` runs a Proc, sends a Symbol, and in its final branch CALLS any value answering
+  # `call`, handing the result to `include?`. So a collection carrying a `call` names no static members at all
+  # — what it compares against is decided per record — and reading its elements is reading the wrong set.
+  describe "a collection ActiveModel resolves per call" do
+    def callable_set(freeze: true)
+      set = Set["x"]
+      set.define_singleton_method(:call) { |_record = nil| [1] }
+      freeze ? set.freeze : set
+    end
+
+    it "compares against what `call` returns, not against the elements it holds" do
+      values = callable_set
+      action = build_axn { expects :v, type: Integer, inclusion: { in: values } }
+
+      expect(action.call(v: 1)).to be_ok
+      expect(action.call(v: "x")).not_to be_ok
+    end
+
+    # The guards used to read the elements and refuse `type: Integer` as unsatisfiable, while the runtime
+    # accepted `1` — an over-restriction, the one direction a declaration-time guard may not err in.
+    it "is not judged by the elements it happens to hold" do
+      %i[inclusion exclusion].each do |key|
+        values = callable_set
+        expect { build_axn { expects :v, type: Integer, **{ key => { in: values } } } }.not_to raise_error
+      end
+    end
+
+    it "reaches ActiveModel from the bare spelling too" do
+      values = callable_set
+      action = build_axn { expects :v, type: Integer, inclusion: values }
+
+      expect(action.call(v: 1)).to be_ok
+      expect(action.call(v: "x")).not_to be_ok
+    end
+
+    # Never refused for carrying its own code, frozen or not: a dynamic delimiter is accepted exactly as a Proc
+    # or Symbol delimiter is, and its ELEMENTS are not the contract, so the aliasing rule has nothing to bite on.
+    it "is accepted while unfrozen, unlike a container whose members would be read" do
+      dynamic = callable_set(freeze: false)
+      expect { build_axn { expects :v, type: Integer, inclusion: { in: dynamic } } }.not_to raise_error
+    end
+
+    it "leaves the guards with nothing to read" do
+      expect(Axn::Validation::Base.literal_set_members({ in: callable_set })).to be_nil
+    end
+  end
+
   describe "a container carrying code of its own" do
     # The distinguishing case: an Array that CLAIMS to be a Hash. Classified by `Identity.class_of` it is an
     # Array and is left alone; classified by dispatch it would have its keys read with `Hash#keys`, which an

@@ -52,6 +52,8 @@ module Axn
       # by the declaration-time satisfiability guard, so the two cannot read one declaration differently.
       def literal_set_members(opt, keys: %i[in within])
         collection = declared_set_collection(opt, keys:)
+        return nil if dynamically_resolved?(collection)
+
         members = Axn::Internal::Identity.class_of(collection).equal?(::Hash) ? HASH_KEYS_READER.bind_call(collection) : collection
         return nil unless literal_set_collection?(members)
 
@@ -68,6 +70,22 @@ module Axn
       def literal_set_collection?(collection)
         klass = Axn::Internal::Identity.class_of(collection)
         klass.equal?(::Array) || (defined?(Set) && klass.equal?(::Set))
+      end
+
+      # Whether ActiveModel will RESOLVE this collection per call rather than treat it as the set itself.
+      # `Clusivity#resolve_value` runs a Proc, sends a Symbol, and — in its final branch — calls ANY value
+      # answering `call`, handing the result to `include?`. So a collection carrying a `call` names no static
+      # members at all: what it compares against is decided per record, and the elements it happens to hold are
+      # not the set. Measured: a frozen `Set["x"]` whose `call` returns `[1]` accepts `1` and rejects `"x"`.
+      #
+      # Reading such a collection statically is what made a guard refuse a working contract — the elements say
+      # "no Integer here" while the runtime compares against `[1]` — which is the one direction a
+      # declaration-time guard may not err in.
+      #
+      # Asked by OWNERSHIP rather than `respond_to?`, so a `respond_to_missing?` of the caller's cannot answer
+      # it, and so the question runs none of their code.
+      def dynamically_resolved?(collection)
+        !Axn::Internal::NativeMethods.declared_method(collection, :call).nil?
       end
 
       # The two validators that name a set of values the field's own value is compared AGAINST. THE single
@@ -206,7 +224,7 @@ module Axn
           members = hash_keyed_set_members(entry)
           return { in: members } if members
 
-          reject_unreadable_mutable_container!(entry, key, where) if hash_keyed_container?(entry)
+          reject_unreadable_mutable_container!(entry, key, where) if hash_keyed_container?(entry) && !dynamically_resolved?(entry)
           # A container whose members must not be read still needs the long form, and does not need reading to
           # get it: the shorthand is a SPELLING that ActiveModel maps only for a Range or an Array, so leaving a
           # bare Set as written sent it to `with:` and raised `ArgumentError` on every call. Wrapping the
@@ -223,7 +241,7 @@ module Axn
         members = hash_keyed_set_members(collection)
         return options.merge(set_key => members) if members
 
-        reject_unreadable_mutable_container!(collection, key, where) if hash_keyed_container?(collection)
+        reject_unreadable_mutable_container!(collection, key, where) if hash_keyed_container?(collection) && !dynamically_resolved?(collection)
         entry
       end
 
