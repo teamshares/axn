@@ -142,14 +142,25 @@ module Axn
           # rather than the action's generated `sidekiq_job_tag_sources` reader: that is a class method
           # a consumer could shadow, which would silently bypass the override store; the registry path
           # reads the store directly. Best-effort — never breaks the enqueue. Skips
-          # all work (no instance built) when the sink is disabled or the action declares no facets
+          # all work (no instance built) when the sink is disabled or the action has nothing to resolve
           # for the enabled sources. See PRO-2855.
           def _resolve_sidekiq_job_tags(kwargs)
             sources = Axn::Configuration.resolve_override_for(self, :sidekiq_job_tag_sources)
             return [] if sources.empty?
 
-            declares_facets = (sources.include?(:tag) && _tags.any?) || (sources.include?(:dimension) && _dimensions.any?)
-            return [] unless declares_facets
+            # The :dimension leg also checks for an active ambient invoked_via stamp
+            # (Internal::CurrentEntryPoint) — enqueuing from inside a stamped call tree (e.g. an MCP
+            # tool handler firing call_async) must produce a job tag even when this class declares no
+            # dimension of its own. `_tags` has no ambient counterpart, so the :tag leg is unchanged.
+            #
+            # Presence check is `!nil?`, not truthiness: `false` is a legal stamp value (as legal as
+            # any other Core::Tagging.coerce-preserved boolean), and _ambient_dimensions in the
+            # executor already tests `.nil?` rather than truthiness for exactly this reason — a
+            # truthy check here would silently drop the job tag for `InvokedVia.with(false)` while
+            # every other sink (span, payload, emit_metrics, log, exception context) still reports it.
+            has_facets_to_resolve = (sources.include?(:tag) && _tags.any?) ||
+                                    (sources.include?(:dimension) && (_dimensions.any? || !Axn::Internal::CurrentEntryPoint.current.nil?))
+            return [] unless has_facets_to_resolve
 
             # Empty list on any failure (best_effort yields nil) — never breaks the enqueue, and the
             # caller reads the result with `.any?`.

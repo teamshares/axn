@@ -156,6 +156,9 @@ Source: `lib/axn/extensions/config.rb`, `lib/axn/core/semantic_hints.rb`.
   (always-on wire coercion, opt-in user-facing input-error surfacing, undeclared-key rejection, the
   ambient guard) that a trusted in-process `.call` deliberately omits. See
   <https://teamshares.github.io/axn/reference/tool-invoker>.
+- Pass `adapter: :your_key` to `Invoker.new` and every call it makes is stamped with the `invoked_via`
+  dimension across its whole call tree — the seam that lets an app's dashboard separate tool-driven
+  traffic from ordinary direct calls. See <https://teamshares.github.io/axn/recipes/declaring-entry-points>.
 - Map from: `result.ok?`; `result.error` (**user-facing** — show to the LLM/client); `result.success` /
   `result.message` (success string); `result.exception` (**dev-facing** detail, e.g. the
   `Axn::InboundValidationError` — do **NOT** surface it).
@@ -278,8 +281,9 @@ Source: `lib/axn/core/ambient_context.rb`, `lib/axn/tools/invoker.rb`.
 
 Docs — <https://teamshares.github.io/axn/>: authoring a tool-adapter gem
 (`/recipes/authoring-tool-adapters`), tool invoker (`/reference/tool-invoker`), gem configuration
-(`/recipes/gem-configuration`), factory (`/reference/factory`), class DSL (`/reference/class`), result
-(`/reference/axn-result`). Action-authoring: `AGENTS-consuming.md` (this gem).
+(`/recipes/gem-configuration`), declaring an entry point (`/recipes/declaring-entry-points`), factory
+(`/reference/factory`), class DSL (`/reference/class`), result (`/reference/axn-result`).
+Action-authoring: `AGENTS-consuming.md` (this gem).
 
 Core source entry points (resolve with `bundle show axn`):
 - `lib/axn/tools.rb` — `Axn::Tools.register_adapter`, `.adapters`, `.for`, `.versions`, `.validate_contracts!`.

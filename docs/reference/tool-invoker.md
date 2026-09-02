@@ -28,6 +28,8 @@ A normal `Foo.call(**args)` is written for a trusted, in-process Ruby caller: ty
 
 Both are per-call gates threaded through `Axn::Internal::CurrentCallOptions` — they apply to exactly the wrapped `.call` and are cleared before any nested `.call` inside it, so a tool calling another action internally sees ordinary default semantics for that inner call.
 
+A third, unrelated option: `adapter:` names your adapter's registered key (`:mcp`, `:ruby_llm`, `:openapi`, …). When given, every call this `Invoker` makes is stamped with the `invoked_via` dimension for its entire call tree — see [Declaring an Entry Point](/recipes/declaring-entry-points) for what that dimension is and where it shows up. It's optional and `nil` by default, so an existing `Invoker.new(...)` call written before this option existed keeps its current, unstamped behavior exactly.
+
 Coercion is **not** one of these knobs — it's always on for every `Invoker#call`, regardless of the profile. A tool's arguments are wire data by construction (JSON from a model, form-shaped params), so the Invoker forces `coerce_input_types: true` for the call. This is the one case where axn coerces without the author opting in at the class or global level: the trusted-JSON boundary already implies it. A field's own `coerce:` (or lack of a coercible `type:`) still governs that field — the Invoker only supplies the whole-action default. See [`type:` on every tool input](#type-on-every-tool-input) below for what this means for how you declare a tool's `expects`.
 
 ## `ambient_context` guard

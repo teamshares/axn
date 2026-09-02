@@ -3,6 +3,7 @@
 require "axn/internal/coercion"
 require "axn/internal/native_methods"
 require "axn/internal/rendering"
+require "axn/internal/current_entry_point"
 
 module Axn
   module Core
@@ -219,6 +220,31 @@ module Axn
         @action = action
         @action_class = action.class
         @context = action.instance_variable_get(:@__context)
+
+        # Snapshot the ambient invoked_via stamp (Internal::CurrentEntryPoint) HERE, before anything
+        # else in the pipeline runs — including inbound validation, and any default:/preprocess:/
+        # validator hook it triggers. resolved_input_dimensions (below) only resolves the class's own
+        # DECLARED dimensions after inbound validation, because a resolver reads validated/coerced/
+        # defaulted inputs — but the ambient stamp has no such dependency on this action's contract at
+        # all, so deferring its capture to that same point only widens, for no reason, the window in
+        # which something reachable from inbound preparation could mutate a caller-supplied mutable
+        # value before it's ever read. Capturing in `initialize` — the first line of this call's
+        # pipeline (`run`'s `NestingTracking.tracking`, `with_tracing`, and everything else all run
+        # strictly after this constructor returns) — closes that window regardless of what runs next.
+        #
+        # No coerce here: Axn::Extensions::InvokedVia.with already coerced the value to an OTel-legal
+        # type ONCE, before storing it — so every executor in the tree resolves from the exact same
+        # already-legal value, rather than each re-coercing its own copy from a reference the caller is
+        # free to keep mutating between calls (which would make a root and a nested call inside the
+        # same block disagree, defeating the whole point of a subtree-wide stamp).
+        #
+        # Still `dup_value` HERE, though — matching how `Tagging.dup_facets` re-dups at every sink
+        # boundary rather than trusting a single upstream copy to stay pristine forever. The one
+        # upstream dup decouples the stored value from the CALLER's object at `with`-entry; this one
+        # decouples THIS executor's own reported value from whatever anything else does to the shared
+        # holder for the rest of the tree's lifetime (its own body included).
+        ambient = Internal::CurrentEntryPoint.current
+        @ambient_dimensions = ambient.nil? ? {} : { Internal::CurrentEntryPoint::DIMENSION_NAME => Core::Tagging.dup_value(ambient) }
       end
 
       def run
@@ -381,8 +407,10 @@ module Axn
             payload[:result] = result
             payload[:elapsed_time] = result.elapsed_time
             payload[:exception] = result.exception if result.exception
-            payload[:tags] = Core::Tagging.dup_facets(resolved_tags) if @action_class._tags.any?
-            payload[:dimensions] = Core::Tagging.dup_facets(resolved_dimensions) if @action_class._dimensions.any?
+            # Gate on the RESOLVED map, not the class's declared facets: resolved_dimensions can be
+            # non-empty from the ambient invoked_via stamp alone, with nothing declared on this class.
+            payload[:tags] = Core::Tagging.dup_facets(resolved_tags) if resolved_tags.any?
+            payload[:dimensions] = Core::Tagging.dup_facets(resolved_dimensions) if resolved_dimensions.any?
           end
         end
 
@@ -759,20 +787,42 @@ module Axn
       # memoizing now would freeze a result-phase facet reading elapsed_time as nil and poison those
       # post-timing sinks. dup the whole merge so a reporter mutating a value can't corrupt the shared
       # input snapshot the other sinks read (the fresh result-phase values are already private).
+      #
+      # No `map.any?` short-circuit: `input_snapshot` can carry the ambient invoked_via stamp (see
+      # resolved_input_dimensions below) even when the class declares no dimensions of its own, and an
+      # empty `map` costs nothing extra — Core::Tagging.resolve on an empty facet hash is a no-op.
       def resolve_report_facets(input_snapshot, map)
-        return {} unless map.any?
-
         Core::Tagging.dup_facets(input_snapshot.merge(Core::Tagging.resolve(map, action: @action, from: :result)))
       end
 
       def resolved_input_tags = @resolved_input_tags ||= _resolve_facets(@action_class._tags, :inputs)
       def resolved_result_tags = @resolved_result_tags ||= _resolve_facets(@action_class._tags, :result)
-      def resolved_input_dimensions = @resolved_input_dimensions ||= _resolve_facets(@action_class._dimensions, :inputs)
+
+      # The one merge point for the ambient "how was this call tree invoked" stamp
+      # (Internal::CurrentEntryPoint, set by Axn::Tools::Invoker / Axn::Extensions::InvokedVia). Every
+      # sink below reads resolved_input_dimensions or the resolved_dimensions view built from it, so
+      # merging here — rather than at each sink — is what makes the stamp reach the span, the
+      # notification payload, emit_metrics, logs, the exception report, AND enqueue-time Sidekiq job
+      # tags (Async::Adapters::Sidekiq#resolve_inbound_facets reads this same memo) with no per-sink
+      # code. Merged last so the ambient value wins over a same-named declared dimension in the
+      # unreachable case that ever happens — Core::Tagging rejects `dimension :invoked_via` at
+      # declaration, so today there is nothing for it to win against.
+      def resolved_input_dimensions
+        @resolved_input_dimensions ||= _resolve_facets(@action_class._dimensions, :inputs).merge(_ambient_dimensions)
+      end
+
       def resolved_result_dimensions = @resolved_result_dimensions ||= _resolve_facets(@action_class._dimensions, :result)
 
       def _resolve_facets(facets, from)
         facets.any? ? Core::Tagging.resolve(facets, action: @action, from:) : {}
       end
+
+      # { invoked_via: <value> } when a caller (a tool adapter via the Invoker, or a non-tool gem via
+      # Axn::Extensions::InvokedVia) has stamped the current call tree, else {} — so merging this is a
+      # no-op for the overwhelming majority of calls that were not dispatched through either. Already
+      # coerced and duped in `initialize`, at the earliest point in this call's pipeline — see the
+      # comment there for why the snapshot has to happen that early rather than here.
+      def _ambient_dimensions = @ambient_dimensions
 
       # =========================================================================
       # LOGGING (Outside zone - result is settled)
@@ -839,9 +889,10 @@ module Axn
 
       # Copies (never the memoized maps) of the resolved facets for the log sink, so a suffix/tagged
       # annotation can never mutate what the span / payload / emit_metrics sinks share. Omitted
-      # entirely when nothing is declared, so an action with no facets does zero extra work here.
+      # entirely when nothing RESOLVED — not when nothing is DECLARED, since the ambient invoked_via
+      # stamp can populate resolved_dimensions with no class-level dimension in sight.
       def log_facets
-        return nil unless @action_class._tags.any? || @action_class._dimensions.any?
+        return nil if resolved_tags.empty? && resolved_dimensions.empty?
 
         {
           tags: Core::Tagging.dup_facets(resolved_tags),
@@ -1151,9 +1202,13 @@ module Axn
       # tagged context so every log line emitted during `call` is annotated (axn.tag.<name> /
       # axn.dimension.<name>). Result-phase facets aren't available yet — they only annotate the
       # settle-time completion line.
+      #
+      # No declaration-level early-out here (deliberately — see log_facets): resolved_input_tags and
+      # resolved_input_dimensions are cheap to compute even when nothing is declared (each returns {}
+      # without calling Core::Tagging.resolve — see _resolve_facets), and the `named.any?` check right
+      # below already covers "nothing to annotate", now correctly including the ambient invoked_via
+      # stamp that a bare `._dimensions.any?` on the class could never see.
       def with_facet_log_context(&body)
-        return body.call unless @action_class._tags.any? || @action_class._dimensions.any?
-
         named = Core::Tagging.namespaced(tags: resolved_input_tags, dimensions: resolved_input_dimensions)
         return body.call unless named.any? && Internal::CallLogger.semantic_logger?
 

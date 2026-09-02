@@ -313,13 +313,25 @@ chains existing action classes. Data flows via the shared context; a step failur
 with the step name prefixed (`"validate: Email is invalid"`).
 <https://teamshares.github.io/axn/usage/steps>.
 
+## Declaring your entry point
+
+If you're building a gem that dispatches Axns on behalf of an external trigger (an inbound webhook, a
+scheduled job runner, a queue consumer) rather than calling them straight from app code, wrap your
+dispatch in `Axn::Extensions::InvokedVia.with(:your_gem) { handler.call!(**args) }`. The value becomes
+the `invoked_via` dimension on the whole call tree — every nested sub-Axn, span, log line, metric, and
+exception report — so an app can tell "traffic that came in through your gem" apart from ordinary
+direct calls without touching the classes it dispatches. A tool-adapter gem gets this automatically
+through `Axn::Tools::Invoker`'s `adapter:` kwarg; everyone else calls `InvokedVia.with` once, at the
+outermost point they control. `dimension :invoked_via` / `tag :invoked_via` are reserved — declaring
+either raises. See `docs/recipes/declaring-entry-points.md` for the full recipe.
+
 ## Pointers
 
 Human docs — <https://teamshares.github.io/axn/>:
 build (`/usage/writing`), use (`/usage/using`), class DSL (`/reference/class`), instance helpers
 (`/reference/instance`), result (`/reference/axn-result`), strategies (`/strategies/`), steps
 (`/usage/steps`), async (`/reference/async`), config (`/reference/configuration`), tool invoker
-(`/reference/tool-invoker`).
+(`/reference/tool-invoker`), entry points (`/recipes/declaring-entry-points`).
 
 Source entry points (resolve with `bundle show axn`):
 - `lib/axn.rb` — `include Axn` wiring.
