@@ -138,6 +138,24 @@ RSpec.describe "invoked_via ambient dimension" do
       Axn::Extensions::InvokedVia.with(source) { action.call }
       expect(notifications.first[:dimensions]).to eq(invoked_via: "mcp")
     end
+
+    it "snapshots the value before inbound validation/preprocess hooks run, not just before the body" do
+      # The narrower window the body-mutation spec above doesn't cover: resolved_input_dimensions
+      # first resolves AFTER inbound validation (default:/preprocess:/validators), so a hook reaching
+      # the still-live ambient holder — however it got a reference — could mutate it before the
+      # snapshot in the old (post-validation) resolution point ever ran. The fix moved the snapshot
+      # into Executor#initialize, before inbound validation starts at all.
+      source = +"mcp"
+      action = build_axn do
+        expects :name, preprocess: lambda { |value|
+          Axn::Internal::CurrentEntryPoint.current&.replace("mutated")
+          value
+        }
+        def call; end
+      end
+      Axn::Extensions::InvokedVia.with(source) { action.call(name: "x") }
+      expect(notifications.first[:dimensions]).to eq(invoked_via: "mcp")
+    end
   end
 
   describe "a `false` stamp" do

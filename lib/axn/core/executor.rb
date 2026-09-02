@@ -220,6 +220,19 @@ module Axn
         @action = action
         @action_class = action.class
         @context = action.instance_variable_get(:@__context)
+
+        # Snapshot the ambient invoked_via stamp (Internal::CurrentEntryPoint) HERE, before anything
+        # else in the pipeline runs — including inbound validation, and any default:/preprocess:/
+        # validator hook it triggers. resolved_input_dimensions (below) only resolves the class's own
+        # DECLARED dimensions after inbound validation, because a resolver reads validated/coerced/
+        # defaulted inputs — but the ambient stamp has no such dependency on this action's contract at
+        # all, so deferring its capture to that same point only widens, for no reason, the window in
+        # which something reachable from inbound preparation could mutate a caller-supplied mutable
+        # value before it's ever read. Capturing in `initialize` — the first line of this call's
+        # pipeline (`run`'s `NestingTracking.tracking`, `with_tracing`, and everything else all run
+        # strictly after this constructor returns) — closes that window regardless of what runs next.
+        ambient = Internal::CurrentEntryPoint.current
+        @ambient_dimensions = ambient.nil? ? {} : { Internal::CurrentEntryPoint::DIMENSION_NAME => Core::Tagging.dup_value(Core::Tagging.coerce(ambient)) }
       end
 
       def run
@@ -794,19 +807,10 @@ module Axn
 
       # { invoked_via: <value> } when a caller (a tool adapter via the Invoker, or a non-tool gem via
       # Axn::Extensions::InvokedVia) has stamped the current call tree, else {} — so merging this is a
-      # no-op for the overwhelming majority of calls that were not dispatched through either. No
-      # resolver/best_effort machinery — the value isn't resolved from anything that can raise — but
-      # still coerced and duped through the same Core::Tagging helpers a declared facet's resolved
-      # value goes through, and for the same reason: `resolved_input_dimensions` memoizes this once,
-      # before the body runs, and every sink after that reads the SAME hash entry rather than a fresh
-      # read of Internal::CurrentEntryPoint.current — so an un-duped mutable String handed to `with`
-      # would let something mutating that object during the call rewrite what every later sink
-      # (including ones the span writes to un-duped, at settle) reports for a value that had already
-      # been "captured" at call start.
-      def _ambient_dimensions
-        value = Internal::CurrentEntryPoint.current
-        value.nil? ? {} : { Internal::CurrentEntryPoint::DIMENSION_NAME => Core::Tagging.dup_value(Core::Tagging.coerce(value)) }
-      end
+      # no-op for the overwhelming majority of calls that were not dispatched through either. Already
+      # coerced and duped in `initialize`, at the earliest point in this call's pipeline — see the
+      # comment there for why the snapshot has to happen that early rather than here.
+      def _ambient_dimensions = @ambient_dimensions
 
       # =========================================================================
       # LOGGING (Outside zone - result is settled)
