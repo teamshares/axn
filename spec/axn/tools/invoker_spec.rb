@@ -176,7 +176,8 @@ RSpec.describe Axn::Tools::Invoker do
       captured = nil
       Axn.configure { |c| c.emit_metrics = proc { |dimensions:| captured = dimensions } }
       described_class.new(adapter: :mcp).call(action, { name: "ada", age: 36 })
-      expect(captured).to eq(invoked_via: :mcp)
+      # Coerced through Core::Tagging.coerce, same as any resolved facet — a Symbol stringifies.
+      expect(captured).to eq(invoked_via: "mcp")
     ensure
       Axn.configure { |c| c.emit_metrics = nil }
     end

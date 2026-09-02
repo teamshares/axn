@@ -30,14 +30,15 @@ RSpec.describe "invoked_via ambient dimension" do
 
     it "reaches the notification payload dimensions" do
       Axn::Extensions::InvokedVia.with(:mcp) { action.call }
-      expect(notifications.first[:dimensions]).to eq(invoked_via: :mcp)
+      # Coerced through Core::Tagging.coerce, same as any resolved facet — a Symbol stringifies.
+      expect(notifications.first[:dimensions]).to eq(invoked_via: "mcp")
     end
 
     it "reaches Axn.config.emit_metrics dimensions:" do
       captured = nil
       Axn.configure { |c| c.emit_metrics = proc { |dimensions:| captured = dimensions } }
       Axn::Extensions::InvokedVia.with(:mcp) { action.call }
-      expect(captured).to eq(invoked_via: :mcp)
+      expect(captured).to eq(invoked_via: "mcp")
     ensure
       Axn.configure { |c| c.emit_metrics = nil }
     end
@@ -47,7 +48,7 @@ RSpec.describe "invoked_via ambient dimension" do
       captured = nil
       Axn.config.instance_variable_set(:@on_exception, proc { |context:| captured = context[:dimensions] })
       Axn::Extensions::InvokedVia.with(:mcp) { raising.call }
-      expect(captured).to eq(invoked_via: :mcp)
+      expect(captured).to eq(invoked_via: "mcp")
     end
 
     it "reaches SemanticLogger.tagged named tags" do
@@ -65,7 +66,7 @@ RSpec.describe "invoked_via ambient dimension" do
 
       Axn::Extensions::InvokedVia.with(:mcp) { action.call }
 
-      expect(tagged_calls).to include(a_hash_including("axn.dimension.invoked_via": :mcp))
+      expect(tagged_calls).to include(a_hash_including("axn.dimension.invoked_via": "mcp"))
     end
 
     it "reaches the axn.tag.* / axn.dimension.* span attributes" do
@@ -85,7 +86,7 @@ RSpec.describe "invoked_via ambient dimension" do
 
       Axn::Extensions::InvokedVia.with(:mcp) { action.call }
 
-      expect(fake_span.attributes).to include("axn.dimension.invoked_via" => :mcp)
+      expect(fake_span.attributes).to include("axn.dimension.invoked_via" => "mcp")
     ensure
       Axn.config.reset!(:tracer)
     end
@@ -121,7 +122,21 @@ RSpec.describe "invoked_via ambient dimension" do
         def call; end
       end
       Axn::Extensions::InvokedVia.with(:mcp) { action.call }
-      expect(notifications.first[:dimensions]).to eq(plan: "pro", invoked_via: :mcp)
+      expect(notifications.first[:dimensions]).to eq(plan: "pro", invoked_via: "mcp")
+    end
+  end
+
+  describe "a mutable String stamp" do
+    it "snapshots the value at call start — a later in-place mutation of the caller's string can't leak in" do
+      # resolved_input_dimensions memoizes once, BEFORE the body runs; every post-body sink (payload,
+      # span, log, exception report) reads that same memoized entry rather than a fresh
+      # Internal::CurrentEntryPoint.current read. Mutating the caller's string from INSIDE the body —
+      # between memoization and those sinks reading it — is exactly the window an un-duped ambient
+      # value would leak through.
+      source = +"mcp"
+      action = build_axn { define_method(:call) { source.replace("mutated") } }
+      Axn::Extensions::InvokedVia.with(source) { action.call }
+      expect(notifications.first[:dimensions]).to eq(invoked_via: "mcp")
     end
   end
 end

@@ -795,11 +795,17 @@ module Axn
       # { invoked_via: <value> } when a caller (a tool adapter via the Invoker, or a non-tool gem via
       # Axn::Extensions::InvokedVia) has stamped the current call tree, else {} — so merging this is a
       # no-op for the overwhelming majority of calls that were not dispatched through either. No
-      # resolver/coerce/best_effort machinery: unlike a declared facet, the value is already a
-      # framework-trusted Symbol/String the CALLER chose, not user data.
+      # resolver/best_effort machinery — the value isn't resolved from anything that can raise — but
+      # still coerced and duped through the same Core::Tagging helpers a declared facet's resolved
+      # value goes through, and for the same reason: `resolved_input_dimensions` memoizes this once,
+      # before the body runs, and every sink after that reads the SAME hash entry rather than a fresh
+      # read of Internal::CurrentEntryPoint.current — so an un-duped mutable String handed to `with`
+      # would let something mutating that object during the call rewrite what every later sink
+      # (including ones the span writes to un-duped, at settle) reports for a value that had already
+      # been "captured" at call start.
       def _ambient_dimensions
         value = Internal::CurrentEntryPoint.current
-        value.nil? ? {} : { Internal::CurrentEntryPoint::DIMENSION_NAME => value }
+        value.nil? ? {} : { Internal::CurrentEntryPoint::DIMENSION_NAME => Core::Tagging.dup_value(Core::Tagging.coerce(value)) }
       end
 
       # =========================================================================
