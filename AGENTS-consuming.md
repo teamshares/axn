@@ -168,6 +168,13 @@ input is a developer error. `klass:` must be a single Class/Module (no union, no
 pseudo-type); anything else raises `ArgumentError` at declaration. Source:
 `lib/axn/core/field_resolvers/model.rb`.
 
+**No record found is a contract violation, not a reported exception.** A finder returning `nil` and
+one raising its not-found error (`ActiveRecord::RecordNotFound` for `:find`) are the same outcome:
+an `InboundValidationError` reading `User not found` — distinct from the `User can't be blank` an
+omitted `user_id` gets. It is NOT handed to `on_ignored_exception`, so a bad id from a tool caller
+never pages; anything else the finder raises still does. Name your own miss class with
+`model: { finder: :fetch!, not_found_on: MyApi::NotFound }` (a class or an array; `[]` opts out).
+
 **`on:` — subfields (the `:extract` resolver).** Declare expectations about nested data and get a
 flat reader:
 

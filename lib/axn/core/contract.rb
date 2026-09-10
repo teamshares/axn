@@ -2395,6 +2395,7 @@ module Axn
           _reject_falsy_model_klass!(validations)
           validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
           _reject_unsupported_model_klass!(validations)
+          _reject_unsupported_model_not_found_on!(validations)
           if validations.key?(:validate)
             validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields, nested: false)
           end
@@ -2724,6 +2725,32 @@ module Axn
                 "model: klass: must name a single Class or Module (got #{_declared_type_label(klass)}) — a " \
                 "model field resolves a record by calling a finder method on this class, so a union or a " \
                 "pseudo-type has nothing to dispatch through."
+        end
+
+        # `not_found_on:` names the exception classes whose being raised by the finder MEANS "no such record"
+        # — a statement about the caller's id, not a fault (see FieldResolvers::Model). Since the whole point
+        # is that axn absorbs one instead of reporting it, an entry that is not an exception class either
+        # absorbs nothing (a class the finder can never raise) or, worse, reads as a silent opt-out of the
+        # default `RecordNotFound` handling — so it is refused at the author rather than at the call.
+        #
+        # Runs AFTER the sugar, which canonicalizes a bare class to a one-element Array; an ABSENT key means
+        # "use the default set" and is untouched, while an explicit empty Array is a legitimate opt-out.
+        # `nil`/`false` are refused on the same terms as `_reject_falsy_model_klass!`: they are the spellings
+        # an author reaches for to mean "none", and `[]` says that unambiguously.
+        def _reject_unsupported_model_not_found_on!(validations)
+          return unless validations.key?(:model)
+
+          declared = validations[:model]
+          return unless declared.is_a?(::Hash) && declared.key?(:not_found_on)
+
+          offending = declared[:not_found_on].reject { |entry| entry.is_a?(::Class) && entry <= ::Exception }
+          return if offending.empty?
+
+          raise ArgumentError,
+                "model: not_found_on: must name exception classes (got " \
+                "#{offending.map { |e| _declared_type_label(e) }.join(', ')}) — each one is a class the finder " \
+                "raises to mean \"no such record\", which axn turns into a not-found violation instead of a " \
+                "reported exception. Pass `not_found_on: []` to opt out of that handling entirely."
         end
 
         # `on:` inside a bag is the same dead declaration it is inside any other validator's option bag, and it
@@ -5494,7 +5521,7 @@ module Axn
             validations[:allow_blank] = allow_blank unless shared_options.key?(:allow_blank)
             validations[:allow_nil] = allow_nil unless shared_options.key?(:allow_nil)
           else
-            _apply_default_presence!(validations, allow_empty:, tolerant:)
+            _apply_presence_axis!(validations, allow_empty:, tolerant:)
           end
 
           # Asked once the validations hash is final (both tolerance branches above have run), since the
@@ -5616,8 +5643,42 @@ module Axn
           !(type_values.include?(:boolean) || type_values.include?(:params))
         end
 
+        # The whole presence axis for a non-tolerant declaration: install the inferred check, then give a
+        # `model:` field's check the wording only it can supply. Both halves in one call because they are one
+        # decision about one entry, and because the second must see whatever the first left behind — including
+        # a `presence:` the author wrote instead. The tolerant branch reaches neither: it installs no check,
+        # and pushes `allow_blank:` into any the author declared, so nothing there can fire on a nil.
+        def _apply_presence_axis!(validations, allow_empty:, tolerant:)
+          _apply_default_presence!(validations, allow_empty:, tolerant:)
+          _apply_model_absence_message!(validations)
+        end
+
         def _apply_default_presence!(validations, allow_empty:, tolerant:)
           validations[:presence] = true if _default_presence_applies?(validations, allow_empty:, tolerant:)
+        end
+
+        # A `model:` field's presence check is also its NOT-FOUND check: the resolver hands validation a nil
+        # both when no `<field>_id` was supplied and when one was supplied that resolved to no record, and
+        # only the message tells those apart (PRO-3369). Carried as the check's `message:` rather than added
+        # as a second error, so one nil produces one error — the doubled "X is not a Y and X can't be blank"
+        # was the model validator's type check and this one both reporting it.
+        #
+        # Stamped onto WHATEVER presence entry the field ends up with, axn's inferred one and an author's own
+        # `presence: true`/`presence: { if: … }` alike, so the same contract does not say two different things
+        # about the same miss depending on whether the author spelled the check out. An author who supplied
+        # their own `message:` is left alone — they named the wording deliberately. Requiredness itself is
+        # untouched: it comes from `optional?`, not from this entry (`presence: false` still emits
+        # `required`), so only the wording moves.
+        def _apply_model_absence_message!(validations)
+          return unless validations.key?(:model)
+
+          entry = validations[:presence]
+          return unless entry
+
+          entry = Axn::Validation::Base.normalize_validator_options(entry)
+          return if entry.key?(:message)
+
+          validations[:presence] = entry.merge(message: Axn::Validators::ModelValidator::ABSENCE_MESSAGE)
         end
 
         # Whatever enforces the emptiness axis talks about emptiness only, so it skips nil (the nil axis is

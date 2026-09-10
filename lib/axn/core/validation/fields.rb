@@ -59,6 +59,13 @@ module Axn
         Class.new(self) do
           def self.name = "Axn::Validation::Fields::OneOff"
 
+          # The one field this class validates. A Proc `message:` is handed only the validator INSTANCE and
+          # ActiveModel's own `data` (whose `:attribute` is already humanized for display), so a message that
+          # has to reason about the declaration — ModelValidator::ABSENCE_MESSAGE — has no other way back to
+          # the field name. Defined per built class rather than closed over by the message, because one
+          # `validations` hash is shared across a declaration batch while each class is built per field.
+          define_singleton_method(:_axn_validated_field) { field }
+
           # A field may legitimately carry no validators at all (e.g. `optional: true` with no
           # type/model, or an `optional:` field carrying only ActiveModel shared options like
           # `strict:`), which `validates` rejects with "You need to supply at least one validation" —
@@ -204,6 +211,11 @@ module Axn
       def _validation_subject(attribute) = "field '#{attribute}'"
 
       def _action_for_validation = @action
+
+      # The FieldConfig this validation is running for, or nil. Set only for a subfield today (the
+      # executor's top-level call site passes none), so a reader that needs a top-level config looks it up
+      # by field name — see ModelValidator.lookup_attempted?.
+      def _config_for_validation = @config
 
       # The nested shape walk's position, or nil at the top of one. Read off the record by
       # `ShapeValidator`, which owns what it means.
