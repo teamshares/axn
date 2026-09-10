@@ -1441,14 +1441,52 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(klass.input_schema[:properties][:company_id]).to include(type: "string", format: "uuid")
       end
 
-      it "does not raise when the explicit sibling has no type: of its own to disagree with" do
+      it "does not raise when the explicit sibling has no type: of its own to disagree with, and " \
+         "merges the declared id_type: into the sibling's own property rather than losing it" do
         klass = Class.new do
           include Axn
           expects :company_id, default: 1
           expects :company, model: { klass: Struct.new(:id), id_type: Integer }
         end
 
-        expect(klass.input_schema[:properties][:company_id]).to eq(default: 1)
+        expect(klass.input_schema[:properties][:company_id]).to eq(default: 1, type: "integer")
+      end
+
+      it "does the same merge for a NESTED untyped sibling, regardless of which is declared first " \
+         "(the sibling's OWN entry always wins the emitted property outright, so the merge has to run " \
+         "after every child in the loop has been visited, not at the model's own visit)" do
+        declared_model_first = Class.new do
+          include Axn
+          expects :payload, type: Hash, shape: { members: {} }
+          expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
+          expects :company_id, on: :payload, default: 1, as: :company_id_field
+        end
+        declared_sibling_first = Class.new do
+          include Axn
+          expects :payload, type: Hash, shape: { members: {} }
+          expects :company_id, on: :payload, default: 1, as: :company_id_field
+          expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
+        end
+
+        [declared_model_first, declared_sibling_first].each do |klass|
+          company_id = klass.input_schema.dig(:properties, :payload, :properties, :company_id)
+          expect(company_id).to eq(default: 1, type: "integer")
+        end
+      end
+
+      it "drops the sibling's own now-redundant not: { type: \"null\" } once a real type: is merged in " \
+         "(reject_null! already ran on the untyped sibling before this merge and, finding no type: to " \
+         "narrow, fell back to that marker)" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash, shape: { members: {} }
+          expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
+          expects :company_id, on: :payload, default: 1, as: :company_id_field
+        end
+
+        company_id = klass.input_schema.dig(:properties, :payload, :properties, :company_id)
+        expect(company_id).not_to have_key(:not)
+        expect(company_id[:type]).to eq("integer")
       end
 
       # Codex review round 3 (PR #269): comparing base :type alone missed the REVERSE asymmetry —

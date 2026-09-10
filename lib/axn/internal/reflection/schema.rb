@@ -1201,6 +1201,7 @@ module Axn
         # recoverable validation error, and the generated `<leaf>_id` already advertises the working path.
         def apply_children!(prop, children, parent_configs, ann)
           required_model_ids = []
+          model_id_siblings = []
           children.each do |key, node|
             if node.implicit?
               apply_implicit_node!(prop, key, node, parent_configs, ann)
@@ -1212,7 +1213,10 @@ module Axn
             # The object property is built from ONE of them; see property_representative, which every layer that
             # has to name that config reads (requiredness annotation, and the size cap's shape charge).
 
-            apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids) unless model_configs.empty?
+            unless model_configs.empty?
+              apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
+                                    model_id_siblings)
+            end
 
             representative = property_representative(node.configs)
             next unless representative
@@ -1231,6 +1235,13 @@ module Axn
           # A required nested model id can't be null (a null token resolves the model to nil at runtime).
           # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
           required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
+          # Same reason: the sibling's OWN entry (a plain child of this same loop) always wins the
+          # property outright regardless of visitation order, so `prop[:properties][id_field]` is only
+          # guaranteed to hold the sibling's FINAL emission once every key has been visited (Codex review
+          # round 15, PR #269) — merging mid-loop risked reading a not-yet-overwritten model placeholder.
+          model_id_siblings.each do |id_field, model_configs, explicit_id|
+            merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id, id_field) if prop[:properties][id_field]
+          end
         end
 
         # The nested twin of `build_input`'s own model branch — extracted from `apply_children!` (which
@@ -1238,7 +1249,8 @@ module Axn
         # this file's own complexity budget) rather than folding another key into that method's single
         # already-large loop body. Mutates `prop`/`required_model_ids` in place, exactly as the inlined
         # code it replaces did.
-        def apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids)
+        def apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
+                                  model_id_siblings)
           # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
           # the same nested parent at runtime). A user may declare an explicit NON-model nested
           # `<field>_id` subfield — its own entry in `children`, keyed by that same id, visited
@@ -1280,7 +1292,13 @@ module Axn
           # 3, PR #269): two `model:` routes reaching the same wire node may each carry their own
           # `id_type:`/`klass:`, and reading only one silently dropped the other's claim.
           reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
-          unless explicit_id || prop[:properties].key?(id_field)
+          if explicit_id
+            # Deferred rather than merged here directly (see the post-loop pass in `apply_children!`):
+            # this sibling's OWN entry in `children` hasn't necessarily been visited yet, so
+            # `prop[:properties][id_field]` isn't guaranteed to hold its FINAL emission until every key
+            # in this loop has run.
+            model_id_siblings << [id_field, model_configs, explicit_id]
+          elsif !prop[:properties].key?(id_field)
             id_type = reconciled_model_id_type_token(model_configs, id_field)
             _, subprop = model_id_property(model_configs.first, id_type)
             prop[:properties][id_field] ||= subprop
@@ -3102,6 +3120,7 @@ module Axn
           # type-conflict check below and the `usable_default?` rescue just past it.
           explicit_id = field_configs.find { |c| c.field == id_field && !c.validations[:model] }
           reject_model_id_type_conflict!([config], explicit_id, id_field)
+          merge_model_id_type_into_sibling!(properties[id_field], [config], explicit_id, id_field) if properties[id_field]
           # A default at ANY depth under the model applies at read time (value-level defaults,
           # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
           # annotation-derived rule, same as every other parent.
@@ -3227,6 +3246,37 @@ module Axn
                 "model: id_type: #{declared.inspect} disagrees with the explicitly declared " \
                 "#{renderable_id_field(id_field)}'s own type: (#{explicit_desc.join(', ')}) — declare " \
                 "one or the other."
+        end
+
+        # A declared `id_type:` beside an explicit sibling that emits no type of its OWN at all (a bare
+        # `default:`, `length:`, or other metadata-only declaration — the one case
+        # `reject_model_id_type_conflict!` above deliberately has nothing to compare, so it returns
+        # without raising) is not a conflict, but it isn't free either: nothing else was ever going to
+        # write a `:type` there, since the sibling always wins the emitted property outright (Codex
+        # review round 15, PR #269) — so the declared `id_type:` has to be merged in explicitly, or it
+        # is simply lost with no error and no trace. Mutates `target_property` (the sibling's OWN
+        # already-built emission) in place; a no-op whenever there is nothing to merge (no declared
+        # type, no sibling, or the sibling already carries type/anyOf/enum of its own — which
+        # `reject_model_id_type_conflict!` has already either accepted as compatible or raised on,
+        # so this method never overwrites a type the sibling itself asserted).
+        def merge_model_id_type_into_sibling!(target_property, model_configs, explicit_id, id_field)
+          return unless explicit_id
+          return if target_property.key?(:type) || target_property.key?(:anyOf) || target_property.key?(:enum)
+
+          declared = reconciled_declared_id_type(model_configs, id_field)
+          return if declared.nil?
+
+          # The SIBLING's own nullability/blank-tolerance, not the model config's — `target_property` is
+          # the sibling's emission, so its own `allow_nil:`/`allow_blank:` govern whether `"null"` joins
+          # the merged type and whether a blank-tolerant `:uuid`'s `format:` stands down (the same rule
+          # `apply_single_type!` already applies for every other property).
+          apply_single_type!(target_property, single_type_for(declared, for_output: false), explicit_id, nullable: nil_allowed?(explicit_id))
+          # `reject_null!` already ran on this (untyped) property earlier in the same build and, finding
+          # no `:type` to narrow, fell back to its `not: { type: "null" }` marker — now redundant (a real
+          # `:type` excludes null on its own, and `apply_single_type!` just decided that question fresh)
+          # and, left in place, a confusing double-marker beside the type that just replaced its reason
+          # for existing.
+          target_property.delete(:not) if target_property[:not] == { type: "null" }
         end
 
         # `id_field` rendered safely into an error message — `Values.canonical_wire_key` (already a
