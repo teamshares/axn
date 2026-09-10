@@ -1465,6 +1465,35 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
       end
+
+      # Codex review round 4 (PR #269): the "any branch satisfies" check let a widening UNION sibling
+      # through, since the branch that happened to match id_type: was enough to accept the whole thing
+      # — but the WINNING property is the entire union, including the branch that doesn't satisfy it.
+      it "rejects id_type: Integer beside an explicit union type: [Integer, String] sibling (one " \
+         "branch matches, but the whole union — including the string branch — is what wins, silently " \
+         "widening past what id_type: promised)" do
+        klass = Class.new do
+          include Axn
+          expects :company_id, type: [Integer, String]
+          expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+        end
+
+        expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
+      end
+
+      it "does not raise for a union sibling where EVERY branch still satisfies id_type: (both " \
+         "project to \"string\")" do
+        klass = Class.new do
+          include Axn
+          expects :company_id, type: [String, :uuid]
+          expects :company, model: { klass: Struct.new(:id), id_type: String }
+        end
+
+        expect(klass.input_schema[:properties][:company_id][:anyOf]).to contain_exactly(
+          { type: "string", minLength: 1 },
+          { type: "string", format: "uuid", minLength: 1 },
+        )
+      end
     end
 
     # Codex review round 3 (PR #269): a merged wire node reached by TWO `model:` routes (a dotted

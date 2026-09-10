@@ -3089,6 +3089,14 @@ module Axn
         # WIDENING — the declared format constraint would silently vanish). `type_pair_satisfies?` below
         # encodes exactly that: the base type must match, and only when `id_type:` itself asserts a
         # `format` must the sibling assert the SAME one.
+        #
+        # EVERY branch of an explicit UNION sibling must satisfy it, not merely one (Codex review round
+        # 4, PR #269): `id_type: Integer` beside an explicit `type: [Integer, String]` sibling has an
+        # integer branch that trivially satisfies the check, but the WINNING property is the WHOLE union
+        # — admitting the string branch too — so accepting on any one satisfied branch let the sibling
+        # silently widen past what `id_type:` promised. `[].all?` is vacuously true, matching the
+        # existing "nothing concrete to compare" behavior for a sibling whose type resolves to no
+        # branches at all (Ruby's own read of that state, not a special case introduced here).
         def reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
           declared = declared_model_id_types(model_configs)
           return if declared.empty?
@@ -3104,7 +3112,7 @@ module Axn
 
           declared_shape = single_type_for(declared.first, for_output: false)
           explicit_pairs = json_type_pairs(json_type_for(explicit_id.validations, for_output: false))
-          return if explicit_pairs.any? { |pair| type_pair_satisfies?(declared_shape, pair) }
+          return if explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
 
           explicit_desc = explicit_pairs.map { |pair| pair[:format] ? "#{pair[:type]}/#{pair[:format]}" : pair[:type] }
           raise ArgumentError,
