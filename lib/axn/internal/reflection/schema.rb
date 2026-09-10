@@ -3134,7 +3134,7 @@ module Axn
         def reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
           declared = reconciled_declared_id_type(model_configs, id_field)
           return if declared.nil?
-          return unless explicit_id&.validations&.key?(:type)
+          return unless explicit_id
 
           declared_shape = single_type_for(declared, for_output: false)
           # `build_property`, not `json_type_for(explicit_id.validations, ...)` (Codex review round 7, PR
@@ -3145,7 +3145,18 @@ module Axn
           # format for exactly the reason `apply_single_type!`'s own comment gives: a blank value would
           # fail a strict `format: "uuid"` the runtime doesn't enforce. Comparing the raw pre-relaxation
           # shape let the format vanish with no error; comparing the real emitted one catches it.
-          explicit_pairs = json_type_pairs(build_property(explicit_id))
+          sibling_prop = build_property(explicit_id)
+          # Gated on the BUILT property carrying a type-bearing key, not on `explicit_id.validations`
+          # having a `:type` entry (Codex review round 8, PR #269): `inclusion:`/`numericality:` alone —
+          # no `type:` at all — can still make `json_type_for` (and so `build_property`) infer one (an
+          # `inclusion: { in: ["abc"] }` sibling emits `{type: "string", ...}`), and gating on the RAW
+          # validations skipped the comparison entirely for exactly that sibling, letting a declared
+          # `id_type: Integer` silently lose to an inferred `"string"` sibling with no error. A sibling
+          # with NEITHER key present is the one genuine "nothing to compare" case (a bare `default:`, say)
+          # — everything else must be checked, the null-only sibling (round 5) included.
+          return unless sibling_prop.key?(:type) || sibling_prop.key?(:anyOf)
+
+          explicit_pairs = json_type_pairs(sibling_prop)
           satisfied = !explicit_pairs.empty? && explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
           return if satisfied
 

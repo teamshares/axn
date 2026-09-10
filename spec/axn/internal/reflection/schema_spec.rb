@@ -1605,6 +1605,48 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end.to raise_error(ArgumentError, /disagrees/)
     end
 
+    # Codex review round 8 (PR #269): gating the comparison on `explicit_id.validations.key?(:type)`
+    # skipped a sibling that carries no `type:` at all but still gets one INFERRED by `inclusion:`/
+    # `numericality:` (the same `json_type_for` branches `build_property` itself reads) — so the winning
+    # property (a plain string, `inclusion:`-derived) silently discarded a declared `id_type: Integer`
+    # with no error, the very thing the round-1 fix exists to catch.
+    it "rejects an explicit sibling with no type: of its own whose OTHER validator (inclusion:) still " \
+       "makes build_property infer a conflicting type" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, inclusion: { in: ["abc"] }
+        expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+      end
+
+      expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
+    end
+
+    # (The companion "no type at all" case — a bare `default:` sibling that infers nothing — is already
+    # covered above by "does not raise when the explicit sibling has no type: of its own to disagree
+    # with"; re-verified passing unchanged by this round's fix, not duplicated here.)
+
+    # Codex review round 8 (PR #269): `id_type:` types the generated `<field>_id` `expects` builds on
+    # the INPUT schema; `exposes` never generates one at all (output reflects the exposed value itself),
+    # so `id_type:` there was accepted at declaration and then silently did nothing.
+    it "rejects id_type: on an exposes model: declaration — there is no generated <field>_id on output " \
+       "for it to type" do
+      expect do
+        Class.new do
+          include Axn
+          exposes :user, model: { klass: Struct.new(:id), id_type: Integer }
+        end
+      end.to raise_error(ArgumentError, /exposes.*does not support model: id_type:/)
+    end
+
+    it "still allows model: on exposes without id_type:" do
+      expect do
+        Class.new do
+          include Axn
+          exposes :user, model: { klass: Struct.new(:id) }
+        end
+      end.not_to raise_error
+    end
+
     # Codex review round 1 (PR #269): an explicit sibling always wins, so building the model's OWN
     # property (and, for an ActiveRecord class, dispatching into it to infer the id's type) is wasted
     # work whenever one exists — verified here with a token whose inference methods raise if reached;

@@ -666,6 +666,19 @@ module Axn
                   "`expects` if the confirmation is an input."
           end
 
+          # `id_type:` types the GENERATED `<field>_id` on the INPUT schema `expects` builds — there is no
+          # such property on the outbound side at all: `output_schema` reflects the exposed value itself
+          # (`user`), never a synthesized `user_id`, and neither output validation nor `build_output` ever
+          # reads this option. Declaring it here would decorate the field while doing nothing whatsoever —
+          # the same defect `_reject_model_transform!` closes for `coerce:`/`preprocess:` on a model field,
+          # on the outbound side instead of a transform (Codex review round 8, PR #269).
+          if (bag = validations[:model]).is_a?(::Hash) && bag.key?(:id_type)
+            raise ArgumentError,
+                  "`exposes` does not support model: id_type: on #{fields.map(&:to_s).inspect} — " \
+                  "id_type: types the generated `<field>_id` property `expects` builds on the INPUT " \
+                  "schema, and an exposure never generates one. Drop id_type: here."
+          end
+
           # Same refusal as `expects`, and for the same ordering reason: reads the caller's own `shape:` ahead
           # of the block form's write to the slot (see PRO-3191).
           _reject_distributing_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
