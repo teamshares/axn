@@ -76,12 +76,27 @@ module Axn
         # cleanly and only blew up as a bare `TypeError: wrong argument type Array (expected Proc)` on
         # the FIRST call after — after!, at the run site, not the declaration. Reject it here instead,
         # naming the shape to write.
+        #
+        # Deliberately NOT `Handlers::Invoker.safely_callable?` -- that predicate requires `arity` too,
+        # because Invoker's OWN dispatch (`instance_exec` with arity-filtered args, for messages and
+        # callbacks) needs it. `Executor#run_hook` calls `instance_exec(*, &hook)` instead: `&hook`
+        # only ever calls `hook.to_proc`, never inspects arity, so an object answering `to_proc` alone
+        # (no `arity`) runs here just fine and must not be rejected by a stricter borrowed check.
         def _validate_hooks!(hooks)
-          invalid = hooks.reject { |hook| hook.is_a?(Symbol) || Axn::Core::Flow::Handlers::Invoker.safely_callable?(hook) }
+          invalid = hooks.reject { |hook| hook.is_a?(Symbol) || _safely_to_proc?(hook) }
           return if invalid.empty?
 
           raise ArgumentError,
                 "hooks must be Symbols naming instance methods, or callables (e.g. `before :a, :b`); got #{invalid.inspect}"
+        end
+
+        # Guarded against a hostile `respond_to?`/`respond_to_missing?` that raises instead of
+        # answering, same boundary as `Handlers::Invoker.safely_callable?` -- a declaration guard must
+        # not let the value being judged raise IN PLACE OF the verdict.
+        def _safely_to_proc?(value)
+          value.respond_to?(:to_proc)
+        rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
+          false
         end
       end
     end

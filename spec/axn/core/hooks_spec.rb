@@ -495,6 +495,24 @@ RSpec.describe Axn do
             build_axn { public_send(dsl, 42) }
           end.to raise_error(ArgumentError, /hooks must be Symbols naming instance methods, or callables/)
         end
+
+        # Codex review, PR #272: the guard originally borrowed `Handlers::Invoker.safely_callable?`,
+        # which requires `arity` too -- needed by Invoker's OWN dispatch (arity-filtered
+        # `instance_exec`, for messages/callbacks), but NOT by `Executor#run_hook`, which calls
+        # `instance_exec(*, &hook)` -- `&hook` only ever calls `to_proc`, never inspects arity. An
+        # object answering `to_proc` alone previously worked at runtime and would have been wrongly
+        # rejected at declaration by the borrowed check.
+        it "accepts an object answering to_proc but not arity" do
+          to_proc_only = Class.new do
+            def initialize(&blk) = @blk = blk
+            def to_proc = @blk
+          end.new {}
+
+          expect(to_proc_only).to respond_to(:to_proc)
+          expect(to_proc_only).not_to respond_to(:arity)
+
+          expect { build_axn { public_send(dsl, to_proc_only) } }.not_to raise_error
+        end
       end
     end
   end
