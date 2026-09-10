@@ -36,6 +36,25 @@ RSpec.describe Axn::Core::Memoization do
           first_result = instance.num
           expect(instance.num).to eq(first_result)
         end
+
+        it "memoizes multiple methods given variadically in one call" do
+          action_class = Class.new do
+            include Axn
+
+            def a = rand(1000)
+            def b = rand(1000)
+
+            memo :a, :b
+          end
+
+          instance = action_class.allocate
+          instance.send(:initialize)
+
+          first_a = instance.a
+          first_b = instance.b
+          expect(instance.a).to eq(first_a)
+          expect(instance.b).to eq(first_b)
+        end
       end
 
       context "with methods that have arguments" do
@@ -179,6 +198,25 @@ RSpec.describe Axn::Core::Memoization do
         result3 = instance.compute(2, y: 3, z: 2)
         expect(result3).to eq(12)
         expect(result3).not_to eq(result1)
+      end
+
+      it "memoizes multiple methods given variadically in one call" do
+        action_class = Class.new do
+          include Axn
+
+          def a = rand(1000)
+          def b = rand(1000)
+
+          memo :a, :b
+        end
+
+        instance = action_class.allocate
+        instance.send(:initialize)
+
+        first_a = instance.a
+        first_b = instance.b
+        expect(instance.a).to eq(first_a)
+        expect(instance.b).to eq(first_b)
       end
 
       it "allows memoizing methods with blocks" do

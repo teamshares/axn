@@ -19,6 +19,16 @@ module Axn
         def semantic_hints(*hints)
           return _semantic_hints if hints.empty?
 
+          # `semantic_hints [:read_only, :idempotent]` (an Array handed to the splat instead of
+          # `semantic_hints :read_only, :idempotent`) used to reach `.to_sym` on the Array itself and
+          # raise a bare NoMethodError. Named here instead.
+          non_symbolic = hints.reject { |hint| hint.is_a?(Symbol) || hint.is_a?(String) }
+          if non_symbolic.any?
+            raise ArgumentError,
+                  "semantic_hints must be Symbols or Strings, given variadically (e.g. `semantic_hints :read_only`); " \
+                  "got #{non_symbolic.inspect}"
+          end
+
           hints = hints.map(&:to_sym)
           vocab = Axn::Extensions.config.registered_semantic_hints
           unknown = hints.reject { |h| vocab.include?(h) }

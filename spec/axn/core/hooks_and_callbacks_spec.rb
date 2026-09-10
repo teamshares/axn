@@ -920,4 +920,54 @@ RSpec.describe Axn do
       end.to raise_error(ArgumentError, "Cannot pass additional configuration with prebuilt descriptor")
     end
   end
+
+  describe "variadic handlers" do
+    it "on_success registers each Symbol given variadically as its own entry (last-defined-first)" do
+      action = build_axn do
+        define_method(:notify) { puts "notify" }
+        define_method(:audit) { puts "audit" }
+        on_success :notify, :audit
+        def call = nil
+      end
+
+      expect { action.call }.to output("audit\nnotify\n").to_stdout
+    end
+
+    it "on_success behaves identically whether given variadically or as separate calls" do
+      separate = build_axn do
+        define_method(:notify) { puts "notify" }
+        define_method(:audit) { puts "audit" }
+        on_success :notify
+        on_success :audit
+        def call = nil
+      end
+
+      # Same expected order as the variadic form above ("audit\nnotify\n") -- `on_success :a, :b` and
+      # `on_success :a; on_success :b` register identically.
+      expect { separate.call }.to output("audit\nnotify\n").to_stdout
+    end
+
+    it "gates every variadically-given handler with one shared if:/unless:" do
+      action = build_axn do
+        expects :flag
+        define_method(:notify) { puts "notify" }
+        define_method(:audit) { puts "audit" }
+        on_success :notify, :audit, if: -> { flag }
+        def call = nil
+      end
+
+      expect { action.call(flag: false) }.not_to output.to_stdout
+      expect { action.call(flag: true) }.to output("audit\nnotify\n").to_stdout
+    end
+
+    it "rejects combining a block with variadic handlers" do
+      expect do
+        build_axn { on_success(:a) {} }
+      end.to raise_error(ArgumentError, /cannot be called with both a block and a handler/)
+    end
+
+    it "raises when called with neither handlers nor a block" do
+      expect { build_axn { on_success } }.to raise_error(ArgumentError, /must be called with a block or symbol/)
+    end
+  end
 end

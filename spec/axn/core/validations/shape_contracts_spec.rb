@@ -96,6 +96,64 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
     end
   end
 
+  describe "field(...) declared variadically inside a shape block" do
+    it "declares two members sharing identical options" do
+      action = build_axn do
+        expects :payload, type: Hash do
+          field :first, :last, type: String
+        end
+      end
+
+      expect(action.call(payload: { first: "a", last: "b" })).to be_ok
+
+      result = action.call(payload: { first: 1, last: "b" })
+      expect(result).not_to be_ok
+      expect(result.exception.message).to match(/first/)
+    end
+
+    it "reflects both members in the schema" do
+      action = build_axn do
+        expects :payload, type: Hash do
+          field :first, :last, type: String
+        end
+      end
+
+      props = action.input_schema[:properties][:payload][:properties]
+      expect(props.keys).to contain_exactly(:first, :last)
+    end
+
+    it "behaves identically to two separate field calls" do
+      variadic = build_axn do
+        expects :payload, type: Hash do
+          field :first, :last, type: String
+        end
+      end
+
+      separate = build_axn do
+        expects :payload, type: Hash do
+          field :first, type: String
+          field :last, type: String
+        end
+      end
+
+      expect(variadic.input_schema[:properties][:payload]).to eq(separate.input_schema[:properties][:payload])
+    end
+
+    # Mirrors `expects`/`exposes`'s own rule for a shape block declared across several top-level
+    # fields at once -- a nested shape can't be shared honestly across sibling members either.
+    it "rejects multiple names sharing a nested shape block" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :first, :last, type: Hash do
+              field :nested, type: String
+            end
+          end
+        end
+      end.to raise_error(ArgumentError, "a shape block can only be declared on a single field")
+    end
+  end
+
   describe "of: Data.define element class" do
     it "validates declared members against each element via reader access" do
       point = Data.define(:x, :y)

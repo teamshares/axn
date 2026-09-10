@@ -10,12 +10,14 @@ module Axn
       end
 
       module ClassMethods
-        def memo(method_name)
-          if _memo_wise_available?
-            _ensure_memo_wise_prepended
-            memo_wise(method_name)
-          else
-            _memo_minimal(method_name)
+        def memo(*method_names)
+          method_names.each do |method_name|
+            if _memo_wise_available?
+              _ensure_memo_wise_prepended
+              memo_wise(method_name)
+            else
+              _memo_minimal(method_name)
+            end
           end
         end
 

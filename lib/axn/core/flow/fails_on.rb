@@ -27,7 +27,9 @@ module Axn
         end
 
         module ClassMethods
-          # @param exceptions [Class, Array<Class>] one or more Exception classes
+          # @param exceptions [Class, Array<Class>] one or more Exception classes, given variadically
+          #   (`fails_on A, B`) or as an explicit array (`fails_on [A, B]`) -- the two spellings produce
+          #   the identical classification set. A trailing message may follow either form.
           # @param message [String, #call, nil] optional message (positional, like fail!)
           # @param standalone [Boolean, nil] forwarded to the wired `error` — true lets the message
           #   replace a declared base headline instead of attaching under it; only meaningful with a
@@ -40,13 +42,13 @@ module Axn
           # @param unless [Symbol, #call, String, Class, Array, nil] gate(s) that must ALL fail to
           #   match for this declaration to reclassify the exception. Combines with `if:` via AND.
           # @yield optional block receiving the exception (like error { |e| ... })
-          def fails_on(exceptions, message = nil, standalone: nil, if: nil, unless: nil, &block)
+          def fails_on(*args, standalone: nil, if: nil, unless: nil, &block)
             if_condition = binding.local_variable_get(:if)
             unless_condition = binding.local_variable_get(:unless)
 
-            classes = Array(exceptions)
+            classes, message = _split_fails_on_args(args)
             if classes.empty? || classes.any? { |c| !(c.is_a?(Class) && c <= Exception) }
-              raise ArgumentError, "fails_on requires one or more Exception classes (got #{exceptions.inspect})"
+              raise ArgumentError, "fails_on requires one or more Exception classes (got #{args.inspect})"
             end
 
             _reject_unreachable_fails_on!(classes)
@@ -57,8 +59,10 @@ module Axn
 
             _validate_fails_on_conditions!(if_condition, unless_condition)
 
-            # `classes.dup.freeze`: `Array(exceptions)` returns the CALLER'S array unchanged when one was
-            # passed, so storing it bare would alias a declaration to an array the caller still owns.
+            # `classes.dup.freeze`: `_split_fails_on_args` already returns a fresh array (`flatten`
+            # never returns the same object, even when nothing was nested), but dup+freeze is kept as
+            # the belt-and-suspenders guarantee that a declaration's stored entry can never be mutated
+            # through any reference -- the caller's own, or a future refactor's.
             entry_matcher = if_condition.nil? && unless_condition.nil? ? nil : Handlers::Matcher.build(if: if_condition, unless: unless_condition)
             entry = Entry.new(classes: classes.dup.freeze, matcher: entry_matcher)
             self._fails_on_entries = (_fails_on_entries + [entry]).freeze
@@ -161,6 +165,27 @@ module Axn
           end
 
           private
+
+          # Splits the raw argument list into `[classes, message]`. The trailing element is the
+          # message iff it is neither a Class nor an Array -- every legal message shape (String,
+          # Symbol, a callable) is disjoint from both, since no Exception class answers
+          # `Handlers::Invoker.safely_callable?` and neither grammar accepts the other's shape. That
+          # makes the split unambiguous: `fails_on A, B` and `fails_on [A, B]` both land on `[[A, B],
+          # nil]`; `fails_on A, B, "msg"` and `fails_on [A, B], "msg"` both land on `[[A, B], "msg"]`.
+          #
+          # Everything kept for the class side is flattened ONE level -- exactly what turns the bare
+          # variadic form and the explicit-array form into the same list, and what still rejects a
+          # doubly-nested `fails_on [[A, B]]` (an Array survives `flatten(1)` as an element, and fails
+          # the class check below same as it always has). `flatten` always allocates a fresh array
+          # (even with nothing to flatten), so this never aliases a caller's own array.
+          def _split_fails_on_args(args)
+            return [[], nil] if args.empty?
+
+            last = args.last
+            return [args.flatten(1), nil] if last.is_a?(Class) || last.is_a?(Array)
+
+            [args[0...-1].flatten(1), last]
+          end
 
           # An exception axn never absorbs into a result (a signal, an `exit`, another library's private
           # control-flow signal — see Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR) is raised straight

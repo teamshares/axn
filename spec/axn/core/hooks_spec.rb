@@ -462,4 +462,40 @@ RSpec.describe Axn do
       end
     end
   end
+
+  describe "hook grammar" do
+    %i[before after around].each do |dsl|
+      describe "`#{dsl}`" do
+        it "accepts variadic Symbols" do
+          expect do
+            build_axn do
+              public_send(dsl, :a, :b)
+              def a; end
+
+              def b; end
+            end
+          end.not_to raise_error
+        end
+
+        it "accepts a Proc" do
+          expect { build_axn { public_send(dsl, -> {}) } }.not_to raise_error
+        end
+
+        # The regression this closes: `before [:a, :b]` (an Array handed to the splat instead of two
+        # Symbols) used to declare cleanly and only surface as a bare `TypeError: wrong argument type
+        # Array (expected Proc)` on the FIRST call after -- not at declaration.
+        it "rejects an Array handed to the splat instead of variadic Symbols" do
+          expect do
+            build_axn { public_send(dsl, %i[a b]) }
+          end.to raise_error(ArgumentError, /hooks must be Symbols naming instance methods, or callables/)
+        end
+
+        it "rejects a non-Symbol, non-callable value" do
+          expect do
+            build_axn { public_send(dsl, 42) }
+          end.to raise_error(ArgumentError, /hooks must be Symbols naming instance methods, or callables/)
+        end
+      end
+    end
+  end
 end

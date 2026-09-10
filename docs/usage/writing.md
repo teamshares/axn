@@ -503,9 +503,12 @@ result.exception        # => the original ActiveRecord::RecordInvalid
 ```ruby
 fails_on ActiveRecord::RecordInvalid, "Unable to submit"
 fails_on(ActiveRecord::RecordInvalid) { |e| e.record.errors.full_messages.to_sentence }
-fails_on [ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique], "Couldn't save"
+fails_on ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique, "Couldn't save"  # variadic classes
+fails_on [ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique], "Couldn't save"  # equivalent array form
 fails_on(ActiveRecord::RecordInvalid, standalone: true, &:message)  # message stands alone
 ```
+
+Multiple exception classes may be listed variadically (`fails_on A, B`) or as an explicit array (`fails_on [A, B]`) — the two spellings are identical, and either may be followed by a trailing message.
 
 The message integrates with the standard message DSL (ordering, base/reason semantics, etc.), so it composes with — and can be overridden by — your other `error` declarations. It also accepts `standalone:`, forwarded to that wired `error`: by default the message attaches as a reason under any declared base `error` headline (e.g. `"Couldn't save order: Unable to submit"`); `standalone: true` makes it replace the base instead, so the message stands alone. (`standalone:` only configures that wired message, so passing it with no message/block raises — there's nothing to configure.)
 

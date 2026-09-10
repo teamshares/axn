@@ -29,6 +29,7 @@ module Axn
         #         is executed after methods corresponding to any given Symbols.
         def around(*hooks, &block)
           hooks << block if block
+          _validate_hooks!(hooks)
           hooks.each { |hook| self.around_hooks += [hook] }
         end
 
@@ -45,6 +46,7 @@ module Axn
         #         is executed after methods corresponding to any given Symbols.
         def before(*hooks, &block)
           hooks << block if block
+          _validate_hooks!(hooks)
           hooks.each { |hook| self.before_hooks += [hook] }
         end
 
@@ -61,7 +63,25 @@ module Axn
         #         is executed before methods corresponding to any given Symbols.
         def after(*hooks, &block)
           hooks << block if block
+          _validate_hooks!(hooks)
           hooks.each { |hook| self.after_hooks = [hook] + after_hooks }
+        end
+
+        private
+
+        # A hook is dispatched at run time as either a Symbol (`@action.send(hook)`) or a callable
+        # (`@action.instance_exec(&hook)`, see `Executor#run_hook`) — there is no String form, unlike
+        # the `error`/`success` message DSL. A value outside that grammar reached this point silently
+        # before: `before [:a, :b]` (an Array handed to the splat instead of two Symbols) declared
+        # cleanly and only blew up as a bare `TypeError: wrong argument type Array (expected Proc)` on
+        # the FIRST call after — after!, at the run site, not the declaration. Reject it here instead,
+        # naming the shape to write.
+        def _validate_hooks!(hooks)
+          invalid = hooks.reject { |hook| hook.is_a?(Symbol) || Axn::Core::Flow::Handlers::Invoker.safely_callable?(hook) }
+          return if invalid.empty?
+
+          raise ArgumentError,
+                "hooks must be Symbols naming instance methods, or callables (e.g. `before :a, :b`); got #{invalid.inspect}"
         end
       end
     end

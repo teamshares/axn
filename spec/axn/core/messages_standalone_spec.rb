@@ -398,6 +398,61 @@ RSpec.describe "removed error options" do
   end
 end
 
+RSpec.describe "error/success message grammar" do
+  # Until now `MessageDescriptor.build` validated `join:` and `standalone:` but never the message
+  # itself -- `error 42` / `success Object.new` declared cleanly and put the literal value on
+  # `result.error`, violating its documented String contract. This is the same declaration-time
+  # grammar `expects ..., user_facing:` already enforces (`Contract.validate_user_facing!`), applied
+  # to the mirror layer that never got it. It is also what makes the `fails_on` classes/message
+  # mis-bind (see fails_on_spec.rb) silent: a mis-bound Class landed here unchecked.
+  %i[error success].each do |dsl|
+    describe "`#{dsl}`" do
+      it "rejects an Integer literal" do
+        expect do
+          build_axn { public_send(dsl, 42) }
+        end.to raise_error(ArgumentError, /message must be a String, a Symbol, or a callable.*class Integer/)
+      end
+
+      it "rejects an arbitrary Object" do
+        expect do
+          build_axn { public_send(dsl, Object.new) }
+        end.to raise_error(ArgumentError, /message must be a String, a Symbol, or a callable.*class Object/)
+      end
+
+      it "accepts a String" do
+        expect { build_axn { public_send(dsl, "ok") } }.not_to raise_error
+      end
+
+      it "accepts a Symbol naming an action method" do
+        expect { build_axn { public_send(dsl, :some_method) } }.not_to raise_error
+      end
+
+      it "accepts a Proc" do
+        expect { build_axn { public_send(dsl, -> { "ok" }) } }.not_to raise_error
+      end
+
+      it "accepts a block" do
+        expect { build_axn { public_send(dsl) { "ok" } } }.not_to raise_error
+      end
+    end
+  end
+
+  describe "directly via MessageDescriptor.build (the Factory/prebuilt path)" do
+    let(:descriptor) { Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor }
+
+    it "rejects a non-String/Symbol/callable handler" do
+      expect { descriptor.build(handler: 42) }.to raise_error(ArgumentError, /message must be a String, a Symbol, or a callable/)
+    end
+
+    it "refuses to let a hostile respond_to? replace the verdict with its own exception" do
+      hostile = Object.new
+      def hostile.respond_to?(*) = raise "boom"
+
+      expect { descriptor.build(handler: hostile) }.to raise_error(ArgumentError, /message must be a String, a Symbol, or a callable/)
+    end
+  end
+end
+
 RSpec.describe "Axn standalone: DSL" do
   describe "declaration validation" do
     it "allows standalone: false on an unconditional message (promotes the headline to an attached reason)" do

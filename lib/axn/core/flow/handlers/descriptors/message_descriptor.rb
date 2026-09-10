@@ -31,6 +31,7 @@ module Axn
 
             def self.build(handler: nil, if: nil, unless: nil, standalone: nil, join: nil, **unsupported)
               reject_unsupported_options!(unsupported)
+              validate_handler!(handler)
               matcher = Matcher.build(if:, unless:)
 
               # Default by conditionality: an unconditional entry is the standalone base headline; a
@@ -47,6 +48,29 @@ module Axn
               raise ArgumentError, "join: must be a String or a callable ->(base, reason) {}" if !join.nil? && !(join.is_a?(String) || join.respond_to?(:call))
 
               new(handler:, standalone:, join:, matcher:)
+            end
+
+            # A message handler must be something the resolver can actually render: a String (used
+            # literally), a Symbol (an action method name), or a callable (`instance_exec`'d, like
+            # `error`/`fails_on`'s block form). Anything else was accepted silently until now and
+            # landed verbatim on `result.error` — `error 42` put the Integer `42` there, violating its
+            # documented String contract. `expects ..., user_facing:` already guards this exact
+            # grammar (`Contract.validate_user_facing!`); this is the mirror layer that never got it.
+            #
+            # `nil` is not a handler at all (`_add_message` requires one of message/block before ever
+            # reaching here), so it is left alone rather than folded into the grammar it doesn't
+            # belong to.
+            def self.validate_handler!(handler)
+              return if handler.nil?
+
+              case handler
+              when ::String, ::Symbol then return
+              end
+              return if Handlers::Invoker.safely_callable?(handler)
+
+              raise ArgumentError,
+                    "a message must be a String, a Symbol, or a callable (got a value of class " \
+                    "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(handler)})"
             end
           end
         end

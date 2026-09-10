@@ -36,6 +36,35 @@ RSpec.describe "Axn semantic_hints" do
     expect(klass.semantic_hints).to eq([:open_world])
   end
 
+  # The regression this closes: `semantic_hints [:read_only, :idempotent]` (an Array handed to the
+  # splat instead of two Symbols) used to reach `.to_sym` on the Array itself and raise a bare
+  # `NoMethodError` rather than naming the actual mistake.
+  it "rejects an Array handed to the splat instead of variadic Symbols" do
+    expect do
+      Class.new do
+        include Axn
+        semantic_hints [:read_only]
+      end
+    end.to raise_error(ArgumentError, /semantic_hints must be Symbols or Strings/)
+  end
+
+  it "rejects a non-Symbol, non-String value" do
+    expect do
+      Class.new do
+        include Axn
+        semantic_hints 42
+      end
+    end.to raise_error(ArgumentError, /semantic_hints must be Symbols or Strings/)
+  end
+
+  it "accepts Strings" do
+    klass = Class.new do
+      include Axn
+      semantic_hints "read_only"
+    end
+    expect(klass.semantic_hints).to eq([:read_only])
+  end
+
   it "inherits hints and lets a subclass replace them" do
     parent = Class.new do
       include Axn

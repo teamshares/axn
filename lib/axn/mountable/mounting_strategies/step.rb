@@ -15,7 +15,11 @@ module Axn
         module DSL
           def steps(*steps)
             Array(steps).compact.each do |step_class|
-              next unless step_class.is_a?(Class)
+              # `steps [A, B]` (an Array handed to the splat instead of `steps A, B`) used to be
+              # silently skipped here (`next unless ... is_a?(Class)`) — the action mounted ZERO
+              # steps and settled `success`, having done nothing, with no complaint at all. Reject it
+              # instead, naming the shape to write.
+              raise ArgumentError, "steps must be Axn classes (e.g. `steps A, B`); got #{step_class.inspect}" unless step_class.is_a?(Class)
               raise ArgumentError, "Step #{step_class} must include Axn module" if !step_class.included_modules.include?(::Axn) && !step_class < ::Axn
 
               num_steps = _mounted_axn_descriptors.count { |descriptor| descriptor.mount_strategy.key == :step }

@@ -39,6 +39,7 @@ end
 - `memo` wraps the method and caches its return value on first call
 - Subsequent calls return the cached value without re-executing the method
 - Memoization is scoped to the action instance, so each `call` starts fresh
+- `memo` also accepts several method names in one call — `memo :top_products, :total_revenue` behaves identically to memoizing each separately
 
 ## Methods With Arguments
 

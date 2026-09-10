@@ -58,6 +58,22 @@ module Axn
           # pass an arity-only check yet raise at call time — Procs/lambdas/Methods answer both.
           def callable?(value) = value.respond_to?(:to_proc) && value.respond_to?(:arity)
 
+          # `callable?` guarded against a hostile `respond_to?`/`respond_to_missing?` that raises
+          # instead of answering. A declaration guard must not let the value being judged raise IN
+          # PLACE OF the verdict — so a value that cannot be established as callable is refused as
+          # not-callable rather than escaping the check entirely. Pinned to the same boundary as
+          # everything else axn absorbs (`Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR`), so a signal
+          # or another library's own control-flow exception still passes through untouched.
+          #
+          # Shared by every declaration-time grammar guard that accepts "a callable" as one of its
+          # legal shapes (`user_facing:`, the `error`/`success`/`fails_on` message handler) — one
+          # predicate, so they can never quietly diverge from what `call` above will actually invoke.
+          def safely_callable?(value)
+            callable?(value)
+          rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
+            false
+          end
+
           private
 
           def symbol?(value) = value.is_a?(Symbol)

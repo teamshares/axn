@@ -151,10 +151,14 @@ module Axn
           # rather than being shadowed by it.
           _apply_fails_on(axn, fails_on)
 
-          # Hooks
-          axn.before(before) if before.present?
-          axn.after(after) if after.present?
-          axn.around(around) if around.present?
+          # Hooks — `before:`/`after:`/`around:` document "a callable or array of callables"
+          # (docs/reference/factory.md), so an array value is splatted rather than handed through
+          # bare: `axn.before(before)` with `before: [cb1, cb2]` would pass the Array itself as ONE
+          # hook, which the DSL now rejects at declaration (previously it declared cleanly and raised
+          # a bare TypeError on the very first call instead).
+          axn.before(*Array(before)) if before.present?
+          axn.after(*Array(after)) if after.present?
+          axn.around(*Array(around)) if around.present?
 
           # Callbacks
           _apply_handlers(axn, :on_success, on_success, Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor)

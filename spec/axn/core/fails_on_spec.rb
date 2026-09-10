@@ -201,6 +201,74 @@ RSpec.describe "fails_on" do
     end
   end
 
+  describe "multiple exception classes (variadic)" do
+    # The regression this closes: `fails_on ArgumentError, KeyError` used to bind `KeyError` to the
+    # `message` positional instead of merging it into the classification set -- KeyError silently kept
+    # paging as an unhandled exception, and `result.error` for the ArgumentError case became the KeyError
+    # CLASS OBJECT itself (not a String). Both directions must now behave identically to the array form.
+    let(:action) do
+      build_axn do
+        fails_on ArgumentError, KeyError
+
+        expects :which
+        def call
+          raise ArgumentError, "a" if which == :arg
+          raise KeyError, "k" if which == :key
+
+          raise "other"
+        end
+      end
+    end
+
+    it "reclassifies each listed class" do
+      expect(action.call(which: :arg).outcome).to be_failure
+      expect(action.call(which: :key).outcome).to be_failure
+    end
+
+    it "yields the same String result.error as the array form (the reported bug)" do
+      expect(action.call(which: :arg).error).to be_a(String)
+      expect(action.call(which: :key).error).to be_a(String)
+    end
+
+    it "leaves unlisted exceptions as reported exceptions" do
+      expect(action.call(which: :other).outcome).to be_exception
+    end
+
+    it "wires a trailing message identically to the array form" do
+      with_message = build_axn do
+        fails_on ArgumentError, KeyError, "Couldn't process"
+        def call = raise ArgumentError, "a"
+      end
+      expect(with_message.call.error).to eq("Couldn't process")
+    end
+
+    it "wires a trailing block identically to the array form" do
+      with_block = build_axn do
+        fails_on(ArgumentError, KeyError) { |e| "handled: #{e.class}" }
+        def call = raise ArgumentError, "a"
+      end
+      expect(with_block.call.error).to eq("handled: ArgumentError")
+    end
+
+    it "still rejects a doubly-nested array" do
+      expect do
+        build_axn { fails_on [[ArgumentError, KeyError]] }
+      end.to raise_error(ArgumentError, /requires one or more Exception classes/)
+    end
+
+    it "rejects a class following the message positional" do
+      expect do
+        build_axn { fails_on ArgumentError, "m", KeyError }
+      end.to raise_error(ArgumentError, /requires one or more Exception classes/)
+    end
+
+    it "rejects a non-message value in the trailing positional (surfaced by the message grammar guard)" do
+      expect do
+        build_axn { fails_on ArgumentError, 42 }
+      end.to raise_error(ArgumentError, /message must be a String, a Symbol, or a callable/)
+    end
+  end
+
   describe "invalid arguments" do
     it "rejects a non-Exception class" do
       expect do
