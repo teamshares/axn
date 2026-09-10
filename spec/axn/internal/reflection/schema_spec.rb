@@ -1377,6 +1377,120 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
       expect(inferable.uniq).to match_array(declarable)
     end
+
+    # Codex review round 1 (PR #269): an explicit `<field>_id` sibling ALWAYS wins the emitted property
+    # over the model-generated one (declaration-order independent — tested above), so a declared
+    # `id_type:` that disagrees with the sibling's own `type:` was being silently discarded rather than
+    # flagged as the authored contradiction it is.
+    describe "conflicting with an explicit <field>_id sibling's own type:" do
+      it "rejects id_type: Integer beside an explicit type: String sibling" do
+        klass = Class.new do
+          include Axn
+          expects :company_id, type: String
+          expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+        end
+
+        expect do
+          described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+        end.to raise_error(ArgumentError, /id_type:.*disagrees with the explicitly declared company_id/)
+      end
+
+      it "rejects it regardless of declaration order (explicit sibling declared first)" do
+        klass = Class.new do
+          include Axn
+          expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+          expects :company_id, type: String
+        end
+
+        expect do
+          described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+        end.to raise_error(ArgumentError, /id_type:.*disagrees/)
+      end
+
+      it "rejects it for a nested on: model subfield too" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, type: String
+          expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
+        end
+
+        expect do
+          described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+        end.to raise_error(ArgumentError, /id_type:.*disagrees/)
+      end
+
+      it "does not raise when the two agree" do
+        klass = Class.new do
+          include Axn
+          expects :company_id, type: Integer
+          expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+        end
+
+        expect(klass.input_schema[:properties][:company_id]).to include(type: "integer")
+      end
+
+      it "does not raise for a merely COMPATIBLE pairing (id_type: String beside an explicit :uuid " \
+         "sibling — both project to the JSON type \"string\")" do
+        klass = Class.new do
+          include Axn
+          expects :company_id, type: :uuid
+          expects :company, model: { klass: Struct.new(:id), id_type: String }
+        end
+
+        expect(klass.input_schema[:properties][:company_id]).to include(type: "string", format: "uuid")
+      end
+
+      it "does not raise when the explicit sibling has no type: of its own to disagree with" do
+        klass = Class.new do
+          include Axn
+          expects :company_id, default: 1
+          expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+        end
+
+        expect(klass.input_schema[:properties][:company_id]).to eq(default: 1)
+      end
+    end
+
+    # Codex review round 1 (PR #269): an explicit sibling always wins, so building the model's OWN
+    # property (and, for an ActiveRecord class, dispatching into it to infer the id's type) is wasted
+    # work whenever one exists — verified here with a token whose inference methods raise if reached;
+    # the AR-specific case (a real primary_key/type_for_attribute call that must never run) lives in
+    # spec_rails/dummy_app/spec/axn/internal/reflection/model_id_type_spec.rb.
+    describe "skips id_type inference entirely when an explicit sibling will win" do
+      it "never calls model_id_type_token for the discarded property, top-level" do
+        klass = Class.new do
+          include Axn
+          expects :company_id, type: String
+          expects :company, model: { klass: Struct.new(:id) }
+        end
+
+        expect(described_class).not_to receive(:model_id_type_token)
+        klass.input_schema
+      end
+
+      it "never calls model_id_type_token for the discarded property, nested" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, type: String
+          expects :company, on: :payload, model: { klass: Struct.new(:id) }
+        end
+
+        expect(described_class).not_to receive(:model_id_type_token)
+        klass.input_schema
+      end
+
+      it "still calls it when no explicit sibling exists (baseline sanity)" do
+        klass = Class.new do
+          include Axn
+          expects :company, model: { klass: Struct.new(:id) }
+        end
+
+        expect(described_class).to receive(:model_id_type_token).and_call_original
+        klass.input_schema
+      end
+    end
   end
 
   describe "shape: members" do

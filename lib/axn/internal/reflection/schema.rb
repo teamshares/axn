@@ -224,8 +224,19 @@ module Axn
               # Emit the generated `<field>_id` property (don't clobber an explicitly-declared one).
               # Its requiredness/nullability is decided in the post-pass below so it can account for an
               # explicit `<field>_id` sibling regardless of declaration order.
-              id_field, id_prop = model_id_property(config)
-              properties[id_field] ||= id_prop
+              #
+              # An explicit sibling ALWAYS wins the property regardless of which is visited first (its
+              # own branch below writes unconditionally; this branch only `||=`s), so when one exists
+              # anywhere in `field_configs` — checked BEFORE building anything, since the whole list is
+              # known upfront — building `id_prop` here would just be discarded. Skipping it matters
+              # beyond the wasted allocation: for an ActiveRecord model, `model_id_property` dispatches
+              # `primary_key`/`type_for_attribute` (PRO-3384) to infer the id's type, and that dispatch,
+              # and the DB/schema access behind it, has no reason to run for a result nothing will use.
+              id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
+              unless field_configs.any? { |c| c.field == id_field }
+                _, id_prop = model_id_property(config)
+                properties[id_field] ||= id_prop
+              end
             else
               prop = build_property(config)
               apply_nested_subfields!(prop, node, ann)
@@ -1200,10 +1211,19 @@ module Axn
             unless model_configs.empty?
               # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
               # the same nested parent at runtime). A user may declare an explicit nested `<field>_id`
-              # subfield; don't clobber it with the generic model-generated one.
+              # subfield — its own entry in `children`, keyed by that same id, visited independently of
+              # this one — and it always wins the property, so `model_id_property` is skipped rather
+              # than built and discarded: for an ActiveRecord model that call dispatches
+              # `primary_key`/`type_for_attribute` (PRO-3384), and there is no reason to pay that (or the
+              # DB/schema access behind it) for a result an explicit sibling is about to replace anyway.
               id_field = Internal::FieldConfig.model_id_key(key)
-              _, subprop = model_id_property(model_configs.first)
-              prop[:properties][id_field] ||= subprop
+              sibling_node = children[id_field]
+              explicit_id = sibling_node&.configs&.find { |c| !c.validations[:model] }
+              reject_model_id_type_conflict!(model_configs.first, explicit_id, id_field)
+              unless sibling_node
+                _, subprop = model_id_property(model_configs.first)
+                prop[:properties][id_field] ||= subprop
+              end
               unless node_optional?(node, ann, model_configs)
                 prop[:required] << id_field.to_s
                 required_model_ids << id_field
@@ -2972,8 +2992,13 @@ module Axn
         # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
         # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
         def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
-          id_field, = model_id_property(config)
+          # The key alone, not `model_id_property(config)` — this pass runs for EVERY model config
+          # regardless of whether an explicit sibling exists, so re-deriving the whole property here
+          # would re-run the same (possibly AR-dispatching, PRO-3384) inference `build_input` already
+          # skipped or already discarded, for a value this method never reads.
+          id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
           explicit_id = field_configs.find { |c| c.field == id_field }
+          reject_model_id_type_conflict!(config, explicit_id, id_field)
           # A default at ANY depth under the model applies at read time (value-level defaults,
           # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
           # annotation-derived rule, same as every other parent.
@@ -2983,6 +3008,46 @@ module Axn
           key = id_field.to_s
           required << key unless required.include?(key)
           reject_null!(properties[id_field]) if properties[id_field]
+        end
+
+        # A declared `id_type:` and an explicit `<field>_id` sibling's OWN `type:` are two claims about
+        # the SAME wire property, and the sibling always wins the emitted one (its branch writes
+        # unconditionally; the model's only `||=`s) regardless of which is declared first, at either
+        # depth — so a disagreement between the two would otherwise be swallowed with no sign the model
+        # ever said something else. Reject it outright rather than let the overwrite silently pick a
+        # winner, matching the family PRO-2901 already rejects (two conflicting claims about one merged
+        # wire node). Shared by both call sites (top-level `apply_model_id_requiredness!`, nested
+        # `apply_children!`), each passing its own `id_field` since a nested one derives it from the
+        # wire KEY rather than from `config.field` (an `as:`-aliased subfield can differ).
+        #
+        # Derives both sides from CONFIGS via `single_type_for`/`json_type_for` — not from an
+        # already-built property — so it needs neither side to have been emitted yet, which the nested
+        # call site cannot guarantee (its sibling node may be visited later in the same pass). Compared
+        # on the base JSON `:type` alone — nullability and `format:` aside, so a declared `id_type:
+        # String` beside an explicit `type: :uuid` sibling is NOT a conflict (both project to
+        # `"string"`); only the two disagreeing about the base type is an authored contradiction.
+        def reject_model_id_type_conflict!(config, explicit_id, id_field)
+          model_opts = config.validations[:model]
+          return unless model_opts.key?(:id_type)
+          return unless explicit_id&.validations&.key?(:type)
+
+          declared_type = single_type_for(model_opts[:id_type], for_output: false)[:type]
+          explicit_types = json_type_strings(json_type_for(explicit_id.validations, for_output: false)) - ["null"]
+          return if explicit_types.include?(declared_type)
+
+          raise ArgumentError,
+                "model: id_type: #{model_opts[:id_type].inspect} disagrees with the explicitly declared " \
+                "#{id_field}'s own type: (#{explicit_types.join(', ')}) — declare one or the other."
+        end
+
+        # The base JSON `:type` string(s) a `json_type_for` result names — a single-element Array for a
+        # plain `{type: "string"}` node, the union's members for `{anyOf: [...]}`, empty when the node
+        # names no type at all (an `inclusion:`/`numericality:`-only bag that couldn't prove one).
+        def json_type_strings(type_info)
+          return type_info[:anyOf].filter_map { |member| member[:type] } if type_info[:anyOf]
+          return Array(type_info[:type]) if type_info[:type]
+
+          []
         end
 
         # Forbid `null` on a property (a required model-id token can't be null). Strips the null branch from
