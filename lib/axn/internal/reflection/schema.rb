@@ -2971,19 +2971,26 @@ module Axn
         # — a merged node's routes may each point at a different AR class). Distinct non-nil inferred
         # results are compared by simple `.uniq`, always safe here since every value in play is one of
         # the CLOSED `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS` (never a caller-supplied class with
-        # hostile equality); more than one is an unresolvable contradiction between routes' primary keys
-        # and is rejected outright, the same family every other conflict in this area already is.
+        # hostile equality).
+        #
+        # Two routes' MERELY INFERRED types disagreeing degrades to the untyped fallback rather than
+        # raising (Codex review round 6, PR #269): unlike a declared `id_type:` conflict, NEITHER author
+        # asked for a type check here — two legitimate model routes at one node simply happen to point
+        # at AR classes with different primary-key column types, which is an entirely legal runtime
+        # contract (each route resolves through its own class's own `.find`). Reflection's inference is
+        # opportunistic everywhere else in this feature (a composite PK, an unreachable connection, a
+        # custom finder all fall back silently rather than erroring), and `Axn::Tools.validate_contracts!`
+        # runs this at APP BOOT — raising here would let an add-on schema *nicety* take an otherwise
+        # working application down. A DECLARED disagreement stays a hard error (an author's own explicit,
+        # conflicting words about the SAME property, caught above by `reconciled_declared_id_type`); an
+        # INFERRED one is just inference failing to reach a confident answer, same as every other
+        # inference gap this method already treats that way.
         def reconciled_model_id_type_token(model_configs, id_field)
           declared = reconciled_declared_id_type(model_configs, id_field)
           return declared if declared
 
           tokens = model_configs.filter_map { |c| model_id_type_token(c.validations[:model], c.validations[:model][:klass]) }.uniq
-          return tokens.first if tokens.size <= 1
-
-          raise ArgumentError,
-                "multiple model: routes at the same wire node disagree on the generated #{id_field}'s " \
-                "type (#{tokens.map(&:inspect).join(' vs ')}) — declare id_type: consistently across " \
-                "every route, or only on one."
+          tokens.size == 1 ? tokens.first : nil
         end
 
         # THE single DECLARED `id_type:` agreed across a (possibly merged) node's model routes, or nil

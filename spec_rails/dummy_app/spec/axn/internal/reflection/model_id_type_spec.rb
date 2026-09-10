@@ -161,6 +161,31 @@ RSpec.describe "model: <field>_id type inference from an ActiveRecord primary ke
     expect(account[:properties][:user_id]).to include(type: "integer")
   end
 
+  # Codex review round 6 (PR #269): two merged-node routes with NEITHER declaring `id_type:`, each
+  # backed by a real AR class with a DIFFERENT primary-key column type, raised — even though neither
+  # author ever asked for a type check on this property; it's an inference-only disagreement (two
+  # legitimate model routes just happen to point at classes with different PK types), not an authored
+  # contradiction. Since `Axn::Tools.validate_contracts!` builds `.input_schema` at app boot, raising
+  # here could take an otherwise-working application down over a schema NICETY. Falls back to the
+  # untyped property instead, same as every other "can't confidently infer" case.
+  it "falls back untyped, rather than raising, when two merged-node routes' INFERRED types disagree " \
+     "and neither declares id_type:" do
+    other_klass = string_pk_klass
+    klass = Class.new do
+      include Axn
+
+      expects :payload, type: Hash
+      expects :user, on: "payload.account", model: { klass: User }, as: :user_route1
+      expects :account, on: :payload, type: Hash
+      expects :user, on: :account, model: { klass: other_klass }
+      def call = nil
+    end
+
+    account = nil
+    expect { account = klass.input_schema[:properties][:payload][:properties][:account] }.not_to raise_error
+    expect(account[:properties][:user_id]).not_to have_key(:type)
+  end
+
   it "falls back untyped rather than raising when the class's own primary_key raises" do
     hostile = Class.new(ActiveRecord::Base) do
       self.table_name = "string_pk_things"
@@ -178,6 +203,26 @@ RSpec.describe "model: <field>_id type inference from an ActiveRecord primary ke
     schema = nil
     expect { schema = schema_for(klass: unreachable) }.not_to raise_error
     expect(schema[:properties][:record_id]).not_to have_key(:type)
+  end
+
+  # Codex review round 6 (PR #269) raised a related concern that measured false: that a model route's
+  # own `allow_blank: true` could strip the `format: "uuid"` `type_allows_blank?` normally drops for a
+  # blank-tolerant `type: :uuid` FIELD. It can't — `type_allows_blank?` reads `config.validations[:type]`,
+  # which a `model:` config never carries at all (its own type comes from `id_type:`/inference, not a
+  # `type:` validator), so the check is unreachable for a model config regardless of `allow_blank:`.
+  # Pinned directly here rather than only by absence of a failure elsewhere.
+  it "never drops a uuid id_type:'s format due to allow_blank: on the model field itself" do
+    klass = uuid_pk_klass
+    action = Class.new do
+      include Axn
+
+      expects :record, model: { klass:, id_type: :uuid }, allow_blank: true
+      def call = nil
+    end
+
+    record_id = action.input_schema[:properties][:record_id]
+    expect(record_id[:format]).to eq("uuid")
+    expect(Array(record_id[:type])).to include("string")
   end
 
   describe "against a real JSON Schema engine" do
