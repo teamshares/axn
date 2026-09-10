@@ -1262,9 +1262,20 @@ module Axn
           # `field :company_id, type: String` inside a `do...end` block beside `expects :company,
           # on: ..., model: { id_type: Integer }` left `explicit_id` nil (no SUBFIELD sibling exists),
           # so the conflict check never ran, and the shape member's `||=`-preserved string property
-          # silently discarded the declared integer id_type. `shape_members_at` is the SAME lookup
-          # `apply_implicit_node!` already uses to find a shape member colliding with a subfield key.
-          explicit_id ||= shape_members_at(parent_configs, id_field).first
+          # silently discarded the declared integer id_type.
+          #
+          # Restricted to the REPRESENTATIVE config's OWN shape, not every route at a merged parent node
+          # (Codex review round 11, PR #269): at a merged node `apply_structured_schema!` (building the
+          # parent's OWN property, via `property_representative`) only ever merges the FIRST non-model
+          # route's shape — a member declared on a LATER, non-representative route never reaches
+          # `prop[:properties]` at all. Searching every `parent_configs` (what `shape_members_at` alone
+          # does — correct for `apply_implicit_node!`'s use, an intermediate node with no representative
+          # of its own) found a member that was never actually emitted, so the check believed something
+          # had already claimed the key while NOTHING had: the model's own property was skipped, but
+          # nothing replaced it, leaving `id_field` `required` with no matching entry in `properties` at
+          # all — worse than losing the type, JSON Schema then admits any value there.
+          representative = property_representative(parent_configs)
+          explicit_id ||= shape_members_at(Array(representative), id_field).first
           # `model_configs`, every route at THIS merged node — not just `.first` (Codex review round
           # 3, PR #269): two `model:` routes reaching the same wire node may each carry their own
           # `id_type:`/`klass:`, and reading only one silently dropped the other's claim.

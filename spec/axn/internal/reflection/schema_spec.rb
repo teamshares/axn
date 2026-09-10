@@ -1574,6 +1574,33 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(payload[:properties][:company_id]).to include(type: "integer")
     end
 
+    # Codex review round 11 (PR #269): at a MERGED parent node (two routes reaching the same wire path —
+    # `as:` disambiguates their shared reader, the same construction this file's own "merged node"
+    # examples use elsewhere), `apply_structured_schema!` merges a shape member into the emitted
+    # property ONLY from the representative (first non-model) route — a member on a LATER, non-
+    # representative route never reaches `prop[:properties]` at all. Searching every route
+    # (`shape_members_at` alone) found a member that was never actually emitted, so the check believed
+    # something had already claimed the key while nothing had: the model's own property was skipped in
+    # favor of it, but nothing replaced it — `company_id` ended up `required` with no matching entry in
+    # `properties`, JSON Schema admitting any value there.
+    it "ignores a shape: member on a NON-representative route at a merged parent node — it never " \
+       "reaches the emitted property, so it must not suppress the model's own generated id" do
+      klass = Class.new do
+        include Axn
+        expects :root, type: Hash
+        expects :sub, on: :root, type: Hash
+        expects :payload, on: "root.sub", type: Hash, as: :payload_route1
+        expects :payload, on: :sub, type: Hash do
+          field :company_id, type: String
+        end
+        expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
+      end
+
+      payload = klass.input_schema.dig(:properties, :root, :properties, :sub, :properties, :payload)
+      expect(payload[:properties][:company_id]).to include(type: "integer")
+      expect(payload[:required]).to include("company_id")
+    end
+
     # Codex review round 10 (PR #269): an `inclusion:` set's members are the AUTHOR'S OWN literals, and
     # one whose `inspect` raises would replace this ArgumentError with its own exception while the
     # message describing the conflict was still being built.
