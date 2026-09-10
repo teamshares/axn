@@ -1542,6 +1542,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
+    # Codex review round 5 (PR #269): `json_type_pairs` strips the `null` branch before comparing (see
+    # `reject_model_id_type_conflict!`), so a sibling whose type is NilClass-only reduced to an empty
+    # set — and a bare `.all?` on that empty set is vacuously true, letting a null-only sibling silently
+    # win over a declared `id_type:` with no error at all.
+    it "rejects a null-only explicit sibling (type: NilClass) beside a declared id_type: — a lookup " \
+       "token can never be null, so nothing about the sibling actually satisfies the claim" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, type: NilClass, optional: true
+        expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+      end
+
+      expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
+    end
+
     # Codex review round 1 (PR #269): an explicit sibling always wins, so building the model's OWN
     # property (and, for an ActiveRecord class, dispatching into it to infer the id's type) is wasted
     # work whenever one exists — verified here with a token whose inference methods raise if reached;

@@ -2963,17 +2963,20 @@ module Axn
         end
 
         # The single id-type TOKEN to emit for a (possibly merged) wire node's model routes, or nil for
-        # the untyped fallback. Reconciles across ALL of `model_configs`, never just the first (Codex
-        # review round 3, PR #269): a merged node's routes each carry their OWN `klass:`/`id_type:` (and,
-        # for an AR class, their own primary key), so a single-route read silently dropped whichever
-        # OTHER route's claim, and changed answer with declaration order. `model_id_type_token` is
-        # evaluated once PER config — each against its own `klass` — and the DISTINCT non-nil results are
-        # compared by simple `.uniq`, always safe here since every value in play is one of the CLOSED
-        # `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS` (never a caller-supplied class with hostile
-        # equality). More than one distinct result — whether from disagreeing `id_type:` declarations,
-        # disagreeing AR-inferred primary keys, or one of each — is an unresolvable contradiction between
-        # routes and is rejected outright, the same family every other conflict in this area already is.
+        # the untyped fallback. A DECLARED `id_type:` agreed across every route always wins outright
+        # (Codex review round 5, PR #269) — never merely one candidate among the inferred ones, which
+        # let a route's explicit claim collide with, and be rejected against, another route's UNASKED-FOR
+        # AR inference. Only absent any declared `id_type:` does this fall back to reconciling each
+        # route's OWN inferred type (`model_id_type_token`, evaluated per config against its own `klass`
+        # — a merged node's routes may each point at a different AR class). Distinct non-nil inferred
+        # results are compared by simple `.uniq`, always safe here since every value in play is one of
+        # the CLOSED `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS` (never a caller-supplied class with
+        # hostile equality); more than one is an unresolvable contradiction between routes' primary keys
+        # and is rejected outright, the same family every other conflict in this area already is.
         def reconciled_model_id_type_token(model_configs, id_field)
+          declared = reconciled_declared_id_type(model_configs, id_field)
+          return declared if declared
+
           tokens = model_configs.filter_map { |c| model_id_type_token(c.validations[:model], c.validations[:model][:klass]) }.uniq
           return tokens.first if tokens.size <= 1
 
@@ -2983,13 +2986,29 @@ module Axn
                 "every route, or only on one."
         end
 
-        # THE distinct DECLARED `id_type:` tokens across a (possibly merged) node's model routes — never
-        # touches inference, so this is always cheap and non-dispatching and safe to compute regardless
-        # of whether an explicit sibling is about to make the result moot. What
-        # `reject_model_id_type_conflict!` needs even when `model_id_property`/inference is never called
-        # at all (an explicit sibling already wins), and — like `reconciled_model_id_type_token` — scans
-        # every route rather than just the first, so two model routes each declaring a disagreeing
-        # `id_type:` are caught even with no explicit sibling in the picture.
+        # THE single DECLARED `id_type:` agreed across a (possibly merged) node's model routes, or nil
+        # when none declares one — never touches inference, so this is always cheap and non-dispatching
+        # and safe to compute regardless of whether an explicit sibling is about to make the result
+        # moot. Raises when two-plus routes declare DISAGREEING values, checked here rather than left
+        # for a later inference-vs-declared mismatch to surface confusingly (Codex review round 5, PR
+        # #269): a declared claim must be resolved, and found consistent, entirely on its own terms
+        # before it is ever weighed against either an explicit sibling
+        # (`reject_model_id_type_conflict!`) or another route's mere AR inference
+        # (`reconciled_model_id_type_token`) — both call this first and trust its answer outranks
+        # whatever they'd otherwise derive.
+        def reconciled_declared_id_type(model_configs, id_field)
+          declared = declared_model_id_types(model_configs)
+          return declared.first if declared.size <= 1
+
+          raise ArgumentError,
+                "multiple model: routes declare disagreeing id_type: values for the same generated " \
+                "#{id_field} (#{declared.map(&:inspect).join(' vs ')}) — declare it consistently " \
+                "across every route, or only on one."
+        end
+
+        # THE distinct DECLARED `id_type:` tokens across a (possibly merged) node's model routes —
+        # `reconciled_declared_id_type` (above) is the single-value form every caller actually wants;
+        # this is the raw set it (and its own emptiness check) reads.
         def declared_model_id_types(model_configs)
           model_configs.filter_map { |c| c.validations[:model][:id_type] if c.validations[:model].key?(:id_type) }.uniq
         end
@@ -3094,29 +3113,31 @@ module Axn
         # 4, PR #269): `id_type: Integer` beside an explicit `type: [Integer, String]` sibling has an
         # integer branch that trivially satisfies the check, but the WINNING property is the WHOLE union
         # — admitting the string branch too — so accepting on any one satisfied branch let the sibling
-        # silently widen past what `id_type:` promised. `[].all?` is vacuously true, matching the
-        # existing "nothing concrete to compare" behavior for a sibling whose type resolves to no
-        # branches at all (Ruby's own read of that state, not a special case introduced here).
+        # silently widen past what `id_type:` promised.
+        #
+        # A sibling whose type resolves to NOTHING BUT `null` can never satisfy it either (Codex review
+        # round 5, PR #269): `json_type_pairs` strips the `null` branch (requiredness is reconciled
+        # elsewhere), so a null-ONLY sibling — `type: NilClass` — reduces to an EMPTY set, and a bare
+        # `.all?` on that empty set is vacuously true. A lookup token can never legitimately be null, so
+        # an EMPTY (post-strip) set here can only mean every branch the sibling admits was null — never
+        # "no type info at all" (`explicit_id.validations` is already known to carry a `:type` key by the
+        # time this runs, and `json_type_for` never returns `{}` for one on input) — and must fail the
+        # check rather than vacuously pass it. `satisfied` is explicit about requiring at least one
+        # branch, not just "no branch disagrees".
         def reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
-          declared = declared_model_id_types(model_configs)
-          return if declared.empty?
-
-          if declared.size > 1
-            raise ArgumentError,
-                  "multiple model: routes declare disagreeing id_type: values for the same generated " \
-                  "#{id_field} (#{declared.map(&:inspect).join(' vs ')}) — declare it consistently " \
-                  "across every route, or only on one."
-          end
-
+          declared = reconciled_declared_id_type(model_configs, id_field)
+          return if declared.nil?
           return unless explicit_id&.validations&.key?(:type)
 
-          declared_shape = single_type_for(declared.first, for_output: false)
+          declared_shape = single_type_for(declared, for_output: false)
           explicit_pairs = json_type_pairs(json_type_for(explicit_id.validations, for_output: false))
-          return if explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
+          satisfied = !explicit_pairs.empty? && explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
+          return if satisfied
 
           explicit_desc = explicit_pairs.map { |pair| pair[:format] ? "#{pair[:type]}/#{pair[:format]}" : pair[:type] }
+          explicit_desc = ["null-only"] if explicit_desc.empty?
           raise ArgumentError,
-                "model: id_type: #{declared.first.inspect} disagrees with the explicitly declared " \
+                "model: id_type: #{declared.inspect} disagrees with the explicitly declared " \
                 "#{id_field}'s own type: (#{explicit_desc.join(', ')}) — declare one or the other."
         end
 

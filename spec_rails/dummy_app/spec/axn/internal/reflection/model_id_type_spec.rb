@@ -139,6 +139,28 @@ RSpec.describe "model: <field>_id type inference from an ActiveRecord primary ke
     expect(payload[:properties][:record_id]).to include(type: "integer")
   end
 
+  # Codex review round 5 (PR #269): a merged nested node with one route declaring `id_type:` and
+  # another route (no id_type: of its own) pointing at a real AR class raised, since the declared and
+  # AR-inferred tokens were reconciled as two equally-weighted, disagreeing candidates. A DECLARED
+  # `id_type:` must win outright over another route's mere inference, never merely be one candidate
+  # among the inferred ones.
+  it "lets a declared id_type: on one merged-node route win over another route's AR-inferred type, " \
+     "rather than treating them as disagreeing candidates" do
+    other_klass = string_pk_klass
+    klass = Class.new do
+      include Axn
+
+      expects :payload, type: Hash
+      expects :user, on: "payload.account", model: { klass: User, id_type: Integer }, as: :user_route1
+      expects :account, on: :payload, type: Hash
+      expects :user, on: :account, model: { klass: other_klass }
+      def call = nil
+    end
+
+    account = klass.input_schema[:properties][:payload][:properties][:account]
+    expect(account[:properties][:user_id]).to include(type: "integer")
+  end
+
   it "falls back untyped rather than raising when the class's own primary_key raises" do
     hostile = Class.new(ActiveRecord::Base) do
       self.table_name = "string_pk_things"
