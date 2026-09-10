@@ -2194,7 +2194,7 @@ module Axn
         # record", reading the raw id from the inbound context. The subfield contract defines the
         # same reader against an `on:` parent — both share `_define_model_id_reader_from`.
         def _define_model_id_reader(reader, source_field, model_options)
-          by_primary_key = model_options.is_a?(Hash) && model_options[:finder] == :find
+          by_primary_key = Internal::FieldConfig.by_primary_key_finder?(model_options)
           _define_model_id_reader_from(reader:, source_field:, by_primary_key:) do |id_key|
             # The `<field>_id` token: reuse a DECLARED `<field>_id` field's CACHED reader value
             # (resolve_value) so this companion agrees with that field's own reader, validation, and the
@@ -2396,6 +2396,7 @@ module Axn
           validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
           _reject_unsupported_model_klass!(validations)
           _reject_unsupported_model_not_found_on!(validations)
+          _reject_unsupported_model_id_type!(validations)
           if validations.key?(:validate)
             validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields, nested: false)
           end
@@ -2768,6 +2769,30 @@ module Axn
                 "reported exception. Only StandardError is rescuable there, so a class outside it would escape " \
                 "`.call` entirely rather than being handled. Pass `not_found_on: []` to opt out of that " \
                 "handling entirely."
+        end
+
+        # `id_type:` names the JSON wire type of a `model:` field's GENERATED `<field>_id` — the schema
+        # property `Reflection::Schema.model_id_property` emits, not something a value is ever checked
+        # `is_a?` against. So its grammar is narrower than `type:`'s, and closed rather than open: a lookup
+        # token is a scalar a client sends over the wire, never a union (there is nothing to dispatch a
+        # union through) and never a Class the emitter has no JSON Schema spelling for. It is exactly the
+        # vocabulary `Reflection::Schema` can already project through `single_type_for` — the same closed
+        # set inference from an ActiveRecord primary key maps onto (`AR_PRIMARY_KEY_TYPE_TOKENS`) — so a
+        # declared `id_type:` and an inferred one can never mean two different things.
+        def _reject_unsupported_model_id_type!(validations)
+          return unless validations.key?(:model)
+
+          bag = validations[:model]
+          return unless bag.is_a?(::Hash) && bag.key?(:id_type)
+
+          id_type = bag[:id_type]
+          allowed = Internal::Reflection::Schema::MODEL_ID_TYPE_TOKENS
+          return if allowed.any? { |token| Internal::Identity.same?(token, id_type) }
+
+          raise ArgumentError,
+                "model: id_type: must be one of #{allowed.map(&:inspect).join(', ')} (got " \
+                "#{_declared_type_label(id_type)}) — a model id is a scalar lookup token, not a value " \
+                "checked against a type."
         end
 
         # `on:` inside a bag is the same dead declaration it is inside any other validator's option bag, and it

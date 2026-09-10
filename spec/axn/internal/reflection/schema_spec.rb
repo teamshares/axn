@@ -1075,7 +1075,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:properties][:company_id]).not_to have_key(:type)
     end
 
-    it "leaves the <field>_id type unconstrained for the default :find finder too (PK may be integer, UUID, or string)" do
+    it "leaves the <field>_id type unconstrained for a non-ActiveRecord class's default :find finder too " \
+       "(PK may be integer, UUID, or string, and there is no primary key to infer it from)" do
       klass = Class.new do
         include Axn
         expects :user, model: { klass: Struct.new(:id), finder: :find }
@@ -1281,6 +1282,100 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         expect(action.input_schema[:required]).to include("company_id")
       end
+    end
+  end
+
+  # PRO-3384: a declared `id_type:` types the generated `<field>_id` directly, for exactly the cases
+  # inference (spec_rails/dummy_app, an ActiveRecord class) can't reach — a PORO model, a custom
+  # finder, or a non-Rails consumer. It wins over inference unconditionally, and shares the SAME
+  # accepted vocabulary (Schema::MODEL_ID_TYPE_TOKENS) that inference's AR-type map projects onto.
+  describe "model: id_type:" do
+    it "types the generated id from a declared id_type:, on a PORO model with the default finder" do
+      klass = Class.new do
+        include Axn
+        expects :lead, model: { klass: Struct.new(:id), id_type: Integer }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:lead_id]).to include(type: "integer")
+    end
+
+    it "types the generated id as a uuid, format included, exactly like a declared type: :uuid field" do
+      klass = Class.new do
+        include Axn
+        expects :doc, model: { klass: Struct.new(:id), id_type: :uuid }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:doc_id]).to include(type: "string", format: "uuid")
+    end
+
+    it "honors id_type: even under a custom finder (the declared layer ignores the finder gate " \
+       "inference is confined to)" do
+      klass = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id), finder: :find_by_token, id_type: String }
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(schema[:properties][:company_id]).to include(type: "string")
+    end
+
+    it "admits null for an optional id_type:-typed id, and the required pass still strips it when required" do
+      optional = Class.new do
+        include Axn
+        expects :doc, model: { klass: Struct.new(:id), id_type: Integer }, allow_nil: true
+      end
+      required = Class.new do
+        include Axn
+        expects :doc, model: { klass: Struct.new(:id), id_type: Integer }
+      end
+
+      optional_schema = described_class.build_input(optional.internal_field_configs, optional.subfield_configs)
+      required_schema = described_class.build_input(required.internal_field_configs, required.subfield_configs)
+
+      expect(optional_schema[:properties][:doc_id][:type]).to eq(%w[integer null])
+      expect(Array(optional_schema[:required])).not_to include("doc_id")
+
+      expect(required_schema[:properties][:doc_id]).to include(type: "integer")
+      expect(required_schema[:properties][:doc_id]).not_to have_key(:not)
+      expect(required_schema[:required]).to include("doc_id")
+    end
+
+    it "types a NESTED on: model subfield's generated id from id_type: too" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
+      end
+      payload = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:payload]
+
+      expect(payload[:properties][:company_id]).to include(type: "integer")
+    end
+
+    it "rejects an id_type: outside the closed vocabulary at declaration time" do
+      expect do
+        Class.new do
+          include Axn
+          expects :company, model: { klass: Struct.new(:id), id_type: Hash }
+        end
+      end.to raise_error(ArgumentError, /id_type:.*must be one of/)
+    end
+
+    it "rejects a union id_type: (a lookup token is a scalar, never a list of them)" do
+      expect do
+        Class.new do
+          include Axn
+          expects :company, model: { klass: Struct.new(:id), id_type: [Integer, String] }
+        end
+      end.to raise_error(ArgumentError, /id_type:.*must be one of/)
+    end
+
+    it "keeps the declared and inferable vocabularies from drifting apart" do
+      inferable = Axn::Internal::Reflection::Schema::AR_PRIMARY_KEY_TYPE_TOKENS.values
+      declarable = Axn::Internal::Reflection::Schema::MODEL_ID_TYPE_TOKENS
+
+      expect(inferable.uniq).to match_array(declarable)
     end
   end
 

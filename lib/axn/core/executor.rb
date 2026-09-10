@@ -1669,8 +1669,7 @@ module Axn
       end
 
       def _id_based_model?(config)
-        model = config.validations[:model]
-        model.is_a?(Hash) && model[:finder] == :find
+        Internal::FieldConfig.by_primary_key_finder?(config.validations[:model])
       end
 
       # The <field>_id to check model consistency against, at EITHER depth (PRO-2910): nil unless the

@@ -81,6 +81,24 @@ module Axn
 
         NULL_BRANCH = { type: "null" }.freeze
 
+        # The closed vocabulary a `model:` field's generated `<field>_id` can be typed as — a scalar
+        # lookup token, never a union or a structured type. THE single owner of that set: Contract's
+        # `_reject_unsupported_model_id_type!` confines a declared `id_type:` to exactly these, and
+        # AR_PRIMARY_KEY_TYPE_TOKENS (below) maps every inferable ActiveRecord primary-key type onto one
+        # of them — so a declared token and an inferred one can never mean two different things.
+        MODEL_ID_TYPE_TOKENS = [Integer, String, :uuid].freeze
+
+        # Which token `model_id_type_token` infers for each ActiveRecord primary-key attribute type
+        # (`klass.type_for_attribute(klass.primary_key).type`). Every value here is one of
+        # MODEL_ID_TYPE_TOKENS; an AR type with no entry (`:binary`, `:decimal`, a custom
+        # `ActiveRecord::Type` this table doesn't know) falls back to today's untyped property rather
+        # than guessing.
+        AR_PRIMARY_KEY_TYPE_TOKENS = {
+          integer: Integer,
+          string: String,
+          uuid: :uuid,
+        }.freeze
+
         FORMAT_MAP = {
           Date => "date",
           DateTime => "date-time",
@@ -2866,8 +2884,14 @@ module Axn
           [props, required]
         end
 
-        # Returns [id_field_symbol, prop_hash] for a model: config. No type constraint: `find`/custom
-        # finders accept any nonblank PK token, and inferring the real PK type would require a DB load.
+        # Returns [id_field_symbol, prop_hash] for a model: config. The id's JSON type comes from either
+        # spelling, in strict precedence over the other: a declared `id_type:` always wins (Contract's
+        # `_reject_unsupported_model_id_type!` has already confined it to MODEL_ID_TYPE_TOKENS); absent
+        # that, it is INFERRED from the class's own ActiveRecord primary key (`model_id_type_token`,
+        # below) — gated narrowly enough that a PORO model, a custom finder, or a plain non-Rails app get
+        # exactly today's untyped property. Both routes are projected through the SAME `single_type_for`
+        # this module already uses for every declared `type:`, so the JSON type table has one owner and
+        # `:uuid` gets its `format: "uuid"` for free either way.
         def model_id_property(config)
           model_opts = config.validations[:model]
           klass = model_opts[:klass]
@@ -2881,7 +2905,52 @@ module Axn
           klass_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of_module(klass))
           id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
           prop = { description: config.description || "ID of the #{klass_name} record" }
+
+          id_type = model_id_type_token(model_opts, klass)
+          apply_single_type!(prop, single_type_for(id_type, for_output: false), config, nullable: nil_allowed?(config)) if id_type
+
           [id_field, prop.compact]
+        end
+
+        # The token behind a model id's emitted type, or nil for today's untyped fallback. A declared
+        # `id_type:` always wins, whatever the finder and whether or not the class is ActiveRecord at
+        # all. Absent that, infer from the class's own primary key — but ONLY when doing so cannot
+        # silently mislead: the finder must resolve BY that primary key (`by_primary_key_finder?` — a
+        # custom finder's token has no reason to share the PK's type), and the class's ancestry must
+        # NATIVELY include ActiveRecord::Base (`includes_module?`, never `klass < ActiveRecord::Base`,
+        # which the class is free to override). Every other combination — a PORO, a custom finder, no
+        # ActiveRecord loaded at all — returns nil, same as before this method existed.
+        def model_id_type_token(model_opts, klass)
+          return model_opts[:id_type] if model_opts.key?(:id_type)
+          return nil unless defined?(::ActiveRecord::Base)
+          return nil unless Axn::Internal::NativeMethods.includes_module?(klass, ::ActiveRecord::Base)
+          return nil unless Axn::Internal::FieldConfig.by_primary_key_finder?(model_opts)
+
+          infer_ar_primary_key_type_token(klass)
+        end
+
+        # Reads the class's OWN primary key type — a genuine dispatch into ActiveRecord (and, through
+        # it, any custom `ActiveRecord::Type` the class itself registered), the one deliberate exception
+        # to this module's no-dispatch doctrine (see the header comment on
+        # reflection_does_not_dispatch_spec.rb, which states it). Rescued broadly rather than narrowly:
+        # no database connection (`ActiveRecord::NoDatabaseError`), no such table
+        # (`ActiveRecord::StatementInvalid`), and any other misconfiguration are all ordinary, expected
+        # outcomes here — reflection must never fail a schema build over a class it cannot fully
+        # introspect — so every one of them falls back to the SAME untyped property a PORO model or a
+        # custom finder already gets, never surfaces as an exception, and never touches boot at all
+        # beyond the one probe `Axn::Tools.validate_contracts!` triggers per tool class.
+        #
+        # A composite primary key (an Array) and a tableless/keyless model (nil) are both declared
+        # non-goals of the `<field>_id` reader convention itself
+        # (internal-docs/specs/2026-06-17-model-id-reader-design.md:38-40), so both fall back here too,
+        # deliberately, rather than being treated as an error.
+        def infer_ar_primary_key_type_token(klass)
+          pk = klass.primary_key
+          return nil unless pk.is_a?(::String)
+
+          AR_PRIMARY_KEY_TYPE_TOKENS[klass.type_for_attribute(pk).type]
+        rescue StandardError
+          nil
         end
 
         # A model lookup needs a non-nil token. Single source of truth for the generated `<field>_id`'s

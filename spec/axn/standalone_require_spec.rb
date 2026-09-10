@@ -85,8 +85,9 @@ end
 #
 # So each case runs in a fresh Ruby that requires exactly one entry point and then exercises it.
 RSpec.describe "standalone require completeness" do
-  # The references a standalone load legitimately cannot resolve, in two kinds — and neither is a missing require,
-  # because the reverse require is either a CYCLE or a layer inversion:
+  # The references a standalone load legitimately cannot resolve, in three kinds — and none is a missing
+  # require, because the reverse require is either a CYCLE, a layer inversion, or a dependency axn must
+  # not take on at all:
   #
   #   - a lower file calling back into the layer that composes it. `PropertyNames` is the name renderer every
   #     message goes through, built on `Values`/`exceptions` (see AGENTS.md). Each such reference runs only from
@@ -95,6 +96,14 @@ RSpec.describe "standalone require completeness" do
   #     validator entries a schema is derived from, `Core::Contract` records the file its generated readers are
   #     defined in, and `Internal::AsyncSerialization` renders an unserializable async argument. Reflecting over a
   #     class means the class exists, which means the library is loaded.
+  #   - an OPTIONAL external dependency axn deliberately never requires (PRO-3384): `::ActiveRecord::Base`
+  #     types a `model:` field's generated `<field>_id` from the class's own primary key, but only on a
+  #     class whose ancestry already, natively includes it — the reference is read from behind
+  #     `defined?(::ActiveRecord::Base)`, which answers false rather than raising when nothing has loaded
+  #     ActiveRecord, exactly the shape `docs/recipes/running-without-rails.md` commits `model:` to more
+  #     broadly. Requiring `active_record` here to close this gap would be strictly worse: it would load a
+  #     multi-hundred-file dependency into every non-Rails consumer of this entry point to resolve a
+  #     reference that is never actually dereferenced when the gem isn't present.
   #
   # This list may only SHRINK. Anything not on it is a missing require, and the last example fails if an entry
   # stops being unresolved, so a closed gap cannot linger here as a stale allowance.
@@ -104,6 +113,7 @@ RSpec.describe "standalone require completeness" do
       ["axn/internal/shape_graph.rb", "Axn::Internal::Reflection::PropertyNames"],
       ["axn/internal/reflection/schema.rb", "Axn::Core::Contract::GENERATED_READER_SOURCE_PATH"],
       ["axn/internal/reflection/schema.rb", "Axn::Validation::Base"],
+      ["axn/internal/reflection/schema.rb", "::ActiveRecord::Base"],
     ]
   end
 

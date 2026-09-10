@@ -73,6 +73,21 @@ module Axn
         [own_route, named_route].compact.uniq
       end
 
+      # Whether a `model:` bag's finder resolves BY the record's primary key — true only for the
+      # default `:find`, never a custom finder (a symbol naming another method, or a bound `Method`).
+      # THE single owner of that question, so it cannot drift across its three readers: the generated
+      # `<field>_id` reader's fast path (Contract#_define_model_id_reader — a directly-supplied,
+      # non-blank id IS the pk there, so no lookup is needed to answer it), the runtime record/id
+      # consistency check (Executor#_id_based_model?), and schema reflection's primary-key-type
+      # inference (Reflection::Schema — it only trusts the class's OWN primary key type when the id
+      # token IS that primary key).
+      #
+      # @param model_options the field config's `validations[:model]` bag
+      # @return [Boolean]
+      def by_primary_key_finder?(model_options)
+        model_options.is_a?(::Hash) && model_options[:finder] == :find
+      end
+
       # Resolve a config's declared default against an action instance: a Proc is instance_exec'd (so
       # it sees readers/context), anything else returned as-is, with failures wrapped as
       # DefaultAssignmentError. Single source for the outbound-defaults write pass (Executor
