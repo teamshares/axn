@@ -266,6 +266,98 @@ RSpec.describe "a model: finder that finds no record" do
     end
   end
 
+  # THE invariant behind every wording rule above, stated once and checked by instrumenting the finder
+  # rather than by asserting a message per case: the message says "not found" if and only if the finder was
+  # actually called. Every round of review on this feature found the same shape of bug — the message
+  # inferring what the resolver did from some parallel signal instead of the authoritative one — so this
+  # derives the answer from the runtime at each position where the token can be read differently.
+  describe "the message agrees with whether the finder actually ran" do
+    let(:asked) { [] }
+
+    let(:recording_registry) do
+      log = asked
+      Class.new { define_singleton_method(:find) { |id| log << id and nil } }
+    end
+
+    def assert_agreement(action, **inputs)
+      asked.clear
+      result = action.call(**inputs)
+      message = result.ok? ? "" : result.exception.message
+
+      expect(message.include?("not found")).to eq(asked.any?),
+                                               "finder ran: #{asked.any?}, but message was #{message.inspect}"
+    end
+
+    it "agrees at the top level, with and without a token" do
+      klass = recording_registry
+      action = build_axn { expects :v, model: { klass: } }
+
+      assert_agreement(action, v_id: 7)
+      assert_agreement(action)
+    end
+
+    # The token a declared sibling `<field>_id` resolves to is not the raw wire value: a `default:` supplies
+    # one the caller never sent, and a `preprocess:` can map a sent one to nil. Both move the "was it asked"
+    # answer, so both are checked against the finder rather than against the input.
+    it "agrees when a sibling <field>_id supplies the token by default:" do
+      klass = recording_registry
+      action = build_axn do
+        expects :v, model: { klass: }
+        expects :v_id, default: 7
+      end
+
+      assert_agreement(action)
+    end
+
+    it "agrees when a sibling <field>_id preprocesses the token away" do
+      klass = recording_registry
+      action = build_axn do
+        expects :v, model: { klass: }
+        expects :v_id, preprocess: ->(_x) {}, allow_nil: true
+      end
+
+      assert_agreement(action, v_id: 7)
+    end
+
+    it "agrees for an aliased reader" do
+      klass = recording_registry
+      action = build_axn { expects :v, model: { klass: }, as: :thing }
+
+      assert_agreement(action, v_id: 7)
+      assert_agreement(action)
+    end
+
+    it "agrees for a subfield" do
+      klass = recording_registry
+      action = build_axn do
+        expects :data
+        expects :v, model: { klass: }, on: :data
+      end
+
+      assert_agreement(action, data: { v_id: 7 })
+      assert_agreement(action, data: { other: 1 })
+    end
+
+    it "agrees for a deep dotted subfield" do
+      klass = recording_registry
+      action = build_axn do
+        expects :a
+        expects :v, model: { klass: }, on: "a.b"
+      end
+
+      assert_agreement(action, a: { b: { v_id: 7 } })
+      assert_agreement(action, a: { b: { other: 1 } })
+    end
+
+    it "agrees for an ambient subfield" do
+      klass = recording_registry
+      action = build_axn { expects :v, model: { klass: }, on: :ambient_context }
+
+      assert_agreement(action, ambient_context: { v_id: 7 })
+      assert_agreement(action, ambient_context: { other: 1 })
+    end
+  end
+
   describe "declaration-time validation of not_found_on:" do
     it "refuses a value that is not an exception class" do
       klass = registry
