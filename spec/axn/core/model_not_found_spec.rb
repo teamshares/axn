@@ -349,6 +349,28 @@ RSpec.describe "a model: finder that finds no record" do
       assert_agreement(action, a: { b: { other: 1 } })
     end
 
+    # The hard case for "ask the authority, don't re-read": with `method_call:` and no declared `<field>_id`,
+    # reading the token DISPATCHES a method on caller data. A one-shot getter answers a second reader
+    # differently, so any consumer taking its own read can contradict what the finder actually did. One
+    # memoized derivation now serves all of them — the finder, the absence wording, and the executor's
+    # record/id consistency check, which had been taking a second raw read of its own.
+    it "agrees for a method_call: subfield whose id getter answers only once" do
+      klass = recording_registry
+      parent = Object.new
+      parent.define_singleton_method(:v_id) do
+        @dispatches = (@dispatches || 0) + 1
+        @dispatches == 1 ? 7 : nil
+      end
+
+      action = build_axn do
+        expects :data
+        expects :v, model: { klass: }, on: :data, method_call: true
+      end
+
+      assert_agreement(action, data: parent)
+      expect(parent.instance_variable_get(:@dispatches)).to eq(1)
+    end
+
     it "agrees for an ambient subfield" do
       klass = recording_registry
       action = build_axn { expects :v, model: { klass: }, on: :ambient_context }

@@ -48,20 +48,21 @@ module Axn
       # entry's Proc `message:` above and by the fallback in `validate_each` below, so a `model:` field says
       # the same thing about a nil however the check that reports it was installed.
       def self.absence_message(validator, field)
-        return "not found" if field && lookup_attempted?(validator, field)
+        return "not found" if lookup_attempted?(validator)
 
         # ActiveModel's own :blank string, so a host's i18n override still governs the ordinary case.
         field ? validator.errors.generate_message(field, :blank) : "can't be blank"
       end
 
       # Whether the finder was actually asked — i.e. the caller named a record to look up. Resolved through
-      # the SAME token derivation the finder consumes (ContractForSubfields.model_lookup_token), so the
-      # message can never claim "not found" for an id the lookup never saw, or "can't be blank" for one it did.
+      # the SAME token derivation the finder consumes (ContractForSubfields.model_lookup_token), which also
+      # memoizes it, so the message can never claim "not found" for an id the lookup never saw, or "can't be
+      # blank" for one it did — not even when reading the id DISPATCHES a one-shot method.
       #
       # Any seam that cannot answer means NOT attempted: this only ever chooses between two wordings for a
       # violation already being reported, so a degraded read costs a less specific message, while raising
       # here would replace the contract violation with an error manufactured while describing it.
-      def self.lookup_attempted?(validator, field)
+      def self.lookup_attempted?(validator)
         # A finder runs for INBOUND fields only — `_model_fields`, the resolver's own source, is built from
         # `internal_field_configs` — so an outbound `model:` field resolving to nil means "you did not expose
         # it", never "no such record". Without this, an `exposes :user, model: …` failure alongside an
@@ -73,8 +74,12 @@ module Axn
         action = validator.send(:_action_for_validation)
         return false unless action
 
-        config = validator.send(:_config_for_validation) ||
-                 action.class.send(:internal_field_configs).find { |c| c.field == field }
+        # The config is HANDED over, never recovered. Looking it up by name meant dispatching `class` on the
+        # action — a user-owned object, so an override decided the answer — and matching on `field`, which
+        # cannot distinguish two declarations that share a name. Both call sites now thread it (Executor's
+        # inbound collector at either depth), so an absent one means this is not a position that can have
+        # attempted a lookup.
+        config = validator.send(:_config_for_validation)
         return false unless config&.validations&.key?(:model)
 
         # `blank?`, the SAME decision `FieldResolvers::Model#derive_value` gates the finder on. A hand-rolled
