@@ -1212,37 +1212,7 @@ module Axn
             # The object property is built from ONE of them; see property_representative, which every layer that
             # has to name that config reads (requiredness annotation, and the size cap's shape charge).
 
-            unless model_configs.empty?
-              # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
-              # the same nested parent at runtime). A user may declare an explicit NON-model nested
-              # `<field>_id` subfield — its own entry in `children`, keyed by that same id, visited
-              # independently of this one — and it always wins the property, so `model_id_property` is
-              # skipped rather than built and discarded: for an ActiveRecord model that call dispatches
-              # `primary_key`/`type_for_attribute` (PRO-3384), and there is no reason to pay that (or the
-              # DB/schema access behind it) for a result an explicit sibling is about to replace anyway.
-              #
-              # Gated on `explicit_id`, not merely `sibling_node`'s presence (Codex review round 2, PR
-              # #269): a sibling node whose OWN field is itself a `model:` (e.g. `company_id, model:
-              # ...` beside `company, model: ...`) never writes to THIS key at all — it emits its own
-              # generated id one level deeper (`company_id_id`) — so treating its mere existence as
-              # "something will write here" skipped the only thing that would have.
-              id_field = Internal::FieldConfig.model_id_key(key)
-              sibling_node = children[id_field]
-              explicit_id = sibling_node&.configs&.find { |c| !c.validations[:model] }
-              # `model_configs`, every route at THIS merged node — not just `.first` (Codex review round
-              # 3, PR #269): two `model:` routes reaching the same wire node may each carry their own
-              # `id_type:`/`klass:`, and reading only one silently dropped the other's claim.
-              reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
-              unless explicit_id
-                id_type = reconciled_model_id_type_token(model_configs, id_field)
-                _, subprop = model_id_property(model_configs.first, id_type)
-                prop[:properties][id_field] ||= subprop
-              end
-              unless node_optional?(node, ann, model_configs)
-                prop[:required] << id_field.to_s
-                required_model_ids << id_field
-              end
-            end
+            apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids) unless model_configs.empty?
 
             representative = property_representative(node.configs)
             next unless representative
@@ -1261,6 +1231,53 @@ module Axn
           # A required nested model id can't be null (a null token resolves the model to nil at runtime).
           # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
           required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
+        end
+
+        # The nested twin of `build_input`'s own model branch — extracted from `apply_children!` (which
+        # a growing product of Codex findings against the SAME conflict/reconciliation logic pushed over
+        # this file's own complexity budget) rather than folding another key into that method's single
+        # already-large loop body. Mutates `prop`/`required_model_ids` in place, exactly as the inlined
+        # code it replaces did.
+        def apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids)
+          # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
+          # the same nested parent at runtime). A user may declare an explicit NON-model nested
+          # `<field>_id` subfield — its own entry in `children`, keyed by that same id, visited
+          # independently of this one — and it always wins the property, so `model_id_property` is
+          # skipped rather than built and discarded: for an ActiveRecord model that call dispatches
+          # `primary_key`/`type_for_attribute` (PRO-3384), and there is no reason to pay that (or the
+          # DB/schema access behind it) for a result an explicit sibling is about to replace anyway.
+          #
+          # Gated on `explicit_id`, not merely `sibling_node`'s presence (Codex review round 2, PR
+          # #269): a sibling node whose OWN field is itself a `model:` (e.g. `company_id, model:
+          # ...` beside `company, model: ...`) never writes to THIS key at all — it emits its own
+          # generated id one level deeper (`company_id_id`) — so treating its mere existence as
+          # "something will write here" skipped the only thing that would have.
+          id_field = Internal::FieldConfig.model_id_key(key)
+          sibling_node = children[id_field]
+          explicit_id = sibling_node&.configs&.find { |c| !c.validations[:model] }
+          # A `shape:` member on the PARENT (`parent_configs`) can ALSO claim `id_field` by name — a
+          # wire-property source `apply_structured_schema!` merges into `prop[:properties]` BEFORE
+          # this method ever runs (called from `build_property`, ahead of `apply_nested_subfields!`),
+          # entirely outside the subfield tree `children` searches (Codex review round 10, PR #269):
+          # `field :company_id, type: String` inside a `do...end` block beside `expects :company,
+          # on: ..., model: { id_type: Integer }` left `explicit_id` nil (no SUBFIELD sibling exists),
+          # so the conflict check never ran, and the shape member's `||=`-preserved string property
+          # silently discarded the declared integer id_type. `shape_members_at` is the SAME lookup
+          # `apply_implicit_node!` already uses to find a shape member colliding with a subfield key.
+          explicit_id ||= shape_members_at(parent_configs, id_field).first
+          # `model_configs`, every route at THIS merged node — not just `.first` (Codex review round
+          # 3, PR #269): two `model:` routes reaching the same wire node may each carry their own
+          # `id_type:`/`klass:`, and reading only one silently dropped the other's claim.
+          reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
+          unless explicit_id || prop[:properties].key?(id_field)
+            id_type = reconciled_model_id_type_token(model_configs, id_field)
+            _, subprop = model_id_property(model_configs.first, id_type)
+            prop[:properties][id_field] ||= subprop
+          end
+          return if node_optional?(node, ann, model_configs)
+
+          prop[:required] << id_field.to_s
+          required_model_ids << id_field
         end
 
         # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
@@ -3186,7 +3203,13 @@ module Axn
           explicit_desc = if typed
                             json_type_pairs(sibling_prop).map { |pair| pair[:format] ? "#{pair[:type]}/#{pair[:format]}" : pair[:type] }
                           else
-                            ["enum: #{sibling_prop[:enum].inspect}"]
+                            # `Identity.describe`, not a raw `.inspect` (Codex review round 10, PR #269):
+                            # an `inclusion:` set's members are the AUTHOR'S OWN literals, and one whose
+                            # `inspect` raises (or answers something not a String) would replace this
+                            # ArgumentError with its own exception while the message is being built —
+                            # `describe` reads it the same non-dispatching way every other foreign value
+                            # in this codebase's messages is named.
+                            ["enum: [#{Array(sibling_prop[:enum]).map { |v| Internal::Identity.describe(v) }.join(', ')}]"]
                           end
           explicit_desc = ["null-only"] if explicit_desc.empty?
           raise ArgumentError,

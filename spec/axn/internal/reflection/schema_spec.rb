@@ -1542,6 +1542,54 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
+    # Codex review round 10 (PR #269): a `shape:` member on the PARENT — declared via a `do...end`
+    # block, not a subfield — can ALSO claim the generated `<field>_id` key by name. It's merged into
+    # `prop[:properties]` by `apply_structured_schema!`, entirely BEFORE `apply_children!` (and so this
+    # conflict check) ever runs, and outside the subfield tree `children` searches at all — so the
+    # explicit-sibling lookup found nothing, the check never ran, and the shape member's `||=`-preserved
+    # property silently discarded a declared `id_type:`.
+    it "rejects a PARENT shape: member sharing the generated id's name, which the subfield-tree " \
+       "lookup alone would miss entirely" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash do
+          field :company_id, type: String
+        end
+        expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
+      end
+
+      expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
+    end
+
+    it "does not raise when a parent shape: member sharing the id's name agrees with the declared id_type:" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash do
+          field :company_id, type: Integer
+        end
+        expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
+      end
+
+      payload = klass.input_schema[:properties][:payload]
+      expect(payload[:properties][:company_id]).to include(type: "integer")
+    end
+
+    # Codex review round 10 (PR #269): an `inclusion:` set's members are the AUTHOR'S OWN literals, and
+    # one whose `inspect` raises would replace this ArgumentError with its own exception while the
+    # message describing the conflict was still being built.
+    it "renders a hostile enum literal (raising #inspect) safely rather than crashing the message itself" do
+      hostile = Object.new
+      def hostile.inspect = raise "hostile inspect ran"
+
+      expect do
+        Class.new do
+          include Axn
+          expects :company_id, inclusion: { in: [1, hostile] }
+          expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+        end.input_schema
+      end.to raise_error(ArgumentError, /disagrees.*enum/)
+    end
+
     # Codex review round 5 (PR #269): `json_type_pairs` strips the `null` branch before comparing (see
     # `reject_model_id_type_conflict!`), so a sibling whose type is NilClass-only reduced to an empty
     # set — and a bare `.all?` on that empty set is vacuously true, letting a null-only sibling silently
