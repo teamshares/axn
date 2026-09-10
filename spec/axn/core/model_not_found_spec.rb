@@ -218,6 +218,27 @@ RSpec.describe "a model: finder that finds no record" do
       end
     end
 
+    # Deciding whether the presence check would fire meant re-running the author's condition, and a condition
+    # with side effects answered the prediction and the real check differently — one order let a required
+    # field resolve to nil and SUCCEED, the other produced two errors. The model validator now observes
+    # whether the presence check reported (it is ordered to run first) instead of predicting that it would,
+    # so the condition is evaluated exactly once, by ActiveModel.
+    it "evaluates a presence condition exactly once, whatever it answers" do
+      klass = registry
+      evaluations = 0
+      answers = [true, false].cycle
+      action = build_axn do
+        expects :widget, model: { klass:, finder: :find_by_id },
+                         presence: { if: -> { evaluations += 1 and answers.next } }
+      end
+
+      result = action.call(widget_id: 7)
+
+      expect(evaluations).to eq(1)
+      expect(result.exception.message).to eq("Widget not found")
+      expect(result.exception.errors.count).to eq(1)
+    end
+
     it "leaves an author's own message: alone" do
       klass = registry
       action = build_axn { expects :widget, model: { klass:, finder: :find_by_id }, presence: { message: "pick a widget" } }

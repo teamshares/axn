@@ -5697,9 +5697,17 @@ module Axn
           return unless entry
 
           entry = Axn::Validation::Base.normalize_validator_options(entry)
-          return if entry.key?(:message)
+          # The wording only when the author named none; the REORDER below regardless, since it is what keeps
+          # the two reporters from doubling and that is not conditional on whose message is used.
+          entry = entry.merge(message: _model_absence_message_for(validations)) unless entry.key?(:message)
 
-          validations[:presence] = entry.merge(message: _model_absence_message_for(validations))
+          # Ordered BEFORE `model:`, which is the whole mechanism behind ModelValidator#_reject_absence:
+          # `validates` registers validators in hash order, so the presence check runs first and the model
+          # validator can OBSERVE whether it reported rather than predicting whether it would. Predicting
+          # meant re-running the author's `if:`/`unless:` condition, and a condition with side effects
+          # answered the prediction and the real check differently — either both reported (a doubled error)
+          # or neither did (a required field resolving to nil and the action succeeding).
+          validations.replace({ presence: entry }.merge(validations.except(:presence)))
         end
 
         # Precedence, decided once here rather than at each of the two places that report an absence: an

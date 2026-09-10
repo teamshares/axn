@@ -44,9 +44,10 @@ module Axn
         Axn::Validators::ModelValidator.absence_message(object, field)
       end
 
-      # The wording, given the validator instance and the field it is validating. Shared by the presence
-      # entry's Proc `message:` above and by the fallback in `validate_each` below, so a `model:` field says
-      # the same thing about a nil however the check that reports it was installed.
+      # Axn's own wording, given the validator instance and the field it is validating. Reached from the
+      # presence entry's Proc `message:` above and from `_reject_absence` below — the two places an absence
+      # can be reported — so a `model:` field says the same thing about a nil however the check that reports
+      # it was installed. An author's own `message:` outranks it at both, and is applied by the caller.
       def self.absence_message(validator, field)
         return "not found" if lookup_attempted?(validator)
 
@@ -112,7 +113,8 @@ module Axn
       # be blank" — two validators reporting one missing value — so this reports it once, or defers.
       #
       # It DEFERS whenever a presence check will actually REPORT this nil, which is the ordinary case: that
-      # entry carries ABSENCE_MESSAGE and says exactly this, and both of us adding an error is the doubling
+      # entry carries this same wording (Contract#_model_absence_message_for picks it, author's `message:`
+      # included), so it says exactly this, and both of us adding an error is the doubling
       # again. Otherwise this is the only thing between an omitted record and a passing contract, so it
       # reports here — the field is still required either way (requiredness is `optional?`, which none of
       # these spellings touch, and the emitted schema keys off that).
@@ -126,21 +128,12 @@ module Axn
       # constructed validator, where `validates` has already merged the declaration-level gates into the
       # entry's own.
       def _reject_absence(record, attribute)
-        return if _presence_reports?(record, attribute)
+        return if record.errors.where(attribute).any?
 
         # The author's own `model: { message: }` first, on the same precedence the presence door applies
         # (Contract#_model_absence_message_for) — it reached this case before the model validator stopped
         # handing nil to `TypeValidator`, which is what honored it.
         record.errors.add(attribute, options[:message] || self.class.absence_message(record, attribute))
-      end
-
-      def _presence_reports?(record, attribute)
-        presence = record.class.validators_on(attribute).find { |v| v.is_a?(ActiveModel::Validations::PresenceValidator) }
-        return false unless presence
-        return false if presence.options[:allow_nil] || presence.options[:allow_blank]
-
-        Axn::Validation::Fields.validator_gate_open?(validations: {}, entry_options: presence.options,
-                                                     **record.send(:_gate_probe_context))
       end
     end
   end
