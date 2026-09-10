@@ -200,6 +200,23 @@ RSpec.describe "model: id reader and consistency" do
       expect(action.call(payload: { company_id: 11 }).cid).to eq(11)
     end
 
+    it "derives its 'by primary key' fast-path flag through the shared FieldConfig predicate, not an " \
+       "inline re-derivation (Codex review round 3, PR #269: this reader independently re-derived " \
+       "'by_primary_key' instead of going through FieldConfig.by_primary_key_finder?, so a later change " \
+       "to that predicate's semantics could silently disagree between the top-level and nested " \
+       "readers). Ordinary field validation resolves the record regardless of which branch the reader " \
+       "itself takes, so nothing about the fast path is observable in the RETURNED id alone — this " \
+       "verifies the shared call directly instead." do
+      klass = co_class
+      expect(Axn::Internal::FieldConfig).to receive(:by_primary_key_finder?).at_least(:once).and_call_original
+
+      build_axn do
+        expects :payload
+        expects :company, on: :payload, model: { klass:, finder: :find }
+        def call; end
+      end
+    end
+
     it "resolves the model and its id to nil when the parent is nil (no NoMethodError)" do
       # A `model:` subfield hanging off a nil/absent parent must resolve to nil (parent absent),
       # not blow up reaching into nil for the record/id (PRO-2857).

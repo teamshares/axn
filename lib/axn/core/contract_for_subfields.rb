@@ -855,7 +855,7 @@ module Axn
         # when a transform is declared (PRO-2910). An undeclared id is the caller's raw token off the `on:`
         # parent.
         def _define_subfield_model_id_reader(config, processed_options)
-          by_primary_key = processed_options[:finder] == :find
+          by_primary_key = Axn::Internal::FieldConfig.by_primary_key_finder?(processed_options)
           _define_model_id_reader_from(reader: config.reader_as, source_field: config.field, by_primary_key:) do |id_key|
             sibling_configs = Axn::Core::ContractForSubfields.sibling_id_configs(self, config)
             if sibling_configs.empty?

@@ -2775,10 +2775,15 @@ module Axn
         # property `Reflection::Schema.model_id_property` emits, not something a value is ever checked
         # `is_a?` against. So its grammar is narrower than `type:`'s, and closed rather than open: a lookup
         # token is a scalar a client sends over the wire, never a union (there is nothing to dispatch a
-        # union through) and never a Class the emitter has no JSON Schema spelling for. It is exactly the
-        # vocabulary `Reflection::Schema` can already project through `single_type_for` — the same closed
-        # set inference from an ActiveRecord primary key maps onto (`AR_PRIMARY_KEY_TYPE_TOKENS`) — so a
-        # declared `id_type:` and an inferred one can never mean two different things.
+        # union through) and never a Class the emitter has no JSON Schema spelling for.
+        #
+        # Reads `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS`, not a copy of that set here or a read from
+        # `Internal::Reflection::Schema` (Codex review round 3, PR #269): `Internal::Reflection::X`
+        # derives a JSON view of a contract and only that, so a declaration-time guard depending upward
+        # on it would be a layer inversion (AGENTS.md's namespace doctrine). `FieldConfig` is the shared,
+        # value-level home both this guard and the reflection layer's own AR-inference map
+        # (`Reflection::Schema::AR_PRIMARY_KEY_TYPE_TOKENS`) read the SAME vocabulary from, so a declared
+        # `id_type:` and an inferred one can never mean two different things.
         def _reject_unsupported_model_id_type!(validations)
           return unless validations.key?(:model)
 
@@ -2786,7 +2791,7 @@ module Axn
           return unless bag.is_a?(::Hash) && bag.key?(:id_type)
 
           id_type = bag[:id_type]
-          allowed = Internal::Reflection::Schema::MODEL_ID_TYPE_TOKENS
+          allowed = Internal::FieldConfig::MODEL_ID_TYPE_TOKENS
           return if allowed.any? { |token| Internal::Identity.same?(token, id_type) }
 
           raise ArgumentError,

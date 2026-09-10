@@ -1288,7 +1288,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
   # PRO-3384: a declared `id_type:` types the generated `<field>_id` directly, for exactly the cases
   # inference (spec_rails/dummy_app, an ActiveRecord class) can't reach — a PORO model, a custom
   # finder, or a non-Rails consumer. It wins over inference unconditionally, and shares the SAME
-  # accepted vocabulary (Schema::MODEL_ID_TYPE_TOKENS) that inference's AR-type map projects onto.
+  # accepted vocabulary (FieldConfig::MODEL_ID_TYPE_TOKENS) that inference's AR-type map projects onto.
   describe "model: id_type:" do
     it "types the generated id from a declared id_type:, on a PORO model with the default finder" do
       klass = Class.new do
@@ -1373,7 +1373,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
     it "keeps the declared and inferable vocabularies from drifting apart" do
       inferable = Axn::Internal::Reflection::Schema::AR_PRIMARY_KEY_TYPE_TOKENS.values
-      declarable = Axn::Internal::Reflection::Schema::MODEL_ID_TYPE_TOKENS
+      declarable = Axn::Internal::FieldConfig::MODEL_ID_TYPE_TOKENS
 
       expect(inferable.uniq).to match_array(declarable)
     end
@@ -1449,6 +1449,67 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
 
         expect(klass.input_schema[:properties][:company_id]).to eq(default: 1)
+      end
+
+      # Codex review round 3 (PR #269): comparing base :type alone missed the REVERSE asymmetry —
+      # id_type: :uuid asserts a format the plain explicit type: String sibling does not carry, so the
+      # uuid-shape requirement silently vanished with no error, the same swallowed-contradiction class
+      # the round-1 fix existed to close.
+      it "rejects id_type: :uuid beside an explicit type: String sibling (the sibling admits any " \
+         "string, silently dropping the uuid-format requirement)" do
+        klass = Class.new do
+          include Axn
+          expects :company_id, type: String
+          expects :company, model: { klass: Struct.new(:id), id_type: :uuid }
+        end
+
+        expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
+      end
+    end
+
+    # Codex review round 3 (PR #269): a merged wire node reached by TWO `model:` routes (a dotted
+    # `on:` path and a nested subfield resolving to the same wire path — `as:` disambiguates their
+    # shared reader name so they still merge, the same construction schema_spec's own "merged node"
+    # examples use elsewhere in this file) each carry their own `id_type:`, but only `model_configs.first`
+    # was ever consulted — silently dropping whichever route was declared second, and changing the
+    # answer with declaration order.
+    describe "reconciling id_type: across multiple model: routes at one merged node" do
+      it "rejects two model: routes at the same node declaring disagreeing id_type: values" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :user, on: "payload.account", model: { klass: Struct.new(:id), id_type: Integer }, as: :user_route1
+          expects :account, on: :payload, type: Hash
+          expects :user, on: :account, model: { klass: Struct.new(:id), id_type: String }
+        end
+
+        expect { klass.input_schema }.to raise_error(ArgumentError, /disagree.*user_id/)
+      end
+
+      it "does not raise, and reconciles to the single value, when only one route declares id_type:" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :user, on: "payload.account", type: Hash, optional: true, as: :user_nonmodel
+          expects :account, on: :payload, type: Hash
+          expects :user, on: :account, model: { klass: Struct.new(:id), id_type: Integer }
+        end
+
+        account = klass.input_schema[:properties][:payload][:properties][:account]
+        expect(account[:properties][:user_id]).to include(type: "integer")
+      end
+
+      it "does not raise when both routes declare the SAME id_type:" do
+        klass = Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :user, on: "payload.account", model: { klass: Struct.new(:id), id_type: Integer }, as: :user_route1
+          expects :account, on: :payload, type: Hash
+          expects :user, on: :account, model: { klass: Struct.new(:id), id_type: Integer }
+        end
+
+        account = klass.input_schema[:properties][:payload][:properties][:account]
+        expect(account[:properties][:user_id]).to include(type: "integer")
       end
     end
 
