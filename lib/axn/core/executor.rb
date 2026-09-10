@@ -1255,7 +1255,7 @@ module Axn
         failures = @action_class.send(:external_field_configs).filter_map do |config|
           validator_class = @action_class._cached_validator_class_for(config:, effective_validations: config.validations, coerce: false)
           errors = Axn::Validation::Fields.errors_for(validator_class, source: Internal::ActionState.result(@action), validations: config.validations,
-                                                                       action: @action, permit_method_call: true)
+                                                                       action: @action, permit_method_call: true, outbound: true)
           ContractFailure.new(config:, path: nil, errors:, stranded_at: nil) if errors.any?
         end
         raise OutboundValidationError, _aggregate_errors(failures, []) if failures.any?

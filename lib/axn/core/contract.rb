@@ -2733,6 +2733,14 @@ module Axn
         # absorbs nothing (a class the finder can never raise) or, worse, reads as a silent opt-out of the
         # default `RecordNotFound` handling — so it is refused at the author rather than at the call.
         #
+        # Held to `StandardError`, not `Exception`, because that is the boundary the resolver's rescue can
+        # actually reach. A declared miss outside it was accepted and then never caught: it escaped the
+        # resolver, the guard, and `.call` itself — the consistent-return guarantee broken by a declaration
+        # that read as if it were handled. Widening the rescue is not the alternative: what axn may absorb
+        # beyond StandardError is a deliberate two-member allowlist, and several non-StandardErrors exist
+        # PRECISELY so that nothing swallows them (Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR). So the
+        # declaration is held to what the runtime can honor.
+        #
         # Runs AFTER the sugar, which canonicalizes a bare class to a one-element Array; an ABSENT key means
         # "use the default set" and is untouched, while an explicit empty Array is a legitimate opt-out.
         # `nil`/`false` are refused on the same terms as `_reject_falsy_model_klass!`: they are the spellings
@@ -2743,14 +2751,16 @@ module Axn
           declared = validations[:model]
           return unless declared.is_a?(::Hash) && declared.key?(:not_found_on)
 
-          offending = declared[:not_found_on].reject { |entry| entry.is_a?(::Class) && entry <= ::Exception }
+          offending = declared[:not_found_on].reject { |entry| entry.is_a?(::Class) && entry <= ::StandardError }
           return if offending.empty?
 
           raise ArgumentError,
-                "model: not_found_on: must name exception classes (got " \
+                "model: not_found_on: must name StandardError subclasses (got " \
                 "#{offending.map { |e| _declared_type_label(e) }.join(', ')}) — each one is a class the finder " \
                 "raises to mean \"no such record\", which axn turns into a not-found violation instead of a " \
-                "reported exception. Pass `not_found_on: []` to opt out of that handling entirely."
+                "reported exception. Only StandardError is rescuable there, so a class outside it would escape " \
+                "`.call` entirely rather than being handled. Pass `not_found_on: []` to opt out of that " \
+                "handling entirely."
         end
 
         # `on:` inside a bag is the same dead declaration it is inside any other validator's option bag, and it
@@ -5669,6 +5679,10 @@ module Axn
         # their own `message:` is left alone — they named the wording deliberately. Requiredness itself is
         # untouched: it comes from `optional?`, not from this entry (`presence: false` still emits
         # `required`), so only the wording moves.
+        #
+        # The wording itself is inbound-gated at RUNTIME (ModelValidator.lookup_attempted?), not here: the
+        # same borrowing reaches a second door — a model field with no presence check at all, where
+        # `ModelValidator` reports the absence directly — so one gate at the shared seam beats two here.
         def _apply_model_absence_message!(validations)
           return unless validations.key?(:model)
 

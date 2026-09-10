@@ -62,6 +62,14 @@ module Axn
       # violation already being reported, so a degraded read costs a less specific message, while raising
       # here would replace the contract violation with an error manufactured while describing it.
       def self.lookup_attempted?(validator, field)
+        # A finder runs for INBOUND fields only — `_model_fields`, the resolver's own source, is built from
+        # `internal_field_configs` — so an outbound `model:` field resolving to nil means "you did not expose
+        # it", never "no such record". Without this, an `exposes :user, model: …` failure alongside an
+        # `expects :user, model: …` that SUCCEEDED borrowed the inbound token and reported a lookup that had
+        # actually found its record. Gated here rather than at declaration because the same borrowing reaches
+        # a second door (a model field with no presence check, reported by `_reject_absence` below).
+        return false if validator.send(:_outbound_validation?)
+
         action = validator.send(:_action_for_validation)
         return false unless action
 
@@ -69,8 +77,11 @@ module Axn
                  action.class.send(:internal_field_configs).find { |c| c.field == field }
         return false unless config&.validations&.key?(:model)
 
-        token = Axn::Core::ContractForSubfields.model_lookup_token(action, config)
-        !token.nil? && !token.to_s.strip.empty?
+        # `blank?`, the SAME decision `FieldResolvers::Model#derive_value` gates the finder on. A hand-rolled
+        # `to_s.strip.empty?` disagreed with it for every token whose blankness is not about its characters —
+        # `false`, `[]`, `{}` all render non-empty — so the resolver skipped the lookup while this said one had
+        # happened, and a required field reported "not found" for a record nobody asked for.
+        !Axn::Core::ContractForSubfields.model_lookup_token(action, config).blank?
       rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
         false
       end

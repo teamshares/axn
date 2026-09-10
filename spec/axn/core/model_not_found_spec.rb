@@ -190,19 +190,92 @@ RSpec.describe "a model: finder that finds no record" do
     end
   end
 
+  # "The finder was asked" has to be decided by the SAME blankness the resolver gates the finder on
+  # (`id_value.blank?`), or the message describes a lookup that never happened. Every value here is blank
+  # to Ruby while rendering non-empty, which is what a `to_s`-based predicate got wrong.
+  describe "a token the resolver treats as blank" do
+    subject(:action) { klass = registry and build_axn { expects :widget, model: { klass:, finder: :find_by_id } } }
+
+    [false, [], {}, "", "  "].each do |token|
+      it "reads as blank, not as a failed lookup, for #{token.inspect}" do
+        expect(action.call(widget_id: token).exception.message).to eq("Widget can't be blank")
+      end
+    end
+
+    # The complement: not blank, so the finder really did run.
+    [0, "0"].each do |token|
+      it "reads as a failed lookup for #{token.inspect}, which is not blank" do
+        expect(action.call(widget_id: token).exception.message).to eq("Widget not found")
+      end
+    end
+  end
+
+  # A finder only ever runs for an INBOUND field (`_model_fields` is built from `internal_field_configs`),
+  # so an outbound `model:` field resolving to nil means "you did not expose it". One field name can be
+  # declared on both sides, so without the direction an outbound failure borrowed the inbound token and
+  # reported a lookup that had actually SUCCEEDED.
+  describe "an outbound model: field" do
+    # A finder that always HITS, so the inbound lookup succeeds and only the outbound half can fail.
+    let(:hitting_registry) do
+      Class.new do
+        attr_reader :id
+
+        define_method(:initialize) { |id| @id = id }
+        define_singleton_method(:hit) { |id| new(id) }
+      end
+    end
+
+    let(:both_ways) do
+      lambda do |**exposes_opts|
+        klass = hitting_registry
+        build_axn do
+          expects :widget, model: { klass:, finder: :hit }
+          exposes :widget, model: { klass:, finder: :hit }, **exposes_opts
+          define_method(:call) { expose(widget: nil) }
+        end
+      end
+    end
+
+    it "never describes the inbound lookup" do
+      result = both_ways.call.call(widget_id: 7)
+
+      expect(result.exception).to be_a(Axn::OutboundValidationError)
+      expect(result.exception.message).to eq("Widget can't be blank")
+    end
+
+    # The same borrowing reaches a second door: with no presence check, the model validator reports the
+    # absence itself. One gate covers both.
+    it "never describes it through the no-presence-check path either" do
+      result = both_ways.call(presence: false).call(widget_id: 7)
+
+      expect(result.exception.message).to eq("Widget can't be blank")
+    end
+  end
+
   describe "declaration-time validation of not_found_on:" do
     it "refuses a value that is not an exception class" do
       klass = registry
 
       expect { build_axn { expects :widget, model: { klass:, not_found_on: :nope } } }
-        .to raise_error(ArgumentError, /not_found_on: must name exception classes/)
+        .to raise_error(ArgumentError, /not_found_on: must name StandardError subclasses/)
     end
 
     it "refuses a non-exception class" do
       klass = registry
 
       expect { build_axn { expects :widget, model: { klass:, not_found_on: String } } }
-        .to raise_error(ArgumentError, /not_found_on: must name exception classes/)
+        .to raise_error(ArgumentError, /not_found_on: must name StandardError subclasses/)
+    end
+
+    # The resolver rescues StandardError, and widening that is not an option — what axn may absorb beyond
+    # it is a deliberate two-member allowlist. So a miss declared outside the boundary was accepted and
+    # then never caught: it escaped the resolver, the guard, and `.call` itself.
+    it "refuses a class outside the rescuable boundary, which would escape .call entirely" do
+      klass = registry
+      not_standard = Class.new(Exception) # rubocop:disable Lint/InheritException -- the point of the test
+
+      expect { build_axn { expects :widget, model: { klass:, not_found_on: not_standard } } }
+        .to raise_error(ArgumentError, /Only StandardError is rescuable there/)
     end
 
     it "refuses nil, which reads as `none` but would silently restore the default set" do

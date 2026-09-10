@@ -173,7 +173,7 @@ one raising its not-found error (`ActiveRecord::RecordNotFound` for `:find`) are
 an `InboundValidationError` reading `User not found` — distinct from the `User can't be blank` an
 omitted `user_id` gets. It is NOT handed to `on_ignored_exception`, so a bad id from a tool caller
 never pages; anything else the finder raises still does. Name your own miss class with
-`model: { finder: :fetch!, not_found_on: MyApi::NotFound }` (a class or an array; `[]` opts out).
+`model: { finder: :fetch!, not_found_on: MyApi::NotFound }` (a `StandardError` subclass or an array of them; `[]` opts out).
 
 **`on:` — subfields (the `:extract` resolver).** Declare expectations about nested data and get a
 flat reader:
