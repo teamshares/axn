@@ -152,6 +152,20 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         end
       end.to raise_error(ArgumentError, "a shape block can only be declared on a single field")
     end
+
+    # Codex review, PR #272: a bare positional was REQUIRED before `field` went variadic, so
+    # `field type: String` (the name typo'd away, options still present) raised a loud arity error.
+    # The splat accepted zero names silently instead -- the options/block are declared but land on
+    # nothing, so the intended validation silently vanishes.
+    it "rejects a field call with no name" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field type: String
+          end
+        end
+      end.to raise_error(ArgumentError, "field requires at least one name")
+    end
   end
 
   describe "of: Data.define element class" do

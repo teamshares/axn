@@ -267,6 +267,26 @@ RSpec.describe "fails_on" do
         build_axn { fails_on ArgumentError, 42 }
       end.to raise_error(ArgumentError, /message must be a String, a Symbol, or a callable/)
     end
+
+    # Codex review, PR #272: `message || block` treated an explicit trailing `false` identically to
+    # "no message given" (both falsy), so the message grammar guard added above never even ran --
+    # `fails_on ArgumentError, false` declared cleanly with the message silently dropped. Fixed by
+    # keying presence on `!message.nil?` rather than truthiness. `nil` must still mean "not given"
+    # (indistinguishable from omitting the argument, exactly like `error`/`success`'s own optional
+    # positional) -- only `false` specifically was the gap.
+    it "does not let an explicit trailing false silently skip the message grammar guard" do
+      expect do
+        build_axn { fails_on ArgumentError, false }
+      end.to raise_error(ArgumentError, /Provide a message or a block/)
+    end
+
+    it "still treats an explicit trailing nil as no message (indistinguishable from omitting it)" do
+      action = build_axn do
+        fails_on ArgumentError, nil
+        def call = raise ArgumentError, "boom"
+      end
+      expect(action.call.outcome).to be_failure
+    end
   end
 
   describe "invalid arguments" do

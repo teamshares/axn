@@ -11,6 +11,14 @@ module Axn
 
       module ClassMethods
         def memo(*method_names)
+          # `memo` took exactly one required positional before this went variadic, so a bare `memo`
+          # (or `memo(*names)` with an unexpectedly-empty `names`) raised a loud arity error. A splat
+          # accepts zero silently instead -- there is no legitimate "memoize nothing" call here (unlike
+          # `expects`/`before`'s own long-standing tolerance of a truly empty declaration), so an empty
+          # list is always the caller's mistake: the intended method is left unmemoized with no
+          # complaint. Reject it.
+          raise ArgumentError, "memo requires at least one method name" if method_names.empty?
+
           method_names.each do |method_name|
             if _memo_wise_available?
               _ensure_memo_wise_prepended

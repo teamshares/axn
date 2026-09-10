@@ -62,6 +62,20 @@ module Axn
 
                       handler
                     else
+                      # Before this went variadic, a single `handler = nil` positional was
+                      # indistinguishable from "not given" and rejected by `_add_callback`'s own
+                      # presence check above. Now that several handlers can be listed, an explicit
+                      # `on_success nil` (or `false`, or any other non-Symbol non-callable) is a
+                      # NONEMPTY entry in that list -- it slips past the presence check and would
+                      # silently register a descriptor that does nothing at dispatch (a literal,
+                      # non-callable handler resolves to itself and runs no code). Reject it here,
+                      # by the same grammar the message DSL holds its handler to.
+                      unless handler.is_a?(Symbol) || Axn::Core::Flow::Handlers::Invoker.safely_callable?(handler)
+                        raise ArgumentError,
+                              "on_#{event_type} handler must be a Symbol, a callable, or a prebuilt descriptor " \
+                              "(got a value of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(handler)})"
+                      end
+
                       Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler:, **kwargs)
                     end
 

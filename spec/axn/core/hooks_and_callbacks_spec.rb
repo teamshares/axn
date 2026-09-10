@@ -969,5 +969,35 @@ RSpec.describe Axn do
     it "raises when called with neither handlers nor a block" do
       expect { build_axn { on_success } }.to raise_error(ArgumentError, /must be called with a block or symbol/)
     end
+
+    # Codex review, PR #272: `on_success nil` used to be indistinguishable from "not given" (both
+    # were the single `handler = nil` default) and got rejected by the presence check. Now that
+    # `handlers` is a list, an explicit `nil` (or any other non-Symbol, non-callable value) is a
+    # NONEMPTY entry that slips past that check -- it would silently register a descriptor that runs
+    # no code at dispatch. Every `on_*` shares `_add_callback`/`_register_callback`, so one
+    # representative plus `on_enqueue_all` (which reuses the same private method from a different
+    # file) covers the class.
+    it "rejects an explicit nil handler rather than silently registering a no-op" do
+      expect do
+        build_axn { on_success nil }
+      end.to raise_error(ArgumentError, /on_success handler must be a Symbol, a callable, or a prebuilt descriptor.*NilClass/)
+    end
+
+    it "rejects an explicit false handler rather than silently registering a no-op" do
+      expect do
+        build_axn { on_failure false }
+      end.to raise_error(ArgumentError, /on_failure handler must be a Symbol, a callable, or a prebuilt descriptor.*FalseClass/)
+    end
+
+    it "rejects a non-Symbol, non-callable literal handler" do
+      expect do
+        build_axn { on_error 42 }
+      end.to raise_error(ArgumentError, /on_error handler must be a Symbol, a callable, or a prebuilt descriptor.*Integer/)
+    end
+
+    it "still accepts a prebuilt descriptor" do
+      descriptor = Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor.build(handler: -> { puts "ok" })
+      expect { build_axn { on_success descriptor } }.not_to raise_error
+    end
   end
 end

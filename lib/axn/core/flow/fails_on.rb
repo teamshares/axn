@@ -53,9 +53,17 @@ module Axn
 
             _reject_unreachable_fails_on!(classes)
 
+            # `message`'s ABSENCE is `nil` (both when no trailing arg was given, and when the caller
+            # wrote `fails_on A, nil` -- the two are indistinguishable, exactly like `error`/`success`'s
+            # own optional positional, and both mean "no message"). A trailing `false`, though, WAS
+            # given -- `!message.nil?` is the difference: `fails_on A, false` must still reach the
+            # wiring below and be rejected by the message grammar guard, rather than silently vanish
+            # because `false` also reads as falsy in a bare `message || block` check.
+            message_given = !message.nil?
+
             # standalone: only configures the wired `error`, so it's inert without a message/block —
             # raise rather than silently drop it (true and false alike), matching the message DSL.
-            raise ArgumentError, "fails_on standalone: has no effect without a message or block" if !standalone.nil? && !(message || block)
+            raise ArgumentError, "fails_on standalone: has no effect without a message or block" if !standalone.nil? && !(message_given || block)
 
             _validate_fails_on_conditions!(if_condition, unless_condition)
 
@@ -80,7 +88,7 @@ module Axn
             # stateful -- would otherwise risk classifying one way and presenting the other. Reusing
             # the verdict makes that impossible: the condition runs at most once per exception,
             # period, whether or not a message is declared.
-            if message || block
+            if message_given || block
               message_gate = lambda { |exception:|
                 # `entry.classes`, NOT the bare `classes` local -- that's `Array(exceptions)`, the
                 # CALLER'S own array when one was passed (see the aliasing note above `entry_matcher`).

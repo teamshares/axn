@@ -416,6 +416,14 @@ module Axn
         end
 
         def field(*names, **opts, &block)
+          # A bare positional was REQUIRED before this went variadic, so `field type: String` (the
+          # name typo'd away, options still present) raised a loud arity error. A splat accepts zero
+          # names silently instead -- unlike `expects`/`before`'s own long-standing tolerance of a
+          # truly empty call (a legitimate "nothing to declare this time"), an empty `field` call still
+          # carries `opts`/a `block`, which is exactly the shape of a typo that dropped the name, not
+          # a deliberate no-op. Reject it rather than let the declared validations silently vanish.
+          raise ArgumentError, "field requires at least one name" if names.empty?
+
           # Same rule `expects`/`exposes` already enforce for a shape block declared across several
           # top-level fields at once (`_build_shape`'s "a shape block can only be declared on a
           # single field") -- a nested shape can't be shared honestly across sibling members either.

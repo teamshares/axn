@@ -55,6 +55,19 @@ RSpec.describe Axn::Core::Memoization do
           expect(instance.a).to eq(first_a)
           expect(instance.b).to eq(first_b)
         end
+
+        # Codex review, PR #272: `memo` took exactly one required positional before this went
+        # variadic, so a bare `memo` raised a loud arity error. The splat accepted zero names
+        # silently instead -- the intended method is left unmemoized with no complaint at all.
+        it "rejects a bare call with no method names" do
+          expect do
+            Class.new do
+              include Axn
+
+              memo
+            end
+          end.to raise_error(ArgumentError, "memo requires at least one method name")
+        end
       end
 
       context "with methods that have arguments" do
