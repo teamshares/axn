@@ -44,6 +44,6 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   # Core dependencies
-  spec.add_dependency "activemodel", ">= 7.2"    # For contract validation
-  spec.add_dependency "activesupport", ">= 7.2"  # For compact_blank and friends
+  spec.add_dependency "activemodel", ">= 8.1"    # For contract validation
+  spec.add_dependency "activesupport", ">= 8.1"  # For compact_blank and friends
 end
