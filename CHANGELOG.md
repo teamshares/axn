@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+* [BREAKING] Raises the `activemodel`/`activesupport` floor from `>= 7.2` to `>= 8.1`. Rails 7.2 and 8.0 are both past their upstream maintenance windows (7.2 past even security support, 8.0 past bug-fix support) as of this release, and 8.1 is the only series the Rails-integration dummy app (`spec_rails/dummy_app`) is now tested against — this closes the gap between the gemspec's claimed floor and what CI actually exercises rather than adding back a lane for an end-of-life Rails series.
+
 ## 0.1.0-alpha.6
 
 ### Added
