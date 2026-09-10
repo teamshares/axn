@@ -160,11 +160,18 @@ RSpec.describe "a model: finder that finds no record" do
   # The message rides on whatever presence check the field carries, so the same contract cannot say two
   # different things about the same miss depending on whether the author spelled the check out.
   describe "the wording is the same however the presence check was written" do
+    # Every spelling, including the four where ActiveModel SKIPS the presence check — it reports nothing
+    # then, so deferring to its mere existence let a required model field resolve to nil and the action
+    # succeed. Whichever check ends up reporting, the field is rejected and the wording is the same.
     {
       "inferred" => {},
       "declared true" => { presence: true },
-      "declared with a gate" => { presence: { if: -> { true } } },
+      "declared with an open gate" => { presence: { if: -> { true } } },
       "declared false" => { presence: false },
+      "gated off with if:" => { presence: { if: -> { false } } },
+      "gated off with unless:" => { presence: { unless: -> { true } } },
+      "nil-tolerant" => { presence: { allow_nil: true } },
+      "blank-tolerant" => { presence: { allow_blank: true } },
     }.each do |label, opts|
       it "reads the same for a #{label} presence check" do
         klass = registry
@@ -172,6 +179,13 @@ RSpec.describe "a model: finder that finds no record" do
 
         expect(action.call(widget_id: 7).exception.message).to eq("Widget not found")
         expect(action.call.exception.message).to eq("Widget can't be blank")
+      end
+
+      it "reports exactly one error for a #{label} presence check" do
+        klass = registry
+        action = build_axn { expects :widget, model: { klass:, finder: :find_by_id }, **opts }
+
+        expect(action.call(widget_id: 7).exception.errors.count).to eq(1)
       end
     end
 
@@ -283,6 +297,18 @@ RSpec.describe "a model: finder that finds no record" do
 
       expect { build_axn { expects :widget, model: { klass:, not_found_on: nil } } }
         .to raise_error(ArgumentError, /Pass `not_found_on: \[\]` to opt out/)
+    end
+
+    # Undispatched ancestry: `entry <= StandardError` asks the class being judged about itself, and a class
+    # answering in the true direction passed the guard and then escaped `.call`, since the resolver's rescue
+    # reads the real ancestry.
+    it "is not fooled by a class that lies about its own ancestry" do
+      klass = registry
+      liar = Class.new(Exception) # rubocop:disable Lint/InheritException -- the point of the test
+      def liar.<=(_other) = true
+
+      expect { build_axn { expects :widget, model: { klass:, not_found_on: liar } } }
+        .to raise_error(ArgumentError, /must name StandardError subclasses/)
     end
 
     it "names every offending entry in one message" do

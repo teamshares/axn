@@ -2751,7 +2751,14 @@ module Axn
           declared = validations[:model]
           return unless declared.is_a?(::Hash) && declared.key?(:not_found_on)
 
-          offending = declared[:not_found_on].reject { |entry| entry.is_a?(::Class) && entry <= ::StandardError }
+          # Undispatched, on the same terms as the resolver's own membership test and for a consequence of the
+          # same shape: `entry <= ::StandardError` asks the caller's class about itself, and a class answering
+          # in the true direction passes the guard and then escapes `.call`, since the resolver's rescue reads
+          # the real ancestry. Judged by `Class`-ness and by ancestor identity instead, neither of which the
+          # class being judged can supply.
+          offending = declared[:not_found_on].reject do |entry|
+            Internal::Identity.kind?(entry, ::Class) && Internal::NativeMethods.includes_module?(entry, ::StandardError)
+          end
           return if offending.empty?
 
           raise ArgumentError,

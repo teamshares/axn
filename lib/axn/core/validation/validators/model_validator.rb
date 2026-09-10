@@ -106,17 +106,33 @@ module Axn
       # record". Delegating nil to the TypeValidator is what produced the doubled "X is not a Y and X can't
       # be blank" — two validators reporting one missing value — so this reports it once, or defers.
       #
-      # It DEFERS whenever a presence check is also installed, which is the ordinary case: that entry carries
-      # ABSENCE_MESSAGE and says exactly this, and both of us adding an error is the doubling again. With no
-      # presence check to defer to (`presence: false` on a field that is still required — requiredness is
-      # `optional?`, which `presence: false` does not touch, and the emitted schema keys off that), this is
-      # the only thing between an omitted record and a passing contract, so it reports here instead. Asked of
-      # ActiveModel's own validator list rather than of the options bag, so a presence check reached by any
-      # spelling counts.
+      # It DEFERS whenever a presence check will actually REPORT this nil, which is the ordinary case: that
+      # entry carries ABSENCE_MESSAGE and says exactly this, and both of us adding an error is the doubling
+      # again. Otherwise this is the only thing between an omitted record and a passing contract, so it
+      # reports here — the field is still required either way (requiredness is `optional?`, which none of
+      # these spellings touch, and the emitted schema keys off that).
+      #
+      # "Will report", never "exists": a presence entry that ActiveModel SKIPS reports nothing, and deferring
+      # to one let a required `model:` field resolve to nil and the action succeed. Three spellings skip it —
+      # `presence: false` installs no validator at all, `presence: { if: … }`/`{ unless: … }` gates it off,
+      # and `presence: { allow_nil: … }`/`{ allow_blank: … }` makes it skip exactly the value in hand. The
+      # gate half is decided by ActiveModel itself through the shared oracle rather than a hand-rolled mirror
+      # of its merge and arity rules (Fields.validator_gate_open?), and the entry's options are read off the
+      # constructed validator, where `validates` has already merged the declaration-level gates into the
+      # entry's own.
       def _reject_absence(record, attribute)
-        return if record.class.validators_on(attribute).any? { |v| v.is_a?(ActiveModel::Validations::PresenceValidator) }
+        return if _presence_reports?(record, attribute)
 
         record.errors.add(attribute, self.class.absence_message(record, attribute))
+      end
+
+      def _presence_reports?(record, attribute)
+        presence = record.class.validators_on(attribute).find { |v| v.is_a?(ActiveModel::Validations::PresenceValidator) }
+        return false unless presence
+        return false if presence.options[:allow_nil] || presence.options[:allow_blank]
+
+        Axn::Validation::Fields.validator_gate_open?(validations: {}, entry_options: presence.options,
+                                                     **record.send(:_gate_probe_context))
       end
     end
   end

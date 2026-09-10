@@ -218,6 +218,13 @@ module Axn
       # by field name — see ModelValidator.lookup_attempted?.
       def _config_for_validation = @config
 
+      # The caller-supplied threading a gate probe needs, as one set — `validator_gate_open?` builds a probe
+      # that subclasses this class and reads these same ivars, so a validator asking the oracle about one of
+      # its own sibling entries hands over exactly what it was built with. See ModelValidator#_reject_absence.
+      def _gate_probe_context
+        { action: @action, source: @source, reader: @reader, config: @config, permit_method_call: @permit_method_call }
+      end
+
       # Whether this pass is validating the OUTBOUND contract. A by-name lookup back into the declaration
       # cannot tell the two apart on its own — one field name can be declared on both `expects` and
       # `exposes` — so the direction is carried rather than inferred. Read by
