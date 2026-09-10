@@ -1687,6 +1687,27 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(klass.input_schema[:properties][:company_id]).to eq(type: "null")
     end
 
+    # Codex review round 17 (PR #269): the merged type must not resurrect a null branch the
+    # required-id null pass already stripped. An untyped `allow_nil:` sibling beside a REQUIRED
+    # (non-nilable) model merges as `type: ["integer", "null"]` on the SIBLING's own nullability, but
+    # the id is required by the MODEL, and a required nested model id can never actually resolve from
+    # nil at runtime (verified: `.call(payload: { company_id: nil })` fails). The merge has to run
+    # BEFORE the required-null pass so that pass gets the last, correct word — not after, where it
+    # would silently widen a required property past what runtime accepts.
+    it "does not let a nested untyped allow_nil: sibling reintroduce a null branch the required-id " \
+       "null pass already removed (the model itself is required, not the sibling)" do
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, shape: { members: {} }
+        expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
+        expects :company_id, on: :payload, allow_nil: true, as: :company_id_field
+      end
+
+      schema = klass.input_schema.dig(:properties, :payload)
+      expect(schema[:properties][:company_id]).to eq(type: "integer")
+      expect(schema[:required]).to include("company_id")
+    end
+
     # Codex review round 7 (PR #269): comparing against `json_type_for` alone missed a RUNTIME
     # relaxation `build_property` applies afterward — a blank-tolerant explicit `type: :uuid` sibling
     # still projects `format: "uuid"` through `json_type_for` alone, so the check saw "satisfies" and

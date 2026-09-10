@@ -1232,16 +1232,28 @@ module Axn
             prop[:properties][key] = child_prop.compact
             prop[:required] << required_key(key) unless node_optional?(node, ann, non_model_configs)
           end
-          # A required nested model id can't be null (a null token resolves the model to nil at runtime).
-          # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
-          required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
-          # Same reason: the sibling's OWN entry (a plain child of this same loop) always wins the
-          # property outright regardless of visitation order, so `prop[:properties][id_field]` is only
-          # guaranteed to hold the sibling's FINAL emission once every key has been visited (Codex review
-          # round 15, PR #269) — merging mid-loop risked reading a not-yet-overwritten model placeholder.
+          # The sibling's OWN entry (a plain child of this same loop) always wins the property outright
+          # regardless of visitation order, so `prop[:properties][id_field]` is only guaranteed to hold
+          # the sibling's FINAL emission once every key has been visited (Codex review round 15, PR
+          # #269) — merging mid-loop risked reading a not-yet-overwritten model placeholder.
+          #
+          # Ordered BEFORE the required-null pass just below, not after (Codex review round 17, PR
+          # #269): merging the declared `id_type:` in uses the SIBLING's OWN `allow_nil:`/`allow_blank:`
+          # to decide whether `"null"` joins the merged type (an untyped `company_id, allow_nil: true`
+          # sibling beside a REQUIRED model reconstructed `type: ["integer", "null"]`) — but requiredness
+          # here is decided by the MODEL, not the sibling, and a required model id can never actually
+          # resolve from `nil` at runtime. Merging first and then letting the null pass strip `"null"`
+          # from whatever type it finds lets that pass win regardless of which ran the type in; the
+          # reverse order let the sibling's own nullability reintroduce a null branch the null pass had
+          # already correctly removed, silently admitting a value runtime always rejects for a required
+          # id (top-level `apply_model_id_requiredness!` never had this bug — its merge already ran
+          # before its own `reject_null!`, being a single sequential method rather than two loops here).
           model_id_siblings.each do |id_field, model_configs, explicit_id|
             merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id, id_field) if prop[:properties][id_field]
           end
+          # A required nested model id can't be null (a null token resolves the model to nil at runtime).
+          # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
+          required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
         end
 
         # The nested twin of `build_input`'s own model branch — extracted from `apply_children!` (which
