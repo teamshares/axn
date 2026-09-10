@@ -128,7 +128,10 @@ module Axn
       def _reject_absence(record, attribute)
         return if _presence_reports?(record, attribute)
 
-        record.errors.add(attribute, self.class.absence_message(record, attribute))
+        # The author's own `model: { message: }` first, on the same precedence the presence door applies
+        # (Contract#_model_absence_message_for) — it reached this case before the model validator stopped
+        # handing nil to `TypeValidator`, which is what honored it.
+        record.errors.add(attribute, options[:message] || self.class.absence_message(record, attribute))
       end
 
       def _presence_reports?(record, attribute)

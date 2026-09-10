@@ -189,6 +189,35 @@ RSpec.describe "a model: finder that finds no record" do
       end
     end
 
+    # A `message:` in the `model:` bag reached the absence case before this change, because the model
+    # validator handed nil to `TypeValidator` and that is what honors it. Silently replacing an instruction
+    # the author wrote with axn's own wording would be a regression, so it keeps precedence over both.
+    describe "an author's `model: { message: }`" do
+      {
+        "inferred presence" => {},
+        "presence: false" => { presence: false },
+        "a presence check that never fires" => { presence: { if: -> { false } } },
+      }.each do |label, opts|
+        it "is used for both absence cases under #{label}" do
+          klass = registry
+          action = build_axn { expects :widget, model: { klass:, finder: :find_by_id, message: "pick a widget" }, **opts }
+
+          expect(action.call(widget_id: 7).exception.message).to eq("Widget pick a widget")
+          expect(action.call.exception.message).to eq("Widget pick a widget")
+        end
+      end
+
+      it "yields to an author's own presence message, which is the more specific declaration" do
+        klass = registry
+        action = build_axn do
+          expects :widget, model: { klass:, finder: :find_by_id, message: "from model" },
+                           presence: { message: "from presence" }
+        end
+
+        expect(action.call(widget_id: 7).exception.message).to eq("Widget from presence")
+      end
+    end
+
     it "leaves an author's own message: alone" do
       klass = registry
       action = build_axn { expects :widget, model: { klass:, finder: :find_by_id }, presence: { message: "pick a widget" } }

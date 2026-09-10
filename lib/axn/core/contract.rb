@@ -5699,7 +5699,20 @@ module Axn
           entry = Axn::Validation::Base.normalize_validator_options(entry)
           return if entry.key?(:message)
 
-          validations[:presence] = entry.merge(message: Axn::Validators::ModelValidator::ABSENCE_MESSAGE)
+          validations[:presence] = entry.merge(message: _model_absence_message_for(validations))
+        end
+
+        # Precedence, decided once here rather than at each of the two places that report an absence: an
+        # author's own `presence: { message: }` wins (the caller above returns before this), then a
+        # `message:` in the `model:` bag, then axn's own wording. The middle rung is not a courtesy — a
+        # `model:` bag's `message:` reached the absence case before this change (the model validator handed
+        # nil to `TypeValidator`, which honors it), so dropping it would silently discard an instruction the
+        # author wrote.
+        def _model_absence_message_for(validations)
+          model = validations[:model]
+          declared = model[:message] if model.is_a?(::Hash)
+
+          declared || Axn::Validators::ModelValidator::ABSENCE_MESSAGE
         end
 
         # Whatever enforces the emptiness axis talks about emptiness only, so it skips nil (the nil axis is
