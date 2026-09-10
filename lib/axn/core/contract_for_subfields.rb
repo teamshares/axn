@@ -425,17 +425,58 @@ module Axn
       # goes straight to the id derivation — the caller already read the record key (present_record), and
       # re-reading it here would dispatch a one-shot/stateful record reader a second time (PRO-2910).
       def self.resolve_model_via_id(action, config, options, parent)
-        id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
-        configs = sibling_id_configs(action, config)
-        token =
-          if configs.empty?
-            Axn::Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: parent, permit_method_call: config.method_call)
-          else
-            _declared_id_token(action, configs)
-          end
+        token = model_lookup_token(action, config, parent)
         return nil if token.nil?
 
+        id_key = Axn::Internal::FieldConfig.model_id_key(config.field)
         Axn::Core::FieldResolvers.resolve(type: :model, field: config.field, options:, provided_data: { id_key => token })
+      end
+
+      # Stands for "the caller did not hand me one" so a legitimately nil parent is still a parent. An
+      # omitted one is resolved here; `resolve_parent` is depth-agnostic (a top-level field's parent IS
+      # the provided_data hash) and reads through memoized readers, so resolving it a second time
+      # dispatches nothing twice.
+      UNRESOLVED_PARENT = Object.new.freeze
+      private_constant :UNRESOLVED_PARENT
+
+      # THE `<field>_id` token a `model:` field's finder consumes, at either depth: a DECLARED sibling
+      # `<field>_id`'s read-path-transformed value (its own reader, via _declared_id_token), or — with none
+      # declared — the caller's RAW token off the field's own wire parent. Shared by the record lookup above
+      # and by `ModelValidator`'s absence message, so the finder and the message can never disagree about
+      # whether the caller named a record to look up (PRO-3369).
+      #
+      # A narrower question than `Executor#_consistency_id_for`, deliberately: that one exempts a token no
+      # CALLER supplied, so a route's `default:` never fabricates a conflict with a present record. The
+      # finder consumes the defaulted token, so an absence message describing what the finder did must too.
+      def self.model_lookup_token(action, config, parent = UNRESOLVED_PARENT)
+        configs = sibling_id_configs(action, config)
+        # A DECLARED route reads through its own reader (resolve_value), already memoized, so it dispatches
+        # once however many callers ask.
+        return _declared_id_token(action, configs) unless configs.empty?
+
+        # An UNDECLARED id has no reader to memoize behind, and this derivation now has two callers — the
+        # record lookup and the absence wording. With `method_call:` the read DISPATCHES a method on caller
+        # data, so a second read of a one-shot or stateful getter answers differently and the message
+        # contradicts what the finder actually did. Memoized per config on the same terms as
+        # `_memoized_raw_extract`, whose hazard and lifecycle this shares (PRO-2910): a read taken while a
+        # parent transform is in progress is provisional and re-extracts against the settled parent, and the
+        # executor drops both memos at the inbound-pipeline boundary.
+        memo = _model_token_memo(action)
+        return memo[config] if memo.key?(config)
+
+        source = parent.equal?(UNRESOLVED_PARENT) ? resolve_parent(action, config) : parent
+        token = Axn::Core::FieldResolvers.extract_or_nil(field: Axn::Internal::FieldConfig.model_id_key(config.field),
+                                                         provided_data: source, permit_method_call: config.method_call)
+        memo[config] = token if _transform_in_progress_set(action).empty?
+        token
+      end
+
+      def self._model_token_memo(action)
+        if action.instance_variable_defined?(:@__model_token_memo)
+          action.instance_variable_get(:@__model_token_memo)
+        else
+          action.instance_variable_set(:@__model_token_memo, {}.compare_by_identity)
+        end
       end
 
       # The effective transformed `<field>_id` token from the DECLARED sibling routes (`configs`, already the
@@ -525,7 +566,7 @@ module Axn
                            :_resolve_in_progress_set, :_transform_in_progress_set, :_raw_extract_memo,
                            :_raw_reads?, :_reader_memo_ref, :_mark_provisional_reader,
                            :_drop_provisional_reader_memos, :_apply_read_path_transforms,
-                           :_model_from_raw_parent
+                           :_model_from_raw_parent, :_model_token_memo
 
       module ClassMethods
         # The class's canonical resolved-subfield structure (PRO-2883), built lazily and cached on

@@ -179,6 +179,25 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
 
     `klass:` must name a single Class or Module — a record is resolved by calling the finder method **on** it, so there is nothing for a union or a `type:`-style pseudo-type to dispatch through, and either raises `ArgumentError` at declaration.
 
+    **When no record is found.** A finder has two ways of saying "no such record": returning `nil`, or raising its own not-found error (`ActiveRecord::RecordNotFound`, for the default `:find`). Axn treats both as the same outcome — an inbound contract violation reading `User not found`, distinct from the `User can't be blank` you get when no `<field>_id` was supplied at all.
+
+    A miss is a statement about the *id you were given*, not a fault in the lookup, so it is **not** reported to [`on_exception`](/reference/configuration#on-exception) as an exception in its own right. It settles like any other inbound violation: reported once as an `InboundValidationError` for an ordinary `.call`, and — for a tool invocation running under [`user_facing_input_errors:`](/reference/tool-invoker) — surfaced to the caller with no report at all, exactly as a bad enum value or a wrong type already is. Anything *else* the finder raises (a dead connection, a broken custom finder) is still a fault: it is swallowed to `nil` and reported through [`on_ignored_exception`](/reference/configuration#on-ignored-exception), whoever the caller is.
+
+    The message never includes the id. It reaches an external caller verbatim under `user_facing_input_errors:`, and a custom finder's lookup token can be a credential where a primary key would have been harmless — the caller already knows what they sent, and a dev-facing report carries it in `context[:inputs]`.
+
+    ```ruby
+    expects :user, model: true                                        # ActiveRecord::RecordNotFound
+    expects :account, model: { finder: :find_by_slug! }               # ...also RecordNotFound
+    expects :repo, model: { klass: GitHub, finder: :fetch!,           # your own miss class
+                            not_found_on: GitHub::NotFound }
+    expects :repo, model: { klass: GitHub, finder: :fetch!,           # or several
+                            not_found_on: [GitHub::NotFound, KeyError] }
+    expects :repo, model: { klass: GitHub, finder: :fetch!,           # opt out: every raise is a fault
+                            not_found_on: [] }
+    ```
+
+    `not_found_on:` names the exception classes whose being raised means "no such record" — decided by the raised class's ancestry, so a subclass of a declared class counts too. It **replaces** the default rather than adding to it, so a non-ActiveRecord finder can opt out of `RecordNotFound` entirely. Every entry must be a `StandardError` subclass; anything else (including `nil`) raises `ArgumentError` at declaration. The bound is the rescuable one on purpose: axn absorbs nothing outside `StandardError` beyond a deliberate two-member allowlist, so a miss declared outside it would escape `.call` entirely rather than becoming a violation. Outside Rails, where `ActiveRecord::RecordNotFound` is undefined, the default set is empty and a finder that returns `nil` is the only miss.
+
 * `confirmation: true` - declares a companion input, `<field>_confirmation`, and fails unless it matches the field's actual value
   * Note this departs from ActiveModel, which lets an omitted confirmation pass. See [Confirmation pairs](#confirmation) for the details.
 

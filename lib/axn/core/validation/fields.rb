@@ -59,6 +59,13 @@ module Axn
         Class.new(self) do
           def self.name = "Axn::Validation::Fields::OneOff"
 
+          # The one field this class validates. A Proc `message:` is handed only the validator INSTANCE and
+          # ActiveModel's own `data` (whose `:attribute` is already humanized for display), so a message that
+          # has to reason about the declaration — ModelValidator::ABSENCE_MESSAGE — has no other way back to
+          # the field name. Defined per built class rather than closed over by the message, because one
+          # `validations` hash is shared across a declaration batch while each class is built per field.
+          define_singleton_method(:_axn_validated_field) { field }
+
           # A field may legitimately carry no validators at all (e.g. `optional: true` with no
           # type/model, or an `optional:` field carrying only ActiveModel shared options like
           # `strict:`), which `validates` rejects with "You need to supply at least one validation" —
@@ -82,7 +89,7 @@ module Axn
       # a nested `of:` (PRO-3166) — the two edges interleave, so one shared position is what keeps the cycle
       # guard and the depth bound counting a `shape:` inside an `of:` as two levels rather than one each.
       def self.errors_for(validator_class, source:, validations:, action: nil, reader: nil, config: nil, permit_method_call: false,
-                          shape_ancestry: nil, confirmation: nil)
+                          shape_ancestry: nil, confirmation: nil, outbound: false)
         validator = validator_class.new(source)
 
         # Set the action context for model field resolution + symbol-argument delegation
@@ -92,6 +99,7 @@ module Axn
         validator.instance_variable_set(:@config, config)
         validator.instance_variable_set(:@permit_method_call, permit_method_call)
         validator.instance_variable_set(:@shape_ancestry, shape_ancestry)
+        validator.instance_variable_set(:@outbound, outbound)
 
         # ActiveModel's ConfirmationValidator#setup! defines a real `attr_reader :<attr>_confirmation` on
         # this one-off class, and compares only when that reader answers non-nil. The reader reads an ivar,
@@ -204,6 +212,18 @@ module Axn
       def _validation_subject(attribute) = "field '#{attribute}'"
 
       def _action_for_validation = @action
+
+      # The FieldConfig this validation is running for, or nil. Set only for a subfield today (the
+      # executor's top-level call site passes none), so a reader that needs a top-level config looks it up
+      # by field name — see ModelValidator.lookup_attempted?.
+      def _config_for_validation = @config
+
+      # Whether this pass is validating the OUTBOUND contract. A by-name lookup back into the declaration
+      # cannot tell the two apart on its own — one field name can be declared on both `expects` and
+      # `exposes` — so the direction is carried rather than inferred. Read by
+      # `ModelValidator.lookup_attempted?`, which must never describe an inbound record lookup while
+      # reporting an outbound failure.
+      def _outbound_validation? = @outbound || false
 
       # The nested shape walk's position, or nil at the top of one. Read off the record by
       # `ShapeValidator`, which owns what it means.

@@ -1255,7 +1255,7 @@ module Axn
         failures = @action_class.send(:external_field_configs).filter_map do |config|
           validator_class = @action_class._cached_validator_class_for(config:, effective_validations: config.validations, coerce: false)
           errors = Axn::Validation::Fields.errors_for(validator_class, source: Internal::ActionState.result(@action), validations: config.validations,
-                                                                       action: @action, permit_method_call: true)
+                                                                       action: @action, permit_method_call: true, outbound: true)
           ContractFailure.new(config:, path: nil, errors:, stranded_at: nil) if errors.any?
         end
         raise OutboundValidationError, _aggregate_errors(failures, []) if failures.any?
@@ -1342,7 +1342,12 @@ module Axn
             validations: effective_validations,
             action: @action,
             reader: @action_class.send(:_validation_reader_for, config),
-            config: config.subfield? ? config : nil,
+            # The config at BOTH depths, not subfields only. `read_attribute_for_validation` gates its use on
+            # `@config&.subfield?`, so a top-level config changes nothing there — but it means a validator that
+            # has to reason about its own declaration (ModelValidator's absence wording) is handed it rather
+            # than recovering it through `action.class`, a dispatch on a user-owned object that a `def class`
+            # could answer with anything.
+            config:,
             permit_method_call: true,
             confirmation:,
           )
@@ -1684,13 +1689,14 @@ module Axn
 
         # No declared `<field>_id`: the caller's raw token carries no transform, read with the model field's own
         # `method_call:`. The `raw`-nil guard enforces present-record authority (an omitted id fabricates no
-        # conflict). The raw source differs by depth: a top-level id off provided_data, a subfield id off the
-        # resolved parent (the model leaf's own wire parent).
-        if sibling_configs.empty?
-          id_key = Internal::FieldConfig.model_id_key(config.field)
-          source = config.subfield? ? _resolved_parent_value(config) : @context.provided_data
-          return Core::FieldResolvers.extract_or_nil(field: id_key, provided_data: source, permit_method_call: config.method_call)
-        end
+        # conflict). Read through the SAME derivation the finder consumes rather than a second copy of it —
+        # `model_lookup_token` is depth-agnostic on its own (a top-level field's parent IS provided_data, so
+        # the by-depth source split this used to spell out is what `resolve_parent` already does) and it
+        # memoizes, which is what this branch was missing: with `method_call:` and an undeclared id the read
+        # DISPATCHES, so the finder and this check were two dispatches of one caller-supplied getter and a
+        # one-shot getter answered them differently (PRO-2910's invariant, held for the declared route by
+        # `_memoized_raw_extract` and not for this one).
+        return Axn::Core::ContractForSubfields.model_lookup_token(@action, config) if sibling_configs.empty?
 
         # Present-record authority: exempt a caller-OMITTED id (no declared route saw a raw token) before any
         # resolution, so a default-only id never fabricates a conflict with a present record. Probe presence via
@@ -1852,7 +1858,8 @@ module Axn
       # invalid data passes. The raw memo is cleared alongside the value cache for the same reason: a stale
       # raw leaf would let validation re-run a parent preprocess/default yet still resolve the child from the
       # pre-pipeline wire value. Same accepted trade as the resolve_value clear: a Proc read early and re-read
-      # post-clear runs twice.
+      # post-clear runs twice. `@__model_token_memo` (the `<field>_id` a model finder consumed) has the same
+      # lifecycle and the same staleness hazard, so it is dropped here too.
       #
       # One ivar per reader-generating subfield config covers every flavor: the plain reader, and the
       # model RECORD reader (whose stale memo would otherwise pin a record resolved from the old id).
@@ -1863,6 +1870,7 @@ module Axn
       def _clear_pre_pipeline_memos!
         @action.remove_instance_variable(:@__resolve_value_cache) if @action.instance_variable_defined?(:@__resolve_value_cache)
         @action.remove_instance_variable(:@__raw_extract_memo) if @action.instance_variable_defined?(:@__raw_extract_memo)
+        @action.remove_instance_variable(:@__model_token_memo) if @action.instance_variable_defined?(:@__model_token_memo)
 
         @action_class.send(:subfield_configs).each do |config|
           ivar = :"@_memoized_reader_#{config.reader_as}"
