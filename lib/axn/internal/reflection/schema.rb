@@ -3009,8 +3009,8 @@ module Axn
 
           raise ArgumentError,
                 "multiple model: routes declare disagreeing id_type: values for the same generated " \
-                "#{id_field} (#{declared.map(&:inspect).join(' vs ')}) — declare it consistently " \
-                "across every route, or only on one."
+                "#{renderable_id_field(id_field)} (#{declared.map(&:inspect).join(' vs ')}) — declare " \
+                "it consistently across every route, or only on one."
         end
 
         # THE distinct DECLARED `id_type:` tokens across a (possibly merged) node's model routes —
@@ -3137,7 +3137,15 @@ module Axn
           return unless explicit_id&.validations&.key?(:type)
 
           declared_shape = single_type_for(declared, for_output: false)
-          explicit_pairs = json_type_pairs(json_type_for(explicit_id.validations, for_output: false))
+          # `build_property`, not `json_type_for(explicit_id.validations, ...)` (Codex review round 7, PR
+          # #269): `json_type_for` alone doesn't know about the tolerance-driven relaxations `build_property`
+          # applies afterward — a blank-tolerant `type: :uuid` sibling still projects `format: "uuid"`
+          # through `json_type_for` alone, so comparing against IT said "satisfies", while the ACTUAL
+          # winning property (built the same way `build_input` builds every other property) drops that
+          # format for exactly the reason `apply_single_type!`'s own comment gives: a blank value would
+          # fail a strict `format: "uuid"` the runtime doesn't enforce. Comparing the raw pre-relaxation
+          # shape let the format vanish with no error; comparing the real emitted one catches it.
+          explicit_pairs = json_type_pairs(build_property(explicit_id))
           satisfied = !explicit_pairs.empty? && explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
           return if satisfied
 
@@ -3145,7 +3153,20 @@ module Axn
           explicit_desc = ["null-only"] if explicit_desc.empty?
           raise ArgumentError,
                 "model: id_type: #{declared.inspect} disagrees with the explicitly declared " \
-                "#{id_field}'s own type: (#{explicit_desc.join(', ')}) — declare one or the other."
+                "#{renderable_id_field(id_field)}'s own type: (#{explicit_desc.join(', ')}) — declare " \
+                "one or the other."
+        end
+
+        # `id_field` rendered safely into an error message — `Values.canonical_wire_key` (already a
+        # dependency of this file) renders its actual UTF-8 characters when the bytes convert, falling
+        # back to `Symbol#inspect` — which a genuine Symbol (never a caller-subclassable object; every
+        # `id_field` here comes from `FieldConfig.model_id_key`, which always returns one) answers
+        # without running anything overridable, and always in valid UTF-8 even for exotic bytes. Bare
+        # interpolation would risk `Encoding::CompatibilityError` from THIS message's own UTF-8 text
+        # (Codex review round 7, PR #269): `model_id_key` always returns a Symbol, but nothing stops
+        # that Symbol from holding a legal, ASCII-compatible, non-UTF-8 encoding (a Latin-1 field name).
+        def renderable_id_field(id_field)
+          Values.canonical_wire_key(id_field) || id_field.inspect
         end
 
         # Whether a sibling's projected (type, format) PAIR satisfies what a declared `id_type:` demands
@@ -3158,15 +3179,19 @@ module Axn
           declared[:format] == sibling_pair[:format]
         end
 
-        # The base JSON `:type`/`:format` pairs a `json_type_for` result names — a single-element Array
-        # for a plain `{type: "string", format: "uuid"}` node, one entry per branch for `{anyOf: [...]}`,
-        # empty when the node names no type at all (an `inclusion:`/`numericality:`-only bag that
-        # couldn't prove one). The `"null"` branch a nullable sibling's union carries is excluded: `nil`
-        # is never a candidate satisfying a lookup token's type, and requiredness is reconciled
-        # separately (`apply_model_id_requiredness!`/the nested `reject_null!` pass).
+        # The base JSON `:type`/`:format` pairs a built property NAMES — one entry per branch for
+        # `{anyOf: [...]}`, one for a plain `{type: "string", format: "uuid"}` node, and one PER element
+        # when nullability has turned `:type` itself into an Array (`{type: ["string", "null"]}` —
+        # `build_property`'s own post-tolerance shape for a nullable SINGLE type, distinct from `anyOf`,
+        # which is reserved for a genuinely DECLARED union); empty when the node names no type at all (an
+        # `inclusion:`/`numericality:`-only bag that couldn't prove one). Every `"null"` entry is excluded
+        # either way: `nil` is never a candidate satisfying a lookup token's type, and requiredness is
+        # reconciled separately (`apply_model_id_requiredness!`/the nested `reject_null!` pass). Also
+        # accepts a `json_type_for`-shaped (pre-nullability) argument — that never puts an Array at a
+        # single member's `:type`, so `Array(m[:type])` is a one-element wrap there and reads identically.
         def json_type_pairs(type_info)
           members = type_info[:anyOf] || (type_info[:type] ? [type_info] : [])
-          members.reject { |m| m[:type] == "null" }.map { |m| { type: m[:type], format: m[:format] } }
+          members.flat_map { |m| Array(m[:type]).reject { |t| t == "null" }.map { |t| { type: t, format: m[:format] } } }
         end
 
         # Forbid `null` on a property (a required model-id token can't be null). Strips the null branch from

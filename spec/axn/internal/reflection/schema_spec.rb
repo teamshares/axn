@@ -1557,6 +1557,54 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
     end
 
+    # Codex review round 7 (PR #269): comparing against `json_type_for` alone missed a RUNTIME
+    # relaxation `build_property` applies afterward — a blank-tolerant explicit `type: :uuid` sibling
+    # still projects `format: "uuid"` through `json_type_for` alone, so the check saw "satisfies" and
+    # passed, but the ACTUAL winning property (built through `apply_single_type!`, which drops the uuid
+    # format for a blank-tolerant field per its own documented reasoning) silently lost the format —
+    # exactly the class of swallowed contradiction every earlier round's fix here already closed for
+    # other shapes.
+    it "rejects a blank-tolerant explicit type: :uuid sibling beside a required id_type: :uuid (the " \
+       "sibling's OWN blank-tolerance drops its uuid format at emission, so the winning property " \
+       "silently admits \"\" though the required model resolution never would)" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, type: :uuid, allow_blank: true
+        expects :company, model: { klass: Struct.new(:id), id_type: :uuid }
+      end
+
+      expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
+    end
+
+    it "does not raise for a blank-tolerant explicit type: :uuid sibling beside an id_type: String " \
+       "(String never asserted a format to lose)" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, type: :uuid, allow_blank: true
+        expects :company, model: { klass: Struct.new(:id), id_type: String }
+      end
+
+      schema = klass.input_schema
+      expect(schema[:properties][:company_id][:type]).to include("string")
+      expect(schema[:properties][:company_id]).not_to have_key(:format)
+    end
+
+    # Codex review round 7 (PR #269): the generated `<field>_id` Symbol was interpolated raw into this
+    # message's own UTF-8 text — a legal, ASCII-compatible but non-UTF-8 field name (a Latin-1 Symbol)
+    # raised Encoding::CompatibilityError from the MESSAGE ITSELF, replacing the intended, actionable
+    # ArgumentError with an unrelated crash.
+    it "renders a non-UTF-8 (but ASCII-compatible) field name safely rather than crashing the message itself" do
+      name = "caf\xE9".dup.force_encoding("ISO-8859-1").to_sym
+
+      expect do
+        Class.new do
+          include Axn
+          expects name, model: { klass: Struct.new(:id), id_type: Integer }
+          expects :"#{name}_id", type: String
+        end.input_schema
+      end.to raise_error(ArgumentError, /disagrees/)
+    end
+
     # Codex review round 1 (PR #269): an explicit sibling always wins, so building the model's OWN
     # property (and, for an ActiveRecord class, dispatching into it to infer the id's type) is wasted
     # work whenever one exists — verified here with a token whose inference methods raise if reached;
