@@ -225,15 +225,21 @@ module Axn
               # Its requiredness/nullability is decided in the post-pass below so it can account for an
               # explicit `<field>_id` sibling regardless of declaration order.
               #
-              # An explicit sibling ALWAYS wins the property regardless of which is visited first (its
+              # A NON-model sibling ALWAYS wins the property regardless of which is visited first (its
               # own branch below writes unconditionally; this branch only `||=`s), so when one exists
               # anywhere in `field_configs` — checked BEFORE building anything, since the whole list is
               # known upfront — building `id_prop` here would just be discarded. Skipping it matters
               # beyond the wasted allocation: for an ActiveRecord model, `model_id_property` dispatches
               # `primary_key`/`type_for_attribute` (PRO-3384) to infer the id's type, and that dispatch,
               # and the DB/schema access behind it, has no reason to run for a result nothing will use.
+              #
+              # MODEL configs sharing this name are excluded from that check (Codex review round 2, PR
+              # #269): a field named `company_id` that is ITSELF a `model:` field emits at
+              # `company_id_id`, not at `company_id` — it never touches this key at all — so treating it
+              # as the winning sibling skipped the ONLY thing that would have written `company_id`'s
+              # property, leaving a `required` entry with no matching property.
               id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
-              unless field_configs.any? { |c| c.field == id_field }
+              unless field_configs.any? { |c| c.field == id_field && !c.validations[:model] }
                 _, id_prop = model_id_property(config)
                 properties[id_field] ||= id_prop
               end
@@ -1210,17 +1216,23 @@ module Axn
 
             unless model_configs.empty?
               # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
-              # the same nested parent at runtime). A user may declare an explicit nested `<field>_id`
-              # subfield — its own entry in `children`, keyed by that same id, visited independently of
-              # this one — and it always wins the property, so `model_id_property` is skipped rather
-              # than built and discarded: for an ActiveRecord model that call dispatches
+              # the same nested parent at runtime). A user may declare an explicit NON-model nested
+              # `<field>_id` subfield — its own entry in `children`, keyed by that same id, visited
+              # independently of this one — and it always wins the property, so `model_id_property` is
+              # skipped rather than built and discarded: for an ActiveRecord model that call dispatches
               # `primary_key`/`type_for_attribute` (PRO-3384), and there is no reason to pay that (or the
               # DB/schema access behind it) for a result an explicit sibling is about to replace anyway.
+              #
+              # Gated on `explicit_id`, not merely `sibling_node`'s presence (Codex review round 2, PR
+              # #269): a sibling node whose OWN field is itself a `model:` (e.g. `company_id, model:
+              # ...` beside `company, model: ...`) never writes to THIS key at all — it emits its own
+              # generated id one level deeper (`company_id_id`) — so treating its mere existence as
+              # "something will write here" skipped the only thing that would have.
               id_field = Internal::FieldConfig.model_id_key(key)
               sibling_node = children[id_field]
               explicit_id = sibling_node&.configs&.find { |c| !c.validations[:model] }
               reject_model_id_type_conflict!(model_configs.first, explicit_id, id_field)
-              unless sibling_node
+              unless explicit_id
                 _, subprop = model_id_property(model_configs.first)
                 prop[:properties][id_field] ||= subprop
               end

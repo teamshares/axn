@@ -1491,6 +1491,27 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         klass.input_schema
       end
     end
+
+    # Codex review round 2 (PR #269): the "an explicit sibling will win" skip above matched ANY field
+    # config named `<field>_id`, including one that is ITSELF a `model:` field — but such a config never
+    # writes to that wire key at all (it emits its OWN generated id one level deeper,
+    # `<field>_id_id`), so treating it as "something will provide this property" left the FIRST
+    # model's id in `required` with no matching property at all — an invalid, previously-untyped-but-at-
+    # least-PRESENT schema regressed to entirely absent.
+    describe "a model field's generated id sharing a name with ANOTHER model field (not an explicit sibling)" do
+      it "still emits company_id's own generated property when company_id is itself a model: field" do
+        klass = Class.new do
+          include Axn
+          expects :company, model: { klass: Struct.new(:id) }
+          expects :company_id, model: { klass: Struct.new(:id) }
+        end
+        schema = klass.input_schema
+
+        expect(schema[:properties]).to have_key(:company_id)
+        expect(schema[:properties]).to have_key(:company_id_id)
+        expect(schema[:required]).to include("company_id", "company_id_id")
+      end
+    end
   end
 
   describe "shape: members" do
