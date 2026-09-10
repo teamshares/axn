@@ -3146,21 +3146,48 @@ module Axn
           # fail a strict `format: "uuid"` the runtime doesn't enforce. Comparing the raw pre-relaxation
           # shape let the format vanish with no error; comparing the real emitted one catches it.
           sibling_prop = build_property(explicit_id)
-          # Gated on the BUILT property carrying a type-bearing key, not on `explicit_id.validations`
-          # having a `:type` entry (Codex review round 8, PR #269): `inclusion:`/`numericality:` alone —
-          # no `type:` at all — can still make `json_type_for` (and so `build_property`) infer one (an
-          # `inclusion: { in: ["abc"] }` sibling emits `{type: "string", ...}`), and gating on the RAW
-          # validations skipped the comparison entirely for exactly that sibling, letting a declared
-          # `id_type: Integer` silently lose to an inferred `"string"` sibling with no error. A sibling
-          # with NEITHER key present is the one genuine "nothing to compare" case (a bare `default:`, say)
-          # — everything else must be checked, the null-only sibling (round 5) included.
-          return unless sibling_prop.key?(:type) || sibling_prop.key?(:anyOf)
+          # Gated on the BUILT property carrying a type- or enum-bearing key, not on
+          # `explicit_id.validations` having a `:type` entry (Codex review rounds 8-9, PR #269):
+          # `inclusion:`/`numericality:` alone — no `type:` at all — can still make `json_type_for` (and
+          # so `build_property`) infer a type (an `inclusion: { in: ["abc"] }` sibling emits `{type:
+          # "string", ...}`), and a HETEROGENEOUS `inclusion:` set (`in: [1, "abc"]`) can't reduce to one
+          # type at all, so `json_type_for` emits `enum:` alone with NEITHER `:type` nor `:anyOf` —
+          # `build_property` still applies it as the value constraint (see `apply_type_info!`'s own
+          # enum-only branch). Gating on the raw validations, or on `:type`/`:anyOf` alone, skipped the
+          # comparison entirely for exactly these siblings, letting a declared `id_type: Integer` silently
+          # lose to an inferred (or enum-admitted) type with no error. A sibling with NONE of these three
+          # keys is the one genuine "nothing to compare" case (a bare `default:`, say) — everything else
+          # must be checked, the null-only sibling (round 5) included.
+          return unless sibling_prop.key?(:type) || sibling_prop.key?(:anyOf) || sibling_prop.key?(:enum)
 
-          explicit_pairs = json_type_pairs(sibling_prop)
-          satisfied = !explicit_pairs.empty? && explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
+          # The enum-only branch checks each LITERAL's own base JSON type (`enum_scalar_type`, the same
+          # classifier `json_type_for`'s own inclusion branch already uses) against `declared_shape` —
+          # reading each literal's real class, never a method it defines, the same non-dispatching
+          # discipline as everywhere else reflection classifies a caller-supplied value. KNOWN
+          # LIMITATION, stated rather than hidden: this checks base TYPE only, not `id_type: :uuid`'s
+          # FORMAT — a homogeneous String `inclusion:` set of non-uuid-shaped literals still passes,
+          # since the uuid pattern is TypeValidator's own regex, a runtime-layer concern this reflection
+          # module has no dependency on and should not duplicate. The base-type gap this round reported
+          # (Integer vs. a mixed set) is fully closed either way.
+          typed = sibling_prop.key?(:type) || sibling_prop.key?(:anyOf)
+          satisfied = if typed
+                        explicit_pairs = json_type_pairs(sibling_prop)
+                        !explicit_pairs.empty? && explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
+                      else
+                        literals = Array(sibling_prop[:enum]).compact
+                        !literals.empty? && literals.all? { |literal| enum_scalar_type(literal) == declared_shape[:type] }
+                      end
           return if satisfied
 
-          explicit_desc = explicit_pairs.map { |pair| pair[:format] ? "#{pair[:type]}/#{pair[:format]}" : pair[:type] }
+          # Same `typed` branch the check above used, so the message names whichever half of the
+          # property actually decided the verdict — a homogeneous single-value `inclusion:` sibling
+          # carries BOTH a `:type` (what the comparison above used) and an `:enum` (its value
+          # constraint), and describing it by the wrong one would misname what actually disagreed.
+          explicit_desc = if typed
+                            json_type_pairs(sibling_prop).map { |pair| pair[:format] ? "#{pair[:type]}/#{pair[:format]}" : pair[:type] }
+                          else
+                            ["enum: #{sibling_prop[:enum].inspect}"]
+                          end
           explicit_desc = ["null-only"] if explicit_desc.empty?
           raise ArgumentError,
                 "model: id_type: #{declared.inspect} disagrees with the explicitly declared " \

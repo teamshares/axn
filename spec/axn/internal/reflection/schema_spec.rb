@@ -1621,6 +1621,43 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
     end
 
+    # Codex review round 9 (PR #269): a HETEROGENEOUS `inclusion:` set (mixed value types) can't reduce
+    # to one base type at all, so `json_type_for` emits `enum:` alone — neither `:type` nor `:anyOf` —
+    # which the round-8 fix's gate didn't check, letting a declared `id_type: Integer` silently lose to
+    # a sibling whose enum admits a String literal too.
+    it "rejects an explicit sibling whose HETEROGENEOUS inclusion: set emits only enum: (no derivable " \
+       "type at all), when a literal violates the declared id_type:" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, inclusion: { in: [1, "abc"] }
+        expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+      end
+
+      expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees.*enum/)
+    end
+
+    it "does not raise for an enum-only sibling whose every literal matches the declared id_type:" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, inclusion: { in: %w[a b] }
+        expects :company, model: { klass: Struct.new(:id), id_type: String }
+      end
+
+      expect(klass.input_schema[:properties][:company_id][:enum]).to eq(%w[a b])
+    end
+
+    it "names the base :type, not :enum, in the message when a sibling carries BOTH (a homogeneous " \
+       "single-value inclusion: still derives a :type; the verdict came from comparing IT, not the " \
+       "coincidental enum)" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, inclusion: { in: ["abc"] }
+        expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+      end
+
+      expect { klass.input_schema }.to raise_error(ArgumentError, /\(string\)/)
+    end
+
     # (The companion "no type at all" case — a bare `default:` sibling that infers nothing — is already
     # covered above by "does not raise when the explicit sibling has no type: of its own to disagree
     # with"; re-verified passing unchanged by this round's fix, not duplicated here.)
