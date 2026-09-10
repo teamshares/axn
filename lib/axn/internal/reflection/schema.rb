@@ -3169,15 +3169,16 @@ module Axn
         # — admitting the string branch too — so accepting on any one satisfied branch let the sibling
         # silently widen past what `id_type:` promised.
         #
-        # A sibling whose type resolves to NOTHING BUT `null` can never satisfy it either (Codex review
-        # round 5, PR #269): `json_type_pairs` strips the `null` branch (requiredness is reconciled
-        # elsewhere), so a null-ONLY sibling — `type: NilClass` — reduces to an EMPTY set, and a bare
-        # `.all?` on that empty set is vacuously true. A lookup token can never legitimately be null, so
-        # an EMPTY (post-strip) set here can only mean every branch the sibling admits was null — never
-        # "no type info at all" (`explicit_id.validations` is already known to carry a `:type` key by the
-        # time this runs, and `json_type_for` never returns `{}` for one on input) — and must fail the
-        # check rather than vacuously pass it. `satisfied` is explicit about requiring at least one
-        # branch, not just "no branch disagrees".
+        # A sibling whose type resolves to NOTHING BUT `null` needs its own rule (Codex review round 5,
+        # PR #269): `json_type_pairs` strips the `null` branch (requiredness is reconciled elsewhere), so
+        # a null-ONLY sibling — `type: NilClass` — reduces to an EMPTY set, and a bare `.all?` on that
+        # empty set is vacuously true — which would let a null-only sibling silently satisfy ANY declared
+        # `id_type:`, whether or not the model can ever actually go without a real id. An EMPTY
+        # (post-strip) set here can only mean every branch the sibling admits was null (`explicit_id.validations`
+        # is already known to carry a `:type` key by the time this runs, and `json_type_for` never
+        # returns `{}` for one on input), so `sibling_satisfies_declared_id_type?` (below) treats it as a
+        # question about the MODEL's own nullability rather than deciding it outright — see there for why
+        # (Codex review round 16, PR #269).
         def reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
           declared = reconciled_declared_id_type(model_configs, id_field)
           return if declared.nil?
@@ -3207,23 +3208,7 @@ module Axn
           # must be checked, the null-only sibling (round 5) included.
           return unless sibling_prop.key?(:type) || sibling_prop.key?(:anyOf) || sibling_prop.key?(:enum)
 
-          # The enum-only branch checks each LITERAL's own base JSON type (`enum_scalar_type`, the same
-          # classifier `json_type_for`'s own inclusion branch already uses) against `declared_shape` —
-          # reading each literal's real class, never a method it defines, the same non-dispatching
-          # discipline as everywhere else reflection classifies a caller-supplied value. KNOWN
-          # LIMITATION, stated rather than hidden: this checks base TYPE only, not `id_type: :uuid`'s
-          # FORMAT — a homogeneous String `inclusion:` set of non-uuid-shaped literals still passes,
-          # since the uuid pattern is TypeValidator's own regex, a runtime-layer concern this reflection
-          # module has no dependency on and should not duplicate. The base-type gap this round reported
-          # (Integer vs. a mixed set) is fully closed either way.
-          typed = sibling_prop.key?(:type) || sibling_prop.key?(:anyOf)
-          satisfied = if typed
-                        explicit_pairs = json_type_pairs(sibling_prop)
-                        !explicit_pairs.empty? && explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
-                      else
-                        literals = Array(sibling_prop[:enum]).compact
-                        !literals.empty? && literals.all? { |literal| enum_scalar_type(literal) == declared_shape[:type] }
-                      end
+          typed, satisfied = sibling_satisfies_declared_id_type?(sibling_prop, declared_shape, model_configs)
           return if satisfied
 
           # Same `typed` branch the check above used, so the message names whichever half of the
@@ -3246,6 +3231,44 @@ module Axn
                 "model: id_type: #{declared.inspect} disagrees with the explicitly declared " \
                 "#{renderable_id_field(id_field)}'s own type: (#{explicit_desc.join(', ')}) — declare " \
                 "one or the other."
+        end
+
+        # Whether a sibling's projected type/enum satisfies a declared `id_type:`, and whether the check
+        # ran the typed or the enum-only branch (the caller needs `typed` again to describe a mismatch).
+        # Extracted from `reject_model_id_type_conflict!` (which the accumulated Codex findings against
+        # this one check pushed over this file's complexity budget) rather than folding another branch
+        # into that method's body.
+        #
+        # The enum-only branch checks each LITERAL's own base JSON type (`enum_scalar_type`, the same
+        # classifier `json_type_for`'s own inclusion branch already uses) against `declared_shape` —
+        # reading each literal's real class, never a method it defines, the same non-dispatching
+        # discipline as everywhere else reflection classifies a caller-supplied value. KNOWN LIMITATION,
+        # stated rather than hidden: this checks base TYPE only, not `id_type: :uuid`'s FORMAT — a
+        # homogeneous String `inclusion:` set of non-uuid-shaped literals still passes, since the uuid
+        # pattern is TypeValidator's own regex, a runtime-layer concern this reflection module has no
+        # dependency on and should not duplicate.
+        #
+        # A null-only sibling (every branch strips to empty) is satisfied — not a conflict — exactly when
+        # EVERY model route at this node also tolerates nil (Codex review round 16, PR #269): `model:
+        # ..., allow_nil: true` beside `company_id, type: NilClass, optional: true` is a genuinely
+        # working, callable pairing (verified: `.call` succeeds with the id omitted OR explicitly nil),
+        # and the declared `id_type:` is never actually contradicted since the sibling never carries a
+        # non-null value for it to disagree with. It's a real conflict only when some route does NOT
+        # tolerate nil — there, the id is REQUIRED to resolve a record at least sometimes, but the
+        # sibling can never supply one, and THAT combination fails at every call (also verified). `.all?`,
+        # not `.any?`: a single non-nilable route among several merged ones still needs a real id
+        # sometimes.
+        def sibling_satisfies_declared_id_type?(sibling_prop, declared_shape, model_configs)
+          null_only_ok = model_configs.all? { |c| nil_allowed?(c) }
+          typed = sibling_prop.key?(:type) || sibling_prop.key?(:anyOf)
+          satisfied = if typed
+                        explicit_pairs = json_type_pairs(sibling_prop)
+                        explicit_pairs.empty? ? null_only_ok : explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
+                      else
+                        literals = Array(sibling_prop[:enum]).compact
+                        literals.empty? ? null_only_ok : literals.all? { |literal| enum_scalar_type(literal) == declared_shape[:type] }
+                      end
+          [typed, satisfied]
         end
 
         # A declared `id_type:` beside an explicit sibling that emits no type of its OWN at all (a bare

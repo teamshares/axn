@@ -1670,6 +1670,23 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
     end
 
+    # Codex review round 16 (PR #269): the round-5 rule above is right when the model itself REQUIRES a
+    # real id (verified: `.call` with no args raises there, so the id genuinely can never be supplied) —
+    # but the same null-only sibling is not a conflict at all when the model ALSO tolerates nil
+    # throughout (`allow_nil: true`): verified `.call` succeeds both with the id omitted and with it
+    # explicitly nil, so nothing the declared `id_type:` asserts is ever actually contradicted.
+    it "does not raise a null-only explicit sibling beside a declared id_type: when the model ALSO " \
+       "tolerates nil throughout — a genuinely callable pairing, not a swallowed contradiction" do
+      klass = Class.new do
+        include Axn
+        expects :company_id, type: NilClass, optional: true
+        expects :company, model: { klass: Struct.new(:id), id_type: Integer }, allow_nil: true
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+      expect(klass.input_schema[:properties][:company_id]).to eq(type: "null")
+    end
+
     # Codex review round 7 (PR #269): comparing against `json_type_for` alone missed a RUNTIME
     # relaxation `build_property` applies afterward — a blank-tolerant explicit `type: :uuid` sibling
     # still projects `format: "uuid"` through `json_type_for` alone, so the check saw "satisfies" and
