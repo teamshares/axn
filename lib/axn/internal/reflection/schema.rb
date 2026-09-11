@@ -1721,7 +1721,7 @@ module Axn
         # partly) an arbitrary `preprocess:` (Codex review, PR #278 round 10): under a String ancestor, a
         # node `type: { klass: Integer, coerce: false }, preprocess: ->(v) { Integer(v) + 1 }, comparison:
         # { equal_to: 5 }` accepts wire "4" (preprocessed to 5) and rejects wire "5" (preprocessed to 6) —
-        # the OPPOSITE of what a coercion-based `enum: [5, "5"]` would advertise. `coerces_wire_value?`
+        # the OPPOSITE of what a coercion-based `enum: [5, "5"]` would advertise. `coercible_target_klasses`
         # asks the narrower question (coercion only, no preprocess bypass) for exactly this gate.
         #
         # A TYPE-CONDITIONAL bound (length/size/numeric) from a `preprocess:`-tainted side is safe to KEEP
@@ -1741,33 +1741,48 @@ module Axn
         def strip_intrinsically_typed_keys(prop, configs, other_prop)
           literal_values = Array(prop[:const]) + Array(prop[:enum])
           stripped = prop.except(:type, :anyOf, :enum, :const)
-          stripped = drop_conflicting_size_bounds(stripped, other_prop) unless coerces_wire_value?(configs)
-          return stripped if literal_values.empty? || !coerces_wire_value?(configs)
+          coercible_klasses = coercible_target_klasses(configs)
+          stripped = drop_conflicting_size_bounds(stripped, other_prop) if coercible_klasses.empty?
+          return stripped if literal_values.empty? || coercible_klasses.empty?
 
-          spellings = wire_spellings_for(literal_values)
+          spellings = wire_spellings_for(literal_values, coercible_klasses)
           return stripped if spellings.nil?
 
           stripped[:enum] = spellings
           stripped
         end
 
-        # The min/max keyword pairs a size/numeric bound can land in — checked together because a bound on
-        # either side of a pair is enough to create an empty interval against the other side's opposite
-        # bound (a floor with no matching ceiling anywhere is never a contradiction on its own).
+        # The min/max keyword pairs a plain (inclusive-only) size bound can land in — checked together
+        # because a bound on either side of a pair is enough to create an empty interval against the other
+        # side's opposite bound (a floor with no matching ceiling anywhere is never a contradiction on its
+        # own). Numeric bounds are handled separately (see NUMERIC_LOWER_KEYS/NUMERIC_UPPER_KEYS below):
+        # unlike a length/items/properties floor or ceiling, a numeric one can ALSO be spelled exclusively
+        # (`exclusiveMinimum`/`exclusiveMaximum`), which this inclusive-only pairing cannot see at all
+        # (Codex review, PR #278 round 12: an ancestor `numericality: { greater_than: 3 }` emits
+        # `exclusiveMinimum: 3`, not `minimum`, so checking only `minimum`/`maximum` here missed the empty
+        # interval it forms with a colliding node's `exclusiveMaximum: 2`).
         SIZE_BOUND_KEY_PAIRS = [
           %i[minLength maxLength],
           %i[minItems maxItems],
           %i[minProperties maxProperties],
-          %i[minimum maximum],
         ].freeze
         private_constant :SIZE_BOUND_KEY_PAIRS
 
+        # A numeric lower/upper bound's keyword and whether it excludes its own endpoint — `false` (0) for
+        # the inclusive spelling sorts before `true` (1) for the exclusive one in the tie-break `max_by`/
+        # `min_by` below, which is what makes an exclusive bound win a tie against an inclusive one AT THE
+        # SAME value (the exclusive reading is the stricter of the two).
+        NUMERIC_LOWER_KEYS = { minimum: false, exclusiveMinimum: true }.freeze
+        NUMERIC_UPPER_KEYS = { maximum: false, exclusiveMaximum: true }.freeze
+        private_constant :NUMERIC_LOWER_KEYS, :NUMERIC_UPPER_KEYS
+
         # Drops a size/numeric bound pair from `prop` wherever combining it with whatever `other_prop`
         # independently asserts on the SAME pair would admit no value at all (the effective floor exceeds
-        # the effective ceiling) — the narrow, empirical trigger for the round 11 gap, rather than dropping
-        # every bound merely because the OTHER side happens to declare one too (round 8's own test pairs a
-        # node `minLength: 3` against an ancestor's UNRELATED default `minLength: 1` floor, which combines
-        # to an ordinary, satisfiable `minLength: 3` and must survive untouched).
+        # the effective ceiling — or equals it while either side is exclusive there) — the narrow,
+        # empirical trigger for the round 11 gap, rather than dropping every bound merely because the OTHER
+        # side happens to declare one too (round 8's own test pairs a node `minLength: 3` against an
+        # ancestor's UNRELATED default `minLength: 1` floor, which combines to an ordinary, satisfiable
+        # `minLength: 3` and must survive untouched).
         def drop_conflicting_size_bounds(prop, other_prop)
           conflicting = SIZE_BOUND_KEY_PAIRS.flat_map do |min_key, max_key|
             combined_min = [prop[min_key], other_prop[min_key]].compact.max
@@ -1777,74 +1792,122 @@ module Axn
             [min_key, max_key]
           end
 
+          conflicting += NUMERIC_LOWER_KEYS.keys + NUMERIC_UPPER_KEYS.keys if numeric_bounds_conflict?(prop, other_prop)
+
           conflicting.empty? ? prop : prop.except(*conflicting)
         end
 
-        # A literal set's wire-compatible spellings, or nil when this set has no translation reflection can
-        # vouch for without executing user code. `nil` itself (a nullable position's enum member) is never
-        # wire-transformed by coercion at all, so it is set aside before classifying the rest and
-        # reattached untouched after.
-        #
-        # Two classes of literal are safe, for different reasons:
-        # - Integer/Float: `Coercion::COERCERS[Integer]` parses via `Integer(s, 10)` and `Float` via
-        #   `Float(s)`, and both round-trip through `#to_s` — so ADDING the literal's decimal string
-        #   spelling alongside its native form covers exactly the wire forms the coercer accepts for it.
-        # - String: by the time a literal reaches here, `apply_inclusion_enum!` (via
-        #   `normalize_schema_literal`/`Values.serialize_value`) has ALREADY rendered any Symbol/Date/
-        #   Time/DateTime member into its own wire-string spelling — `:allowed` became `"allowed"` before
-        #   this function ever saw it. That string IS the coercer's accepted wire input (`.to_sym`/
-        #   `Date.parse`/etc. all invert `Values.serialize_value` exactly), so it needs no ADDITIONAL
-        #   spelling — it is already one (Codex review, PR #278 round 10: a coercible `Symbol` inclusion
-        #   enum was being dropped here for being "non-numeric" even though it was already wire-safe).
-        #
-        # A third class, TrueClass/FalseClass, is ALSO safe despite `:boolean` accepting several string
-        # spellings with no single canonical inverse: `Coercion.boolean_wire_spellings` is the single
-        # source for the WHOLE accepted set (both truthy and falsy string/integer forms), so this can
-        # enumerate every wire form that coerces to the literal rather than needing to pick just one
-        # (Codex review, PR #278 round 11: `wire_spellings_for([true])` previously fell through to `nil`
-        # for being non-numeric/non-string, dropping the constraint entirely — `type: { klass: :boolean,
-        # coerce: true }, inclusion: { in: [true] } }` beside a raw `String` ancestor then accepted "false",
-        # which coerces to `false` and fails the inclusion check at runtime).
-        #
-        # Anything else (an unrecognized object) has no safe translation and is dropped, a narrower, still-
-        # tolerated imprecision than before this fix existed at all.
-        def wire_spellings_for(values)
-          non_nil = values.compact
-          return nil if non_nil.empty?
+        # Whether the numeric bounds `prop` and `other_prop` each declare (any mix of inclusive/exclusive)
+        # combine into an interval admitting no value — the strictest lower bound exceeds the strictest
+        # upper bound, or the two are equal with at least one side exclusive there (an inclusive `>= 3`
+        # paired with an inclusive `<= 3` still admits 3; an exclusive reading on either side admits
+        # nothing).
+        def numeric_bounds_conflict?(prop, other_prop)
+          lower = strictest_numeric_bound(NUMERIC_LOWER_KEYS, prop, other_prop) do |candidates|
+            candidates.max_by { |value, exclusive| [value, exclusive ? 1 : 0] }
+          end
+          upper = strictest_numeric_bound(NUMERIC_UPPER_KEYS, prop, other_prop) do |candidates|
+            candidates.min_by { |value, exclusive| [value, exclusive ? 0 : 1] }
+          end
+          return false unless lower && upper
 
-          spellings =
-            if non_nil.all? { |v| v.is_a?(::Integer) || v.is_a?(::Float) }
-              (non_nil + non_nil.map(&:to_s)).uniq
-            elsif non_nil.all? { |v| v.is_a?(::String) }
-              non_nil
-            elsif non_nil.all? { |v| [true, false].include?(v) }
-              non_nil.flat_map { |v| Axn::Internal::Coercion.boolean_wire_spellings(v) }.uniq
-            end
-          return nil if spellings.nil?
-
-          values.size == non_nil.size ? spellings : spellings + [nil]
+          lower_value, lower_exclusive = lower
+          upper_value, upper_exclusive = upper
+          lower_value > upper_value || (lower_value == upper_value && (lower_exclusive || upper_exclusive))
         end
 
-        # Whether ANY config in this route list transforms its wire value through COERCION ALONE — a
-        # literal translation gated on this can trust that the config's declared type is what governs the
-        # wire-to-target mapping (see wire_spellings_for), rather than an opaque Proc reflection must not
-        # execute. A config with a `preprocess:` is excluded OUTRIGHT here even when it ALSO coerces: the
-        # two can compose in either order and a Proc can undo or rescale whatever coercion produced, so
-        # coercion's presence proves nothing about the config's net wire-to-value mapping the moment a
-        # preprocess sits alongside it (Codex review, PR #278 round 10 — the reported repro used `coerce:
-        # false` beside `preprocess:`, but the same unsoundness follows just as well from `coerce: true`
-        # beside a NON-identity `preprocess:`, so the exclusion is on `preprocess:` being present at all,
-        # not on whether coercion is explicitly disabled).
-        def coerces_wire_value?(configs)
-          configs.any? do |config|
-            next false unless config.respond_to?(:preprocess)
-            next false if config.preprocess
+        # The single strictest `[value, exclusive?]` bound across both props' entries for one keyword pair
+        # (e.g. `minimum`/`exclusiveMinimum`), or nil when neither prop declares either keyword.
+        def strictest_numeric_bound(keys, prop, other_prop)
+          candidates = keys.flat_map do |key, exclusive|
+            [prop[key], other_prop[key]].compact.map { |value| [value, exclusive] }
+          end
+          return nil if candidates.empty?
+
+          yield candidates
+        end
+
+        # A literal set's wire-compatible spellings, or nil when NONE of them have a translation reflection
+        # can vouch for without executing user code. Each literal is judged INDEPENDENTLY (not as an
+        # all-or-nothing homogeneous set — see round_tripping_wire_spellings) and a literal with no safe
+        # spelling of its own simply contributes none, rather than poisoning the whole set (Codex review,
+        # PR #278 round 12: with a coercing declared type of `[Integer, String]`, an inclusion enum of
+        # `["5", "ok"]` needs "5" DROPPED — it decodes to Integer 5, never String "5", so no wire value
+        # could ever satisfy the inclusion check via that entry — while "ok" is untouched by either target
+        # and survives; an earlier all-or-nothing, class-only check couldn't see the difference and kept
+        # both, including the wire-unreachable "5").
+        def wire_spellings_for(values, coercible_klasses)
+          spellings = values.flat_map { |value| round_tripping_wire_spellings(value, coercible_klasses) }.uniq
+          spellings.empty? ? nil : spellings
+        end
+
+        # The wire forms of ONE literal that reflection can PROVE the coercer accepts, by actually calling
+        # it (a pure parse function, not user code — the same boundary `Values.serialize_value` calls
+        # already cross elsewhere in this file) rather than assuming a spelling from the literal's Ruby
+        # class alone: a CANDIDATE wire form is safe only if coercing it and re-serializing the result
+        # reproduces the EXACT literal `apply_inclusion_enum!` already emitted — the round-trip that a
+        # class-only check (round 9-11's `.to_s`/"already a String" heuristics) cannot express, and got
+        # wrong for a union coercion target where a candidate that LOOKS like a safe spelling actually
+        # decodes to something else entirely (Codex review, PR #278 round 12, same finding as above).
+        #
+        # `nil` needs no candidate beyond itself: `Coercion.coerce_value`/`coerce_boolean` both leave it
+        # untouched (never wire-transformed by coercion at all — round 8's original justification), so it
+        # trivially round-trips and this never has to special-case it as `values.compact`-and-reattach the
+        # way earlier rounds did (Codex review, PR #278 round 12: that reattachment code path returned nil
+        # — "no safe translation" — for an ALL-nil literal set, since compacting first left nothing to
+        # classify, dropping an entirely safe `enum: [nil]` outright).
+        #
+        # Integer/Float ALSO try their `#to_s` spelling (the coercer's String-parsing input, alongside the
+        # value's own already-JSON-native form); a boolean tries every spelling `Coercion.boolean_wire_
+        # spellings` names; anything else tries only itself. A candidate that fails to round-trip — the
+        # union case above, or any candidate `Coercion.coerce_value` cannot parse for this declared type at
+        # all — is silently excluded rather than raising: `coerce_value` itself never raises (a failed
+        # parse just returns its input unchanged), so only `Values.serialize_value`'s own opaque-value
+        # guard needs rescuing.
+        def round_tripping_wire_spellings(value, coercible_klasses)
+          candidates =
+            case value
+            when nil then [nil]
+            when ::Integer, ::Float then [value, value.to_s]
+            when ::String then [value]
+            when true, false then Axn::Internal::Coercion.boolean_wire_spellings(value)
+            else []
+            end
+
+          candidates.select { |candidate| wire_candidate_round_trips?(candidate, value, coercible_klasses) }
+        end
+
+        def wire_candidate_round_trips?(candidate, value, coercible_klasses)
+          coerced = Axn::Internal::Coercion.coerce_value(candidate, coercible_klasses)
+          Values.serialize_value(coerced) == value
+        rescue Axn::Extensions::Serialization::UnserializableValue
+          false
+        end
+
+        # The coercible target klasses of the FIRST config in this route list that transforms its wire
+        # value through COERCION ALONE — empty when none does. A literal translation gated on a non-empty
+        # result can trust that THESE klasses are what governs the wire-to-target mapping (see
+        # wire_spellings_for), rather than an opaque Proc reflection must not execute. A config with a
+        # `preprocess:` is excluded OUTRIGHT here even when it ALSO coerces: the two can compose in either
+        # order and a Proc can undo or rescale whatever coercion produced, so coercion's presence proves
+        # nothing about the config's net wire-to-value mapping the moment a preprocess sits alongside it
+        # (Codex review, PR #278 round 10 — the reported repro used `coerce: false` beside `preprocess:`,
+        # but the same unsoundness follows just as well from `coerce: true` beside a NON-identity
+        # `preprocess:`, so the exclusion is on `preprocess:` being present at all, not on whether coercion
+        # is explicitly disabled).
+        def coercible_target_klasses(configs)
+          configs.each do |config|
+            next unless config.respond_to?(:preprocess)
+            next if config.preprocess
 
             type_opt = config.validations[:type]
-            next false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
+            next if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
 
-            !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
+            klasses = Axn::Internal::Coercion.coercible_klasses(type_opt)
+            return klasses unless klasses.empty?
           end
+
+          []
         end
 
         # Whether ANY config in this route list transforms the wire value it judges — a Proc
