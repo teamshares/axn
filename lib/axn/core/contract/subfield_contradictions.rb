@@ -37,6 +37,21 @@ module Axn
           check_dead_nil_tolerance!(tree, field_configs)
         end
 
+        # The subfield-free entry point. `check!` is skipped outright by the top-level seam when no subfield
+        # exists, on the documented grounds that with an empty tree no tolerance is unexercisable and no
+        # segment is read. That reasoning does not extend to the model-id claim, which needs no subfield at
+        # all — a top-level `<field>_id` carrying its own `shape:` block claims the key on its own — so the
+        # top-level seam routes here instead of skipping everything.
+        #
+        # Returns without building a tree when no `model:` is declared, which is what keeps the
+        # per-declaration build off the subfield-free path for every contract that cannot trip this.
+        def check_model_id_claims!(field_configs)
+          return if field_configs.none? { |c| c.validations[:model] }
+
+          tree = Axn::Internal::SubfieldTree.build(field_configs, [])
+          check_model_id_object_claim!(tree, field_configs)
+        end
+
         # The MODEL-ID OBJECT-CLAIM check (PRO-3396): a `model:` field's generated `<field>_id` names the
         # LOOKUP TOKEN the finder consumes — a scalar. Another declaration can claim that same wire key as an
         # object WITH CONTENTS: a dotted `on:` whose intermediate segment is spelled `<field>_id`, an explicit
@@ -69,6 +84,12 @@ module Axn
         def check_model_id_object_claim!(tree, field_configs)
           tree.index.each do |config, path|
             next unless config.validations[:model]
+            # A model under a `model:` (or otherwise non-nestable) ancestor is never nested by the emitter at
+            # all — `apply_nested_subfields!` stops at the blocking node — so neither this model's generated
+            # id nor anything beneath it reaches the document, and there is no emitted claim to collide with.
+            # Asked through `path_blocked?`, the drop pass's own predicate, so what this skips and what
+            # emission omits cannot drift.
+            next if Axn::Internal::Reflection::Schema.path_blocked?(path.ancestors)
 
             id_key = Internal::FieldConfig.model_id_key(config.field)
             claim = model_id_object_claimant(tree, path, field_configs, id_key)

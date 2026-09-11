@@ -1013,6 +1013,45 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
     end
 
+    # The top-level seam skips the other checks entirely when no subfield exists. This claim needs none, so
+    # gating on one made the SAME two declarations legal or illegal depending on whether an unrelated
+    # subfield happened to be declared elsewhere (Codex review round 7).
+    it "rejects a subfield-free contract, where the other checks are skipped outright" do
+      expect do
+        build_axn do
+          expects :company_id, type: Hash do
+            field :detail, type: String
+          end
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects it identically once an unrelated subfield exists" do
+      expect do
+        build_axn do
+          expects :company_id, type: Hash do
+            field :detail, type: String
+          end
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+          expects :other, type: Hash
+          expects :x, on: :other, type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    # A model beneath a `model:` ancestor is never nested by the emitter, so neither its generated id nor
+    # anything under it reaches the document and there is no emitted claim to collide with (Codex round 7).
+    it "accepts a model whose own path the emitter never nests through" do
+      expect do
+        build_axn do
+          expects :user, model: { klass: DeadCo, finder: :fetch }
+          expects :widget, on: :user, model: { klass: DeadCo, finder: :fetch }, method_call: true
+          expects :detail, on: "user.widget_id", type: String
+        end
+      end.not_to raise_error
+    end
+
     # The legal tail — a scalar `<field>_id` beside a model is THE supported spelling (it supplies the
     # lookup token), so nothing here may start raising.
     # The id sibling is declared FIRST at depth: an explicit reader declared after the model's inferred
