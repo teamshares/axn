@@ -5643,11 +5643,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
           # An approximate side's `enum` survives stripping only when it describes the SAME (raw) value
           # the other side reads — a TRANSFORMING side's enum describes its OWN post-transform value
-          # instead, so it is forced to `{}` in pass 1 before pass 2 (the enum-preserving stand-down) ever
-          # runs, unlike the plain-`inclusion:`-on-an-unknown-class case above (Codex review, PR #278 round
-          # 6: keeping `enum: [5]` — a target Integer — conjoined against the ancestor's raw String
-          # requirement produced a node nothing satisfies, though the runtime accepts the wire string "5").
-          it "does not preserve an enum belonging to a config that also transforms its input" do
+          # instead, so `type`/`anyOf`/`enum` are all still stripped in pass 1 before pass 2 (the
+          # enum-preserving stand-down for an unknown-class side) ever runs, unlike the plain-`inclusion:`-
+          # on-an-unknown-class case above (Codex review, PR #278 round 6: keeping `enum: [5]` — a target
+          # Integer — unstripped conjoined against the ancestor's raw String requirement produced a node
+          # nothing satisfies, though the runtime accepts the wire string "5").
+          #
+          # But dropping the enum's VALUES entirely (rather than just the `type` binding it came with) is
+          # its own, opposite-direction gap (Codex review, PR #278 round 9): with nothing surviving beside
+          # it, the node contributes nothing beyond the ancestor's bare `type: "string"`, so the schema
+          # admits every non-empty string — including "6", though the runtime coerces "6" to Integer 6 and
+          # rejects it (only 5 is in the inclusion list). Since `Integer(s, 10)` and `Float(s)` both
+          # round-trip through `#to_s`, a numeric enum value's decimal string spelling is a wire form the
+          # coercer accepts for it — retaining both spellings (`enum: [5, "5"]`) keeps the schema correct
+          # without dropping the constraint or inventing a general coercion inverse.
+          it "translates a numeric enum belonging to a config that also transforms its input into its wire-string spelling" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -5659,8 +5669,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(type: "string", minLength: 1)
+            expect(inner).to eq(enum: [5, "5"], not: { type: "null" }, allOf: [{ type: "string", minLength: 1 }])
             expect(klass.call(payload: { inner: "5" })).to be_ok
+            expect(klass.call(payload: { inner: "6" })).not_to be_ok # coerces to 6, fails inclusion in [5]
           end
 
           # coerce: false only rules out the COERCION reason a type is approximate — it says nothing about
@@ -5737,19 +5748,25 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # type binding `enum` does — a literal value is itself of some JSON type — so it belongs beside
           # `type`/`anyOf`/`enum` in strip_intrinsically_typed_keys, not among the type-conditional keywords
           # that survive. Found by auditing every keyword the emitter can produce for this same class of gap,
-          # rather than waiting for another round to surface it one keyword at a time: a coercing node's own
-          # `comparison: { equal_to: 5 }` names the POST-coercion value (Integer 5), but the wire value the
-          # ancestor's exact `type: "string"` still has to accept is the pre-coercion String "5" — conjoining
-          # `const: 5` unstripped rejects that wire string outright, even though runtime accepts it (coerces
-          # "5" to Integer 5, then compares equal). Schema stricter than runtime here, the mirror image of the
-          # round 8 `length:` bug rather than the same direction, but the same missing keyword classification.
+          # rather than waiting for another round to surface it one keyword at a time.
           #
-          # Once `type` and `const` are both stripped this node's OWN property is fully empty (it declares
-          # nothing type-conditional to survive alongside them), so the conjunction routes through the
-          # empty-side merge branch and the ancestor's exact property is the whole story — no `allOf`
-          # sibling, and no explicit `not: {type: "null"}` either: unlike a bare size bound, `const: 5` (had
-          # it survived) would already have excluded null on its own, so reject_null! never needed to add one.
-          it "strips a transforming node's own const:, which names the post-coercion value rather than the wire form" do
+          # DROPPING it outright (Codex review, PR #278 round 9) is its OWN gap in the opposite direction:
+          # once `const` is gone with nothing left to survive alongside it, the node contributes NOTHING
+          # beyond the ancestor's bare `type: "string"` — so the schema admits every non-empty string,
+          # including "6", though the runtime coerces "6" to Integer 6 and rejects it (only 5 passes the
+          # equality check). Schema looser than runtime — the one forbidden direction.
+          #
+          # The fix: since `Coercion::COERCERS[Integer]` parses via `Integer(s, 10)` and `Float` via
+          # `Float(s)`, both round-trip through `#to_s` — so a numeric const/enum value's decimal string
+          # spelling is a WIRE form the coercer accepts, and retaining both spellings as an `enum` (rather
+          # than dropping the constraint) keeps the schema correct without inventing a general coercion-
+          # inverse: `enum: [5, "5"]` accepts "5" (matches runtime) and rejects "6" (matches runtime) and
+          # rejects the JSON integer 5 too (correctly — the ancestor's own raw-wire `type: "string"`, kept
+          # in the `allOf` sibling, still requires the wire form itself to be a String). A non-numeric
+          # literal (Symbol/Date/anything else) has no such safe, construction-only translation available
+          # and is dropped as before — a narrower, still-tolerated imprecision, filed as a follow-up rather
+          # than solved here.
+          it "translates a transforming node's own numeric const: into its wire-string spelling instead of dropping it" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -5761,8 +5778,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(type: "string", minLength: 1)
+            expect(inner).to eq(enum: [5, "5"], not: { type: "null" }, allOf: [{ type: "string", minLength: 1 }])
             expect(klass.call(payload: { inner: "5" })).to be_ok
+            expect(klass.call(payload: { inner: "6" })).not_to be_ok # coerces to 6, fails the node's own equal_to: 5
             expect(klass.call(payload: { inner: 5 })).not_to be_ok # fails the ancestor's raw-wire type: String
           end
 
