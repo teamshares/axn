@@ -5609,6 +5609,75 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: { other: true } })).not_to be_ok # not in the ancestor's inclusion list
           end
 
+          # Two sides that are BOTH unknown-class hints never contradict each other (they both fall back to
+          # the SAME permissive shape), so this stays unstripped — but an unknown-class member beside a
+          # TRANSFORMING node is a different pairing: the node's own emission is forced to `{}` first (it
+          # names a post-transform value nothing else reads), and the ancestor's hint, having nothing real
+          # to contradict, keeps its FULL property rather than being stripped to just its (here, absent)
+          # enum. That is what lets the coercible wire string the runtime accepts still validate (Codex
+          # review, PR #278 round 6 — treating both emitted type hints as exact here produced an integer
+          # node with an incompatible string allOf branch, admitting nothing).
+          it "keeps an unknown-class ancestor's full hint beside a node that transforms, rather than stripping both" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", minLength: 1)
+            expect(klass.call(payload: { inner: "5" })).to be_ok
+          end
+
+          # An approximate side's `enum` survives stripping only when it describes the SAME (raw) value
+          # the other side reads — a TRANSFORMING side's enum describes its OWN post-transform value
+          # instead, so it is forced to `{}` in pass 1 before pass 2 (the enum-preserving stand-down) ever
+          # runs, unlike the plain-`inclusion:`-on-an-unknown-class case above (Codex review, PR #278 round
+          # 6: keeping `enum: [5]` — a target Integer — conjoined against the ancestor's raw String
+          # requirement produced a node nothing satisfies, though the runtime accepts the wire string "5").
+          it "does not preserve an enum belonging to a config that also transforms its input" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, inclusion: { in: [5] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", minLength: 1)
+            expect(klass.call(payload: { inner: "5" })).to be_ok
+          end
+
+          # coerce: false only rules out the COERCION reason a type is approximate — it says nothing about
+          # the SEPARATE unknown-class reason, so an unknown class explicitly opted out of coercion is
+          # still approximate on its own terms (Codex review, PR #278 round 6 — the opt-out was short-
+          # circuiting the whole approximateness check, so `Object` conjoined its fake string type against
+          # a real ancestor Hash shape and admitted nothing).
+          it "keeps an unknown class approximate even when coerce: false rules out the coercion reason" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :a, type: String
+                end
+              end
+              expects :inner, on: :payload, type: { klass: Object, coerce: false }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1)
+            expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
+          end
+
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
             klass = Class.new do
               include Axn
