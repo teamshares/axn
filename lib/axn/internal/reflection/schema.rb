@@ -15,8 +15,8 @@ require "axn/internal/reflection/pattern"
 # cannot load without their owner either.
 require "axn/internal/field_config"
 require "axn/internal/shape_graph"
-# transforms_value? asks whether a node's declared type is coercible at all, reusing the runtime step's
-# own derivation (Coercion.coercible_klasses) rather than re-deriving it.
+# approximate_type_token? asks whether a token is one of Coercion::SUPPORTED's coercion targets, so the
+# builder cannot load without that constant either.
 require "axn/internal/coercion"
 
 # The graph this builder walks is one the class merely HOLDS, so the builder cannot load without the two
@@ -1278,6 +1278,16 @@ module Axn
           # has no member to collide with at any key, so the per-key lookup below is skipped outright. Measured
           # at +15% allocations for a shape-free action with 21 subfield children before this guard, ~0 after.
           ancestor_shapes = ancestor_configs.any? { |c| c.validations[:shape] }
+          # The ENFORCED list (`ancestor_configs`, every route) is right for nullability, but wrong for "what
+          # did the ancestor actually EMIT here" — `apply_structured_schema!` builds a node's property from
+          # the REPRESENTATIVE route alone, so a later, non-representative route's shape member is declared
+          # but never reaches the document. Restricted the same way `property_representative` restricts
+          # everywhere else that has to name the config a property was built FROM (Codex review, PR #278
+          # round 4: judging every route let a merged node's non-representative EXACT route mask its
+          # representative's APPROXIMATE one — the property actually conjoined was the representative's fake
+          # hint, not the exact route the unrestricted list also saw). `carried` is already
+          # representative-restricted by construction, so it is unaffected here.
+          emitted_ancestor_configs = Array(property_representative(parent_configs)) + carried
           children.each do |key, node|
             if node.implicit?
               apply_implicit_node!(prop, key, node, ancestor_configs, ann)
@@ -1298,7 +1308,8 @@ module Axn
             next unless representative
 
             members = ancestor_shapes ? shape_members_at(ancestor_configs, key) : NO_SHAPE_MEMBERS
-            apply_explicit_child!(prop, key, node, representative, non_model_configs, members, ann)
+            emitted_members = ancestor_shapes ? shape_members_at(emitted_ancestor_configs, key) : NO_SHAPE_MEMBERS
+            apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
             prop[:required] << required_key(key) unless node_optional?(node, ann, non_model_configs)
           end
           # The sibling's OWN entry (a plain child of this same loop) always wins the property outright
@@ -1345,10 +1356,7 @@ module Axn
         # member-of-a-member test — and the conjunction itself needs neither: conjoin_shape_member_property
         # already knows how to combine two object-shaped properties (the keyword union above) and how to
         # combine anything else (a sibling `allOf` branch), so a member the node "cannot nest" rides
-        # alongside as its own `allOf` branch rather than being dropped. The one thing that DOES skip the
-        # conjoin is the node transforming the wire value
-        # (`coerce:`/`preprocess:`): the two sides would then be judging different values, and stating their
-        # conjunction would describe a contract stricter than the one that actually runs.
+        # alongside as its own `allOf` branch rather than being dropped.
         #
         # The merge runs BEFORE the descent, not after: the nested pass reads `child_prop[:properties]` to
         # decide whether a generated `<leaf>_id` still needs writing, and `apply_implicit_node!` reads it again
@@ -1356,11 +1364,20 @@ module Axn
         # them looking at a property the member's contribution had not reached yet.
         #
         # Codex review (PR #278): `member_configs`/`own_configs` (the collision's two sides, as ROUTE lists —
-        # `members` and `[representative]` here) let `conjoin_shape_member_property` judge each side's
-        # DECLARED type before trusting its emitted property as an exact constraint worth conjoining — see
-        # that method for why (a real `type: String` and an unknown class's approximate `{type: "string"}`
-        # fallback emit the byte-identical Hash, so only the declaration tells them apart) and for how the
-        # same judgment recurses through `merge_emitted_maps` for a name colliding one level down.
+        # `emitted_members` and `[representative]` here) let `conjoin_shape_member_property` judge each
+        # side's DECLARED type before trusting its emitted property as an exact constraint worth conjoining —
+        # see `approximate_type_token?` for why (a real `type: String` and an unknown class's approximate
+        # `{type: "string"}` fallback, OR a coercible token's TARGET-not-wire-form emission, land on the
+        # identical Hash a real declaration of that type would) and for how the same judgment recurses
+        # through `merge_emitted_maps` for a name colliding one level down. `emitted_members`, not `members`:
+        # at a merged node `apply_structured_schema!` only ever builds `member_prop` from the REPRESENTATIVE
+        # route, so approximateness is judged on that route alone — `members` (every route) stays for
+        # nullability just below, an ENFORCED question the representative restriction does not apply to.
+        #
+        # `representative.preprocess` is the one thing checked OUTSIDE `conjoin_shape_member_property`
+        # itself: a Proc transform has no declared type to weigh as approximate-vs-exact at all (see
+        # `approximate_type_token?`'s own comment on why it stops at coercion), so the conjoin is skipped
+        # outright rather than asked to judge something it has no token for.
         #
         # `null` survives only when every non-model route tolerates nil (runtime enforces all of them; the
         # property itself is built from the first non-model config), EVERY colliding shape member tolerates nil
@@ -1370,12 +1387,12 @@ module Axn
         # nil even for a non-object node whose subfield shape isn't nested here. The members are read via
         # nil_allowed?, the predicate `apply_implicit_node!` reads them with, never sniffed off the emitted
         # property: an untyped nil-tolerant member emits no `type`, leaving no null branch to find.
-        def apply_explicit_child!(prop, key, node, representative, non_model_configs, members, ann)
+        def apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
           merged_members = merged_explicit_members(node, members)
           child_prop = build_property(representative, subfield: true)
           member_prop = prop[:properties][key]
-          if member_prop && !transforms_value?(representative)
-            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: members, own_configs: [representative])
+          if member_prop && !representative.preprocess
+            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative])
           end
           apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
           null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
@@ -1641,42 +1658,45 @@ module Axn
           type == "object" || (type.is_a?(::Array) && type.include?("object"))
         end
 
-        # `coerce:`/`preprocess:` transform the WIRE value before validation runs, so a node declaring
-        # either judges a DIFFERENT value than the ancestor member's own declaration does — a shape member
-        # can never carry either (`_reject_model_transform!`'s sibling guard on shape members), so the
-        # transform is always on the node's side alone. Conjoining their emitted properties would describe
-        # a contract stricter than the one that actually runs: `field :inner, type: String` beside `expects
-        # :inner, on: :payload, type: { klass: Integer, coerce: true }` accepts the wire value `"5"` at
-        # runtime (coerced to `5`), while `{type: "integer", allOf: [{type: "string"}]}` admits nothing.
+        # Whether `single_type_for`'s INPUT branch for this token is untrustworthy as an EXACT conjunction
+        # target — either because it is a permissive HINT (an unknown class like `Object`/`Enumerable`,
+        # reflected as `{type: "string"}` because "a JSON client can't send a Ruby object anyway", never a
+        # real constraint), or because a coercible token's emitted type is the coercion TARGET rather than
+        # the wire form the ancestor's own check actually reads.
         #
-        # `preprocess:` and an explicit `coerce:` are unconditional — declaring either always transforms.
-        # But an ABSENT `coerce:` on a coercible type is not evidence of no transform: the class/global
+        # The coercion half needs its own paragraph. `field :inner, type: String` beside `expects :inner,
+        # on: :payload, type: { klass: Integer, coerce: true }` accepts the wire value `"5"` at runtime
+        # (`"5"` is a real String, satisfying the ancestor's OWN check, which always reads the RAW wire
+        # value regardless of what any OTHER declaration at this position coerces — measured: the ancestor
+        # ALSO rejects an already-Integer wire value `5` here, "Payload inner is not a String", so its check
+        # is unconditional and never sees the coerced result). Conjoining the node's emitted `{type:
+        # "integer"}` against the ancestor's real `{type: "string"}` states a contradiction nothing
+        # satisfies, though `"5"` satisfies both declarations under their OWN (different) readings of the
+        # SAME wire value. So a coercible token's emission is approximate in exactly the sense the
+        # unknown-class hint is: it names the TARGET, not the full set of wire forms that reach it, and
+        # `conjoin_shape_member_property` already knows what to do with an approximate side — drop it,
+        # adopt the other side's real property wholesale (Codex review, PR #278 rounds 1 and 4: two
+        # separate attempts to protect just the "transforming" branch, both replaced once the ancestor's
+        # check was measured to be unconditional rather than value-order-dependent, which made the
+        # union-of-branches machinery unnecessary — every coercible token, in ANY position, is simply
+        # approximate).
+        #
+        # An ABSENT `coerce:` on a coercible type is not evidence of no transform: the class/global
         # `coerce_input_types` setting (always on under `Axn::Tools::Invoker`) coerces every such field
         # whose own `coerce:` is silent, and reflection cannot resolve that per-call/per-class flag — the
         # same conservatism `boolean_coercion_can_flip_truthiness?` already applies ("an ABSENT flag with a
-        # coercible branch is treated as flippable"). So a declared type with ANY coercible branch stands
-        # down UNLESS it explicitly opts out (`coerce: false` in the bag), mirroring `Coercion.field_coerces?`
-        # exactly: explicit wins, absence defers to the ambient flag. `Coercion.coercible_klasses` is the
-        # single source of truth for "what does this field coerce to" (the runtime step's own words), reused
-        # rather than re-derived so this can't drift from what `coerce_config_value` actually does.
-        def transforms_value?(config)
-          return true if config.preprocess
-          return true if config.validations.key?(:coerce) # bare form: coerce: <Type>, never a no-op
-
-          type_opt = config.validations[:type]
-          return false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
-
-          !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
-        end
-
-        # Whether `single_type_for`'s INPUT branch for this token falls through to its permissive `{type:
-        # "string"}` fallback ("a JSON client can't send a Ruby object anyway") rather than asserting a real
-        # JSON type. Derived from the SAME branches `single_type_for` checks, in the same order, so the two
-        # cannot disagree about which classes are "known": boolean/uuid/params, a `TYPE_MAP` entry, or a
-        # Numeric excluding Complex (which falls through to the fallback on input too, exactly as
-        # `single_type_for` itself does).
+        # coercible branch is treated as flippable"). `Coercion::SUPPORTED` is checked FIRST and unconditionally
+        # (a bare `coerce: <Type>` is sugar for `type: { klass:, coerce: true }` — `_expand_coerce_sugar!`
+        # settles it into the bag form before `validations` ever holds it, so there is no separate bare
+        # spelling left to check here) — the per-config `coerce: false` opt-out is `approximate_config?`'s
+        # job, since it is a property of the DECLARATION's bag, not of the token.
+        #
+        # Derived from the SAME branches `single_type_for` checks, in the same order, for the OTHER
+        # (unknown-class) half: boolean/uuid/params, a `TYPE_MAP` entry, or a Numeric excluding Complex
+        # (which falls through to the fallback on input too, exactly as `single_type_for` itself does) — so
+        # the two can't disagree about which classes are "known".
         def approximate_type_token?(token)
-          return false if Axn::Internal::Identity.same?(token, :boolean)
+          return true if Axn::Internal::Coercion::SUPPORTED.include?(token)
           return false if Axn::Internal::Identity.same?(token, ::TrueClass)
           return false if Axn::Internal::Identity.same?(token, ::FalseClass)
           return false if Axn::Internal::Identity.same?(token, :uuid)
@@ -1686,15 +1706,28 @@ module Axn
           !numeric_but_not_complex?(token)
         end
 
-        # Whether ANY branch of a config's declared type is one of the approximate tokens above. `.any?`,
-        # not `.all?`: a mixed union like `type: [Object, String]` has one exact branch, but `Object` alone
-        # already admits everything the union could ever narrow to, so the union as a whole asserts nothing
-        # more precise than the approximate branch does (Codex review, PR #278 round 2 — a `.all?` reading
-        # let a union with an approximate branch through as "exact", conjoining its collapsed `"string"`
-        # emission as if it meant only strings). Untyped (no declared type at all) is NOT approximate: it
-        # emits no `:type` key at all rather than a misleading one, which is the `own_prop.empty?` case
+        # `preprocess:` is the one transform this cannot see through — a caller-supplied Proc with no
+        # declared TARGET type at all, so there is no "real" side to fall back on the way a coercion's
+        # target gives one. A shape member can never carry it (`_reject_model_transform!`'s sibling guard),
+        # so the node's own emission is simply left untouched (the caller skips the conjoin outright).
+        #
+        # `coerce: false` is the explicit opt-out `approximate_type_token?` cannot see (it is a property of
+        # the DECLARATION's bag, not of any one token), mirroring `Coercion.field_coerces?`'s own
+        # explicit-wins semantics: it stands down every OTHER coercible-token check for this config, even
+        # in a bag naming a single class.
+        #
+        # Whether ANY branch of a config's declared type is approximate. `.any?`, not `.all?`: a mixed union
+        # like `type: [Object, String]` has one exact branch, but `Object` alone already admits everything
+        # the union could ever narrow to, so the union as a whole asserts nothing more precise than the
+        # approximate branch does (Codex review, PR #278 round 2 — a `.all?` reading let a union with an
+        # approximate branch through as "exact", conjoining its collapsed `"string"` emission as though it
+        # meant only strings). Untyped (no declared type at all) is NOT approximate: it emits no `:type` key
+        # at all rather than a misleading one, which is the `own_prop.empty?` case
         # `conjoin_shape_member_property` already handles on its own terms.
         def approximate_config?(config)
+          type_opt = config.validations[:type]
+          return false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
+
           tokens = declared_type_tokens(config.validations)
           !tokens.empty? && tokens.any? { |t| approximate_type_token?(t) }
         end
