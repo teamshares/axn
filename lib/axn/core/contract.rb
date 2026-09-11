@@ -544,15 +544,9 @@ module Axn
           validations, metadata = _partition_field_options(fields, **)
           # Ahead of the block form's own write to this slot (a block legitimately builds a distributing
           # shape; a raw kwarg no longer may) — reads the caller's own `shape:`, not what a block would replace
-          # it with, so a field declaring BOTH no longer has the raw one silently discarded for THAT defect
-          # (see PRO-3191). `_reject_unshaped_shape!`/`_reject_unknown_shape_keys!` join it here for the
-          # identical reason (PRO-3387, Codex round 1, PR #275): a raw `shape:` beside a block is fully
-          # OVERWRITTEN below, so any OTHER defect in what the author wrote — a non-Hash, an unknown key — is
-          # erased before `_snapshot_declared_shape!` ever reads it, and `shape: { bogus: 1 } do … end`
-          # declared clean. Both stand down harmlessly when there is no raw `shape:` to judge.
-          _reject_distributing_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
-          _reject_unshaped_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
-          _reject_unknown_shape_keys!(validations, "`shape:` on #{_declared_fields_label(fields)}")
+          # it with, so a field declaring BOTH no longer has the raw one silently discarded (see PRO-3191, and
+          # `_reject_raw_shape_before_block_overwrite!` for the two later rounds that joined it here).
+          _reject_raw_shape_before_block_overwrite!(validations, "`shape:` on #{_declared_fields_label(fields)}", fields.map(&:to_s).inspect)
           validations[:shape] = _build_shape(fields, validations:, &block) if block
           # Minted here, after the block form's per-member pre-pass, and threaded to BOTH of this declaration's
           # edges — the snapshot below and the `of:` chain `_parse_field_configs` descends (see
@@ -698,10 +692,9 @@ module Axn
           end
 
           # Same refusal as `expects`, and for the same ordering reason: reads the caller's own `shape:` ahead
-          # of the block form's write to the slot (see PRO-3191, and PRO-3387 for the two joining it here).
-          _reject_distributing_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
-          _reject_unshaped_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
-          _reject_unknown_shape_keys!(validations, "`shape:` on #{_declared_fields_label(fields)}")
+          # of the block form's write to the slot (see PRO-3191, and `_reject_raw_shape_before_block_overwrite!`
+          # for the later rounds that joined it here).
+          _reject_raw_shape_before_block_overwrite!(validations, "`shape:` on #{_declared_fields_label(fields)}", fields.map(&:to_s).inspect)
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
           # Ahead of the `user_facing:` walk below so a member carrying both an unusable name and a rejected
@@ -1584,10 +1577,8 @@ module Axn
 
           # Same refusal, same ordering reason, at the member's own slot: a `field :rows, type: Array, shape:
           # {...} do ... end` no longer has its raw `shape:` silently replaced by the subblock's (see PRO-3191,
-          # and PRO-3387 for the two joining it here).
-          _reject_distributing_shape!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`")
-          _reject_unshaped_shape!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`")
-          _reject_unknown_shape_keys!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`")
+          # and `_reject_raw_shape_before_block_overwrite!` for the later rounds that joined it here).
+          _reject_raw_shape_before_block_overwrite!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`", [name].map(&:to_s).inspect)
           field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
@@ -2516,6 +2507,43 @@ module Axn
           return if nil.equal?(bag)
 
           _reject_unknown_bag_keys!(bag, allowed, option:)
+        end
+
+        # Every guard a raw `shape:` kwarg must clear BEFORE a block/subblock is allowed to overwrite it
+        # (PRO-3191, PRO-3387). The block always wins outright — `validations[:shape] = _build_shape(...) if
+        # block` replaces the raw Hash unconditionally, never merges with it — so this is the only chance
+        # anything ever gets to judge what the author actually wrote there; every check below has already been
+        # found, one Codex round at a time, to have a downstream twin the overwrite makes unreachable:
+        # `_reject_unshaped_shape!`/`_reject_unknown_shape_keys!` normally run from `_snapshot_declared_shape!`,
+        # and `_reject_validator_context_scope!`/`_except_on!`/`_strict!` normally run from
+        # `_parse_field_validations` — both stages the overwrite has already happened by the time either
+        # reaches `validations[:shape]`.
+        #
+        # `carrier.slice(:shape)` — never the whole `carrier` — is handed to the three shared-option scans:
+        # they read `Validation::Base.validator_entries`, one ENTRY of which is the `:shape` key itself (the
+        # same mechanism that already lets `_reject_validator_context_scope!` catch `on:` written directly
+        # inside a `model:`/`type:`/`of:` bag), so scoping the input to just `:shape` reaches exactly the
+        # shape's own `on:`/`except_on:`/`strict:` and none of this field's other bags — those are judged at
+        # their own, later, canonicalized time, by the very same three calls this method's caller still reaches
+        # through the normal `_parse_field_validations` path. Running the FULL `carrier` here instead would let
+        # this earlier, pre-canonicalization pass decide an ordering question (which of two defects in another
+        # bag is reported first) it has no business deciding.
+        #
+        # `where`/`declaration_where` are two different renderings of the same field, because the two guard
+        # families were never unified and format it differently: `where` is `_reject_unshaped_shape!`'s own
+        # `` `shape:` on :h `` form, `declaration_where` is `_reject_validator_context_scope!`'s own
+        # `fields.map(&:to_s).inspect` form (`["h"]`) — passed separately so each renders through this early
+        # call exactly as it would have downstream, and a message pinned against the ordinary (block-free)
+        # spelling of the defect does not have to change to also cover this one.
+        def _reject_raw_shape_before_block_overwrite!(carrier, where, declaration_where)
+          _reject_distributing_shape!(carrier, where)
+          _reject_unshaped_shape!(carrier, where)
+          _reject_unknown_shape_keys!(carrier, where)
+
+          shape_only = carrier.slice(:shape)
+          _reject_validator_context_scope!(shape_only, where: declaration_where)
+          _reject_validator_except_on!(shape_only, where: declaration_where)
+          _reject_strict_validation!(shape_only, where: declaration_where)
         end
 
         # `of:` names what is INSIDE a container, so the declared type is what decides which grammar the bag is

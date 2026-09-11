@@ -395,6 +395,49 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
         expect { build_axn { expects(:h, type: Hash, shape: { members: [], container: Hash }) { field :a, type: String } } }
           .not_to raise_error
       end
+
+      # `on:`/`except_on:`/`strict:` are admitted into `SHAPE_OPTION_KEYS` deliberately, so the dedicated
+      # context/except_on/strict guards can name the real problem instead of "unknown key" — but those guards
+      # normally run from `_parse_field_validations`, well after a block has already overwritten the raw
+      # shape, so they never saw it either (Codex review round 3, PR #275).
+      it "still refuses on: inside a raw shape: beside a block" do
+        expect { build_axn { expects(:h, type: Hash, shape: { members: [], on: :create }) { field :a, type: String } } }
+          .to raise_error(ArgumentError, /`on:` inside shape:/)
+      end
+
+      it "still refuses except_on: inside a raw shape: beside a block" do
+        expect { build_axn { expects(:h, type: Hash, shape: { members: [], except_on: :create }) { field :a, type: String } } }
+          .to raise_error(ArgumentError, /`except_on:` inside shape:/)
+      end
+
+      it "still refuses strict: inside a raw shape: beside a block" do
+        expect { build_axn { expects(:h, type: Hash, shape: { members: [], strict: true }) { field :a, type: String } } }
+          .to raise_error(ArgumentError, /`strict:` inside shape:/)
+      end
+
+      it "still refuses on: inside a raw shape: beside a subblock" do
+        expect do
+          build_axn do
+            expects(:outer, type: Hash) do
+              field(:inner, type: Hash, shape: { members: [], on: :create }) { field :leaf, type: String }
+            end
+          end
+        end.to raise_error(ArgumentError, /`on:` inside shape:/)
+      end
+
+      it "does not disturb the ordinary (block-free) on: inside shape: message" do
+        expect { build_axn { expects :h, type: Hash, shape: { members: [], on: :create } } }
+          .to raise_error(ArgumentError, /`on:` inside shape: on \["h"\]/)
+      end
+
+      # A raw shape's own on:/except_on:/strict: check is scoped to just the `:shape` entry, never the whole
+      # field, so it must not preempt (or reorder) the SAME guard's verdict on an unrelated bag on this field.
+      it "does not affect an on: violation in a sibling bag" do
+        klass = Struct.new(:id) { def self.find(id) = new(id) }
+
+        expect { build_axn { expects :lead, model: { klass:, on: :create } } }
+          .to raise_error(ArgumentError, /`on:` inside model:/)
+      end
     end
   end
 
