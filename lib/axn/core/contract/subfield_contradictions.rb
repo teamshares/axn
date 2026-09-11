@@ -128,10 +128,26 @@ module Axn
         def enforced_parent_configs(path)
           carried = []
           path.ancestors.first(path.parent_index).each do |(node, segment)|
-            carried = Axn::Internal::Reflection::Schema.shape_members_at(node.configs + carried, segment)
+            sources = ungated_shape_sources(node.configs + carried)
+            carried = Axn::Internal::Reflection::Schema.shape_members_at(sources, segment)
                                                        .reject { |m| Axn::Internal::Reflection::Schema.conditionally_gated?(m) }
           end
-          path.parent_node.configs + carried
+          ungated_shape_sources(path.parent_node.configs + carried)
+        end
+
+        # Drops a config whose `shape:` ENTRY carries a gate of its own (`shape: { members: …, if: … }`) — the
+        # per-validator spelling, which skips that validator alone and so decides whether the nested shape is
+        # enforced at all. A declaration-level gate is a different key and is filtered separately; both have to
+        # be asked, since either alone leaves the other's spelling reading as unconditional.
+        #
+        # `entry_self_gated?` rather than `entry_mentions_gate_key?`: a BLANK nested gate is not a gate. Per
+        # AM's measured per-key merge it overrides and drops the shared gate for that key, UN-gating the entry
+        # — so treating "mentions a key" as gated would stand down on a shape that runs unconditionally.
+        def ungated_shape_sources(configs)
+          configs.reject do |config|
+            shape = config.validations[:shape]
+            shape && Axn::Internal::Reflection::Schema.entry_self_gated?(shape)
+          end
         end
 
         # The configs `apply_children!` is handed for the model's own parent node — which is NOT always that
@@ -141,14 +157,33 @@ module Axn
         # member claiming the id key is reachable from a shape two levels up, and reading `parent.configs`
         # alone found nothing while the emitter found — and emitted — the object.
         #
-        # The declaration whose nesting under `node` makes the key an object: the shallowest config found beneath
-        # it. Nil when the node has no children, or when its own configs forbid nesting them (a scalar or `model:`
-        # route there emits no object property, so nothing collides with the id).
+        # The declaration whose nesting under `node` makes the key an object. Nil when its own configs forbid
+        # nesting (a scalar or `model:` route there emits no object property, so nothing collides with the id).
+        #
+        # Two sources of contents, because a node has two. Subfield CHILDREN are the tree's own; a node's own
+        # `shape:` MEMBERS are not children at all and so were invisible to a `children`-only test — measured,
+        # `expects :company_id, on: :payload, type: Hash do … end` beside a `model:` emitted the member's
+        # object and dropped the model's id entirely, while the resolver still read that Hash as its token.
         def claiming_descendant(node)
-          return nil if node.children.empty?
           return nil if Axn::Internal::Reflection::Schema.node_configs_block_nesting?(node.configs)
 
-          first_config_below(node)
+          first_config_below(node) || claiming_own_member(node)
+        end
+
+        # A member declared by the node's OWN `shape:`. Asked of the emitted route first (the representative,
+        # whose members `apply_structured_schema!` merges — in the document, so no gate reaches it), then of
+        # every route the runtime enforces, where a gated shape entry stands down like any other.
+        def claiming_own_member(node)
+          emitted = Array(Axn::Internal::Reflection::Schema.property_representative(node.configs))
+          first_declared_member(emitted) || first_declared_member(ungated_shape_sources(node.configs))
+        end
+
+        def first_declared_member(configs)
+          configs.each do |config|
+            pair = Axn::Internal::Reflection::Schema.named_members(config.validations.dig(:shape, :members)).first
+            return pair.first if pair
+          end
+          nil
         end
 
         def first_config_below(node)

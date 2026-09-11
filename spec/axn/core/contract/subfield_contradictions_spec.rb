@@ -1049,6 +1049,55 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
     end
 
+    # A node has two sources of contents and only one of them is a tree child. An explicit `<field>_id`
+    # subfield declaring members through its OWN shape block has no children at all, so a children-only
+    # test saw an empty node — while the emitter emitted the member's object and dropped the model's id
+    # (Codex review round 5).
+    it "rejects an explicit <field>_id subfield that declares its own shape members" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, type: Hash do
+            field :detail, type: String
+          end
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    # The per-validator gate spelling. `shape: { members: …, if: … }` skips that validator alone, so the
+    # nested object is enforced on no call — same standing-down as a declaration-level gate, reached through
+    # a different key (Codex review round 5).
+    it "accepts a runtime-only claim whose shape ENTRY carries its own gate" do
+      detail = Axn::Core::Contract::ShapeConfig.new(field: :detail, validations: { type: String })
+      cid = Axn::Core::Contract::ShapeConfig.new(field: :company_id,
+                                                 validations: { type: Hash, shape: { members: [detail] } })
+      inner = Axn::Core::Contract::ShapeConfig.new(
+        field: :inner, validations: { type: Hash, shape: { members: [cid], if: -> { false } } },
+      )
+      expect do
+        build_axn do
+          expects :payload, type: Hash, shape: { members: [inner] }
+          expects :inner, on: :payload, type: Hash
+          expects :company, on: :inner, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    it "still rejects that shape when the entry gate is absent" do
+      detail = Axn::Core::Contract::ShapeConfig.new(field: :detail, validations: { type: String })
+      cid = Axn::Core::Contract::ShapeConfig.new(field: :company_id,
+                                                 validations: { type: Hash, shape: { members: [detail] } })
+      inner = Axn::Core::Contract::ShapeConfig.new(field: :inner, validations: { type: Hash, shape: { members: [cid] } })
+      expect do
+        build_axn do
+          expects :payload, type: Hash, shape: { members: [inner] }
+          expects :inner, on: :payload, type: Hash
+          expects :company, on: :inner, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
     # The legal tail — a scalar `<field>_id` beside a model is THE supported spelling (it supplies the
     # lookup token), so nothing here may start raising.
     # The id sibling is declared FIRST at depth: an explicit reader declared after the model's inferred
