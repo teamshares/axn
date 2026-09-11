@@ -119,10 +119,17 @@ module Axn
         # position, so the carry does not reset and every route is asked rather than the representative.
         # Self-limiting either way: `shape_members_at` returns only members NAMED by the segment, so a member
         # with no nested members of its own contributes nothing at the next hop.
+        #
+        # A GATED member is dropped from the carry, not merely from the final lookup: a gate on an enclosing
+        # member makes the whole nested shape beneath it conditional, so its ungated descendants are no more
+        # enforced than it is. Carrying them on and asking only the leaf's own gate read an ancestor's
+        # subtree as unconditional — measured, a closed gate on the enclosing member skips the nested shape
+        # entirely and a scalar id is accepted, agreeing with the scalar the schema emits.
         def enforced_parent_configs(path)
           carried = []
           path.ancestors.first(path.parent_index).each do |(node, segment)|
             carried = Axn::Internal::Reflection::Schema.shape_members_at(node.configs + carried, segment)
+                                                       .reject { |m| Axn::Internal::Reflection::Schema.conditionally_gated?(m) }
           end
           path.parent_node.configs + carried
         end

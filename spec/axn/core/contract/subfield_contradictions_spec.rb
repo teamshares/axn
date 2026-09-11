@@ -998,6 +998,57 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
     end
 
+    # A gate on an ENCLOSING member makes the whole nested shape beneath it conditional, so its ungated
+    # descendants are no more enforced than it is. Asking only the leaf's own gate read an ancestor's
+    # subtree as unconditional (Codex review round 4).
+    it "accepts an ungated member whose ENCLOSING member is gated, under an explicit parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :inner, type: Hash, if: -> { false } do
+              field :company_id, type: Hash do
+                field :detail, type: String
+              end
+            end
+          end
+          expects :inner, on: :payload, type: Hash
+          expects :company, on: :inner, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    # The same enclosing gate under an IMPLICIT parent still emits the object, so it still collides.
+    it "still rejects when the enclosing member is gated but the object is still emitted" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :inner, type: Hash, if: -> { false } do
+              field :company_id, type: Hash do
+                field :detail, type: String
+              end
+            end
+          end
+          expects :company, on: "payload.inner", model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
+    # A gated CONFIG carrying the shape is the parent's own representative, so its members ARE merged into
+    # the document — the claim is emitted, and a gate does not reach an emitted claim.
+    it "still rejects a gated parent CONFIG whose shape is merged into the schema" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :inner, on: :payload, type: Hash, if: -> { false } do
+            field :company_id, type: Hash do
+              field :detail, type: String
+            end
+          end
+          expects :company, on: :inner, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
     # The legal tail — a scalar `<field>_id` beside a model is THE supported spelling (it supplies the
     # lookup token), so nothing here may start raising.
     # The id sibling is declared FIRST at depth: an explicit reader declared after the model's inferred
