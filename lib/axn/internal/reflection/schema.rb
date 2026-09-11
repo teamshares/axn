@@ -1355,27 +1355,12 @@ module Axn
         # to place a blocked merge's obligation on the member's own property. Merging afterwards left both of
         # them looking at a property the member's contribution had not reached yet.
         #
-        # Codex review (PR #278): a side whose declared type is APPROXIMATE — an unknown class like `Object`
-        # or `Enumerable`, which `single_type_for` reflects on input as a permissive `{type: "string"}` HINT
-        # rather than a real constraint ("a JSON client can't send a Ruby object anyway") — must not be
-        # conjoined as if that hint were exact. A `type: Object` member beside a `type: Hash` node (or the
-        # reverse) emitted a string-vs-object intersection nothing satisfies, though the runtime accepts any
-        # Hash for both (`Object`/`Enumerable` admit it trivially). Judged on the DECLARED type, never the
-        # emitted Hash: a real `type: String` and the `Object` fallback emit the byte-identical property, so
-        # only the declaration can tell them apart, which is why this reads `representative`/`members`
-        # directly rather than `member_prop`/`child_prop`.
-        #
-        # An approximate side contributes nothing trustworthy to the conjunction, so it is dropped rather
-        # than wrapped: the OTHER side's real property is used as-is (its `own_prop.empty?` shortcut in
-        # conjoin_shape_member_property already knows how to adopt a real member_prop wholesale). Only when
-        # BOTH sides are approximate does the plain conjoin still run — two "string" hints never contradict
-        # each other, so there is nothing to protect against.
-        #
-        # The trade-off, and it is a narrow one: an approximate side's OWN other validators (a `length:`
-        # riding on the same fake `minLength`, per the wire audit's `known_broad_token_string_fallback?` note
-        # that this is "deliberate and load-bearing" elsewhere) are dropped along with its fake type when it
-        # loses — compounding an already-rare declaration (a broad class AND an explicit collision AND a
-        # further size bound) with a documented approximation this ticket did not introduce.
+        # Codex review (PR #278): `member_configs`/`own_configs` (the collision's two sides, as ROUTE lists —
+        # `members` and `[representative]` here) let `conjoin_shape_member_property` judge each side's
+        # DECLARED type before trusting its emitted property as an exact constraint worth conjoining — see
+        # that method for why (a real `type: String` and an unknown class's approximate `{type: "string"}`
+        # fallback emit the byte-identical Hash, so only the declaration tells them apart) and for how the
+        # same judgment recurses through `merge_emitted_maps` for a name colliding one level down.
         #
         # `null` survives only when every non-model route tolerates nil (runtime enforces all of them; the
         # property itself is built from the first non-model config), EVERY colliding shape member tolerates nil
@@ -1390,12 +1375,7 @@ module Axn
           child_prop = build_property(representative, subfield: true)
           member_prop = prop[:properties][key]
           if member_prop && !transforms_value?(representative)
-            node_approximate = approximate_config?(representative)
-            member_approximate = !members.empty? && members.all? { |m| approximate_config?(m) }
-            unless member_approximate && !node_approximate
-              base = node_approximate && !member_approximate ? {} : child_prop
-              child_prop = conjoin_shape_member_property(member_prop, base)
-            end
+            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: members, own_configs: [representative])
           end
           apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
           null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
@@ -1587,10 +1567,10 @@ module Axn
         # from THAT declaration's `shape:` (Core::Contract#_derive_shaped_keys!), so a member carried from an
         # ancestor exempts no key at this node's map validator either. Re-running it would admit a key the
         # runtime rejects — measured, both spellings reject one.
-        def merge_shape_member_property(member_prop, own_prop)
+        def merge_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
           merged = member_prop.merge(own_prop)
           merged.delete(:format)
-          merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties])
+          merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties], member_configs:, own_configs:)
           merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required])
           merged[:minProperties] = [member_prop[:minProperties], own_prop[:minProperties]].compact.max if merged[:minProperties]
           merged[:maxProperties] = [member_prop[:maxProperties], own_prop[:maxProperties]].compact.min if merged[:maxProperties]
@@ -1619,8 +1599,33 @@ module Axn
         # place. merge_shape_member_property never has that problem (merge_emitted_maps dups the properties
         # map whenever one side is absent), so routing every combination through the one function is what
         # keeps this conjoin from being the aliasing bug AGENTS.md already names.
-        def conjoin_shape_member_property(member_prop, own_prop)
-          return merge_shape_member_property(member_prop, own_prop) if own_prop.empty? || (object_property?(member_prop) && object_property?(own_prop))
+        #
+        # `member_configs`/`own_configs` are the declarations each emitted property came from — a LIST,
+        # mirroring `shape_members_at`'s own return shape, since a merged node can carry more than one route
+        # to the same name. Empty (or omitted) on a side whose config is unknown at the call site, which
+        # reads as "not approximate" (the conservative, pre-existing answer) rather than crashing. Before
+        # trusting either side as an EXACT constraint worth conjoining, ask whether its type is merely
+        # `single_type_for`'s permissive fallback (an unknown class like `Object`/`Enumerable`, reflected as
+        # `{type: "string"}` because "a JSON client can't send a Ruby object anyway") — a hint, not a
+        # promise. Wrapping that hint into `allOf` beside a REAL type (a `Hash` node, say) would assert a
+        # string-vs-object intersection nothing satisfies, though the runtime accepts anything the broad
+        # class actually admits (Codex review, PR #278: reported for the member side; the node's own type
+        # being approximate is the same defect, checked here too though unreported). The approximate side
+        # contributes nothing trustworthy, so it is DROPPED rather than wrapped — the other side's real
+        # property standing alone. Only when BOTH sides are approximate does the plain conjoin still run:
+        # two "string" hints never contradict each other.
+        def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
+          member_approximate = approximate_configs?(member_configs)
+          return own_prop if member_approximate && !approximate_configs?(own_configs)
+
+          if approximate_configs?(own_configs) && !member_approximate
+            own_prop = {}
+            own_configs = []
+          end
+
+          if own_prop.empty? || (object_property?(member_prop) && object_property?(own_prop))
+            return merge_shape_member_property(member_prop, own_prop, member_configs:, own_configs:)
+          end
 
           conjoined = own_prop.dup
           conjoined[:allOf] = Array(conjoined[:allOf]) + [member_prop]
@@ -1681,13 +1686,31 @@ module Axn
           !numeric_but_not_complex?(token)
         end
 
-        # Whether EVERY branch of a config's declared type is one of the approximate tokens above — the
-        # question `apply_explicit_child!`'s conjoin asks of each colliding side. Untyped (no declared type
-        # at all) is NOT approximate: it emits no `:type` key at all rather than a misleading one, which is
-        # the `own_prop.empty?` case `conjoin_shape_member_property` already handles on its own terms.
+        # Whether ANY branch of a config's declared type is one of the approximate tokens above. `.any?`,
+        # not `.all?`: a mixed union like `type: [Object, String]` has one exact branch, but `Object` alone
+        # already admits everything the union could ever narrow to, so the union as a whole asserts nothing
+        # more precise than the approximate branch does (Codex review, PR #278 round 2 — a `.all?` reading
+        # let a union with an approximate branch through as "exact", conjoining its collapsed `"string"`
+        # emission as if it meant only strings). Untyped (no declared type at all) is NOT approximate: it
+        # emits no `:type` key at all rather than a misleading one, which is the `own_prop.empty?` case
+        # `conjoin_shape_member_property` already handles on its own terms.
         def approximate_config?(config)
           tokens = declared_type_tokens(config.validations)
-          !tokens.empty? && tokens.all? { |t| approximate_type_token?(t) }
+          !tokens.empty? && tokens.any? { |t| approximate_type_token?(t) }
+        end
+
+        # Whether EVERY config in a colliding-name's route list is approximate — `.all?`, the OPPOSITE
+        # quantifier from `approximate_config?`'s `.any?`, because the two lists mean opposite things. A
+        # config's own type tokens are a UNION (an OR: any branch admitting a value is enough), so one
+        # approximate branch already widens the real constraint toward "everything" — hence `.any?`. Multiple
+        # configs at one key (a merged node's routes, from `shape_members_at`) are each independently
+        # enforced (an AND: every route's declaration must hold), so ONE exact route already narrows the
+        # combined constraint precisely regardless of an approximate route beside it — hence `.all?`: the
+        # side counts as approximate only when NONE of its routes assert anything real. An empty list (no
+        # config known at this call site) is NOT approximate — the conservative, pre-existing answer for a
+        # side this walk cannot judge.
+        def approximate_configs?(configs)
+          !configs.empty? && configs.all? { |c| approximate_config?(c) }
         end
 
         # Duped when only one side has them: `apply_nested_subfields!` mutates the map it is handed as it adds
@@ -1695,11 +1718,25 @@ module Axn
         # conjoined rather than let the second (`own_props`, the node's own child) win outright — PRO-3405;
         # `apply_structured_schema!`'s own `base_properties.merge(member_props)` is a different question (an
         # INFERRED property deferring to a DECLARED one), not two declarations colliding, and is unchanged.
-        def merge_emitted_maps(member_props, own_props)
+        #
+        # `member_configs`/`own_configs` — the routes each side's PARENT config came from — are re-resolved
+        # PER COLLIDING KEY via `shape_members_at`, the same locator emission and the drop pass already share:
+        # a name colliding one level down was declared by a DIFFERENT (nested) config than the one that
+        # produced `member_props`/`own_props` themselves, so the parent's approximateness says nothing about
+        # the child's (Codex review, PR #278 round 3 — the recursive twin of the top-level conjoin needed the
+        # SAME judgment, not a Hash-level heuristic: a real `type: String` and the `Object` fallback emit the
+        # byte-identical property, so only the declaration distinguishes them).
+        def merge_emitted_maps(member_props, own_props, member_configs: [], own_configs: [])
           return own_props if member_props.nil?
           return member_props.dup if own_props.nil?
 
-          member_props.merge(own_props) { |_key, member_prop, own_prop| conjoin_shape_member_property(member_prop, own_prop) }
+          member_props.merge(own_props) do |key, member_prop, own_prop|
+            conjoin_shape_member_property(
+              member_prop, own_prop,
+              member_configs: shape_members_at(member_configs, key),
+              own_configs: shape_members_at(own_configs, key)
+            )
+          end
         end
 
         def merge_emitted_required(member_required, own_required)

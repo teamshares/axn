@@ -5386,14 +5386,35 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
           end
 
-          # KNOWN RESIDUAL, not fixed by this ticket: the same approximate-type risk one level deeper, where
-          # the collision is between the ancestor's NESTED field and the node's OWN shape block (spelling B,
-          # reached through merge_emitted_maps rather than apply_explicit_child!). That site combines two
-          # property Hashes with no config reference to tell a real `type: String` from the `Object` fallback
-          # apart — both emit the byte-identical Hash — so the guard above cannot reach it without threading
-          # declared-type info through what is otherwise a pure-Hash merge. Pinned here so a future change to
-          # that plumbing is deliberate, not a silent regression in either direction.
-          it "still admits nothing for the same approximate-type collision one level deeper (KNOWN RESIDUAL)" do
+          # A mixed union with ONE exact branch is still approximate as a WHOLE: `Object` alone already
+          # admits everything the union could narrow to, so the exact `String` branch beside it adds
+          # nothing the runtime doesn't already accept via `Object`. Codex review (PR #278 round 2) — an
+          # earlier `.all?` reading let this union through as "exact" because String isn't approximate,
+          # conjoining the union's collapsed `"string"` emission as though it meant only strings.
+          it "treats a mixed union with an approximate branch as approximate as a whole" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Object, String]
+              end
+              expects :inner, on: :payload, type: Hash
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "object", minProperties: 1)
+            expect(klass.call(payload: { inner: { a: 1 } })).to be_ok
+          end
+
+          # The same approximate-type judgment, one level deeper: the collision is between the ancestor's
+          # NESTED field and the node's OWN shape block (spelling B, reached through merge_emitted_maps
+          # rather than apply_explicit_child!). `merge_emitted_maps` re-resolves each side's config PER
+          # COLLIDING KEY via `shape_members_at` rather than trusting the property Hash, so it can tell a
+          # real `type: String` from the `Object` fallback apart at THIS depth too (Codex review, PR #278
+          # round 3 — this was a KNOWN RESIDUAL through round 2, left deliberately unfixed pending exactly
+          # this plumbing).
+          it "does not conjoin an approximate type hint one level deeper either, through merge_emitted_maps" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -5411,9 +5432,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             deep = schema[:properties][:payload][:properties][:inner][:properties][:deep]
-            expect(deep[:allOf]).to eq([{ type: "string", minLength: 1 }]) # the fake hint, wrongly conjoined
-            # the runtime accepts this (Object admits any Hash); the document does not yet.
+            expect(deep).to eq(type: "object", properties: { z: { type: "string", minLength: 1 } }, required: ["z"], minProperties: 1)
             expect(klass.call(payload: { inner: { deep: { z: "x" } } })).to be_ok
+            expect(klass.call(payload: { inner: { deep: {} } })).not_to be_ok # the node's own required `z` still enforced
           end
 
           # coerce:/preprocess: transform the wire value before validation runs, so the node judges a
