@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+* [FEAT] A `model:` field's generated `<field>_id` is now typed on `.input_schema` instead of always emitting bare `not: { type: "null" }`. Under ActiveRecord, with the default `:find` finder, the type is **inferred from the class's own primary key** (`{type: "integer"}`, `{type: "string"}`, or `{type: "string", format: "uuid"}`); falling back to untyped, exactly as before, for a custom finder, a composite primary key, or when the database can't be reached. You can also declare it directly — `model: { id_type: Integer }` (or `String`/`:uuid`) — which wins over inference outright and is the only way to type it for a PORO model, a custom finder, or outside Rails. An `id_type:` outside that closed set raises `ArgumentError` at declaration (see PRO-3384).
+
 ### Changed
 
 * [BREAKING] Raises the `activemodel`/`activesupport` floor from `>= 7.2` to `>= 8.1`. Rails 7.2 and 8.0 are both past their upstream maintenance windows (7.2 past even security support, 8.0 past bug-fix support) as of this release, and 8.1 is the only series the Rails-integration dummy app (`spec_rails/dummy_app`) is now tested against — this closes the gap between the gemspec's claimed floor and what CI actually exercises rather than adding back a lane for an end-of-life Rails series.

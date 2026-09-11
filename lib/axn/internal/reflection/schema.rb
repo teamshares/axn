@@ -81,6 +81,21 @@ module Axn
 
         NULL_BRANCH = { type: "null" }.freeze
 
+        # Which token `model_id_type_token` infers for each ActiveRecord primary-key attribute type
+        # (`klass.type_for_attribute(klass.primary_key).type`). Every value here is one of
+        # `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS` — that constant, not a copy of it here, is what
+        # Contract's declaration-time `id_type:` guard also reads, so the declared and inferable
+        # vocabularies cannot drift apart (moved there from here in Codex review round 3, PR #269:
+        # `Internal::Reflection::X` derives a JSON view and nothing runs upward FROM it into
+        # declaration-time code, per AGENTS.md). An AR type with no entry (`:binary`, `:decimal`, a
+        # custom `ActiveRecord::Type` this table doesn't know) falls back to today's untyped property
+        # rather than guessing.
+        AR_PRIMARY_KEY_TYPE_TOKENS = {
+          integer: Integer,
+          string: String,
+          uuid: :uuid,
+        }.freeze
+
         FORMAT_MAP = {
           Date => "date",
           DateTime => "date-time",
@@ -206,8 +221,26 @@ module Axn
               # Emit the generated `<field>_id` property (don't clobber an explicitly-declared one).
               # Its requiredness/nullability is decided in the post-pass below so it can account for an
               # explicit `<field>_id` sibling regardless of declaration order.
-              id_field, id_prop = model_id_property(config)
-              properties[id_field] ||= id_prop
+              #
+              # A NON-model sibling ALWAYS wins the property regardless of which is visited first (its
+              # own branch below writes unconditionally; this branch only `||=`s), so when one exists
+              # anywhere in `field_configs` — checked BEFORE building anything, since the whole list is
+              # known upfront — building `id_prop` here would just be discarded. Skipping it matters
+              # beyond the wasted allocation: for an ActiveRecord model, `model_id_property` dispatches
+              # `primary_key`/`type_for_attribute` (PRO-3384) to infer the id's type, and that dispatch,
+              # and the DB/schema access behind it, has no reason to run for a result nothing will use.
+              #
+              # MODEL configs sharing this name are excluded from that check (Codex review round 2, PR
+              # #269): a field named `company_id` that is ITSELF a `model:` field emits at
+              # `company_id_id`, not at `company_id` — it never touches this key at all — so treating it
+              # as the winning sibling skipped the ONLY thing that would have written `company_id`'s
+              # property, leaving a `required` entry with no matching property.
+              id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
+              unless field_configs.any? { |c| c.field == id_field && !c.validations[:model] }
+                id_type = reconciled_model_id_type_token([config], id_field)
+                _, id_prop = model_id_property(config, id_type)
+                properties[id_field] ||= id_prop
+              end
             else
               prop = build_property(config)
               apply_nested_subfields!(prop, node, ann)
@@ -1168,6 +1201,7 @@ module Axn
         # recoverable validation error, and the generated `<leaf>_id` already advertises the working path.
         def apply_children!(prop, children, parent_configs, ann)
           required_model_ids = []
+          model_id_siblings = []
           children.each do |key, node|
             if node.implicit?
               apply_implicit_node!(prop, key, node, parent_configs, ann)
@@ -1180,16 +1214,8 @@ module Axn
             # has to name that config reads (requiredness annotation, and the size cap's shape charge).
 
             unless model_configs.empty?
-              # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
-              # the same nested parent at runtime). A user may declare an explicit nested `<field>_id`
-              # subfield; don't clobber it with the generic model-generated one.
-              id_field = Internal::FieldConfig.model_id_key(key)
-              _, subprop = model_id_property(model_configs.first)
-              prop[:properties][id_field] ||= subprop
-              unless node_optional?(node, ann, model_configs)
-                prop[:required] << id_field.to_s
-                required_model_ids << id_field
-              end
+              apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
+                                    model_id_siblings)
             end
 
             representative = property_representative(node.configs)
@@ -1206,9 +1232,93 @@ module Axn
             prop[:properties][key] = child_prop.compact
             prop[:required] << required_key(key) unless node_optional?(node, ann, non_model_configs)
           end
+          # The sibling's OWN entry (a plain child of this same loop) always wins the property outright
+          # regardless of visitation order, so `prop[:properties][id_field]` is only guaranteed to hold
+          # the sibling's FINAL emission once every key has been visited (Codex review round 15, PR
+          # #269) — merging mid-loop risked reading a not-yet-overwritten model placeholder.
+          #
+          # Ordered BEFORE the required-null pass just below, not after (Codex review round 17, PR
+          # #269): merging the declared `id_type:` in uses the SIBLING's OWN `allow_nil:`/`allow_blank:`
+          # to decide whether `"null"` joins the merged type (an untyped `company_id, allow_nil: true`
+          # sibling beside a REQUIRED model reconstructed `type: ["integer", "null"]`) — but requiredness
+          # here is decided by the MODEL, not the sibling, and a required model id can never actually
+          # resolve from `nil` at runtime. Merging first and then letting the null pass strip `"null"`
+          # from whatever type it finds lets that pass win regardless of which ran the type in; the
+          # reverse order let the sibling's own nullability reintroduce a null branch the null pass had
+          # already correctly removed, silently admitting a value runtime always rejects for a required
+          # id (top-level `apply_model_id_requiredness!` never had this bug — its merge already ran
+          # before its own `reject_null!`, being a single sequential method rather than two loops here).
+          model_id_siblings.each do |id_field, model_configs, explicit_id|
+            merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id, id_field) if prop[:properties][id_field]
+          end
           # A required nested model id can't be null (a null token resolves the model to nil at runtime).
           # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
           required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
+        end
+
+        # The nested twin of `build_input`'s own model branch — extracted from `apply_children!` (which
+        # a growing product of Codex findings against the SAME conflict/reconciliation logic pushed over
+        # this file's own complexity budget) rather than folding another key into that method's single
+        # already-large loop body. Mutates `prop`/`required_model_ids` in place, exactly as the inlined
+        # code it replaces did.
+        def apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
+                                  model_id_siblings)
+          # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
+          # the same nested parent at runtime). A user may declare an explicit NON-model nested
+          # `<field>_id` subfield — its own entry in `children`, keyed by that same id, visited
+          # independently of this one — and it always wins the property, so `model_id_property` is
+          # skipped rather than built and discarded: for an ActiveRecord model that call dispatches
+          # `primary_key`/`type_for_attribute` (PRO-3384), and there is no reason to pay that (or the
+          # DB/schema access behind it) for a result an explicit sibling is about to replace anyway.
+          #
+          # Gated on `explicit_id`, not merely `sibling_node`'s presence (Codex review round 2, PR
+          # #269): a sibling node whose OWN field is itself a `model:` (e.g. `company_id, model:
+          # ...` beside `company, model: ...`) never writes to THIS key at all — it emits its own
+          # generated id one level deeper (`company_id_id`) — so treating its mere existence as
+          # "something will write here" skipped the only thing that would have.
+          id_field = Internal::FieldConfig.model_id_key(key)
+          sibling_node = children[id_field]
+          explicit_id = sibling_node&.configs&.find { |c| !c.validations[:model] }
+          # A `shape:` member on the PARENT (`parent_configs`) can ALSO claim `id_field` by name — a
+          # wire-property source `apply_structured_schema!` merges into `prop[:properties]` BEFORE
+          # this method ever runs (called from `build_property`, ahead of `apply_nested_subfields!`),
+          # entirely outside the subfield tree `children` searches (Codex review round 10, PR #269):
+          # `field :company_id, type: String` inside a `do...end` block beside `expects :company,
+          # on: ..., model: { id_type: Integer }` left `explicit_id` nil (no SUBFIELD sibling exists),
+          # so the conflict check never ran, and the shape member's `||=`-preserved string property
+          # silently discarded the declared integer id_type.
+          #
+          # Restricted to the REPRESENTATIVE config's OWN shape, not every route at a merged parent node
+          # (Codex review round 11, PR #269): at a merged node `apply_structured_schema!` (building the
+          # parent's OWN property, via `property_representative`) only ever merges the FIRST non-model
+          # route's shape — a member declared on a LATER, non-representative route never reaches
+          # `prop[:properties]` at all. Searching every `parent_configs` (what `shape_members_at` alone
+          # does — correct for `apply_implicit_node!`'s use, an intermediate node with no representative
+          # of its own) found a member that was never actually emitted, so the check believed something
+          # had already claimed the key while NOTHING had: the model's own property was skipped, but
+          # nothing replaced it, leaving `id_field` `required` with no matching entry in `properties` at
+          # all — worse than losing the type, JSON Schema then admits any value there.
+          representative = property_representative(parent_configs)
+          explicit_id ||= shape_members_at(Array(representative), id_field).first
+          # `model_configs`, every route at THIS merged node — not just `.first` (Codex review round
+          # 3, PR #269): two `model:` routes reaching the same wire node may each carry their own
+          # `id_type:`/`klass:`, and reading only one silently dropped the other's claim.
+          reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
+          if explicit_id
+            # Deferred rather than merged here directly (see the post-loop pass in `apply_children!`):
+            # this sibling's OWN entry in `children` hasn't necessarily been visited yet, so
+            # `prop[:properties][id_field]` isn't guaranteed to hold its FINAL emission until every key
+            # in this loop has run.
+            model_id_siblings << [id_field, model_configs, explicit_id]
+          elsif !prop[:properties].key?(id_field)
+            id_type = reconciled_model_id_type_token(model_configs, id_field)
+            _, subprop = model_id_property(model_configs.first, id_type)
+            prop[:properties][id_field] ||= subprop
+          end
+          return if node_optional?(node, ann, model_configs)
+
+          prop[:required] << id_field.to_s
+          required_model_ids << id_field
         end
 
         # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
@@ -2866,9 +2976,14 @@ module Axn
           [props, required]
         end
 
-        # Returns [id_field_symbol, prop_hash] for a model: config. No type constraint: `find`/custom
-        # finders accept any nonblank PK token, and inferring the real PK type would require a DB load.
-        def model_id_property(config)
+        # Returns [id_field_symbol, prop_hash] for a model: config, given the id's ALREADY-RESOLVED type
+        # token (or nil for the untyped fallback) — computed by the caller via
+        # `reconciled_model_id_type_token`, never re-derived here, so a merged node's multiple model
+        # routes are reconciled exactly once regardless of which route's config this happens to build
+        # the description/klass from. Projected through the SAME `single_type_for` this module already
+        # uses for every declared `type:`, so the JSON type table has one owner and `:uuid` gets its
+        # `format: "uuid"` for free.
+        def model_id_property(config, id_type)
           model_opts = config.validations[:model]
           klass = model_opts[:klass]
           # The declared class written into PROSE, which owes both halves of that obligation: the name is read
@@ -2881,7 +2996,110 @@ module Axn
           klass_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of_module(klass))
           id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
           prop = { description: config.description || "ID of the #{klass_name} record" }
+
+          apply_single_type!(prop, single_type_for(id_type, for_output: false), config, nullable: nil_allowed?(config)) if id_type
+
           [id_field, prop.compact]
+        end
+
+        # The token behind a model config's OWN emitted type, or nil for today's untyped fallback. A
+        # declared `id_type:` always wins, whatever the finder and whether or not the class is
+        # ActiveRecord at all. Absent that, infer from the class's own primary key — but ONLY when doing
+        # so cannot silently mislead: the finder must resolve BY that primary key
+        # (`by_primary_key_finder?` — a custom finder's token has no reason to share the PK's type), and
+        # the class's ancestry must NATIVELY include ActiveRecord::Base (`includes_module?`, never
+        # `klass < ActiveRecord::Base`, which the class is free to override). Every other combination —
+        # a PORO, a custom finder, no ActiveRecord loaded at all — returns nil, same as before this
+        # method existed.
+        def model_id_type_token(model_opts, klass)
+          return model_opts[:id_type] if model_opts.key?(:id_type)
+          return nil unless defined?(::ActiveRecord::Base)
+          return nil unless Axn::Internal::NativeMethods.includes_module?(klass, ::ActiveRecord::Base)
+          return nil unless Axn::Internal::FieldConfig.by_primary_key_finder?(model_opts)
+
+          infer_ar_primary_key_type_token(klass)
+        end
+
+        # The single id-type TOKEN to emit for a (possibly merged) wire node's model routes, or nil for
+        # the untyped fallback. A DECLARED `id_type:` agreed across every route always wins outright
+        # (Codex review round 5, PR #269) — never merely one candidate among the inferred ones, which
+        # let a route's explicit claim collide with, and be rejected against, another route's UNASKED-FOR
+        # AR inference. Only absent any declared `id_type:` does this fall back to reconciling each
+        # route's OWN inferred type (`model_id_type_token`, evaluated per config against its own `klass`
+        # — a merged node's routes may each point at a different AR class). Distinct non-nil inferred
+        # results are compared by simple `.uniq`, always safe here since every value in play is one of
+        # the CLOSED `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS` (never a caller-supplied class with
+        # hostile equality).
+        #
+        # Two routes' MERELY INFERRED types disagreeing degrades to the untyped fallback rather than
+        # raising (Codex review round 6, PR #269): unlike a declared `id_type:` conflict, NEITHER author
+        # asked for a type check here — two legitimate model routes at one node simply happen to point
+        # at AR classes with different primary-key column types, which is an entirely legal runtime
+        # contract (each route resolves through its own class's own `.find`). Reflection's inference is
+        # opportunistic everywhere else in this feature (a composite PK, an unreachable connection, a
+        # custom finder all fall back silently rather than erroring), and `Axn::Tools.validate_contracts!`
+        # runs this at APP BOOT — raising here would let an add-on schema *nicety* take an otherwise
+        # working application down. A DECLARED disagreement stays a hard error (an author's own explicit,
+        # conflicting words about the SAME property, caught above by `reconciled_declared_id_type`); an
+        # INFERRED one is just inference failing to reach a confident answer, same as every other
+        # inference gap this method already treats that way.
+        def reconciled_model_id_type_token(model_configs, id_field)
+          declared = reconciled_declared_id_type(model_configs, id_field)
+          return declared if declared
+
+          tokens = model_configs.filter_map { |c| model_id_type_token(c.validations[:model], c.validations[:model][:klass]) }.uniq
+          tokens.size == 1 ? tokens.first : nil
+        end
+
+        # THE single DECLARED `id_type:` agreed across a (possibly merged) node's model routes, or nil
+        # when none declares one — never touches inference, so this is always cheap and non-dispatching
+        # and safe to compute regardless of whether an explicit sibling is about to make the result
+        # moot. Raises when two-plus routes declare DISAGREEING values, checked here rather than left
+        # for a later inference-vs-declared mismatch to surface confusingly (Codex review round 5, PR
+        # #269): a declared claim must be resolved, and found consistent, entirely on its own terms
+        # before it is ever weighed against either an explicit sibling
+        # (`reject_model_id_type_conflict!`) or another route's mere AR inference
+        # (`reconciled_model_id_type_token`) — both call this first and trust its answer outranks
+        # whatever they'd otherwise derive.
+        def reconciled_declared_id_type(model_configs, id_field)
+          declared = declared_model_id_types(model_configs)
+          return declared.first if declared.size <= 1
+
+          raise ArgumentError,
+                "multiple model: routes declare disagreeing id_type: values for the same generated " \
+                "#{renderable_id_field(id_field)} (#{declared.map(&:inspect).join(' vs ')}) — declare " \
+                "it consistently across every route, or only on one."
+        end
+
+        # THE distinct DECLARED `id_type:` tokens across a (possibly merged) node's model routes —
+        # `reconciled_declared_id_type` (above) is the single-value form every caller actually wants;
+        # this is the raw set it (and its own emptiness check) reads.
+        def declared_model_id_types(model_configs)
+          model_configs.filter_map { |c| c.validations[:model][:id_type] if c.validations[:model].key?(:id_type) }.uniq
+        end
+
+        # Reads the class's OWN primary key type — a genuine dispatch into ActiveRecord (and, through
+        # it, any custom `ActiveRecord::Type` the class itself registered), the one deliberate exception
+        # to this module's no-dispatch doctrine (see the header comment on
+        # reflection_does_not_dispatch_spec.rb, which states it). Rescued broadly rather than narrowly:
+        # no database connection (`ActiveRecord::NoDatabaseError`), no such table
+        # (`ActiveRecord::StatementInvalid`), and any other misconfiguration are all ordinary, expected
+        # outcomes here — reflection must never fail a schema build over a class it cannot fully
+        # introspect — so every one of them falls back to the SAME untyped property a PORO model or a
+        # custom finder already gets, never surfaces as an exception, and never touches boot at all
+        # beyond the one probe `Axn::Tools.validate_contracts!` triggers per tool class.
+        #
+        # A composite primary key (an Array) and a tableless/keyless model (nil) are both declared
+        # non-goals of the `<field>_id` reader convention itself
+        # (internal-docs/specs/2026-06-17-model-id-reader-design.md:38-40), so both fall back here too,
+        # deliberately, rather than being treated as an error.
+        def infer_ar_primary_key_type_token(klass)
+          pk = klass.primary_key
+          return nil unless pk.is_a?(::String)
+
+          AR_PRIMARY_KEY_TYPE_TOKENS[klass.type_for_attribute(pk).type]
+        rescue StandardError
+          nil
         end
 
         # A model lookup needs a non-nil token. Single source of truth for the generated `<field>_id`'s
@@ -2903,8 +3121,18 @@ module Axn
         # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
         # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
         def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
-          id_field, = model_id_property(config)
-          explicit_id = field_configs.find { |c| c.field == id_field }
+          # The key alone, not `model_id_property(config)` — this pass runs for EVERY model config
+          # regardless of whether an explicit sibling exists, so re-deriving the whole property here
+          # would re-run the same (possibly AR-dispatching, PRO-3384) inference `build_input` already
+          # skipped or already discarded, for a value this method never reads.
+          id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
+          # Excludes a model config sharing this name (Codex review round 2/3 fallout, PR #269): such a
+          # config never writes to THIS key (it emits its own generated id one level deeper) and never
+          # rescues it with a default of its own, so matching one here would misattribute both the
+          # type-conflict check below and the `usable_default?` rescue just past it.
+          explicit_id = field_configs.find { |c| c.field == id_field && !c.validations[:model] }
+          reject_model_id_type_conflict!([config], explicit_id, id_field)
+          merge_model_id_type_into_sibling!(properties[id_field], [config], explicit_id, id_field) if properties[id_field]
           # A default at ANY depth under the model applies at read time (value-level defaults,
           # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
           # annotation-derived rule, same as every other parent.
@@ -2914,6 +3142,225 @@ module Axn
           key = id_field.to_s
           required << key unless required.include?(key)
           reject_null!(properties[id_field]) if properties[id_field]
+        end
+
+        # A declared `id_type:` and an explicit `<field>_id` sibling's OWN `type:` are two claims about
+        # the SAME wire property, and the sibling always wins the emitted one (its branch writes
+        # unconditionally; the model's only `||=`s) regardless of which is declared first, at either
+        # depth — so a disagreement between the two would otherwise be swallowed with no sign the model
+        # ever said something else. Reject it outright rather than let the overwrite silently pick a
+        # winner, matching the family PRO-2901 already rejects (two conflicting claims about one merged
+        # wire node). Shared by both call sites (top-level `apply_model_id_requiredness!`, which passes a
+        # one-element `[config]`; nested `apply_children!`, which passes every route's config at that
+        # merged node), each passing its own `id_field` since a nested one derives it from the wire KEY
+        # rather than from a config's `field` (an `as:`-aliased subfield can differ).
+        #
+        # First reconciles the DECLARED side across every route (`declared_model_id_types` — cheap,
+        # non-dispatching, and correct even when an explicit sibling makes `model_id_property` itself
+        # unreachable): two routes each declaring a disagreeing `id_type:` is rejected here before either
+        # is ever compared to a sibling. Only once that resolves to at most one candidate is it compared
+        # against the sibling — derived from CONFIGS via `single_type_for`/`json_type_for`, not from an
+        # already-built property, so it needs neither side to have been emitted yet (the nested call
+        # site cannot guarantee its sibling node was visited first in the same pass).
+        #
+        # Compared on the FULL projected constraint — base `:type` AND `:format` (Codex review round 3,
+        # PR #269: comparing `:type` alone let `id_type: :uuid` beside an explicit `type: String`
+        # sibling through silently, since both project to the same base `"string"`, quietly dropping the
+        # uuid-shape requirement the declaration asked for) — but the direction is deliberately
+        # asymmetric, not a strict equality: a sibling only needs to be AT LEAST as constrained as
+        # `id_type:` demands, never exactly as loose. `id_type: String` (no format) is satisfied by an
+        # explicit `type: :uuid` sibling (a valid REFINEMENT — nothing the declaration claimed is
+        # contradicted), while `id_type: :uuid` is NOT satisfied by a plain `type: String` sibling (a
+        # WIDENING — the declared format constraint would silently vanish). `type_pair_satisfies?` below
+        # encodes exactly that: the base type must match, and only when `id_type:` itself asserts a
+        # `format` must the sibling assert the SAME one.
+        #
+        # EVERY branch of an explicit UNION sibling must satisfy it, not merely one (Codex review round
+        # 4, PR #269): `id_type: Integer` beside an explicit `type: [Integer, String]` sibling has an
+        # integer branch that trivially satisfies the check, but the WINNING property is the WHOLE union
+        # — admitting the string branch too — so accepting on any one satisfied branch let the sibling
+        # silently widen past what `id_type:` promised.
+        #
+        # A sibling whose type resolves to NOTHING BUT `null` needs its own rule (Codex review round 5,
+        # PR #269): `json_type_pairs` strips the `null` branch (requiredness is reconciled elsewhere), so
+        # a null-ONLY sibling — `type: NilClass` — reduces to an EMPTY set, and a bare `.all?` on that
+        # empty set is vacuously true — which would let a null-only sibling silently satisfy ANY declared
+        # `id_type:`, whether or not the model can ever actually go without a real id. An EMPTY
+        # (post-strip) set here can only mean every branch the sibling admits was null (`explicit_id.validations`
+        # is already known to carry a `:type` key by the time this runs, and `json_type_for` never
+        # returns `{}` for one on input), so `sibling_satisfies_declared_id_type?` (below) treats it as a
+        # question about the MODEL's own nullability rather than deciding it outright — see there for why
+        # (Codex review round 16, PR #269).
+        def reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
+          declared = reconciled_declared_id_type(model_configs, id_field)
+          return if declared.nil?
+          return unless explicit_id
+
+          declared_shape = single_type_for(declared, for_output: false)
+          # `build_property`, not `json_type_for(explicit_id.validations, ...)` (Codex review round 7, PR
+          # #269): `json_type_for` alone doesn't know about the tolerance-driven relaxations `build_property`
+          # applies afterward — a blank-tolerant `type: :uuid` sibling still projects `format: "uuid"`
+          # through `json_type_for` alone, so comparing against IT said "satisfies", while the ACTUAL
+          # winning property (built the same way `build_input` builds every other property) drops that
+          # format for exactly the reason `apply_single_type!`'s own comment gives: a blank value would
+          # fail a strict `format: "uuid"` the runtime doesn't enforce. Comparing the raw pre-relaxation
+          # shape let the format vanish with no error; comparing the real emitted one catches it.
+          sibling_prop = build_property(explicit_id)
+          # Gated on the BUILT property carrying a type- or enum-bearing key, not on
+          # `explicit_id.validations` having a `:type` entry (Codex review rounds 8-9, PR #269):
+          # `inclusion:`/`numericality:` alone — no `type:` at all — can still make `json_type_for` (and
+          # so `build_property`) infer a type (an `inclusion: { in: ["abc"] }` sibling emits `{type:
+          # "string", ...}`), and a HETEROGENEOUS `inclusion:` set (`in: [1, "abc"]`) can't reduce to one
+          # type at all, so `json_type_for` emits `enum:` alone with NEITHER `:type` nor `:anyOf` —
+          # `build_property` still applies it as the value constraint (see `apply_type_info!`'s own
+          # enum-only branch). Gating on the raw validations, or on `:type`/`:anyOf` alone, skipped the
+          # comparison entirely for exactly these siblings, letting a declared `id_type: Integer` silently
+          # lose to an inferred (or enum-admitted) type with no error. A sibling with NONE of these three
+          # keys is the one genuine "nothing to compare" case (a bare `default:`, say) — everything else
+          # must be checked, the null-only sibling (round 5) included.
+          return unless sibling_prop.key?(:type) || sibling_prop.key?(:anyOf) || sibling_prop.key?(:enum)
+
+          typed, satisfied = sibling_satisfies_declared_id_type?(sibling_prop, declared_shape, model_configs)
+          return if satisfied
+
+          # Same `typed` branch the check above used, so the message names whichever half of the
+          # property actually decided the verdict — a homogeneous single-value `inclusion:` sibling
+          # carries BOTH a `:type` (what the comparison above used) and an `:enum` (its value
+          # constraint), and describing it by the wrong one would misname what actually disagreed.
+          explicit_desc = if typed
+                            json_type_pairs(sibling_prop).map { |pair| pair[:format] ? "#{pair[:type]}/#{pair[:format]}" : pair[:type] }
+                          else
+                            # `Identity.describe`, not a raw `.inspect` (Codex review round 10, PR #269):
+                            # an `inclusion:` set's members are the AUTHOR'S OWN literals, and one whose
+                            # `inspect` raises (or answers something not a String) would replace this
+                            # ArgumentError with its own exception while the message is being built —
+                            # `describe` reads it the same non-dispatching way every other foreign value
+                            # in this codebase's messages is named.
+                            ["enum: [#{Array(sibling_prop[:enum]).map { |v| Internal::Identity.describe(v) }.join(', ')}]"]
+                          end
+          explicit_desc = ["null-only"] if explicit_desc.empty?
+          raise ArgumentError,
+                "model: id_type: #{declared.inspect} disagrees with the explicitly declared " \
+                "#{renderable_id_field(id_field)}'s own type: (#{explicit_desc.join(', ')}) — declare " \
+                "one or the other."
+        end
+
+        # Whether a sibling's projected type/enum satisfies a declared `id_type:`, and whether the check
+        # ran the typed or the enum-only branch (the caller needs `typed` again to describe a mismatch).
+        # Extracted from `reject_model_id_type_conflict!` (which the accumulated Codex findings against
+        # this one check pushed over this file's complexity budget) rather than folding another branch
+        # into that method's body.
+        #
+        # The enum-only branch checks each LITERAL's own base JSON type (`enum_scalar_type`, the same
+        # classifier `json_type_for`'s own inclusion branch already uses) against `declared_shape` —
+        # reading each literal's real class, never a method it defines, the same non-dispatching
+        # discipline as everywhere else reflection classifies a caller-supplied value. KNOWN LIMITATION,
+        # stated rather than hidden: this checks base TYPE only, not `id_type: :uuid`'s FORMAT — a
+        # homogeneous String `inclusion:` set of non-uuid-shaped literals still passes, since the uuid
+        # pattern is TypeValidator's own regex, a runtime-layer concern this reflection module has no
+        # dependency on and should not duplicate.
+        #
+        # A null-only sibling (every branch strips to empty) is satisfied — not a conflict — exactly when
+        # EVERY model route at this node also tolerates nil (Codex review round 16, PR #269): `model:
+        # ..., allow_nil: true` beside `company_id, type: NilClass, optional: true` is a genuinely
+        # working, callable pairing (verified: `.call` succeeds with the id omitted OR explicitly nil),
+        # and the declared `id_type:` is never actually contradicted since the sibling never carries a
+        # non-null value for it to disagree with. It's a real conflict only when some route does NOT
+        # tolerate nil — there, the id is REQUIRED to resolve a record at least sometimes, but the
+        # sibling can never supply one, and THAT combination fails at every call (also verified). `.all?`,
+        # not `.any?`: a single non-nilable route among several merged ones still needs a real id
+        # sometimes.
+        def sibling_satisfies_declared_id_type?(sibling_prop, declared_shape, model_configs)
+          null_only_ok = model_configs.all? { |c| nil_allowed?(c) }
+          typed = sibling_prop.key?(:type) || sibling_prop.key?(:anyOf)
+          type_ok = if typed
+                      explicit_pairs = json_type_pairs(sibling_prop)
+                      explicit_pairs.empty? ? null_only_ok : explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
+                    end
+          # An `inclusion:` sibling's own literals satisfy on base type ALONE, matching this method's
+          # KNOWN LIMITATION for the enum-only case (a homogeneous String `inclusion:` set of
+          # non-uuid-shaped literals already passes there, deliberately, rather than duplicating
+          # TypeValidator's own uuid regex) — checked here too whenever the sibling carries an `:enum`,
+          # not gated behind `typed` being false (Codex review round 18, PR #269): `type: String,
+          # inclusion: { in: [uuid_string] }` builds BOTH `:type` and `:enum`, so `typed` is true and the
+          # bare type-pair check alone fails a required `id_type: :uuid` (the sibling's plain `type:
+          # String` carries no `format: "uuid"` of its own) — a real value-level match rejected only
+          # because an explicit `type:` happened to sit beside the `inclusion:` that already narrows it,
+          # which is backwards: adding a type shouldn't make an otherwise-tolerated enum stricter.
+          enum_ok = if sibling_prop.key?(:enum)
+                      literals = Array(sibling_prop[:enum]).compact
+                      literals.empty? ? null_only_ok : literals.all? { |literal| enum_scalar_type(literal) == declared_shape[:type] }
+                    end
+          satisfied = typed ? (type_ok || enum_ok) : enum_ok
+          [typed, satisfied]
+        end
+
+        # A declared `id_type:` beside an explicit sibling that emits no type of its OWN at all (a bare
+        # `default:`, `length:`, or other metadata-only declaration — the one case
+        # `reject_model_id_type_conflict!` above deliberately has nothing to compare, so it returns
+        # without raising) is not a conflict, but it isn't free either: nothing else was ever going to
+        # write a `:type` there, since the sibling always wins the emitted property outright (Codex
+        # review round 15, PR #269) — so the declared `id_type:` has to be merged in explicitly, or it
+        # is simply lost with no error and no trace. Mutates `target_property` (the sibling's OWN
+        # already-built emission) in place; a no-op whenever there is nothing to merge (no declared
+        # type, no sibling, or the sibling already carries type/anyOf/enum of its own — which
+        # `reject_model_id_type_conflict!` has already either accepted as compatible or raised on,
+        # so this method never overwrites a type the sibling itself asserted).
+        def merge_model_id_type_into_sibling!(target_property, model_configs, explicit_id, id_field)
+          return unless explicit_id
+          return if target_property.key?(:type) || target_property.key?(:anyOf) || target_property.key?(:enum)
+
+          declared = reconciled_declared_id_type(model_configs, id_field)
+          return if declared.nil?
+
+          # The SIBLING's own nullability/blank-tolerance, not the model config's — `target_property` is
+          # the sibling's emission, so its own `allow_nil:`/`allow_blank:` govern whether `"null"` joins
+          # the merged type and whether a blank-tolerant `:uuid`'s `format:` stands down (the same rule
+          # `apply_single_type!` already applies for every other property).
+          apply_single_type!(target_property, single_type_for(declared, for_output: false), explicit_id, nullable: nil_allowed?(explicit_id))
+          # `reject_null!` already ran on this (untyped) property earlier in the same build and, finding
+          # no `:type` to narrow, fell back to its `not: { type: "null" }` marker — now redundant (a real
+          # `:type` excludes null on its own, and `apply_single_type!` just decided that question fresh)
+          # and, left in place, a confusing double-marker beside the type that just replaced its reason
+          # for existing.
+          target_property.delete(:not) if target_property[:not] == { type: "null" }
+        end
+
+        # `id_field` rendered safely into an error message — `Values.canonical_wire_key` (already a
+        # dependency of this file) renders its actual UTF-8 characters when the bytes convert, falling
+        # back to `Symbol#inspect` — which a genuine Symbol (never a caller-subclassable object; every
+        # `id_field` here comes from `FieldConfig.model_id_key`, which always returns one) answers
+        # without running anything overridable, and always in valid UTF-8 even for exotic bytes. Bare
+        # interpolation would risk `Encoding::CompatibilityError` from THIS message's own UTF-8 text
+        # (Codex review round 7, PR #269): `model_id_key` always returns a Symbol, but nothing stops
+        # that Symbol from holding a legal, ASCII-compatible, non-UTF-8 encoding (a Latin-1 field name).
+        def renderable_id_field(id_field)
+          Values.canonical_wire_key(id_field) || id_field.inspect
+        end
+
+        # Whether a sibling's projected (type, format) PAIR satisfies what a declared `id_type:` demands
+        # — see `reject_model_id_type_conflict!` for why this is a one-way "at least as strict" test
+        # rather than equality.
+        def type_pair_satisfies?(declared, sibling_pair)
+          return false unless declared[:type] == sibling_pair[:type]
+          return true unless declared[:format]
+
+          declared[:format] == sibling_pair[:format]
+        end
+
+        # The base JSON `:type`/`:format` pairs a built property NAMES — one entry per branch for
+        # `{anyOf: [...]}`, one for a plain `{type: "string", format: "uuid"}` node, and one PER element
+        # when nullability has turned `:type` itself into an Array (`{type: ["string", "null"]}` —
+        # `build_property`'s own post-tolerance shape for a nullable SINGLE type, distinct from `anyOf`,
+        # which is reserved for a genuinely DECLARED union); empty when the node names no type at all (an
+        # `inclusion:`/`numericality:`-only bag that couldn't prove one). Every `"null"` entry is excluded
+        # either way: `nil` is never a candidate satisfying a lookup token's type, and requiredness is
+        # reconciled separately (`apply_model_id_requiredness!`/the nested `reject_null!` pass). Also
+        # accepts a `json_type_for`-shaped (pre-nullability) argument — that never puts an Array at a
+        # single member's `:type`, so `Array(m[:type])` is a one-element wrap there and reads identically.
+        def json_type_pairs(type_info)
+          members = type_info[:anyOf] || (type_info[:type] ? [type_info] : [])
+          members.flat_map { |m| Array(m[:type]).reject { |t| t == "null" }.map { |t| { type: t, format: m[:format] } } }
         end
 
         # Forbid `null` on a property (a required model-id token can't be null). Strips the null branch from

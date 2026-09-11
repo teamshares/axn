@@ -198,6 +198,15 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
 
     `not_found_on:` names the exception classes whose being raised means "no such record" — decided by the raised class's ancestry, so a subclass of a declared class counts too. It **replaces** the default rather than adding to it, so a non-ActiveRecord finder can opt out of `RecordNotFound` entirely. Every entry must be a `StandardError` subclass; anything else (including `nil`) raises `ArgumentError` at declaration. The bound is the rescuable one on purpose: axn absorbs nothing outside `StandardError` beyond a deliberate two-member allowlist, so a miss declared outside it would escape `.call` entirely rather than becoming a violation. Outside Rails, where `ActiveRecord::RecordNotFound` is undefined, the default set is empty and a finder that returns `nil` is the only miss.
 
+    **The `<field>_id`'s reflected type.** On `.input_schema`, a `model:` field's generated `<field>_id` property is typed like any other scalar field when its type can be known:
+    * Under ActiveRecord, with the default `:find` finder, it is **inferred from the class's own primary key** — `{type: "integer"}`, `{type: "string"}`, or `{type: "string", format: "uuid"}` for a uuid-typed one. A custom finder's token has no reason to share the primary key's type, so it stays untyped there, same as a non-ActiveRecord model.
+    * You can also declare it directly — `model: { id_type: Integer }` (or `String`/`:uuid`) — which wins over inference outright and is the only way to type it for a PORO model, a custom finder, or outside Rails:
+      ```ruby
+      expects :lead, model: { id_type: Integer }
+      # => { lead_id: { type: "integer" } }
+      ```
+    * Absent both, the property stays untyped (just a description, and `not: { type: "null" }` when required) — the same schema this always emitted.
+
 * `confirmation: true` - declares a companion input, `<field>_confirmation`, and fails unless it matches the field's actual value
   * Note this departs from ActiveModel, which lets an omitted confirmation pass. See [Confirmation pairs](#confirmation) for the details.
 
@@ -1067,6 +1076,10 @@ To keep reflection cheap and free of running your code, the schema is built from
 - a **`do…end` shape member under a nil-tolerant parent that carries its own object default** (e.g. `expects :payload, type: Hash, allow_nil: true, default: -> { {} }` with a required member): strict reflection ignores a `Proc` default, so it reflects the parent as nullable/omittable, but at runtime the Proc fills `{}` and the required member is then enforced, so the omitted/`nil` call fails.
 
 These surface as ordinary, recoverable validation errors (a tool client simply gets a failed result and can retry). Give the default a valid value, or send the parent explicitly, and the schema and runtime agree.
+:::
+
+::: tip A model id's inferred type is stricter than runtime, on purpose
+A `model:` field's `<field>_id`, when its type is known (see `model:` above), is the one place the schema is narrower than what `Axn.call` actually accepts: `User.find("5")` succeeds at runtime — `find` coerces its argument — but the ActiveRecord-inferred (or declared `id_type:`) schema says `{type: "integer"}` and would reject the string `"5"`. This is the safe direction reflection is allowed to err in (unlike the requiredness divergences above, which loosen the schema): a tool client that follows the schema never sends a value runtime would reject, it only might send a stricter-than-necessary one.
 :::
 
 ### Names that one JSON property can't keep apart {#property-name-rules}

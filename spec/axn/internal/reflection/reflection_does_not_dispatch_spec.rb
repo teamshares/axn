@@ -10,6 +10,15 @@
 # `member_keyed_object_type?`, `single_contents_schema`, `json_type_for`, `object_type_branches`,
 # `boolean_coercion_can_flip_truthiness?` and the shape-property base — each asking `is_a?`/`<`/`<=`/`==` of
 # the token, plus `model_id_property` reading its `name` into prose.
+#
+# ONE DELIBERATE EXCEPTION (PRO-3384), not reachable from THIS spec: `model_id_type_token` dispatches
+# `klass.primary_key` and `klass.type_for_attribute` — genuinely the token's own code — but only when
+# `klass`'s ancestry NATIVELY includes `ActiveRecord::Base` (`NativeMethods.includes_module?`, never
+# `klass < ActiveRecord::Base`, which the token could override) and the finder is the default `:find`. This
+# suite never loads ActiveRecord, so the probe token below can never enter that branch and this spec cannot
+# be the one that catches a regression there; the positive control — proving the branch is reached, and
+# that a `primary_key` which itself raises still falls back to the untyped property rather than taking
+# `input_schema` down — lives in `spec_rails/dummy_app/spec/axn/internal/reflection/model_id_type_spec.rb`.
 module ReflectionDispatchProbe
   # Everything a classification or a rendering could reach. `to_ary`/`to_a` are absent for a mechanical reason
   # rather than a policy one: defining them on a Class leaves no `super` to call, so they cannot be

@@ -73,6 +73,35 @@ module Axn
         [own_route, named_route].compact.uniq
       end
 
+      # Whether a `model:` bag's finder resolves BY the record's primary key — true only for the
+      # default `:find`, never a custom finder (a symbol naming another method, or a bound `Method`).
+      # THE single owner of that question, so it cannot drift across its four readers: the generated
+      # `<field>_id` reader's fast path, top-level (Contract#_define_model_id_reader — a
+      # directly-supplied, non-blank id IS the pk there, so no lookup is needed to answer it) AND
+      # nested (ContractForSubfields#_define_subfield_model_id_reader — Codex review round 3, PR #269,
+      # caught this one still re-deriving it inline after the other three were unified); the runtime
+      # record/id consistency check (Executor#_id_based_model?); and schema reflection's
+      # primary-key-type inference (Reflection::Schema — it only trusts the class's OWN primary key
+      # type when the id token IS that primary key).
+      #
+      # @param model_options the field config's `validations[:model]` bag
+      # @return [Boolean]
+      def by_primary_key_finder?(model_options)
+        model_options.is_a?(::Hash) && model_options[:finder] == :find
+      end
+
+      # The closed vocabulary a `model:` field's generated `<field>_id` can be typed as — a scalar
+      # lookup token, never a union or a structured type. Lives here rather than under
+      # `Internal::Reflection::Schema` (Codex review round 3, PR #269): it is read from BOTH sides of a
+      # layer boundary reflection may not cross upward — Contract's `_reject_unsupported_model_id_type!`
+      # confines a declared `id_type:` to exactly this set at DECLARATION time, and
+      # `Reflection::Schema::AR_PRIMARY_KEY_TYPE_TOKENS` maps every inferable ActiveRecord primary-key
+      # type onto one of these SAME tokens — so a declared token and an inferred one can never mean two
+      # different things. `Internal::X` is the home for a value-level mechanism more than one layer
+      # needs with no presence in the action's surface (AGENTS.md); `model_id_key`, right above, is the
+      # same kind of shared naming convention.
+      MODEL_ID_TYPE_TOKENS = [Integer, String, :uuid].freeze
+
       # Resolve a config's declared default against an action instance: a Proc is instance_exec'd (so
       # it sees readers/context), anything else returned as-is, with failures wrapped as
       # DefaultAssignmentError. Single source for the outbound-defaults write pass (Executor

@@ -14,7 +14,7 @@ What Rails gives you is **wiring**: an autoload path, a boot sequence to hook, a
 | [Resolving tool roots](#resolving-tool-roots) | Relative entries resolve under `Rails.root/app` | Supply absolute paths |
 | [`on_success` timing](#on-success-timing) | Deferred to after the outermost transaction commits | Runs inline |
 | [`use :transaction`](#use-transaction) | Wraps the call in a transaction | Raises `NotImplementedError` |
-| [`model:` fields](#model-fields) | ActiveRecord lookup | Any class answering the finder |
+| [`model:` fields](#model-fields) | ActiveRecord lookup; `<field>_id` typed on `.input_schema` from the primary key | Any class answering the finder; declare `id_type:` for the same schema typing |
 | Generators | `rails g axn …` | Not available — write the file |
 | [Profile output path](#profile-output-path) | `Rails.root/tmp/profiles` | `tmp/profiles`, relative to the working directory |
 
@@ -92,6 +92,14 @@ expects :widget, model: Widget # [!code focus]
 ```
 
 Axn's own non-Rails test suite uses POROs with a finder for exactly this. See [validation details](/reference/class#validation-details) for the full `model:` option surface.
+
+One thing that IS ActiveRecord-specific: under Rails, with the default `:find` finder, `.input_schema` types the generated `<field>_id` from the class's own primary key (`{type: "integer"}`, `{type: "string"}`, or a uuid). Without Rails — a PORO, or any custom finder — there is no primary key to read, so declare it yourself with `id_type:`:
+
+```ruby
+expects :widget, model: { klass: Widget, id_type: Integer }
+```
+
+Nothing about *runtime* changes either way — `id_type:` only affects the reflected schema.
 
 ## Profile output path
 
