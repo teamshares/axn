@@ -5928,6 +5928,79 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "false" })).not_to be_ok # coerces to false, fails inclusion in [true]
           end
 
+          # `drop_conflicting_size_bounds` (round 11) checked only `minimum`/`maximum`, missing exactly the
+          # keywords `numericality:`/`comparison:` actually emit for a strict bound — `exclusiveMinimum`/
+          # `exclusiveMaximum` (Codex review, PR #278 round 12): an ancestor `numericality: { greater_than:
+          # 3 }` beside a colliding preprocessing node's `comparison: { less_than: 2 }` accepts raw `4` at
+          # runtime (the ancestor checks 4 > 3; the node's own check runs on `4 - 3 = 1 < 2`), but keeping
+          # both bounds conjoined `exclusiveMinimum: 3` with `exclusiveMaximum: 2` — a node no integer can
+          # satisfy.
+          it "drops a preprocessing node's own exclusive numeric bound rather than conjoin it into an empty interval" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Integer, numericality: { greater_than: 3 }
+              end
+              expects :inner, on: :payload, type: Integer, comparison: { less_than: 2 }, preprocess: ->(v) { v - 3 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer", exclusiveMinimum: 3)
+            expect(klass.call(payload: { inner: 4 })).to be_ok # ancestor's raw bound passes; node's transformed check is vacuous (4-3=1 < 2)
+            expect(klass.call(payload: { inner: 3 })).not_to be_ok # fails the ancestor's own exclusiveMinimum: 3
+          end
+
+          # A wire-spelling candidate is safe only if it ACTUALLY round-trips through the real coercer for
+          # THIS declared type — a union target changes which candidates survive, which a class-only check
+          # (round 9-11: "it's a String, so it's already safe") cannot see (Codex review, PR #278 round
+          # 12): under a `[Integer, String]` coercing type, the literal "5" decodes to Integer 5 (Integer is
+          # tried first and succeeds), never remaining String "5" — so no wire value could ever satisfy an
+          # inclusion check against the literal String "5", and it must be dropped; "ok" is untouched by
+          # either coercion target and survives unchanged.
+          it "drops a wire-unreachable string enum entry under a union coercion target, keeping a reachable one" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: [Integer, String], coerce: true }, inclusion: { in: %w[5 ok] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: ["ok"], not: { type: "null" }, allOf: [{ type: "string", minLength: 1 }])
+            expect(klass.call(payload: { inner: "ok" })).to be_ok
+            expect(klass.call(payload: { inner: "5" })).not_to be_ok # decodes to Integer 5, never String "5" — never in the inclusion set
+          end
+
+          # An all-`nil` literal set must not be discarded merely because compacting it first (to classify
+          # the REST) leaves nothing behind — `nil` is never wire-transformed by coercion at all (round 8's
+          # own justification), so `enum: [nil]` round-trips trivially and is exactly as safe to keep as any
+          # other coercible literal (Codex review, PR #278 round 12): a nil-tolerant coercing `Integer` node
+          # with `inclusion: { in: [nil] }` beside a nil-tolerant String ancestor accepts nil and rejects
+          # every non-nil wire value at runtime (nothing else is in the inclusion set), but the previous
+          # compact-first check returned `nil` — "no safe translation" — for this literal set, dropping the
+          # constraint and letting the schema accept "5".
+          it "keeps an all-nil enum rather than treating it as having no safe translation" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, optional: true
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, inclusion: { in: [nil] }, optional: true
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: [nil], allOf: [{ type: %w[string null] }])
+            expect(klass.call(payload: { inner: nil })).to be_ok
+            expect(klass.call(payload: { inner: "5" })).not_to be_ok # coerces to 5, not in the inclusion set [nil]
+          end
+
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
             klass = Class.new do
               include Axn
