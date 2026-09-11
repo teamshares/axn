@@ -1701,8 +1701,42 @@ module Axn
         # absolute, value-independent contradiction; at worst they are imprecise in the same way
         # `single_type_for`'s own pre-existing reflection of a transforming field already is, standalone,
         # with no collision at all.
+        #
+        # Dropping `enum`/`const` outright (rather than merely dropping `type`/`anyOf`) has its OWN gap in
+        # the opposite direction (Codex review, PR #278 round 9): if nothing else on this side survives,
+        # the node contributes NOTHING beyond whatever the other side already asserts, so any wire value
+        # that satisfies the OTHER side's type alone now satisfies the whole conjunction — even one this
+        # node's own (dropped) equality/inclusion constraint would have rejected after coercion. So a
+        # numeric literal is TRANSLATED rather than dropped: `Coercion::COERCERS[Integer]` parses via
+        # `Integer(s, 10)` and `Float` via `Float(s)`, and both round-trip through `#to_s` — the literal's
+        # decimal string spelling is therefore a WIRE form the coercer accepts for it, so retaining both
+        # spellings as an `enum` keeps the schema correct without inventing a general coercion inverse. A
+        # non-numeric literal (Symbol/Date/anything else) has no such safe, construction-only translation
+        # available here and is dropped as before — a narrower, still-tolerated imprecision.
         def strip_intrinsically_typed_keys(prop)
-          prop.except(:type, :anyOf, :enum, :const)
+          literal_values = Array(prop[:const]) + Array(prop[:enum])
+          stripped = prop.except(:type, :anyOf, :enum, :const)
+          return stripped if literal_values.empty?
+
+          spellings = numeric_wire_spellings(literal_values)
+          return stripped if spellings.nil?
+
+          stripped[:enum] = spellings
+          stripped
+        end
+
+        # A literal set's wire-string spellings, when every non-nil member is Integer or Float — nil
+        # (present) unless the whole set is homogeneously numeric, since a Symbol/Date/other literal has
+        # no `#to_s`-based coercion inverse this can vouch for (see strip_intrinsically_typed_keys). `nil`
+        # itself (a nullable position's enum member) never needs a spelling — it is not wire-transformed
+        # by coercion at all — so it is set aside before the type check and reattached untouched after.
+        def numeric_wire_spellings(values)
+          non_nil = values.compact
+          return nil if non_nil.empty?
+          return nil unless non_nil.all? { |v| v.is_a?(::Integer) || v.is_a?(::Float) }
+
+          spellings = (non_nil + non_nil.map(&:to_s)).uniq
+          values.size == non_nil.size ? spellings : spellings + [nil]
         end
 
         # Whether ANY config in this route list transforms the wire value it judges — a Proc
