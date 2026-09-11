@@ -305,24 +305,23 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # document that accepts what the runtime rejects is the failure. The nesting is spelled both ways in the
   # matrix — an explicit `on:` node and the dotted `on:` that reaches the same wire path — because the two
   # are the same contract and the defect was the disagreement between them.
-  # A member the emitter declines to MERGE (see merged_explicit_members) is the one cell this walk cannot
-  # judge, and the exclusion is stated as a fact about the declaration rather than as a list of rows.
-  #
-  # Such a member is still enforced, but its constraints describe branches the node's own type does not
-  # admit, so there is nowhere in an object property to put them: a `[Hash, Array]` member's presence floor
-  # lands on two branches the node narrowed to one, and a `String` member conjoined with a `type: Hash` node
-  # admits nothing at all. Writing the conjunction honestly needs `allOf: [member, node]`, a schema shape the
-  # emitter does not produce anywhere today — so these stay looser than the runtime, exactly as they were
-  # before PRO-3399 (measured: this walk reported 58 divergences across 19 rows against the emitter that
-  # dropped merged members outright, and 22 across these rows after). Tracked as PRO-3405.
+  # PRO-3405 closed the conjunction gap: a member the node's own type "cannot nest" is no longer dropped
+  # outright — it rides alongside as a sibling `allOf` branch instead (conjoin_shape_member_property), so
+  # every row this walk exercises now agrees with the runtime. What remains excluded is a DIFFERENT, older
+  # gap (`apply_implicit_node!`'s early return, unrelated to PRO-3405): a deep subfield reached only through
+  # an IMPLICIT intermediate under a non-nestable member has no explicit node to hang an `allOf` branch off
+  # of at all — the member's own type IS the whole story at that key, and it cannot host a deeper object
+  # structure. That is the divergence `docs/recipes/authoring-tool-adapters.md` already documents (a deep
+  # subfield with no JSON representation, omitted with a `logger.warn`) and it is asked of the EMITTER's own
+  # `dropped_deep_subfields`, not re-derived, so the exclusion can never drift from what is actually dropped
+  # (measured: this walk reported 58 divergences across 19 rows before PRO-3399, 22 across 6 rows after it,
+  # and 0 after PRO-3405 conjoined every row but this one).
   #
   # NOT excluded, deliberately: the nullability cap PRO-3399 added applies to these members too (it is
   # charged on every colliding member, merged or not), and `schema_spec.rb` asserts that directly — so the
   # one thing this walk stops watching here is watched there.
-  def unmergeable_member?(klass)
-    payload = klass.internal_field_configs.find { |c| c.field == :payload }
-    members = Axn::Internal::Reflection::Schema.send(:shape_members_at, [payload], :inner)
-    members.any? { |m| !Axn::Internal::Reflection::Schema.send(:nestable_as_object?, m) }
+  def unrepresentable_deep_drop?(klass)
+    !Axn::Internal::Reflection::Schema.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs).empty?
   end
 
   def nested_members
@@ -349,6 +348,11 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         expects(:inner, on: :payload, type: Hash) { field :b, type: String }
       },
       "dotted on: (no explicit node)" => proc { expects :c, on: "payload.inner", type: String },
+      # PRO-3405: the node ITSELF is non-nestable (a mixed union, not a plain Hash) — every other node in
+      # this axis is `type: Hash`, so this is the one row that reaches conjoin_shape_member_property's
+      # "neither side is object-shaped" branch at the TOP level rather than at a nested key. Without it,
+      # the fix's least-tested branch is unguarded.
+      "explicit non-nesting node" => proc { expects :inner, on: :payload, type: [Hash, Array] },
     }
   end
 
@@ -379,7 +383,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       nested_nodes.each do |nname, node|
         klass = declare_nested(member, node)
         next if klass.nil?
-        next if unmergeable_member?(klass)
+        next if unrepresentable_deep_drop?(klass)
 
         document = schemer(klass.input_schema)
         nested_payloads.each do |payload|

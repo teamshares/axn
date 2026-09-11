@@ -4973,15 +4973,14 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(klass.call(payload: { inner: nil })).not_to be_ok
         end
 
-        # Precedence, not conjunction — and deliberately the SAME precedence every other spelling already
-        # uses: `apply_structured_schema!` has always resolved a name declared twice at one node with
-        # `base_properties.merge(member_props)`, so the child wins here, through a dotted `on:`, and through
-        # the node's own `shape:` alike, on `main` and after this change alike (measured). That is a real
-        # divergence — the runtime enforces both declarations and rejects what the document accepts — but it
-        # is one level down from this ticket and spelling-independent, so it is tracked with the rest of the
-        # conjunction work in PRO-3405. Pinning it here keeps the two spellings provably equal, which is what
-        # a fix must preserve: correcting only the explicit path would reopen the divergence this closes.
-        it "lets the node's own child win a name the ancestor member also declares (same as every spelling)" do
+        # PRO-3405. A name declared twice at one node — once by the ancestor's nested shape, once by the
+        # node's own child — used to resolve by precedence (`base_properties.merge(member_props)`, the
+        # child winning outright), discarding the ancestor's constraint though the runtime enforces both.
+        # Conjoined via `allOf` instead, same as any other collision this ticket closes: `String` and
+        # `Integer` are disjoint, so the honest conjunction is empty, matching a contract nothing
+        # satisfies (both spellings, measured). Every spelling agrees, which is what a fix must preserve —
+        # correcting only the explicit path would reopen the divergence PRO-3399 closed.
+        it "conjoins a colliding child name via allOf rather than letting one side win" do
           klass = Class.new do
             include Axn
             expects :payload, type: Hash do
@@ -4991,10 +4990,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             end
             expects :inner, on: :payload, type: Hash
             expects :a, on: :inner, type: Integer
+            def call = nil
           end
           schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-          expect(schema[:properties][:payload][:properties][:inner][:properties][:a]).to include(type: "integer")
+          a_prop = schema[:properties][:payload][:properties][:inner][:properties][:a]
+          expect(a_prop[:type]).to eq("integer")
+          expect(a_prop[:allOf]).to eq([{ type: "string", minLength: 1 }])
+          expect(klass.call(payload: { inner: { a: "x" } })).not_to be_ok # ancestor wants String…
+          expect(klass.call(payload: { inner: { a: 1 } })).not_to be_ok   # …node wants Integer: nothing satisfies both
 
           implicit = Class.new do
             include Axn
@@ -5007,6 +5011,57 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           end
           expect(described_class.build_input(implicit.internal_field_configs, implicit.subfield_configs))
             .to eq(schema)
+        end
+
+        # The conjunction actually being ENFORCED, not just an empty one: two compatible String
+        # constraints, one on each side, both alive in the final document — and pinned across all three
+        # spellings, which must agree (the property PRO-3399 established).
+        it "enforces both sides of a satisfiable colliding-child conjunction, identically in every spelling" do
+          explicit_child = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String, length: { minimum: 3 }
+              end
+            end
+            expects :inner, on: :payload, type: Hash
+            expects :a, on: :inner, type: String, format: { with: /\Aabc/ }
+            def call = nil
+          end
+          own_shape = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String, length: { minimum: 3 }
+              end
+            end
+            expects(:inner, on: :payload, type: Hash) { field :a, type: String, format: { with: /\Aabc/ } }
+            def call = nil
+          end
+          dotted = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String, length: { minimum: 3 }
+              end
+            end
+            expects :a, on: "payload.inner", type: String, format: { with: /\Aabc/ }
+            def call = nil
+          end
+
+          schema = described_class.build_input(explicit_child.internal_field_configs, explicit_child.subfield_configs)
+          expect(described_class.build_input(own_shape.internal_field_configs, own_shape.subfield_configs)).to eq(schema)
+          expect(described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)).to eq(schema)
+
+          a_prop = schema[:properties][:payload][:properties][:inner][:properties][:a]
+          expect(a_prop[:pattern]).to eq("^abc") # the node's own format survives at the top
+          expect(a_prop[:allOf]).to eq([{ type: "string", minLength: 3 }]) # the ancestor's length floor, conjoined
+
+          [explicit_child, own_shape, dotted].each do |klass|
+            expect(klass.call(payload: { inner: { a: "abcdef" } })).to be_ok       # satisfies length AND format
+            expect(klass.call(payload: { inner: { a: "ab" } })).not_to be_ok       # fails the ancestor's length floor
+            expect(klass.call(payload: { inner: { a: "xyzxyz" } })).not_to be_ok   # fails the node's own format
+          end
         end
 
         # A non-nestable member BELOW the explicit hop blocks at the deeper implicit node, exactly as it does
@@ -5094,10 +5149,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           end
         end
 
-        context "negative controls — a member the emitter does not merge" do
+        # PRO-3405. Every case below used to discard the ancestor member's contents outright — no shared
+        # `properties`/`required` keyword surface with the node's own emission, so there was nowhere to
+        # put them structurally. They still don't get keyword-merged (that stays the object-vs-object
+        # path above), but they are no longer DROPPED: the member is conjoined as a sibling `allOf`
+        # branch, so the document keeps every constraint the runtime enforces.
+        context "a member the emitter cannot structurally merge conjoins via allOf instead of dropping" do
           # The node's OWN type governs nesting: a `type: Hash` node under a `[Hash, Array]` member still
           # nests its subfields, because runtime narrows to the Hash branch there and such a contract
-          # resolves for real. Only the member's own contents stay out. If this ever starts dropping `c`,
+          # resolves for real. Only the member's own contents stay OUT OF `properties` — they still reach
+          # the document, via the allOf branch below. If this ever starts dropping `c` from `properties`,
           # the drop pass has been widened to block at explicit hops, which it must not be.
           it "still nests an explicit node's children under a mixed-union member, and drops nothing" do
             klass = Class.new do
@@ -5114,11 +5175,56 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner[:type]).to eq("object")
             expect(inner[:properties]).to have_key(:c)
+            expect(inner[:allOf]).to eq([{ anyOf: [{ type: "object", minProperties: 1 }, { type: "array", minItems: 1 }] }])
             expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)).to eq([])
             expect(klass.call(payload: { inner: { c: "x" } })).to be_ok # and it really resolves
           end
 
-          it "merges nothing into a node whose own type cannot hold object properties" do
+          # The measured divergence this closes: the ancestor member requires an object with AT LEAST one
+          # property (or a non-empty array) — a bare `{}` satisfies neither branch, and the runtime has
+          # always rejected it. Before this fix the document accepted it (the member was dropped whole).
+          it "conjoins a mixed-union member's own presence floor onto a nil-tolerant node" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Hash, Array]
+              end
+              expects :inner, on: :payload, type: Hash, allow_nil: true
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner[:type]).to eq("object") # allow_nil stripped: the ancestor member forbids nil
+            expect(inner[:allOf]).to eq([{ anyOf: [{ type: "object", minProperties: 1 }, { type: "array", minItems: 1 }] }])
+            expect(klass.call(payload: { inner: {} })).not_to be_ok # the divergence: the document used to accept this
+          end
+
+          it "conjoins via allOf when the ancestor member's own type has no object branch at all" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: Hash
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner[:type]).to eq("object")
+            expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
+            # honest emptiness: String and Hash are disjoint, so nothing satisfies the conjunction —
+            # matching the contract, which nothing satisfies either.
+            expect(klass.call(payload: { inner: {} })).not_to be_ok
+            expect(klass.call(payload: { inner: "x" })).not_to be_ok
+          end
+
+          # A non-object NODE type (not a union — plain `Array`) beside an object-shaped ancestor member:
+          # `properties` stays absent (there is nowhere at the top level to put an object's properties
+          # under an array-typed node), but the member's whole Hash-shaped constraint now reaches the
+          # document via allOf, rather than vanishing.
+          it "conjoins via allOf into a node whose own type cannot hold object properties" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -5127,28 +5233,89 @@ RSpec.describe Axn::Internal::Reflection::Schema do
                 end
               end
               expects :inner, on: :payload, type: Array
+              def call = nil
             end
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner[:type]).to eq("array")
             expect(inner).not_to have_key(:properties)
+            expect(inner[:allOf]).to eq(
+              [{ type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1 }],
+            )
             expect(schema[:properties][:payload][:required]).to include("inner") # obligation kept
+            # honest emptiness: Array and the member's required Hash shape are disjoint.
+            expect(klass.call(payload: { inner: [] })).not_to be_ok
+            expect(klass.call(payload: { inner: { a: "x" } })).not_to be_ok
           end
 
-          it "merges nothing from an Array member, whose shape describes ELEMENTS rather than the node" do
+          # The deep twin of the top-level case above: a nested key, not the node itself, collision-free at
+          # depth 0 but conjoined at depth 1 via merge_emitted_maps rather than apply_explicit_child! — the
+          # OTHER site this fix touches. Object (node's own shape) vs scalar (ancestor's), not two scalars.
+          it "conjoins a nested key's ancestor-declared shape with the node's OWN differently-shaped child" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :deep, type: String
+                end
+              end
+              expects(:inner, on: :payload, type: Hash) do
+                field :deep, type: Hash do
+                  field :z, type: String
+                end
+              end
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:inner][:properties][:deep]
+            expect(deep[:type]).to eq("object")
+            expect(deep[:properties]).to have_key(:z)
+            expect(deep[:allOf]).to eq([{ type: "string", minLength: 1 }])
+            # the divergence this closes: an object satisfying the node's own shape used to pass, though
+            # the ancestor member requires deep to be a String.
+            expect(klass.call(payload: { inner: { deep: { z: "x" } } })).not_to be_ok
+          end
+
+          # coerce:/preprocess: transform the wire value before validation runs, so the node judges a
+          # DIFFERENT value than the ancestor member's declaration does. Conjoining would emit a node
+          # nothing satisfies for a contract that works at runtime — stand down and keep today's emission.
+          it "stands down when the node's own declaration transforms the value" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer")
+            expect(inner).not_to have_key(:allOf)
+            expect(klass.call(payload: { inner: "5" })).to be_ok # the working contract this stand-down protects
+          end
+
+          it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
                 field :inner, type: Array, of: Hash
               end
               expects :inner, on: :payload, type: Hash
+              def call = nil
             end
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner).not_to have_key(:items)
             expect(inner).not_to have_key(:properties)
+            expect(inner[:allOf]).to eq([{ type: "array", items: { type: "object" }, minItems: 1 }])
+            # honest emptiness: Hash and Array are disjoint.
+            expect(klass.call(payload: { inner: {} })).not_to be_ok
+            expect(klass.call(payload: { inner: [{}] })).not_to be_ok
           end
 
           it "leaves a sibling member with no explicit node of its own untouched" do
