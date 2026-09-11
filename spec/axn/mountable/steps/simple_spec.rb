@@ -57,4 +57,36 @@ RSpec.describe "Step functionality" do
 
     it_behaves_like "a composed Axn"
   end
+
+  describe "steps(...) grammar" do
+    let(:step1) { Axn::Factory.build(expects: [:name]) {} }
+    let(:step2) { Axn::Factory.build {} }
+
+    # The regression this closes: `steps [Step1, Step2]` (an Array handed to the splat instead of
+    # `steps Step1, Step2`) used to be silently SKIPPED (`next unless step_class.is_a?(Class)`) -- the
+    # action mounted zero steps and settled `success`, having done nothing, with no complaint at all.
+    it "rejects an Array handed to the splat instead of variadic classes" do
+      s1 = step1
+      s2 = step2
+      expect do
+        build_axn { steps([s1, s2]) }
+      end.to raise_error(ArgumentError, /steps must be Axn classes/)
+    end
+
+    it "tolerates a nil entry (e.g. a conditional step)" do
+      s1 = step1
+      expect { build_axn { steps(s1, nil) } }.not_to raise_error
+    end
+
+    # Codex review, PR #272: the rejection message interpolated `step_class.inspect`, so a hostile
+    # step value's own `#inspect` raising would replace the intended declaration-time ArgumentError.
+    it "does not let a hostile #inspect replace the intended ArgumentError" do
+      hostile = Object.new
+      def hostile.inspect = raise "boom in inspect"
+
+      expect do
+        build_axn { steps(hostile) }
+      end.to raise_error(ArgumentError, /steps must be Axn classes/)
+    end
+  end
 end

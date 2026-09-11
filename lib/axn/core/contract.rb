@@ -97,38 +97,17 @@ module Axn
       # the method table instead would ACCEPT one whose `respond_to?` answers false, which the invoker would then
       # treat as a literal value and render as the caller's error message. So the dispatch stays and is GUARDED
       # instead: an object that raises while being asked cannot be established as invokable, so it is refused by
-      # axn's own error naming its class (see `_invokable_user_facing?`).
+      # axn's own error naming its class (see `Handlers::Invoker.safely_callable?`).
       def self.validate_user_facing!(user_facing)
         case user_facing
         when true, false, ::String, ::Symbol then return
         end
-        return if _invokable_user_facing?(user_facing)
+        return if Axn::Core::Flow::Handlers::Invoker.safely_callable?(user_facing)
 
         raise ArgumentError,
               "user_facing: must be true, a String, a Symbol, or a Proc (got a value of class " \
               "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(user_facing)})"
       end
-
-      # Whether the invoker would run this value as a handler — asked of the invoker itself, so the declaration
-      # check and the call-time dispatch can never disagree, with the caller's exception kept from replacing the
-      # verdict.
-      #
-      # `respond_to?` is the caller's to override, and it consults `respond_to_missing?`, which is the caller's
-      # too; either raising would surface as the object's own exception in place of the ArgumentError. Refusing is
-      # the honest fallback: a value that cannot answer whether it is invokable has not been shown to be a
-      # resolution rule, and axn's error names its class safely rather than reporting the object's.
-      #
-      # The rescue is pinned to the same boundary as everything else axn absorbs
-      # (`Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR`), so a signal or another library's control-flow
-      # exception still passes through untouched — and it is written as a `rescue` clause rather than
-      # `Extensions.swallowable?` because `rescue` matches through `Module#===` while that predicate would ask
-      # the exception's own `is_a?`, reintroducing the dispatch one layer down.
-      def self._invokable_user_facing?(value)
-        Axn::Core::Flow::Handlers::Invoker.callable?(value)
-      rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
-        false
-      end
-      private_class_method :_invokable_user_facing?
 
       # The grammar of a `sensitive:` value: `true`/`false`, a Symbol (an action method name), or a Proc — plus
       # `nil`, which means `false` (so `sensitive: some_flag` reads naturally when the flag is unset). Anything
@@ -436,8 +415,21 @@ module Axn
           @declarations = []
         end
 
-        def field(name, **opts, &block)
-          @declarations << [name, opts, block]
+        def field(*names, **opts, &block)
+          # A bare positional was REQUIRED before this went variadic, so `field type: String` (the
+          # name typo'd away, options still present) raised a loud arity error. A splat accepts zero
+          # names silently instead -- unlike `expects`/`before`'s own long-standing tolerance of a
+          # truly empty call (a legitimate "nothing to declare this time"), an empty `field` call still
+          # carries `opts`/a `block`, which is exactly the shape of a typo that dropped the name, not
+          # a deliberate no-op. Reject it rather than let the declared validations silently vanish.
+          raise ArgumentError, "field requires at least one name" if names.empty?
+
+          # Same rule `expects`/`exposes` already enforce for a shape block declared across several
+          # top-level fields at once (`_build_shape`'s "a shape block can only be declared on a
+          # single field") -- a nested shape can't be shared honestly across sibling members either.
+          raise ArgumentError, "a shape block can only be declared on a single field" if names.size > 1 && block
+
+          names.each { |name| @declarations << [name, opts, block] }
         end
       end
 

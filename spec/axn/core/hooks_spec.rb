@@ -462,4 +462,72 @@ RSpec.describe Axn do
       end
     end
   end
+
+  describe "hook grammar" do
+    %i[before after around].each do |dsl|
+      describe "`#{dsl}`" do
+        it "accepts variadic Symbols" do
+          expect do
+            build_axn do
+              public_send(dsl, :a, :b)
+              def a; end
+
+              def b; end
+            end
+          end.not_to raise_error
+        end
+
+        it "accepts a Proc" do
+          expect { build_axn { public_send(dsl, -> {}) } }.not_to raise_error
+        end
+
+        # The regression this closes: `before [:a, :b]` (an Array handed to the splat instead of two
+        # Symbols) used to declare cleanly and only surface as a bare `TypeError: wrong argument type
+        # Array (expected Proc)` on the FIRST call after -- not at declaration.
+        it "rejects an Array handed to the splat instead of variadic Symbols" do
+          expect do
+            build_axn { public_send(dsl, %i[a b]) }
+          end.to raise_error(ArgumentError, /hooks must be Symbols naming instance methods, or callables/)
+        end
+
+        it "rejects a non-Symbol, non-callable value" do
+          expect do
+            build_axn { public_send(dsl, 42) }
+          end.to raise_error(ArgumentError, /hooks must be Symbols naming instance methods, or callables/)
+        end
+
+        # Codex review, PR #272: the guard originally borrowed `Handlers::Invoker.safely_callable?`,
+        # which requires `arity` too -- needed by Invoker's OWN dispatch (arity-filtered
+        # `instance_exec`, for messages/callbacks), but NOT by `Executor#run_hook`, which calls
+        # `instance_exec(*, &hook)` -- `&hook` only ever calls `to_proc`, never inspects arity. An
+        # object answering `to_proc` alone previously worked at runtime and would have been wrongly
+        # rejected at declaration by the borrowed check.
+        it "accepts an object answering to_proc but not arity" do
+          to_proc_only = Class.new do
+            def initialize(&blk) = @blk = blk
+            def to_proc = @blk
+          end.new {}
+
+          expect(to_proc_only).to respond_to(:to_proc)
+          expect(to_proc_only).not_to respond_to(:arity)
+
+          expect { build_axn { public_send(dsl, to_proc_only) } }.not_to raise_error
+        end
+
+        # Codex review, PR #272: the rejection message interpolated `invalid.inspect`, so a hostile
+        # hook's own `#inspect` raising would replace the intended declaration-time ArgumentError
+        # with whatever THAT raised instead -- the same class of hole `_safely_to_proc?` exists to
+        # close for `respond_to?`, just at the message-rendering step instead of the predicate.
+        it "does not let a hostile #inspect replace the intended ArgumentError" do
+          hostile = Object.new
+          def hostile.respond_to?(*) = false
+          def hostile.inspect = raise "boom in inspect"
+
+          expect do
+            build_axn { public_send(dsl, hostile) }
+          end.to raise_error(ArgumentError, /hooks must be Symbols naming instance methods, or callables/)
+        end
+      end
+    end
+  end
 end

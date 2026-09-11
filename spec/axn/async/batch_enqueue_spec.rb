@@ -164,6 +164,17 @@ RSpec.describe "Axn::Async::BatchEnqueue" do
       end.to raise_error(ArgumentError, /on_enqueue_all cannot be called with both a block and a handler/)
     end
 
+    # Codex review, PR #272: an explicit `nil` handler used to be indistinguishable from "not given"
+    # (the single `handler = nil` default) and got rejected by the presence check above. It shares
+    # `_add_callback`/`_register_callback` with `on_success` et al. -- see hooks_and_callbacks_spec.rb
+    # for the full grammar coverage; this pins the same guard reached through this file's own DSL
+    # method.
+    it "rejects an explicit nil handler rather than silently registering a no-op" do
+      expect do
+        build_axn { on_enqueue_all nil }
+      end.to raise_error(ArgumentError, /on_enqueue_all handler must be a Symbol, a callable, or a prebuilt descriptor/)
+    end
+
     it "does not leak callbacks across sibling classes" do
       parent = build_axn { on_enqueue_all { |count:| count } }
       sibling = build_axn {}

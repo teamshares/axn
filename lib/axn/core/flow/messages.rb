@@ -22,8 +22,18 @@ module Axn
 
           def _add_message(kind, message:, standalone: nil, join: nil, **kwargs, &block)
             Axn::Core::Flow::Handlers::Descriptors::MessageDescriptor.reject_unsupported_options!(kwargs.slice(:from, :prefix))
-            raise ArgumentError, "Provide either a message or a block, not both" if message && block_given?
-            raise ArgumentError, "Provide a message or a block" unless message || block_given?
+
+            # `message`'s ABSENCE is `nil` -- both when the positional was omitted entirely and when
+            # the caller wrote `error(nil)` (indistinguishable, exactly like `fails_on`'s own optional
+            # positional). `!message.nil?` is the difference from bare truthiness: `error(false) {
+            # "fallback" }` used to read as "no message given" (both `message` checks below are
+            # falsy for `false`), so the conflict check never fired and `_build_entry` silently
+            # preferred the block, dropping the explicitly-supplied invalid `false` with no
+            # complaint at all. `message_given` makes `false` behave like every OTHER invalid
+            # non-nil value here: a real conflict with the block, caught below.
+            message_given = !message.nil?
+            raise ArgumentError, "Provide either a message or a block, not both" if message_given && block_given?
+            raise ArgumentError, "Provide a message or a block" unless message_given || block_given?
 
             entry = _build_entry(message, standalone:, join:, kwargs:, block:, block_given: block_given?)
 

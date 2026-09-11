@@ -124,7 +124,7 @@ module Axn
         # @example Count-only heartbeat via a class method
         #   on_enqueue_all :log_summary
         #   def self.log_summary(count:) = info "Found #{count} events"
-        def on_enqueue_all(handler = nil, **, &block) = _add_callback(:enqueue_all, handler:, **, block:)
+        def on_enqueue_all(*handlers, **, &block) = _add_callback(:enqueue_all, handlers, **, block:)
       end
     end
   end
