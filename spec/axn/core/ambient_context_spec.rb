@@ -105,6 +105,57 @@ RSpec.describe "Axn ambient_context resolution" do
   end
 end
 
+# PRO-3409: an ambient-rooted violation reads identically to a plain caller-input violation today
+# ("Current user can't be blank" either way) — nothing in the message tells a dev the value was
+# expected to come from the ambient provider rather than the caller's kwargs. Every case below
+# annotates the message; the contrast case proves a plain (non-ambient) field is untouched.
+RSpec.describe "Axn ambient_context validation error messages (PRO-3409)" do
+  after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
+
+  it "annotates a missing required ambient subfield's message" do
+    klass = build_axn { expects :current_user, on: :ambient_context }
+
+    result = klass.call
+
+    expect(result.exception.message).to eq("Current user can't be blank (via ambient_context, not caller input)")
+  end
+
+  it "annotates a type-mismatch on an ambient subfield's message" do
+    klass = build_axn { expects :current_user, on: :ambient_context, type: String }
+
+    result = with_ambient_context(current_user: 5) { klass.call }
+
+    expect(result.exception.message).to eq("Current user is not a String (via ambient_context, not caller input)")
+  end
+
+  it "does not annotate a plain (non-ambient) field's message" do
+    klass = build_axn { expects :current_user }
+
+    result = klass.call
+
+    expect(result.exception.message).to eq("Current user can't be blank")
+  end
+
+  it "annotates a model-consistency mismatch rooted at ambient_context" do
+    company_model = Class.new do
+      def self.find(id) = new(id)
+      def initialize(id) = (@id = id)
+      attr_reader :id
+    end
+    klass = build_axn do
+      expects :company_id, on: :ambient_context
+      expects :company, on: :ambient_context, model: { klass: company_model, finder: :find }, allow_nil: true
+    end
+    record = company_model.new("5")
+
+    result = with_ambient_context(company: record, company_id: "9") { klass.call }
+
+    expect(result.exception.message)
+      .to eq('company: provided record (id="5") conflicts with company_id="9" — pass one, or matching values ' \
+             "(via ambient_context, not caller input)")
+  end
+end
+
 RSpec.describe "Axn::Core::AmbientContext.default_source" do
   it "merges attributes across registered CurrentAttributes descendants" do
     skip "ActiveSupport::CurrentAttributes required" unless defined?(ActiveSupport::CurrentAttributes)

@@ -1282,7 +1282,7 @@ module Axn
         # top-level config marks its root node, so its whole subtree suppresses through the same rule.
         failures.reject! { |failure| failure.path && _suppressed_by_failed_ancestor?(failure.path, failed_nodes) }
         mismatches = _model_consistency_mismatches(failed_nodes)
-        base_extras = mismatches.map(&:message) + _undeclared_input_messages
+        base_extras = mismatches.map { |m| m.ambient ? _ambient_annotated(m.message) : m.message } + _undeclared_input_messages
 
         return if failures.empty? && base_extras.empty?
 
@@ -1323,6 +1323,13 @@ module Axn
       def _ambient_config?(config)
         config.subfield? && @action_class.send(:_on_roots_at_ambient?, config.on)
       end
+
+      # PRO-3409: ambient context is framework-supplied, not caller input — a dev debugging a missing or
+      # invalid ambient value needs to know to check the ambient provider (or `Current`), not the caller's
+      # kwargs. Every validator type renders through this one call (see `_aggregate_errors` above and
+      # `base_extras` in `_validate_inbound!`), so the annotation stays uniform without touching a single
+      # validator's own message-building.
+      def _ambient_annotated(message) = "#{message} (via ambient_context, not caller input)"
 
       # Every inbound config's errors — top-level fields and subfields through the one collector —
       # gathered in declaration order with no early exit: settling needs the complete set (both to
@@ -1410,11 +1417,16 @@ module Axn
 
       # The one dev-facing exception: every unsuppressed violation in a single errors object, in
       # declaration order (top-level fields then subfields), with model-consistency mismatches and
-      # stranded-path diagnostics on :base.
+      # stranded-path diagnostics on :base. An ambient-rooted field's own errors are annotated (PRO-3409):
+      # `errors.import` can't carry a substituted message (`ActiveModel::NestedError#message` delegates
+      # straight to the original error), so an ambient failure's errors are re-added under the SAME
+      # attribute with the annotated text instead — every other observable (attribute, count, the
+      # `ActiveModel::Errors` shape) is unchanged.
       def _aggregate_errors(failures, mismatches)
         errors = ActiveModel::Errors.new(Axn::Validation::Aggregate.new)
         failures.each do |failure|
-          failure.errors.each { |err| errors.import(err) }
+          ambient = _ambient_config?(failure.config)
+          failure.errors.each { |err| ambient ? errors.add(err.attribute, _ambient_annotated(err.message)) : errors.import(err) }
         end
         mismatches.each { |msg| errors.add(:base, msg) }
         failures.filter_map(&:stranded_at).uniq.each do |strand|
