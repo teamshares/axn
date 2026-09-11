@@ -1355,6 +1355,28 @@ module Axn
         # to place a blocked merge's obligation on the member's own property. Merging afterwards left both of
         # them looking at a property the member's contribution had not reached yet.
         #
+        # Codex review (PR #278): a side whose declared type is APPROXIMATE — an unknown class like `Object`
+        # or `Enumerable`, which `single_type_for` reflects on input as a permissive `{type: "string"}` HINT
+        # rather than a real constraint ("a JSON client can't send a Ruby object anyway") — must not be
+        # conjoined as if that hint were exact. A `type: Object` member beside a `type: Hash` node (or the
+        # reverse) emitted a string-vs-object intersection nothing satisfies, though the runtime accepts any
+        # Hash for both (`Object`/`Enumerable` admit it trivially). Judged on the DECLARED type, never the
+        # emitted Hash: a real `type: String` and the `Object` fallback emit the byte-identical property, so
+        # only the declaration can tell them apart, which is why this reads `representative`/`members`
+        # directly rather than `member_prop`/`child_prop`.
+        #
+        # An approximate side contributes nothing trustworthy to the conjunction, so it is dropped rather
+        # than wrapped: the OTHER side's real property is used as-is (its `own_prop.empty?` shortcut in
+        # conjoin_shape_member_property already knows how to adopt a real member_prop wholesale). Only when
+        # BOTH sides are approximate does the plain conjoin still run — two "string" hints never contradict
+        # each other, so there is nothing to protect against.
+        #
+        # The trade-off, and it is a narrow one: an approximate side's OWN other validators (a `length:`
+        # riding on the same fake `minLength`, per the wire audit's `known_broad_token_string_fallback?` note
+        # that this is "deliberate and load-bearing" elsewhere) are dropped along with its fake type when it
+        # loses — compounding an already-rare declaration (a broad class AND an explicit collision AND a
+        # further size bound) with a documented approximation this ticket did not introduce.
+        #
         # `null` survives only when every non-model route tolerates nil (runtime enforces all of them; the
         # property itself is built from the first non-model config), EVERY colliding shape member tolerates nil
         # too — merged or not, since a member this node declined to merge is still enforced, and a non-nullable
@@ -1367,7 +1389,14 @@ module Axn
           merged_members = merged_explicit_members(node, members)
           child_prop = build_property(representative, subfield: true)
           member_prop = prop[:properties][key]
-          child_prop = conjoin_shape_member_property(member_prop, child_prop) if member_prop && !transforms_value?(representative)
+          if member_prop && !transforms_value?(representative)
+            node_approximate = approximate_config?(representative)
+            member_approximate = !members.empty? && members.all? { |m| approximate_config?(m) }
+            unless member_approximate && !node_approximate
+              base = node_approximate && !member_approximate ? {} : child_prop
+              child_prop = conjoin_shape_member_property(member_prop, base)
+            end
+          end
           apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
           null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
                     members.all? { |m| nil_allowed?(m) } &&
@@ -1633,6 +1662,32 @@ module Axn
           return false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
 
           !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
+        end
+
+        # Whether `single_type_for`'s INPUT branch for this token falls through to its permissive `{type:
+        # "string"}` fallback ("a JSON client can't send a Ruby object anyway") rather than asserting a real
+        # JSON type. Derived from the SAME branches `single_type_for` checks, in the same order, so the two
+        # cannot disagree about which classes are "known": boolean/uuid/params, a `TYPE_MAP` entry, or a
+        # Numeric excluding Complex (which falls through to the fallback on input too, exactly as
+        # `single_type_for` itself does).
+        def approximate_type_token?(token)
+          return false if Axn::Internal::Identity.same?(token, :boolean)
+          return false if Axn::Internal::Identity.same?(token, ::TrueClass)
+          return false if Axn::Internal::Identity.same?(token, ::FalseClass)
+          return false if Axn::Internal::Identity.same?(token, :uuid)
+          return false if Axn::Internal::Identity.same?(token, :params)
+          return false unless nil.equal?(map_type_for(token))
+
+          !numeric_but_not_complex?(token)
+        end
+
+        # Whether EVERY branch of a config's declared type is one of the approximate tokens above — the
+        # question `apply_explicit_child!`'s conjoin asks of each colliding side. Untyped (no declared type
+        # at all) is NOT approximate: it emits no `:type` key at all rather than a misleading one, which is
+        # the `own_prop.empty?` case `conjoin_shape_member_property` already handles on its own terms.
+        def approximate_config?(config)
+          tokens = declared_type_tokens(config.validations)
+          !tokens.empty? && tokens.all? { |t| approximate_type_token?(t) }
         end
 
         # Duped when only one side has them: `apply_nested_subfields!` mutates the map it is handed as it adds

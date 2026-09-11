@@ -5321,6 +5321,101 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: { deep: { z: "x" } } })).not_to be_ok
           end
 
+          # A shape member (or the node's own shape) whose declared type is APPROXIMATE — an unknown class
+          # like `Object`/`Enumerable`, which `single_type_for` reflects on input as a permissive `{type:
+          # "string"}` HINT rather than a real constraint — must not be conjoined as if that hint were
+          # exact: doing so emits a string-vs-object intersection nothing satisfies, though the runtime
+          # accepts any Hash for both sides (Codex review, PR #278). The approximate side is dropped from
+          # the conjunction entirely (contributes nothing trustworthy) rather than wrapped, and the OTHER
+          # side's real property is used as-is.
+          it "does not conjoin an ancestor member's approximate type hint against the node's real object shape" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object
+              end
+              expects :inner, on: :payload, type: Hash
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "object", minProperties: 1)
+            expect(klass.call(payload: { inner: { a: 1 } })).to be_ok # the working contract this protects
+          end
+
+          # The mirror: the NODE's own type is the approximate one, and the ancestor member's real Hash
+          # shape survives — its `properties`/`required` reach the document, rather than the node's fake
+          # "string" hint discarding them.
+          it "does not conjoin the node's own approximate type hint against a real ancestor shape, and keeps the ancestor's" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :a, type: String
+                end
+              end
+              expects :inner, on: :payload, type: Object
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1,
+            )
+            expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
+            expect(klass.call(payload: { inner: {} })).not_to be_ok # the ancestor's required `a` still enforced
+          end
+
+          # Two approximate hints beside each other never contradict — nothing is lost by conjoining them
+          # normally, so this is the one combination where the plain conjoin still runs.
+          it "conjoins normally when BOTH sides are approximate, since two string hints cannot contradict" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object
+              end
+              expects :inner, on: :payload, type: Enumerable
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner[:type]).to eq("string")
+            expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
+          end
+
+          # KNOWN RESIDUAL, not fixed by this ticket: the same approximate-type risk one level deeper, where
+          # the collision is between the ancestor's NESTED field and the node's OWN shape block (spelling B,
+          # reached through merge_emitted_maps rather than apply_explicit_child!). That site combines two
+          # property Hashes with no config reference to tell a real `type: String` from the `Object` fallback
+          # apart — both emit the byte-identical Hash — so the guard above cannot reach it without threading
+          # declared-type info through what is otherwise a pure-Hash merge. Pinned here so a future change to
+          # that plumbing is deliberate, not a silent regression in either direction.
+          it "still admits nothing for the same approximate-type collision one level deeper (KNOWN RESIDUAL)" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :deep, type: Object
+                end
+              end
+              expects(:inner, on: :payload, type: Hash) do
+                field :deep, type: Hash do
+                  field :z, type: String
+                end
+              end
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:inner][:properties][:deep]
+            expect(deep[:allOf]).to eq([{ type: "string", minLength: 1 }]) # the fake hint, wrongly conjoined
+            # the runtime accepts this (Object admits any Hash); the document does not yet.
+            expect(klass.call(payload: { inner: { deep: { z: "x" } } })).to be_ok
+          end
+
           # coerce:/preprocess: transform the wire value before validation runs, so the node judges a
           # DIFFERENT value than the ancestor member's declaration does. Conjoining would emit a node
           # nothing satisfies for a contract that works at runtime — stand down and keep today's emission.
