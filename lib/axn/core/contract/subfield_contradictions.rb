@@ -33,7 +33,114 @@ module Axn
           check_unanswerable_segments!(tree) # first: an unreachable path moots any ambiguity on it
           check_subfields_under_map!(tree)
           check_ambiguous_crossings!(tree) if crossings
+          check_model_id_object_claim!(tree, field_configs)
           check_dead_nil_tolerance!(tree, field_configs)
+        end
+
+        # The MODEL-ID OBJECT-CLAIM check (PRO-3396): a `model:` field's generated `<field>_id` names the
+        # LOOKUP TOKEN the finder consumes — a scalar. Another declaration can claim that same wire key as an
+        # object WITH CONTENTS: a dotted `on:` whose intermediate segment is spelled `<field>_id`, an explicit
+        # `<field>_id` that a subfield then nests under, or a `shape:` member of that name carrying its own
+        # `members:`. One wire key cannot be both, and the emitter reconciled neither pair — `apply_model_id_child!`
+        # recognizes a sibling only by its `configs`, so an implicit intermediate is invisible to it, while
+        # `apply_implicit_node!` does not know a model's generated id might be underneath. Whichever ran second in
+        # the insertion-ordered walk simply overwrote the other, so the surviving property followed declaration
+        # order and the loser's contribution vanished silently.
+        #
+        # Refused rather than reconciled, because there is no coherent schema to emit: the property is either the
+        # scalar the finder reads or the object the descendant is read out of. A PLAIN scalar `<field>_id` sibling
+        # is untouched — that is the supported spelling, and the one `sibling_id_configs` exists to serve.
+        #
+        # The object claim is judged by what the emitter would actually NEST, not by the claimant's declared type:
+        # `node_configs_block_nesting?` is the same predicate emission and the drop pass consult, so a node whose
+        # children are dropped (a scalar or `model:` route at the id key) raises nothing here — an unreachable
+        # segment is `check_unanswerable_segments!`'s to report, and it runs first.
+        def check_model_id_object_claim!(tree, field_configs)
+          tree.index.each do |config, path|
+            next unless config.validations[:model]
+
+            id_key = Internal::FieldConfig.model_id_key(config.field)
+            claim = model_id_object_claimant(tree, path, field_configs, id_key)
+            raise_model_id_object_claim!(config, *claim, id_key) if claim
+          end
+        end
+
+        # The declaration that claims `id_key` as an object with contents, or nil. Two positions, mirroring the
+        # two the emitter reads a sibling from: at depth the id key is a CHILD of the model's own wire parent
+        # (`apply_model_id_child!` reads `children[id_field]`), at depth 0 it is another top-level config's own
+        # node (`build_input` scans `field_configs` by wire key — not `tree.roots`, which is keyed by reader name
+        # and so misses an aliased declaration of the same wire key).
+        #
+        # A model route at the id key is excluded on both sides: such a config emits its own generated id one
+        # level deeper (`<key>_id_id`) and never writes this key at all, the same exclusion `build_input` and
+        # `apply_model_id_child!` already apply when they look for an explicit sibling.
+        def model_id_object_claimant(tree, path, field_configs, id_key)
+          if path.ancestors.empty?
+            sibling_nodes = field_configs.filter_map do |c|
+              tree.index[c].node if c.field == id_key && !c.validations[:model]
+            end
+            descendant = sibling_nodes.filter_map { |node| claiming_descendant(node) }.first
+            return descendant && [descendant, :nested]
+          end
+
+          parent = path.parent_node
+          nested = parent.children[id_key]
+          descendant = nested && claiming_descendant(nested)
+          return [descendant, :nested] if descendant
+
+          member = claiming_shape_member(parent, id_key)
+          member && [member, :member]
+        end
+
+        # The declaration whose nesting under `node` makes the key an object: the shallowest config found beneath
+        # it. Nil when the node has no children, or when its own configs forbid nesting them (a scalar or `model:`
+        # route there emits no object property, so nothing collides with the id).
+        def claiming_descendant(node)
+          return nil if node.children.empty?
+          return nil if Axn::Internal::Reflection::Schema.node_configs_block_nesting?(node.configs)
+
+          first_config_below(node)
+        end
+
+        def first_config_below(node)
+          node.children.each_value do |child|
+            found = child.config || first_config_below(child)
+            return found if found
+          end
+          nil
+        end
+
+        # The `shape:` spelling of the same claim: a member of the model's wire parent named `id_key` that
+        # carries members of its own, so `apply_structured_schema!` merges an object property at that key before
+        # `apply_model_id_child!` ever runs. Read off the parent's REPRESENTATIVE config alone, the same
+        # restriction `apply_model_id_child!` applies: only the first non-model route's shape is ever merged, so
+        # a member on a later route is emitted nowhere and claims nothing.
+        def claiming_shape_member(parent, id_key)
+          representative = Axn::Internal::Reflection::Schema.property_representative(parent.configs)
+          Axn::Internal::Reflection::Schema.shape_members_at(Array(representative), id_key).find do |member|
+            Axn::Internal::Reflection::Schema.named_members(member.validations.dig(:shape, :members)).any?
+          end
+        end
+
+        # Names are RENDERED rather than interpolated raw, for the reason `raise_dead_tolerance!` documents: a
+        # declared name may hold bytes with no UTF-8 rendering, and joining one into this message would replace
+        # the contradiction being reported with an Encoding::CompatibilityError from the reporting itself.
+        def raise_model_id_object_claim!(config, claimant, kind, id_key)
+          label = ->(name) { Axn::Internal::Reflection::PropertyNames.renderable_label(name) }
+          where = config.on ? " (on #{label.call(config.on)})" : ""
+          claim =
+            if kind == :member
+              "a `shape:` member :#{label.call(claimant.field)} of the same name declares members of its own"
+            else
+              via = claimant.respond_to?(:on) && claimant.on ? " (on #{label.call(claimant.on)})" : ""
+              ":#{label.call(claimant.field)}#{via} nests underneath that same key"
+            end
+          raise ArgumentError,
+                "`model:` field :#{label.call(config.field)}#{where} generates the wire key " \
+                ":#{label.call(id_key)} for its lookup token, but #{claim}. One wire key cannot be both a " \
+                "lookup token and a nested object parent — the reflected schema can emit only one of the " \
+                "two, and which one survives follows declaration order. Rename the nested key, or drop the " \
+                "`model:` on :#{label.call(config.field)}."
         end
 
         # The MAP-PARENT check: a subfield read out of a Hash that declares `of:`. `of:` names what every key of

@@ -817,4 +817,151 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end
     end
   end
+
+  # PRO-3396: a `model:` field's generated `<field>_id` names a LOOKUP SCALAR. Another declaration can
+  # claim that same wire key as an object with contents — a dotted `on:` whose intermediate segment is
+  # spelled `<field>_id`, or a `shape:` member of that name carrying its own `members:`. One wire key
+  # cannot be both, and nothing reconciled the pair: whichever emission path ran second in the
+  # insertion-ordered walk simply overwrote the other, so the surviving property depended on declaration
+  # order and the loser's contribution vanished with no warning.
+  describe "a model: field's generated <field>_id claimed as an object (PRO-3396)" do
+    it "rejects a dotted intermediate segment spelled <field>_id" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "payload.company_id", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects it in the opposite declaration order" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :detail, on: "payload.company_id", type: String
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects it when the model's own reader is aliased (the wire key still generates the id)" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, as: :co, model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "payload.company_id", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects it under a deeper dotted model parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company, on: "payload.inner", model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "payload.inner.company_id", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects a shape member of that name carrying its own members" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :company_id, type: Hash do
+              field :detail, type: String
+            end
+          end
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /`shape:` member :company_id of the same name declares members of its own/)
+    end
+
+    it "rejects a top-level <field>_id sibling that a dotted subfield nests under" do
+      expect do
+        build_axn do
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+          expects :company_id, type: Hash
+          expects :detail, on: "company_id", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects it on an ambient-rooted model, where the check runs from the ambient seam" do
+      expect do
+        build_axn do
+          expects :company, on: :ambient_context, model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "ambient_context.company_id", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    # The claimant is found by WIRE KEY, not by reader name: `tree.roots` is keyed by `reader_as`, so an
+    # aliased declaration of the same wire key is absent from it while still owning the key the model needs.
+    it "rejects an ALIASED top-level <field>_id that a dotted subfield nests under" do
+      expect do
+        build_axn do
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+          expects :company_id, as: :cid, type: Hash
+          expects :detail, on: "cid", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    # The legal tail — a scalar `<field>_id` beside a model is THE supported spelling (it supplies the
+    # lookup token), so nothing here may start raising.
+    # The id sibling is declared FIRST at depth: an explicit reader declared after the model's inferred
+    # one trips the duplicate-sub-key guard, which is a separate rule and not what this describes.
+    it "accepts a plain scalar <field>_id sibling at depth" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, type: Integer
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a defaulted top-level <field>_id sibling (the omitted-id rescue)" do
+      expect do
+        build_axn do
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+          expects :company_id, type: Integer, default: 7
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a shape member of that name with no members of its own" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :company_id, type: Integer
+          end
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts the same-named key nested under a DIFFERENT parent than the model's own" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :other, type: Hash
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "other.company_id", type: String
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts an unrelated field that merely shares the name of some other model's id" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "payload.vendor_id", type: String
+        end
+      end.not_to raise_error
+    end
+  end
 end
