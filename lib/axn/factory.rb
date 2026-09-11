@@ -245,8 +245,8 @@ module Axn
         # Check if the value itself is a hash (this catches the case where someone passes a hash literal)
         raise Axn::UnsupportedArgument, "Cannot pass hash directly to #{method_name} - use descriptor objects for kwargs" if value.is_a?(Hash)
 
-        # Wrap in Array() to handle both single values and arrays
-        Array(value).each do |handler|
+        # `_as_list`, deliberately NOT `Kernel#Array()` -- see the comment on `_as_list` above.
+        _as_list(value).each do |handler|
           raise Axn::UnsupportedArgument, "Cannot pass hash directly to #{method_name} - use descriptor objects for kwargs" if handler.is_a?(Hash)
 
           # Both descriptor objects and simple cases (string/proc) can be used directly
