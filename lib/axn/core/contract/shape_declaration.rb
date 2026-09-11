@@ -117,6 +117,7 @@ module Axn
         # declared no `shape:` must not gain the key here.
         def _snapshot_declared_shape!(validations, allowance, fields)
           _reject_unshaped_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
+          _reject_unknown_shape_keys!(validations, "`shape:` on #{_declared_fields_label(fields)}")
           shape = Internal::ShapeGraph.hash_or_nil(validations[:shape])
           return if nil.equal?(shape)
 
@@ -167,6 +168,48 @@ module Axn
                 "#{_declared_type_label(carrier[:shape])}) — a shape describes what is inside a value, so one " \
                 "that names no `members:` list constrains nothing and makes every call raise " \
                 "`ArgumentError: must supply :members`. Supply `shape: { members: [...] }`, or drop shape:."
+        end
+
+        # THE key-set refusal for a `shape:` node (PRO-3387), at the same four positions
+        # `_reject_unshaped_shape!` reaches: a field's own, a shape MEMBER's, an `of:` element bag's, and either
+        # axis of a map (the last two share one call site, `_snapshot_inner_shape!`). `members:`/`container:`
+        # are the only two keys `ShapeValidator` reads (`ClassMethods::SHAPE_OPTION_KEYS`) — everything else
+        # declared cleanly and constrained nothing, the same hole `_reject_unknown_bag_keys!` already closes for
+        # `of:`/`model:`/`type:`/`validate:`. `where` is the same label its `_reject_unshaped_shape!` sibling
+        # takes at every call site — passed rather than recomputed, so the two guards read the position
+        # identically and neither can name it differently from the other.
+        #
+        # Stands down on a non-Hash `shape:` — that is `_reject_unshaped_shape!`'s defect one line up, and
+        # firing here too would report a bare `ArgumentError: must supply :members` graph as also missing keys
+        # it never had a chance to name.
+        #
+        # Raises ITSELF, rather than deferring, for a shape that ANSWERS a missing key from a Hash default
+        # (`Hash.new(…)` or a `default_proc`) — `copy_entries` below is entry-wise, so a `members:`/`container:`
+        # the shape only ANSWERS is invisible to it, and every REAL entry beside it (however few) reads as
+        # unknown. This used to defer to `_walk_shape_graph!`'s own `reject_defaulting_option_container!` call,
+        # on the assumption that it always runs after this one — true when there is no block, but this guard
+        # ALSO runs ahead of a block/subblock overwrite (PRO-3387, Codex round 2, PR #275), and that overwrite
+        # replaces `validations[:shape]` before `_walk_shape_graph!` ever reaches the ORIGINAL defaulting Hash
+        # — so deferring there let a defaulting raw shape beside a block skip this check entirely, real
+        # entries included. Raising here closes that: the SAME shared helper, so the underlying defect is
+        # named identically wherever it is caught, and `_walk_shape_graph!`'s own call stays as a backstop for
+        # the one position this method is never asked about (a shape reached via `internal_field_configs=`,
+        # which skips the whole declaration walk).
+        #
+        # `:shape` is the one entry `ShapeGraph.detach_option_containers!` deliberately skips — the field's own
+        # validations bag is detached there, but the shape graph beneath it is walked and copied by this
+        # module's own machinery instead — so the Hash handed here is still the CALLER's own object. Read
+        # through `ShapeGraph.copy_entries` (the bound `each` seam) rather than a direct `.keys`, which a
+        # caller-defined Hash subclass could answer with anything: the same discipline `_symbol_keyed_bag`
+        # already reads a caller-supplied bag by.
+        def _reject_unknown_shape_keys!(carrier, where)
+          return unless Internal::ShapeGraph.carries_key?(carrier, :shape)
+
+          shape = Internal::ShapeGraph.hash_or_nil(carrier[:shape])
+          return if nil.equal?(shape)
+
+          Internal::ShapeGraph.reject_defaulting_option_container!(shape) { where }
+          _reject_unknown_bag_keys!(Internal::ShapeGraph.copy_entries(shape), ClassMethods::SHAPE_OPTION_KEYS, option: "shape:")
         end
 
         # THE refusal for a raw `shape:` kwarg asking to distribute — the reading PRO-3191 retires. Checked at
@@ -369,6 +412,7 @@ module Axn
         # what a member's nested shape contributes to its node's height.
         def _snapshot_inner_shape!(bag, walk, allowance, fields:, position:, via:, via_name:)
           _reject_unshaped_shape!(bag, _inner_shape_position_label(position, via, via_name, fields))
+          _reject_unknown_shape_keys!(bag, _inner_shape_position_label(position, via, via_name, fields))
           shape = Internal::ShapeGraph.hash_or_nil(bag[:shape])
           return NO_INNER_CONTRACTS if nil.equal?(shape)
 
@@ -601,6 +645,7 @@ module Axn
           # pre-pass, leaving no top-level `shape:` for this read to find.
           _reject_distributing_shape!(validations, "`shape:` on shape member #{_describe_shape_member(member, name)}")
           _reject_unshaped_shape!(validations, "`shape:` on shape member #{_describe_shape_member(member, name)}")
+          _reject_unknown_shape_keys!(validations, "`shape:` on shape member #{_describe_shape_member(member, name)}")
           nested = Internal::ShapeGraph.hash_or_nil(validations[:shape])
           return NO_INNER_CONTRACTS if nil.equal?(nested)
 
@@ -966,7 +1011,7 @@ module Axn
                 :_raise_member_confirmation_unsupported!,
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
                 :_distributing_shape_depth,
-                :_reject_unshaped_shape!, :_reject_distributing_shape!,
+                :_reject_unshaped_shape!, :_reject_unknown_shape_keys!, :_reject_distributing_shape!,
                 :_distributing_shape_message, :_distributing_container_message,
                 :_inner_shape_position_label,
                 :_walk_inner_contracts!, :_walk_declared_inner_contracts!, :_new_path_allowance,

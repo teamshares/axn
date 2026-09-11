@@ -435,7 +435,7 @@ RSpec.describe "option bag keys" do
       shape[:container] = Hash
 
       expect { build_axn { expects :payload, type: Hash, shape: } }
-        .to raise_error(ArgumentError, /the `shape:` answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /`shape:` on :payload answers a missing key from a Hash default/)
     end
 
     it "rejects a defaulting nested shape, naming the member it hangs from" do
@@ -444,7 +444,7 @@ RSpec.describe "option bag keys" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: Hash, shape: nested })
 
       expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /the nested `shape:` at shape member `m` answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /`shape:` on shape member `m` answers a missing key from a Hash default/)
     end
 
     # A shape node's keys are canonicalized by the same pass, so both shape reports had the same hole — and a
@@ -455,7 +455,7 @@ RSpec.describe "option bag keys" do
       shape["container"] = Hash
 
       expect { build_axn { expects :payload, type: Hash, shape: } }
-        .to raise_error(ArgumentError, /the `shape:` answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /`shape:` on :payload answers a missing key from a Hash default/)
     end
 
     it "rejects a String-keyed defaulting nested shape, naming the member it hangs from" do
@@ -464,7 +464,7 @@ RSpec.describe "option bag keys" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: Hash, shape: nested })
 
       expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /the nested `shape:` at shape member `m` answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /`shape:` on shape member `m` answers a missing key from a Hash default/)
     end
 
     it "rejects a String-keyed defaulting bag inside a shape member" do

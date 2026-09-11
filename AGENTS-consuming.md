@@ -165,8 +165,10 @@ expects :user, model: true
 `user_id` always means *the record's primary key*, on every path. Passing both a record and a
 disagreeing `user_id` (default `:find` finder) raises `InboundValidationError` — contradictory
 input is a developer error. `klass:` must be a single Class/Module (no union, no `type:`-style
-pseudo-type); anything else raises `ArgumentError` at declaration. Source:
-`lib/axn/core/field_resolvers/model.rb`.
+pseudo-type); anything else raises `ArgumentError` at declaration. The `model:` bag only accepts
+`klass:`/`finder:`/`not_found_on:`/`id_type:`/`message:` (plus the shared ActiveModel options) — a
+typo'd key (`fnder:`, `class:` for `klass:`) raises `ArgumentError` too, rather than silently
+falling back to the default. Source: `lib/axn/core/field_resolvers/model.rb`.
 
 **No record found is a contract violation, not a reported exception.** A finder returning `nil` and
 one raising its not-found error (`ActiveRecord::RecordNotFound` for `:find`) are the same outcome:
