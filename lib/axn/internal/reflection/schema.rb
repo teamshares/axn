@@ -1330,11 +1330,22 @@ module Axn
         # An ancestor `shape:` may describe this very key, and `apply_structured_schema!` has already emitted
         # its property into `prop[:properties][key]` (from `build_property`, before `apply_children!` ran at
         # all). Runtime enforces the member and the node alike, so the two are CONJOINED rather than one
-        # replacing the other, and the merged members are carried down so a deeper hop sees a
-        # member-of-a-member — the same two things `apply_implicit_node!` does at an implicit child. Without
-        # them this branch advertised a bare object for a position the contract still held to every nested
-        # member it declared: the document was looser than the runtime, and the same contract spelled with a
-        # dotted `on:` emitted it correctly (PRO-3399).
+        # replacing the other — the merged (object-shaped) members are carried down so a deeper hop sees a
+        # member-of-a-member, the same thing `apply_implicit_node!` does at an implicit child. Without this
+        # branch advertised a bare object for a position the contract still held to every nested member it
+        # declared: the document was looser than the runtime, and the same contract spelled with a dotted
+        # `on:` emitted it correctly (PRO-3399).
+        #
+        # PRO-3405: the conjoin runs whenever `member_prop` exists, not only when `merged_members` came back
+        # non-empty. `merged_explicit_members`'s gates (the node must nest; every colliding member must be
+        # object-shaped) answer a DIFFERENT question — whether to carry the member down for a deeper hop's
+        # member-of-a-member test — and the conjunction itself needs neither: conjoin_shape_member_property
+        # already knows how to combine two object-shaped properties (the keyword union above) and how to
+        # combine anything else (a sibling `allOf` branch), so a member the node "cannot nest" rides
+        # alongside as its own `allOf` branch rather than being dropped. The one thing that DOES skip the
+        # conjoin is the node transforming the wire value
+        # (`coerce:`/`preprocess:`): the two sides would then be judging different values, and stating their
+        # conjunction would describe a contract stricter than the one that actually runs.
         #
         # The merge runs BEFORE the descent, not after: the nested pass reads `child_prop[:properties]` to
         # decide whether a generated `<leaf>_id` still needs writing, and `apply_implicit_node!` reads it again
@@ -1353,7 +1364,7 @@ module Axn
           merged_members = merged_explicit_members(node, members)
           child_prop = build_property(representative, subfield: true)
           member_prop = prop[:properties][key]
-          child_prop = merge_shape_member_property(member_prop, child_prop) if member_prop && !merged_members.empty?
+          child_prop = conjoin_shape_member_property(member_prop, child_prop) if member_prop && !transforms_value?(representative)
           apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
           null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
                     members.all? { |m| nil_allowed?(m) } &&
@@ -1526,10 +1537,12 @@ module Axn
         # zero for a graph this walk has already descended.
         #
         # Three keys are not a plain overlay. `properties` and `required` are unioned, since each side names
-        # contents the other does not — the node's own winning a name collision, the precedence
-        # `apply_structured_schema!` already uses for `base_properties.merge(member_props)`. And a size bound
-        # declared on BOTH sides takes the STRICTER of the two: a value satisfying only the looser one is
-        # rejected at runtime by the other, and that is the one direction a plain overlay emits too loosely.
+        # contents the other does not — and a NAME both sides declare (PRO-3405) is not a collision to
+        # resolve by precedence either: each of the two schemas at that child key is itself conjoined,
+        # recursively, via merge_emitted_maps's own use of conjoin_shape_member_property, rather than one
+        # replacing the other. And a size bound declared on BOTH sides takes the STRICTER of the two: a
+        # value satisfying only the looser one is rejected at runtime by the other, and that is the one
+        # direction a plain overlay emits too loosely.
         #
         # Taken from what is AT the key rather than from the member config, which is also why the caller guards
         # on its presence: at a merged node `apply_structured_schema!` only ever emits the REPRESENTATIVE
@@ -1552,13 +1565,63 @@ module Axn
           merged
         end
 
+        # Two emitted properties at ONE wire position, both enforced at runtime (PRO-3405): a shape member's
+        # own emission and the node's — or, recursively, two child properties a name collided on inside
+        # merge_emitted_maps. Neither may simply win: a name both sides declare means the runtime enforces
+        # both, so the document must say so too.
+        #
+        # Where both sides are already object-shaped, their keywords share a surface worth unioning
+        # (`properties`/`required`/the size bounds) — that IS merge_shape_member_property, unchanged since
+        # PRO-3399. Everywhere else — a scalar collides with a scalar, a union with an object, anything that
+        # doesn't share that surface — there is no keyword-by-keyword reading that means the same thing for
+        # every pair (the approach PRO-2877's pulled detectors already rejected: it invents an
+        # intersection-semantics per keyword, and every keyword nobody thought of stays silently wrong). JSON
+        # Schema already has the honest, keyword-agnostic spelling for "both of these apply" — `allOf`, free
+        # at a property (the same trick write_pattern! uses to compose two patterns) — so the member rides
+        # alongside as a sibling branch instead. `own_prop` being genuinely EMPTY (an explicit node with no
+        # type or shape of its own — the member is then the whole story) is folded into the same object-merge
+        # path: merging with `{}` is the member's property unchanged, whatever shape it has.
+        def conjoin_shape_member_property(member_prop, own_prop)
+          return member_prop.dup if own_prop.empty?
+          return merge_shape_member_property(member_prop, own_prop) if object_property?(member_prop) && object_property?(own_prop)
+
+          conjoined = own_prop.dup
+          conjoined[:allOf] = Array(conjoined[:allOf]) + [member_prop]
+          conjoined
+        end
+
+        # "object", nullable or not, at the TOP of a property — the one shape merge_shape_member_property's
+        # keyword union actually reads (`properties`/`required`/the size bounds). Anything else — a scalar
+        # `type:`, a bare `anyOf`/`enum` with no top-level `type` — has no such surface, so conjoin_shape_
+        # member_property falls back to allOf rather than guessing at a per-keyword meaning.
+        def object_property?(prop)
+          type = prop[:type]
+          type == "object" || (type.is_a?(::Array) && type.include?("object"))
+        end
+
+        # `coerce:`/`preprocess:` transform the WIRE value before validation runs, so a node declaring
+        # either judges a DIFFERENT value than the ancestor member's own declaration does — a shape member
+        # can never carry either (`_reject_model_transform!`'s sibling guard on shape members), so the
+        # transform is always on the node's side alone. Conjoining their emitted properties would describe
+        # a contract stricter than the one that actually runs: `field :inner, type: String` beside `expects
+        # :inner, on: :payload, type: { klass: Integer, coerce: true }` accepts the wire value `"5"` at
+        # runtime (coerced to `5`), while `{type: "integer", allOf: [{type: "string"}]}` admits nothing.
+        # Both spellings of `coerce:` are checked, the same pair `_reject_model_transform!` checks.
+        def transforms_value?(config)
+          config.preprocess || config.validations.key?(:coerce) ||
+            (config.validations[:type].is_a?(::Hash) && config.validations[:type][:coerce])
+        end
+
         # Duped when only one side has them: `apply_nested_subfields!` mutates the map it is handed as it adds
-        # children, and the member's own emission must not be written through.
+        # children, and the member's own emission must not be written through. A name BOTH sides declare is
+        # conjoined rather than let the second (`own_props`, the node's own child) win outright — PRO-3405;
+        # `apply_structured_schema!`'s own `base_properties.merge(member_props)` is a different question (an
+        # INFERRED property deferring to a DECLARED one), not two declarations colliding, and is unchanged.
         def merge_emitted_maps(member_props, own_props)
           return own_props if member_props.nil?
           return member_props.dup if own_props.nil?
 
-          member_props.merge(own_props)
+          member_props.merge(own_props) { |_key, member_prop, own_prop| conjoin_shape_member_property(member_prop, own_prop) }
         end
 
         def merge_emitted_required(member_required, own_required)
