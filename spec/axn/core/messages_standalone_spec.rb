@@ -434,6 +434,22 @@ RSpec.describe "error/success message grammar" do
       it "accepts a block" do
         expect { build_axn { public_send(dsl) { "ok" } } }.not_to raise_error
       end
+
+      # Codex review, PR #272: an explicit `false` positional alongside a block used to be silently
+      # accepted -- `false` reads as falsy in `_add_message`'s OWN presence/conflict checks, so
+      # neither "both given" nor "neither given" fired, and `_build_entry` preferred the block,
+      # dropping the invalid `false` with no complaint at all (the grammar guard added above never
+      # even ran). `nil` alongside a block is unaffected -- still means "no message", same as
+      # omitting the positional entirely.
+      it "rejects an explicit false positional alongside a block rather than silently preferring the block" do
+        expect do
+          build_axn { public_send(dsl, false) { "ok" } }
+        end.to raise_error(ArgumentError, /Provide either a message or a block, not both/)
+      end
+
+      it "still prefers the block when the positional is explicitly nil" do
+        expect { build_axn { public_send(dsl, nil) { "ok" } } }.not_to raise_error
+      end
     end
   end
 

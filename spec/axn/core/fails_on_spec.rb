@@ -297,7 +297,7 @@ RSpec.describe "fails_on" do
     it "does not let an explicit trailing false silently skip the message grammar guard" do
       expect do
         build_axn { fails_on ArgumentError, false }
-      end.to raise_error(ArgumentError, /Provide a message or a block/)
+      end.to raise_error(ArgumentError, /message must be a String, a Symbol, or a callable/)
     end
 
     it "still treats an explicit trailing nil as no message (indistinguishable from omitting it)" do

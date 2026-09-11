@@ -156,9 +156,16 @@ module Axn
           # bare: `axn.before(before)` with `before: [cb1, cb2]` would pass the Array itself as ONE
           # hook, which the DSL now rejects at declaration (previously it declared cleanly and raised
           # a bare TypeError on the very first call instead).
-          axn.before(*Array(before)) if before.present?
-          axn.after(*Array(after)) if after.present?
-          axn.around(*Array(around)) if around.present?
+          #
+          # `_as_list`, deliberately NOT `Kernel#Array()` -- `Array(hook)` calls `hook.to_ary`/
+          # `hook.to_a` when the hook defines either, so a perfectly valid SINGLE callable hook that
+          # also happens to answer `to_a` (a Struct-backed wrapper, say -- Struct defines `to_a` for
+          # free) would be silently splatted into ITS OWN FIELDS instead of passed through as one
+          # hook. Checking `is_a?(Array)` is the only test that means "the caller wrote an actual
+          # array," not "this object happens to convert to one."
+          axn.before(*_as_list(before)) if before.present?
+          axn.after(*_as_list(after)) if after.present?
+          axn.around(*_as_list(around)) if around.present?
 
           # Callbacks
           _apply_handlers(axn, :on_success, on_success, Axn::Core::Flow::Handlers::Descriptors::CallbackDescriptor)
@@ -223,6 +230,12 @@ module Axn
       end
 
       def _hash_with_default_array = Hash.new { |h, k| h[k] = [] }
+
+      # A literal Array is a list of several values; anything else is exactly one value, whatever it
+      # answers to `to_a`/`to_ary`. Unlike `Kernel#Array()`, which calls either conversion method when
+      # present, this never asks the value about itself -- `is_a?(Array)` is the only test that means
+      # "the caller wrote an actual array," not "this object happens to convert to one."
+      def _as_list(value) = value.is_a?(Array) ? value : [value]
 
       def _hydrate_hash(given) = Axn::FieldDeclarations.hydrate(given)
 

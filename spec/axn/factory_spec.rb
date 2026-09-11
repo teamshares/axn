@@ -213,6 +213,29 @@ RSpec.shared_examples "can build Axns from callables" do
         end.to output(expected).to_stdout
       end
     end
+
+    # Codex review, PR #272: `before:`/`after:`/`around:` splat a single hook via `Array(before)`,
+    # and `Kernel#Array()` calls `to_ary`/`to_a` when the value defines either -- so a perfectly
+    # valid SINGLE callable hook that also happens to answer `to_a` (any Struct, for free) would be
+    # silently splatted into its own FIELDS instead of passed through as one hook. Fixed by checking
+    # `is_a?(Array)` instead of coercing.
+    context "with a single hook that is also Array-convertible (e.g. a Struct)" do
+      let(:callable_hook_class) do
+        Struct.new(:label) do
+          def to_proc
+            l = label
+            ->(*) { puts "hook:#{l}" }
+          end
+
+          def arity = -1
+        end
+      end
+      let(:kwargs) { { before: callable_hook_class.new("audit") } }
+
+      it "passes the hook through as ONE hook rather than splatting its Struct fields" do
+        expect { axn.call }.to output(a_string_including("hook:audit")).to_stdout
+      end
+    end
   end
 
   context "setting conditional error" do
