@@ -107,8 +107,8 @@ end
 
 # PRO-3409: an ambient-rooted violation reads identically to a plain caller-input violation today
 # ("Current user can't be blank" either way) — nothing in the message tells a dev the value was
-# expected to come from the ambient provider rather than the caller's kwargs. Every case below
-# annotates the message; the contrast case proves a plain (non-ambient) field is untouched.
+# expected to come from ambient_context rather than the caller's kwargs. Every case below annotates
+# the message; the contrast case proves a plain (non-ambient) field is untouched.
 RSpec.describe "Axn ambient_context validation error messages (PRO-3409)" do
   after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
 
@@ -117,7 +117,7 @@ RSpec.describe "Axn ambient_context validation error messages (PRO-3409)" do
 
     result = klass.call
 
-    expect(result.exception.message).to eq("Current user can't be blank (via ambient_context, not caller input)")
+    expect(result.exception.message).to eq("Current user can't be blank (via ambient_context)")
   end
 
   it "annotates a type-mismatch on an ambient subfield's message" do
@@ -125,7 +125,7 @@ RSpec.describe "Axn ambient_context validation error messages (PRO-3409)" do
 
     result = with_ambient_context(current_user: 5) { klass.call }
 
-    expect(result.exception.message).to eq("Current user is not a String (via ambient_context, not caller input)")
+    expect(result.exception.message).to eq("Current user is not a String (via ambient_context)")
   end
 
   it "does not annotate a plain (non-ambient) field's message" do
@@ -152,7 +152,33 @@ RSpec.describe "Axn ambient_context validation error messages (PRO-3409)" do
 
     expect(result.exception.message)
       .to eq('company: provided record (id="5") conflicts with company_id="9" — pass one, or matching values ' \
-             "(via ambient_context, not caller input)")
+             "(via ambient_context)")
+  end
+
+  # Also true — and phrased identically — when the ambient hash is explicitly passed as a kwarg rather
+  # than resolved from the provider: `ambient_context:` REPLACES the provider (see the "resolution"
+  # describe block above), so the field still didn't arrive as a direct top-level kwarg. An earlier
+  # "not caller input" phrasing was wrong for exactly this case (Codex review, PR #277).
+  it "annotates the same way when ambient_context: is passed explicitly" do
+    klass = build_axn { expects :current_user, on: :ambient_context }
+
+    result = klass.call(ambient_context: {})
+
+    expect(result.exception.message).to eq("Current user can't be blank (via ambient_context)")
+  end
+
+  # Codex review (PR #277): an earlier version re-added the error as a bare annotated STRING, which
+  # replaced the presence validator's Symbol `type` (`:blank`) with the whole rendered string — breaking
+  # `errors.details`/`of_kind?` for exactly the fields this feature touches. Only `full_message` may
+  # change; the structured classification must survive untouched.
+  it "preserves the original error's type/options for an annotated ambient failure" do
+    klass = build_axn { expects :current_user, on: :ambient_context }
+
+    result = klass.call
+
+    error = result.exception.errors.find { |e| e.attribute == :current_user }
+    expect(error.type).to eq(:blank)
+    expect(result.exception.errors.details).to eq(current_user: [{ error: :blank }])
   end
 end
 

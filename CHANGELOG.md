@@ -17,7 +17,7 @@
 
 ### `ambient_context`
 
-* [FEAT] A validation failure on a field declared `on: :ambient_context` (at any depth, including a model-consistency mismatch) now says so in its message — `"Current user can't be blank (via ambient_context, not caller input)"` instead of the same text a directly-injected kwarg produces for the identical failure. Applies uniformly across every validator type (presence, type, shape members, model-consistency) since the annotation is added once, where every failure's message is aggregated, rather than per-validator; a non-ambient field's message is unchanged. Lets a dev debugging a failing call tell, from the message alone, whether to look at the caller's kwargs or the ambient provider/`Current` (PRO-3409).
+* [FEAT] A validation failure on a field declared `on: :ambient_context` (at any depth, including a model-consistency mismatch) now says so in its message — `"Current user can't be blank (via ambient_context)"` instead of the same text a directly-injected kwarg produces for the identical failure. Applies uniformly across every validator type (presence, type, shape members, model-consistency) since the annotation is added once, where every failure's message is aggregated, rather than per-validator; a non-ambient field's message is unchanged, and the underlying `errors.details`/`type`/`options` for an annotated field are untouched — only the rendered message gains the suffix. Lets a dev debugging a failing call tell, from the message alone, that the field comes from ambient context rather than a plain top-level kwarg (PRO-3409).
 
 ### `model:` fields
 

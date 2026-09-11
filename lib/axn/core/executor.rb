@@ -4,6 +4,7 @@ require "axn/internal/coercion"
 require "axn/internal/native_methods"
 require "axn/internal/rendering"
 require "axn/internal/current_entry_point"
+require "active_model/nested_error"
 
 module Axn
   module Core
@@ -1324,12 +1325,29 @@ module Axn
         config.subfield? && @action_class.send(:_on_roots_at_ambient?, config.on)
       end
 
-      # PRO-3409: ambient context is framework-supplied, not caller input — a dev debugging a missing or
-      # invalid ambient value needs to know to check the ambient provider (or `Current`), not the caller's
-      # kwargs. Every validator type renders through this one call (see `_aggregate_errors` above and
-      # `base_extras` in `_validate_inbound!`), so the annotation stays uniform without touching a single
-      # validator's own message-building.
-      def _ambient_annotated(message) = "#{message} (via ambient_context, not caller input)"
+      # PRO-3409: a dev debugging a missing or invalid ambient value needs to know it came from
+      # `ambient_context` rather than being a plain top-level kwarg — that's true whether the value was
+      # resolved from the configured provider/`Current` OR from an explicit `ambient_context:` kwarg, so
+      # the annotation names only the ROOT, not which of those two supplied it (an earlier "not caller
+      # input" phrasing was wrong for the explicit-kwarg case — Codex review, PR #277). Every validator
+      # type renders through this one call (see `_aggregate_errors` below and `base_extras` in
+      # `_validate_inbound!`), so the annotation stays uniform without touching a single validator's own
+      # message-building.
+      AMBIENT_SUFFIX = " (via ambient_context)"
+
+      def _ambient_annotated(message) = "#{message}#{AMBIENT_SUFFIX}"
+
+      # A NestedError whose full message alone carries the ambient annotation. `NestedError`'s own
+      # `message`/`type`/`raw_type`/`options`/`details` all stay exactly what `import` would have given
+      # them — only `full_message` (what `errors.full_messages`/`field_errors` actually render) adds the
+      # suffix. An earlier version re-added ambient errors as a bare annotated STRING, which discarded the
+      # original Symbol `type` (`:blank`, `:inclusion`, …) and `options` — breaking `errors.details`,
+      # `of_kind?`, and any other consumer keyed on the structured classification rather than the prose
+      # (Codex review, PR #277).
+      AmbientAnnotatedError = Class.new(ActiveModel::NestedError) do
+        define_method(:full_message) { "#{super()}#{AMBIENT_SUFFIX}" }
+      end
+      private_constant :AmbientAnnotatedError
 
       # Every inbound config's errors — top-level fields and subfields through the one collector —
       # gathered in declaration order with no early exit: settling needs the complete set (both to
@@ -1417,16 +1435,15 @@ module Axn
 
       # The one dev-facing exception: every unsuppressed violation in a single errors object, in
       # declaration order (top-level fields then subfields), with model-consistency mismatches and
-      # stranded-path diagnostics on :base. An ambient-rooted field's own errors are annotated (PRO-3409):
-      # `errors.import` can't carry a substituted message (`ActiveModel::NestedError#message` delegates
-      # straight to the original error), so an ambient failure's errors are re-added under the SAME
-      # attribute with the annotated text instead — every other observable (attribute, count, the
-      # `ActiveModel::Errors` shape) is unchanged.
+      # stranded-path diagnostics on :base. An ambient-rooted field's own errors are wrapped in
+      # `AmbientAnnotatedError` (PRO-3409) instead of plain `import`, so only the rendered `full_message`
+      # gains the suffix — `type`/`raw_type`/`options`/`details` stay whatever the real validator produced.
       def _aggregate_errors(failures, mismatches)
-        errors = ActiveModel::Errors.new(Axn::Validation::Aggregate.new)
+        base = Axn::Validation::Aggregate.new
+        errors = ActiveModel::Errors.new(base)
         failures.each do |failure|
           ambient = _ambient_config?(failure.config)
-          failure.errors.each { |err| ambient ? errors.add(err.attribute, _ambient_annotated(err.message)) : errors.import(err) }
+          failure.errors.each { |err| ambient ? errors.objects << AmbientAnnotatedError.new(base, err) : errors.import(err) }
         end
         mismatches.each { |msg| errors.add(:base, msg) }
         failures.filter_map(&:stranded_at).uniq.each do |strand|
