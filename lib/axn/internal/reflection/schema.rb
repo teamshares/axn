@@ -15,7 +15,7 @@ require "axn/internal/reflection/pattern"
 # cannot load without their owner either.
 require "axn/internal/field_config"
 require "axn/internal/shape_graph"
-# approximate_type_token? asks whether a token is one of Coercion::SUPPORTED's coercion targets, so the
+# transforms_wire_value? asks whether a token is one of Coercion::SUPPORTED's coercion targets, so the
 # builder cannot load without that constant either.
 require "axn/internal/coercion"
 
@@ -1365,20 +1365,13 @@ module Axn
         #
         # Codex review (PR #278): `member_configs`/`own_configs` (the collision's two sides, as ROUTE lists —
         # `emitted_members` and `[representative]` here) let `conjoin_shape_member_property` judge each
-        # side's DECLARED type before trusting its emitted property as an exact constraint worth conjoining —
-        # see `approximate_type_token?` for why (a real `type: String` and an unknown class's approximate
-        # `{type: "string"}` fallback, OR a coercible token's TARGET-not-wire-form emission, land on the
-        # identical Hash a real declaration of that type would) and for how the same judgment recurses
-        # through `merge_emitted_maps` for a name colliding one level down. `emitted_members`, not `members`:
-        # at a merged node `apply_structured_schema!` only ever builds `member_prop` from the REPRESENTATIVE
+        # side's DECLARED type before trusting its emitted property as an exact constraint worth conjoining
+        # — see that method for the two separate reasons a side can be untrustworthy (a transform, or an
+        # unknown class) and how each is handled, and for how the same judgment recurses through
+        # `merge_emitted_maps` for a name colliding one level down. `emitted_members`, not `members`: at a
+        # merged node `apply_structured_schema!` only ever builds `member_prop` from the REPRESENTATIVE
         # route, so approximateness is judged on that route alone — `members` (every route) stays for
         # nullability just below, an ENFORCED question the representative restriction does not apply to.
-        #
-        # `preprocess:` is judged the SAME way — `approximate_config?` treats a preprocessing config as
-        # approximate outright, no declared type needed: a Proc can rewrite the wire value into anything,
-        # so the node's own emitted type is no more trustworthy than an unknown class's fallback is (Codex
-        # review, PR #278 round 5 — the conjoin used to skip entirely here too, discarding the ancestor's
-        # independently-enforced raw-value constraint along with the node's untrustworthy one).
         #
         # `null` survives only when every non-model route tolerates nil (runtime enforces all of them; the
         # property itself is built from the first non-model config), EVERY colliding shape member tolerates nil
@@ -1619,57 +1612,57 @@ module Axn
         # `member_configs`/`own_configs` are the declarations each emitted property came from — a LIST,
         # mirroring `shape_members_at`'s own return shape, since a merged node can carry more than one route
         # to the same name. Empty (or omitted) on a side whose config is unknown at the call site, which
-        # reads as "not approximate" (the conservative, pre-existing answer) rather than crashing. Before
-        # trusting either side as an EXACT constraint worth conjoining, ask whether its type is merely
-        # `single_type_for`'s permissive fallback, or a coercion's TARGET rather than the wire form the
-        # OTHER side actually reads (`approximate_type_token?`) — a hint, not a promise. Wrapping that hint
-        # into `allOf` beside a REAL type (a `Hash` node, say) would assert a string-vs-object intersection
-        # nothing satisfies, though the runtime accepts anything the broad class (or the ambient coercion)
-        # actually admits.
+        # reads as "trustworthy" (the conservative, pre-existing answer) rather than crashing.
         #
-        # An approximate side is not simply DROPPED, though — only its TYPE ASSERTION is untrustworthy
-        # (`conjoin_approximate_remainder` strips `:type`/`:anyOf`/`:format`/`:pattern`), and whatever named
-        # LITERAL VALUES it independently constrains survives that stripping and still conjoins (Codex
-        # review, PR #278 round 5: `type: Object, inclusion: { in: [...] }` beside an explicit `type: Hash`
-        # node used to drop the ENTIRE ancestor member — its fake string type, but ALSO its exact `enum`,
-        # which the runtime keeps enforcing regardless of what the type hint says). Only when BOTH sides
-        # are approximate does the plain conjoin still run unstripped: two "string" hints never contradict
-        # each other, so there is nothing to protect.
+        # Two SEPARATE, ORTHOGONAL reasons an emitted property is untrustworthy — kept apart because they
+        # answer differently to "is anything left worth conjoining":
+        #
+        # PASS 1 — TRANSFORM (`transforms_wire_value?`: `preprocess:`, or a coercible declared type with no
+        # `coerce: false`). The config's OWN validators — its `inclusion:`/`enum` included — run against a
+        # value nothing ELSE at this position ever sees: a Proc's output, or coercion's TARGET rather than
+        # the wire form the OTHER side's check actually reads (measured: an ancestor's own check is
+        # UNCONDITIONAL and reads the RAW wire value regardless of what any other declaration coerces — a
+        # `type: String` ancestor rejects an already-Integer wire value even when a coercing sibling would
+        # have accepted it, "... is not a String"). So a transforming side is forced to `{}` OUTRIGHT,
+        # before anything else is asked about it — not even its own `enum` survives (Codex review, PR #278
+        # round 6: an ancestor `String` beside `type: { klass: Integer, coerce: true }, inclusion: { in: [5]
+        # } }` kept `enum: [5]` — the COERCED target's value — conjoined against the ancestor's raw-string
+        # type, an intersection nothing satisfies, though the runtime accepts the wire string "5").
+        #
+        # PASS 2 — UNKNOWN CLASS (`unknown_class_approximate?`: an `Object`/`Enumerable`-style token,
+        # `single_type_for`'s permissive `{type: "string"}` HINT rather than a promise). Its OWN literal
+        # constraints (`enum`, from `inclusion:`) still describe the SAME raw value everything else at this
+        # position reads — only the fake TYPE is untrustworthy, and only relative to something that MAKES A
+        # REAL, competing claim. Two sides that are BOTH unknown-class hints never contradict each other
+        # (they both fall back to the same permissive shape), so the plain conjoin runs UNSTRIPPED there;
+        # paired against something exact — including a transform-forced-`{}` sibling, which asserts nothing
+        # to contradict — an unknown-class side is stripped to its enum-only remainder (Codex review, PR
+        # #278 round 5: `type: Object, inclusion: { in: [...] }` beside an explicit `type: Hash` node used
+        # to drop the ancestor's exact `enum` along with its fake type). A side already forced to `{}` by
+        # pass 1 is left alone in pass 2 — there is nothing left on it to strip twice, and an UNKNOWN-CLASS
+        # side paired against it keeps its FULL property (Codex review, PR #278 round 6 again: an ancestor
+        # `Object` beside `type: { klass: Integer, coerce: true }` — pass 1 empties the Integer side, and
+        # keeping the ancestor's `{type: "string"}` hint, rather than also emptying it, is what lets the
+        # coercible wire string "5" the runtime accepts still validate).
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
-          member_approximate = approximate_configs?(member_configs)
-          own_approximate = approximate_configs?(own_configs)
+          member_prop = {} if transforms_wire_value?(member_configs)
+          own_prop = {} if transforms_wire_value?(own_configs)
 
-          return conjoin_approximate_remainder(own_prop, member_prop) if member_approximate && !own_approximate
-          return conjoin_approximate_remainder(member_prop, own_prop) if own_approximate && !member_approximate
+          member_unknown = unknown_class_approximate?(member_configs)
+          own_unknown = unknown_class_approximate?(own_configs)
 
-          if own_prop.empty? || (object_property?(member_prop) && object_property?(own_prop))
+          if member_unknown && !own_unknown && !own_prop.empty?
+            member_prop = member_prop.slice(:enum)
+          elsif own_unknown && !member_unknown && !member_prop.empty?
+            own_prop = own_prop.slice(:enum)
+          end
+
+          if own_prop.empty? || member_prop.empty? || (object_property?(member_prop) && object_property?(own_prop))
             return merge_shape_member_property(member_prop, own_prop, member_configs:, own_configs:)
           end
 
           conjoined = own_prop.dup
           conjoined[:allOf] = Array(conjoined[:allOf]) + [member_prop]
-          conjoined
-        end
-
-        # `real_prop`'s own type stands (it names something trustworthy); `approximate_prop` contributes
-        # only what it constrains INDEPENDENTLY of its own (untrustworthy) type — today, exactly `enum`
-        # (from `inclusion:`), a literal-value list JSON Schema applies to the instance regardless of any
-        # `type` keyword. Everything else a `single_type_for` fallback or a coercible declaration can emit
-        # (`type`/`anyOf`, `format`/`pattern`, the size bounds presence/length derive) is premised on the
-        # fake type and dropped with it — size bounds are harmless to drop even though they are not
-        # strictly type-derived, since a JSON Schema size keyword is itself inert without a matching `type`
-        # to apply to, so keeping them would only add noise, never a missed constraint.
-        #
-        # `real_prop` is returned AS-IS when there is nothing left to conjoin — the common case (an
-        # approximate side with no `inclusion:`) — rather than routed through `merge_shape_member_property`,
-        # since an `{enum: [...]}` remainder has no `:properties`/`:required` for that function's keyword
-        # union to do anything with; a bare `allOf` sibling says the same thing more simply.
-        def conjoin_approximate_remainder(real_prop, approximate_prop)
-          remainder = approximate_prop.slice(:enum)
-          return real_prop if remainder.empty?
-
-          conjoined = real_prop.dup
-          conjoined[:allOf] = Array(conjoined[:allOf]) + [remainder]
           conjoined
         end
 
@@ -1682,45 +1675,39 @@ module Axn
           type == "object" || (type.is_a?(::Array) && type.include?("object"))
         end
 
-        # Whether `single_type_for`'s INPUT branch for this token is untrustworthy as an EXACT conjunction
-        # target — either because it is a permissive HINT (an unknown class like `Object`/`Enumerable`,
-        # reflected as `{type: "string"}` because "a JSON client can't send a Ruby object anyway", never a
-        # real constraint), or because a coercible token's emitted type is the coercion TARGET rather than
-        # the wire form the ancestor's own check actually reads.
-        #
-        # The coercion half needs its own paragraph. `field :inner, type: String` beside `expects :inner,
-        # on: :payload, type: { klass: Integer, coerce: true }` accepts the wire value `"5"` at runtime
-        # (`"5"` is a real String, satisfying the ancestor's OWN check, which always reads the RAW wire
-        # value regardless of what any OTHER declaration at this position coerces — measured: the ancestor
-        # ALSO rejects an already-Integer wire value `5` here, "Payload inner is not a String", so its check
-        # is unconditional and never sees the coerced result). Conjoining the node's emitted `{type:
-        # "integer"}` against the ancestor's real `{type: "string"}` states a contradiction nothing
-        # satisfies, though `"5"` satisfies both declarations under their OWN (different) readings of the
-        # SAME wire value. So a coercible token's emission is approximate in exactly the sense the
-        # unknown-class hint is: it names the TARGET, not the full set of wire forms that reach it, and
-        # `conjoin_shape_member_property` already knows what to do with an approximate side — drop it,
-        # adopt the other side's real property wholesale (Codex review, PR #278 rounds 1 and 4: two
-        # separate attempts to protect just the "transforming" branch, both replaced once the ancestor's
-        # check was measured to be unconditional rather than value-order-dependent, which made the
-        # union-of-branches machinery unnecessary — every coercible token, in ANY position, is simply
-        # approximate).
-        #
-        # An ABSENT `coerce:` on a coercible type is not evidence of no transform: the class/global
-        # `coerce_input_types` setting (always on under `Axn::Tools::Invoker`) coerces every such field
-        # whose own `coerce:` is silent, and reflection cannot resolve that per-call/per-class flag — the
-        # same conservatism `boolean_coercion_can_flip_truthiness?` already applies ("an ABSENT flag with a
-        # coercible branch is treated as flippable"). `Coercion::SUPPORTED` is checked FIRST and unconditionally
-        # (a bare `coerce: <Type>` is sugar for `type: { klass:, coerce: true }` — `_expand_coerce_sugar!`
-        # settles it into the bag form before `validations` ever holds it, so there is no separate bare
-        # spelling left to check here) — the per-config `coerce: false` opt-out is `approximate_config?`'s
-        # job, since it is a property of the DECLARATION's bag, not of the token.
-        #
-        # Derived from the SAME branches `single_type_for` checks, in the same order, for the OTHER
-        # (unknown-class) half: boolean/uuid/params, a `TYPE_MAP` entry, or a Numeric excluding Complex
-        # (which falls through to the fallback on input too, exactly as `single_type_for` itself does) — so
-        # the two can't disagree about which classes are "known".
-        def approximate_type_token?(token)
-          return true if Axn::Internal::Coercion::SUPPORTED.include?(token)
+        # Whether ANY config in this route list transforms the wire value it judges — a Proc
+        # (`preprocess:`), or a declared type with a coercible branch and no explicit `coerce: false`. A
+        # shape member (`Core::Contract::ShapeConfig`) has no `preprocess` reader at all, hence the
+        # `respond_to?` guard. `Coercion::SUPPORTED` is checked directly rather than through a bare
+        # `coerce:` key: a bare `coerce: <Type>` is sugar for `type: { klass:, coerce: true }` —
+        # `_expand_coerce_sugar!` settles it into the bag form before `validations` ever holds it, so there
+        # is no separate bare spelling left to check. An ABSENT `coerce:` on a coercible type is not
+        # evidence of no transform — the class/global `coerce_input_types` setting (always on under
+        # `Axn::Tools::Invoker`) coerces every such field whose own `coerce:` is silent, and reflection
+        # cannot resolve that per-call/per-class flag (the same conservatism
+        # `boolean_coercion_can_flip_truthiness?` already applies) — so only an explicit `coerce: false`
+        # rules a coercible token out, mirroring `Coercion.field_coerces?`'s own explicit-wins semantics.
+        def transforms_wire_value?(configs)
+          configs.any? do |config|
+            next true if config.respond_to?(:preprocess) && config.preprocess
+
+            type_opt = config.validations[:type]
+            next false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
+
+            !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
+          end
+        end
+
+        # Whether `single_type_for`'s INPUT branch for this token falls through to its permissive `{type:
+        # "string"}` fallback ("a JSON client can't send a Ruby object anyway") rather than asserting a real
+        # JSON type — the OTHER reason (beside a transform) an emitted property is untrustworthy, and
+        # deliberately UNRELATED to coercibility: `unknown_class_approximate?` (below) is asked only once
+        # `transforms_wire_value?` has already had first say, so a coercible token is never re-litigated
+        # here. Derived from the SAME branches `single_type_for` checks, in the same order, so the two
+        # cannot disagree about which classes are "known": boolean/uuid/params, a `TYPE_MAP` entry, or a
+        # Numeric excluding Complex (which falls through to the fallback on input too, exactly as
+        # `single_type_for` itself does).
+        def unknown_class_token?(token)
           return false if Axn::Internal::Identity.same?(token, ::TrueClass)
           return false if Axn::Internal::Identity.same?(token, ::FalseClass)
           return false if Axn::Internal::Identity.same?(token, :uuid)
@@ -1730,48 +1717,25 @@ module Axn
           !numeric_but_not_complex?(token)
         end
 
-        # `preprocess:` is the one transform this cannot see through — a caller-supplied Proc with no
-        # declared TARGET type at all, so there is no "real" side to fall back on the way a coercion's
-        # target gives one. A shape member can never carry it (`_reject_model_transform!`'s sibling guard),
-        # so the node's own emission is simply left untouched (the caller skips the conjoin outright).
-        #
-        # `coerce: false` is the explicit opt-out `approximate_type_token?` cannot see (it is a property of
-        # the DECLARATION's bag, not of any one token), mirroring `Coercion.field_coerces?`'s own
-        # explicit-wins semantics: it stands down every OTHER coercible-token check for this config, even
-        # in a bag naming a single class.
-        #
-        # Whether ANY branch of a config's declared type is approximate. `.any?`, not `.all?`: a mixed union
-        # like `type: [Object, String]` has one exact branch, but `Object` alone already admits everything
-        # the union could ever narrow to, so the union as a whole asserts nothing more precise than the
-        # approximate branch does (Codex review, PR #278 round 2 — a `.all?` reading let a union with an
-        # approximate branch through as "exact", conjoining its collapsed `"string"` emission as though it
-        # meant only strings). Untyped (no declared type at all) is NOT approximate: it emits no `:type` key
-        # at all rather than a misleading one, which is the `own_prop.empty?` case
-        # `conjoin_shape_member_property` already handles on its own terms.
-        def approximate_config?(config)
-          # A shape member (Core::Contract::ShapeConfig) has no reader to preprocess and so no `preprocess`
-          # attribute at all — only a subfield/field config (FieldConfig) can carry one.
-          return true if config.respond_to?(:preprocess) && config.preprocess
-
-          type_opt = config.validations[:type]
-          return false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
-
-          tokens = declared_type_tokens(config.validations)
-          !tokens.empty? && tokens.any? { |t| approximate_type_token?(t) }
-        end
-
-        # Whether EVERY config in a colliding-name's route list is approximate — `.all?`, the OPPOSITE
-        # quantifier from `approximate_config?`'s `.any?`, because the two lists mean opposite things. A
-        # config's own type tokens are a UNION (an OR: any branch admitting a value is enough), so one
-        # approximate branch already widens the real constraint toward "everything" — hence `.any?`. Multiple
-        # configs at one key (a merged node's routes, from `shape_members_at`) are each independently
-        # enforced (an AND: every route's declaration must hold), so ONE exact route already narrows the
-        # combined constraint precisely regardless of an approximate route beside it — hence `.all?`: the
-        # side counts as approximate only when NONE of its routes assert anything real. An empty list (no
-        # config known at this call site) is NOT approximate — the conservative, pre-existing answer for a
-        # side this walk cannot judge.
-        def approximate_configs?(configs)
-          !configs.empty? && configs.all? { |c| approximate_config?(c) }
+        # Whether ANY branch of a config's declared type is an unknown-class hint. `.any?`, not `.all?`: a
+        # mixed union like `type: [Object, String]` has one exact branch, but `Object` alone already admits
+        # everything the union could ever narrow to, so the union as a whole asserts nothing more precise
+        # than the approximate branch does (Codex review, PR #278 round 2 — a `.all?` reading let a union
+        # with an approximate branch through as "exact"). Untyped (no declared type at all) is NOT
+        # approximate: it emits no `:type` key at all rather than a misleading one, which is the
+        # `own_prop.empty?` case `conjoin_shape_member_property` already handles on its own terms. And
+        # `.all?` across MULTIPLE configs (a merged node's routes) — the opposite quantifier from the
+        # per-config `.any?`, because the two lists mean opposite things: a config's own tokens are a UNION
+        # (an OR — any branch is enough to widen toward "everything"), while multiple ROUTES at one key are
+        # each independently enforced (an AND — one exact route already narrows the combined constraint
+        # regardless of an approximate route beside it), so the side counts as approximate only when NONE
+        # of its routes assert anything real. An empty list is NOT approximate — the conservative,
+        # pre-existing answer for a side this walk cannot judge.
+        def unknown_class_approximate?(configs)
+          !configs.empty? && configs.all? do |config|
+            tokens = declared_type_tokens(config.validations)
+            !tokens.empty? && tokens.any? { |t| unknown_class_token?(t) }
+          end
         end
 
         # Duped when only one side has them: `apply_nested_subfields!` mutates the map it is handed as it adds
