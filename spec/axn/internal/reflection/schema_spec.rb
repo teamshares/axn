@@ -5582,7 +5582,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1)
+            # The node's own `minProperties: 1` (its presence floor, a TYPE-CONDITIONAL keyword — see
+            # strip_intrinsically_typed_keys) survives stripping alongside the ancestor's full shape,
+            # landing as a (redundant but harmless) sibling of the allOf rather than the node's `type:
+            # "object"` winning outright the way it would if nothing else on it had survived.
+            expect(inner).to eq(
+              minProperties: 1,
+              allOf: [{ type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1 }],
+              not: { type: "null" },
+            )
             expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
             expect(klass.call(payload: { inner: { b: 1 } })).not_to be_ok # missing the ancestor's required `a`
           end
@@ -5700,6 +5708,29 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(inner).to eq(type: "integer", allOf: [{ type: "integer", enum: [5] }])
             expect(klass.call(payload: { inner: 5 })).to be_ok
             expect(klass.call(payload: { inner: 6 })).not_to be_ok # not in the member's inclusion list
+          end
+
+          # A transforming node's own `length:` is TYPE-CONDITIONAL (JSON Schema never applies it to an
+          # instance of some other type), unlike `type`/`anyOf`/`enum` — so it survives stripping alongside
+          # the ancestor's real constraint, matching `single_type_for`'s own pre-existing, out-of-scope
+          # approximation for how a transforming field's declared size bounds already reflect with no
+          # collision at all (Codex review, PR #278 round 8: dropping `length:` here entirely let `"a"`
+          # pass `input_schema` though the node's own — identity-preprocessed — length floor rejects it).
+          it "keeps a transforming node's own length: floor alongside the ancestor's real constraint" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: String, length: { minimum: 3 }, preprocess: ->(v) { v }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(minLength: 3, allOf: [{ type: "string", minLength: 1 }], not: { type: "null" })
+            expect(klass.call(payload: { inner: "abc" })).to be_ok
+            expect(klass.call(payload: { inner: "a" })).not_to be_ok # fails the node's own (identity-preprocessed) length floor
           end
 
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
