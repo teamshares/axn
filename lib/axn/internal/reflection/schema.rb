@@ -1374,10 +1374,11 @@ module Axn
         # route, so approximateness is judged on that route alone — `members` (every route) stays for
         # nullability just below, an ENFORCED question the representative restriction does not apply to.
         #
-        # `representative.preprocess` is the one thing checked OUTSIDE `conjoin_shape_member_property`
-        # itself: a Proc transform has no declared type to weigh as approximate-vs-exact at all (see
-        # `approximate_type_token?`'s own comment on why it stops at coercion), so the conjoin is skipped
-        # outright rather than asked to judge something it has no token for.
+        # `preprocess:` is judged the SAME way — `approximate_config?` treats a preprocessing config as
+        # approximate outright, no declared type needed: a Proc can rewrite the wire value into anything,
+        # so the node's own emitted type is no more trustworthy than an unknown class's fallback is (Codex
+        # review, PR #278 round 5 — the conjoin used to skip entirely here too, discarding the ancestor's
+        # independently-enforced raw-value constraint along with the node's untrustworthy one).
         #
         # `null` survives only when every non-model route tolerates nil (runtime enforces all of them; the
         # property itself is built from the first non-model config), EVERY colliding shape member tolerates nil
@@ -1391,9 +1392,7 @@ module Axn
           merged_members = merged_explicit_members(node, members)
           child_prop = build_property(representative, subfield: true)
           member_prop = prop[:properties][key]
-          if member_prop && !representative.preprocess
-            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative])
-          end
+          child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
           apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
           null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
                     members.all? { |m| nil_allowed?(m) } &&
@@ -1622,23 +1621,26 @@ module Axn
         # to the same name. Empty (or omitted) on a side whose config is unknown at the call site, which
         # reads as "not approximate" (the conservative, pre-existing answer) rather than crashing. Before
         # trusting either side as an EXACT constraint worth conjoining, ask whether its type is merely
-        # `single_type_for`'s permissive fallback (an unknown class like `Object`/`Enumerable`, reflected as
-        # `{type: "string"}` because "a JSON client can't send a Ruby object anyway") — a hint, not a
-        # promise. Wrapping that hint into `allOf` beside a REAL type (a `Hash` node, say) would assert a
-        # string-vs-object intersection nothing satisfies, though the runtime accepts anything the broad
-        # class actually admits (Codex review, PR #278: reported for the member side; the node's own type
-        # being approximate is the same defect, checked here too though unreported). The approximate side
-        # contributes nothing trustworthy, so it is DROPPED rather than wrapped — the other side's real
-        # property standing alone. Only when BOTH sides are approximate does the plain conjoin still run:
-        # two "string" hints never contradict each other.
+        # `single_type_for`'s permissive fallback, or a coercion's TARGET rather than the wire form the
+        # OTHER side actually reads (`approximate_type_token?`) — a hint, not a promise. Wrapping that hint
+        # into `allOf` beside a REAL type (a `Hash` node, say) would assert a string-vs-object intersection
+        # nothing satisfies, though the runtime accepts anything the broad class (or the ambient coercion)
+        # actually admits.
+        #
+        # An approximate side is not simply DROPPED, though — only its TYPE ASSERTION is untrustworthy
+        # (`conjoin_approximate_remainder` strips `:type`/`:anyOf`/`:format`/`:pattern`), and whatever named
+        # LITERAL VALUES it independently constrains survives that stripping and still conjoins (Codex
+        # review, PR #278 round 5: `type: Object, inclusion: { in: [...] }` beside an explicit `type: Hash`
+        # node used to drop the ENTIRE ancestor member — its fake string type, but ALSO its exact `enum`,
+        # which the runtime keeps enforcing regardless of what the type hint says). Only when BOTH sides
+        # are approximate does the plain conjoin still run unstripped: two "string" hints never contradict
+        # each other, so there is nothing to protect.
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
           member_approximate = approximate_configs?(member_configs)
-          return own_prop if member_approximate && !approximate_configs?(own_configs)
+          own_approximate = approximate_configs?(own_configs)
 
-          if approximate_configs?(own_configs) && !member_approximate
-            own_prop = {}
-            own_configs = []
-          end
+          return conjoin_approximate_remainder(own_prop, member_prop) if member_approximate && !own_approximate
+          return conjoin_approximate_remainder(member_prop, own_prop) if own_approximate && !member_approximate
 
           if own_prop.empty? || (object_property?(member_prop) && object_property?(own_prop))
             return merge_shape_member_property(member_prop, own_prop, member_configs:, own_configs:)
@@ -1646,6 +1648,28 @@ module Axn
 
           conjoined = own_prop.dup
           conjoined[:allOf] = Array(conjoined[:allOf]) + [member_prop]
+          conjoined
+        end
+
+        # `real_prop`'s own type stands (it names something trustworthy); `approximate_prop` contributes
+        # only what it constrains INDEPENDENTLY of its own (untrustworthy) type — today, exactly `enum`
+        # (from `inclusion:`), a literal-value list JSON Schema applies to the instance regardless of any
+        # `type` keyword. Everything else a `single_type_for` fallback or a coercible declaration can emit
+        # (`type`/`anyOf`, `format`/`pattern`, the size bounds presence/length derive) is premised on the
+        # fake type and dropped with it — size bounds are harmless to drop even though they are not
+        # strictly type-derived, since a JSON Schema size keyword is itself inert without a matching `type`
+        # to apply to, so keeping them would only add noise, never a missed constraint.
+        #
+        # `real_prop` is returned AS-IS when there is nothing left to conjoin — the common case (an
+        # approximate side with no `inclusion:`) — rather than routed through `merge_shape_member_property`,
+        # since an `{enum: [...]}` remainder has no `:properties`/`:required` for that function's keyword
+        # union to do anything with; a bare `allOf` sibling says the same thing more simply.
+        def conjoin_approximate_remainder(real_prop, approximate_prop)
+          remainder = approximate_prop.slice(:enum)
+          return real_prop if remainder.empty?
+
+          conjoined = real_prop.dup
+          conjoined[:allOf] = Array(conjoined[:allOf]) + [remainder]
           conjoined
         end
 
@@ -1725,6 +1749,10 @@ module Axn
         # at all rather than a misleading one, which is the `own_prop.empty?` case
         # `conjoin_shape_member_property` already handles on its own terms.
         def approximate_config?(config)
+          # A shape member (Core::Contract::ShapeConfig) has no reader to preprocess and so no `preprocess`
+          # attribute at all — only a subfield/field config (FieldConfig) can carry one.
+          return true if config.respond_to?(:preprocess) && config.preprocess
+
           type_opt = config.validations[:type]
           return false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
 

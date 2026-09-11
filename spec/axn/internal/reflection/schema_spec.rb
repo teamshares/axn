@@ -5563,6 +5563,52 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 5 })).not_to be_ok # a wire integer never satisfies the ancestor's Hash requirement
           end
 
+          # preprocess: is judged the same way as coercion — the node's own emitted type is approximate,
+          # even with NO declared type token to weigh at all, since a Proc can rewrite the wire value into
+          # anything. The ancestor's constraint is still independently enforced against the RAW value, so
+          # it must not be discarded just because the node also transforms its own reading (Codex review,
+          # PR #278 round 5).
+          it "conjoins the ancestor's real constraint over a node whose own declaration preprocesses" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :a, type: String
+                end
+              end
+              expects :inner, on: :payload, type: Hash, preprocess: ->(v) { v }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1)
+            expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
+            expect(klass.call(payload: { inner: { b: 1 } })).not_to be_ok # missing the ancestor's required `a`
+          end
+
+          # An approximate side's TYPE is untrustworthy, but a literal-value `enum` (from `inclusion:`) is
+          # not premised on the type at all — JSON Schema applies it to the instance regardless of any
+          # `type` keyword, and the runtime keeps enforcing it too. Dropping the whole member — type hint
+          # AND exact enum together — let the document accept a value the runtime's inclusion check
+          # rejects (Codex review, PR #278 round 5).
+          it "keeps an approximate member's exact inclusion enum even though its type hint is dropped" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, inclusion: { in: [{ allowed: true }] }
+              end
+              expects :inner, on: :payload, type: Hash
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "object", minProperties: 1, allOf: [{ enum: [{ allowed: true }] }])
+            expect(klass.call(payload: { inner: { allowed: true } })).to be_ok
+            expect(klass.call(payload: { inner: { other: true } })).not_to be_ok # not in the ancestor's inclusion list
+          end
+
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
             klass = Class.new do
               include Axn
