@@ -1082,6 +1082,25 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.not_to raise_error
     end
 
+    # A child the emitter declines to nest contributes no property, so it is no part of the claim.
+    # `apply_implicit_node!` drops an implicit child colliding with a non-nestable `shape:` member (here a
+    # mixed union) and everything beneath it, leaving the parent emitted as a bare object with empty
+    # `properties` — a raw recursive walk still found the dropped descendant and named it in the message
+    # as nesting under the key the schema never emits (Codex review round 10).
+    it "accepts a descendant the emitter drops at a deeper blocker" do
+      mixed = Axn::Core::Contract::ShapeConfig.new(field: :inner, validations: { type: [Hash, Array] })
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :account, on: :payload, type: Hash
+          expects :company_id, on: :account, type: Hash, as: :cid1
+          expects :company_id, on: "payload.account", type: Hash, as: :cid2, shape: { members: [mixed] }
+          expects :deep, on: "cid1.inner", type: String
+          expects :company, on: :account, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
     # The legal tail — a scalar `<field>_id` beside a model is THE supported spelling (it supplies the
     # lookup token), so nothing here may start raising.
     # The id sibling is declared FIRST at depth: an explicit reader declared after the model's inferred

@@ -172,10 +172,32 @@ module Axn
           nil
         end
 
-        def first_config_below(node)
-          node.children.each_value do |child|
-            found = child.config || first_config_below(child)
-            return found if found
+        # Descends the way the EMITTER does, not the way the tree is shaped. A child the emitter declines to
+        # nest contributes no property, so it is no part of the claim: `apply_implicit_node!` drops an
+        # implicit child that collides with a non-nestable `shape:` member (a scalar, a mixed union) along
+        # with everything beneath it, leaving the parent emitted as a bare object with empty `properties`.
+        # A raw recursive walk still found the dropped descendant and reported it as nesting under the key,
+        # which was wrong twice over — the declaration was refused, and the message named a path the schema
+        # never emits.
+        #
+        # Asked through `path_blocked?`, the drop pass's own judgment and the same one `PropertyNames`
+        # consults per hop, so what this descends into and what emission nests cannot drift. The whole hop
+        # chain is passed each time rather than a carried-member accumulator, because that predicate carries
+        # internally from the start of the chain — and it is the PUBLIC half of the pair (`blocking_ancestor?`
+        # and `merged_shape_members` are private to reflection on purpose), so mirroring it needs no widening
+        # of that module's surface.
+        #
+        # An EXPLICIT child is always emitted as a property — `apply_children!` writes it unconditionally —
+        # and `path_blocked?` reports that hop unblocked, so it still counts as contents.
+        def first_config_below(node, hops = [])
+          node.children.each do |key, child|
+            chain = hops + [[node, key]]
+            next if Axn::Internal::Reflection::Schema.path_blocked?(chain)
+
+            return child.config if child.config
+
+            deeper = first_config_below(child, chain)
+            return deeper if deeper
           end
           nil
         end
