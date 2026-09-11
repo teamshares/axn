@@ -589,10 +589,21 @@ module Axn
             # exactly one config and a re-anchor SPLITS routes apart rather than merging them onto one node.
             #
             # A repeated top-level name is a duplicate (rejected above), so the takeover is always
-            # top-level-over-subfield. Skipped outright where no subfield exists: with an empty tree every
+            # top-level-over-subfield. Skipped where no subfield exists: with an empty tree every
             # top-level tolerance is exercisable and no segment is read, so a subfield-free contract sees
             # none of this — which is also what keeps the per-declaration tree build off that path.
-            SubfieldContradictions.check!(retained + configs, subfield_configs) unless subfield_configs.empty?
+            #
+            # With ONE exception, which is why the empty case routes rather than returning: the model-id
+            # object claim (PRO-3396) needs no subfield to arise, a top-level `<field>_id` carrying its own
+            # `shape:` block claiming the key beside a `model:` field. Gating it on a subfield existing made
+            # the same two declarations legal or illegal depending on whether an unrelated subfield happened
+            # to be declared elsewhere. `check_model_id_claims!` still builds nothing when no `model:` is
+            # declared, so the subfield-free path stays free for every contract that cannot trip it.
+            if subfield_configs.empty?
+              SubfieldContradictions.check_model_id_claims!(retained + configs)
+            else
+              SubfieldContradictions.check!(retained + configs, subfield_configs)
+            end
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class

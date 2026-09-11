@@ -19,7 +19,10 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
     end
   end
 
-  before { stub_const("DeadCo", company_class) }
+  before do
+    stub_const("DeadCo", company_class)
+    stub_const("DeadDetail", Data.define(:detail))
+  end
 
   describe "dead nil-tolerance rejection" do
     it "rejects a nil-tolerant top-level parent with an unrescued required deep descendant" do
@@ -815,6 +818,391 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
         expects :payload, type: Hash
         expects :other, allow_nil: true
       end
+    end
+  end
+
+  # PRO-3396: a `model:` field's generated `<field>_id` names a LOOKUP SCALAR. Another declaration can
+  # claim that same wire key as an object with contents — a dotted `on:` whose intermediate segment is
+  # spelled `<field>_id`, or a `shape:` member of that name carrying its own `members:`. One wire key
+  # cannot be both, and nothing reconciled the pair: whichever emission path ran second in the
+  # insertion-ordered walk simply overwrote the other, so the surviving property depended on declaration
+  # order and the loser's contribution vanished with no warning.
+  describe "a model: field's generated <field>_id claimed as an object (PRO-3396)" do
+    it "rejects a dotted intermediate segment spelled <field>_id" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "payload.company_id", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects it in the opposite declaration order" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :detail, on: "payload.company_id", type: String
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects it when the model's own reader is aliased (the wire key still generates the id)" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, as: :co, model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "payload.company_id", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects it under a deeper dotted model parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company, on: "payload.inner", model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "payload.inner.company_id", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects a shape member of that name carrying its own members" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :company_id, type: Hash do
+              field :detail, type: String
+            end
+          end
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /`shape:` member :company_id of the same name declares members of its own/)
+    end
+
+    it "rejects a top-level <field>_id sibling that a dotted subfield nests under" do
+      expect do
+        build_axn do
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+          expects :company_id, type: Hash
+          expects :detail, on: "company_id", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects it on an ambient-rooted model, where the check runs from the ambient seam" do
+      expect do
+        build_axn do
+          expects :company, on: :ambient_context, model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "ambient_context.company_id", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    # The claimant is found by WIRE KEY, not by reader name: `tree.roots` is keyed by `reader_as`, so an
+    # aliased declaration of the same wire key is absent from it while still owning the key the model needs.
+    it "rejects an ALIASED top-level <field>_id that a dotted subfield nests under" do
+      expect do
+        build_axn do
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+          expects :company_id, as: :cid, type: Hash
+          expects :detail, on: "cid", type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    # The model's parent is an IMPLICIT dotted intermediate, so it has no configs of its own — the shape
+    # member claiming the id key is reachable only by carrying the ancestor shape down through the hop, the
+    # way `apply_implicit_node!` does. Reading the parent node's own configs found nothing here while the
+    # emitter found, and emitted, the object (Codex review round 1).
+    it "rejects a nested shape member under an IMPLICIT dotted model parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :inner, type: Hash do
+              field :company_id, type: Hash do
+                field :detail, type: String
+              end
+            end
+          end
+          expects :company, on: "payload.inner", model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
+    # THE RULE, stated once: the claim this guard reads is the one the emitter WRITES. A member the emitter
+    # merges puts the object into the document beside the model's id, and input reflection is
+    # static-maximal — so a gate changes nothing there and none is consulted.
+    #
+    # A member the emitter DROPS claims the key at runtime only. Those are out of scope here: the drop is a
+    # separate pre-existing defect (an explicit subfield node at an intermediate replaces an ancestor
+    # shape member's emission), and the right fix for it is in the emitter, not in a declaration guard.
+    # Once emission stops dropping them they become emitted claims and this guard catches them with no
+    # change. Tracked separately; see PRO-3399.
+    it "accepts a runtime-only claim the emitter drops (an explicit intermediate resets emission)" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :inner, type: Hash do
+              field :company_id, type: Hash do
+                field :detail, type: String
+              end
+            end
+          end
+          expects :inner, on: :payload, type: Hash
+          expects :company, on: :inner, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    # …while the SAME shape with an implicit intermediate is emitted, so it is refused. The pair is the
+    # whole distinction, and neither half consults a gate.
+    it "rejects that same shape when the intermediate is implicit, so the object IS emitted" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :inner, type: Hash do
+              field :company_id, type: Hash do
+                field :detail, type: String
+              end
+            end
+          end
+          expects :company, on: "payload.inner", model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
+    # A gate never relaxes an emitted claim — the member is advertised exactly as an ungated one is.
+    it "rejects a GATED shape member the parent declares directly (it is the emitted one)" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :company_id, type: Hash, if: -> { false } do
+              field :detail, type: String
+            end
+          end
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
+    it "rejects a gated parent CONFIG whose shape is merged into the schema" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :inner, on: :payload, type: Hash, if: -> { false } do
+            field :company_id, type: Hash do
+              field :detail, type: String
+            end
+          end
+          expects :company, on: :inner, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
+    # A node has two sources of contents and only one of them is a tree child. An explicit `<field>_id`
+    # subfield declaring members through its OWN shape block has no children at all, so a children-only
+    # test saw an empty node — while the emitter emitted the member's object and dropped the model's id.
+    it "rejects an explicit <field>_id subfield that declares its own shape members" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, type: Hash do
+            field :detail, type: String
+          end
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    # The top-level seam skips the other checks entirely when no subfield exists. This claim needs none, so
+    # gating on one made the SAME two declarations legal or illegal depending on whether an unrelated
+    # subfield happened to be declared elsewhere (Codex review round 7).
+    it "rejects a subfield-free contract, where the other checks are skipped outright" do
+      expect do
+        build_axn do
+          expects :company_id, type: Hash do
+            field :detail, type: String
+          end
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    it "rejects it identically once an unrelated subfield exists" do
+      expect do
+        build_axn do
+          expects :company_id, type: Hash do
+            field :detail, type: String
+          end
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+          expects :other, type: Hash
+          expects :x, on: :other, type: String
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    # A model beneath a `model:` ancestor is never nested by the emitter, so neither its generated id nor
+    # anything under it reaches the document and there is no emitted claim to collide with (Codex round 7).
+    it "accepts a model whose own path the emitter never nests through" do
+      expect do
+        build_axn do
+          expects :user, model: { klass: DeadCo, finder: :fetch }
+          expects :widget, on: :user, model: { klass: DeadCo, finder: :fetch }, method_call: true
+          expects :detail, on: "user.widget_id", type: String
+        end
+      end.not_to raise_error
+    end
+
+    # The nesting block suppresses CHILDREN, not the node's own property: `build_property` has already
+    # merged the representative's `shape:` members by the time `apply_nested_subfields!` declines to nest.
+    # So a merged node carrying a `model:` route beside a non-model route with its own members still emits
+    # that object, and an early return on the block missed it (Codex review round 8).
+    it "rejects a merged <field>_id node whose non-model route declares its own shape members" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :account, on: :payload, type: Hash
+          expects :company_id, on: "payload.account", model: { klass: DeadCo, finder: :fetch }, as: :cid_model
+          expects :company_id, on: :account, type: Hash, as: :cid_shape do
+            field :detail, type: String
+          end
+          expects :company, on: :account, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    # …but a PURE model node at that key has no representative at all, so it declares no members and
+    # emits its own id one level deeper. Nothing to claim, nothing to refuse.
+    it "accepts a pure model node at the id key" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, model: { klass: DeadCo, finder: :fetch }
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    # A child the emitter declines to nest contributes no property, so it is no part of the claim.
+    # `apply_implicit_node!` drops an implicit child colliding with a non-nestable `shape:` member (here a
+    # mixed union) and everything beneath it, leaving the parent emitted as a bare object with empty
+    # `properties` — a raw recursive walk still found the dropped descendant and named it in the message
+    # as nesting under the key the schema never emits (Codex review round 10).
+    it "accepts a descendant the emitter drops at a deeper blocker" do
+      mixed = Axn::Core::Contract::ShapeConfig.new(field: :inner, validations: { type: [Hash, Array] })
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :account, on: :payload, type: Hash
+          expects :company_id, on: :account, type: Hash, as: :cid1
+          expects :company_id, on: "payload.account", type: Hash, as: :cid2, shape: { members: [mixed] }
+          expects :deep, on: "cid1.inner", type: String
+          expects :company, on: :account, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    # Reflection INFERS properties from a structured `type:` whenever an `of:`/`shape:` key is present at
+    # all, so a `Data`-typed claimant declaring an explicitly EMPTY member list still emits its type's own
+    # members — an object property where the lookup token belongs. Reading the raw member list alone let
+    # this through (Codex review round 11).
+    it "rejects a Data-typed shape member whose declared member list is empty" do
+      expect do
+        build_axn do
+          expects(:payload, type: Hash) { field :company_id, type: DeadDetail, shape: { members: [] } }
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token/m)
+    end
+
+    it "rejects the top-level spelling of the same inferred claim" do
+      expect do
+        build_axn do
+          expects :company_id, type: DeadDetail, shape: { members: [] }
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:detail nests underneath that same key/)
+    end
+
+    # …but with NO `of:`/`shape:` key the type names nothing — `shape_property_plan` returns its `nothing`
+    # plan, reflection emits no object, and there is no claim.
+    it "accepts a Data-typed claimant carrying no of:/shape: key at all" do
+      expect do
+        build_axn do
+          expects(:payload, type: Hash) { field :company_id, type: DeadDetail }
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    # An `in_items` shape describes the ARRAY'S ELEMENTS, so the node is emitted as an array and is no
+    # object parent — the inferred-property path must not read those as contents.
+    it "accepts a distributing Array shape, whose members describe elements rather than the node" do
+      expect do
+        build_axn do
+          expects(:payload, type: Hash) do
+            field(:company_id, type: Array, of: Hash) { field :sku, type: String }
+          end
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    # The legal tail — a scalar `<field>_id` beside a model is THE supported spelling (it supplies the
+    # lookup token), so nothing here may start raising.
+    # The id sibling is declared FIRST at depth: an explicit reader declared after the model's inferred
+    # one trips the duplicate-sub-key guard, which is a separate rule and not what this describes.
+    it "accepts a plain scalar <field>_id sibling at depth" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, type: Integer
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a defaulted top-level <field>_id sibling (the omitted-id rescue)" do
+      expect do
+        build_axn do
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+          expects :company_id, type: Integer, default: 7
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts a shape member of that name with no members of its own" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :company_id, type: Integer
+          end
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts the same-named key nested under a DIFFERENT parent than the model's own" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :other, type: Hash
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "other.company_id", type: String
+        end
+      end.not_to raise_error
+    end
+
+    it "accepts an unrelated field that merely shares the name of some other model's id" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+          expects :detail, on: "payload.vendor_id", type: String
+        end
+      end.not_to raise_error
     end
   end
 end
