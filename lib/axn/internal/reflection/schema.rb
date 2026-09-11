@@ -1578,12 +1578,17 @@ module Axn
         # intersection-semantics per keyword, and every keyword nobody thought of stays silently wrong). JSON
         # Schema already has the honest, keyword-agnostic spelling for "both of these apply" — `allOf`, free
         # at a property (the same trick write_pattern! uses to compose two patterns) — so the member rides
-        # alongside as a sibling branch instead. `own_prop` being genuinely EMPTY (an explicit node with no
-        # type or shape of its own — the member is then the whole story) is folded into the same object-merge
-        # path: merging with `{}` is the member's property unchanged, whatever shape it has.
+        # alongside as a sibling branch instead.
+        #
+        # `own_prop` being genuinely EMPTY (an explicit node with no type or shape of its own — the member is
+        # then the whole story) also routes through merge_shape_member_property rather than a bare `.dup`: a
+        # shallow dup would share `member_prop[:properties]` — the SAME nested Hash `apply_nested_subfields!`
+        # is about to add the node's own children into — mutating the ancestor's already-emitted property in
+        # place. merge_shape_member_property never has that problem (merge_emitted_maps dups the properties
+        # map whenever one side is absent), so routing every combination through the one function is what
+        # keeps this conjoin from being the aliasing bug AGENTS.md already names.
         def conjoin_shape_member_property(member_prop, own_prop)
-          return member_prop.dup if own_prop.empty?
-          return merge_shape_member_property(member_prop, own_prop) if object_property?(member_prop) && object_property?(own_prop)
+          return merge_shape_member_property(member_prop, own_prop) if own_prop.empty? || (object_property?(member_prop) && object_property?(own_prop))
 
           conjoined = own_prop.dup
           conjoined[:allOf] = Array(conjoined[:allOf]) + [member_prop]

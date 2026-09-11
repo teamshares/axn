@@ -5200,6 +5200,22 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: {} })).not_to be_ok # the divergence: the document used to accept this
           end
 
+          # A direct unit test of the conjoin helper itself, at the one combination no declaration reaches
+          # through `.input_schema` in one build (the node's OWN emitted property is always overwritten
+          # before anything else could read the stale reference) but that a future caller easily could: an
+          # EXPLICIT node with no type or shape of its own emits `{}`, which routes through
+          # merge_shape_member_property rather than a bare `member_prop.dup` specifically so that a caller
+          # adding the node's own children afterward (as apply_nested_subfields! does) writes into a properties
+          # Hash of its own, never into the ancestor's.
+          it "conjoins an empty node property without aliasing the member's own properties Hash" do
+            member_prop = { type: "object", properties: { a: { type: "string" } }, required: ["a"], minProperties: 1 }
+
+            conjoined = described_class.conjoin_shape_member_property(member_prop, {})
+            conjoined[:properties][:b] = { type: "integer" } # simulate a node's own child being added afterward
+
+            expect(member_prop[:properties]).not_to have_key(:b)
+          end
+
           it "conjoins via allOf when the ancestor member's own type has no object branch at all" do
             klass = Class.new do
               include Axn
