@@ -4973,7 +4973,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(klass.call(payload: { inner: nil })).not_to be_ok
         end
 
-        it "lets the node's own child win a name the ancestor member also declares" do
+        # Precedence, not conjunction — and deliberately the SAME precedence every other spelling already
+        # uses: `apply_structured_schema!` has always resolved a name declared twice at one node with
+        # `base_properties.merge(member_props)`, so the child wins here, through a dotted `on:`, and through
+        # the node's own `shape:` alike, on `main` and after this change alike (measured). That is a real
+        # divergence — the runtime enforces both declarations and rejects what the document accepts — but it
+        # is one level down from this ticket and spelling-independent, so it is tracked with the rest of the
+        # conjunction work in PRO-3405. Pinning it here keeps the two spellings provably equal, which is what
+        # a fix must preserve: correcting only the explicit path would reopen the divergence this closes.
+        it "lets the node's own child win a name the ancestor member also declares (same as every spelling)" do
           klass = Class.new do
             include Axn
             expects :payload, type: Hash do
@@ -4987,6 +4995,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
           expect(schema[:properties][:payload][:properties][:inner][:properties][:a]).to include(type: "integer")
+
+          implicit = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+              end
+            end
+            expects :a, on: "payload.inner", type: Integer
+          end
+          expect(described_class.build_input(implicit.internal_field_configs, implicit.subfield_configs))
+            .to eq(schema)
         end
 
         # A non-nestable member BELOW the explicit hop blocks at the deeper implicit node, exactly as it does
