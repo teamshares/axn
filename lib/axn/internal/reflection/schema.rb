@@ -1658,8 +1658,8 @@ module Axn
         # than also stripping it, is what lets the coercible wire string "5" the runtime accepts still
         # validate).
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
-          member_prop = strip_intrinsically_typed_keys(member_prop) if transforms_wire_value?(member_configs)
-          own_prop = strip_intrinsically_typed_keys(own_prop) if transforms_wire_value?(own_configs)
+          member_prop = strip_intrinsically_typed_keys(member_prop, member_configs) if transforms_wire_value?(member_configs)
+          own_prop = strip_intrinsically_typed_keys(own_prop, own_configs) if transforms_wire_value?(own_configs)
 
           member_unknown = unknown_class_approximate?(member_configs)
           own_unknown = unknown_class_approximate?(own_configs)
@@ -1707,36 +1707,82 @@ module Axn
         # the node contributes NOTHING beyond whatever the other side already asserts, so any wire value
         # that satisfies the OTHER side's type alone now satisfies the whole conjunction — even one this
         # node's own (dropped) equality/inclusion constraint would have rejected after coercion. So a
-        # numeric literal is TRANSLATED rather than dropped: `Coercion::COERCERS[Integer]` parses via
-        # `Integer(s, 10)` and `Float` via `Float(s)`, and both round-trip through `#to_s` — the literal's
-        # decimal string spelling is therefore a WIRE form the coercer accepts for it, so retaining both
-        # spellings as an `enum` keeps the schema correct without inventing a general coercion inverse. A
-        # non-numeric literal (Symbol/Date/anything else) has no such safe, construction-only translation
-        # available here and is dropped as before — a narrower, still-tolerated imprecision.
-        def strip_intrinsically_typed_keys(prop)
+        # literal is TRANSLATED to its wire spelling rather than dropped, wherever that translation is
+        # something reflection can vouch for WITHOUT executing user code — see wire_spellings_for.
+        #
+        # That translation is only sound when the transform is the KNOWN coercer, never when it is (even
+        # partly) an arbitrary `preprocess:` (Codex review, PR #278 round 10): under a String ancestor, a
+        # node `type: { klass: Integer, coerce: false }, preprocess: ->(v) { Integer(v) + 1 }, comparison:
+        # { equal_to: 5 }` accepts wire "4" (preprocessed to 5) and rejects wire "5" (preprocessed to 6) —
+        # the OPPOSITE of what a coercion-based `enum: [5, "5"]` would advertise. `coerces_wire_value?`
+        # asks the narrower question (coercion only, no preprocess bypass) for exactly this gate.
+        def strip_intrinsically_typed_keys(prop, configs)
           literal_values = Array(prop[:const]) + Array(prop[:enum])
           stripped = prop.except(:type, :anyOf, :enum, :const)
-          return stripped if literal_values.empty?
+          return stripped if literal_values.empty? || !coerces_wire_value?(configs)
 
-          spellings = numeric_wire_spellings(literal_values)
+          spellings = wire_spellings_for(literal_values)
           return stripped if spellings.nil?
 
           stripped[:enum] = spellings
           stripped
         end
 
-        # A literal set's wire-string spellings, when every non-nil member is Integer or Float — nil
-        # (present) unless the whole set is homogeneously numeric, since a Symbol/Date/other literal has
-        # no `#to_s`-based coercion inverse this can vouch for (see strip_intrinsically_typed_keys). `nil`
-        # itself (a nullable position's enum member) never needs a spelling — it is not wire-transformed
-        # by coercion at all — so it is set aside before the type check and reattached untouched after.
-        def numeric_wire_spellings(values)
+        # A literal set's wire-compatible spellings, or nil when this set has no translation reflection can
+        # vouch for without executing user code. `nil` itself (a nullable position's enum member) is never
+        # wire-transformed by coercion at all, so it is set aside before classifying the rest and
+        # reattached untouched after.
+        #
+        # Two classes of literal are safe, for different reasons:
+        # - Integer/Float: `Coercion::COERCERS[Integer]` parses via `Integer(s, 10)` and `Float` via
+        #   `Float(s)`, and both round-trip through `#to_s` — so ADDING the literal's decimal string
+        #   spelling alongside its native form covers exactly the wire forms the coercer accepts for it.
+        # - String: by the time a literal reaches here, `apply_inclusion_enum!` (via
+        #   `normalize_schema_literal`/`Values.serialize_value`) has ALREADY rendered any Symbol/Date/
+        #   Time/DateTime member into its own wire-string spelling — `:allowed` became `"allowed"` before
+        #   this function ever saw it. That string IS the coercer's accepted wire input (`.to_sym`/
+        #   `Date.parse`/etc. all invert `Values.serialize_value` exactly), so it needs no ADDITIONAL
+        #   spelling — it is already one (Codex review, PR #278 round 10: a coercible `Symbol` inclusion
+        #   enum was being dropped here for being "non-numeric" even though it was already wire-safe).
+        #
+        # Anything else (TrueClass/FalseClass — `:boolean` accepts several string spellings, with no single
+        # canonical inverse to pick — or an unrecognized object) has no safe translation and is dropped, a
+        # narrower, still-tolerated imprecision than before this fix existed at all.
+        def wire_spellings_for(values)
           non_nil = values.compact
           return nil if non_nil.empty?
-          return nil unless non_nil.all? { |v| v.is_a?(::Integer) || v.is_a?(::Float) }
 
-          spellings = (non_nil + non_nil.map(&:to_s)).uniq
+          spellings =
+            if non_nil.all? { |v| v.is_a?(::Integer) || v.is_a?(::Float) }
+              (non_nil + non_nil.map(&:to_s)).uniq
+            elsif non_nil.all? { |v| v.is_a?(::String) }
+              non_nil
+            end
+          return nil if spellings.nil?
+
           values.size == non_nil.size ? spellings : spellings + [nil]
+        end
+
+        # Whether ANY config in this route list transforms its wire value through COERCION ALONE — a
+        # literal translation gated on this can trust that the config's declared type is what governs the
+        # wire-to-target mapping (see wire_spellings_for), rather than an opaque Proc reflection must not
+        # execute. A config with a `preprocess:` is excluded OUTRIGHT here even when it ALSO coerces: the
+        # two can compose in either order and a Proc can undo or rescale whatever coercion produced, so
+        # coercion's presence proves nothing about the config's net wire-to-value mapping the moment a
+        # preprocess sits alongside it (Codex review, PR #278 round 10 — the reported repro used `coerce:
+        # false` beside `preprocess:`, but the same unsoundness follows just as well from `coerce: true`
+        # beside a NON-identity `preprocess:`, so the exclusion is on `preprocess:` being present at all,
+        # not on whether coercion is explicitly disabled).
+        def coerces_wire_value?(configs)
+          configs.any? do |config|
+            next false unless config.respond_to?(:preprocess)
+            next false if config.preprocess
+
+            type_opt = config.validations[:type]
+            next false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
+
+            !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
+          end
         end
 
         # Whether ANY config in this route list transforms the wire value it judges — a Proc
