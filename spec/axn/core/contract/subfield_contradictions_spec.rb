@@ -19,7 +19,10 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
     end
   end
 
-  before { stub_const("DeadCo", company_class) }
+  before do
+    stub_const("DeadCo", company_class)
+    stub_const("DeadDetail", Data.define(:detail))
+  end
 
   describe "dead nil-tolerance rejection" do
     it "rejects a nil-tolerant top-level parent with an unrescued required deep descendant" do
@@ -1097,6 +1100,52 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
           expects :company_id, on: "payload.account", type: Hash, as: :cid2, shape: { members: [mixed] }
           expects :deep, on: "cid1.inner", type: String
           expects :company, on: :account, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    # Reflection INFERS properties from a structured `type:` whenever an `of:`/`shape:` key is present at
+    # all, so a `Data`-typed claimant declaring an explicitly EMPTY member list still emits its type's own
+    # members — an object property where the lookup token belongs. Reading the raw member list alone let
+    # this through (Codex review round 11).
+    it "rejects a Data-typed shape member whose declared member list is empty" do
+      expect do
+        build_axn do
+          expects(:payload, type: Hash) { field :company_id, type: DeadDetail, shape: { members: [] } }
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token/m)
+    end
+
+    it "rejects the top-level spelling of the same inferred claim" do
+      expect do
+        build_axn do
+          expects :company_id, type: DeadDetail, shape: { members: [] }
+          expects :company, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:detail nests underneath that same key/)
+    end
+
+    # …but with NO `of:`/`shape:` key the type names nothing — `shape_property_plan` returns its `nothing`
+    # plan, reflection emits no object, and there is no claim.
+    it "accepts a Data-typed claimant carrying no of:/shape: key at all" do
+      expect do
+        build_axn do
+          expects(:payload, type: Hash) { field :company_id, type: DeadDetail }
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    # An `in_items` shape describes the ARRAY'S ELEMENTS, so the node is emitted as an array and is no
+    # object parent — the inferred-property path must not read those as contents.
+    it "accepts a distributing Array shape, whose members describe elements rather than the node" do
+      expect do
+        build_axn do
+          expects(:payload, type: Hash) do
+            field(:company_id, type: Array, of: Hash) { field :sku, type: String }
+          end
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
         end
       end.not_to raise_error
     end

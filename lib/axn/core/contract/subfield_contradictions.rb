@@ -166,10 +166,34 @@ module Axn
 
         def first_declared_member(configs)
           configs.each do |config|
-            pair = Axn::Internal::Reflection::Schema.named_members(config.validations.dig(:shape, :members)).first
-            return pair.first if pair
+            contents = object_contents_of(config)
+            return contents if contents
           end
           nil
+        end
+
+        # What `config` contributes as object CONTENTS at its own node, or nil. Two sources, because a member
+        # list is not the whole of what gets emitted:
+        #
+        #   * its DECLARED members, returned as the member config itself so the message can name the
+        #     declaration the author wrote; and
+        #   * the properties reflection INFERS, which `shape_property_plan` seeds from a structured `type:`
+        #     whenever an `of:`/`shape:` key is present at all. A `Data`-typed member with an explicitly
+        #     EMPTY `shape: { members: [] }` declares nothing and still emits its type's own members — an
+        #     object property where the lookup token belongs — so reading the raw list alone let it through.
+        #     There is no config to name for one of these, so the property NAME is returned instead.
+        #
+        # `in_items` is excluded: there the shape describes the ARRAY'S ELEMENTS rather than the node, so the
+        # node is emitted as an array and is no object parent. Declared members are asked first, so the
+        # existing answer (and the existing message) is unchanged wherever one exists.
+        def object_contents_of(config)
+          declared = Axn::Internal::Reflection::Schema.named_members(config.validations.dig(:shape, :members)).first
+          return declared.first if declared
+
+          plan = Axn::Internal::Reflection::Schema.shape_property_plan(config, for_output: false)
+          return nil unless plan.emitted && !plan.in_items
+
+          plan.base_properties.keys.first
         end
 
         # Descends the way the EMITTER does, not the way the tree is shaped. A child the emitter declines to
@@ -211,7 +235,7 @@ module Axn
         # the document carries the collision either way.
         def claiming_shape_member(parent_configs, id_key)
           Axn::Internal::Reflection::Schema.shape_members_at(parent_configs, id_key).find do |member|
-            Axn::Internal::Reflection::Schema.named_members(member.validations.dig(:shape, :members)).any?
+            object_contents_of(member)
           end
         end
 
@@ -221,12 +245,15 @@ module Axn
         def raise_model_id_object_claim!(config, claimant, kind, id_key)
           label = ->(name) { Axn::Internal::Reflection::PropertyNames.renderable_label(name) }
           where = config.on ? " (on #{label.call(config.on)})" : ""
+          # A claimant is the DECLARATION where there is one, and a bare emitted property name where the
+          # contents are inferred from a structured `type:` (see `object_contents_of`).
+          named = claimant.respond_to?(:field) ? claimant.field : claimant
           claim =
             if kind == :member
-              "a `shape:` member :#{label.call(claimant.field)} of the same name declares members of its own"
+              "a `shape:` member :#{label.call(named)} of the same name declares members of its own"
             else
               via = claimant.respond_to?(:on) && claimant.on ? " (on #{label.call(claimant.on)})" : ""
-              ":#{label.call(claimant.field)}#{via} nests underneath that same key"
+              ":#{label.call(named)}#{via} nests underneath that same key"
             end
           raise ArgumentError,
                 "`model:` field :#{label.call(config.field)}#{where} generates the wire key " \
