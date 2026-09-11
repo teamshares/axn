@@ -5038,6 +5038,62 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             .to eq([:x])
         end
 
+        # A model's generated `<field>_id` is skipped only when something else has ALREADY written that key.
+        # A `shape:` member on a non-representative route of a merged node is declared but never emitted, so
+        # treating it as that something skipped the generated property and left `company_id` `required` with
+        # no entry in `properties` — which JSON Schema reads as "any value permitted", looser than emitting
+        # nothing at all. Both spellings of the intermediate are pinned: the explicit node (where the carry
+        # introduced it) and the dotted `on:` (where it predates this change).
+        describe "a carried shape member that was never emitted does not claim a model's id key" do
+          def merged_route_klass(intermediate)
+            cid = Axn::Core::Contract::ShapeConfig.new(
+              field: :company_id, validations: { type: { klass: String }, presence: true }, metadata: {},
+            )
+            inner_member = Axn::Core::Contract::ShapeConfig.new(
+              field: :inner,
+              validations: { type: { klass: Hash }, presence: true, shape: { members: [cid], container: Hash } },
+              metadata: {},
+            )
+            Class.new do
+              include Axn
+              expects :outer, type: Hash
+              expects :mid, on: :outer, type: Hash
+              # Two routes to the wire key `outer.mid.payload`; the FIRST is the representative, and it is the
+              # one whose shape `apply_structured_schema!` emits — so the second route's member never reaches
+              # the document at all.
+              expects :payload, on: "outer.mid", type: Hash, as: :p1
+              expects :payload, on: :mid, type: Hash, shape: { members: [inner_member], container: Hash }
+              instance_exec(&intermediate)
+              def call = nil
+            end
+          end
+
+          it "emits the generated id at an EXPLICIT intermediate" do
+            klass = merged_route_klass(proc do
+              expects :inner, on: :p1, type: Hash
+              expects :company, on: :inner, model: { klass: Object, finder: :inspect, id_type: String }
+            end)
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema.dig(:properties, :outer, :properties, :mid, :properties, :payload, :properties, :inner)
+            expect(inner[:required]).to include("company_id")
+            expect(inner[:properties]).to have_key(:company_id) # required AND defined
+            expect(inner[:properties][:company_id]).to include(type: "string") # the declared id_type, not untyped
+          end
+
+          it "emits the generated id at an IMPLICIT intermediate" do
+            klass = merged_route_klass(proc do
+              expects :company, on: "p1.inner", model: { klass: Object, finder: :inspect, id_type: String }
+            end)
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema.dig(:properties, :outer, :properties, :mid, :properties, :payload, :properties, :inner)
+            expect(inner[:required]).to include("company_id")
+            expect(inner[:properties]).to have_key(:company_id)
+            expect(inner[:properties][:company_id]).to include(type: "string")
+          end
+        end
+
         context "negative controls — a member the emitter does not merge" do
           # The node's OWN type governs nesting: a `type: Hash` node under a `[Hash, Array]` member still
           # nests its subfields, because runtime narrows to the Hash branch there and such a contract

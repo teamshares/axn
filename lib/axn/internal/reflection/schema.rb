@@ -1392,13 +1392,12 @@ module Axn
           # had already claimed the key while NOTHING had: the model's own property was skipped, but
           # nothing replaced it, leaving `id_field` `required` with no matching entry in `properties` at
           # all — worse than losing the type, JSON Schema then admits any value there.
-          # The representative's own shape PLUS the members carried from a shallower hop: both are emitted
-          # into this node's property (the carry is all-or-nothing, so every carried member's members are),
-          # and the restriction above is about which of the node's OWN routes contributes a shape, not about
-          # the ancestor's. Leaving the carry out would reinstate the same defect one level up — a carried
-          # `field :company_id, type: String` claiming the key while the declared `id_type:` was discarded.
+          # The representative's own shape PLUS the members carried from a shallower hop — the ancestor's
+          # shape reaches this node's property too (PRO-3399), so a carried `field :company_id, type: String`
+          # claims the key exactly as one on the node's own route does, and leaving the carry out would
+          # discard the declared `id_type:` one level up.
           representative = property_representative(parent_configs)
-          explicit_id ||= shape_members_at(carried.empty? ? Array(representative) : Array(representative) + carried, id_field).first
+          explicit_id ||= emitted_shape_member_at(prop, representative, carried, id_field)
           # `model_configs`, every route at THIS merged node — not just `.first` (Codex review round
           # 3, PR #269): two `model:` routes reaching the same wire node may each carry their own
           # `id_type:`/`klass:`, and reading only one silently dropped the other's claim.
@@ -1418,6 +1417,30 @@ module Axn
 
           prop[:required] << id_field.to_s
           required_model_ids << id_field
+        end
+
+        # The `shape:` member claiming `id_field`, but ONLY where that member's property was actually EMITTED
+        # — asked of `prop[:properties]` itself rather than inferred from which route declared it.
+        #
+        # Declaring a member and emitting one are not the same thing, and the gap is what this guards. At a
+        # merged node `apply_structured_schema!` builds the property from the REPRESENTATIVE route alone, and
+        # a merged ancestor member is conjoined only where the ancestor emitted one to conjoin with — so a
+        # member on a later route is found by `shape_members_at` while nothing of it is in the document.
+        # Treating such a member as the sibling that claims the key skipped the generated id property, and the
+        # deferred `merge_model_id_type_into_sibling!` pass then found nothing at that key to merge into:
+        # `id_field` came out `required` with no entry in `properties` at all, which JSON Schema reads as
+        # "any value permitted" — looser than emitting nothing, and the same failure the route restriction
+        # here was originally written to prevent (Codex review round 2, PR #276).
+        #
+        # A `prop[:properties]` question rather than a route question, because it is the one the emitter can
+        # actually answer at this point: a shape member's property is written by `build_property` (and the
+        # ancestor merge) strictly before `apply_children!` runs, while a subfield SIBLING at the same key is
+        # found through `children` above and has already set `explicit_id` by the time this is reached.
+        def emitted_shape_member_at(prop, representative, carried, id_field)
+          return nil unless prop[:properties].key?(id_field)
+
+          sources = carried.empty? ? Array(representative) : Array(representative) + carried
+          shape_members_at(sources, id_field).first
         end
 
         # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
