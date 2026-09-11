@@ -5014,13 +5014,14 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             .to eq(schema)
         end
 
-        # The coercion stand-down applies at a colliding CHILD exactly as it does at the node itself: a
-        # plain `type: Integer` child declares no `coerce:` of its own, but the class/global
-        # `coerce_input_types` flag (or `Axn::Tools::Invoker`, always on) can still coerce it, and
-        # reflection cannot resolve that ambient flag. Conjoining `{a: "x"}`'s String requirement in here
-        # would reject a wire value ("5") the runtime accepts once coerced — so this stands down exactly
-        # as the top-level stand-down below does, and the child's own emission (not the ancestor's) wins.
-        it "stands down a colliding child whose own type is coercible, even with no explicit coerce:" do
+        # A coercible child's emitted type ("integer") names its TARGET, not the wire form the ancestor's
+        # own check reads — the ancestor's check is UNCONDITIONAL (measured: it also rejects an
+        # already-Integer wire value here, independent of coercion), so conjoining the ancestor's REAL
+        # String constraint is what matches the runtime, not standing the whole child down. This is the
+        # child-level twin of the node-level case below — a coercible type is approximate exactly the way
+        # an unknown class's fallback is, so `conjoin_shape_member_property` drops it and adopts the
+        # ancestor's own emission wholesale.
+        it "conjoins the ancestor's real constraint over a colliding child's coercible-target type" do
           klass = Class.new do
             include Axn
             configure { |c| c.coerce_input_types = true }
@@ -5036,8 +5037,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
           a_prop = schema[:properties][:payload][:properties][:inner][:properties][:a]
-          expect(a_prop).to eq(type: "integer")
-          expect(klass.call(payload: { inner: { a: "5" } })).to be_ok # the working contract the stand-down protects
+          expect(a_prop).to eq(type: "string", minLength: 1)
+          expect(klass.call(payload: { inner: { a: "5" } })).to be_ok # the coercible wire form still works
+          expect(klass.call(payload: { inner: { a: 5 } })).not_to be_ok # a raw wire integer never satisfies the ancestor
         end
 
         # The conjunction actually being ENFORCED, not just an empty one: two compatible String
@@ -5437,10 +5439,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: { deep: {} } })).not_to be_ok # the node's own required `z` still enforced
           end
 
-          # coerce:/preprocess: transform the wire value before validation runs, so the node judges a
-          # DIFFERENT value than the ancestor member's declaration does. Conjoining would emit a node
-          # nothing satisfies for a contract that works at runtime — stand down and keep today's emission.
-          it "stands down when the node's own declaration transforms the value" do
+          # coerce:/preprocess: transform the wire value before validation runs, so a node declaring either
+          # judges a DIFFERENT value than the ancestor member's declaration does — but the ancestor's own
+          # check is UNCONDITIONAL (measured: it rejects an already-Integer wire value here too, regardless
+          # of the node's coercion), so the coercible node's emitted "integer" names its TARGET, not the
+          # wire form the ancestor actually reads. That makes it approximate exactly the way an unknown
+          # class's `single_type_for` fallback is: `conjoin_shape_member_property` drops it and adopts the
+          # ancestor's real String constraint wholesale, which is what actually matches the runtime for
+          # BOTH the coercible wire string ("5") and the raw wire integer (5) it never satisfies.
+          it "conjoins the ancestor's real constraint over a node whose own declaration coerces" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -5452,17 +5459,17 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(type: "integer")
-            expect(inner).not_to have_key(:allOf)
-            expect(klass.call(payload: { inner: "5" })).to be_ok # the working contract this stand-down protects
+            expect(inner).to eq(type: "string", minLength: 1)
+            expect(klass.call(payload: { inner: "5" })).to be_ok # the coercible wire form still works
+            expect(klass.call(payload: { inner: 5 })).not_to be_ok # a raw wire integer never satisfies the ancestor
           end
 
           # An ABSENT coerce: is not evidence of no transform: the class/global coerce_input_types setting
           # (and Axn::Tools::Invoker, always on) coerces every coercible field whose own coerce: is silent,
           # and reflection cannot resolve that ambient, per-call/per-class flag — the same conservatism
           # `boolean_coercion_can_flip_truthiness?` already applies elsewhere in this file. So a plain `type:
-          # Integer` node with no coerce: at all stands down too, exactly as an explicit coerce: true does.
-          it "stands down on a plain coercible type with no explicit coerce:, since the ambient flag might enable it" do
+          # Integer` node with no coerce: at all is approximate too, exactly as an explicit coerce: true is.
+          it "conjoins the ancestor's real constraint over a plain coercible type with no explicit coerce:" do
             klass = Class.new do
               include Axn
               configure { |c| c.coerce_input_types = true }
@@ -5475,9 +5482,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(type: "integer")
-            expect(inner).not_to have_key(:allOf)
+            expect(inner).to eq(type: "string", minLength: 1)
             expect(klass.call(payload: { inner: "5" })).to be_ok
+            expect(klass.call(payload: { inner: 5 })).not_to be_ok
           end
 
           # The mirror: an explicit coerce: false opts back out even on a coercible type, so a genuinely
@@ -5498,6 +5505,62 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
             expect(klass.call(payload: { inner: "5" })).not_to be_ok # never coerced: a String fails the ancestor's own type too
+          end
+
+          # Approximateness is judged on the route that actually PRODUCED member_prop, not on every route
+          # matching the key: at a merged ancestor node, `apply_structured_schema!` builds `member_prop`
+          # from the REPRESENTATIVE route alone, so a LATER, non-representative route's exact type never
+          # reaches the document at all — judging the whole `members` list let that unreached route mask
+          # the representative's own approximate one (Codex review, PR #278 round 4). Two routes to
+          # `outer.mid.payload`, the FIRST (representative) declaring `inner` as the approximate `Object`,
+          # the SECOND (never emitted) declaring it as the real `Hash`.
+          it "judges approximateness on the route that actually produced member_prop, not every merged route" do
+            klass = Class.new do
+              include Axn
+              expects :outer, type: Hash
+              expects :mid, on: :outer, type: Hash
+              expects :payload, on: "outer.mid", type: Hash, as: :p1 do
+                field :inner, type: Object
+              end
+              expects :payload, on: :mid, type: Hash do
+                field :inner, type: Hash
+              end
+              expects :inner, on: :p1, type: Hash
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema.dig(:properties, :outer, :properties, :mid, :properties, :payload, :properties, :inner)
+            expect(inner).to eq(type: "object", minProperties: 1)
+            expect(klass.call(outer: { mid: { payload: { inner: { a: 1 } } } })).to be_ok
+          end
+
+          # A mixed union node beside a real ancestor constraint: the ancestor's check is UNCONDITIONAL
+          # (it runs regardless of which union branch the node's own type nominally admits), so an
+          # `Integer` branch that's ALSO approximate (coercible) does not shield the union from the
+          # ancestor — the whole node collapses to the ancestor's real Hash-shape requirement, because
+          # nothing satisfies the ancestor without also being the Hash the union's other branch names
+          # (Codex review, PR #278 round 4 — measured: even a wire value the Integer branch would coerce
+          # successfully, or one that's already a valid Integer, fails the ancestor's Hash check either
+          # way, so there is nothing for the Integer branch to protect).
+          it "conjoins the ancestor's real constraint over a union node with one coercible branch" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :a, type: String
+                end
+              end
+              expects :inner, on: :payload, type: [Hash, Integer]
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1)
+            expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
+            expect(klass.call(payload: { inner: { other: 1 } })).not_to be_ok # non-empty Hash, but missing the ancestor's required `a`
+            expect(klass.call(payload: { inner: 5 })).not_to be_ok # a wire integer never satisfies the ancestor's Hash requirement
           end
 
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
