@@ -1689,16 +1689,20 @@ module Axn
         end
 
         # Removes exactly the keywords that carry an INTRINSIC type binding — `type`/`anyOf` (the type
-        # assertion itself) and `enum` (a literal value is itself of some JSON type, so a mismatched enum
-        # is as absolute a contradiction as a mismatched `type`). Used for a TRANSFORMING side, where these
-        # three are untrustworthy (they describe the post-transform value, not the wire form another
-        # declaration reads) but everything else — `length`/size bounds, `format`/`pattern` — is
-        # TYPE-CONDITIONAL (JSON Schema applies none of them to an instance of some OTHER type), so keeping
-        # them can never manufacture that same absolute, value-independent contradiction; at worst they are
-        # imprecise in the same way `single_type_for`'s own pre-existing reflection of a transforming field
-        # already is, standalone, with no collision at all.
+        # assertion itself) and `enum`/`const` (a literal value is itself of some JSON type — `const:
+        # 5` is Integer 5, not any string, the same way an `enum` entry is — so a mismatch against
+        # either is as absolute a contradiction as a mismatched `type`; `const` is NUMERIC_BOUND_KEYS'
+        # spelling for a non-nullable `equal_to:`, found by auditing every keyword this emitter can
+        # produce for the same gap rather than waiting for another round to surface it one keyword at a
+        # time). Used for a TRANSFORMING side, where these four are untrustworthy (they describe the
+        # post-transform value, not the wire form another declaration reads) but everything else —
+        # `length`/size bounds, `format`/`pattern` — is TYPE-CONDITIONAL (JSON Schema applies none of
+        # them to an instance of some OTHER type), so keeping them can never manufacture that same
+        # absolute, value-independent contradiction; at worst they are imprecise in the same way
+        # `single_type_for`'s own pre-existing reflection of a transforming field already is, standalone,
+        # with no collision at all.
         def strip_intrinsically_typed_keys(prop)
-          prop.except(:type, :anyOf, :enum)
+          prop.except(:type, :anyOf, :enum, :const)
         end
 
         # Whether ANY config in this route list transforms the wire value it judges — a Proc
