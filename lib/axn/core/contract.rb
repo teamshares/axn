@@ -1264,7 +1264,7 @@ module Axn
         # strict-raising mode) instead of reporting the key as unknown. `except_on:` is listed explicitly in the
         # `Set.new(...)` below rather than left to arrive with `shared_validation_option_keys`: it joined
         # ActiveModel's shared-option list after the gemspec's floor of 7.2, so on 7.2 it is absent from that
-        # list and would otherwise reach `_reject_unknown_of_keys!` as an unknown key — reporting the wrong
+        # list and would otherwise reach `_reject_unknown_bag_keys!` as an unknown key — reporting the wrong
         # defect on the older of the two supported ActiveModel lines, before the dedicated guard above ever runs.
         #
         # `allow_nil:`/`allow_blank:`/`optional:` are the position's TOLERANCE: the same three spellings a named
@@ -1276,8 +1276,8 @@ module Axn
         # then do anything depends on the position, which is `AXIS_INERT_OPTION_KEYS` below.
         #
         # `optional` itself is never seen by the check below — `_canonicalize_bag_tolerance!` always deletes it
-        # first — so its entry here is not a gate. It exists because `_reject_unknown_of_keys!` renders `allowed
-        # - UNADVERTISED_OF_KEYS` as the "(supported: …)" list on an unknown-key refusal; without this entry
+        # first — so its entry here is not a gate. It exists because `_reject_unknown_bag_keys!` renders `allowed
+        # - UNADVERTISED_BAG_KEYS` as the "(supported: …)" list on an unknown-key refusal; without this entry
         # that list would advertise a grammar a typo'd sibling key could not actually match.
         #
         # `POSITIONAL_VALIDATOR_KEYS` is the value-constraint half (PRO-3193): a bag is a validator SET for
@@ -1306,6 +1306,51 @@ module Axn
         # One message, since the fix is the same one every way.
         MAP_OF_REQUIRED_MESSAGE = "of: requires keys: and/or values: for a Hash — a Hash has two things inside it, " \
                                   "so name the axis you are constraining"
+
+        # What a `model:` bag may carry (PRO-3387). `klass:`/`finder:`/`not_found_on:`/`id_type:` are read by
+        # `ModelValidator`/`FieldResolvers::Model`/schema reflection (see the guards beside
+        # `_reject_unsupported_model_klass!` below, each of which already judges one of these keys — this is
+        # the whitelist that catches every OTHER key those miss). `message:` is the one ActiveModel option a
+        # `model:` bag actually reads (`ModelValidator#_reject_absence`), unlike `validate:`'s, which is inert
+        # (see `VALIDATE_OPTION_KEYS`). `except_on:` is named explicitly for the reason `OF_OPTION_KEYS` names
+        # it: absent from ActiveModel's shared-option list before 8.0, so without it the same declaration would
+        # be refused as unknown on 7.2 and correctly diagnosed on 8.x.
+        #
+        # `on:`/`strict:` are admitted here for the same reason they are in `OF_OPTION_KEYS`: they are refused
+        # by the dedicated context/strict guards (`_reject_validator_context_scope!` et al.), which name the
+        # real problem, and `_reject_unknown_bag_keys!` holds them out of what it advertises via
+        # `UNADVERTISED_BAG_KEYS`.
+        MODEL_OPTION_KEYS = (Set.new(%i[klass finder not_found_on id_type message except_on]) |
+                             Axn::Validation::Base.shared_validation_option_keys).freeze
+
+        # What a `type:` bag may carry. `klass:` is the type check itself; `coerce:` opts into coercion
+        # (`_expand_coerce_sugar!` writes it, and an author may write it directly inside the bag —
+        # `type: { klass:, coerce: true }`); `message:` overrides the mismatch wording
+        # (`TypeValidator#validate_each`). `allow_nil:`/`allow_blank:` arrive through the shared-option union,
+        # not listed twice.
+        TYPE_OPTION_KEYS = (Set.new(%i[klass coerce message except_on]) |
+                            Axn::Validation::Base.shared_validation_option_keys).freeze
+
+        # What a `validate:` bag may carry. `with:` is the callable itself (`ValidateValidator#check_validity!`
+        # requires it). `message:` is admitted but deliberately UNADVERTISED — not through
+        # `UNADVERTISED_BAG_KEYS` (that set is refused by a dedicated guard elsewhere; this key is refused
+        # nowhere) but by being left out of this constant's contribution to the rendered "(supported: …)" list.
+        # `ValidateValidator#validate_each` never reads `options[:message]` — the callable's OWN return value is
+        # the error message — so `message:` here is inert, and a whitelist that advertised it would recommend an
+        # option that does nothing. Kept legal (not refused) because pointing an author at the correct spelling
+        # would trade one silently-ignored option for another; a real fix (making it live, or refusing it) is a
+        # separate ticket.
+        VALIDATE_OPTION_KEYS = (Set.new(%i[with message except_on]) |
+                                Axn::Validation::Base.shared_validation_option_keys).freeze
+
+        # What a `shape:` node may carry, at every position one can be written (a field's own, a shape member's,
+        # an `of:` element bag's, either axis of a map). `members:` and `container:` are the only two keys
+        # `ShapeValidator` reads; `container: Array` is also the distributing marker `_build_shape` writes for a
+        # block shape declared under `type: Array` (`shape_validator.rb`). `shaped_keys:` is deliberately
+        # absent — that key is DERIVED onto the sibling `of:` bag by the walk, never written onto a shape node
+        # by an author, so admitting it here would legitimize a spelling nobody can legally write.
+        SHAPE_OPTION_KEYS = (Set.new(%i[members container except_on]) |
+                             Axn::Validation::Base.shared_validation_option_keys).freeze
 
         # Types for which a shape block is meaningless — the block describes the members of a
         # structured value (Array elements, Hash keys, or a class's readers), not a scalar.
@@ -2414,8 +2459,17 @@ module Axn
         # raised on every call instead of at the author.
         def _canonicalize_validator_options!(validations, fields)
           Axn::Validation::Base.canonicalize_clusivity_sets!(validations, where: _declared_fields_label(fields))
+          # The key-set question first, for both bags, ahead of every sugar call below — the same "broadest
+          # judgment first" ordering `_reject_unsupported_validator_keys!` leads its own group with in
+          # `_parse_field_validations` (whether a key names a validator at all, ahead of what that validator can
+          # MEAN). `type:`'s and `model:`'s sugar only ever WRITE keys already in their own whitelist (`klass:`,
+          # `finder:`, `not_found_on:`), so running before or after cannot hide an offender — but before is what
+          # a reader of `_reject_falsy_model_klass!`'s docstring (below) expects, and keeps every guard in this
+          # method reading the author's own spelling.
+          _reject_unknown_top_level_bag_keys!(validations, :type, TYPE_OPTION_KEYS, option: "type:")
           validations[:type] = Axn::Validators::TypeValidator.apply_syntactic_sugar(validations[:type], fields) if validations.key?(:type)
           _reject_unsupported_type_klass!(validations)
+          _reject_unknown_top_level_bag_keys!(validations, :model, MODEL_OPTION_KEYS, option: "model:")
           _reject_falsy_model_klass!(validations)
           validations[:model] = Axn::Validators::ModelValidator.apply_syntactic_sugar(validations[:model], fields) if validations.key?(:model)
           _reject_unsupported_model_klass!(validations)
@@ -2423,12 +2477,33 @@ module Axn
           _reject_unsupported_model_id_type!(validations)
           if validations.key?(:validate)
             validations[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(validations[:validate], fields, nested: false)
+            # AFTER the sugar here, deliberately unlike its two siblings above: the sugar's own "expects a
+            # callable" refusal (`ValidateValidator.apply_syntactic_sugar`) is the more useful diagnosis for a
+            # Hash with no `:with` at all — the ordinary way this bag is misused is nesting a standard
+            # validator under it (`validate: { inclusion: { in: [...] } }}`), and that message names the fix
+            # this whitelist cannot (`spec/axn/core/validations/shape_contracts_spec.rb:689`,
+            # `of_bag_value_validators_spec.rb`). Once `:with` is confirmed present, this catches an
+            # extraneous key beside it (`validate: { with: ->(v){}, bogus: 1 }`).
+            _reject_unknown_validate_keys!(validations[:validate])
           end
           return unless validations.key?(:of)
 
           container = _of_container!(validations)
           _drop_derived_of_container!(validations, container)
           validations[:of] = container.equal?(::Hash) ? _canonical_map_of!(validations, fields) : _canonical_array_of!(validations, fields)
+        end
+
+        # The key-set question for a top-level bag (`type:`/`model:`) at the point it is still exactly as the
+        # author wrote it: a bare, non-Hash spelling (`type: String`, `model: User`, `model: true`) wrote no
+        # keys at all, so it stands down rather than raising — this judges an author's own BAG, and only a Hash
+        # carries one.
+        def _reject_unknown_top_level_bag_keys!(validations, key, allowed, option:)
+          return unless validations.key?(key)
+
+          bag = Internal::ShapeGraph.hash_or_nil(validations[key])
+          return if nil.equal?(bag)
+
+          _reject_unknown_bag_keys!(bag, allowed, option:)
         end
 
         # `of:` names what is INSIDE a container, so the declared type is what decides which grammar the bag is
@@ -2554,6 +2629,20 @@ module Axn
           return unless Internal::ShapeGraph.carries_key?(bag, :validate)
 
           bag[:validate] = Axn::Validators::ValidateValidator.apply_syntactic_sugar(bag[:validate], fields, nested: true)
+          # AFTER the sugar, for the same reason the field path's own call is (PRO-3387): the sugar's own
+          # "expects a callable" misuse message is the more useful diagnosis for a `:with`-less Hash, and once
+          # `:with` is confirmed present the result is always a Hash, so no `hash_or_nil` stand-down is needed.
+          _reject_unknown_validate_keys!(bag[:validate])
+        end
+
+        # The one call this method makes twice — the field path's own `validate:` and a bag's positional
+        # `validate:` entry (PRO-3193) — so the two cannot drift. `message:` is folded into what this call
+        # holds OUT of the advertised list, beside the shared `on:`/`except_on:`/`strict:` set every bag
+        # holds out: `validate:` admits it (an author who writes it is not refused) but nothing reads it
+        # (`ValidateValidator#validate_each` never consults `options[:message]`), so naming it as the fix for
+        # an unrelated typo would recommend an option that does nothing.
+        def _reject_unknown_validate_keys!(bag)
+          _reject_unknown_bag_keys!(bag, VALIDATE_OPTION_KEYS, option: "validate:", unadvertised: UNADVERTISED_BAG_KEYS + [:message])
         end
 
         # `optional:` is the sugar a NAMED position takes, canonicalized here into the pair the runtime and the
@@ -2598,7 +2687,7 @@ module Axn
         def _check_inner_contract_bag!(bag, fields)
           _canonicalize_bag_tolerance!(bag)
           _canonicalize_positional_validator_options!(bag, fields)
-          _reject_unknown_of_keys!(bag, OF_OPTION_KEYS)
+          _reject_unknown_bag_keys!(bag, OF_OPTION_KEYS, option: "of:")
           _reject_unconstraining_of_bag!(bag)
           _reject_unsupported_of_klass!(bag)
           _reject_inner_contract_context_scope!(bag, fields)
@@ -3161,7 +3250,7 @@ module Axn
         #
         # `_symbol_keyed_bag` is the one symbolizer, reused rather than mirrored: it reads through the bound
         # `each` seam (never asking an indifferent-access bag to convert itself), preserves a key it cannot
-        # symbolize so `_reject_unknown_of_keys!` still names it, and refuses one option declared under both
+        # symbolize so `_reject_unknown_bag_keys!` still names it, and refuses one option declared under both
         # spellings. It answers nil when there is nothing to change, so a Symbol-keyed declaration — every one
         # the DSL writes for itself, and every rung of the second pass over a shape member — allocates nothing.
         #
@@ -3202,7 +3291,7 @@ module Axn
           bag = Internal::ShapeGraph.hash_or_nil(owner[:of])
           raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if nil.equal?(bag)
 
-          _reject_unknown_of_keys!(bag, MAP_OF_OPTION_KEYS)
+          _reject_unknown_bag_keys!(bag, MAP_OF_OPTION_KEYS, option: "of:")
           raise ArgumentError, _map_axes_name_no_class_message(bag) if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
 
           _reject_inner_contract_context_scope!(bag, fields)
@@ -3576,23 +3665,36 @@ module Axn
         end
 
         # Bag keys admitted by the whitelist only so a dedicated guard can name what is actually wrong with them.
-        UNADVERTISED_OF_KEYS = %i[on except_on strict].freeze
-        private_constant :UNADVERTISED_OF_KEYS
+        # Shared by every bag this method polices — `model:`, `type:`, `validate:`, `shape:` and `of:` alike —
+        # since the three keys it holds out are refused by the SAME dedicated guards at every one of those
+        # positions (`_reject_validator_context_scope!` / `_reject_validator_except_on!` /
+        # `_reject_strict_validation!`, or their bag-level twins), not just at `of:`.
+        UNADVERTISED_BAG_KEYS = %i[on except_on strict].freeze
+        private_constant :UNADVERTISED_BAG_KEYS
 
         # Every offender at once: an author who wrote two of them has one declaration to fix, not two rounds
-        # of the same error.
-        def _reject_unknown_of_keys!(bag, allowed)
+        # of the same error. `option:` names the bag in the message (`"of:"`, `"model:"`, `"type:"`, …) — the
+        # one thing that differs between callers; the rest of the shape (offender rendering, the advertised-set
+        # subtraction) is identical for every bag this method polices.
+        #
+        # `unadvertised:` defaults to the shared `on:`/`except_on:`/`strict:` set every bag holds out for the
+        # same reason, but is a parameter rather than a hardcoded reference to it: `validate:`'s `message:` is
+        # admitted (an author who writes it is not refused) yet reads nothing (`ValidateValidator#validate_each`
+        # never consults `options[:message]` — the callable's own return value IS the error), so recommending
+        # it as a fix would trade one silently-ignored option for another. That one caller extends the shared
+        # set rather than every bag growing its own copy of it.
+        def _reject_unknown_bag_keys!(bag, allowed, option:, unadvertised: UNADVERTISED_BAG_KEYS)
           offenders = bag.keys.reject { |key| allowed.include?(key) }
           return if offenders.empty?
 
           # `on:`, `except_on:` and `strict:` sit in the whitelist so `_reject_inner_contract_context_scope!` /
-          # `_reject_inner_contract_except_on!` / `_reject_inner_contract_strict!` can name the real problem
-          # (axn has no validation contexts, and no strict-raising mode) instead of reporting any of them as
-          # unknown — but all three are left out of what this ADVERTISES, since a key this line calls supported
-          # and the next line refuses is not one to point an author at.
-          supported = allowed.reject { |key| UNADVERTISED_OF_KEYS.include?(key) }
+          # `_reject_inner_contract_except_on!` / `_reject_inner_contract_strict!` (or their field-level twins)
+          # can name the real problem (axn has no validation contexts, and no strict-raising mode) instead of
+          # reporting any of them as unknown — but all three are left out of what this ADVERTISES, since a key
+          # this line calls supported and a sibling guard refuses is not one to point an author at.
+          supported = allowed.reject { |key| unadvertised.include?(key) }
           raise ArgumentError,
-                "of: does not support #{offenders.map { |key| _of_key_label(key) }.join(', ')} " \
+                "#{option} does not support #{offenders.map { |key| _bag_key_label(key) }.join(', ')} " \
                 "(supported: #{supported.map { |key| "#{key}:" }.join(', ')})"
         end
 
@@ -3602,7 +3704,7 @@ module Axn
         # one may be an arbitrary caller object — and interpolating it ran that object's own `to_s`, which
         # replaced this declaration error with the caller's exception (outside StandardError, one that escapes
         # every rescue meant to settle it).
-        def _of_key_label(key)
+        def _bag_key_label(key)
           case key
           when ::Symbol then "#{SYMBOL_KEY_NAME.bind_call(key)}:"
           else Axn::Internal::Reflection::PropertyNames.inspect_field_name(key)
