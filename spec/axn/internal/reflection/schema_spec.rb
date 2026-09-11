@@ -5327,9 +5327,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # like `Object`/`Enumerable`, which `single_type_for` reflects on input as a permissive `{type:
           # "string"}` HINT rather than a real constraint — must not be conjoined as if that hint were
           # exact: doing so emits a string-vs-object intersection nothing satisfies, though the runtime
-          # accepts any Hash for both sides (Codex review, PR #278). The approximate side is dropped from
-          # the conjunction entirely (contributes nothing trustworthy) rather than wrapped, and the OTHER
-          # side's real property is used as-is.
+          # accepts any Hash for both sides (Codex review, PR #278). Only the fake TYPE (`type`/`anyOf`) is
+          # dropped from the approximate side; everything else — here, the presence floor `single_type_for`
+          # attached under its "string" assumption — survives as a harmless residue: `minLength` is
+          # TYPE-CONDITIONAL, so JSON Schema never applies it to the object instance this position actually
+          # receives, the same "redundant but harmless" shape round 8 already established for a transforming
+          # side's own surviving bound.
           it "does not conjoin an ancestor member's approximate type hint against the node's real object shape" do
             klass = Class.new do
               include Axn
@@ -5342,13 +5345,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(type: "object", minProperties: 1)
+            expect(inner).to eq(type: "object", minProperties: 1, allOf: [{ minLength: 1 }])
             expect(klass.call(payload: { inner: { a: 1 } })).to be_ok # the working contract this protects
           end
 
           # The mirror: the NODE's own type is the approximate one, and the ancestor member's real Hash
           # shape survives — its `properties`/`required` reach the document, rather than the node's fake
-          # "string" hint discarding them.
+          # "string" hint discarding them. The node's own presence floor (`minLength: 1`, from `single_
+          # type_for`'s "string" fallback) survives too, as a harmless top-level sibling of the ancestor's
+          # real shape in `allOf` — `minLength` is TYPE-CONDITIONAL, so it never applies to the object
+          # instance this position actually receives.
           it "does not conjoin the node's own approximate type hint against a real ancestor shape, and keeps the ancestor's" do
             klass = Class.new do
               include Axn
@@ -5364,7 +5370,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner).to eq(
-              type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1,
+              minLength: 1,
+              not: { type: "null" },
+              allOf: [{ type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1 }],
             )
             expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
             expect(klass.call(payload: { inner: {} })).not_to be_ok # the ancestor's required `a` still enforced
@@ -5405,7 +5413,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(type: "object", minProperties: 1)
+            expect(inner).to eq(type: "object", minProperties: 1, allOf: [{ minLength: 1 }])
             expect(klass.call(payload: { inner: { a: 1 } })).to be_ok
           end
 
@@ -5434,7 +5442,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             deep = schema[:properties][:payload][:properties][:inner][:properties][:deep]
-            expect(deep).to eq(type: "object", properties: { z: { type: "string", minLength: 1 } }, required: ["z"], minProperties: 1)
+            expect(deep).to eq(
+              type: "object", properties: { z: { type: "string", minLength: 1 } }, required: ["z"], minProperties: 1,
+              allOf: [{ minLength: 1 }]
+            )
             expect(klass.call(payload: { inner: { deep: { z: "x" } } })).to be_ok
             expect(klass.call(payload: { inner: { deep: {} } })).not_to be_ok # the node's own required `z` still enforced
           end
@@ -5531,7 +5542,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema.dig(:properties, :outer, :properties, :mid, :properties, :payload, :properties, :inner)
-            expect(inner).to eq(type: "object", minProperties: 1)
+            expect(inner).to eq(type: "object", minProperties: 1, allOf: [{ minLength: 1 }])
             expect(klass.call(outer: { mid: { payload: { inner: { a: 1 } } } })).to be_ok
           end
 
@@ -5612,7 +5623,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(type: "object", minProperties: 1, allOf: [{ enum: [{ allowed: true }] }])
+            expect(inner).to eq(type: "object", minProperties: 1, allOf: [{ enum: [{ allowed: true }], minLength: 1 }])
             expect(klass.call(payload: { inner: { allowed: true } })).to be_ok
             expect(klass.call(payload: { inner: { other: true } })).not_to be_ok # not in the ancestor's inclusion list
           end
@@ -5693,7 +5704,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1)
+            expect(inner).to eq(
+              minLength: 1,
+              not: { type: "null" },
+              allOf: [{ type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1 }],
+            )
             expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
           end
 
@@ -5835,6 +5850,82 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(inner).to eq(type: "string", minLength: 1)
             expect(klass.call(payload: { inner: "4" })).to be_ok # coerced then preprocessed to 5, satisfies equal_to: 5
             expect(klass.call(payload: { inner: "5" })).not_to be_ok # coerced then preprocessed to 6, fails equal_to: 5
+          end
+
+          # A type-conditional bound (round 8's `length:`) is safe to KEEP from a `preprocess:`-tainted
+          # side ONLY when it does not conjoin into an EMPTY interval with a bound the OTHER side
+          # independently asserts (Codex review, PR #278 round 11): the ancestor's `minLength: 3` runs
+          # against the RAW value, the node's own `maxLength: 1` runs against `v[0]` (always a single
+          # character) — genuinely satisfiable at runtime (a 3+ char string always has a 1-char first
+          # character), but conjoining both bounds unstripped produces `minLength: 3, maxLength: 1`, which
+          # no string can satisfy. `drop_conflicting_size_bounds` detects the empty interval and drops the
+          # node's own (untrustworthy, preprocess-derived) pair rather than emitting it.
+          it "drops a preprocessing node's own size bound rather than conjoin it into an empty interval" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, type: String, length: { maximum: 1 }, preprocess: ->(v) { v[0] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", minLength: 3)
+            expect(klass.call(payload: { inner: "abc" })).to be_ok # ancestor's raw length passes, node's transformed check is vacuous
+            expect(klass.call(payload: { inner: "ab" })).not_to be_ok # fails the ancestor's own raw minLength: 3
+          end
+
+          # An unknown-class member's TYPE-CONDITIONAL constraints are just as trustworthy as an exactly-
+          # typed member's — nothing about it transforms the value, so a real `length:` validator still
+          # runs against the SAME raw value the colliding node reads. Slicing the approximate side down to
+          # `.slice(:enum)` (rather than `.except(:type, :anyOf)`, dropping only the fake type) discarded
+          # this along with the fake type for no reason (Codex review, PR #278 round 11): `type: Object,
+          # length: { minimum: 3 }` beside an explicit `type: String` node let a 1-character string pass
+          # the schema though the member's real length floor rejects it at runtime.
+          it "keeps an unknown-class member's real length: validator, not just its enum" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, type: String
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", minLength: 1, allOf: [{ minLength: 3 }])
+            expect(klass.call(payload: { inner: "abc" })).to be_ok
+            expect(klass.call(payload: { inner: "a" })).not_to be_ok # fails the member's own real length: { minimum: 3 }
+          end
+
+          # `:boolean` accepts several wire spellings for one native value, unlike Integer/Float's single
+          # canonical `#to_s` — but `Coercion.boolean_wire_spellings` is the single source for the WHOLE
+          # accepted set, so a coercible boolean literal is translated the same way a numeric one is
+          # (Codex review, PR #278 round 11): dropping it entirely let a raw String ancestor's schema
+          # accept "false", though coercion turns that into `false` and fails `inclusion: { in: [true] }`
+          # at runtime.
+          it "translates a coercing node's own boolean inclusion enum into its wire spellings" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: :boolean, coerce: true }, inclusion: { in: [true] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              enum: [true, 1, "1", "true", "t", "yes", "y", "on"],
+              not: { type: "null" },
+              allOf: [{ type: "string", minLength: 1 }],
+            )
+            expect(klass.call(payload: { inner: "true" })).to be_ok
+            expect(klass.call(payload: { inner: "false" })).not_to be_ok # coerces to false, fails inclusion in [true]
           end
 
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
