@@ -372,6 +372,31 @@ RSpec.shared_examples "can build Axns from callables" do
         end.to output("on_error\non_exception\n").to_stdout
       end
     end
+
+    # PRO-3401: `_apply_handlers` (backing success:/error:/on_success:/on_failure:/on_error:/
+    # on_exception:) splat a single handler via `Array(value)`, and `Kernel#Array()` calls
+    # `to_ary`/`to_a` when the value defines either -- so a perfectly valid SINGLE callback that
+    # also happens to answer `to_a` (any Struct, for free) would be silently splatted into its own
+    # FIELDS instead of passed through as one handler. Fixed by checking `is_a?(Array)` instead of
+    # coercing (mirrors the before:/after:/around: fix from PR #272 / PRO-3395).
+    context "with a single on_success callback that is also Array-convertible (e.g. a Struct)" do
+      let(:callable_callback_class) do
+        Struct.new(:label) do
+          def to_proc
+            l = label
+            ->(*) { puts "callback:#{l}" }
+          end
+
+          def arity = -1
+        end
+      end
+      let(:kwargs) { { on_success: callable_callback_class.new("audit") } }
+      let(:callable) { -> { puts "call" } }
+
+      it "passes the callback through as ONE handler rather than splatting its Struct fields" do
+        expect { axn.call }.to output(a_string_including("callback:audit")).to_stdout
+      end
+    end
   end
 
   context "setting use strategies" do
