@@ -1052,6 +1052,36 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.not_to raise_error
     end
 
+    # The nesting block suppresses CHILDREN, not the node's own property: `build_property` has already
+    # merged the representative's `shape:` members by the time `apply_nested_subfields!` declines to nest.
+    # So a merged node carrying a `model:` route beside a non-model route with its own members still emits
+    # that object, and an early return on the block missed it (Codex review round 8).
+    it "rejects a merged <field>_id node whose non-model route declares its own shape members" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :account, on: :payload, type: Hash
+          expects :company_id, on: "payload.account", model: { klass: DeadCo, finder: :fetch }, as: :cid_model
+          expects :company_id, on: :account, type: Hash, as: :cid_shape do
+            field :detail, type: String
+          end
+          expects :company, on: :account, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
+    end
+
+    # …but a PURE model node at that key has no representative at all, so it declares no members and
+    # emits its own id one level deeper. Nothing to claim, nothing to refuse.
+    it "accepts a pure model node at the id key" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash
+          expects :company_id, on: :payload, model: { klass: DeadCo, finder: :fetch }
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
     # The legal tail — a scalar `<field>_id` beside a model is THE supported spelling (it supplies the
     # lookup token), so nothing here may start raising.
     # The id sibling is declared FIRST at depth: an explicit reader declared after the model's inferred

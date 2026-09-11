@@ -147,10 +147,15 @@ module Axn
         # `shape:` MEMBERS are not children at all and so were invisible to a `children`-only test — measured,
         # `expects :company_id, on: :payload, type: Hash do … end` beside a `model:` emitted the member's
         # object and dropped the model's id entirely, while the resolver still read that Hash as its token.
+        # The block applies to the CHILDREN only. `node_configs_block_nesting?` gates `apply_nested_subfields!`,
+        # which is what declines to nest subfield children — but the node's own property was already built by
+        # `build_property`, and `apply_structured_schema!` merged the representative's own `shape:` members
+        # into it on the way. So a merged node carrying a `model:` route beside a non-model route with its own
+        # members still emits that object, and returning early on the block missed it entirely.
         def claiming_descendant(node)
-          return nil if Axn::Internal::Reflection::Schema.node_configs_block_nesting?(node.configs)
+          nested = first_config_below(node) unless Axn::Internal::Reflection::Schema.node_configs_block_nesting?(node.configs)
 
-          first_config_below(node) || claiming_own_member(node)
+          nested || claiming_own_member(node)
         end
 
         # A member declared by the node's OWN `shape:` — the representative route's, which is the one
