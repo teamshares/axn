@@ -1579,8 +1579,18 @@ module Axn
         def merge_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
           merged = member_prop.merge(own_prop)
           merged.delete(:format)
-          merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties], member_configs:, own_configs:)
-          merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required])
+          # Reassigned only when at least one side actually HAS the key — both sides bare (e.g. two
+          # colliding `type: Hash` declarations with no children on either) means merge_emitted_maps/
+          # merge_emitted_required return nil (nothing to merge), and writing that nil through would leave
+          # an explicit `properties: nil`/`required: nil` in the document: JSON Schema requires `properties`
+          # to be an object and `required` to be an array, so a null-valued keyword is an invalid document,
+          # not merely a permissive one (Codex review, PR #278 round 13 — the OUTER `.compact` calls this
+          # property eventually passes through are all shallow, so a nil written INTO this property here
+          # survives every one of them).
+          if member_prop[:properties] || own_prop[:properties]
+            merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties], member_configs:, own_configs:)
+          end
+          merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required]) if member_prop[:required] || own_prop[:required]
           merged[:minProperties] = [member_prop[:minProperties], own_prop[:minProperties]].compact.max if merged[:minProperties]
           merged[:maxProperties] = [member_prop[:maxProperties], own_prop[:maxProperties]].compact.min if merged[:maxProperties]
           merged
@@ -1672,9 +1682,9 @@ module Axn
           own_unknown = unknown_class_approximate?(own_configs)
 
           if member_unknown && !own_unknown && !own_prop.empty?
-            member_prop = member_prop.except(:type, :anyOf)
+            member_prop = retarget_unknown_class_length(member_prop.except(:type, :anyOf), own_prop)
           elsif own_unknown && !member_unknown && !member_prop.empty?
-            own_prop = own_prop.except(:type, :anyOf)
+            own_prop = retarget_unknown_class_length(own_prop.except(:type, :anyOf), member_prop)
           end
 
           if own_prop.empty? || member_prop.empty? || (object_property?(member_prop) && object_property?(own_prop))
@@ -1693,6 +1703,34 @@ module Axn
         def object_property?(prop)
           type = prop[:type]
           type == "object" || (type.is_a?(::Array) && type.include?("object"))
+        end
+
+        # An unknown-class hint's `minLength`/`maxLength` (from `single_type_for`'s permissive "string"
+        # fallback — the only JSON type SIZE_CONSTRAINT_KEYS/SIZE_CEILING_KEYS give an approximate class,
+        # regardless of what the colliding side turns out to actually be) describes the SAME real, raw-
+        # value `length:`/size validator an exactly-typed member's would — but that validator calls `#length`
+        # on WHATEVER the runtime value actually is, and `minLength`/`maxLength` is a JSON Schema keyword
+        # JSON Schema applies ONLY to a string instance, silently ignoring it for anything else. Once the
+        # collision reveals the surviving side's REAL type, the constraint needs the JSON keyword THAT type
+        # actually honors, not the string-shaped one `single_type_for` merely guessed at (Codex review, PR
+        # #278 round 13): `type: Object, length: { minimum: 3 }` beside a colliding `type: Hash` node left
+        # `minLength: 3` sitting beside the object schema, which JSON Schema ignores for an object instance
+        # — so a one-property Hash passed the schema though the member's own (real) length validator, which
+        # DOES apply (`Hash#length` is its key count), rejects it at runtime. Retargeting to `minProperties`/
+        # `maxProperties` here (or `minItems`/`maxItems` for a surviving Array) is what keeps it enforced;
+        # a surviving type with no JSON size keyword at all (Integer, boolean) has no way to express this
+        # constraint, so it is dropped rather than left inert under the wrong keyword.
+        def retarget_unknown_class_length(prop, other_prop)
+          return prop unless prop[:minLength] || prop[:maxLength]
+
+          other_type = Array(other_prop[:type]).find { |t| t != "null" }
+          floor_key = other_type && SIZE_CONSTRAINT_KEYS[other_type]
+          ceiling_key = other_type && SIZE_CEILING_KEYS[other_type]
+
+          retargeted = prop.except(:minLength, :maxLength)
+          retargeted[floor_key] = prop[:minLength] if floor_key && prop[:minLength]
+          retargeted[ceiling_key] = prop[:maxLength] if ceiling_key && prop[:maxLength]
+          retargeted
         end
 
         # Removes exactly the keywords that carry an INTRINSIC type binding — `type`/`anyOf` (the type
@@ -1738,14 +1776,24 @@ module Axn
         # side is stripped so evaluation order can't change the answer — lets `drop_conflicting_size_bounds`
         # detect exactly that empty-interval case and drop only the offending pair, leaving an unrelated
         # bound (as in round 8's own, non-colliding-bound test) untouched.
+        #
+        # `pattern`/`format` get no such interval check — unlike a numeric range, "do these two regexes
+        # share a match" has no cheap, always-correct answer reflection can compute, so a preprocess-tainted
+        # side's pattern is dropped OUTRIGHT rather than risk conjoining two DISJOINT ones into a node
+        # nothing can satisfy (Codex review, PR #278 round 13): an ancestor `/\Aa+\z/` beside a colliding
+        # `preprocess: ->(_) { "b" }, format: /\Ab+\z/` node accepts raw "a" at runtime (its OWN check runs
+        # on the constant "b", which the node's pattern matches unconditionally), but conjoining both
+        # patterns requires one wire string to match both `/\Aa+\z/` AND `/\Ab+\z/` — impossible. This is
+        # the same "no execution-free proof available" limit `wire_spellings_for` hits for a literal value,
+        # applied to a regex instead — dropped as a tolerated imprecision, not solved.
         def strip_intrinsically_typed_keys(prop, configs, other_prop)
           literal_values = Array(prop[:const]) + Array(prop[:enum])
           stripped = prop.except(:type, :anyOf, :enum, :const)
           coercible_klasses = coercible_target_klasses(configs)
-          stripped = drop_conflicting_size_bounds(stripped, other_prop) if coercible_klasses.empty?
+          stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format) if coercible_klasses.empty?
           return stripped if literal_values.empty? || coercible_klasses.empty?
 
-          spellings = wire_spellings_for(literal_values, coercible_klasses)
+          spellings = wire_spellings_for(literal_values, coercible_klasses, configs)
           return stripped if spellings.nil?
 
           stripped[:enum] = spellings
@@ -1835,20 +1883,61 @@ module Axn
         # `["5", "ok"]` needs "5" DROPPED — it decodes to Integer 5, never String "5", so no wire value
         # could ever satisfy the inclusion check via that entry — while "ok" is untouched by either target
         # and survives; an earlier all-or-nothing, class-only check couldn't see the difference and kept
-        # both, including the wire-unreachable "5").
-        def wire_spellings_for(values, coercible_klasses)
-          spellings = values.flat_map { |value| round_tripping_wire_spellings(value, coercible_klasses) }.uniq
+        # both, including the wire-unreachable "5"). `configs` recovers each literal's PRE-normalization
+        # provenance (see raw_literal_for) — necessary because the ALREADY-emitted `values` have had that
+        # provenance erased.
+        def wire_spellings_for(values, coercible_klasses, configs)
+          raw_literals = raw_inclusion_literals(configs)
+          spellings = values.flat_map { |value| round_tripping_wire_spellings(value, coercible_klasses, raw_literals) }.uniq
           spellings.empty? ? nil : spellings
+        end
+
+        # The declared (pre-normalization) `inclusion:` literal set across every config in this list —
+        # BEFORE `apply_inclusion_enum!` (via `normalize_schema_literal`/`Values.serialize_value`) renders
+        # each member into its own wire-string spelling. Needed to recover PROVENANCE (Codex review, PR
+        # #278 round 13): once rendered, a Date/Symbol/Time literal's spelling is indistinguishable from a
+        # NATIVE String literal that merely happens to render the same way — `Date.parse("2026-01-01")` and
+        # the plain string "2026-01-01" both serialize to "2026-01-01", but only a comparison against the
+        # ORIGINAL Ruby object (never a re-serialized one) can tell a coercing validator's actual match
+        # target apart from an unrelated literal that looks the same on the wire.
+        def raw_inclusion_literals(configs)
+          configs.flat_map do |config|
+            inclusion = config.validations[:inclusion]
+            inclusion ? Array(inclusion_enum_values(inclusion)) : []
+          end
+        end
+
+        # The literal `raw_literals` holds that `value` (the already-normalized/emitted form) stands for —
+        # itself, when nothing in `raw_literals` renders to the same wire spelling (the numeric `const` path
+        # never normalizes at all, so its value already IS its own raw form and this is always a no-op for
+        # it).
+        def raw_literal_for(value, raw_literals)
+          raw_literals.find do |raw|
+            raw.equal?(value) || raw == value || serializes_to?(raw, value)
+          end || value
+        end
+
+        def serializes_to?(raw, value)
+          Values.serialize_value(raw) == value
+        rescue Axn::Extensions::Serialization::UnserializableValue
+          false
         end
 
         # The wire forms of ONE literal that reflection can PROVE the coercer accepts, by actually calling
         # it (a pure parse function, not user code — the same boundary `Values.serialize_value` calls
         # already cross elsewhere in this file) rather than assuming a spelling from the literal's Ruby
-        # class alone: a CANDIDATE wire form is safe only if coercing it and re-serializing the result
-        # reproduces the EXACT literal `apply_inclusion_enum!` already emitted — the round-trip that a
-        # class-only check (round 9-11's `.to_s`/"already a String" heuristics) cannot express, and got
-        # wrong for a union coercion target where a candidate that LOOKS like a safe spelling actually
-        # decodes to something else entirely (Codex review, PR #278 round 12, same finding as above).
+        # class alone: a CANDIDATE wire form is safe only if coercing it reproduces the EXACT (raw,
+        # pre-normalization) literal a validator actually holds — the round-trip a class-only check (round
+        # 9-11's `.to_s`/"already a String" heuristics) cannot express, and a SERIALIZED-form comparison
+        # (this function's own first draft, round 12) still gets wrong: `Date.parse("2026-01-01")` and the
+        # plain string "2026-01-01" serialize identically, but only one of them is what a `[Date, String]`-
+        # coercing `inclusion:` validator is actually holding, and comparing serialized forms cannot tell
+        # them apart — comparing the coerced result against the RAW literal by plain `==` can, since a Date
+        # is never `==` a String even when they render the same (Codex review, PR #278 round 13: a
+        # `[Date, String]` coercing node's `inclusion: { in: ["2026-01-01", "fallback"] }` beside a String
+        # ancestor kept "2026-01-01" as a safe spelling — it coerces to a Date, which the SAME text renders
+        # back to, but the inclusion set holds the STRING "2026-01-01", never a Date, so no wire value could
+        # ever satisfy it via that entry; "fallback" is untouched by either coercion target and survives).
         #
         # `nil` needs no candidate beyond itself: `Coercion.coerce_value`/`coerce_boolean` both leave it
         # untouched (never wire-transformed by coercion at all — round 8's original justification), so it
@@ -1859,12 +1948,10 @@ module Axn
         #
         # Integer/Float ALSO try their `#to_s` spelling (the coercer's String-parsing input, alongside the
         # value's own already-JSON-native form); a boolean tries every spelling `Coercion.boolean_wire_
-        # spellings` names; anything else tries only itself. A candidate that fails to round-trip — the
-        # union case above, or any candidate `Coercion.coerce_value` cannot parse for this declared type at
-        # all — is silently excluded rather than raising: `coerce_value` itself never raises (a failed
-        # parse just returns its input unchanged), so only `Values.serialize_value`'s own opaque-value
-        # guard needs rescuing.
-        def round_tripping_wire_spellings(value, coercible_klasses)
+        # spellings` names; anything else tries only itself. A candidate that fails to round-trip is
+        # silently excluded rather than raising: `coerce_value` itself never raises (a failed parse just
+        # returns its input unchanged).
+        def round_tripping_wire_spellings(value, coercible_klasses, raw_literals)
           candidates =
             case value
             when nil then [nil]
@@ -1874,14 +1961,12 @@ module Axn
             else []
             end
 
-          candidates.select { |candidate| wire_candidate_round_trips?(candidate, value, coercible_klasses) }
+          raw_literal = raw_literal_for(value, raw_literals)
+          candidates.select { |candidate| wire_candidate_round_trips?(candidate, raw_literal, coercible_klasses) }
         end
 
-        def wire_candidate_round_trips?(candidate, value, coercible_klasses)
-          coerced = Axn::Internal::Coercion.coerce_value(candidate, coercible_klasses)
-          Values.serialize_value(coerced) == value
-        rescue Axn::Extensions::Serialization::UnserializableValue
-          false
+        def wire_candidate_round_trips?(candidate, raw_literal, coercible_klasses)
+          Axn::Internal::Coercion.coerce_value(candidate, coercible_klasses) == raw_literal
         end
 
         # The coercible target klasses of the FIRST config in this route list that transforms its wire
