@@ -77,5 +77,16 @@ RSpec.describe "Step functionality" do
       s1 = step1
       expect { build_axn { steps(s1, nil) } }.not_to raise_error
     end
+
+    # Codex review, PR #272: the rejection message interpolated `step_class.inspect`, so a hostile
+    # step value's own `#inspect` raising would replace the intended declaration-time ArgumentError.
+    it "does not let a hostile #inspect replace the intended ArgumentError" do
+      hostile = Object.new
+      def hostile.inspect = raise "boom in inspect"
+
+      expect do
+        build_axn { steps(hostile) }
+      end.to raise_error(ArgumentError, /steps must be Axn classes/)
+    end
   end
 end

@@ -57,6 +57,20 @@ RSpec.describe "Axn semantic_hints" do
     end.to raise_error(ArgumentError, /semantic_hints must be Symbols or Strings/)
   end
 
+  # Codex review, PR #272: the rejection message interpolated `non_symbolic.inspect`, so a hostile
+  # hint's own `#inspect` raising would replace the intended declaration-time ArgumentError.
+  it "does not let a hostile #inspect replace the intended ArgumentError" do
+    hostile = Object.new
+    def hostile.inspect = raise "boom in inspect"
+
+    expect do
+      Class.new do
+        include Axn
+        semantic_hints hostile
+      end
+    end.to raise_error(ArgumentError, /semantic_hints must be Symbols or Strings/)
+  end
+
   it "accepts Strings" do
     klass = Class.new do
       include Axn

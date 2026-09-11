@@ -86,8 +86,13 @@ module Axn
           invalid = hooks.reject { |hook| hook.is_a?(Symbol) || _safely_to_proc?(hook) }
           return if invalid.empty?
 
+          # Rendered by CLASS, never by the offender's own `#inspect` -- a guard that has already
+          # gone to the trouble of surviving a hostile `respond_to?` (`_safely_to_proc?` above) must
+          # not turn around and hand the SAME hostile object its `#inspect` to run, which would
+          # replace this ArgumentError with whatever that raises instead.
+          rendered = invalid.map { |hook| Axn::Internal::Reflection::PropertyNames.renderable_class_name(hook) }.join(", ")
           raise ArgumentError,
-                "hooks must be Symbols naming instance methods, or callables (e.g. `before :a, :b`); got #{invalid.inspect}"
+                "hooks must be Symbols naming instance methods, or callables (e.g. `before :a, :b`); got #{rendered}"
         end
 
         # Guarded against a hostile `respond_to?`/`respond_to_missing?` that raises instead of

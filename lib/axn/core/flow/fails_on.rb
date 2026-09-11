@@ -48,7 +48,10 @@ module Axn
 
             classes, message = _split_fails_on_args(args)
             if classes.empty? || classes.any? { |c| !(c.is_a?(Class) && c <= Exception) }
-              raise ArgumentError, "fails_on requires one or more Exception classes (got #{args.inspect})"
+              # Rendered by CLASS, never by the caller's own `#inspect` -- a hostile argument's
+              # `#inspect` must not be allowed to raise IN PLACE OF this ArgumentError.
+              rendered = args.map { |arg| Axn::Internal::Reflection::PropertyNames.renderable_class_name(arg) }.join(", ")
+              raise ArgumentError, "fails_on requires one or more Exception classes (got #{rendered})"
             end
 
             _reject_unreachable_fails_on!(classes)
@@ -175,10 +178,14 @@ module Axn
           private
 
           # Splits the raw argument list into `[classes, message]`. The trailing element is the
-          # message iff it is neither a Class nor an Array -- every legal message shape (String,
-          # Symbol, a callable) is disjoint from both, since no Exception class answers
-          # `Handlers::Invoker.safely_callable?` and neither grammar accepts the other's shape. That
-          # makes the split unambiguous: `fails_on A, B` and `fails_on [A, B]` both land on `[[A, B],
+          # message iff it is neither an EXCEPTION class nor an Array -- checking `<= Exception`
+          # rather than a bare `is_a?(Class)` matters: a message may itself be a Class object that
+          # also happens to be callable (defines singleton `to_proc`/`arity`), which `error`/`success`
+          # already accept and always have -- a bare `is_a?(Class)` would misread that shape as
+          # another exception-class entry and reject it as one, instead of reaching the message
+          # grammar guard where it belongs and passes. No Exception subclass is ever itself callable,
+          # and neither a String/Symbol/Proc message nor an Array is ever an Exception subclass, so
+          # the split stays unambiguous: `fails_on A, B` and `fails_on [A, B]` both land on `[[A, B],
           # nil]`; `fails_on A, B, "msg"` and `fails_on [A, B], "msg"` both land on `[[A, B], "msg"]`.
           #
           # Everything kept for the class side is flattened ONE level -- exactly what turns the bare
@@ -190,7 +197,7 @@ module Axn
             return [[], nil] if args.empty?
 
             last = args.last
-            return [args.flatten(1), nil] if last.is_a?(Class) || last.is_a?(Array)
+            return [args.flatten(1), nil] if (last.is_a?(Class) && last <= Exception) || last.is_a?(Array)
 
             [args[0...-1].flatten(1), last]
           end

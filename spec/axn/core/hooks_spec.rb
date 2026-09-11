@@ -513,6 +513,20 @@ RSpec.describe Axn do
 
           expect { build_axn { public_send(dsl, to_proc_only) } }.not_to raise_error
         end
+
+        # Codex review, PR #272: the rejection message interpolated `invalid.inspect`, so a hostile
+        # hook's own `#inspect` raising would replace the intended declaration-time ArgumentError
+        # with whatever THAT raised instead -- the same class of hole `_safely_to_proc?` exists to
+        # close for `respond_to?`, just at the message-rendering step instead of the predicate.
+        it "does not let a hostile #inspect replace the intended ArgumentError" do
+          hostile = Object.new
+          def hostile.respond_to?(*) = false
+          def hostile.inspect = raise "boom in inspect"
+
+          expect do
+            build_axn { public_send(dsl, hostile) }
+          end.to raise_error(ArgumentError, /hooks must be Symbols naming instance methods, or callables/)
+        end
       end
     end
   end

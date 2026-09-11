@@ -268,6 +268,26 @@ RSpec.describe "fails_on" do
       end.to raise_error(ArgumentError, /message must be a String, a Symbol, or a callable/)
     end
 
+    # Codex review, PR #272: a bare `last.is_a?(Class)` check misread a callable-Class message (a
+    # Class object that also defines singleton `to_proc`/`arity`, which `error`/`success` already
+    # accept) as another exception-class entry -- it reached the "requires one or more Exception
+    # classes" raise instead of the message grammar guard, where such an object correctly belongs
+    # and passes. Fixed by checking `<= Exception` specifically.
+    it "wires a message that is itself a callable Class, distinguishing it from an exception class" do
+      handler = ->(e) { "handled: #{e.class}" }
+      callable_class = Class.new
+      callable_class.define_singleton_method(:to_proc) { handler }
+      callable_class.define_singleton_method(:arity) { handler.arity }
+      callable_class.define_singleton_method(:parameters) { handler.parameters }
+
+      action = build_axn do
+        klass = callable_class
+        fails_on ArgumentError, klass
+        def call = raise ArgumentError, "boom"
+      end
+      expect(action.call.error).to eq("handled: ArgumentError")
+    end
+
     # Codex review, PR #272: `message || block` treated an explicit trailing `false` identically to
     # "no message given" (both falsy), so the message grammar guard added above never even ran --
     # `fails_on ArgumentError, false` declared cleanly with the message silently dropped. Fixed by
@@ -293,6 +313,17 @@ RSpec.describe "fails_on" do
     it "rejects a non-Exception class" do
       expect do
         build_axn { fails_on String }
+      end.to raise_error(ArgumentError, /requires one or more Exception classes/)
+    end
+
+    # Codex review, PR #272: the rejection message interpolated `args.inspect`, so a hostile
+    # argument's own `#inspect` raising would replace the intended declaration-time ArgumentError.
+    it "does not let a hostile #inspect replace the intended ArgumentError" do
+      hostile = Object.new
+      def hostile.inspect = raise "boom in inspect"
+
+      expect do
+        build_axn { fails_on hostile, ArgumentError }
       end.to raise_error(ArgumentError, /requires one or more Exception classes/)
     end
 
