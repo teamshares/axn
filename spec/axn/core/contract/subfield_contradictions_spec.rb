@@ -948,6 +948,56 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
     end
 
+    # A gated member the emitter DROPS claims the key on no call at all, so the emitted scalar id and a
+    # scalar input agree and there is nothing to refuse. The carve-out is the one the other contradiction
+    # checks rely on: `_canonicalize_blank_gates!` has already deleted a blank gate at declaration, so a
+    # surviving `if:`/`unless:` always denotes a real gate (Codex review round 3).
+    it "accepts a GATED nested shape member under an EXPLICIT dotted model parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :inner, type: Hash do
+              field :company_id, type: Hash, if: -> { false } do
+                field :detail, type: String
+              end
+            end
+          end
+          expects :inner, on: :payload, type: Hash
+          expects :company, on: :inner, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.not_to raise_error
+    end
+
+    # …but a gate does NOT relax a member the emitter MERGES: input reflection is static-maximal, so the
+    # object is in the document either way and the two claims still collide there.
+    it "still rejects a GATED nested shape member under an IMPLICIT dotted model parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :inner, type: Hash do
+              field :company_id, type: Hash, if: -> { false } do
+                field :detail, type: String
+              end
+            end
+          end
+          expects :company, on: "payload.inner", model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
+    it "still rejects a GATED shape member the parent declares directly (it is the emitted one)" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :company_id, type: Hash, if: -> { false } do
+              field :detail, type: String
+            end
+          end
+          expects :company, on: :payload, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
     # The legal tail — a scalar `<field>_id` beside a model is THE supported spelling (it supplies the
     # lookup token), so nothing here may start raising.
     # The id sibling is declared FIRST at depth: an explicit reader declared after the model's inferred

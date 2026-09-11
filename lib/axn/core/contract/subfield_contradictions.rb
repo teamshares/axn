@@ -88,8 +88,43 @@ module Axn
           descendant = nested && claiming_descendant(nested)
           return [descendant, :nested] if descendant
 
-          member = claiming_shape_member(effective_parent_configs(path), id_key)
+          # Two searches, because the two claims are not the same claim. A member the emitter MERGES puts the
+          # object into the document itself, where a gate cannot reach it — input reflection is
+          # static-maximal, so a gated member is advertised exactly as an ungated one is. A member the
+          # emitter drops claims the key at RUNTIME only, through its shape validator, and there a gate does
+          # decide whether the claim exists at all.
+          member = claiming_shape_member(emitted_parent_configs(path), id_key) ||
+                   claiming_shape_member(enforced_parent_configs(path), id_key, ungated_only: true)
           member && [member, :member]
+        end
+
+        # The configs the EMITTER merges at the model's parent node: the carry resets at an explicit hop
+        # (`apply_children!` passes that node's own configs down, losing sight of an ancestor shape), and only
+        # the representative route's shape is ever merged — the restriction `apply_model_id_child!` applies.
+        # Gate-insensitive by construction: whatever this finds is in the emitted document.
+        def emitted_parent_configs(path)
+          carried = []
+          path.ancestors.first(path.parent_index).each do |(node, segment)|
+            carried = if node.children[segment]&.implicit?
+                        Axn::Internal::Reflection::Schema.shape_members_at(node.configs + carried, segment)
+                      else
+                        []
+                      end
+          end
+          Array(Axn::Internal::Reflection::Schema.property_representative(path.parent_node.configs + carried))
+        end
+
+        # The configs the RUNTIME enforces at that node. A shape validator has no emission boundary: it
+        # enforces the whole nested structure it declares whether or not a subfield node also sits at the
+        # position, so the carry does not reset and every route is asked rather than the representative.
+        # Self-limiting either way: `shape_members_at` returns only members NAMED by the segment, so a member
+        # with no nested members of its own contributes nothing at the next hop.
+        def enforced_parent_configs(path)
+          carried = []
+          path.ancestors.first(path.parent_index).each do |(node, segment)|
+            carried = Axn::Internal::Reflection::Schema.shape_members_at(node.configs + carried, segment)
+          end
+          path.parent_node.configs + carried
         end
 
         # The configs `apply_children!` is handed for the model's own parent node — which is NOT always that
@@ -99,21 +134,6 @@ module Axn
         # member claiming the id key is reachable from a shape two levels up, and reading `parent.configs`
         # alone found nothing while the emitter found — and emitted — the object.
         #
-        # Accumulated hop by hop like `check_unanswerable_segments!`'s carry, with one deliberate difference:
-        # the carry does NOT reset at an explicit hop. That reset mirrors the emitter, which passes an
-        # explicit node's own configs down and so loses sight of an ancestor shape; a shape VALIDATOR has no
-        # such boundary and enforces the whole nested structure it declares whether or not a subfield node
-        # also sits at that position. The carry is self-limiting either way: `shape_members_at` returns only
-        # members NAMED by the segment, so a member with no nested members of its own contributes nothing at
-        # the next hop and the chain dies on its own.
-        def effective_parent_configs(path)
-          carried = []
-          path.ancestors.first(path.parent_index).each do |(node, segment)|
-            carried = Axn::Internal::Reflection::Schema.shape_members_at(node.configs + carried, segment)
-          end
-          path.parent_node.configs + carried
-        end
-
         # The declaration whose nesting under `node` makes the key an object: the shallowest config found beneath
         # it. Nil when the node has no children, or when its own configs forbid nesting them (a scalar or `model:`
         # route there emits no object property, so nothing collides with the id).
@@ -136,15 +156,17 @@ module Axn
         # carries members of its own, so `apply_structured_schema!` merges an object property at that key before
         # `apply_model_id_child!` ever runs.
         #
-        # Asked of EVERY config in force at the position (`effective_parent_configs`), not of the one the
-        # emitter would merge. `apply_model_id_child!` reads the representative alone because it is deciding
-        # what to EMIT, and only the first non-model route's shape is ever merged. The question here is what
-        # the RUNTIME enforces, and a shape validator runs for every route that declares one — measured: with
-        # an explicit subfield node at the intermediate, the emitted property is the model's scalar id while
-        # the ancestor shape still rejects a scalar there, so the contract and the document take opposite
-        # sides of the same key. Restricting to the representative saw only the emitter's side of that.
-        def claiming_shape_member(parent_configs, id_key)
+        # `ungated_only:` drops a member carrying a declaration-level `if:`/`unless:`, asked through the one
+        # predicate reflection uses (`conditionally_gated?`). It is passed for the RUNTIME search alone: a
+        # gate decides whether that shape validator runs, so a gated member the emitter dropped claims the
+        # key on no call at all — measured, the emitted scalar id and a scalar input agree there. A blank
+        # gate never reaches this, `_canonicalize_blank_gates!` having deleted it at declaration on
+        # ActiveModel's own terms (`if: false` is "no condition", not "never run"), so a surviving key
+        # always denotes a real gate — the same guarantee the other contradiction carve-outs rely on.
+        def claiming_shape_member(parent_configs, id_key, ungated_only: false)
           Axn::Internal::Reflection::Schema.shape_members_at(parent_configs, id_key).find do |member|
+            next false if ungated_only && Axn::Internal::Reflection::Schema.conditionally_gated?(member)
+
             Axn::Internal::Reflection::Schema.named_members(member.validations.dig(:shape, :members)).any?
           end
         end
