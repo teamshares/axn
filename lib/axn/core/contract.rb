@@ -544,8 +544,15 @@ module Axn
           validations, metadata = _partition_field_options(fields, **)
           # Ahead of the block form's own write to this slot (a block legitimately builds a distributing
           # shape; a raw kwarg no longer may) — reads the caller's own `shape:`, not what a block would replace
-          # it with, so a field declaring BOTH no longer has the raw one silently discarded (see PRO-3191).
+          # it with, so a field declaring BOTH no longer has the raw one silently discarded for THAT defect
+          # (see PRO-3191). `_reject_unshaped_shape!`/`_reject_unknown_shape_keys!` join it here for the
+          # identical reason (PRO-3387, Codex round 1, PR #275): a raw `shape:` beside a block is fully
+          # OVERWRITTEN below, so any OTHER defect in what the author wrote — a non-Hash, an unknown key — is
+          # erased before `_snapshot_declared_shape!` ever reads it, and `shape: { bogus: 1 } do … end`
+          # declared clean. Both stand down harmlessly when there is no raw `shape:` to judge.
           _reject_distributing_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
+          _reject_unshaped_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
+          _reject_unknown_shape_keys!(validations)
           validations[:shape] = _build_shape(fields, validations:, &block) if block
           # Minted here, after the block form's per-member pre-pass, and threaded to BOTH of this declaration's
           # edges — the snapshot below and the `of:` chain `_parse_field_configs` descends (see
@@ -691,8 +698,10 @@ module Axn
           end
 
           # Same refusal as `expects`, and for the same ordering reason: reads the caller's own `shape:` ahead
-          # of the block form's write to the slot (see PRO-3191).
+          # of the block form's write to the slot (see PRO-3191, and PRO-3387 for the two joining it here).
           _reject_distributing_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
+          _reject_unshaped_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
+          _reject_unknown_shape_keys!(validations)
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
           # Ahead of the `user_facing:` walk below so a member carrying both an unusable name and a rejected
@@ -1574,8 +1583,11 @@ module Axn
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
 
           # Same refusal, same ordering reason, at the member's own slot: a `field :rows, type: Array, shape:
-          # {...} do ... end` no longer has its raw `shape:` silently replaced by the subblock's (see PRO-3191).
+          # {...} do ... end` no longer has its raw `shape:` silently replaced by the subblock's (see PRO-3191,
+          # and PRO-3387 for the two joining it here).
           _reject_distributing_shape!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`")
+          _reject_unshaped_shape!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`")
+          _reject_unknown_shape_keys!(field_validations)
           field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first

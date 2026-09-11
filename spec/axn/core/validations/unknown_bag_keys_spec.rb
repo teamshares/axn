@@ -338,6 +338,50 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
           .to raise_error(ArgumentError, /must be a Hash naming the members it describes/)
       end
     end
+
+    # A raw `shape:` beside a BLOCK is fully overwritten by the block's own result (`_build_shape`), so an
+    # unguarded check reading `validations[:shape]` after the overwrite never sees what the author actually
+    # wrote — the raw Hash's own defects, unknown keys included, are erased before anything judges them
+    # (Codex review, PR #275). Pinned at every position the overwrite happens: `expects`, `exposes`, and a
+    # block-form member's own subblock.
+    describe "beside a block, which fully overwrites the raw shape:" do
+      it "still refuses an unknown key on expects" do
+        expect { build_axn { expects(:h, type: Hash, shape: { members: [], bogus: 1 }) { field :a, type: String } } }
+          .to raise_error(ArgumentError, /shape: does not support bogus:/)
+      end
+
+      it "still refuses an unknown key on exposes" do
+        expect { build_axn { exposes(:h, type: Hash, shape: { members: [], bogus: 1 }) { field :a, type: String } } }
+          .to raise_error(ArgumentError, /shape: does not support bogus:/)
+      end
+
+      it "still refuses an unknown key on a member's own subblock" do
+        expect do
+          build_axn do
+            expects(:outer, type: Hash) do
+              field(:inner, type: Hash, shape: { members: [], bogus: 1 }) { field :leaf, type: String }
+            end
+          end
+        end.to raise_error(ArgumentError, /shape: does not support bogus:/)
+      end
+
+      it "still refuses a non-Hash raw shape: on expects" do
+        expect { build_axn { expects(:h, type: Hash, shape: 5) { field :a, type: String } } }
+          .to raise_error(ArgumentError, /must be a Hash naming the members it describes/)
+      end
+
+      # The distributing case PRO-3191 already covers stays covered — this doesn't relocate that check,
+      # only joins it.
+      it "leaves the distributing-shape refusal in place" do
+        expect { build_axn { expects(:rows, type: Array, shape: { members: [] }) { field :a, type: String } } }
+          .to raise_error(ArgumentError, /distributes over an Array's elements/)
+      end
+
+      it "still declares a well-formed raw shape: beside a block" do
+        expect { build_axn { expects(:h, type: Hash, shape: { members: [], container: Hash }) { field :a, type: String } } }
+          .not_to raise_error
+      end
+    end
   end
 
   # The drift guard: an ActiveModel version bump that adds/removes a shared option must not silently turn a
