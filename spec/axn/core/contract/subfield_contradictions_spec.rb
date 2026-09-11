@@ -909,6 +909,45 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.to raise_error(ArgumentError, /:company_id.*lookup token.*nested object/m)
     end
 
+    # The model's parent is an IMPLICIT dotted intermediate, so it has no configs of its own — the shape
+    # member claiming the id key is reachable only by carrying the ancestor shape down through the hop, the
+    # way `apply_implicit_node!` does. Reading the parent node's own configs found nothing here while the
+    # emitter found, and emitted, the object (Codex review round 1).
+    it "rejects a nested shape member under an IMPLICIT dotted model parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :inner, type: Hash do
+              field :company_id, type: Hash do
+                field :detail, type: String
+              end
+            end
+          end
+          expects :company, on: "payload.inner", model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
+    # The same shape, with an EXPLICIT subfield node at the intermediate. The emitter passes that node's own
+    # configs down and so never sees the ancestor shape — it emitted the model's scalar id — while the shape
+    # VALIDATOR still rejected a scalar there, so the document and the contract took opposite sides of one
+    # key. The guard asks what the runtime enforces, so it catches this too.
+    it "rejects a nested shape member under an EXPLICIT dotted model parent" do
+      expect do
+        build_axn do
+          expects :payload, type: Hash do
+            field :inner, type: Hash do
+              field :company_id, type: Hash do
+                field :detail, type: String
+              end
+            end
+          end
+          expects :inner, on: :payload, type: Hash
+          expects :company, on: :inner, model: { klass: DeadCo, finder: :fetch }
+        end
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
+    end
+
     # The legal tail — a scalar `<field>_id` beside a model is THE supported spelling (it supplies the
     # lookup token), so nothing here may start raising.
     # The id sibling is declared FIRST at depth: an explicit reader declared after the model's inferred

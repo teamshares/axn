@@ -88,8 +88,30 @@ module Axn
           descendant = nested && claiming_descendant(nested)
           return [descendant, :nested] if descendant
 
-          member = claiming_shape_member(parent, id_key)
+          member = claiming_shape_member(effective_parent_configs(path), id_key)
           member && [member, :member]
+        end
+
+        # The configs `apply_children!` is handed for the model's own parent node — which is NOT always that
+        # node's own `configs`. A dotted `on:` whose intermediate is implicit has no config there at all, and
+        # the emitter descends carrying the `shape:` members that intermediate stands in for
+        # (`apply_implicit_node!` passes them as the parent configs for the node's children). So a nested
+        # member claiming the id key is reachable from a shape two levels up, and reading `parent.configs`
+        # alone found nothing while the emitter found — and emitted — the object.
+        #
+        # Accumulated hop by hop like `check_unanswerable_segments!`'s carry, with one deliberate difference:
+        # the carry does NOT reset at an explicit hop. That reset mirrors the emitter, which passes an
+        # explicit node's own configs down and so loses sight of an ancestor shape; a shape VALIDATOR has no
+        # such boundary and enforces the whole nested structure it declares whether or not a subfield node
+        # also sits at that position. The carry is self-limiting either way: `shape_members_at` returns only
+        # members NAMED by the segment, so a member with no nested members of its own contributes nothing at
+        # the next hop and the chain dies on its own.
+        def effective_parent_configs(path)
+          carried = []
+          path.ancestors.first(path.parent_index).each do |(node, segment)|
+            carried = Axn::Internal::Reflection::Schema.shape_members_at(node.configs + carried, segment)
+          end
+          path.parent_node.configs + carried
         end
 
         # The declaration whose nesting under `node` makes the key an object: the shallowest config found beneath
@@ -112,12 +134,17 @@ module Axn
 
         # The `shape:` spelling of the same claim: a member of the model's wire parent named `id_key` that
         # carries members of its own, so `apply_structured_schema!` merges an object property at that key before
-        # `apply_model_id_child!` ever runs. Read off the parent's REPRESENTATIVE config alone, the same
-        # restriction `apply_model_id_child!` applies: only the first non-model route's shape is ever merged, so
-        # a member on a later route is emitted nowhere and claims nothing.
-        def claiming_shape_member(parent, id_key)
-          representative = Axn::Internal::Reflection::Schema.property_representative(parent.configs)
-          Axn::Internal::Reflection::Schema.shape_members_at(Array(representative), id_key).find do |member|
+        # `apply_model_id_child!` ever runs.
+        #
+        # Asked of EVERY config in force at the position (`effective_parent_configs`), not of the one the
+        # emitter would merge. `apply_model_id_child!` reads the representative alone because it is deciding
+        # what to EMIT, and only the first non-model route's shape is ever merged. The question here is what
+        # the RUNTIME enforces, and a shape validator runs for every route that declares one — measured: with
+        # an explicit subfield node at the intermediate, the emitted property is the model's scalar id while
+        # the ancestor shape still rejects a scalar there, so the contract and the document take opposite
+        # sides of the same key. Restricting to the representative saw only the emitter's side of that.
+        def claiming_shape_member(parent_configs, id_key)
+          Axn::Internal::Reflection::Schema.shape_members_at(parent_configs, id_key).find do |member|
             Axn::Internal::Reflection::Schema.named_members(member.validations.dig(:shape, :members)).any?
           end
         end
