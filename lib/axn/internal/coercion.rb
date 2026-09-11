@@ -165,6 +165,17 @@ module Axn
         explicit.nil? ? coerce_input_types : explicit
       end
 
+      # The wire forms `#coerce_boolean` maps to this native `true`/`false` — its accepted-forms inverse,
+      # single-sourced here so a caller translating a coerced boolean literal back to the wire domain it
+      # came from (Reflection::Schema, conjoining a coercing node's own `inclusion:`/`const` against a
+      # differently-typed ancestor) cannot drift from what this module actually coerces. Not itself a
+      # coercer — a reflection-time lookup over the SAME two strings tables `coerce_boolean` reads.
+      def boolean_wire_spellings(value)
+        return [] unless [true, false].include?(value)
+
+        [value, value ? 1 : 0, *(value ? TRUTHY_STRINGS : FALSY_STRINGS)]
+      end
+
       # Coerce a config's value when the field has ≥1 coercible member AND opts in (field_coerces?);
       # otherwise return it untouched. THE single place the read path decides-and-coerces, for every
       # field regardless of depth.

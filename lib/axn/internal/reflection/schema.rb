@@ -1643,31 +1643,38 @@ module Axn
         #
         # PASS 2 — UNKNOWN CLASS (`unknown_class_approximate?`: an `Object`/`Enumerable`-style token,
         # `single_type_for`'s permissive `{type: "string"}` HINT rather than a promise). Nothing here
-        # transforms the value, so EVERY other keyword — `enum` included — still describes the SAME raw
-        # value everything else at this position reads; only the fake TYPE is untrustworthy, and only
-        # relative to something that MAKES A REAL, competing claim. Two sides that are BOTH unknown-class
-        # hints never contradict each other (they both fall back to the same permissive shape), so the
-        # plain conjoin runs UNSTRIPPED there; paired against something exact — including a transform-
-        # stripped sibling, which by this point asserts no type to contradict — an unknown-class side is
-        # stripped to its enum-only remainder (Codex review, PR #278 round 5: `type: Object, inclusion: {
-        # in: [...] }` beside an explicit `type: Hash` node used to drop the ancestor's exact `enum` along
-        # with its fake type). A side already stripped by pass 1 is left alone in pass 2 — an UNKNOWN-CLASS
-        # side paired against it keeps its FULL property (Codex review, PR #278 round 6 again: an ancestor
-        # `Object` beside `type: { klass: Integer, coerce: true }` — pass 1 strips the Integer side down to
-        # `{}` here, having nothing else to keep, and keeping the ancestor's `{type: "string"}` hint, rather
-        # than also stripping it, is what lets the coercible wire string "5" the runtime accepts still
-        # validate).
+        # transforms the value, so EVERY other keyword — `enum` and every type-conditional bound included —
+        # still describes the SAME raw value everything else at this position reads; only the fake TYPE
+        # (and `anyOf`, its union spelling) is untrustworthy, and only relative to something that MAKES A
+        # REAL, competing claim. Two sides that are BOTH unknown-class hints never contradict each other
+        # (they both fall back to the same permissive shape), so the plain conjoin runs UNSTRIPPED there;
+        # paired against something exact — including a transform-stripped sibling, which by this point
+        # asserts no type to contradict — an unknown-class side drops only `type`/`anyOf` (Codex review, PR
+        # #278 round 5: `type: Object, inclusion: { in: [...] }` beside an explicit `type: Hash` node used to
+        # drop the ancestor's exact `enum` along with its fake type — fixed by keeping `enum`; round 11:
+        # the same fix had gone too far the OTHER way, using `.slice(:enum)` to drop a REAL `length:` bound
+        # too — `type: Object, length: { minimum: 3 }` beside an explicit `type: String` node dropped the
+        # ancestor's `minLength: 3` entirely, since it isn't `enum`, though nothing here transforms the
+        # value and the bound is exactly as trustworthy as it would be on an exactly-typed member). A side
+        # already stripped by pass 1 is left alone in pass 2 — an UNKNOWN-CLASS side paired against it keeps
+        # its FULL property (Codex review, PR #278 round 6 again: an ancestor `Object` beside `type: {
+        # klass: Integer, coerce: true }` — pass 1 strips the Integer side down to `{}` here, having nothing
+        # else to keep, and keeping the ancestor's `{type: "string"}` hint, rather than also stripping it,
+        # is what lets the coercible wire string "5" the runtime accepts still validate).
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
-          member_prop = strip_intrinsically_typed_keys(member_prop, member_configs) if transforms_wire_value?(member_configs)
-          own_prop = strip_intrinsically_typed_keys(own_prop, own_configs) if transforms_wire_value?(own_configs)
+          original_member_prop = member_prop
+          original_own_prop = own_prop
+
+          member_prop = strip_intrinsically_typed_keys(member_prop, member_configs, original_own_prop) if transforms_wire_value?(member_configs)
+          own_prop = strip_intrinsically_typed_keys(own_prop, own_configs, original_member_prop) if transforms_wire_value?(own_configs)
 
           member_unknown = unknown_class_approximate?(member_configs)
           own_unknown = unknown_class_approximate?(own_configs)
 
           if member_unknown && !own_unknown && !own_prop.empty?
-            member_prop = member_prop.slice(:enum)
+            member_prop = member_prop.except(:type, :anyOf)
           elsif own_unknown && !member_unknown && !member_prop.empty?
-            own_prop = own_prop.slice(:enum)
+            own_prop = own_prop.except(:type, :anyOf)
           end
 
           if own_prop.empty? || member_prop.empty? || (object_property?(member_prop) && object_property?(own_prop))
@@ -1716,9 +1723,25 @@ module Axn
         # { equal_to: 5 }` accepts wire "4" (preprocessed to 5) and rejects wire "5" (preprocessed to 6) —
         # the OPPOSITE of what a coercion-based `enum: [5, "5"]` would advertise. `coerces_wire_value?`
         # asks the narrower question (coercion only, no preprocess bypass) for exactly this gate.
-        def strip_intrinsically_typed_keys(prop, configs)
+        #
+        # A TYPE-CONDITIONAL bound (length/size/numeric) from a `preprocess:`-tainted side is safe to KEEP
+        # on its own (round 8) but NOT safe to keep once it would conjoin into an EMPTY interval with a
+        # bound the OTHER side independently asserts (Codex review, PR #278 round 11): an ancestor `type:
+        # String, length: { minimum: 3 }` beside a colliding node `type: String, length: { maximum: 1 },
+        # preprocess: ->(v) { v[0] }` accepts raw `"abc"` at runtime (the ancestor checks the RAW value,
+        # the node's own check runs on the TRANSFORMED `"a"`), but keeping both bounds conjoins `minLength:
+        # 3` with `maxLength: 1` — a node no string can satisfy, for a satisfiable contract. Round 8's
+        # justification (a type-conditional keyword can never manufacture a contradiction on its own) holds
+        # for a MISMATCHED TYPE, but not here: both sides are strings, and the contradiction comes from the
+        # two bounds describing DIFFERENT underlying values (raw vs. an arbitrary transform of it) that
+        # reflection cannot prove agree. `other_prop` — the OTHER side's property, captured before EITHER
+        # side is stripped so evaluation order can't change the answer — lets `drop_conflicting_size_bounds`
+        # detect exactly that empty-interval case and drop only the offending pair, leaving an unrelated
+        # bound (as in round 8's own, non-colliding-bound test) untouched.
+        def strip_intrinsically_typed_keys(prop, configs, other_prop)
           literal_values = Array(prop[:const]) + Array(prop[:enum])
           stripped = prop.except(:type, :anyOf, :enum, :const)
+          stripped = drop_conflicting_size_bounds(stripped, other_prop) unless coerces_wire_value?(configs)
           return stripped if literal_values.empty? || !coerces_wire_value?(configs)
 
           spellings = wire_spellings_for(literal_values)
@@ -1726,6 +1749,35 @@ module Axn
 
           stripped[:enum] = spellings
           stripped
+        end
+
+        # The min/max keyword pairs a size/numeric bound can land in — checked together because a bound on
+        # either side of a pair is enough to create an empty interval against the other side's opposite
+        # bound (a floor with no matching ceiling anywhere is never a contradiction on its own).
+        SIZE_BOUND_KEY_PAIRS = [
+          %i[minLength maxLength],
+          %i[minItems maxItems],
+          %i[minProperties maxProperties],
+          %i[minimum maximum],
+        ].freeze
+        private_constant :SIZE_BOUND_KEY_PAIRS
+
+        # Drops a size/numeric bound pair from `prop` wherever combining it with whatever `other_prop`
+        # independently asserts on the SAME pair would admit no value at all (the effective floor exceeds
+        # the effective ceiling) — the narrow, empirical trigger for the round 11 gap, rather than dropping
+        # every bound merely because the OTHER side happens to declare one too (round 8's own test pairs a
+        # node `minLength: 3` against an ancestor's UNRELATED default `minLength: 1` floor, which combines
+        # to an ordinary, satisfiable `minLength: 3` and must survive untouched).
+        def drop_conflicting_size_bounds(prop, other_prop)
+          conflicting = SIZE_BOUND_KEY_PAIRS.flat_map do |min_key, max_key|
+            combined_min = [prop[min_key], other_prop[min_key]].compact.max
+            combined_max = [prop[max_key], other_prop[max_key]].compact.min
+            next [] unless combined_min && combined_max && combined_min > combined_max
+
+            [min_key, max_key]
+          end
+
+          conflicting.empty? ? prop : prop.except(*conflicting)
         end
 
         # A literal set's wire-compatible spellings, or nil when this set has no translation reflection can
@@ -1745,9 +1797,17 @@ module Axn
         #   spelling — it is already one (Codex review, PR #278 round 10: a coercible `Symbol` inclusion
         #   enum was being dropped here for being "non-numeric" even though it was already wire-safe).
         #
-        # Anything else (TrueClass/FalseClass — `:boolean` accepts several string spellings, with no single
-        # canonical inverse to pick — or an unrecognized object) has no safe translation and is dropped, a
-        # narrower, still-tolerated imprecision than before this fix existed at all.
+        # A third class, TrueClass/FalseClass, is ALSO safe despite `:boolean` accepting several string
+        # spellings with no single canonical inverse: `Coercion.boolean_wire_spellings` is the single
+        # source for the WHOLE accepted set (both truthy and falsy string/integer forms), so this can
+        # enumerate every wire form that coerces to the literal rather than needing to pick just one
+        # (Codex review, PR #278 round 11: `wire_spellings_for([true])` previously fell through to `nil`
+        # for being non-numeric/non-string, dropping the constraint entirely — `type: { klass: :boolean,
+        # coerce: true }, inclusion: { in: [true] } }` beside a raw `String` ancestor then accepted "false",
+        # which coerces to `false` and fails the inclusion check at runtime).
+        #
+        # Anything else (an unrecognized object) has no safe translation and is dropped, a narrower, still-
+        # tolerated imprecision than before this fix existed at all.
         def wire_spellings_for(values)
           non_nil = values.compact
           return nil if non_nil.empty?
@@ -1757,6 +1817,8 @@ module Axn
               (non_nil + non_nil.map(&:to_s)).uniq
             elsif non_nil.all? { |v| v.is_a?(::String) }
               non_nil
+            elsif non_nil.all? { |v| [true, false].include?(v) }
+              non_nil.flat_map { |v| Axn::Internal::Coercion.boolean_wire_spellings(v) }.uniq
             end
           return nil if spellings.nil?
 
