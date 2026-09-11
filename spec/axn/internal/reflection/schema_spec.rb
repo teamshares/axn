@@ -5733,6 +5733,39 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "a" })).not_to be_ok # fails the node's own (identity-preprocessed) length floor
           end
 
+          # `const` (NUMERIC_BOUND_KEYS' spelling for a non-nullable `equal_to:`) carries the SAME intrinsic
+          # type binding `enum` does — a literal value is itself of some JSON type — so it belongs beside
+          # `type`/`anyOf`/`enum` in strip_intrinsically_typed_keys, not among the type-conditional keywords
+          # that survive. Found by auditing every keyword the emitter can produce for this same class of gap,
+          # rather than waiting for another round to surface it one keyword at a time: a coercing node's own
+          # `comparison: { equal_to: 5 }` names the POST-coercion value (Integer 5), but the wire value the
+          # ancestor's exact `type: "string"` still has to accept is the pre-coercion String "5" — conjoining
+          # `const: 5` unstripped rejects that wire string outright, even though runtime accepts it (coerces
+          # "5" to Integer 5, then compares equal). Schema stricter than runtime here, the mirror image of the
+          # round 8 `length:` bug rather than the same direction, but the same missing keyword classification.
+          #
+          # Once `type` and `const` are both stripped this node's OWN property is fully empty (it declares
+          # nothing type-conditional to survive alongside them), so the conjunction routes through the
+          # empty-side merge branch and the ancestor's exact property is the whole story — no `allOf`
+          # sibling, and no explicit `not: {type: "null"}` either: unlike a bare size bound, `const: 5` (had
+          # it survived) would already have excluded null on its own, so reject_null! never needed to add one.
+          it "strips a transforming node's own const:, which names the post-coercion value rather than the wire form" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { equal_to: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", minLength: 1)
+            expect(klass.call(payload: { inner: "5" })).to be_ok
+            expect(klass.call(payload: { inner: 5 })).not_to be_ok # fails the ancestor's raw-wire type: String
+          end
+
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
             klass = Class.new do
               include Axn
