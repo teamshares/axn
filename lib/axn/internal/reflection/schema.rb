@@ -1618,35 +1618,48 @@ module Axn
         # answer differently to "is anything left worth conjoining":
         #
         # PASS 1 — TRANSFORM (`transforms_wire_value?`: `preprocess:`, or a coercible declared type with no
-        # `coerce: false`). The config's OWN validators — its `inclusion:`/`enum` included — run against a
-        # value nothing ELSE at this position ever sees: a Proc's output, or coercion's TARGET rather than
-        # the wire form the OTHER side's check actually reads (measured: an ancestor's own check is
-        # UNCONDITIONAL and reads the RAW wire value regardless of what any other declaration coerces — a
-        # `type: String` ancestor rejects an already-Integer wire value even when a coercing sibling would
-        # have accepted it, "... is not a String"). So a transforming side is forced to `{}` OUTRIGHT,
-        # before anything else is asked about it — not even its own `enum` survives (Codex review, PR #278
-        # round 6: an ancestor `String` beside `type: { klass: Integer, coerce: true }, inclusion: { in: [5]
-        # } }` kept `enum: [5]` — the COERCED target's value — conjoined against the ancestor's raw-string
-        # type, an intersection nothing satisfies, though the runtime accepts the wire string "5").
+        # `coerce: false`). The config's OWN `type`/`anyOf`/`enum` — every keyword that carries an INTRINSIC
+        # type binding a mismatch with the OTHER side would turn into an absolute, value-independent
+        # contradiction — describes a value nothing else at this position ever sees: a Proc's output, or
+        # coercion's TARGET rather than the wire form the OTHER side's check actually reads (measured: an
+        # ancestor's own check is UNCONDITIONAL and reads the RAW wire value regardless of what any other
+        # declaration coerces — a `type: String` ancestor rejects an already-Integer wire value even when a
+        # coercing sibling would have accepted it, "... is not a String"). `enum`'s literal VALUES carry
+        # that same intrinsic type (an Integer `5` can never equal anything of a different JSON type), so it
+        # is stripped alongside `type`/`anyOf`, not kept the way an unknown class's is below (Codex review,
+        # PR #278 round 6: an ancestor `String` beside `type: { klass: Integer, coerce: true }, inclusion: {
+        # in: [5] } }` kept `enum: [5]` — the COERCED target's value — conjoined against the ancestor's
+        # raw-string type, an intersection nothing satisfies, though the runtime accepts the wire string
+        # "5"). Everything else — `length`/size bounds, `format`/`pattern` — is TYPE-CONDITIONAL (JSON
+        # Schema applies none of them to an instance of a non-matching type), so it can never manufacture
+        # that same absolute contradiction and is left on the property: dropping it would make a
+        # transforming side strictly LESS trustworthy than `single_type_for`'s own pre-existing,
+        # out-of-scope approximation for a transforming field reflected with no collision at all (which
+        # already emits its declared `length:`/`format:` bounds as though they described the wire form) —
+        # and round 8's finding is exactly that gap, one level up: `field :inner, type: String` beside
+        # `type: String, length: { minimum: 3 }, preprocess: ->(v) { v }` dropped the node's `length:`
+        # entirely, so `"a"` passed `input_schema` though the node's own (identity-preprocessed) length
+        # check rejects it at runtime.
         #
         # PASS 2 — UNKNOWN CLASS (`unknown_class_approximate?`: an `Object`/`Enumerable`-style token,
-        # `single_type_for`'s permissive `{type: "string"}` HINT rather than a promise). Its OWN literal
-        # constraints (`enum`, from `inclusion:`) still describe the SAME raw value everything else at this
-        # position reads — only the fake TYPE is untrustworthy, and only relative to something that MAKES A
-        # REAL, competing claim. Two sides that are BOTH unknown-class hints never contradict each other
-        # (they both fall back to the same permissive shape), so the plain conjoin runs UNSTRIPPED there;
-        # paired against something exact — including a transform-forced-`{}` sibling, which asserts nothing
-        # to contradict — an unknown-class side is stripped to its enum-only remainder (Codex review, PR
-        # #278 round 5: `type: Object, inclusion: { in: [...] }` beside an explicit `type: Hash` node used
-        # to drop the ancestor's exact `enum` along with its fake type). A side already forced to `{}` by
-        # pass 1 is left alone in pass 2 — there is nothing left on it to strip twice, and an UNKNOWN-CLASS
+        # `single_type_for`'s permissive `{type: "string"}` HINT rather than a promise). Nothing here
+        # transforms the value, so EVERY other keyword — `enum` included — still describes the SAME raw
+        # value everything else at this position reads; only the fake TYPE is untrustworthy, and only
+        # relative to something that MAKES A REAL, competing claim. Two sides that are BOTH unknown-class
+        # hints never contradict each other (they both fall back to the same permissive shape), so the
+        # plain conjoin runs UNSTRIPPED there; paired against something exact — including a transform-
+        # stripped sibling, which by this point asserts no type to contradict — an unknown-class side is
+        # stripped to its enum-only remainder (Codex review, PR #278 round 5: `type: Object, inclusion: {
+        # in: [...] }` beside an explicit `type: Hash` node used to drop the ancestor's exact `enum` along
+        # with its fake type). A side already stripped by pass 1 is left alone in pass 2 — an UNKNOWN-CLASS
         # side paired against it keeps its FULL property (Codex review, PR #278 round 6 again: an ancestor
-        # `Object` beside `type: { klass: Integer, coerce: true }` — pass 1 empties the Integer side, and
-        # keeping the ancestor's `{type: "string"}` hint, rather than also emptying it, is what lets the
-        # coercible wire string "5" the runtime accepts still validate).
+        # `Object` beside `type: { klass: Integer, coerce: true }` — pass 1 strips the Integer side down to
+        # `{}` here, having nothing else to keep, and keeping the ancestor's `{type: "string"}` hint, rather
+        # than also stripping it, is what lets the coercible wire string "5" the runtime accepts still
+        # validate).
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
-          member_prop = {} if transforms_wire_value?(member_configs)
-          own_prop = {} if transforms_wire_value?(own_configs)
+          member_prop = strip_intrinsically_typed_keys(member_prop) if transforms_wire_value?(member_configs)
+          own_prop = strip_intrinsically_typed_keys(own_prop) if transforms_wire_value?(own_configs)
 
           member_unknown = unknown_class_approximate?(member_configs)
           own_unknown = unknown_class_approximate?(own_configs)
@@ -1673,6 +1686,19 @@ module Axn
         def object_property?(prop)
           type = prop[:type]
           type == "object" || (type.is_a?(::Array) && type.include?("object"))
+        end
+
+        # Removes exactly the keywords that carry an INTRINSIC type binding — `type`/`anyOf` (the type
+        # assertion itself) and `enum` (a literal value is itself of some JSON type, so a mismatched enum
+        # is as absolute a contradiction as a mismatched `type`). Used for a TRANSFORMING side, where these
+        # three are untrustworthy (they describe the post-transform value, not the wire form another
+        # declaration reads) but everything else — `length`/size bounds, `format`/`pattern` — is
+        # TYPE-CONDITIONAL (JSON Schema applies none of them to an instance of some OTHER type), so keeping
+        # them can never manufacture that same absolute, value-independent contradiction; at worst they are
+        # imprecise in the same way `single_type_for`'s own pre-existing reflection of a transforming field
+        # already is, standalone, with no collision at all.
+        def strip_intrinsically_typed_keys(prop)
+          prop.except(:type, :anyOf, :enum)
         end
 
         # Whether ANY config in this route list transforms the wire value it judges — a Proc
