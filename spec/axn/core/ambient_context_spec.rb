@@ -105,6 +105,106 @@ RSpec.describe "Axn ambient_context resolution" do
   end
 end
 
+# PRO-3409: an ambient-rooted violation reads identically to a plain caller-input violation today
+# ("Current user can't be blank" either way) — nothing in the message tells a dev the value was
+# expected to come from ambient_context rather than the caller's kwargs. Every case below annotates
+# the message; the contrast case proves a plain (non-ambient) field is untouched.
+RSpec.describe "Axn ambient_context validation error messages (PRO-3409)" do
+  after { Axn.config.instance_variable_set(:@ambient_context_provider, nil) }
+
+  it "annotates a missing required ambient subfield's message" do
+    klass = build_axn { expects :current_user, on: :ambient_context }
+
+    result = klass.call
+
+    expect(result.exception.message).to eq("Current user can't be blank (via ambient_context)")
+  end
+
+  it "annotates a type-mismatch on an ambient subfield's message" do
+    klass = build_axn { expects :current_user, on: :ambient_context, type: String }
+
+    result = with_ambient_context(current_user: 5) { klass.call }
+
+    expect(result.exception.message).to eq("Current user is not a String (via ambient_context)")
+  end
+
+  it "does not annotate a plain (non-ambient) field's message" do
+    klass = build_axn { expects :current_user }
+
+    result = klass.call
+
+    expect(result.exception.message).to eq("Current user can't be blank")
+  end
+
+  it "annotates a model-consistency mismatch rooted at ambient_context" do
+    company_model = Class.new do
+      def self.find(id) = new(id)
+      def initialize(id) = (@id = id)
+      attr_reader :id
+    end
+    klass = build_axn do
+      expects :company_id, on: :ambient_context
+      expects :company, on: :ambient_context, model: { klass: company_model, finder: :find }, allow_nil: true
+    end
+    record = company_model.new("5")
+
+    result = with_ambient_context(company: record, company_id: "9") { klass.call }
+
+    expect(result.exception.message)
+      .to eq('company: provided record (id="5") conflicts with company_id="9" — pass one, or matching values ' \
+             "(via ambient_context)")
+  end
+
+  # Codex review (PR #277, round 2): the model-consistency path annotated the STRING before handing it to
+  # `errors.add`, so the suffix became part of `raw_type`/`type` and leaked into `errors.details[:base]` —
+  # a different regression from the field-error one above, since a mismatch's message doubles as its own
+  # `type` (there's no separate Symbol to preserve). Only `full_message` may carry the suffix.
+  it "preserves the bare message as the mismatch's own classification in errors.details" do
+    company_model = Class.new do
+      def self.find(id) = new(id)
+      def initialize(id) = (@id = id)
+      attr_reader :id
+    end
+    klass = build_axn do
+      expects :company_id, on: :ambient_context
+      expects :company, on: :ambient_context, model: { klass: company_model, finder: :find }, allow_nil: true
+    end
+    record = company_model.new("5")
+
+    result = with_ambient_context(company: record, company_id: "9") { klass.call }
+
+    expect(result.exception.errors.details[:base]).to eq(
+      [{ error: 'company: provided record (id="5") conflicts with company_id="9" — pass one, or matching values' }],
+    )
+  end
+
+  # Also true — and phrased identically — when the ambient hash is explicitly passed as a kwarg rather
+  # than resolved from the provider: `ambient_context:` REPLACES the provider (see the "resolution"
+  # describe block above), so the field still didn't arrive as a direct top-level kwarg. An earlier
+  # "not caller input" phrasing was wrong for exactly this case (Codex review, PR #277).
+  it "annotates the same way when ambient_context: is passed explicitly" do
+    klass = build_axn { expects :current_user, on: :ambient_context }
+
+    result = klass.call(ambient_context: {})
+
+    expect(result.exception.message).to eq("Current user can't be blank (via ambient_context)")
+  end
+
+  # Codex review (PR #277): an earlier version re-added the error as a bare annotated STRING, which
+  # replaced the presence validator's Symbol `type` (`:blank`) with the whole rendered string — breaking
+  # `errors.details`/`of_kind?` for exactly the fields this feature touches. Only `full_message` may
+  # change; the structured classification must survive untouched.
+  it "preserves the original error's type/options for an annotated ambient failure" do
+    klass = build_axn { expects :current_user, on: :ambient_context }
+
+    result = klass.call
+
+    error = result.exception.errors.find { |e| e.attribute == :current_user }
+    expect(error.type).to eq(:blank)
+    expect(result.exception.errors.details).to eq(current_user: [{ error: :blank }])
+  end
+end
+
 RSpec.describe "Axn::Core::AmbientContext.default_source" do
   it "merges attributes across registered CurrentAttributes descendants" do
     skip "ActiveSupport::CurrentAttributes required" unless defined?(ActiveSupport::CurrentAttributes)

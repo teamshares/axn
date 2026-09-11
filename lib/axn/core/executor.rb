@@ -4,6 +4,7 @@ require "axn/internal/coercion"
 require "axn/internal/native_methods"
 require "axn/internal/rendering"
 require "axn/internal/current_entry_point"
+require "active_model/nested_error"
 
 module Axn
   module Core
@@ -1282,7 +1283,8 @@ module Axn
         # top-level config marks its root node, so its whole subtree suppresses through the same rule.
         failures.reject! { |failure| failure.path && _suppressed_by_failed_ancestor?(failure.path, failed_nodes) }
         mismatches = _model_consistency_mismatches(failed_nodes)
-        base_extras = mismatches.map(&:message) + _undeclared_input_messages
+        undeclared = _undeclared_input_messages
+        base_extras = mismatches.map(&:message) + undeclared
 
         return if failures.empty? && base_extras.empty?
 
@@ -1294,9 +1296,11 @@ module Axn
         # subfields), so an ambient violation must stay dev-facing and report. Per the dominance doctrine,
         # one such violation makes the WHOLE set settle dev-facing via the path below (an ambient config's
         # `user_facing` is false, so `_failure_fully_user_facing?` already excludes it).
-        raise _composed_user_facing_error(failures, base_extras) if _user_facing_input_errors? && !_any_ambient_violation?(failures, mismatches)
+        raise _composed_user_facing_error(failures, mismatches, undeclared) if _user_facing_input_errors? && !_any_ambient_violation?(failures, mismatches)
 
-        raise InboundValidationError, _aggregate_errors(failures, base_extras) unless base_extras.empty? && failures.all? { |f| _failure_fully_user_facing?(f) }
+        unless base_extras.empty? && failures.all? { |f| _failure_fully_user_facing?(f) }
+          raise InboundValidationError, _aggregate_errors(failures, mismatches, undeclared)
+        end
 
         # Resolve the user-facing message — invoking any Symbol/Proc handler — only now, once we know
         # this is the exception we actually raise (the dominance check above didn't pre-empt it), so a
@@ -1323,6 +1327,27 @@ module Axn
       def _ambient_config?(config)
         config.subfield? && @action_class.send(:_on_roots_at_ambient?, config.on)
       end
+
+      # PRO-3409: a dev debugging a missing or invalid ambient value needs to know it came from
+      # `ambient_context` rather than being a plain top-level kwarg — that's true whether the value was
+      # resolved from the configured provider/`Current` OR from an explicit `ambient_context:` kwarg, so
+      # the annotation names only the ROOT, not which of those two supplied it (an earlier "not caller
+      # input" phrasing was wrong for the explicit-kwarg case — Codex review, PR #277). Applied via
+      # `AmbientAnnotatedError` below, the one place every ambient-rooted violation's message is rendered,
+      # so the annotation stays uniform without touching a single validator's own message-building.
+      AMBIENT_SUFFIX = " (via ambient_context)"
+
+      # A NestedError whose full message alone carries the ambient annotation. `NestedError`'s own
+      # `message`/`type`/`raw_type`/`options`/`details` all stay exactly what `import` would have given
+      # them — only `full_message` (what `errors.full_messages`/`field_errors` actually render) adds the
+      # suffix. An earlier version re-added ambient errors as a bare annotated STRING, which discarded the
+      # original Symbol `type` (`:blank`, `:inclusion`, …) and `options` — breaking `errors.details`,
+      # `of_kind?`, and any other consumer keyed on the structured classification rather than the prose
+      # (Codex review, PR #277).
+      AmbientAnnotatedError = Class.new(ActiveModel::NestedError) do
+        define_method(:full_message) { "#{super()}#{AMBIENT_SUFFIX}" }
+      end
+      private_constant :AmbientAnnotatedError
 
       # Every inbound config's errors — top-level fields and subfields through the one collector —
       # gathered in declaration order with no early exit: settling needs the complete set (both to
@@ -1410,13 +1435,23 @@ module Axn
 
       # The one dev-facing exception: every unsuppressed violation in a single errors object, in
       # declaration order (top-level fields then subfields), with model-consistency mismatches and
-      # stranded-path diagnostics on :base.
-      def _aggregate_errors(failures, mismatches)
-        errors = ActiveModel::Errors.new(Axn::Validation::Aggregate.new)
+      # stranded-path diagnostics on :base. An ambient-rooted violation — a field's own error OR a
+      # model-consistency mismatch — is wrapped in `AmbientAnnotatedError` (PRO-3409) instead of plain
+      # `import`/`add`, so only the rendered `full_message` gains the suffix — `type`/`raw_type`/`options`/
+      # `details` stay whatever the real validator (or the bare mismatch string, for a mismatch) produced.
+      # `undeclared_input_messages` are never ambient (a top-level wire key can't be), so they always go
+      # through plain `add`.
+      def _aggregate_errors(failures, mismatches, undeclared_input_messages = [])
+        base = Axn::Validation::Aggregate.new
+        errors = ActiveModel::Errors.new(base)
         failures.each do |failure|
-          failure.errors.each { |err| errors.import(err) }
+          ambient = _ambient_config?(failure.config)
+          failure.errors.each { |err| ambient ? errors.objects << AmbientAnnotatedError.new(base, err) : errors.import(err) }
         end
-        mismatches.each { |msg| errors.add(:base, msg) }
+        mismatches.each do |m|
+          m.ambient ? errors.objects << AmbientAnnotatedError.new(base, ActiveModel::Error.new(base, :base, m.message)) : errors.add(:base, m.message)
+        end
+        undeclared_input_messages.each { |msg| errors.add(:base, msg) }
         failures.filter_map(&:stranded_at).uniq.each do |strand|
           errors.add(:base, "'#{Axn::Internal::Reflection::PropertyNames.renderable_label(strand)}' is nil, so nested " \
                             "expectations beneath it cannot be satisfied")
@@ -1429,22 +1464,28 @@ module Axn
       # unit — each failing config's own `user_facing:` and each shape-member's own tagged intent — one
       # uniform path for every depth. Parts are de-duplicated so a String/Symbol member override on an
       # Array shape surfaces once rather than repeating per failing element.
-      # base_extras are :base-level message strings (model-consistency mismatches and, under
-      # reject_undeclared_inputs, unknown-input messages) that compose into the user-facing message and
-      # aggregate onto :base. Empty by default, so the per-field-declared path is unchanged.
+      # `mismatches`/`undeclared_input_messages` are the same two sources `_aggregate_errors` takes
+      # (model-consistency mismatches and, under reject_undeclared_inputs, unknown-input messages) that
+      # compose into the user-facing message and aggregate onto :base. Empty by default, so the
+      # per-field-declared path is unchanged. Reached only when no violation is ambient-rooted (the
+      # dominance gate in `_validate_inbound!` routes an ambient violation to the dev-facing path instead),
+      # so every `mismatches` entry here is guaranteed non-ambient — but `_aggregate_errors` honors each
+      # entry's own `.ambient` regardless, rather than trusting that invariant twice.
       #
       # EVERY part is rendered here, where they are JOINED, and that is the whole requirement — a subset is
       # worse than none. The parts come from three places with three encodings: a `user_facing:` handler's
       # return (rendered by `_override_part`), a field's own ActiveModel `full_message` (whose bytes follow the
-      # declared name's, so a Latin-1 field name yields a Latin-1 message), and a `base_extras` entry axn built
-      # around a provided wire key. Two raw Latin-1 parts joined fine; one rendered UTF-8 part beside a raw
-      # Latin-1 one raises `Encoding::CompatibilityError` out of `to_sentence`, from inside the CLASSIFICATION
-      # of an inbound failure — so the run settles as an `exception` outcome and reports globally, instead of
-      # as the non-reported user-facing failure the declaration asked for. Rendering is idempotent, so the
-      # parts `_resolve_user_facing_override` already rendered are unchanged by passing through again.
-      def _composed_user_facing_error(failures, base_extras = [])
+      # declared name's, so a Latin-1 field name yields a Latin-1 message), and a base-level message string
+      # axn built around a provided wire key. Two raw Latin-1 parts joined fine; one rendered UTF-8 part beside a
+      # raw Latin-1 one raises `Encoding::CompatibilityError` out of `to_sentence`, from inside the
+      # CLASSIFICATION of an inbound failure — so the run settles as an `exception` outcome and reports
+      # globally, instead of as the non-reported user-facing failure the declaration asked for. Rendering is
+      # idempotent, so the parts `_resolve_user_facing_override` already rendered are unchanged by passing
+      # through again.
+      def _composed_user_facing_error(failures, mismatches = [], undeclared_input_messages = [])
+        base_extras = mismatches.map(&:message) + undeclared_input_messages
         parts = (failures.flat_map { |failure| _user_facing_parts(failure) } + base_extras).filter_map { |part| _override_part(part) }
-        InboundValidationError.new(_aggregate_errors(failures, base_extras),
+        InboundValidationError.new(_aggregate_errors(failures, mismatches, undeclared_input_messages),
                                    user_facing: true, user_facing_message: parts.uniq.to_sentence)
       end
 
