@@ -1504,6 +1504,25 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
       end
 
+      # Codex review round 18 (PR #269): the round-3 rule above is right for a BARE type: String
+      # sibling — but a sibling narrowed by its OWN inclusion: to uuid-shaped literals is not the same
+      # "admits any string" case, and the plain type-pair comparison alone can't see that (it reads only
+      # :type/:anyOf, never :enum). An explicit type: String sitting beside the SAME inclusion: made the
+      # check treat the pairing as STRICTER than a bare inclusion: sibling with no type: at all — which
+      # already tolerates this (see the enum-only branch's documented known limitation, just above) — so
+      # this raised for a value-level-compatible declaration purely because a type: was also present.
+      it "does not reject id_type: :uuid beside an explicit type: String, inclusion: [uuid-shaped " \
+         "literal] sibling — an inclusion: set is checked on its own terms, the same tolerance the " \
+         "enum-only case already gets, whether or not an explicit type: also sits beside it" do
+        klass = Class.new do
+          include Axn
+          expects :company_id, type: String, inclusion: { in: ["0f8fad5b-d9cb-469f-a165-70867728950e"] }
+          expects :company, model: { klass: Struct.new(:id), id_type: :uuid }
+        end
+
+        expect { klass.input_schema }.not_to raise_error
+      end
+
       # Codex review round 4 (PR #269): the "any branch satisfies" check let a widening UNION sibling
       # through, since the branch that happened to match id_type: was enough to accept the whole thing
       # — but the WINNING property is the entire union, including the branch that doesn't satisfy it.

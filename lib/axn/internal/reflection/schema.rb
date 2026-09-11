@@ -3273,13 +3273,25 @@ module Axn
         def sibling_satisfies_declared_id_type?(sibling_prop, declared_shape, model_configs)
           null_only_ok = model_configs.all? { |c| nil_allowed?(c) }
           typed = sibling_prop.key?(:type) || sibling_prop.key?(:anyOf)
-          satisfied = if typed
-                        explicit_pairs = json_type_pairs(sibling_prop)
-                        explicit_pairs.empty? ? null_only_ok : explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
-                      else
-                        literals = Array(sibling_prop[:enum]).compact
-                        literals.empty? ? null_only_ok : literals.all? { |literal| enum_scalar_type(literal) == declared_shape[:type] }
-                      end
+          type_ok = if typed
+                      explicit_pairs = json_type_pairs(sibling_prop)
+                      explicit_pairs.empty? ? null_only_ok : explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
+                    end
+          # An `inclusion:` sibling's own literals satisfy on base type ALONE, matching this method's
+          # KNOWN LIMITATION for the enum-only case (a homogeneous String `inclusion:` set of
+          # non-uuid-shaped literals already passes there, deliberately, rather than duplicating
+          # TypeValidator's own uuid regex) — checked here too whenever the sibling carries an `:enum`,
+          # not gated behind `typed` being false (Codex review round 18, PR #269): `type: String,
+          # inclusion: { in: [uuid_string] }` builds BOTH `:type` and `:enum`, so `typed` is true and the
+          # bare type-pair check alone fails a required `id_type: :uuid` (the sibling's plain `type:
+          # String` carries no `format: "uuid"` of its own) — a real value-level match rejected only
+          # because an explicit `type:` happened to sit beside the `inclusion:` that already narrows it,
+          # which is backwards: adding a type shouldn't make an otherwise-tolerated enum stricter.
+          enum_ok = if sibling_prop.key?(:enum)
+                      literals = Array(sibling_prop[:enum]).compact
+                      literals.empty? ? null_only_ok : literals.all? { |literal| enum_scalar_type(literal) == declared_shape[:type] }
+                    end
+          satisfied = typed ? (type_ok || enum_ok) : enum_ok
           [typed, satisfied]
         end
 
