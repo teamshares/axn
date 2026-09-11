@@ -552,7 +552,7 @@ module Axn
           # declared clean. Both stand down harmlessly when there is no raw `shape:` to judge.
           _reject_distributing_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
           _reject_unshaped_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
-          _reject_unknown_shape_keys!(validations)
+          _reject_unknown_shape_keys!(validations, "`shape:` on #{_declared_fields_label(fields)}")
           validations[:shape] = _build_shape(fields, validations:, &block) if block
           # Minted here, after the block form's per-member pre-pass, and threaded to BOTH of this declaration's
           # edges — the snapshot below and the `of:` chain `_parse_field_configs` descends (see
@@ -701,7 +701,7 @@ module Axn
           # of the block form's write to the slot (see PRO-3191, and PRO-3387 for the two joining it here).
           _reject_distributing_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
           _reject_unshaped_shape!(validations, "`shape:` on #{_declared_fields_label(fields)}")
-          _reject_unknown_shape_keys!(validations)
+          _reject_unknown_shape_keys!(validations, "`shape:` on #{_declared_fields_label(fields)}")
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
           # Ahead of the `user_facing:` walk below so a member carrying both an unusable name and a rejected
@@ -1587,7 +1587,7 @@ module Axn
           # and PRO-3387 for the two joining it here).
           _reject_distributing_shape!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`")
           _reject_unshaped_shape!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`")
-          _reject_unknown_shape_keys!(field_validations)
+          _reject_unknown_shape_keys!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`")
           field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first

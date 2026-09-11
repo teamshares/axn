@@ -370,6 +370,20 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
           .to raise_error(ArgumentError, /must be a Hash naming the members it describes/)
       end
 
+      # A raw `shape:` that ANSWERS a missing key from a Hash default (`Hash.new(…)` or a `default_proc`)
+      # is a Hash by classification (`hash_or_nil` matches it), so `_reject_unshaped_shape!` waves it
+      # through — the defaulting-container check is the one that catches it, and it must run BEFORE the
+      # overwrite too, or a defaulting raw shape beside a block skips every check entirely, real entries
+      # (`bogus: 1` here) included (Codex review round 2, PR #275).
+      it "still refuses a raw shape: that answers a missing key from a Hash default" do
+        shape = Hash.new { |_h, _key| [] }
+        shape[:container] = Hash
+        shape[:bogus] = 1
+
+        expect { build_axn { expects(:h, type: Hash, shape:) { field :a, type: String } } }
+          .to raise_error(ArgumentError, /answers a missing key from a Hash default/)
+      end
+
       # The distributing case PRO-3191 already covers stays covered — this doesn't relocate that check,
       # only joins it.
       it "leaves the distributing-shape refusal in place" do
