@@ -55,6 +55,17 @@ module Axn
         # `node_configs_block_nesting?` is the same predicate emission and the drop pass consult, so a node whose
         # children are dropped (a scalar or `model:` route at the id key) raises nothing here — an unreachable
         # segment is `check_unanswerable_segments!`'s to report, and it runs first.
+        #
+        # THE CLAIM IS THE ONE THE EMITTER WRITES. That scope is what makes this check answerable at
+        # declaration, and it is why no `if:`/`unless:` is consulted anywhere below: input reflection is
+        # static-maximal, so a gated declaration is advertised exactly as an ungated one is and the document
+        # carries the collision either way. The mirror case — a claim reflection DROPS, which an explicit
+        # subfield node at an intermediate does to an ancestor `shape:` member — is deliberately out of scope.
+        # Whether such a claim is enforced on a given call is a question about ActiveModel's gate resolution
+        # (a member's own gate, an enclosing member's, and the per-validator `shape: { members:, if: }`
+        # spelling each answer it differently), which belongs to the emitter rather than re-derived here. That
+        # drop is its own defect, tracked as PRO-3399; once emission stops dropping those members they become
+        # ordinary emitted claims and this check covers them unchanged.
         def check_model_id_object_claim!(tree, field_configs)
           tree.index.each do |config, path|
             next unless config.validations[:model]
@@ -88,13 +99,7 @@ module Axn
           descendant = nested && claiming_descendant(nested)
           return [descendant, :nested] if descendant
 
-          # Two searches, because the two claims are not the same claim. A member the emitter MERGES puts the
-          # object into the document itself, where a gate cannot reach it — input reflection is
-          # static-maximal, so a gated member is advertised exactly as an ungated one is. A member the
-          # emitter drops claims the key at RUNTIME only, through its shape validator, and there a gate does
-          # decide whether the claim exists at all.
-          member = claiming_shape_member(emitted_parent_configs(path), id_key) ||
-                   claiming_shape_member(enforced_parent_configs(path), id_key, ungated_only: true)
+          member = claiming_shape_member(emitted_parent_configs(path), id_key)
           member && [member, :member]
         end
 
@@ -114,49 +119,6 @@ module Axn
           Array(Axn::Internal::Reflection::Schema.property_representative(path.parent_node.configs + carried))
         end
 
-        # The configs the RUNTIME enforces at that node. A shape validator has no emission boundary: it
-        # enforces the whole nested structure it declares whether or not a subfield node also sits at the
-        # position, so the carry does not reset and every route is asked rather than the representative.
-        # Self-limiting either way: `shape_members_at` returns only members NAMED by the segment, so a member
-        # with no nested members of its own contributes nothing at the next hop.
-        #
-        # A GATED member is dropped from the carry, not merely from the final lookup: a gate on an enclosing
-        # member makes the whole nested shape beneath it conditional, so its ungated descendants are no more
-        # enforced than it is. Carrying them on and asking only the leaf's own gate read an ancestor's
-        # subtree as unconditional — measured, a closed gate on the enclosing member skips the nested shape
-        # entirely and a scalar id is accepted, agreeing with the scalar the schema emits.
-        def enforced_parent_configs(path)
-          carried = []
-          path.ancestors.first(path.parent_index).each do |(node, segment)|
-            sources = ungated_shape_sources(node.configs + carried)
-            carried = Axn::Internal::Reflection::Schema.shape_members_at(sources, segment)
-                                                       .reject { |m| Axn::Internal::Reflection::Schema.conditionally_gated?(m) }
-          end
-          ungated_shape_sources(path.parent_node.configs + carried)
-        end
-
-        # Drops a config whose `shape:` ENTRY carries a gate of its own (`shape: { members: …, if: … }`) — the
-        # per-validator spelling, which skips that validator alone and so decides whether the nested shape is
-        # enforced at all. A declaration-level gate is a different key and is filtered separately; both have to
-        # be asked, since either alone leaves the other's spelling reading as unconditional.
-        #
-        # `entry_self_gated?` rather than `entry_mentions_gate_key?`: a BLANK nested gate is not a gate. Per
-        # AM's measured per-key merge it overrides and drops the shared gate for that key, UN-gating the entry
-        # — so treating "mentions a key" as gated would stand down on a shape that runs unconditionally.
-        def ungated_shape_sources(configs)
-          configs.reject do |config|
-            shape = config.validations[:shape]
-            shape && Axn::Internal::Reflection::Schema.entry_self_gated?(shape)
-          end
-        end
-
-        # The configs `apply_children!` is handed for the model's own parent node — which is NOT always that
-        # node's own `configs`. A dotted `on:` whose intermediate is implicit has no config there at all, and
-        # the emitter descends carrying the `shape:` members that intermediate stands in for
-        # (`apply_implicit_node!` passes them as the parent configs for the node's children). So a nested
-        # member claiming the id key is reachable from a shape two levels up, and reading `parent.configs`
-        # alone found nothing while the emitter found — and emitted — the object.
-        #
         # The declaration whose nesting under `node` makes the key an object. Nil when its own configs forbid
         # nesting (a scalar or `model:` route there emits no object property, so nothing collides with the id).
         #
@@ -170,12 +132,10 @@ module Axn
           first_config_below(node) || claiming_own_member(node)
         end
 
-        # A member declared by the node's OWN `shape:`. Asked of the emitted route first (the representative,
-        # whose members `apply_structured_schema!` merges — in the document, so no gate reaches it), then of
-        # every route the runtime enforces, where a gated shape entry stands down like any other.
+        # A member declared by the node's OWN `shape:` — the representative route's, which is the one
+        # `apply_structured_schema!` merges into the emitted property.
         def claiming_own_member(node)
-          emitted = Array(Axn::Internal::Reflection::Schema.property_representative(node.configs))
-          first_declared_member(emitted) || first_declared_member(ungated_shape_sources(node.configs))
+          first_declared_member(Array(Axn::Internal::Reflection::Schema.property_representative(node.configs)))
         end
 
         def first_declared_member(configs)
@@ -198,17 +158,11 @@ module Axn
         # carries members of its own, so `apply_structured_schema!` merges an object property at that key before
         # `apply_model_id_child!` ever runs.
         #
-        # `ungated_only:` drops a member carrying a declaration-level `if:`/`unless:`, asked through the one
-        # predicate reflection uses (`conditionally_gated?`). It is passed for the RUNTIME search alone: a
-        # gate decides whether that shape validator runs, so a gated member the emitter dropped claims the
-        # key on no call at all — measured, the emitted scalar id and a scalar input agree there. A blank
-        # gate never reaches this, `_canonicalize_blank_gates!` having deleted it at declaration on
-        # ActiveModel's own terms (`if: false` is "no condition", not "never run"), so a surviving key
-        # always denotes a real gate — the same guarantee the other contradiction carve-outs rely on.
-        def claiming_shape_member(parent_configs, id_key, ungated_only: false)
+        # No gate is consulted, deliberately: every claim this guard reads is one the emitter WRITES, and
+        # input reflection is static-maximal — a gated member is advertised exactly as an ungated one is, so
+        # the document carries the collision either way.
+        def claiming_shape_member(parent_configs, id_key)
           Axn::Internal::Reflection::Schema.shape_members_at(parent_configs, id_key).find do |member|
-            next false if ungated_only && Axn::Internal::Reflection::Schema.conditionally_gated?(member)
-
             Axn::Internal::Reflection::Schema.named_members(member.validations.dig(:shape, :members)).any?
           end
         end
