@@ -155,6 +155,29 @@ RSpec.describe "Axn ambient_context validation error messages (PRO-3409)" do
              "(via ambient_context)")
   end
 
+  # Codex review (PR #277, round 2): the model-consistency path annotated the STRING before handing it to
+  # `errors.add`, so the suffix became part of `raw_type`/`type` and leaked into `errors.details[:base]` —
+  # a different regression from the field-error one above, since a mismatch's message doubles as its own
+  # `type` (there's no separate Symbol to preserve). Only `full_message` may carry the suffix.
+  it "preserves the bare message as the mismatch's own classification in errors.details" do
+    company_model = Class.new do
+      def self.find(id) = new(id)
+      def initialize(id) = (@id = id)
+      attr_reader :id
+    end
+    klass = build_axn do
+      expects :company_id, on: :ambient_context
+      expects :company, on: :ambient_context, model: { klass: company_model, finder: :find }, allow_nil: true
+    end
+    record = company_model.new("5")
+
+    result = with_ambient_context(company: record, company_id: "9") { klass.call }
+
+    expect(result.exception.errors.details[:base]).to eq(
+      [{ error: 'company: provided record (id="5") conflicts with company_id="9" — pass one, or matching values' }],
+    )
+  end
+
   # Also true — and phrased identically — when the ambient hash is explicitly passed as a kwarg rather
   # than resolved from the provider: `ambient_context:` REPLACES the provider (see the "resolution"
   # describe block above), so the field still didn't arrive as a direct top-level kwarg. An earlier
