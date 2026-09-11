@@ -1676,12 +1676,27 @@ module Axn
         end
 
         # Whether ANY config in this route list transforms the wire value it judges — a Proc
-        # (`preprocess:`), or a declared type with a coercible branch and no explicit `coerce: false`. A
-        # shape member (`Core::Contract::ShapeConfig`) has no `preprocess` reader at all, hence the
-        # `respond_to?` guard. `Coercion::SUPPORTED` is checked directly rather than through a bare
-        # `coerce:` key: a bare `coerce: <Type>` is sugar for `type: { klass:, coerce: true }` —
-        # `_expand_coerce_sugar!` settles it into the bag form before `validations` ever holds it, so there
-        # is no separate bare spelling left to check. An ABSENT `coerce:` on a coercible type is not
+        # (`preprocess:`), or a declared type with a coercible branch and no explicit `coerce: false`.
+        #
+        # A shape member (`Core::Contract::ShapeConfig`) can do NEITHER — `_reject_member_coerce!` refuses
+        # `coerce:`/`coerce: true` on one at declaration ("it has no reader for a coerced value to resolve
+        # onto"), and the same is true of `preprocess:` (`_reject_model_transform!`'s sibling guard). Both
+        # rejections are declaration-time GUARDS, not evidence the ambient `coerce_input_types` flag could
+        # somehow still apply where the explicit spelling cannot: coercion is fundamentally a FIELD/reader
+        # mechanism (`ContractForSubfields.resolve_value`'s read path), and a member never has one — so an
+        # `Integer`-typed member is never coerced, ambient flag or not, and treating it as approximate
+        # wrongly discarded its OWN exact constraints (`inclusion:`'s `enum` included) against a colliding
+        # node that cannot coerce it either (Codex review, PR #278 round 7: `type: Integer, inclusion: {
+        # in: [5] }` on a member, `type: { klass: Integer, coerce: false }` on the colliding node — NEITHER
+        # side can coerce, yet the member's own type being merely "coercible in principle" forced it to
+        # `{}`, dropping the `enum` a plain, un-coercing collision needed no protecting from at all).
+        # `respond_to?(:preprocess)` is reused as the "can this config transform at all" signal, since a
+        # shape member and a subfield/field config already differ on it for the identical reason.
+        #
+        # For a config that COULD carry either: `Coercion::SUPPORTED` is checked directly rather than
+        # through a bare `coerce:` key — a bare `coerce: <Type>` is sugar for `type: { klass:, coerce: true
+        # }`, `_expand_coerce_sugar!` settles it into the bag form before `validations` ever holds it, so
+        # there is no separate bare spelling left to check. An ABSENT `coerce:` on a coercible type is not
         # evidence of no transform — the class/global `coerce_input_types` setting (always on under
         # `Axn::Tools::Invoker`) coerces every such field whose own `coerce:` is silent, and reflection
         # cannot resolve that per-call/per-class flag (the same conservatism
@@ -1689,7 +1704,8 @@ module Axn
         # rules a coercible token out, mirroring `Coercion.field_coerces?`'s own explicit-wins semantics.
         def transforms_wire_value?(configs)
           configs.any? do |config|
-            next true if config.respond_to?(:preprocess) && config.preprocess
+            next false unless config.respond_to?(:preprocess) # a shape member has no reader, hence neither coerces nor preprocesses
+            next true if config.preprocess
 
             type_opt = config.validations[:type]
             next false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false

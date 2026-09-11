@@ -5678,6 +5678,30 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
           end
 
+          # A shape member can never coerce at all — `coerce:`/`coerce: true` is refused on one at
+          # declaration ("it has no reader for a coerced value to resolve onto"), and the ambient
+          # `coerce_input_types` flag is a FIELD/reader mechanism a member never routes through either. So
+          # an `Integer`-typed member's declared type being merely "coercible in principle" is not a reason
+          # to distrust it — its own exact `inclusion:` enum must survive a collision with a node that
+          # cannot coerce it either (Codex review, PR #278 round 7 — treating the member as approximate
+          # here dropped its `enum` for no reason, since neither side could ever coerce this value).
+          it "never treats a shape member as coercible, even when its declared type is one of Coercion::SUPPORTED" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Integer, inclusion: { in: [5] }
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: false }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer", allOf: [{ type: "integer", enum: [5] }])
+            expect(klass.call(payload: { inner: 5 })).to be_ok
+            expect(klass.call(payload: { inner: 6 })).not_to be_ok # not in the member's inclusion list
+          end
+
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
             klass = Class.new do
               include Axn
