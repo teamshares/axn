@@ -4977,12 +4977,53 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         # node's own child — used to resolve by precedence (`base_properties.merge(member_props)`, the
         # child winning outright), discarding the ancestor's constraint though the runtime enforces both.
         # Conjoined via `allOf` instead, same as any other collision this ticket closes: `String` and
-        # `Integer` are disjoint, so the honest conjunction is empty, matching a contract nothing
-        # satisfies (both spellings, measured). Every spelling agrees, which is what a fix must preserve —
-        # correcting only the explicit path would reopen the divergence PRO-3399 closed.
+        # `Array` are disjoint (and neither is coercible, so the stand-down below never applies), so the
+        # honest conjunction is empty, matching a contract nothing satisfies (both spellings, measured).
+        # Every spelling agrees, which is what a fix must preserve — correcting only the explicit path
+        # would reopen the divergence PRO-3399 closed.
         it "conjoins a colliding child name via allOf rather than letting one side win" do
           klass = Class.new do
             include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+              end
+            end
+            expects :inner, on: :payload, type: Hash
+            expects :a, on: :inner, type: Array
+            def call = nil
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+          a_prop = schema[:properties][:payload][:properties][:inner][:properties][:a]
+          expect(a_prop[:type]).to eq("array")
+          expect(a_prop[:allOf]).to eq([{ type: "string", minLength: 1 }])
+          expect(klass.call(payload: { inner: { a: "x" } })).not_to be_ok # ancestor wants String…
+          expect(klass.call(payload: { inner: { a: [1] } })).not_to be_ok # …node wants Array: nothing satisfies both
+
+          implicit = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+              end
+            end
+            expects :a, on: "payload.inner", type: Array
+          end
+          expect(described_class.build_input(implicit.internal_field_configs, implicit.subfield_configs))
+            .to eq(schema)
+        end
+
+        # The coercion stand-down applies at a colliding CHILD exactly as it does at the node itself: a
+        # plain `type: Integer` child declares no `coerce:` of its own, but the class/global
+        # `coerce_input_types` flag (or `Axn::Tools::Invoker`, always on) can still coerce it, and
+        # reflection cannot resolve that ambient flag. Conjoining `{a: "x"}`'s String requirement in here
+        # would reject a wire value ("5") the runtime accepts once coerced — so this stands down exactly
+        # as the top-level stand-down below does, and the child's own emission (not the ancestor's) wins.
+        it "stands down a colliding child whose own type is coercible, even with no explicit coerce:" do
+          klass = Class.new do
+            include Axn
+            configure { |c| c.coerce_input_types = true }
             expects :payload, type: Hash do
               field :inner, type: Hash do
                 field :a, type: String
@@ -4995,22 +5036,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
           a_prop = schema[:properties][:payload][:properties][:inner][:properties][:a]
-          expect(a_prop[:type]).to eq("integer")
-          expect(a_prop[:allOf]).to eq([{ type: "string", minLength: 1 }])
-          expect(klass.call(payload: { inner: { a: "x" } })).not_to be_ok # ancestor wants String…
-          expect(klass.call(payload: { inner: { a: 1 } })).not_to be_ok   # …node wants Integer: nothing satisfies both
-
-          implicit = Class.new do
-            include Axn
-            expects :payload, type: Hash do
-              field :inner, type: Hash do
-                field :a, type: String
-              end
-            end
-            expects :a, on: "payload.inner", type: Integer
-          end
-          expect(described_class.build_input(implicit.internal_field_configs, implicit.subfield_configs))
-            .to eq(schema)
+          expect(a_prop).to eq(type: "integer")
+          expect(klass.call(payload: { inner: { a: "5" } })).to be_ok # the working contract the stand-down protects
         end
 
         # The conjunction actually being ENFORCED, not just an empty one: two compatible String
@@ -5312,6 +5339,49 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(inner).to eq(type: "integer")
             expect(inner).not_to have_key(:allOf)
             expect(klass.call(payload: { inner: "5" })).to be_ok # the working contract this stand-down protects
+          end
+
+          # An ABSENT coerce: is not evidence of no transform: the class/global coerce_input_types setting
+          # (and Axn::Tools::Invoker, always on) coerces every coercible field whose own coerce: is silent,
+          # and reflection cannot resolve that ambient, per-call/per-class flag — the same conservatism
+          # `boolean_coercion_can_flip_truthiness?` already applies elsewhere in this file. So a plain `type:
+          # Integer` node with no coerce: at all stands down too, exactly as an explicit coerce: true does.
+          it "stands down on a plain coercible type with no explicit coerce:, since the ambient flag might enable it" do
+            klass = Class.new do
+              include Axn
+              configure { |c| c.coerce_input_types = true }
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: Integer
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer")
+            expect(inner).not_to have_key(:allOf)
+            expect(klass.call(payload: { inner: "5" })).to be_ok
+          end
+
+          # The mirror: an explicit coerce: false opts back out even on a coercible type, so a genuinely
+          # non-transforming node conjoins normally — the stand-down is not "any coercible type", it is
+          # "unless coercion is provably off".
+          it "does not stand down when coerce: false explicitly rules the ambient flag out" do
+            klass = Class.new do
+              include Axn
+              configure { |c| c.coerce_input_types = true }
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: false }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
+            expect(klass.call(payload: { inner: "5" })).not_to be_ok # never coerced: a String fails the ancestor's own type too
           end
 
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do

@@ -2,6 +2,9 @@
 
 require "date"
 require "time"
+# coercible_klasses reads the declared type through ShapeGraph.type_tokens, so this can't load standalone
+# without it — previously masked because every existing caller happened to require it first.
+require "axn/internal/shape_graph"
 
 module Axn
   module Internal

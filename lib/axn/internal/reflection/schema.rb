@@ -15,6 +15,9 @@ require "axn/internal/reflection/pattern"
 # cannot load without their owner either.
 require "axn/internal/field_config"
 require "axn/internal/shape_graph"
+# transforms_value? asks whether a node's declared type is coercible at all, reusing the runtime step's
+# own derivation (Coercion.coercible_klasses) rather than re-deriving it.
+require "axn/internal/coercion"
 
 # The graph this builder walks is one the class merely HOLDS, so the builder cannot load without the two
 # bounds every such walk needs (see `guard_contents_descent`).
@@ -1611,10 +1614,25 @@ module Axn
         # a contract stricter than the one that actually runs: `field :inner, type: String` beside `expects
         # :inner, on: :payload, type: { klass: Integer, coerce: true }` accepts the wire value `"5"` at
         # runtime (coerced to `5`), while `{type: "integer", allOf: [{type: "string"}]}` admits nothing.
-        # Both spellings of `coerce:` are checked, the same pair `_reject_model_transform!` checks.
+        #
+        # `preprocess:` and an explicit `coerce:` are unconditional — declaring either always transforms.
+        # But an ABSENT `coerce:` on a coercible type is not evidence of no transform: the class/global
+        # `coerce_input_types` setting (always on under `Axn::Tools::Invoker`) coerces every such field
+        # whose own `coerce:` is silent, and reflection cannot resolve that per-call/per-class flag — the
+        # same conservatism `boolean_coercion_can_flip_truthiness?` already applies ("an ABSENT flag with a
+        # coercible branch is treated as flippable"). So a declared type with ANY coercible branch stands
+        # down UNLESS it explicitly opts out (`coerce: false` in the bag), mirroring `Coercion.field_coerces?`
+        # exactly: explicit wins, absence defers to the ambient flag. `Coercion.coercible_klasses` is the
+        # single source of truth for "what does this field coerce to" (the runtime step's own words), reused
+        # rather than re-derived so this can't drift from what `coerce_config_value` actually does.
         def transforms_value?(config)
-          config.preprocess || config.validations.key?(:coerce) ||
-            (config.validations[:type].is_a?(::Hash) && config.validations[:type][:coerce])
+          return true if config.preprocess
+          return true if config.validations.key?(:coerce) # bare form: coerce: <Type>, never a no-op
+
+          type_opt = config.validations[:type]
+          return false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
+
+          !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
         end
 
         # Duped when only one side has them: `apply_nested_subfields!` mutates the map it is handed as it adds
