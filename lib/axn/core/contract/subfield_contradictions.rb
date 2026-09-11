@@ -74,13 +74,11 @@ module Axn
         # THE CLAIM IS THE ONE THE EMITTER WRITES. That scope is what makes this check answerable at
         # declaration, and it is why no `if:`/`unless:` is consulted anywhere below: input reflection is
         # static-maximal, so a gated declaration is advertised exactly as an ungated one is and the document
-        # carries the collision either way. The mirror case — a claim reflection DROPS, which an explicit
-        # subfield node at an intermediate does to an ancestor `shape:` member — is deliberately out of scope.
-        # Whether such a claim is enforced on a given call is a question about ActiveModel's gate resolution
-        # (a member's own gate, an enclosing member's, and the per-validator `shape: { members:, if: }`
-        # spelling each answer it differently), which belongs to the emitter rather than re-derived here. That
-        # drop is its own defect, tracked as PRO-3399; once emission stops dropping those members they become
-        # ordinary emitted claims and this check covers them unchanged.
+        # carries the collision either way. A member reached through an EXPLICIT intermediate is such a claim
+        # like any other: the emitter conjoins it with the node's own property rather than replacing it
+        # (PRO-3399), so nothing here has to ask whether a runtime-only claim is enforced on a given call —
+        # a question about ActiveModel's gate resolution that would have had to be re-derived here, and the
+        # reason the case was once out of scope.
         def check_model_id_object_claim!(tree, field_configs)
           tree.index.each do |config, path|
             next unless config.validations[:model]
@@ -120,24 +118,8 @@ module Axn
           descendant = nested && claiming_descendant(nested)
           return [descendant, :nested] if descendant
 
-          member = claiming_shape_member(emitted_parent_configs(path), id_key)
+          member = claiming_shape_member(Axn::Internal::Reflection::Schema.emitted_shape_sources(path), id_key)
           member && [member, :member]
-        end
-
-        # The configs the EMITTER merges at the model's parent node: the carry resets at an explicit hop
-        # (`apply_children!` passes that node's own configs down, losing sight of an ancestor shape), and only
-        # the representative route's shape is ever merged — the restriction `apply_model_id_child!` applies.
-        # Gate-insensitive by construction: whatever this finds is in the emitted document.
-        def emitted_parent_configs(path)
-          carried = []
-          path.ancestors.first(path.parent_index).each do |(node, segment)|
-            carried = if node.children[segment]&.implicit?
-                        Axn::Internal::Reflection::Schema.shape_members_at(node.configs + carried, segment)
-                      else
-                        []
-                      end
-          end
-          Array(Axn::Internal::Reflection::Schema.property_representative(path.parent_node.configs + carried))
         end
 
         # The declaration whose nesting under `node` makes the key an object. Nil when its own configs forbid

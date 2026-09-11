@@ -935,12 +935,11 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
     # merges puts the object into the document beside the model's id, and input reflection is
     # static-maximal — so a gate changes nothing there and none is consulted.
     #
-    # A member the emitter DROPS claims the key at runtime only. Those are out of scope here: the drop is a
-    # separate pre-existing defect (an explicit subfield node at an intermediate replaces an ancestor
-    # shape member's emission), and the right fix for it is in the emitter, not in a declaration guard.
-    # Once emission stops dropping them they become emitted claims and this guard catches them with no
-    # change. Tracked separately; see PRO-3399.
-    it "accepts a runtime-only claim the emitter drops (an explicit intermediate resets emission)" do
+    # An EXPLICIT intermediate merges like any other (PRO-3399): the emitter conjoins the ancestor member
+    # with the node's own property rather than replacing it, so the member's object reaches the document and
+    # collides with the id there. The guard needs no clause of its own for it — this example and the implicit
+    # one below are the same claim reached by two spellings, and both are refused for the same reason.
+    it "rejects the claim through an explicit intermediate, which merges the member rather than replacing it" do
       expect do
         build_axn do
           expects :payload, type: Hash do
@@ -953,11 +952,11 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
           expects :inner, on: :payload, type: Hash
           expects :company, on: :inner, model: { klass: DeadCo, finder: :fetch }
         end
-      end.not_to raise_error
+      end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
     end
 
-    # …while the SAME shape with an implicit intermediate is emitted, so it is refused. The pair is the
-    # whole distinction, and neither half consults a gate.
+    # …and identically when the intermediate is implicit. The pair is the point: one rule, both spellings,
+    # and neither half consults a gate.
     it "rejects that same shape when the intermediate is implicit, so the object IS emitted" do
       expect do
         build_axn do

@@ -4817,6 +4817,307 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(klass.call(payload: { bar: nil })).not_to be_ok # schema agrees: nil member rejected
       end
 
+      # PRO-3399. An EXPLICIT subfield node at a wire position an ancestor `shape:` also describes used to
+      # REPLACE the member's emitted property instead of conjoining with it, so every nested member the
+      # ancestor declared vanished from the document while the runtime went on enforcing all of them — the
+      # one direction input reflection may not err in. The implicit spelling of the identical contract was
+      # correct throughout, which is what these pin: the two spellings must agree.
+      describe "an explicit node at a key an ancestor shape member also declares (PRO-3399)" do
+        it "emits the ancestor's members at the explicit node, and the runtime agrees" do
+          klass = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+                field :b, type: String
+              end
+            end
+            expects :inner, on: :payload, type: Hash
+            def call = nil
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+          inner = schema[:properties][:payload][:properties][:inner]
+          expect(inner[:properties].keys).to contain_exactly(:a, :b)
+          expect(inner[:required]).to contain_exactly("a", "b")
+
+          expect(klass.call(payload: { inner: { a: "x" } })).not_to be_ok # b enforced, and now advertised
+          expect(klass.call(payload: { inner: { a: "x", b: "y" } })).to be_ok
+        end
+
+        # The strongest form of the claim, and the one that would have caught the defect on its own: the same
+        # contract spelled two ways must produce one document.
+        it "emits exactly what the implicit spelling of the same contract emits" do
+          explicit = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+              end
+            end
+            expects :inner, on: :payload, type: Hash
+            expects :c, on: :inner, type: String
+          end
+          implicit = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+              end
+            end
+            expects :c, on: "payload.inner", type: String
+          end
+
+          expect(described_class.build_input(explicit.internal_field_configs, explicit.subfield_configs))
+            .to eq(described_class.build_input(implicit.internal_field_configs, implicit.subfield_configs))
+        end
+
+        it "unions the ancestor's members with the node's OWN shape block rather than picking one" do
+          klass = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+              end
+            end
+            expects :inner, on: :payload, type: Hash do
+              field :b, type: String
+            end
+            def call = nil
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+          inner = schema[:properties][:payload][:properties][:inner]
+          expect(inner[:properties].keys).to contain_exactly(:a, :b)
+          expect(inner[:required]).to contain_exactly("a", "b")
+          expect(klass.call(payload: { inner: { b: "y" } })).not_to be_ok # the ancestor's `a` is enforced too
+        end
+
+        # The member contributes everything the node's own declaration does not state, not just `properties`:
+        # a map's contents live in `additionalProperties`, which a contents-only merge would still have lost.
+        it "carries a map member's additionalProperties onto the merged node" do
+          klass = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash, of: { keys: { klass: Symbol }, values: { klass: String } }
+            end
+            expects :inner, on: :payload, type: Hash
+            expects :c, on: :inner, type: Integer
+            def call = nil
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+          inner = schema[:properties][:payload][:properties][:inner]
+          expect(inner[:additionalProperties]).to eq(type: "string")
+          expect(inner[:properties][:c]).to include(type: "integer")
+          # Unexempted, deliberately: the runtime derives its shaped-key exemption from the node's OWN
+          # `shape:`, so a carried member exempts nothing there either and the map's value check applies to
+          # `c` as well. Both sides reject the same value.
+          expect(klass.call(payload: { inner: { c: 1 } })).not_to be_ok
+        end
+
+        it "carries the ancestor's members through TWO explicit hops" do
+          klass = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :l1, type: Hash do
+                field :l2, type: Hash do
+                  field :a, type: String
+                end
+              end
+            end
+            expects :l1, on: :payload, type: Hash
+            expects :l2, on: :l1, type: Hash
+            expects :extra, on: :l2, type: String
+            def call = nil
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+          l2 = schema[:properties][:payload][:properties][:l1][:properties][:l2]
+          expect(l2[:properties].keys).to contain_exactly(:a, :extra)
+          expect(klass.call(payload: { l1: { l2: { extra: "x" } } })).not_to be_ok
+        end
+
+        it "strips the null branch a nil-tolerant node would admit when the member forbids nil" do
+          klass = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+              end
+            end
+            expects :inner, on: :payload, type: Hash, allow_nil: true
+            def call = nil
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+          inner = schema[:properties][:payload][:properties][:inner]
+          expect(inner[:type]).to eq("object")
+          expect(klass.call(payload: { inner: nil })).not_to be_ok # schema agrees: nil rejected
+        end
+
+        # The cap is charged on every colliding member, merged or not — a non-nestable member contributes no
+        # contents and still forbids nil.
+        it "strips the null branch for a NON-nestable member that forbids nil" do
+          klass = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: [Hash, Array]
+            end
+            expects :inner, on: :payload, type: Hash, allow_nil: true
+            def call = nil
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+          expect(schema[:properties][:payload][:properties][:inner][:type]).to eq("object")
+          expect(klass.call(payload: { inner: nil })).not_to be_ok
+        end
+
+        it "lets the node's own child win a name the ancestor member also declares" do
+          klass = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+              end
+            end
+            expects :inner, on: :payload, type: Hash
+            expects :a, on: :inner, type: Integer
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+          expect(schema[:properties][:payload][:properties][:inner][:properties][:a]).to include(type: "integer")
+        end
+
+        # A non-nestable member BELOW the explicit hop blocks at the deeper implicit node, exactly as it does
+        # with no explicit hop at all — the carry is what makes the two agree, so this pins both halves.
+        it "blocks and drops at a non-nestable member reached THROUGH the explicit hop, matching the implicit control" do
+          explicit = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :deep, type: [Hash, Array]
+              end
+            end
+            expects :inner, on: :payload, type: Hash
+            expects :x, on: "payload.inner.deep", type: String
+          end
+          implicit = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :deep, type: [Hash, Array]
+              end
+            end
+            expects :x, on: "payload.inner.deep", type: String
+          end
+
+          expect(described_class.build_input(explicit.internal_field_configs, explicit.subfield_configs))
+            .to eq(described_class.build_input(implicit.internal_field_configs, implicit.subfield_configs))
+          expect(described_class.dropped_deep_subfields(explicit.internal_field_configs, explicit.subfield_configs).map(&:field))
+            .to eq([:x])
+        end
+
+        context "negative controls — a member the emitter does not merge" do
+          # The node's OWN type governs nesting: a `type: Hash` node under a `[Hash, Array]` member still
+          # nests its subfields, because runtime narrows to the Hash branch there and such a contract
+          # resolves for real. Only the member's own contents stay out. If this ever starts dropping `c`,
+          # the drop pass has been widened to block at explicit hops, which it must not be.
+          it "still nests an explicit node's children under a mixed-union member, and drops nothing" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Hash, Array]
+              end
+              expects :inner, on: :payload, type: Hash
+              expects :c, on: :inner, type: String
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner[:type]).to eq("object")
+            expect(inner[:properties]).to have_key(:c)
+            expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)).to eq([])
+            expect(klass.call(payload: { inner: { c: "x" } })).to be_ok # and it really resolves
+          end
+
+          it "merges nothing into a node whose own type cannot hold object properties" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :a, type: String
+                end
+              end
+              expects :inner, on: :payload, type: Array
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner[:type]).to eq("array")
+            expect(inner).not_to have_key(:properties)
+            expect(schema[:properties][:payload][:required]).to include("inner") # obligation kept
+          end
+
+          it "merges nothing from an Array member, whose shape describes ELEMENTS rather than the node" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Array, of: Hash
+              end
+              expects :inner, on: :payload, type: Hash
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).not_to have_key(:items)
+            expect(inner).not_to have_key(:properties)
+          end
+
+          it "leaves a sibling member with no explicit node of its own untouched" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :a, type: String
+                end
+                field :other, type: String
+              end
+              expects :inner, on: :payload, type: Hash
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            expect(schema[:properties][:payload][:properties][:other]).to include(type: "string")
+          end
+        end
+
+        # Reflection is static-maximal on input, so a gate changes nothing about what is merged.
+        it "merges a gated member exactly as an ungated one" do
+          gated = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash, if: -> { false } do
+                field :a, type: String
+              end
+            end
+            expects :inner, on: :payload, type: Hash
+          end
+          ungated = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+              end
+            end
+            expects :inner, on: :payload, type: Hash
+          end
+
+          expect(described_class.build_input(gated.internal_field_configs, gated.subfield_configs))
+            .to eq(described_class.build_input(ungated.internal_field_configs, ungated.subfield_configs))
+        end
+      end
+
       # A scalar shape member declared on the SECOND config at a merged node blocks the deep structure the
       # SAME as one on the first: emission consults every config's shape members, mirroring SubfieldTree,
       # so the config the tree dropped isn't quietly re-nested by the property (built from the first

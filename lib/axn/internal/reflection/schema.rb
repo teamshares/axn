@@ -332,16 +332,46 @@ module Axn
           colliding_shape_members(node, key, carried).any? { |m| !nestable_as_object?(m) }
         end
 
-        # The object-shaped shape members a node (via its explicit configs or the `carried` members it merged
-        # into) declares at `key`, when descending merges an implicit child there — carried into the next
-        # hop. Empty when nothing merges. ALL nestable colliding members are carried (not just the first), so
-        # a deeper hop tests every route's nested member; a non-nestable one would already have blocked. This
-        # mirrors emission's apply_implicit_node!, which carries every colliding member.
+        # The shape members a node (via its explicit configs or the `carried` members it merged into) declares
+        # at `key` AND the descent merges there — carried into the next hop. Empty when nothing merges.
+        #
+        # Both kinds of child merge, because emission merges at both: an IMPLICIT child carries every nestable
+        # colliding member (a non-nestable one would already have blocked in blocking_ancestor?, so the select
+        # is the same all-or-nothing answer stated defensively), and an EXPLICIT child carries whatever
+        # merged_explicit_members says it merges — the one predicate apply_children! asks too, so the drop pass
+        # and the schema cannot disagree about which members a descent represents.
         def merged_shape_members(node, key, carried)
-          return [] unless node.children[key]&.implicit?
+          child = node.children[key]
+          return NO_SHAPE_MEMBERS unless child
 
-          colliding_shape_members(node, key, carried).select { |m| nestable_as_object?(m) }
+          members = colliding_shape_members(node, key, carried)
+          return members.select { |m| nestable_as_object?(m) } if child.implicit?
+
+          merged_explicit_members(child, members)
         end
+
+        # The colliding `shape:` members an EXPLICIT child merges into its own property, or none.
+        #
+        # THE owner of that question, for emission (apply_children!) and the drop pass (merged_shape_members)
+        # alike. Two gates, each the one its own layer already applies elsewhere: the child must nest at all
+        # (node_configs_block_nesting?, the same predicate apply_nested_subfields! gates on), and EVERY
+        # colliding member must be object-shaped (nestable_as_object?, the same predicate apply_implicit_node!
+        # gates on). All-or-nothing on the second, so a member whose contents have no object representation
+        # never contributes half of itself.
+        #
+        # A non-nestable member does NOT block the child the way it blocks an implicit one: the child's own
+        # declared type governs what it emits, and a `type: Hash` node under a `type: [Hash, Array]` member
+        # still nests its subfields as properties — runtime narrows to the Hash branch there, and a contract
+        # written that way resolves for real (measured). It only means the member's own contents are not
+        # merged in, because they describe branches this node does not admit.
+        def merged_explicit_members(child, members)
+          return NO_SHAPE_MEMBERS if members.empty?
+          return NO_SHAPE_MEMBERS if node_configs_block_nesting?(child.configs)
+
+          members.all? { |m| nestable_as_object?(m) } ? members : NO_SHAPE_MEMBERS
+        end
+
+        NO_SHAPE_MEMBERS = [].freeze
 
         # Every `shape:` member declared at `key` across the node's own configs AND the members carried from
         # a shallower hop — via shape_members_at, the same locator emission uses, so the two sides can't
@@ -350,7 +380,29 @@ module Axn
           shape_members_at(node.configs + carried, key)
         end
 
-        private_class_method :compute_dropped, :blocking_ancestor?, :merged_shape_members, :colliding_shape_members
+        private_class_method :compute_dropped, :blocking_ancestor?, :merged_shape_members, :colliding_shape_members,
+                             :merged_explicit_members
+
+        # The configs whose `shape:` members reflection EMITS at the node a subfield's parent occupies: the
+        # representative of that node's own routes (the only one `apply_structured_schema!` builds a property
+        # from), plus every ancestor member the descent merged on the way down, carried hop by hop exactly as
+        # `apply_children!` carries it.
+        #
+        # Public, and the reason the carry has one owner rather than a copy per caller: `Core::Contract`'s
+        # declaration guards judge a claim by what the emitter WRITES, so they have to read this walk instead
+        # of predicting it — and a copy that fell behind (this one reset the carry at an explicit hop, as
+        # emission itself once did) silently stopped seeing claims that were in the document.
+        #
+        # Asked of a SUBFIELD path, the only kind with a parent node to describe: a depth-0 config has no
+        # ancestors, and the caller answers that case before reaching here (a top-level field's own shape is
+        # read straight off the config).
+        def emitted_shape_sources(path)
+          carried = NO_SHAPE_MEMBERS
+          path.ancestors.first(path.parent_index).each do |(node, segment)|
+            carried = merged_shape_members(node, segment, carried)
+          end
+          Array(property_representative(path.parent_node.configs)) + carried
+        end
 
         # Whether a field's declared type can be represented as a JSON object (so its subfields can nest
         # as object properties): Hash, `:params`, or untyped. A `type: Array` (or other non-object) parent
@@ -1146,7 +1198,7 @@ module Axn
         # node: it decides both whether to nest at all (node_configs_block_nesting?, the same predicate the
         # drop pass uses, so a route the tree drops from is never re-nested) and, threaded on as parent
         # configs, which `shape:` members might collide with an implicit child.
-        def apply_nested_subfields!(prop, node, ann)
+        def apply_nested_subfields!(prop, node, ann, carried: NO_SHAPE_MEMBERS)
           children = node.children
           return if children.empty?
 
@@ -1169,7 +1221,7 @@ module Axn
           prop[:properties] ||= {}
           prop[:required] ||= []
 
-          apply_children!(prop, children, node_configs, ann)
+          apply_children!(prop, children, node_configs, ann, carried:)
 
           prop[:required] = prop[:required].uniq
           # A nil parent yields its subfields as absent, so `null` is admissible exactly when the parent
@@ -1199,12 +1251,14 @@ module Axn
         # rejects — the model resolver reads the raw key as the record, and a JSON object is never a model
         # instance, so only absent/null are JSON-satisfiable. Left as-is: sending the object yields a normal,
         # recoverable validation error, and the generated `<leaf>_id` already advertises the working path.
-        def apply_children!(prop, children, parent_configs, ann)
+        def apply_children!(prop, children, parent_configs, ann, carried: NO_SHAPE_MEMBERS)
           required_model_ids = []
           model_id_siblings = []
+          # Hoisted: every child asks the same question of the same two lists, and this is a hot loop.
+          ancestor_configs = carried.empty? ? parent_configs : parent_configs + carried
           children.each do |key, node|
             if node.implicit?
-              apply_implicit_node!(prop, key, node, parent_configs, ann)
+              apply_implicit_node!(prop, key, node, ancestor_configs, ann)
               next
             end
 
@@ -1215,19 +1269,42 @@ module Axn
 
             unless model_configs.empty?
               apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
-                                    model_id_siblings)
+                                    model_id_siblings, carried)
             end
 
             representative = property_representative(node.configs)
             next unless representative
 
+            # An ancestor `shape:` may describe this very key, and `apply_structured_schema!` has already
+            # emitted its property into `prop[:properties][key]` (from `build_property`, before this method
+            # ever ran). Runtime enforces the member and the node alike, so the two are CONJOINED rather than
+            # one replacing the other, and the merged members are carried down so a deeper hop sees a
+            # member-of-a-member — the same two things `apply_implicit_node!` does at an implicit child.
+            # Without them this branch advertised a bare object for a position the contract still held to
+            # every nested member it declared: the document was looser than the runtime, and the same
+            # contract spelled with a dotted `on:` emitted it correctly (PRO-3399).
+            members = shape_members_at(ancestor_configs, key)
+            merged_members = merged_explicit_members(node, members)
             child_prop = build_property(representative, subfield: true)
-            apply_nested_subfields!(child_prop, node, ann)
+            # BEFORE the descent, not after: the nested pass reads `child_prop[:properties]` to decide whether
+            # a generated `<leaf>_id` still needs writing, and `apply_implicit_node!` reads it again to place a
+            # blocked merge's obligation on the member's own property. Merging afterwards left both of them
+            # looking at a property the member's contribution had not reached yet.
+            member_prop = prop[:properties][key]
+            child_prop = merge_shape_member_property(member_prop, child_prop) if member_prop && !merged_members.empty?
+            apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
             # `null` survives only when every non-model route tolerates nil (runtime enforces all of them;
-            # the property itself is built from the first non-model config) AND no required descendant is
-            # stranded — a nil node yields every descendant absent (PRO-2857), so a required one below it
-            # forbids nil even for a non-object node whose subfield shape isn't nested here.
-            null_ok = non_model_configs.all? { |c| nil_allowed?(c) } && !subtree_requires_presence?(node, ann)
+            # the property itself is built from the first non-model config), EVERY colliding shape member
+            # tolerates nil too — merged or not, since a member this node declined to merge is still enforced,
+            # and a non-nullable one forbids nil however permissive the node's own declaration is — and no
+            # required descendant is stranded, a nil node yielding every descendant absent (PRO-2857), so a
+            # required one below it forbids nil even for a non-object node whose subfield shape isn't nested
+            # here. The members are read via nil_allowed?, the predicate `apply_implicit_node!` reads them
+            # with, never sniffed off the emitted property: an untyped nil-tolerant member emits no `type`,
+            # leaving no null branch for a property-sniff to find.
+            null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
+                      members.all? { |m| nil_allowed?(m) } &&
+                      !subtree_requires_presence?(node, ann)
             reject_null!(child_prop) unless null_ok
             prop[:properties][key] = child_prop.compact
             prop[:required] << required_key(key) unless node_optional?(node, ann, non_model_configs)
@@ -1262,7 +1339,7 @@ module Axn
         # already-large loop body. Mutates `prop`/`required_model_ids` in place, exactly as the inlined
         # code it replaces did.
         def apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
-                                  model_id_siblings)
+                                  model_id_siblings, carried)
           # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
           # the same nested parent at runtime). A user may declare an explicit NON-model nested
           # `<field>_id` subfield — its own entry in `children`, keyed by that same id, visited
@@ -1298,8 +1375,13 @@ module Axn
           # had already claimed the key while NOTHING had: the model's own property was skipped, but
           # nothing replaced it, leaving `id_field` `required` with no matching entry in `properties` at
           # all — worse than losing the type, JSON Schema then admits any value there.
+          # The representative's own shape PLUS the members carried from a shallower hop: both are emitted
+          # into this node's property (the carry is all-or-nothing, so every carried member's members are),
+          # and the restriction above is about which of the node's OWN routes contributes a shape, not about
+          # the ancestor's. Leaving the carry out would reinstate the same defect one level up — a carried
+          # `field :company_id, type: String` claiming the key while the declared `id_type:` was discarded.
           representative = property_representative(parent_configs)
-          explicit_id ||= shape_members_at(Array(representative), id_field).first
+          explicit_id ||= shape_members_at(carried.empty? ? Array(representative) : Array(representative) + carried, id_field).first
           # `model_configs`, every route at THIS merged node — not just `.first` (Codex review round
           # 3, PR #269): two `model:` routes reaching the same wire node may each carry their own
           # `id_type:`/`klass:`, and reading only one silently dropped the other's claim.
@@ -1376,6 +1458,62 @@ module Axn
           target[:required] = nil if target[:required].empty?
           prop[:properties][key] = target.compact
           prop[:required] << required_key(key) if ann[node].required
+        end
+
+        # An ancestor `shape:` member's already-emitted property, conjoined with the one this node's OWN
+        # declaration built. Both are enforced at runtime and JSON Schema keywords at one node are conjoined
+        # too, so keeping both sides' keywords IS the runtime conjunction — the node's own stand (it is the
+        # more specific declaration at the position) and the member contributes everything the node does not
+        # state: the object contents this branch used to drop, and with them a map's `additionalProperties`
+        # and `propertyNames`, which a contents-only merge would still have lost.
+        #
+        # Taken from the emitted property rather than rebuilt from the member's declaration, which is what
+        # makes "what the member contributes" one answer rather than two: a `Data` member's INFERRED
+        # properties (shape_property_plan's base_properties) and a map's contents are not in its `members:`
+        # list at all, and rebuilding would also restart guard_contents_descent's depth/cycle budget from
+        # zero for a graph this walk has already descended.
+        #
+        # Three keys are not a plain overlay. `properties` and `required` are unioned, since each side names
+        # contents the other does not — the node's own winning a name collision, the precedence
+        # `apply_structured_schema!` already uses for `base_properties.merge(member_props)`. And a size bound
+        # declared on BOTH sides takes the STRICTER of the two: a value satisfying only the looser one is
+        # rejected at runtime by the other, and that is the one direction a plain overlay emits too loosely.
+        #
+        # Taken from what is AT the key rather than from the member config, which is also why the caller guards
+        # on its presence: at a merged node `apply_structured_schema!` only ever emits the REPRESENTATIVE
+        # route's shape, so a member declared on a later route is found by shape_members_at and yet has nothing
+        # emitted to conjoin with. Such a member still caps nullability and still blocks at depth — it simply
+        # contributes no contents here, exactly as at an implicit child (see apply_implicit_node!).
+        #
+        # `propertyNames` is deliberately NOT re-exempted (exempt_shaped_keys_from_property_names runs inside
+        # `apply_structured_schema!`, before this): the runtime's own exemption is derived per declaration
+        # from THAT declaration's `shape:` (Core::Contract#_derive_shaped_keys!), so a member carried from an
+        # ancestor exempts no key at this node's map validator either. Re-running it would admit a key the
+        # runtime rejects — measured, both spellings reject one.
+        def merge_shape_member_property(member_prop, own_prop)
+          merged = member_prop.merge(own_prop)
+          merged.delete(:format)
+          merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties])
+          merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required])
+          merged[:minProperties] = [member_prop[:minProperties], own_prop[:minProperties]].compact.max if merged[:minProperties]
+          merged[:maxProperties] = [member_prop[:maxProperties], own_prop[:maxProperties]].compact.min if merged[:maxProperties]
+          merged
+        end
+
+        # Duped when only one side has them: `apply_nested_subfields!` mutates the map it is handed as it adds
+        # children, and the member's own emission must not be written through.
+        def merge_emitted_maps(member_props, own_props)
+          return own_props if member_props.nil?
+          return member_props.dup if own_props.nil?
+
+          member_props.merge(own_props)
+        end
+
+        def merge_emitted_required(member_required, own_required)
+          return own_required if member_required.nil?
+          return member_required.dup if own_required.nil?
+
+          member_required | own_required
         end
 
         # Every `shape:` member declared at `key` across `parent_configs` (the implicit node collides with
