@@ -340,11 +340,16 @@ module Axn
         # is the same all-or-nothing answer stated defensively), and an EXPLICIT child carries whatever
         # merged_explicit_members says it merges — the one predicate apply_children! asks too, so the drop pass
         # and the schema cannot disagree about which members a descent represents.
-        def merged_shape_members(node, key, carried)
+        # `configs` is which of the node's routes may contribute a member, and the two callers want different
+        # answers. The drop pass passes them ALL (the default), because every route is ENFORCED and a
+        # non-nestable member on any of them must block whether or not it is emitted. `emitted_shape_sources`
+        # passes the representative alone, because it asks what the document CONTAINS and only the
+        # representative route's shape is ever emitted.
+        def merged_shape_members(node, key, carried, configs = node.configs)
           child = node.children[key]
           return NO_SHAPE_MEMBERS unless child
 
-          members = colliding_shape_members(node, key, carried)
+          members = shape_members_at(carried.empty? ? configs : configs + carried, key)
           return members.select { |m| nestable_as_object?(m) } if child.implicit?
 
           merged_explicit_members(child, members)
@@ -395,13 +400,20 @@ module Axn
         # of predicting it — and a copy that fell behind (this one reset the carry at an explicit hop, as
         # emission itself once did) silently stopped seeing claims that were in the document.
         #
+        # EMITTED is the whole of it, so the walk carries only what the representative route declares at each
+        # hop: `apply_structured_schema!` builds a node's property from that route alone, and the ancestor
+        # merge conjoins a member only where the ancestor emitted one to conjoin with. Carrying every route's
+        # members instead made this find a claim the document does not contain, and the guard then refused a
+        # declaration `main` accepts — the exact inverse of the defect the carry was added to fix, and the
+        # reason "which route declared it" cannot be dropped in favour of "is it enforced".
+        #
         # Asked of a SUBFIELD path, the only kind with a parent node to describe: a depth-0 config has no
         # ancestors, and the caller answers that case before reaching here (a top-level field's own shape is
         # read straight off the config).
         def emitted_shape_sources(path)
           carried = NO_SHAPE_MEMBERS
           path.ancestors.first(path.parent_index).each do |(node, segment)|
-            carried = merged_shape_members(node, segment, carried)
+            carried = merged_shape_members(node, segment, carried, Array(property_representative(node.configs)))
           end
           Array(property_representative(path.parent_node.configs)) + carried
         end

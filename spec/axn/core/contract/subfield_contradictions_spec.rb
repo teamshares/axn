@@ -955,6 +955,46 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.to raise_error(ArgumentError, /shape:` member :company_id of the same name declares members of its own/)
     end
 
+    # The guard's scope is the claim the emitter WRITES, and a member on a non-representative route of a
+    # merged node is declared but never written: `apply_structured_schema!` builds the node's property from
+    # the representative route alone. Carrying such a member through PRO-3399's ancestor-merge walk made this
+    # refuse a declaration whose `company_id` the document does not describe at all — so the walk carries only
+    # what the representative route declares, and this pins the negative.
+    it "accepts an object-shaped member that a non-representative route declares and the emitter never writes" do
+      detail = Axn::Core::Contract::ShapeConfig.new(
+        field: :detail, validations: { type: { klass: String }, presence: true }, metadata: {},
+      )
+      claimed = Axn::Core::Contract::ShapeConfig.new(
+        field: :company_id,
+        validations: { type: { klass: Hash }, presence: true, shape: { members: [detail], container: Hash } },
+        metadata: {},
+      )
+      inner_member = Axn::Core::Contract::ShapeConfig.new(
+        field: :inner,
+        validations: { type: { klass: Hash }, presence: true, shape: { members: [claimed], container: Hash } },
+        metadata: {},
+      )
+      klass = nil
+      expect do
+        klass = Class.new do
+          include Axn
+          expects :outer, type: Hash
+          expects :mid, on: :outer, type: Hash
+          expects :payload, on: "outer.mid", type: Hash, as: :p1 # representative route: no shape
+          expects :payload, on: :mid, type: Hash, shape: { members: [inner_member], container: Hash }
+          expects :inner, on: :p1, type: Hash
+          expects :company, on: :inner, model: { klass: DeadCo, finder: :fetch }
+          def call = nil
+        end
+      end.not_to raise_error
+
+      # ...and the reason it is accepted: nothing of that member reaches the document, so the generated id
+      # owns the key uncontested.
+      inner = klass.input_schema.dig(:properties, :outer, :properties, :mid, :properties, :payload, :properties, :inner)
+      expect(inner[:properties][:company_id]).to include(description: "ID of the DeadCo record")
+      expect(inner[:properties][:company_id]).not_to have_key(:properties)
+    end
+
     # …and identically when the intermediate is implicit. The pair is the point: one rule, both spellings,
     # and neither half consults a gate.
     it "rejects that same shape when the intermediate is implicit, so the object IS emitted" do
