@@ -5784,6 +5784,59 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 5 })).not_to be_ok # fails the ancestor's raw-wire type: String
           end
 
+          # By the time an inclusion enum reaches this function, apply_inclusion_enum! has already rendered
+          # any Symbol/Date/Time/DateTime member into its own wire-string spelling (Values.serialize_value —
+          # the SAME encoder used for output normalization elsewhere in this file) — `:allowed` became
+          # `"allowed"` before strip_intrinsically_typed_keys ever saw it. Dropping a String literal here
+          # for being "non-numeric" (Codex review, PR #278 round 10) throws away a spelling that is ALREADY
+          # the coercer's accepted wire input (`.to_sym` inverts `.to_s` exactly), leaving the schema unable
+          # to distinguish "allowed" (passes) from "other" (coerces to :other, fails inclusion).
+          it "retains a coercing node's own already wire-normalized Symbol/Date/Time inclusion enum" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Symbol, coerce: true }, inclusion: { in: [:allowed] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(minLength: 1, enum: ["allowed"], not: { type: "null" }, allOf: [{ type: "string", minLength: 1 }])
+            expect(klass.call(payload: { inner: "allowed" })).to be_ok
+            expect(klass.call(payload: { inner: "other" })).not_to be_ok # coerces to :other, fails inclusion in [:allowed]
+          end
+
+          # A numeric literal's wire-string translation (the round 9 fix, two tests above) is only sound
+          # when the transform IS the known coercer — a `preprocess:` can compose with coercion in either
+          # order and arbitrarily rescale the result, so its presence invalidates any inference about the
+          # net wire-to-value mapping regardless of whether `coerce:` is ALSO explicitly true (Codex
+          # review, PR #278 round 10: the reported repro paired `preprocess:` with `coerce: false`, but
+          # `coerce: true` alongside the SAME preprocess is just as unsound and isn't already caught by the
+          # explicit-`coerce: false` branch — under `coerce: true, preprocess: ->(v) { Integer(v) + 1 },
+          # comparison: { equal_to: 5 }`, wire "4" is accepted (coerced then preprocessed to 5) and wire "5"
+          # is rejected (preprocessed to 6) — the OPPOSITE of what synthesizing `enum: [5, "5"]` would have
+          # advertised). Falls back to dropping the constraint entirely, same as before the round 9 fix
+          # existed — a known, tolerated imprecision reflection cannot close without executing the Proc.
+          it "does not synthesize a wire spelling for a node whose transform is a preprocess, even beside coerce: true" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, preprocess: ->(v) { Integer(v) + 1 },
+                              comparison: { equal_to: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", minLength: 1)
+            expect(klass.call(payload: { inner: "4" })).to be_ok # coerced then preprocessed to 5, satisfies equal_to: 5
+            expect(klass.call(payload: { inner: "5" })).not_to be_ok # coerced then preprocessed to 6, fails equal_to: 5
+          end
+
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
             klass = Class.new do
               include Axn
