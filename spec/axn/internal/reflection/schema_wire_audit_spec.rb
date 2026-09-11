@@ -293,4 +293,111 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     expect(checked).to be > 400
     expect(wrong).to be_empty, "these schemas accept what the runtime rejects:\n  #{wrong.join("\n  ")}"
   end
+
+  # The three examples above declare a single FLAT field, which leaves the whole nested-subfield surface
+  # outside the audit — and that is where PRO-3399 lived: an explicit subfield node at a key an ancestor
+  # `shape:` also described replaced the member's emitted property instead of conjoining with it, so the
+  # document advertised a bare object for a position the runtime still held to every member the ancestor
+  # declared. No single keyword was wrong; the node was simply missing half its contract, which is exactly
+  # the shape of defect a keyword-by-keyword spec cannot see and a real engine can.
+  #
+  # So this walks {ancestor member} x {explicit node} x {payload} and asks the same INBOUND question: a
+  # document that accepts what the runtime rejects is the failure. The nesting is spelled both ways in the
+  # matrix — an explicit `on:` node and the dotted `on:` that reaches the same wire path — because the two
+  # are the same contract and the defect was the disagreement between them.
+  # A member the emitter declines to MERGE (see merged_explicit_members) is the one cell this walk cannot
+  # judge, and the exclusion is stated as a fact about the declaration rather than as a list of rows.
+  #
+  # Such a member is still enforced, but its constraints describe branches the node's own type does not
+  # admit, so there is nowhere in an object property to put them: a `[Hash, Array]` member's presence floor
+  # lands on two branches the node narrowed to one, and a `String` member conjoined with a `type: Hash` node
+  # admits nothing at all. Writing the conjunction honestly needs `allOf: [member, node]`, a schema shape the
+  # emitter does not produce anywhere today — so these stay looser than the runtime, exactly as they were
+  # before PRO-3399 (measured: this walk reported 58 divergences across 19 rows against the emitter that
+  # dropped merged members outright, and 22 across these rows after). Tracked as PRO-3405.
+  #
+  # NOT excluded, deliberately: the nullability cap PRO-3399 added applies to these members too (it is
+  # charged on every colliding member, merged or not), and `schema_spec.rb` asserts that directly — so the
+  # one thing this walk stops watching here is watched there.
+  def unmergeable_member?(klass)
+    payload = klass.internal_field_configs.find { |c| c.field == :payload }
+    members = Axn::Internal::Reflection::Schema.send(:shape_members_at, [payload], :inner)
+    members.any? { |m| !Axn::Internal::Reflection::Schema.send(:nestable_as_object?, m) }
+  end
+
+  def nested_members
+    {
+      "object member" => proc { field :inner, type: Hash },
+      "object member with a required String" => proc { field(:inner, type: Hash) { field :a, type: String } },
+      "object member with a required Integer" => proc { field(:inner, type: Hash) { field :a, type: Integer } },
+      "nil-tolerant object member" => proc { field(:inner, type: Hash, allow_nil: true) { field :a, type: String } },
+      "map member" => proc { field :inner, type: Hash, of: { keys: { klass: Symbol }, values: { klass: String } } },
+      "mixed-union member" => proc { field :inner, type: [Hash, Array] },
+      "scalar member" => proc { field :inner, type: String },
+    }
+  end
+
+  def nested_nodes
+    {
+      "explicit node" => proc { expects :inner, on: :payload, type: Hash },
+      "explicit nil-tolerant node" => proc { expects :inner, on: :payload, type: Hash, allow_nil: true },
+      "explicit node with a child" => proc {
+        expects :inner, on: :payload, type: Hash
+        expects :c, on: :inner, type: String
+      },
+      "explicit node with its own shape" => proc {
+        expects(:inner, on: :payload, type: Hash) { field :b, type: String }
+      },
+      "dotted on: (no explicit node)" => proc { expects :c, on: "payload.inner", type: String },
+    }
+  end
+
+  def nested_payloads
+    [
+      {}, { inner: nil }, { inner: {} }, { inner: { a: "x" } }, { inner: { a: 1 } },
+      { inner: { a: "x", b: "y" } }, { inner: { a: "x", c: "z" } }, { inner: { c: "z" } },
+      { inner: { a: "x", extra: "z" } }, { inner: [] }, { inner: [1] }, { inner: "s" }, { inner: 0 }
+    ]
+  end
+
+  def declare_nested(member, node)
+    Class.new do
+      include Axn
+      expects :payload, type: Hash, &member
+      class_eval(&node)
+      def call = nil
+    end
+  rescue StandardError
+    nil
+  end
+
+  it "never accepts inbound a nested value the runtime rejects" do
+    checked = 0
+    wrong = []
+
+    nested_members.each do |mname, member|
+      nested_nodes.each do |nname, node|
+        klass = declare_nested(member, node)
+        next if klass.nil?
+        next if unmergeable_member?(klass)
+
+        document = schemer(klass.input_schema)
+        nested_payloads.each do |payload|
+          runtime_ok = begin
+            klass.call(payload:).ok?
+          rescue StandardError
+            false
+          end
+          checked += 1
+          next unless document.valid?(JSON.parse(JSON.generate("payload" => payload))) && !runtime_ok
+
+          wrong << "#{mname} / #{nname}: document accepts #{payload.inspect}, runtime rejects it, " \
+                   "schema #{klass.input_schema[:properties][:payload].inspect}"
+        end
+      end
+    end
+
+    expect(checked).to be > 150
+    expect(wrong).to be_empty, "these nested schemas accept what the runtime rejects:\n  #{wrong.join("\n  ")}"
+  end
 end
