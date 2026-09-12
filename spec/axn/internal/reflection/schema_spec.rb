@@ -6856,6 +6856,36 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "raw" })).to be_ok # ancestor's inclusion passes; node's own check runs on the preprocessed constant 10
           end
 
+          # Round 33's own exemption also spared the kept type whenever `prop` had its OWN `enum`/`const`
+          # — reasoning that its eventual narrowed enum would keep the type consistent. But a node's own
+          # `enum`/`const` runs through `translated_literal_constraint`, which translates a literal into
+          # EVERY wire spelling reflection can vouch for — routinely BOTH a native and a String form — so
+          # the eventual enum is not guaranteed to share the kept type at all, unlike the numeric-bound
+          # path (which keeps each retained literal in its ORIGINAL form) round 28/30 actually exercise
+          # (Codex review, PR #278 round 34): a sibling `inclusion: { in: ["5", true] }` (mixed literal
+          # types, so genuinely untyped) beside `type: { klass: Integer, coerce: true }, inclusion: { in:
+          # [5] }` accepts wire "5" at runtime (coerces to 5, satisfying the node's own inclusion), but
+          # kept `type: "integer"` conjoined with the translated `enum: [5, "5"]` already excludes the
+          # String spelling "5" (it fails `type: "integer"`), and conjoining THAT against the sibling's own
+          # `enum: ["5", true]` (which the native `5` can never satisfy either) left nothing that could
+          # ever satisfy the whole schema. Fixed by only exempting the NUMERIC-bound path, not a node's own
+          # enum/const.
+          it "strips a transforming node's own type when its own literal translates to a mixed wire type" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, inclusion: { in: ["5", true] }
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, inclusion: { in: [5] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: [5, "5"], not: { type: "null" }, allOf: [{ enum: ["5", true] }])
+            expect(klass.call(payload: { inner: "5" })).to be_ok # coerces to 5, satisfying the node's own inclusion: { in: [5] }
+          end
+
           # `reject_unretargetable_length_bound` (round 31's own fix) left a PRE-EXISTING `:enum` alone
           # whenever the property already had one — but that stale enum is exactly the set
           # `sibling_literals` was built from, and reaching this branch at all means NONE of its non-null

@@ -2124,15 +2124,26 @@ module Axn
           # sibling's `enum: ["raw", true]` — neither literal is ever an integer, so nothing satisfies
           # both at once, though the sibling's own check alone is what the runtime actually applies.
           #
-          # But NOT when `prop` itself already carries a numeric bound or its own `const`/`enum` — those
-          # go on, later in this same function, to populate a NARROWED `:enum` of their own (via
-          # `drop_numeric_bounds_unless_type_admits_number`'s literal retargeting or `translated_literal_
-          # constraint`), and that narrowed enum is what actually keeps the kept type consistent — round
-          # 28/30's own tests collide an untyped-but-literal ancestor with exactly this shape (a coercing
-          # node with its own `comparison:`), and there the retained `type:` never conflicts with the
-          # narrowed `enum:` it ends up beside (every retained literal already IS that type). Checked
-          # against `prop` BEFORE anything strips it, so this reads the declaration as originally written.
-          prop_has_own_narrowing = NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) } || prop.key?(:enum) || prop.key?(:const)
+          # But NOT when `prop` itself already carries a numeric bound — that goes on, later in this same
+          # function, to populate a NARROWED `:enum` via `drop_numeric_bounds_unless_type_admits_number`'s
+          # literal retargeting, which keeps each RETAINED literal in its ORIGINAL declared form (never
+          # translating it into some OTHER wire spelling), so a kept type never conflicts with what ends
+          # up beside it — round 28/30's own tests collide an untyped-but-literal ancestor with exactly
+          # this shape (a coercing node with its own `comparison:`).
+          #
+          # Deliberately NOT exempted merely because `prop` has its OWN `enum`/`const` (round 33's first
+          # attempt at this exemption): that path runs through `translated_literal_constraint` instead,
+          # which translates each literal into EVERY wire spelling reflection can vouch for — routinely
+          # BOTH a native and a String form — so the eventual enum is not guaranteed to share the kept
+          # type at all (Codex review, PR #278 round 34): a sibling `inclusion: { in: ["5", true] }`
+          # (mixed literal types, so genuinely untyped) beside `type: { klass: Integer, coerce: true },
+          # inclusion: { in: [5] }` accepts wire "5" at runtime (coerces to 5, satisfying the node's own
+          # inclusion), but kept `type: "integer"` conjoined with the translated `enum: [5, "5"]` already
+          # excludes the String spelling "5" (it fails `type: "integer"`), and conjoining that against the
+          # sibling's own `enum: ["5", true]` (which the native `5` can never satisfy either) left nothing
+          # that could ever satisfy the whole schema. Checked against `prop` BEFORE anything strips it, so
+          # this reads the declaration as originally written.
+          prop_has_own_narrowing = NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
           other_prop_claims_type = other_prop.key?(:type) || other_prop.key?(:anyOf)
           other_prop_claims_literal = other_prop.key?(:enum) || other_prop.key?(:const)
           strip_intrinsic_type = other_prop_claims_type || (other_prop_claims_literal && !prop_has_own_narrowing)
