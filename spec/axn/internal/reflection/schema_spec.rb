@@ -6886,6 +6886,61 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "5" })).to be_ok # coerces to 5, satisfying the node's own inclusion: { in: [5] }
           end
 
+          # Even the NUMERIC-BOUND exemption itself (round 34's remaining case, believed safe because it
+          # keeps each retained literal in its ORIGINAL declared form) can retain a literal whose original
+          # form simply ISN'T the kept type (Codex review, PR #278 round 35): a sibling `inclusion: { in:
+          # ["6", true] }` (mixed literal types, genuinely untyped) beside a coercing Integer node's
+          # `comparison: { greater_than: 5 }` accepts wire "6" at runtime (coerces to 6, satisfying the
+          # bound), but `drop_numeric_bounds_unless_type_admits_number` retains the ORIGINAL literal "6"
+          # (a String) in the retargeted enum while the exemption keeps `type: "integer"` — "6" itself is
+          # never an integer. Rather than adding yet another narrower upfront heuristic, this is caught by
+          # a single, unconditional POST-HOC check: whenever the stripped result ends up with both a
+          # `:type` and an `:enum`, every enum member must actually BE one of the kept type(s).
+          it "drops the kept type when the numeric-bound-retargeted enum ends up a different JSON type" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, inclusion: { in: ["6", true] }
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { greater_than: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: ["6"], not: { type: "null" }, allOf: [{ enum: ["6", true] }])
+            expect(klass.call(payload: { inner: "6" })).to be_ok # coerces to 6, satisfying comparison: { greater_than: 5 }
+          end
+
+          # `round_tripping_wire_spellings` only ever tried a numeric literal's OWN native form and its
+          # canonical `#to_s` spelling — but a numeric coercer's actual inverse admits other spellings too
+          # (Codex review, PR #278 round 35): a raw String member restricted to `inclusion: { in: ["05"] }`
+          # beside a coercing Integer node restricted to `comparison: { equal_to: 5 }` is satisfiable at
+          # runtime (`Integer("05", 10) == 5`), but this function only generated `[5, "5"]` for the literal
+          # `5` — never "05" — so the translated enum shared no member with the sibling's own `enum:
+          # ["05"]`, though the runtime accepts wire "05". Fixed by also trying the sibling's own declared
+          # String literals as round-trip candidates, rather than assuming `#to_s` is the complete inverse.
+          it "tries a sibling's own literal spellings when inverting a numeric coercer" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, inclusion: { in: ["05"] }
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { equal_to: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              enum: [5, "5", "05"],
+              not: { type: "null" },
+              allOf: [{ type: "string", minLength: 1, enum: ["05"] }],
+            )
+            expect(klass.call(payload: { inner: "05" })).to be_ok # coerces to 5 (Integer("05", 10)), satisfying comparison: { equal_to: 5 }
+            expect(klass.call(payload: { inner: "5" })).not_to be_ok # not in the sibling's own inclusion: { in: ["05"] }
+          end
+
           # `reject_unretargetable_length_bound` (round 31's own fix) left a PRE-EXISTING `:enum` alone
           # whenever the property already had one — but that stale enum is exactly the set
           # `sibling_literals` was built from, and reaching this branch at all means NONE of its non-null
