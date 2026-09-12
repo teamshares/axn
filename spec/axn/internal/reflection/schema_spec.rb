@@ -6271,6 +6271,60 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 1 })).to be_ok # the ancestor's true (intersected) value set is just {1}; preprocessed to 4, passes > 3
           end
 
+          # A floor and its ceiling in the SAME family must be judged TOGETHER, not independently — a
+          # DIFFERENT literal can satisfy EACH one on its own while no literal satisfies both at once
+          # (Codex review, PR #278 round 19): an ancestor `enum: ["a", "aaaa"]` beside a colliding node's
+          # `length: { is: 2 }, preprocess: ->(_) { "aa" }` has "a" (length 1) satisfy `maxLength: 2` but
+          # fail `minLength: 2`, and "aaaa" (length 4) satisfy `minLength: 2` but fail `maxLength: 2` — so
+          # judged independently EACH keyword survives (some literal satisfies THAT one), yet the true
+          # combined interval (exactly length 2) admits neither literal at all.
+          it "drops a whole bound family when no single literal satisfies every bound in it jointly" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, inclusion: { in: %w[a aaaa] }
+              end
+              expects :inner, on: :payload, type: String, length: { is: 2 }, preprocess: ->(_) { "aa" }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", enum: %w[a aaaa], minLength: 1)
+            expect(klass.call(payload: { inner: "a" })).to be_ok # preprocessed to constant "aa", satisfies length: { is: 2 }
+            expect(klass.call(payload: { inner: "aaaa" })).to be_ok # preprocessed to constant "aa", satisfies length: { is: 2 }
+          end
+
+          # A union branch whose type has no matching JSON size keyword (Integer) must be OMITTED from the
+          # retargeted `anyOf`, not left as a bare, unconstrained `{type:}` — the underlying `length:`
+          # validator still runs against whatever the runtime value is (`#to_s.length` when the value has
+          # no native `#length`), so admitting every instance of that type unconditionally accepts values
+          # the validator actually rejects (Codex review, PR #278 round 19): an ancestor `type: Object,
+          # length: { minimum: 3 }` beside an explicit `type: { klass: [String, Integer], coerce: false }`
+          # node let wire integer `1` through unconstrained, though `1.to_s.length` (1) fails `minimum: 3`.
+          # Reflection may be STRICTER than the runtime (never looser), so omitting the inexpressible branch
+          # — rejecting every integer at this position rather than admitting all of them — is the safe
+          # direction, even though some individually-valid integers are no longer admitted either.
+          it "omits a union branch with no matching size keyword rather than leaving it unconstrained" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, type: { klass: [String, Integer], coerce: false }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              anyOf: [{ type: "string", minLength: 1 }, { type: "integer" }],
+              allOf: [{ anyOf: [{ type: "string", minLength: 3 }] }],
+            )
+            expect(klass.call(payload: { inner: 1 })).not_to be_ok # "1".length is 1, fails the member's own length: { minimum: 3 }
+            expect(klass.call(payload: { inner: "abc" })).to be_ok
+          end
+
           # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
           # declares both — translating each to its wire spellings and then CONCATENATING them turns an
           # intersection into a union (Codex review, PR #278 round 14): `inclusion: { in: [5, 6] },

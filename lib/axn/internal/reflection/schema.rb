@@ -1756,21 +1756,36 @@ module Axn
           retargeted
         end
 
-        # One retargeted `{type:, sizeKey:}` pair per surviving branch type, as a NEW `anyOf` sibling to the
-        # rest of `prop` — a branch whose type has no matching size keyword (Integer, boolean) contributes
-        # a bare `{type:}` entry instead, so an instance of THAT type still satisfies the retargeted anyOf
-        # (unconstrained, matching the single-type "no way to express this, drop it" behavior) rather than
-        # being wrongly rejected for lacking a bound that was never expressible for it in the first place.
+        # One retargeted `{type:, sizeKey:}` pair per surviving branch type whose type actually HAS a
+        # matching JSON size keyword, as a NEW `anyOf` sibling to the rest of `prop` — a branch with no such
+        # keyword (Integer, boolean) is OMITTED entirely rather than left as a bare, unconstrained `{type:}`
+        # entry (Codex review, PR #278 round 19): the underlying `length:` validator still runs against
+        # WHATEVER the runtime value is (calling `#to_s.length` when the value has no native `#length`), so
+        # a bare Integer branch that admits every integer unconditionally would accept e.g. `1` even though
+        # the ancestor's real validator rejects it (`1.to_s.length` is 1, short of a `minimum: 3` floor).
+        # There is no JSON Schema keyword for "the STRING RENDERING of a non-string value has this size," so
+        # rather than invent one, the branch is dropped — reflection is allowed to be STRICTER than the
+        # runtime (never looser), so rejecting every instance of a type this can't express a bound for is
+        # the safe direction, even though it means some individually-valid integers (a `.to_s.length` long
+        # enough to pass) are no longer admitted by the schema either. When NO branch has an expressible
+        # keyword at all, the whole `anyOf` would otherwise be empty (vacuously false, rejecting every
+        # value) — that regresses past "no way to express this, drop it" into "reject everything," so in
+        # that case the size bound is dropped entirely instead, same as the single-type answer.
         def retarget_length_to_union(prop, other_types)
           retargeted = prop.except(:minLength, :maxLength)
-          retargeted[:anyOf] = other_types.map do |type|
-            branch = { type: }
+          branches = other_types.filter_map do |type|
             floor_key = SIZE_CONSTRAINT_KEYS[type]
             ceiling_key = SIZE_CEILING_KEYS[type]
+            next unless floor_key || ceiling_key
+
+            branch = { type: }
             branch[floor_key] = prop[:minLength] if floor_key && prop[:minLength]
             branch[ceiling_key] = prop[:maxLength] if ceiling_key && prop[:maxLength]
             branch
           end
+          return retargeted if branches.empty?
+
+          retargeted[:anyOf] = branches
           retargeted
         end
 
@@ -1921,15 +1936,25 @@ module Axn
         # both lists into `[1, 1, 5]` let `5` alone survive the "does every literal violate this bound"
         # check, hiding a real conflict a colliding `exclusiveMinimum: 3` has with the position's actual
         # (intersected) value set of just `{1}`.
+        #
+        # Judged per BOUND FAMILY (`BOUND_VIOLATION_FAMILIES`), not per individual keyword — a floor and a
+        # ceiling in the SAME family are jointly retained or jointly dropped, and a literal only counts as a
+        # witness if it satisfies BOTH at once (Codex review, PR #278 round 19): an ancestor `enum: ["a",
+        # "aaaa"]` beside a colliding node's `length: { is: 2 }` has "a" (length 1) satisfy `maxLength: 2`
+        # but fail `minLength: 2`, and "aaaa" (length 4) satisfy `minLength: 2` but fail `maxLength: 2` — so
+        # judged independently, EACH keyword survives (some literal satisfies THAT one), yet no literal
+        # satisfies both together, and the true combined interval (exactly length 2) admits neither "a" nor
+        # "aaaa" at all — an unsatisfiable conjunction a per-key check cannot see.
         def drop_bounds_contradicted_by_other_literals(prop, other_prop)
           literals = declared_literals(other_prop)
           return prop if literals.empty?
 
-          contradicted = (SIZE_BOUND_KEY_PAIRS.flatten + NUMERIC_BOUND_ALL_KEYS).select do |key|
-            next false unless prop.key?(key)
+          contradicted = BOUND_VIOLATION_FAMILIES.flat_map do |family|
+            present = family.select { |key| prop.key?(key) }
+            next [] if present.empty?
 
-            verdicts = literals.map { |literal| bound_violation_for_literal(key, prop[key], literal) }.compact
-            !verdicts.empty? && verdicts.all?
+            verdicts = literals.map { |literal| bound_family_satisfaction_for_literal(present, prop, literal) }.compact
+            verdicts.empty? || verdicts.any? ? [] : present
           end
 
           contradicted.empty? ? prop : prop.except(*contradicted)
@@ -1976,6 +2001,30 @@ module Axn
           return nil unless literal.is_a?(klass)
 
           literal.public_send(measure).public_send(comparator, bound)
+        end
+
+        # A floor and its ceiling share ONE underlying measurement (a String's length, an Integer's own
+        # value), so they must be judged — and dropped — TOGETHER: see bound_family_satisfaction_for_literal and
+        # drop_bounds_contradicted_by_other_literals for why judging them independently is unsound.
+        BOUND_VIOLATION_FAMILIES = [
+          %i[minLength maxLength],
+          %i[minItems maxItems],
+          %i[minProperties maxProperties],
+          %i[minimum maximum exclusiveMinimum exclusiveMaximum],
+        ].freeze
+        private_constant :BOUND_VIOLATION_FAMILIES
+
+        # Whether `literal` satisfies EVERY bound in `keys` (a family sharing one measurement) at once, or
+        # `nil` when `literal` isn't the type any of them applies to at all. `nil` here is what lets the
+        # caller tell "a real witness for the WHOLE family exists" apart from "no literal was even the
+        # relevant type" — checking each keyword independently (Codex review, PR #278 round 19) missed
+        # exactly the case where DIFFERENT literals each satisfy a DIFFERENT keyword in the family but none
+        # satisfies all of them together, which is what actually decides whether the family is satisfiable.
+        def bound_family_satisfaction_for_literal(keys, prop, literal)
+          klass = BOUND_VIOLATION_CHECKS.fetch(keys.first).first
+          return nil unless literal.is_a?(klass)
+
+          keys.none? { |key| bound_violation_for_literal(key, prop[key], literal) }
         end
 
         # Whether the numeric bounds `prop` and `other_prop` each declare (any mix of inclusive/exclusive)
