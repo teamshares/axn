@@ -6097,6 +6097,34 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 3 })).not_to be_ok # fails the ancestor's own exclusiveMinimum: 3
           end
 
+          # Round 12's own conflict check compares the bounds as a CONTINUOUS interval — it misses an
+          # interval that's non-empty over the reals but contains no INTEGER at all (Codex review, PR #278
+          # round 23): an ancestor Integer member's `comparison: { greater_than: 1 }` (`exclusiveMinimum:
+          # 1`) beside a colliding Integer node's `preprocess: ->(v) { v - 1 }, comparison: { less_than: 2
+          # }` (`exclusiveMaximum: 2`) accepts raw `2` at runtime (the ancestor's own check reads the raw
+          # value 2, which is `> 1`; the node's own check runs on the preprocessed `1`, which is `< 2`),
+          # but `exclusiveMinimum: 1` conjoined with `exclusiveMaximum: 2` describes an integer strictly
+          # between 1 and 2 — none exists — an unsatisfiable schema for a satisfiable contract. Fixed by
+          # also treating an integer-only domain with no integral point in the combined interval as a
+          # conflict, so the node's own bound stands down the same way an outright-empty interval already
+          # does.
+          it "drops a preprocessing node's own numeric bound when the combined interval has no integer, not just when it's empty" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Integer, comparison: { greater_than: 1 }
+              end
+              expects :inner, on: :payload, type: Integer, comparison: { less_than: 2 }, preprocess: ->(v) { v - 1 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer", exclusiveMinimum: 1)
+            expect(klass.call(payload: { inner: 2 })).to be_ok # ancestor's raw bound (2 > 1) and node's transformed check (2-1=1 < 2) both pass
+            expect(klass.call(payload: { inner: 1 })).not_to be_ok # fails the ancestor's own exclusiveMinimum: 1
+          end
+
           # A wire-spelling candidate is safe only if it ACTUALLY round-trips through the real coercer for
           # THIS declared type — a union target changes which candidates survive, which a class-only check
           # (round 9-11: "it's a String, so it's already safe") cannot see (Codex review, PR #278 round
@@ -6474,6 +6502,35 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             )
             expect(klass.call(payload: { inner: 123 })).to be_ok # "123".length is 3, satisfies the member's own length: { minimum: 3 }
             expect(klass.call(payload: { inner: "a" })).not_to be_ok # "a".length is 1, fails the member's own length: { minimum: 3 }
+          end
+
+          # Round 20's fix only reads the SIBLING's own literals (`declared_literals(other_prop)`) — it
+          # misses the case where the approximate MEMBER ITSELF is the only side naming a literal witness
+          # (Codex review, PR #278 round 23): an ancestor `type: Object, length: { minimum: 3 },
+          # inclusion: { in: [123] }` colliding with an explicit `type: { klass: [String, Integer], coerce:
+          # false }` node (no `inclusion:` of its own) accepts raw `123` at runtime ("123".length is 3,
+          # satisfying the ancestor's own length floor), but the member's OWN retained `enum: [123]` was
+          # conjoined against an `anyOf` that omitted the inexpressible Integer branch entirely (there was
+          # no literal on the OTHER side to rescue it), leaving `enum: [123]` unsatisfiable beside a
+          # `type: "string"`-only `anyOf`. Fixed by also checking the member's own literals when recovering
+          # an inexpressible branch, not only the sibling's.
+          it "preserves the approximate member's own literal when it's the only witness for an inexpressible branch" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }, inclusion: { in: [123] }
+              end
+              expects :inner, on: :payload, type: { klass: [String, Integer], coerce: false }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              anyOf: [{ type: "string", minLength: 1 }, { type: "integer" }],
+              allOf: [{ enum: [123], anyOf: [{ type: "string", minLength: 3 }, { enum: [123] }] }],
+            )
+            expect(klass.call(payload: { inner: 123 })).to be_ok # "123".length is 3, satisfies the member's own length: { minimum: 3 }
           end
 
           # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
