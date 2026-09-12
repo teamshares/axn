@@ -2384,9 +2384,22 @@ module Axn
           # type-conditional, but nothing else survives here to admit a non-numeric value either) and
           # retargeting to `enum` is what keeps the constraint instead of discarding it.
           literals = declared_literals(other_prop) | declared_literals(prop)
-          return prop.except(*NUMERIC_BOUND_ALL_KEYS) if literals.empty?
+          # `declared_literals` deliberately DROPS a `nil` member (it never violates a size/numeric bound
+          # and only complicates the intersection there), but THIS function replaces the whole `:enum`
+          # from scratch — unlike the length-retargeting functions, which only ever ADD to or leave an
+          # existing `:enum` untouched — so silently losing `nil` here is losing the position's own
+          # null-tolerance entirely, not merely simplifying an intersection (Codex review, PR #278 round
+          # 30): an untyped shape member's `inclusion: { in: [nil, 3] }, allow_nil: true` beside a
+          # colliding coercing Integer node's `comparison: { greater_than: 5 }, allow_nil: true` accepts
+          # wire `nil` at runtime (both declarations skip their own validator for it), but `3` alone fails
+          # the bound, and the resulting `enum: []` (no `nil` anywhere) made the property reject every
+          # value, nil included. Checked directly against each side's RAW (pre-`declared_literals`) enum,
+          # since this is the one place nil's admissibility can still be read once the survivor is
+          # untyped (no `type: [..., "null"]` to fall back on here).
+          nullable = Array(other_prop[:enum]).include?(nil) || Array(prop[:enum]).include?(nil)
+          return prop.except(*NUMERIC_BOUND_ALL_KEYS) if literals.empty? && !nullable
 
-          retarget_numeric_bound_to_literals(prop, literals, coercible_klasses)
+          retarget_numeric_bound_to_literals(prop, literals, coercible_klasses, nullable)
         end
 
         # The subset of `literals` a still-retained numeric bound on `prop` actually admits, as a
@@ -2402,12 +2415,13 @@ module Axn
         # (this bound's own side doesn't coerce) leaves a literal exactly as `is_a?(Numeric)` would judge
         # it uncoerced, unchanged from before. The retained `enum` keeps each literal in its ORIGINAL
         # (wire) form — "6", not 6 — since that original spelling is what the wire value must actually be.
-        def retarget_numeric_bound_to_literals(prop, literals, coercible_klasses)
+        def retarget_numeric_bound_to_literals(prop, literals, coercible_klasses, nullable)
           bound_keys = NUMERIC_BOUND_ALL_KEYS.select { |key| prop.key?(key) }
           satisfying = literals.select do |literal|
             coerced = coercible_klasses.empty? ? literal : Axn::Internal::Coercion.coerce_value(literal, coercible_klasses)
             coerced.is_a?(::Numeric) && bound_keys.none? { |key| bound_violation_for_literal(key, prop[key], coerced) }
           end
+          satisfying = [nil] + satisfying if nullable
 
           retargeted = prop.except(*NUMERIC_BOUND_ALL_KEYS)
           retargeted[:enum] = satisfying
