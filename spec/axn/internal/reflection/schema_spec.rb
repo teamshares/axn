@@ -5853,6 +5853,34 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "5" })).not_to be_ok # coerced then preprocessed to 6, fails equal_to: 5
           end
 
+          # A colliding node's OWN `nil_allowed?` is not the last word when it also has a `preprocess:` —
+          # the Proc runs BEFORE presence is judged, so a SYNTACTICALLY REQUIRED node can still admit a
+          # wire `nil` if its own preprocess turns it into something non-nil (Codex review, PR #278 round
+          # 20): a nil-tolerant ancestor member constrained to `inclusion: { in: [nil] }` beside a required
+          # node with `preprocess: ->(_) { "x" }` accepts wire `nil` at runtime (the ancestor's own
+          # validators skip for nil; the node's constant preprocess always produces "x", which passes its
+          # own type check) — but the conjoined property already carries `enum: [nil]` from the ancestor,
+          # and unconditionally adding `not: { type: "null" }` because the node is "required" produced a
+          # property that must simultaneously equal nil AND not be null — unsatisfiable, though the contract
+          # itself accepts nil. Coercion gets no such exemption (`Coercion.coerce_value` leaves nil
+          # untouched), only a `preprocess:` can rescue nil into something else.
+          it "does not reject null when a required node's own preprocess might rescue a nil-tolerant ancestor's nil" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, optional: true, inclusion: { in: [nil] }
+              end
+              expects :inner, on: :payload, type: String, preprocess: ->(_) { "x" }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(minLength: 1, allOf: [{ type: %w[string null], enum: [nil] }])
+            expect(inner).not_to have_key(:not)
+            expect(klass.call(payload: { inner: nil })).to be_ok # ancestor skips validation for nil; node preprocesses to "x"
+          end
+
           # A type-conditional bound (round 8's `length:`) is safe to KEEP from a `preprocess:`-tainted
           # side ONLY when it does not conjoin into an EMPTY interval with a bound the OTHER side
           # independently asserts (Codex review, PR #278 round 11): the ancestor's `minLength: 3` runs
@@ -6323,6 +6351,38 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             )
             expect(klass.call(payload: { inner: 1 })).not_to be_ok # "1".length is 1, fails the member's own length: { minimum: 3 }
             expect(klass.call(payload: { inner: "abc" })).to be_ok
+          end
+
+          # Omitting an inexpressible union branch WHOLESALE (the fix above) is itself too strict when a
+          # SIBLING declaration at the SAME position names a specific literal of that type — the runtime's
+          # `length:` validator measures a non-string value via `#to_s.length`, so a literal whose rendered
+          # form happens to satisfy the bound is a CONCRETE, known-satisfiable witness the schema should not
+          # discard (Codex review, PR #278 round 20): `type: { klass: [String, Integer], coerce: false },
+          # inclusion: { in: [123, "a"] }` beside the SAME ancestor `length: { minimum: 3 }` needs the
+          # Integer branch to admit `123` specifically — `"123".length` is 3 — but the blanket omission
+          # rejected every integer, turning a satisfiable contract's schema unsatisfiable once conjoined
+          # with the sibling `enum: [123, "a"]` (123 failing the string-only branch, "a" failing its own
+          # length). Each sibling literal of an inexpressible type is checked against the bound via its own
+          # wire rendering and, if it passes, added to a dedicated `enum`-only branch.
+          it "preserves a sibling literal of an inexpressible type when its wire rendering satisfies the bound" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, type: { klass: [String, Integer], coerce: false }, inclusion: { in: [123, "a"] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              anyOf: [{ type: "string", minLength: 1 }, { type: "integer" }],
+              enum: [123, "a"],
+              allOf: [{ anyOf: [{ type: "string", minLength: 3 }, { enum: [123] }] }],
+            )
+            expect(klass.call(payload: { inner: 123 })).to be_ok # "123".length is 3, satisfies the member's own length: { minimum: 3 }
+            expect(klass.call(payload: { inner: "a" })).not_to be_ok # "a".length is 1, fails the member's own length: { minimum: 3 }
           end
 
           # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
