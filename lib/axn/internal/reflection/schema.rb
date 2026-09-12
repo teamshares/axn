@@ -1865,9 +1865,6 @@ module Axn
         def retarget_unknown_class_length(prop, other_prop)
           return prop unless prop[:minLength] || prop[:maxLength]
 
-          other_types = collision_types(other_prop)
-          return retarget_length_to_type(prop, other_types.first) if other_types.size <= 1
-
           # Both sides' literals, not just the OTHER side's (Codex review, PR #278 round 23): `prop`
           # itself may be the one declaring the only witness of an inexpressible-type branch — an
           # ancestor `type: Object, length: { minimum: 3 }, inclusion: { in: [123] }` colliding with an
@@ -1877,7 +1874,32 @@ module Axn
           # entirely, leaving `enum: [123]` (retained on `prop`, unconditionally) conjoined against an
           # `anyOf` with only a `type: "string"` branch — an Integer literal can never satisfy that,
           # though `123` (`"123".length == 3`) passes the length floor at runtime.
-          retarget_length_to_union(prop, other_types, declared_literals(other_prop) | declared_literals(prop))
+          sibling_literals = declared_literals(other_prop) | declared_literals(prop)
+
+          other_types = collision_types(other_prop)
+          # An UNTYPED survivor (no `type:`/`anyOf` at all — only a literal `const`/`enum`, e.g. a bare
+          # `inclusion:` with no `type:` declared) leaves `collision_types` with nothing to read, and
+          # blindly retargeting onto `nil` DROPS the bound outright rather than merely narrowing it (Codex
+          # review, PR #278 round 28): an ancestor `type: Object, length: { minimum: 3 }` colliding with an
+          # untyped node whose `inclusion:` names both a one-key and a three-key Hash emitted only the
+          # `enum` — no `minProperties` anywhere — so the schema wrongly accepted the one-key Hash the
+          # runtime length floor rejects. The literal VALUES themselves still carry a real JSON type each
+          # (a Hash is "object" whether or not anything declared `type: Hash`), so when there is no typed
+          # collision to read, the types are derived from the literals instead — the exact same fallback
+          # the union path below already leans on for a literal an ordinary typed branch can't reach.
+          other_types = literal_json_types(sibling_literals) if other_types.empty?
+
+          return retarget_length_to_type(prop, other_types.first) if other_types.size <= 1
+
+          retarget_length_to_union(prop, other_types, sibling_literals)
+        end
+
+        # The unique JSON types the given literal VALUES themselves belong to, by their Ruby class alone —
+        # independent of whatever `type:`/`anyOf` (if anything) got declared. Used only as a fallback when
+        # there is no declared type to read at all, so a Hash/Array/String/numeric literal can still be
+        # retargeted onto its real size keyword rather than left to a bound that gets silently dropped.
+        def literal_json_types(literals)
+          literals.filter_map { |literal| map_type_for(Axn::Internal::Identity.class_of(literal)) }.uniq
         end
 
         # Every real (non-null) JSON type the surviving side's collision could produce — a single `type`
@@ -2034,7 +2056,10 @@ module Axn
           spellings = translated_literal_constraint(prop, coercible_klasses, configs)
           return stripped if spellings.nil?
 
-          stripped[:enum] = spellings
+          # `drop_numeric_bounds_unless_type_admits_number` may already have written an `:enum` here (Codex
+          # review, PR #278 round 28's own fix) — both are real, independently-enforced constraints on the
+          # SAME position, so they intersect rather than one silently overwriting the other.
+          stripped[:enum] = stripped[:enum] ? intersect_declared_literals(stripped[:enum], spellings) : spellings
           stripped
         end
 
@@ -2323,7 +2348,36 @@ module Axn
           return prop unless NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
           return prop if collision_types(other_prop).intersect?(NUMERIC_TYPES)
 
-          prop.except(*NUMERIC_BOUND_ALL_KEYS)
+          # An UNTYPED survivor (no `type:`/`anyOf` — only a `const`/`enum` with mixed-type members, e.g.
+          # a bare `inclusion:` naming no `type:`) has no admitted type to check at all, but its own
+          # LITERALS are still concrete, known values the bound can be checked against directly — dropping
+          # the bound wholesale throws that information away for nothing (Codex review, PR #278 round 28):
+          # an untyped shape member's `inclusion: { in: [3, 6, "ok"] }` beside a colliding coercing Integer
+          # node requiring `> 5` emitted just that enum with the bound gone entirely, so the schema wrongly
+          # accepted `3` and `"ok"` — the runtime rejects both (3 fails the comparison; "ok" is never
+          # coerced, being a String, and fails the node's own Integer check) and accepts only `6`. Filtering
+          # the literals down to the ones the bound actually admits (never a non-Numeric one — the bound is
+          # type-conditional, but nothing else survives here to admit a non-numeric value either) and
+          # retargeting to `enum` is what keeps the constraint instead of discarding it.
+          literals = declared_literals(other_prop) | declared_literals(prop)
+          return prop.except(*NUMERIC_BOUND_ALL_KEYS) if literals.empty?
+
+          retarget_numeric_bound_to_literals(prop, literals)
+        end
+
+        # The subset of `literals` a still-retained numeric bound on `prop` actually admits, as a
+        # replacement `enum` — narrower than dropping the bound (which would admit every literal
+        # unconditionally) and safer than leaving the bound in place beside an untyped position (which
+        # JSON Schema would silently ignore for a non-numeric instance, wrongly admitting it).
+        def retarget_numeric_bound_to_literals(prop, literals)
+          bound_keys = NUMERIC_BOUND_ALL_KEYS.select { |key| prop.key?(key) }
+          satisfying = literals.select do |literal|
+            literal.is_a?(::Numeric) && bound_keys.none? { |key| bound_violation_for_literal(key, prop[key], literal) }
+          end
+
+          retargeted = prop.except(*NUMERIC_BOUND_ALL_KEYS)
+          retargeted[:enum] = satisfying
+          retargeted
         end
 
         # `const` (from `comparison:`/`numericality:`'s `equal_to:`) and `enum` (from `inclusion:`) are
