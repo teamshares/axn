@@ -1787,13 +1787,13 @@ module Axn
         # the same "no execution-free proof available" limit `wire_spellings_for` hits for a literal value,
         # applied to a regex instead — dropped as a tolerated imprecision, not solved.
         def strip_intrinsically_typed_keys(prop, configs, other_prop)
-          literal_values = Array(prop[:const]) + Array(prop[:enum])
           stripped = prop.except(:type, :anyOf, :enum, :const)
           coercible_klasses = coercible_target_klasses(configs)
           stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format) if coercible_klasses.empty?
-          return stripped if literal_values.empty? || coercible_klasses.empty?
+          stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop)
+          return stripped if coercible_klasses.empty?
 
-          spellings = wire_spellings_for(literal_values, coercible_klasses, configs)
+          spellings = translated_literal_constraint(prop, coercible_klasses, configs)
           return stripped if spellings.nil?
 
           stripped[:enum] = spellings
@@ -1873,6 +1873,58 @@ module Axn
           return nil if candidates.empty?
 
           yield candidates
+        end
+
+        NUMERIC_BOUND_ALL_KEYS = (NUMERIC_LOWER_KEYS.keys + NUMERIC_UPPER_KEYS.keys).freeze
+        private_constant :NUMERIC_BOUND_ALL_KEYS
+
+        # A numeric bound on `prop` (kept this far because it's TYPE-CONDITIONAL — round 8's own
+        # justification) is only trustworthy when the surviving `other_prop`'s type actually ADMITS a
+        # number at this position — unlike `length:` under a coercing Symbol (whose rendered form has the
+        # SAME length as the wire string, round 11), a numeric bound describes the coerced/transformed
+        # value's magnitude, which has no relationship at all to a wire value the runtime never even reads
+        # as a number in the first place (Codex review, PR #278 round 14): under a raw `String` ancestor, a
+        # colliding `type: { klass: Integer, coerce: true }, comparison: { greater_than: 5 } }` node kept
+        # `exclusiveMinimum: 5` sitting beside the ancestor's `type: "string"` — JSON Schema ignores a
+        # numeric bound for a string instance, so it enforced nothing at all, though the runtime's own
+        # coercion+comparison check does. Unlike a discrete `const`/`enum` literal, an open-ended numeric
+        # RANGE has no small, enumerable set of wire-string candidates a round-trip check could verify, so
+        # there is no sound translation available here — the bound is dropped rather than left inert under
+        # the wrong (silently ignored) keyword, the same "stand down, don't solve" resolution `pattern`/
+        # `format` under an untranslatable transform already uses.
+        def drop_numeric_bounds_unless_type_admits_number(prop, other_prop)
+          return prop unless NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
+          return prop if Array(other_prop[:type]).intersect?(NUMERIC_TYPES)
+
+          prop.except(*NUMERIC_BOUND_ALL_KEYS)
+        end
+
+        # `const` (from `comparison:`/`numericality:`'s `equal_to:`) and `enum` (from `inclusion:`) are
+        # BOTH enforced when a node declares both — an AND, not an OR — so translating each to its wire
+        # spellings and then CONCATENATING the two sets turns an intersection into a union (Codex review,
+        # PR #278 round 14): a coercing node with `inclusion: { in: [5, 6] }, comparison: { equal_to: 5 }`
+        # concatenated to `enum: [5, "5", 6, "6"]`, advertising "6" as valid though the runtime's equality
+        # check rejects the 6 it coerces to (only 5 satisfies both). Translating each constraint SEPARATELY
+        # and intersecting the results (`:none` marks a constraint that was never declared at this position,
+        # contributing no restriction, as distinct from `nil` — a declared constraint with NO safe
+        # translation, which must invalidate the whole result rather than silently drop out of an
+        # intersection) is what keeps only the wire forms both constraints actually agree on.
+        def translated_literal_constraint(prop, coercible_klasses, configs)
+          const_values = Array(prop[:const])
+          enum_values = Array(prop[:enum])
+          return nil if const_values.empty? && enum_values.empty?
+
+          const_spellings = const_values.empty? ? :none : wire_spellings_for(const_values, coercible_klasses, configs)
+          enum_spellings = enum_values.empty? ? :none : wire_spellings_for(enum_values, coercible_klasses, configs)
+          return nil if const_spellings.nil? || enum_spellings.nil?
+
+          if const_spellings == :none
+            enum_spellings
+          elsif enum_spellings == :none
+            const_spellings
+          else
+            const_spellings & enum_spellings
+          end
         end
 
         # A literal set's wire-compatible spellings, or nil when NONE of them have a translation reflection
