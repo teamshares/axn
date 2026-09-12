@@ -2480,6 +2480,21 @@ module Axn
         def drop_numeric_bounds_unless_type_admits_number(prop, other_prop, coercible_klasses)
           return prop unless NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
 
+          # `declared_literals` deliberately DROPS a `nil` member (it never violates a size/numeric bound
+          # and only complicates the intersection there), but THIS function replaces the whole `:enum`
+          # from scratch — unlike the length-retargeting functions, which only ever ADD to or leave an
+          # existing `:enum` untouched — so silently losing `nil` here is losing the position's own
+          # null-tolerance entirely, not merely simplifying an intersection (Codex review, PR #278 round
+          # 30): an untyped shape member's `inclusion: { in: [nil, 3] }, allow_nil: true` beside a
+          # colliding coercing Integer node's `comparison: { greater_than: 5 }, allow_nil: true` accepts
+          # wire `nil` at runtime (both declarations skip their own validator for it), but `3` alone fails
+          # the bound, and the resulting `enum: []` (no `nil` anywhere) made the property reject every
+          # value, nil included. Checked directly against each side's RAW (pre-`declared_literals`) enum,
+          # since this is the one place nil's admissibility can still be read once the survivor is
+          # untyped (no `type: [..., "null"]` to fall back on here).
+          literals = declared_literals(other_prop) | declared_literals(prop)
+          nullable = Array(other_prop[:enum]).include?(nil) || Array(prop[:enum]).include?(nil)
+
           survivor_types = collision_types(other_prop)
           numeric_survivor_types = survivor_types & NUMERIC_TYPES
           if numeric_survivor_types.any?
@@ -2496,7 +2511,20 @@ module Axn
             # `> 5`). Narrowing THIS side's own `:type` down to just the numeric-admitting subset is what
             # makes the eventual conjunction (this property ANDed with the survivor's own emission) require
             # BOTH — so only an instance that is ALSO one of the numeric types can ever reach the bound.
-            return prop.merge(type: numeric_survivor_types.size == 1 ? numeric_survivor_types.first : numeric_survivor_types)
+            #
+            # But narrowing the TYPE is only safe when there is no non-numeric LITERAL witness that would
+            # need it (Codex review, PR #278 round 36): a member declared as `type: [Integer, String],
+            # inclusion: { in: ["6"] }` beside the SAME coercing node accepts wire "6" at runtime (the
+            # member's own type union admits the String, and the node coerces it to 6, satisfying `> 5`),
+            # but narrowing to `type: "integer"` excludes "6" itself (it's a String) — conjoined with the
+            # member's own `enum: ["6"]`, nothing satisfies the result. Retargeting via the SAME literal
+            # mechanism the untyped case below already uses (keeping each literal that, once coerced,
+            # satisfies the bound, in its ORIGINAL form) is what preserves "6" as the witness it is; the
+            # type is narrowed only when there is no non-numeric literal to lose by doing so.
+            non_numeric_literals = literals.reject { |literal| literal.is_a?(::Numeric) }
+            return prop.merge(type: numeric_survivor_types.size == 1 ? numeric_survivor_types.first : numeric_survivor_types) if non_numeric_literals.empty?
+
+            return retarget_numeric_bound_to_literals(prop, literals, coercible_klasses, nullable)
           end
 
           # An UNTYPED survivor (no `type:`/`anyOf` — only a `const`/`enum` with mixed-type members, e.g.
@@ -2510,20 +2538,6 @@ module Axn
           # the literals down to the ones the bound actually admits (never a non-Numeric one — the bound is
           # type-conditional, but nothing else survives here to admit a non-numeric value either) and
           # retargeting to `enum` is what keeps the constraint instead of discarding it.
-          literals = declared_literals(other_prop) | declared_literals(prop)
-          # `declared_literals` deliberately DROPS a `nil` member (it never violates a size/numeric bound
-          # and only complicates the intersection there), but THIS function replaces the whole `:enum`
-          # from scratch — unlike the length-retargeting functions, which only ever ADD to or leave an
-          # existing `:enum` untouched — so silently losing `nil` here is losing the position's own
-          # null-tolerance entirely, not merely simplifying an intersection (Codex review, PR #278 round
-          # 30): an untyped shape member's `inclusion: { in: [nil, 3] }, allow_nil: true` beside a
-          # colliding coercing Integer node's `comparison: { greater_than: 5 }, allow_nil: true` accepts
-          # wire `nil` at runtime (both declarations skip their own validator for it), but `3` alone fails
-          # the bound, and the resulting `enum: []` (no `nil` anywhere) made the property reject every
-          # value, nil included. Checked directly against each side's RAW (pre-`declared_literals`) enum,
-          # since this is the one place nil's admissibility can still be read once the survivor is
-          # untyped (no `type: [..., "null"]` to fall back on here).
-          nullable = Array(other_prop[:enum]).include?(nil) || Array(prop[:enum]).include?(nil)
           return prop.except(*NUMERIC_BOUND_ALL_KEYS) if literals.empty? && !nullable
 
           retarget_numeric_bound_to_literals(prop, literals, coercible_klasses, nullable)
@@ -2690,24 +2704,32 @@ module Axn
         # silently excluded rather than raising: `coerce_value` itself never raises (a failed parse just
         # returns its input unchanged).
         #
-        # For a numeric value, `sibling_wire_candidates` — the OTHER side's own declared String literals
-        # — are ALSO tried, since `#to_s` is not the only wire spelling a numeric coercer accepts (Codex
-        # review, PR #278 round 35): a raw String member restricted to `"05"` beside a coercing Integer
-        # node restricted to `5` is satisfiable at runtime (`Integer("05", 10) == 5`), but this function
-        # only ever generated `[5, "5"]` for the literal `5` — never `"05"` — so a schema built from
-        # `[5, "5"]` conjoined with the sibling's own `enum: ["05"]` had no member in common, though the
-        # runtime accepts wire "05". Trying the sibling's own literals as ADDITIONAL candidates (rather
-        # than trying to enumerate every non-canonical spelling a numeric parser might accept) is what
-        # recovers exactly the finite set of wire values that could ever actually reach this position.
+        # `sibling_wire_candidates` — the OTHER side's own declared String literals — are ALSO tried
+        # regardless of `value`'s own class, since `#to_s`/the canonical spelling table is never the
+        # COMPLETE inverse for any coercer: a numeric parser accepts non-canonical spellings a bare
+        # `#to_s` never generates (Codex review, PR #278 round 35): a raw String member restricted to
+        # `"05"` beside a coercing Integer node restricted to `5` is satisfiable at runtime (`Integer("05",
+        # 10) == 5`), but this function only ever generated `[5, "5"]` for the literal `5` — never "05" —
+        # so a schema built from `[5, "5"]` conjoined with the sibling's own `enum: ["05"]` had no member
+        # in common, though the runtime accepts wire "05". The SAME gap exists for every OTHER coercer,
+        # not just numeric ones (Codex review, PR #278 round 36): `Coercion.boolean_wire_spellings(true)`
+        # only names its OWN canonical spellings (`TRUTHY_STRINGS`, all lowercase), but `coerce_boolean`
+        # itself downcases before comparing — a raw String member restricted to `"TRUE"` beside a coercing
+        # `:boolean` node restricted to `true` is satisfiable at runtime (`coerce_boolean("TRUE") == true`)
+        # but "TRUE" was never among the generated candidates either. Trying the sibling's own literals as
+        # ADDITIONAL candidates UNIVERSALLY (rather than trying to enumerate every non-canonical spelling
+        # every coercer might accept) is what recovers exactly the finite set of wire values that could
+        # ever actually reach this position, for whichever coercer is actually in play.
         def round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates)
           candidates =
             case value
             when nil then [nil]
-            when ::Integer, ::Float then [value, value.to_s, *sibling_wire_candidates]
+            when ::Integer, ::Float then [value, value.to_s]
             when ::String then [value]
             when true, false then Axn::Internal::Coercion.boolean_wire_spellings(value)
             else []
             end
+          candidates += sibling_wire_candidates unless value.nil?
 
           matching_raw_literals = raw_literals_for(value, raw_literals)
           candidates.uniq.select do |candidate|
