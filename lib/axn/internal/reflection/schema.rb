@@ -1803,23 +1803,36 @@ module Axn
         # the OPPOSITE of what a coercion-based `enum: [5, "5"]` would advertise. `coercible_target_klasses`
         # asks the narrower question (coercion only, no preprocess bypass) for exactly this gate.
         #
-        # A TYPE-CONDITIONAL bound (length/size/numeric) from a `preprocess:`-tainted side is safe to KEEP
-        # on its own (round 8) but NOT safe to keep once it would conjoin into an EMPTY interval with a
-        # bound the OTHER side independently asserts (Codex review, PR #278 round 11): an ancestor `type:
-        # String, length: { minimum: 3 }` beside a colliding node `type: String, length: { maximum: 1 },
-        # preprocess: ->(v) { v[0] }` accepts raw `"abc"` at runtime (the ancestor checks the RAW value,
-        # the node's own check runs on the TRANSFORMED `"a"`), but keeping both bounds conjoins `minLength:
-        # 3` with `maxLength: 1` — a node no string can satisfy, for a satisfiable contract. Round 8's
-        # justification (a type-conditional keyword can never manufacture a contradiction on its own) holds
-        # for a MISMATCHED TYPE, but not here: both sides are strings, and the contradiction comes from the
-        # two bounds describing DIFFERENT underlying values (raw vs. an arbitrary transform of it) that
-        # reflection cannot prove agree. `other_prop` — the OTHER side's property, captured before EITHER
-        # side is stripped so evaluation order can't change the answer — lets `drop_conflicting_size_bounds`
-        # detect exactly that empty-interval case and drop only the offending pair, leaving an unrelated
-        # bound (as in round 8's own, non-colliding-bound test) untouched.
+        # A TYPE-CONDITIONAL bound (length/size/numeric) from a transforming side is safe to KEEP on its own
+        # (round 8) but NOT safe to keep once it would conjoin into an EMPTY interval with a bound the OTHER
+        # side independently asserts (Codex review, PR #278 round 11): an ancestor `type: String, length: {
+        # minimum: 3 }` beside a colliding node `type: String, length: { maximum: 1 }, preprocess: ->(v) {
+        # v[0] }` accepts raw `"abc"` at runtime (the ancestor checks the RAW value, the node's own check
+        # runs on the TRANSFORMED `"a"`), but keeping both bounds conjoins `minLength: 3` with `maxLength:
+        # 1` — a node no string can satisfy, for a satisfiable contract. Round 8's justification (a
+        # type-conditional keyword can never manufacture a contradiction on its own) holds for a MISMATCHED
+        # TYPE, but not here: both sides are strings, and the contradiction comes from the two bounds
+        # describing DIFFERENT underlying values (raw vs. a transform of it) that reflection cannot prove
+        # agree. `other_prop` — the OTHER side's property, captured before EITHER side is stripped so
+        # evaluation order can't change the answer — lets `drop_conflicting_size_bounds` detect exactly that
+        # empty-interval case and drop only the offending pair, leaving an unrelated bound (as in round 8's
+        # own, non-colliding-bound test) untouched.
         #
-        # `pattern`/`format` get no such interval check — unlike a numeric range, "do these two regexes
-        # share a match" has no cheap, always-correct answer reflection can compute, so a preprocess-tainted
+        # This check — and the `pattern`/`format` drop below it — runs UNCONDITIONALLY, over a COERCING side
+        # too, not only a preprocessing one: round 8's premise that a KNOWN coercer preserves a bound's
+        # measured property doesn't hold for every `Coercion::SUPPORTED` target, only for the ones whose
+        # rendered form is an EXACT inverse of what was parsed (Symbol's `.to_s`/`.to_sym`) — it fails for
+        # Time/DateTime/Date, whose canonical rendering can have a different length than whatever wire
+        # spelling was parsed (Codex review, PR #278 round 18): a raw `String` member's `length: { is: 20 }`
+        # beside a colliding `type: { klass: Time, coerce: true }, length: { is: 23 } }` node accepts
+        # "2026-08-25T12:00:00Z" (wire length 20) at runtime — the ancestor checks that raw string, the
+        # node's own check runs on `Time#to_s` of the parsed value (length 23) — but conjoining both
+        # `minLength`/`maxLength` pairs unstripped produced an interval (`>= 23` and `<= 20`) nothing can
+        # satisfy. Rather than special-case which SUPPORTED coercers preserve size, both checks now run
+        # regardless of transform kind.
+        #
+        # `pattern`/`format` get no interval check at all — unlike a numeric range, "do these two regexes
+        # share a match" has no cheap, always-correct answer reflection can compute, so a transforming
         # side's pattern is dropped OUTRIGHT rather than risk conjoining two DISJOINT ones into a node
         # nothing can satisfy (Codex review, PR #278 round 13): an ancestor `/\Aa+\z/` beside a colliding
         # `preprocess: ->(_) { "b" }, format: /\Ab+\z/` node accepts raw "a" at runtime (its OWN check runs
@@ -1830,7 +1843,7 @@ module Axn
         def strip_intrinsically_typed_keys(prop, configs, other_prop)
           stripped = prop.except(:type, :anyOf, :enum, :const)
           coercible_klasses = coercible_target_klasses(configs)
-          stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format) if coercible_klasses.empty?
+          stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format)
           stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop)
           stripped = drop_bounds_contradicted_by_other_literals(stripped, other_prop)
           return stripped if coercible_klasses.empty?
@@ -1899,8 +1912,17 @@ module Axn
         # both being asked of the identical schema instance. This is a purely SCHEMA-level satisfiability
         # question independent of transform type, so — unlike `drop_conflicting_size_bounds` — it runs
         # unconditionally, even over a bound kept because coercion made it safe (round 11).
+        #
+        # `declared_literals` — the TRUE, intersected value set (not a bare concatenation of `const` and
+        # `enum`) — because a member declaring BOTH is enforced on BOTH, and treating them as a union can
+        # hide the one value that actually satisfies both (Codex review, PR #278 round 18): a member with
+        # `const: 1` (from `equal_to: 1`) AND `enum: [1, 5]` (from `inclusion: { in: [1, 5] }`) truly admits
+        # only `1` — `5` is in the inclusion list but fails the separate equality check — yet concatenating
+        # both lists into `[1, 1, 5]` let `5` alone survive the "does every literal violate this bound"
+        # check, hiding a real conflict a colliding `exclusiveMinimum: 3` has with the position's actual
+        # (intersected) value set of just `{1}`.
         def drop_bounds_contradicted_by_other_literals(prop, other_prop)
-          literals = Array(other_prop[:const]) + Array(other_prop[:enum]).compact
+          literals = declared_literals(other_prop)
           return prop if literals.empty?
 
           contradicted = (SIZE_BOUND_KEY_PAIRS.flatten + NUMERIC_BOUND_ALL_KEYS).select do |key|
@@ -1911,6 +1933,20 @@ module Axn
           end
 
           contradicted.empty? ? prop : prop.except(*contradicted)
+        end
+
+        # The TRUE value set a property's `const`/`enum` jointly admit — both are enforced when both are
+        # declared (an AND, not an OR), so the combined set is their INTERSECTION, not a concatenation of
+        # the two (see drop_bounds_contradicted_by_other_literals). Either alone is used as-is; `enum`'s
+        # `nil` member (a nullable position's null branch) is dropped here since it never violates a size/
+        # numeric bound and only complicates the intersection.
+        def declared_literals(prop)
+          const_values = Array(prop[:const])
+          enum_values = Array(prop[:enum]).compact
+          return const_values if enum_values.empty?
+          return enum_values if const_values.empty?
+
+          const_values & enum_values
         end
 
         # Per bound keyword: the JSON type it applies to, the measurement it bounds (`#length`/`#size` for

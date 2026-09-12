@@ -6220,6 +6220,57 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 3 })).not_to be_ok # a raw wire integer, fails comparison: { greater_than: 5 } directly
           end
 
+          # Round 8's premise (a KNOWN coercer preserves a bound's measured property) holds for Symbol
+          # (`.to_s`/`.to_sym` are exact inverses) but not for Time/DateTime/Date, whose canonical rendering
+          # can have a different length than whatever wire spelling was actually parsed (Codex review, PR
+          # #278 round 18): a raw `String` member's `length: { is: 20 }` beside a colliding `type: { klass:
+          # Time, coerce: true }, length: { is: 23 } }` node accepts "2026-08-25T12:00:00Z" (wire length 20)
+          # at runtime — the ancestor checks that raw string; the node's own check runs on `Time#to_s` of
+          # the parsed value (length 23) — but conjoining both `minLength`/`maxLength` pairs unstripped
+          # produced an interval nothing satisfies (`>= 23` and `<= 20`). `drop_conflicting_size_bounds` (and
+          # the `pattern`/`format` drop beside it) now run regardless of transform kind, not only under
+          # `preprocess:`.
+          it "drops a coercing node's own conflicting length: bound when the coercer does not preserve size" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, length: { is: 20 }
+              end
+              expects :inner, on: :payload, type: { klass: Time, coerce: true }, length: { is: 23 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", minLength: 20, maxLength: 20)
+            expect(klass.call(payload: { inner: "2026-08-25T12:00:00Z" })).to be_ok # wire length 20; Time#to_s (length 23) never schema-checked
+          end
+
+          # `drop_bounds_contradicted_by_other_literals` (round 17) concatenated the other side's `const`
+          # and `enum` instead of intersecting them, even though both are enforced (an AND, not an OR) when
+          # both are declared — hiding a real conflict (Codex review, PR #278 round 18): an ancestor member
+          # with `const: 1` (from `comparison: { equal_to: 1 }`) AND `enum: [1, 5]` (from `inclusion: { in:
+          # [1, 5] } }`) truly admits only `1` (`5` is in the inclusion list but fails the separate equality
+          # check) — but concatenating `[1, 1, 5]` let the unrelated `5` survive the "does every literal
+          # violate this bound" check, hiding the conflict a colliding `comparison: { greater_than: 3 }`
+          # (after a preprocess mapping 1 -> 4) actually has with the position's TRUE, intersected value set
+          # of just `{1}`.
+          it "intersects the other side's const: and enum: before checking bound contradiction, not concatenates them" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Integer, comparison: { equal_to: 1 }, inclusion: { in: [1, 5] }
+              end
+              expects :inner, on: :payload, type: Integer, preprocess: ->(v) { v == 1 ? 4 : v }, comparison: { greater_than: 3 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer", enum: [1, 5], const: 1)
+            expect(klass.call(payload: { inner: 1 })).to be_ok # the ancestor's true (intersected) value set is just {1}; preprocessed to 4, passes > 3
+          end
+
           # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
           # declares both — translating each to its wire spellings and then CONCATENATING them turns an
           # intersection into a union (Codex review, PR #278 round 14): `inclusion: { in: [5, 6] },
