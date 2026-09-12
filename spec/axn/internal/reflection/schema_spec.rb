@@ -6165,6 +6165,61 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "other" })).not_to be_ok # coerces to neither Date literal, fails inclusion
           end
 
+          # A size/numeric bound retained on a transforming side can be unsatisfiable at the SCHEMA level
+          # even with no COMPETING bound on the other side at all — `enum`/`const` names the EXACT set of
+          # values the position may take, and JSON Schema evaluates every keyword against the SAME instance,
+          # so if not one of those literals could ever satisfy the bound, nothing can ever satisfy the
+          # conjunction (Codex review, PR #278 round 17): an ancestor `inclusion: { in: ["a"] }` (a single,
+          # 1-character literal) beside a colliding node's `length: { minimum: 3 }, preprocess: ->(v) { v *
+          # 3 } }` accepts raw "a" at runtime (the ancestor's own check requires the RAW value to equal "a";
+          # the node's own check runs on the preprocessed "aaa"), but the SCHEMA required one wire string to
+          # both equal "a" (length 1) and have length >= 3 — impossible, regardless of what preprocess does
+          # at runtime, since `enum` and `minLength` are both asked of the identical schema instance.
+          it "drops a retained size bound the other side's own literal enum could never satisfy" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, inclusion: { in: ["a"] }
+              end
+              expects :inner, on: :payload, type: String, length: { minimum: 3 }, preprocess: ->(v) { v * 3 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", enum: ["a"], minLength: 1)
+            expect(klass.call(payload: { inner: "a" })).to be_ok # ancestor's literal "a" passes; node's check runs on preprocessed "aaa"
+          end
+
+          # `collision_types` (round 13/15's union-aware helper), not a bare `other_prop[:type]` read: a
+          # UNION survivor spells its types under `anyOf`, not a top-level `type` (Codex review, PR #278
+          # round 17): an ancestor `type: [Integer, String]` beside the SAME coercing `comparison: {
+          # greater_than: 5 }` node let a raw (already-numeric) wire integer `3` through, since
+          # `other_prop[:type]` was nil for the union and the bound was dropped though an Integer branch
+          # genuinely admits — and needs — it. Kept UNSCOPED (a plain top-level keyword, not retargeted per
+          # branch the way length: is) — the union's OTHER, non-numeric branch (a wire String that coerces
+          # to a violating number) is the SAME residual imprecision round 14 already accepted, not a new one.
+          it "keeps a coercing node's own numeric bound when a union survivor's branches admit a number" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Integer, String]
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { greater_than: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              exclusiveMinimum: 5,
+              not: { type: "null" },
+              allOf: [{ anyOf: [{ type: "integer" }, { type: "string", minLength: 1 }] }],
+            )
+            expect(klass.call(payload: { inner: 6 })).to be_ok
+            expect(klass.call(payload: { inner: 3 })).not_to be_ok # a raw wire integer, fails comparison: { greater_than: 5 } directly
+          end
+
           # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
           # declares both — translating each to its wire spellings and then CONCATENATING them turns an
           # intersection into a union (Codex review, PR #278 round 14): `inclusion: { in: [5, 6] },

@@ -1832,6 +1832,7 @@ module Axn
           coercible_klasses = coercible_target_klasses(configs)
           stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format) if coercible_klasses.empty?
           stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop)
+          stripped = drop_bounds_contradicted_by_other_literals(stripped, other_prop)
           return stripped if coercible_klasses.empty?
 
           spellings = translated_literal_constraint(prop, coercible_klasses, configs)
@@ -1886,6 +1887,61 @@ module Axn
           conflicting.empty? ? prop : prop.except(*conflicting)
         end
 
+        # A size/numeric bound retained on `prop` can be unsatisfiable at the SCHEMA level even with no
+        # competing bound on the other side at all — `enum`/`const` on `other_prop` names the EXACT set of
+        # values the position may take, and JSON Schema evaluates every keyword against the SAME instance,
+        # so if not one of those literals could ever satisfy the bound, nothing can ever satisfy the
+        # conjunction (Codex review, PR #278 round 17): an ancestor `inclusion: { in: ["a"] }` beside a
+        # colliding node's `length: { minimum: 3 }, preprocess: ->(v) { v * 3 }` accepts raw "a" at runtime
+        # (the ancestor's own check requires the RAW value to equal "a"; the node's own check runs on the
+        # preprocessed "aaa"), but the SCHEMA requires one wire string to both equal "a" (length 1) and have
+        # length >= 3 — impossible, regardless of what runs at runtime, since `enum` and `minLength` are
+        # both being asked of the identical schema instance. This is a purely SCHEMA-level satisfiability
+        # question independent of transform type, so — unlike `drop_conflicting_size_bounds` — it runs
+        # unconditionally, even over a bound kept because coercion made it safe (round 11).
+        def drop_bounds_contradicted_by_other_literals(prop, other_prop)
+          literals = Array(other_prop[:const]) + Array(other_prop[:enum]).compact
+          return prop if literals.empty?
+
+          contradicted = (SIZE_BOUND_KEY_PAIRS.flatten + NUMERIC_BOUND_ALL_KEYS).select do |key|
+            next false unless prop.key?(key)
+
+            verdicts = literals.map { |literal| bound_violation_for_literal(key, prop[key], literal) }.compact
+            !verdicts.empty? && verdicts.all?
+          end
+
+          contradicted.empty? ? prop : prop.except(*contradicted)
+        end
+
+        # Per bound keyword: the JSON type it applies to, the measurement it bounds (`#length`/`#size` for
+        # a container, the literal's own value for a number), and the comparison that means "fails the
+        # bound" for that keyword's floor/ceiling/exclusive reading.
+        BOUND_VIOLATION_CHECKS = {
+          minLength: [::String, :length, :<],
+          maxLength: [::String, :length, :>],
+          minItems: [::Array, :length, :<],
+          maxItems: [::Array, :length, :>],
+          minProperties: [::Hash, :size, :<],
+          maxProperties: [::Hash, :size, :>],
+          minimum: [::Numeric, :itself, :<],
+          maximum: [::Numeric, :itself, :>],
+          exclusiveMinimum: [::Numeric, :itself, :<=],
+          exclusiveMaximum: [::Numeric, :itself, :>=],
+        }.freeze
+        private_constant :BOUND_VIOLATION_CHECKS
+
+        # Whether `literal` — of whatever JSON type `key` actually applies to — fails the bound `key`
+        # asserts, or `nil` when `literal` isn't of a type `key` has any opinion about at all (a Hash literal
+        # says nothing about a `minLength` bound, since it could never be the String instance that keyword
+        # constrains). `nil` here is what lets the caller tell "every type-matching literal failed" (a real
+        # contradiction) apart from "no literal was even the relevant type" (nothing to contradict).
+        def bound_violation_for_literal(key, bound, literal)
+          klass, measure, comparator = BOUND_VIOLATION_CHECKS.fetch(key)
+          return nil unless literal.is_a?(klass)
+
+          literal.public_send(measure).public_send(comparator, bound)
+        end
+
         # Whether the numeric bounds `prop` and `other_prop` each declare (any mix of inclusive/exclusive)
         # combine into an interval admitting no value — the strictest lower bound exceeds the strictest
         # upper bound, or the two are equal with at least one side exclusive there (an inclusive `>= 3`
@@ -1933,9 +1989,19 @@ module Axn
         # there is no sound translation available here — the bound is dropped rather than left inert under
         # the wrong (silently ignored) keyword, the same "stand down, don't solve" resolution `pattern`/
         # `format` under an untranslatable transform already uses.
+        #
+        # `collision_types` (not a bare `other_prop[:type]` read), because a UNION survivor spells its types
+        # under `anyOf`, not a top-level `type` (Codex review, PR #278 round 17): an ancestor `type:
+        # [Integer, String]` beside the SAME coercing `comparison: { greater_than: 5 }` node let a raw
+        # (already-numeric) wire integer `3` through, since `other_prop[:type]` was nil for the union and
+        # the bound was dropped though an Integer branch genuinely admits — and needs — it. Keeping the
+        # bound unscoped (a plain top-level keyword, not retargeted per branch the way length: is) accepts
+        # the SAME residual imprecision round 14 already established for the union's OTHER, non-numeric
+        # branch (a wire String that coerces to a violating number is a case JSON Schema's numeric keywords
+        # can never see, whichever branch they sit on) — an accepted trade, not a new one.
         def drop_numeric_bounds_unless_type_admits_number(prop, other_prop)
           return prop unless NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
-          return prop if Array(other_prop[:type]).intersect?(NUMERIC_TYPES)
+          return prop if collision_types(other_prop).intersect?(NUMERIC_TYPES)
 
           prop.except(*NUMERIC_BOUND_ALL_KEYS)
         end
