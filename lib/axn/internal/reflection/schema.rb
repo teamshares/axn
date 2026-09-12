@@ -1982,10 +1982,32 @@ module Axn
 
           reachable = literals_reachable_via_wire_rendering(prop, sibling_literals)
           branches << { enum: reachable } if reachable.any?
-          return retargeted if branches.empty?
+          return reject_unretargetable_length_bound(retargeted) if branches.empty?
 
           retargeted[:anyOf] = branches
           retargeted
+        end
+
+        # No surviving type can express the bound and no literal witness rescues it — returning `prop`
+        # AS-IS here doesn't merely drop the bound, it deletes the ONLY constraint the property had, since
+        # the unknown-class side contributed nothing else (Codex review, PR #278 round 31): an ancestor
+        # `type: Object, length: { minimum: 3 }` member colliding with an exactly-typed-but-unsized
+        # `type: { klass: Integer, coerce: false }` node (no `inclusion:`/`comparison:` literal on either
+        # side to salvage a witness from) reached this branch with nothing left at all, so the emitted
+        # property was simply `{type: "integer"}` — admitting EVERY integer, though the runtime's own
+        # `length:` check (measuring via `#to_s.length`, JSON Schema's `minLength` having no meaning for a
+        # non-string instance) rejects `1` and accepts only integers whose decimal rendering is long
+        # enough. There is no JSON Schema keyword for "the string rendering of a non-string value has this
+        # size" (round 19's own limit), so — unlike a genuinely bare, unconstrained collision — this
+        # position had a REAL bound that's simply inexpressible here, and the honest answer is an
+        # unsatisfiable `enum: []` rather than silently admitting everything. Left alone when the property
+        # already carries some OTHER enum of its own (one `sibling_literals` couldn't already have folded
+        # in and found unreachable, e.g. a String-shaped literal) — not the scenario measured here, but
+        # avoids clobbering a constraint this function didn't derive.
+        def reject_unretargetable_length_bound(prop)
+          return prop if prop.key?(:enum)
+
+          prop.merge(enum: [])
         end
 
         # The sibling literals of a type with no NATIVE JSON size keyword (already covered by their own

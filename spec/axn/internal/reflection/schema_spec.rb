@@ -6760,6 +6760,37 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 123 })).to be_ok # "123".length is 3, satisfies the member's own length: { minimum: 3 }
           end
 
+          # With no literal witness on EITHER side to salvage (no `inclusion:`/`comparison:` anywhere),
+          # a sole survivor type with no size keyword left `retarget_length_to_union` with an empty
+          # `branches` list — returning `prop` as-is there doesn't merely drop the bound, it deletes the
+          # ONLY constraint the property had (Codex review, PR #278 round 31): an ancestor `type: Object,
+          # length: { minimum: 3 }` member colliding with an exactly-typed-but-unsized `type: { klass:
+          # Integer, coerce: false }` node emitted just `{type: "integer"}` — admitting EVERY integer,
+          # though the runtime's own length check (`#to_s.length`) rejects `1` and accepts only integers
+          # whose decimal rendering is long enough. There is no JSON Schema keyword for "the string
+          # rendering of a non-string value has this size" (round 19's own limit), and round 19 already
+          # established the doctrine for exactly this situation in the MULTI-type union case — omit
+          # (reject) a type this can't express a bound for, rather than admit it unconditionally. This
+          # extends that SAME doctrine to the single-type case round 28/29 introduced, rather than leaving
+          # it as the one path that still silently drops the bound.
+          it "rejects a sole non-sized type when no literal witness survives to narrow it" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: false }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer", allOf: [{ enum: [] }])
+            # satisfies the member's own length: { minimum: 3 } at runtime — a documented, tolerated
+            # residual: reflection cannot express this bound and stands unsatisfiable rather than loose
+            expect(klass.call(payload: { inner: 123 })).to be_ok
+          end
+
           # Checking a literal against a numeric bound with a RAW `is_a?(Numeric)` test misses a String
           # literal that COERCES into a number — the same coercer this position's own runtime check reads
           # its wire value through (Codex review, PR #278 round 29): an untyped sibling `enum: ["6", "ok"]`
