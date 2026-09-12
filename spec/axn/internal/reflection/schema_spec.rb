@@ -5928,6 +5928,36 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: { a: 1 } })).not_to be_ok # fails the member's own real length: { minimum: 3 }
           end
 
+          # A UNION survivor (`type: [Hash, Array]`) has no top-level `type` — its own emission is `anyOf`
+          # branches, one per member type — so reading `other_prop[:type]` alone (the fix above) missed it
+          # and dropped the bound entirely (Codex review, PR #278 round 15): `type: Object, length: {
+          # minimum: 3 }` beside a colliding `type: [Hash, Array]` node let a one-item Array OR a
+          # one-property Hash pass, though the member's real length floor rejects both. A single retargeted
+          # keyword can't serve every branch — `minProperties` would be silently ignored (vacuously true)
+          # for an Array instance — so each branch gets its OWN paired `{type:, sizeKey:}` entry in a new
+          # `anyOf`, which is what makes the bound actually discriminate by the instance's real type.
+          it "retargets an unknown-class member's length: into each branch of a union survivor" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, type: [Hash, Array]
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              anyOf: [{ type: "object", minProperties: 1 }, { type: "array", minItems: 1 }],
+              allOf: [{ anyOf: [{ type: "object", minProperties: 3 }, { type: "array", minItems: 3 }] }],
+            )
+            expect(klass.call(payload: { inner: { a: 1, b: 2, c: 3 } })).to be_ok
+            expect(klass.call(payload: { inner: [1, 2, 3] })).to be_ok
+            expect(klass.call(payload: { inner: { a: 1 } })).not_to be_ok # fails the member's own real length: { minimum: 3 }
+            expect(klass.call(payload: { inner: [1] })).not_to be_ok # fails the member's own real length: { minimum: 3 }
+          end
+
           # `:boolean` accepts several wire spellings for one native value, unlike Integer/Float's single
           # canonical `#to_s` — but `Coercion.boolean_wire_spellings` is the single source for the WHOLE
           # accepted set, so a coercible boolean literal is translated the same way a numeric one is
@@ -6107,6 +6137,32 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(inner).to eq(enum: ["fallback"], not: { type: "null" }, allOf: [{ type: "string", minLength: 1 }])
             expect(klass.call(payload: { inner: "fallback" })).to be_ok
             expect(klass.call(payload: { inner: "2026-01-01" })).not_to be_ok # coerces to a Date, never String "2026-01-01"
+          end
+
+          # Two DIFFERENT declared literals can normalize to the identical wire spelling — matching only
+          # the FIRST one that renders that way (the fix above) still gets this wrong when the first match
+          # happens to be the wrong-typed one (Codex review, PR #278 round 15): `inclusion: { in:
+          # ["2026-01-01", Date.new(2026, 1, 1)] }` under a `[Date, String]` coercing type has BOTH entries
+          # render to "2026-01-01" — picking only the String (declared first) made the candidate "2026-01-01"
+          # fail to round-trip (it coerces to a Date, never that String) even though it round-trips fine
+          # against the SECOND entry, the Date literal itself. Checking every raw literal sharing that
+          # spelling — not just the first — is what recovers the safe spelling.
+          it "matches a normalized literal against every source literal sharing that spelling, not just the first" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: [Date, String], coerce: true },
+                              inclusion: { in: ["2026-01-01", Date.new(2026, 1, 1)] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: ["2026-01-01"], not: { type: "null" }, allOf: [{ type: "string", minLength: 1 }])
+            expect(klass.call(payload: { inner: "2026-01-01" })).to be_ok
+            expect(klass.call(payload: { inner: "other" })).not_to be_ok # coerces to neither Date literal, fails inclusion
           end
 
           # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
