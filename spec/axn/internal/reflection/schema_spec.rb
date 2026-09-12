@@ -6727,7 +6727,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(enum: [6], not: { type: "null" }, allOf: [{ enum: [3, 6, "ok"] }])
+            # `type: "integer"` survives here (round 32) since the ancestor `field :inner` declares no
+            # `type:` of its own to strip the node's own type FOR — a purely cosmetic sharpening (the
+            # `enum: [6]` already pins the value exactly either way, so admissibility is unchanged).
+            expect(inner).to eq(enum: [6], type: "integer", allOf: [{ enum: [3, 6, "ok"] }])
             expect(klass.call(payload: { inner: 3 })).not_to be_ok # fails the node's own comparison: { greater_than: 5 }
             expect(klass.call(payload: { inner: 6 })).to be_ok
             expect(klass.call(payload: { inner: "ok" })).not_to be_ok # never coerced (not numeric-shaped) and fails the node's own Integer check
@@ -6791,6 +6794,59 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 123 })).to be_ok
           end
 
+          # `strip_intrinsically_typed_keys` dropped a transforming node's own `type`/`anyOf`
+          # UNCONDITIONALLY — correct only when the OTHER side actually makes a competing type claim to
+          # strip them FOR (Codex review, PR #278 round 32): an ancestor `field :inner` (genuinely
+          # UNTYPED — no `type:` at all, no validators) colliding with an explicit `type: { klass: Integer,
+          # coerce: true }` node dropped the node's own `type: "integer"` anyway, and with no literal
+          # constraint to translate either, the merged schema retained only the ancestor's generic
+          # presence/null constraints — accepting a non-numeric string like "abc" the runtime's own
+          # (uncoerced, since coercion only parses valid Integer strings) type check rejects. Fixed by only
+          # stripping `type`/`anyOf` when the other side actually has one to conflict with.
+          it "keeps a transforming node's own type when the sibling makes no competing type claim" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer")
+            expect(klass.call(payload: { inner: "5" })).to be_ok # coerces to 5
+            expect(klass.call(payload: { inner: "abc" })).not_to be_ok # never coerces to a number and fails the node's own Integer check
+          end
+
+          # `reject_unretargetable_length_bound` (round 31's own fix) left a PRE-EXISTING `:enum` alone
+          # whenever the property already had one — but that stale enum is exactly the set
+          # `sibling_literals` was built from, and reaching this branch at all means NONE of its non-null
+          # members survived the wire-rendering reachability check (Codex review, PR #278 round 32): a
+          # nullable `type: Object, length: { minimum: 3 }, inclusion: { in: [nil, 1] }` member colliding
+          # with a nullable, non-coercing Integer node has no retargetable branch (`1.to_s` is too short),
+          # but leaving the ancestor's own stale `enum: [nil, 1]` in place admitted `1` anyway — the
+          # runtime rejects it, though `nil` (which bypasses the bound entirely) proves the contract
+          # itself remains satisfiable. Fixed by ALWAYS overwriting the enum, keeping only an admitted
+          # `nil` (every non-null literal already failed the same reachability check).
+          it "empties a stale enum down to just an admitted nil when no length-valid witness survives" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }, inclusion: { in: [nil, 1] }, allow_nil: true
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: false }, allow_nil: true
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: %w[integer null], allOf: [{ enum: [nil] }])
+            expect(klass.call(payload: { inner: nil })).to be_ok
+            expect(klass.call(payload: { inner: 1 })).not_to be_ok # "1".length is 1, fails the member's own length: { minimum: 3 }
+          end
+
           # Checking a literal against a numeric bound with a RAW `is_a?(Numeric)` test misses a String
           # literal that COERCES into a number — the same coercer this position's own runtime check reads
           # its wire value through (Codex review, PR #278 round 29): an untyped sibling `enum: ["6", "ok"]`
@@ -6841,7 +6897,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(enum: [nil], allOf: [{ enum: [nil, 3] }])
+            # `type: ["integer", "null"]` survives here (round 32) for the same reason — the ancestor
+            # `field :inner` declares no `type:` of its own, so there's nothing to strip the node's own
+            # type FOR. Purely cosmetic: `enum: [nil]` already pins the value exactly either way.
+            expect(inner).to eq(enum: [nil], type: %w[integer null], allOf: [{ enum: [nil, 3] }])
             expect(klass.call(payload: { inner: nil })).to be_ok # both declarations skip their own validator for nil
             expect(klass.call(payload: { inner: 3 })).not_to be_ok # fails the node's own comparison: { greater_than: 5 }
           end

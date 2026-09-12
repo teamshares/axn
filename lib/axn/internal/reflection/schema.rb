@@ -1915,7 +1915,8 @@ module Axn
           # UNION branch already gets — rather than reinventing a second, narrower filter here.
           return retarget_length_to_type(prop, other_types.first) if other_types.size == 1 && SIZE_CONSTRAINT_KEYS.key?(other_types.first)
 
-          retarget_length_to_union(prop, other_types, sibling_literals)
+          nullable_literal = Array(other_prop[:enum]).include?(nil) || Array(prop[:enum]).include?(nil)
+          retarget_length_to_union(prop, other_types, sibling_literals, nullable_literal)
         end
 
         # The unique JSON types the given literal VALUES themselves belong to, by their Ruby class alone —
@@ -1967,7 +1968,7 @@ module Axn
         # SAME bound via its own wire rendering (`#to_s.length`) and, if it passes, added to a dedicated
         # `enum`-only branch (no `type:`, since `enum`/`const` alone already pin the exact value regardless
         # of type) — narrower than admitting the whole type, but wide enough to keep this witness alive.
-        def retarget_length_to_union(prop, other_types, sibling_literals)
+        def retarget_length_to_union(prop, other_types, sibling_literals, nullable_literal)
           retargeted = prop.except(:minLength, :maxLength)
           branches = other_types.filter_map do |type|
             floor_key = SIZE_CONSTRAINT_KEYS[type]
@@ -1982,7 +1983,7 @@ module Axn
 
           reachable = literals_reachable_via_wire_rendering(prop, sibling_literals)
           branches << { enum: reachable } if reachable.any?
-          return reject_unretargetable_length_bound(retargeted) if branches.empty?
+          return reject_unretargetable_length_bound(retargeted, nullable_literal) if branches.empty?
 
           retargeted[:anyOf] = branches
           retargeted
@@ -2000,14 +2001,22 @@ module Axn
         # enough. There is no JSON Schema keyword for "the string rendering of a non-string value has this
         # size" (round 19's own limit), so — unlike a genuinely bare, unconstrained collision — this
         # position had a REAL bound that's simply inexpressible here, and the honest answer is an
-        # unsatisfiable `enum: []` rather than silently admitting everything. Left alone when the property
-        # already carries some OTHER enum of its own (one `sibling_literals` couldn't already have folded
-        # in and found unreachable, e.g. a String-shaped literal) — not the scenario measured here, but
-        # avoids clobbering a constraint this function didn't derive.
-        def reject_unretargetable_length_bound(prop)
-          return prop if prop.key?(:enum)
-
-          prop.merge(enum: [])
+        # unsatisfiable `enum: []` rather than silently admitting everything.
+        #
+        # ALWAYS overwrites whatever `:enum` the property already had, rather than leaving a pre-existing
+        # one alone (round 31's own first attempt at this): that stale enum is exactly the set
+        # `sibling_literals` was built from, and `reachable` (computed by the caller, always empty by the
+        # time this runs — a non-empty one would have kept `branches` non-empty) is the proof that NONE of
+        # its non-null members actually satisfy the bound (Codex review, PR #278 round 32): a nullable
+        # `type: Object, length: { minimum: 3 }, inclusion: { in: [nil, 1] }` member colliding with a
+        # nullable, non-coercing Integer node has no retargetable branch (`1.to_s` is too short), but
+        # leaving the ancestor's own stale `enum: [nil, 1]` in place admitted `1` anyway — the runtime
+        # rejects it, though `nil` (which bypasses the bound entirely) proves the contract itself remains
+        # satisfiable. `nullable_literal` — whether either side's OWN raw enum admitted `nil` — is the one
+        # survivor worth keeping; every non-null literal already failed the same reachability check that
+        # got this function called in the first place.
+        def reject_unretargetable_length_bound(prop, nullable_literal)
+          prop.merge(enum: nullable_literal ? [nil] : [])
         end
 
         # The sibling literals of a type with no NATIVE JSON size keyword (already covered by their own
@@ -2091,7 +2100,20 @@ module Axn
         # the same "no execution-free proof available" limit `wire_spellings_for` hits for a literal value,
         # applied to a regex instead — dropped as a tolerated imprecision, not solved.
         def strip_intrinsically_typed_keys(prop, configs, other_prop)
-          stripped = prop.except(:type, :anyOf, :enum, :const)
+          # `:type`/`:anyOf` are stripped only when the OTHER side actually makes a competing type claim
+          # to strip them FOR — an ancestor that is genuinely UNTYPED (no `type:` at all, e.g. a bare
+          # `field :inner` with no validators) asserts nothing this side's own type could ever contradict,
+          # so stripping it anyway throws away the only type information the merged position had left
+          # (Codex review, PR #278 round 32): an untyped ancestor member colliding with an explicit
+          # `type: { klass: Integer, coerce: true }` node dropped the node's own `type: "integer"`
+          # unconditionally, and with no literal constraint to translate either, the merged schema kept
+          # only the ancestor's generic presence/null constraints — accepting a non-numeric string like
+          # "abc" the runtime's own (uncoerced, since coercion only parses valid Integer strings) type
+          # check rejects. `:enum`/`:const` are still stripped UNCONDITIONALLY regardless — those describe
+          # a literal VALUE, always translated to its wire spelling by the logic below regardless of
+          # whether the other side happens to compete for the same keyword.
+          intrinsic_type_keys = other_prop[:type] || other_prop[:anyOf] ? %i[type anyOf] : []
+          stripped = prop.except(*intrinsic_type_keys, :enum, :const)
           coercible_klasses = coercible_target_klasses(configs)
           stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format)
           stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop, coercible_klasses)
