@@ -1387,7 +1387,17 @@ module Axn
           member_prop = prop[:properties][key]
           child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
           apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
-          null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
+          # A route's OWN `nil_allowed?` is not the last word when it also has a `preprocess:` (Codex
+          # review, PR #278 round 20): the Proc runs BEFORE presence is judged, so a route that is
+          # syntactically REQUIRED can still admit a wire `nil` if its own preprocess turns it into
+          # something non-nil — `preprocess: ->(_) { "x" }` on an otherwise-required node accepts wire nil
+          # at runtime (the constant "x" always satisfies its own type check), yet the node's OWN
+          # `nil_allowed?` reads false, since it declares neither `allow_nil:` nor `optional:`. Coercion
+          # gets no such exemption — `Coercion.coerce_value` leaves `nil` untouched (round 8's own
+          # justification), so a coercing-only route's `nil_allowed?` is still authoritative. The ANCESTOR
+          # members still have final say either way (`members.all?`, unchanged) — a member that genuinely
+          # forbids nil still forbids it here, regardless of what the node's own preprocess might do.
+          null_ok = non_model_configs.all? { |c| nil_allowed?(c) || preprocesses_wire_value?([c]) } &&
                     members.all? { |m| nil_allowed?(m) } &&
                     !subtree_requires_presence?(node, ann)
           reject_null!(child_prop) unless null_ok
@@ -1736,7 +1746,7 @@ module Axn
           other_types = collision_types(other_prop)
           return retarget_length_to_type(prop, other_types.first) if other_types.size <= 1
 
-          retarget_length_to_union(prop, other_types)
+          retarget_length_to_union(prop, other_types, declared_literals(other_prop))
         end
 
         # Every real (non-null) JSON type the surviving side's collision could produce — a single `type`
@@ -1764,14 +1774,23 @@ module Axn
         # a bare Integer branch that admits every integer unconditionally would accept e.g. `1` even though
         # the ancestor's real validator rejects it (`1.to_s.length` is 1, short of a `minimum: 3` floor).
         # There is no JSON Schema keyword for "the STRING RENDERING of a non-string value has this size," so
-        # rather than invent one, the branch is dropped — reflection is allowed to be STRICTER than the
-        # runtime (never looser), so rejecting every instance of a type this can't express a bound for is
-        # the safe direction, even though it means some individually-valid integers (a `.to_s.length` long
-        # enough to pass) are no longer admitted by the schema either. When NO branch has an expressible
-        # keyword at all, the whole `anyOf` would otherwise be empty (vacuously false, rejecting every
-        # value) — that regresses past "no way to express this, drop it" into "reject everything," so in
-        # that case the size bound is dropped entirely instead, same as the single-type answer.
-        def retarget_length_to_union(prop, other_types)
+        # rather than invent one for an ARBITRARY value of that type, the branch itself is omitted —
+        # reflection is allowed to be STRICTER than the runtime (never looser), so rejecting every instance
+        # of a type this can't express a bound for is the safe default.
+        #
+        # But omitting the branch WHOLESALE is itself too strict when a SIBLING declaration at this same
+        # position ALSO names specific literals — `sibling_literals`, the exact side's own `const`/`enum`
+        # (Codex review, PR #278 round 20): `type: { klass: [String, Integer], coerce: false }, inclusion: {
+        # in: [123, "a"] }` beside the SAME ancestor `length: { minimum: 3 }` needs the Integer branch to
+        # admit `123` specifically — `"123".length` is 3, so the runtime's own length check (measuring via
+        # `#to_s.length`) accepts it — but the blanket omission rejected every integer, including this
+        # concretely-known-satisfiable one, turning a satisfiable contract's schema unsatisfiable once
+        # conjoined with the sibling `enum: [123, "a"]` (123 failing the string-only retained branch, "a"
+        # failing its own length). Each sibling literal of an inexpressible type is checked against the
+        # SAME bound via its own wire rendering (`#to_s.length`) and, if it passes, added to a dedicated
+        # `enum`-only branch (no `type:`, since `enum`/`const` alone already pin the exact value regardless
+        # of type) — narrower than admitting the whole type, but wide enough to keep this witness alive.
+        def retarget_length_to_union(prop, other_types, sibling_literals)
           retargeted = prop.except(:minLength, :maxLength)
           branches = other_types.filter_map do |type|
             floor_key = SIZE_CONSTRAINT_KEYS[type]
@@ -1783,10 +1802,27 @@ module Axn
             branch[ceiling_key] = prop[:maxLength] if ceiling_key && prop[:maxLength]
             branch
           end
+
+          reachable = literals_reachable_via_wire_rendering(prop, sibling_literals)
+          branches << { enum: reachable } if reachable.any?
           return retargeted if branches.empty?
 
           retargeted[:anyOf] = branches
           retargeted
+        end
+
+        # The sibling literals of a type with no NATIVE JSON size keyword (already covered by their own
+        # typed branch otherwise) whose WIRE RENDERING (`#to_s.length` — the same fallback the underlying
+        # `length:` validator itself uses for a value with no native `#length`/`#size`) satisfies `prop`'s
+        # original bound.
+        def literals_reachable_via_wire_rendering(prop, sibling_literals)
+          sibling_literals.reject { |literal| literal.is_a?(::String) || literal.is_a?(::Array) || literal.is_a?(::Hash) }
+                          .select { |literal| wire_rendered_length_satisfies?(prop, literal) }
+        end
+
+        def wire_rendered_length_satisfies?(prop, literal)
+          size = literal.to_s.length
+          (!prop[:minLength] || size >= prop[:minLength]) && (!prop[:maxLength] || size <= prop[:maxLength])
         end
 
         # Removes exactly the keywords that carry an INTRINSIC type binding — `type`/`anyOf` (the type
@@ -2284,6 +2320,16 @@ module Axn
 
             !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
           end
+        end
+
+        # Whether ANY config in this list has a `preprocess:` — the narrower half of transforms_wire_value?
+        # with the coercibility branch removed, used specifically to gate the nullability exemption in
+        # apply_explicit_child! (see its own comment): a preprocess runs BEFORE presence is judged and can
+        # turn a wire `nil` into something non-nil, unlike coercion, which `Coercion.coerce_value` leaves
+        # `nil` untouched by (round 8's own justification) — so only a preprocess, never coercion alone,
+        # can make a syntactically-required config's own `nil_allowed?` an unreliable signal.
+        def preprocesses_wire_value?(configs)
+          configs.any? { |config| config.respond_to?(:preprocess) && config.preprocess }
         end
 
         # Whether `single_type_for`'s INPUT branch for this token falls through to its permissive `{type:
