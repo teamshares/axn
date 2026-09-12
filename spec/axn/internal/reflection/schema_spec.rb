@@ -6523,6 +6523,36 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "3" })).not_to be_ok # coerces to 3, which also fails comparison: { greater_than: 5 }
           end
 
+          # Narrowing the survivor's TYPE down to just the numeric branch (the fix directly above) is only
+          # safe when there's no non-numeric LITERAL witness that specifically needs the excluded branch
+          # (Codex review, PR #278 round 36): a member declared as `type: [Integer, String], inclusion: {
+          # in: ["6"] }` beside the SAME coercing node accepts wire "6" at runtime (the member's own type
+          # union admits the String, and the node coerces it to 6, satisfying `> 5`), but narrowing to
+          # `type: "integer"` excludes "6" itself (it's a String) — conjoined with the member's own `enum:
+          # ["6"]`, nothing satisfies the result. Fixed by retargeting via the SAME literal mechanism the
+          # untyped case already uses (keeping each literal that, once coerced, satisfies the bound, in
+          # its ORIGINAL form) whenever a non-numeric literal witness exists, narrowing the type only when
+          # there is none to lose.
+          it "retargets via literals instead of narrowing the type when a non-numeric witness exists" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Integer, String], inclusion: { in: ["6"] }
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { greater_than: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              enum: ["6"],
+              not: { type: "null" },
+              allOf: [{ anyOf: [{ type: "integer" }, { type: "string", minLength: 1 }], enum: ["6"] }],
+            )
+            expect(klass.call(payload: { inner: "6" })).to be_ok # coerces to 6, satisfying comparison: { greater_than: 5 }
+          end
+
           # Round 8's premise (a KNOWN coercer preserves a bound's measured property) holds for Symbol
           # (`.to_s`/`.to_sym` are exact inverses) but not for Time/DateTime/Date, whose canonical rendering
           # can have a different length than whatever wire spelling was actually parsed (Codex review, PR
@@ -6939,6 +6969,35 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             )
             expect(klass.call(payload: { inner: "05" })).to be_ok # coerces to 5 (Integer("05", 10)), satisfying comparison: { equal_to: 5 }
             expect(klass.call(payload: { inner: "5" })).not_to be_ok # not in the sibling's own inclusion: { in: ["05"] }
+          end
+
+          # The SAME gap exists for every OTHER coercer, not just a numeric one (Codex review, PR #278
+          # round 36): `Coercion.boolean_wire_spellings(true)` only names its OWN canonical spellings
+          # (`TRUTHY_STRINGS`, all lowercase), but `coerce_boolean` itself downcases before comparing — a
+          # raw String member restricted to `inclusion: { in: ["TRUE"] }` beside a coercing `:boolean` node
+          # restricted to `inclusion: { in: [true] }` is satisfiable at runtime (`coerce_boolean("TRUE") ==
+          # true`), but "TRUE" was never among the generated candidates either, since round 35's fix only
+          # added sibling candidates for the Integer/Float branch. Fixed by trying sibling candidates
+          # universally, regardless of which coercer is actually in play.
+          it "tries a sibling's own literal spellings when inverting a boolean coercer" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, inclusion: { in: ["TRUE"] }
+              end
+              expects :inner, on: :payload, type: { klass: :boolean, coerce: true }, inclusion: { in: [true] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              enum: [true, 1, "1", "true", "t", "yes", "y", "on", "TRUE"],
+              not: { type: "null" },
+              allOf: [{ type: "string", minLength: 1, enum: ["TRUE"] }],
+            )
+            expect(klass.call(payload: { inner: "TRUE" })).to be_ok # coerce_boolean downcases before comparing, satisfying inclusion: { in: [true] }
+            expect(klass.call(payload: { inner: "true" })).not_to be_ok # not in the sibling's own inclusion: { in: ["TRUE"] }
           end
 
           # `reject_unretargetable_length_bound` (round 31's own fix) left a PRE-EXISTING `:enum` alone
