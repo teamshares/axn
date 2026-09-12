@@ -5697,6 +5697,36 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { deep: { x: {} } })).to be_ok
           end
 
+          # `axis_configs_for` only carried each axis's own `:klass` into its view, dropping the REST of
+          # the axis bag — harmless one level deep, but wrong once the axis itself is ANOTHER map bag with
+          # its own nested `values:`/`keys:` axis (Codex review, PR #278 round 26): outer `klass: Hash`
+          # axes whose nested values are respectively `Object` and `Hash` lost that inner structure here,
+          # so when the merge recursed one level deeper for the INNER axis, `axis_configs_for` found no
+          # `:of` to read on the view at all, and the inner `Object` axis's approximate `{type: "string"}`
+          # hint was conjoined as exact all over again — the runtime accepts a value containing the nested
+          # Hash, but the emitted `additionalProperties` node was unsatisfiable. Fixed by carrying the
+          # axis's own `:of` forward into the view alongside its synthesized `:type`, so `axis_configs_for`
+          # can keep recursing exactly as deep as the collision itself goes.
+          it "preserves nested axis provenance through a doubly-nested map collision" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :deep, type: Hash, of: { values: { klass: Hash, of: { values: Object } } }
+              end
+              expects(:deep, on: :payload, type: Hash, of: { values: { klass: Hash, of: { values: Hash } } })
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:deep]
+            expect(deep).to eq(
+              type: "object",
+              additionalProperties: { type: "object", additionalProperties: { type: "object" } },
+              minProperties: 1,
+            )
+            expect(klass.call(payload: { deep: { x: { y: {} } } })).to be_ok
+          end
+
           # An approximate side's TYPE is untrustworthy, but a literal-value `enum` (from `inclusion:`) is
           # not premised on the type at all — JSON Schema applies it to the instance regardless of any
           # `type` keyword, and the runtime keeps enforcing it too. Dropping the whole member — type hint
