@@ -1691,17 +1691,24 @@ module Axn
             token = axis ? axis[:klass] : raw
             next nil if token.nil?
 
-            # `:of` is carried forward alongside the synthesized `:type`, not just the axis's own `:klass`
-            # — needed so a DOUBLY-nested collision (one axis's own values/keys is ANOTHER map bag) can
-            # recurse (Codex review, PR #278 round 26): outer `klass: Hash` axes whose NESTED values are
-            # respectively `Object` and `Hash` lost that inner structure here, since only the outer klass
-            # survived into the view — so when `merge_shape_member_property` recurses one level deeper for
-            # the INNER axis, `axis_configs_for(inner_configs, :values)` found no `:of` to read at all
-            # (this view's `.validations` had only `:type`), and the inner `Object` axis's approximate hint
-            # was conjoined as exact all over again, one level down. Threading the axis's OWN `:of` through
-            # is what lets `axis_configs_for` keep recursing exactly as far as the collision itself does.
+            # `:of` and `:shape` are carried forward alongside the synthesized `:type`, not just the
+            # axis's own `:klass` — needed so a DEEPER collision inside the axis (another map bag nested
+            # in `:of`, or named members declared via the axis's own `shape:`) can still be reconciled
+            # (Codex review, PR #278 round 26 for `:of`, round 27 for `:shape`): outer `klass: Hash` axes
+            # whose NESTED values are respectively `Object` and `Hash` lost that inner structure here,
+            # since only the outer klass survived into the view — so when `merge_shape_member_property`
+            # recursed one level deeper for the INNER axis, `axis_configs_for` found no `:of` to read at
+            # all, and the inner `Object` axis's approximate hint was conjoined as exact all over again.
+            # `shape_members_at` reads `config.validations.dig(:shape, :members)` the same way for a NAMED
+            # child inside the axis's own `shape:` block — two `values: { klass: Hash, shape: { … } }` axes
+            # colliding needs the SAME per-child config lookup `merge_emitted_maps` already does for an
+            # ordinary object, and without `:shape` on the view it found nothing, so a child typed `Object`
+            # in one axis's shape collided with `Hash` in the other's as though BOTH were exact. Threading
+            # both through is what lets every recursive lookup this file already has (`shape_members_at`,
+            # `axis_configs_for` itself) keep working exactly as it does for an ordinary field's configs.
             validations = { type: token }
             validations[:of] = axis[:of] if axis && axis[:of]
+            validations[:shape] = axis[:shape] if axis && axis[:shape]
             AxisConfigView.new(validations)
           end
         end
