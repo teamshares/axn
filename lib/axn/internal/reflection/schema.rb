@@ -2112,7 +2112,31 @@ module Axn
           # check rejects. `:enum`/`:const` are still stripped UNCONDITIONALLY regardless — those describe
           # a literal VALUE, always translated to its wire spelling by the logic below regardless of
           # whether the other side happens to compete for the same keyword.
-          intrinsic_type_keys = other_prop[:type] || other_prop[:anyOf] ? %i[type anyOf] : []
+          #
+          # A sibling's OWN `:enum`/`:const` counts as a competing claim too, not just its `:type`/
+          # `:anyOf` — a literal value is itself of some JSON type (this file's own standing doctrine,
+          # see the intrinsic-key doc below), so an untyped-but-literal-constrained sibling can conflict
+          # with a kept transformed type exactly as a typed one can (Codex review, PR #278 round 33): a
+          # `field :inner, inclusion: { in: ["raw", true] }` sibling (no `type:` at all, but a mixed
+          # String/Boolean literal set) beside an Integer node whose `preprocess` always returns a
+          # constant accepted raw `"raw"` at runtime (the node's own check runs on the constant, always
+          # Integer-valid), but keeping the node's post-transform `type: "integer"` conjoined it with the
+          # sibling's `enum: ["raw", true]` — neither literal is ever an integer, so nothing satisfies
+          # both at once, though the sibling's own check alone is what the runtime actually applies.
+          #
+          # But NOT when `prop` itself already carries a numeric bound or its own `const`/`enum` — those
+          # go on, later in this same function, to populate a NARROWED `:enum` of their own (via
+          # `drop_numeric_bounds_unless_type_admits_number`'s literal retargeting or `translated_literal_
+          # constraint`), and that narrowed enum is what actually keeps the kept type consistent — round
+          # 28/30's own tests collide an untyped-but-literal ancestor with exactly this shape (a coercing
+          # node with its own `comparison:`), and there the retained `type:` never conflicts with the
+          # narrowed `enum:` it ends up beside (every retained literal already IS that type). Checked
+          # against `prop` BEFORE anything strips it, so this reads the declaration as originally written.
+          prop_has_own_narrowing = NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) } || prop.key?(:enum) || prop.key?(:const)
+          other_prop_claims_type = other_prop.key?(:type) || other_prop.key?(:anyOf)
+          other_prop_claims_literal = other_prop.key?(:enum) || other_prop.key?(:const)
+          strip_intrinsic_type = other_prop_claims_type || (other_prop_claims_literal && !prop_has_own_narrowing)
+          intrinsic_type_keys = strip_intrinsic_type ? %i[type anyOf] : []
           stripped = prop.except(*intrinsic_type_keys, :enum, :const)
           coercible_klasses = coercible_target_klasses(configs)
           stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format)
@@ -2414,7 +2438,25 @@ module Axn
         # can never see, whichever branch they sit on) — an accepted trade, not a new one.
         def drop_numeric_bounds_unless_type_admits_number(prop, other_prop, coercible_klasses)
           return prop unless NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
-          return prop if collision_types(other_prop).intersect?(NUMERIC_TYPES)
+
+          survivor_types = collision_types(other_prop)
+          numeric_survivor_types = survivor_types & NUMERIC_TYPES
+          if numeric_survivor_types.any?
+            return prop if numeric_survivor_types == survivor_types
+
+            # The survivor admits a number AND something else (e.g. `type: [Integer, String]`) — keeping
+            # the bound as a bare top-level keyword leaves the NON-numeric branch completely uncontained,
+            # since JSON Schema silently ignores a numeric keyword for a non-numeric instance (Codex
+            # review, PR #278 round 33): a `[Integer, String]` shape member beside a coercing Integer
+            # node's `comparison: { greater_than: 5 }` kept `exclusiveMinimum: 5` sitting beside the
+            # survivor's own `anyOf: [{type: "integer"}, {type: "string"}]` — a wire STRING instance
+            # satisfies the `type: "string"` branch and is simply never checked against the bound at all,
+            # so the schema admitted wire "3" though the runtime coerces it to 3 and rejects it (not
+            # `> 5`). Narrowing THIS side's own `:type` down to just the numeric-admitting subset is what
+            # makes the eventual conjunction (this property ANDed with the survivor's own emission) require
+            # BOTH — so only an instance that is ALSO one of the numeric types can ever reach the bound.
+            return prop.merge(type: numeric_survivor_types.size == 1 ? numeric_survivor_types.first : numeric_survivor_types)
+          end
 
           # An UNTYPED survivor (no `type:`/`anyOf` — only a `const`/`enum` with mixed-type members, e.g.
           # a bare `inclusion:` naming no `type:`) has no admitted type to check at all, but its own

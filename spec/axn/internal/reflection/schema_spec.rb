@@ -6492,10 +6492,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # round 17): an ancestor `type: [Integer, String]` beside the SAME coercing `comparison: {
           # greater_than: 5 }` node let a raw (already-numeric) wire integer `3` through, since
           # `other_prop[:type]` was nil for the union and the bound was dropped though an Integer branch
-          # genuinely admits — and needs — it. Kept UNSCOPED (a plain top-level keyword, not retargeted per
-          # branch the way length: is) — the union's OTHER, non-numeric branch (a wire String that coerces
-          # to a violating number) is the SAME residual imprecision round 14 already accepted, not a new one.
-          it "keeps a coercing node's own numeric bound when a union survivor's branches admit a number" do
+          # genuinely admits — and needs — it. Round 17 kept the bound UNSCOPED (a plain top-level keyword,
+          # not retargeted per branch the way length: is), documenting the union's OTHER, non-numeric
+          # branch (a wire String that coerces to a violating number) as an accepted residual — but round
+          # 33 closed that residual too: a bare `exclusiveMinimum:` beside the survivor's own `anyOf` left
+          # the STRING branch completely uncontained (JSON Schema silently ignores a numeric keyword for a
+          # non-numeric instance), so wire `"3"` satisfied `type: "string"` and was never checked against
+          # the bound at all — the schema admitted it though the runtime coerces it to `3` and rejects it.
+          # Fixed by narrowing THIS side's own `:type` to just the numeric-admitting subset, so the eventual
+          # conjunction with the survivor's own `anyOf` requires an instance to be BOTH.
+          it "narrows a coercing node's own type to the numeric branch when a union survivor also admits a string" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -6509,11 +6515,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner).to eq(
               exclusiveMinimum: 5,
-              not: { type: "null" },
+              type: "integer",
               allOf: [{ anyOf: [{ type: "integer" }, { type: "string", minLength: 1 }] }],
             )
             expect(klass.call(payload: { inner: 6 })).to be_ok
             expect(klass.call(payload: { inner: 3 })).not_to be_ok # a raw wire integer, fails comparison: { greater_than: 5 } directly
+            expect(klass.call(payload: { inner: "3" })).not_to be_ok # coerces to 3, which also fails comparison: { greater_than: 5 }
           end
 
           # Round 8's premise (a KNOWN coercer preserves a bound's measured property) holds for Symbol
@@ -6818,6 +6825,35 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(inner).to eq(type: "integer")
             expect(klass.call(payload: { inner: "5" })).to be_ok # coerces to 5
             expect(klass.call(payload: { inner: "abc" })).not_to be_ok # never coerces to a number and fails the node's own Integer check
+          end
+
+          # Round 32's fix checked only the sibling's `:type`/`:anyOf` — a sibling with NO type at all but
+          # a mixed-literal `:enum`/`:const` still carries an intrinsic type claim through its literal
+          # VALUES, and can conflict with a kept transformed type exactly as a typed sibling can (Codex
+          # review, PR #278 round 33): a `field :inner, inclusion: { in: ["raw", true] }` sibling (no
+          # `type:`, but a String/Boolean literal set) beside an Integer node whose `preprocess` always
+          # returns a constant accepted raw "raw" at runtime (the node's own check runs on the constant,
+          # always Integer-valid), but keeping the node's post-transform `type: "integer"` — with NOTHING
+          # of its own to keep it consistent, since this node has no `comparison:`/`inclusion:` of its own
+          # to populate a narrowing `enum:` — conjoined it with the sibling's `enum: ["raw", true]`, and
+          # neither literal is ever an integer. Fixed by treating the sibling's own `enum`/`const` as a
+          # competing claim too — UNLESS `prop` itself has a numeric bound or its own `const`/`enum` that
+          # will populate a consistent narrowed enum later in this same function (round 28/30's own tests
+          # cover exactly that case, and keeping the type there is correct, not a bug).
+          it "strips a transforming node's own type beside a sibling's literal-only claim" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, inclusion: { in: ["raw", true] }
+              end
+              expects :inner, on: :payload, type: Integer, preprocess: ->(_v) { 10 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: ["raw", true], not: { type: "null" })
+            expect(klass.call(payload: { inner: "raw" })).to be_ok # ancestor's inclusion passes; node's own check runs on the preprocessed constant 10
           end
 
           # `reject_unretargetable_length_bound` (round 31's own fix) left a PRE-EXISTING `:enum` alone
