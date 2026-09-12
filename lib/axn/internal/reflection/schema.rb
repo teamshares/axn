@@ -2100,6 +2100,36 @@ module Axn
         # the same "no execution-free proof available" limit `wire_spellings_for` hits for a literal value,
         # applied to a regex instead — dropped as a tolerated imprecision, not solved.
         def strip_intrinsically_typed_keys(prop, configs, other_prop)
+          drop_type_inconsistent_with_enum(strip_intrinsically_typed_keys_before_consistency_check(prop, configs, other_prop))
+        end
+
+        # A last, UNCONDITIONAL safety net over every upfront heuristic above that decides whether to
+        # KEEP a transforming side's own type — rounds 32-34 each found a narrower way that heuristic
+        # could be wrong (an untyped sibling, a sibling with mixed literals, a node's own literal
+        # translating to a mixed wire type), and round 35 found yet another: even the NUMERIC-BOUND
+        # exemption (round 34's own remaining case, believed safe because it keeps each retained literal
+        # in its ORIGINAL declared form) can retain a literal whose original form simply ISN'T the kept
+        # type (Codex review, PR #278 round 35): a sibling `inclusion: { in: ["6", true] }` (mixed literal
+        # types, genuinely untyped) beside a coercing Integer node's `comparison: { greater_than: 5 }`
+        # accepts wire "6" at runtime (coerces to 6, satisfying the bound), but `drop_numeric_bounds_
+        # unless_type_admits_number` retains the ORIGINAL literal "6" (a String) in the retargeted enum
+        # while the exemption keeps `type: "integer"` — "6" itself is never an integer, so the kept type
+        # and its own accompanying enum contradict each other before the sibling's own enum even enters
+        # the conjunction. Rather than trying to predict every way an upfront heuristic could be wrong,
+        # this checks the ACTUAL result: whenever `stripped` ends up with both a `:type` and an `:enum`,
+        # every enum member (`nil` aside — nullability is a separate, already-handled concern) must
+        # actually BE one of the kept type(s), or the type is dropped after all.
+        def drop_type_inconsistent_with_enum(prop)
+          return prop unless prop[:type] && prop[:enum]
+
+          types = collision_types(prop)
+          literals = prop[:enum].compact
+          return prop if literals.all? { |literal| types.include?(map_type_for(Axn::Internal::Identity.class_of(literal))) }
+
+          prop.except(:type, :anyOf)
+        end
+
+        def strip_intrinsically_typed_keys_before_consistency_check(prop, configs, other_prop)
           # `:type`/`:anyOf` are stripped only when the OTHER side actually makes a competing type claim
           # to strip them FOR — an ancestor that is genuinely UNTYPED (no `type:` at all, e.g. a bare
           # `field :inner` with no validators) asserts nothing this side's own type could ever contradict,
@@ -2156,7 +2186,7 @@ module Axn
           stripped = drop_length_bound_beside_sibling_pattern(stripped, other_prop)
           return stripped if coercible_klasses.empty?
 
-          spellings = translated_literal_constraint(prop, coercible_klasses, configs)
+          spellings = translated_literal_constraint(prop, coercible_klasses, configs, other_prop)
           return stripped if spellings.nil?
 
           # `drop_numeric_bounds_unless_type_admits_number` may already have written an `:enum` here (Codex
@@ -2535,13 +2565,13 @@ module Axn
         # contributing no restriction, as distinct from `nil` — a declared constraint with NO safe
         # translation, which must invalidate the whole result rather than silently drop out of an
         # intersection) is what keeps only the wire forms both constraints actually agree on.
-        def translated_literal_constraint(prop, coercible_klasses, configs)
+        def translated_literal_constraint(prop, coercible_klasses, configs, other_prop)
           const_values = Array(prop[:const])
           enum_values = Array(prop[:enum])
           return nil if const_values.empty? && enum_values.empty?
 
-          const_spellings = const_values.empty? ? :none : wire_spellings_for(const_values, coercible_klasses, configs)
-          enum_spellings = enum_values.empty? ? :none : wire_spellings_for(enum_values, coercible_klasses, configs)
+          const_spellings = const_values.empty? ? :none : wire_spellings_for(const_values, coercible_klasses, configs, other_prop)
+          enum_spellings = enum_values.empty? ? :none : wire_spellings_for(enum_values, coercible_klasses, configs, other_prop)
           return nil if const_spellings.nil? || enum_spellings.nil?
 
           if const_spellings == :none
@@ -2585,9 +2615,12 @@ module Axn
         # both, including the wire-unreachable "5"). `configs` recovers each literal's PRE-normalization
         # provenance (see raw_literal_for) — necessary because the ALREADY-emitted `values` have had that
         # provenance erased.
-        def wire_spellings_for(values, coercible_klasses, configs)
+        def wire_spellings_for(values, coercible_klasses, configs, other_prop)
           raw_literals = raw_inclusion_literals(configs)
-          spellings = values.flat_map { |value| round_tripping_wire_spellings(value, coercible_klasses, raw_literals) }.uniq
+          # A sibling's own declared String literals are FINITE, CONCRETE wire values worth trying
+          # alongside a numeric value's own generated candidates — see round_tripping_wire_spellings.
+          sibling_wire_candidates = declared_literals(other_prop).select { |literal| literal.is_a?(::String) }
+          spellings = values.flat_map { |value| round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates) }.uniq
           spellings.empty? ? nil : spellings
         end
 
@@ -2656,18 +2689,28 @@ module Axn
         # spellings` names; anything else tries only itself. A candidate that fails to round-trip is
         # silently excluded rather than raising: `coerce_value` itself never raises (a failed parse just
         # returns its input unchanged).
-        def round_tripping_wire_spellings(value, coercible_klasses, raw_literals)
+        #
+        # For a numeric value, `sibling_wire_candidates` — the OTHER side's own declared String literals
+        # — are ALSO tried, since `#to_s` is not the only wire spelling a numeric coercer accepts (Codex
+        # review, PR #278 round 35): a raw String member restricted to `"05"` beside a coercing Integer
+        # node restricted to `5` is satisfiable at runtime (`Integer("05", 10) == 5`), but this function
+        # only ever generated `[5, "5"]` for the literal `5` — never `"05"` — so a schema built from
+        # `[5, "5"]` conjoined with the sibling's own `enum: ["05"]` had no member in common, though the
+        # runtime accepts wire "05". Trying the sibling's own literals as ADDITIONAL candidates (rather
+        # than trying to enumerate every non-canonical spelling a numeric parser might accept) is what
+        # recovers exactly the finite set of wire values that could ever actually reach this position.
+        def round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates)
           candidates =
             case value
             when nil then [nil]
-            when ::Integer, ::Float then [value, value.to_s]
+            when ::Integer, ::Float then [value, value.to_s, *sibling_wire_candidates]
             when ::String then [value]
             when true, false then Axn::Internal::Coercion.boolean_wire_spellings(value)
             else []
             end
 
           matching_raw_literals = raw_literals_for(value, raw_literals)
-          candidates.select do |candidate|
+          candidates.uniq.select do |candidate|
             matching_raw_literals.any? { |raw_literal| wire_candidate_round_trips?(candidate, raw_literal, coercible_klasses) }
           end
         end
