@@ -1387,17 +1387,22 @@ module Axn
           member_prop = prop[:properties][key]
           child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
           apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
-          # A route's OWN `nil_allowed?` is not the last word when it also has a `preprocess:` (Codex
-          # review, PR #278 round 20): the Proc runs BEFORE presence is judged, so a route that is
-          # syntactically REQUIRED can still admit a wire `nil` if its own preprocess turns it into
-          # something non-nil — `preprocess: ->(_) { "x" }` on an otherwise-required node accepts wire nil
-          # at runtime (the constant "x" always satisfies its own type check), yet the node's OWN
-          # `nil_allowed?` reads false, since it declares neither `allow_nil:` nor `optional:`. Coercion
-          # gets no such exemption — `Coercion.coerce_value` leaves `nil` untouched (round 8's own
-          # justification), so a coercing-only route's `nil_allowed?` is still authoritative. The ANCESTOR
-          # members still have final say either way (`members.all?`, unchanged) — a member that genuinely
-          # forbids nil still forbids it here, regardless of what the node's own preprocess might do.
-          null_ok = non_model_configs.all? { |c| nil_allowed?(c) || preprocesses_wire_value?([c]) } &&
+          # Round 20 tried exempting a route with a `preprocess:` from its OWN `nil_allowed?` here, on the
+          # premise that the Proc runs before presence is judged and so MIGHT turn a wire `nil` into
+          # something non-nil (`preprocess: ->(_) { "x" }` on an otherwise-required node does exactly that).
+          # Round 21 showed the exemption cannot be scoped safely: reflection has no way to tell that
+          # CONSTANT-preprocess case apart from an ordinary IDENTITY (or any other nil-preserving)
+          # `preprocess: ->(v) { v }`, where the Proc does NOT rescue nil and the required check correctly
+          # rejects it at runtime — `preprocess:` is an opaque Proc, and reflection must not execute it to
+          # find out which case it is. Between the two directions this ambiguity forces a choice between —
+          # an unsatisfiable node for round 20's narrow, constant-preprocess scenario, or a schema that
+          # ACCEPTS a wire `nil` the far more common identity/pass-through case actually REJECTS — the
+          # latter is the one direction reflection may never take (`schema_wire_audit_spec`'s own hard
+          # invariant), so the exemption is reverted rather than kept as a broader, silent regression.
+          # Round 20's own scenario is deliberately left as a known, unfixable residual: this is the same
+          # "cannot execute user code" limit already accepted for pattern/format and numeric bounds under
+          # preprocess elsewhere in this file, not a new kind of gap.
+          null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
                     members.all? { |m| nil_allowed?(m) } &&
                     !subtree_requires_presence?(node, ann)
           reject_null!(child_prop) unless null_ok
@@ -2320,16 +2325,6 @@ module Axn
 
             !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
           end
-        end
-
-        # Whether ANY config in this list has a `preprocess:` — the narrower half of transforms_wire_value?
-        # with the coercibility branch removed, used specifically to gate the nullability exemption in
-        # apply_explicit_child! (see its own comment): a preprocess runs BEFORE presence is judged and can
-        # turn a wire `nil` into something non-nil, unlike coercion, which `Coercion.coerce_value` leaves
-        # `nil` untouched by (round 8's own justification) — so only a preprocess, never coercion alone,
-        # can make a syntactically-required config's own `nil_allowed?` an unreliable signal.
-        def preprocesses_wire_value?(configs)
-          configs.any? { |config| config.respond_to?(:preprocess) && config.preprocess }
         end
 
         # Whether `single_type_for`'s INPUT branch for this token falls through to its permissive `{type:
