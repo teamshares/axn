@@ -1689,7 +1689,18 @@ module Axn
             raw = bag[axis_key]
             axis = Axn::Internal::ShapeGraph.hash_or_nil(raw)
             token = axis ? axis[:klass] : raw
-            next nil if token.nil?
+            nested_of = axis && axis[:of]
+            nested_shape = axis && axis[:shape]
+            # A CLASSLESS axis (legally `klass:`-free — e.g. `values: { shape: { members: [...] } }`,
+            # constraining only via its named members) still has a `:shape`/`:of` worth keeping even
+            # though it names no token at all (Codex review, PR #278 round 29): skipping the whole view
+            # whenever `token.nil?` — round 26/27's own gate — discarded that classless axis's `shape:`
+            # too, so when two colliding axes respectively described a child `a` as `Object` and `Hash`,
+            # the recursive `shape_members_at` lookup found NOTHING for either side, and the `Object`
+            # child's approximate hint was conjoined as exact all over again. Only a TRULY empty axis
+            # (no token, no `:of`, no `:shape` — nothing here distrusts or recurses into anything) is
+            # skipped now.
+            next nil if token.nil? && nested_of.nil? && nested_shape.nil?
 
             # `:of` and `:shape` are carried forward alongside the synthesized `:type`, not just the
             # axis's own `:klass` — needed so a DEEPER collision inside the axis (another map bag nested
@@ -1706,9 +1717,10 @@ module Axn
             # in one axis's shape collided with `Hash` in the other's as though BOTH were exact. Threading
             # both through is what lets every recursive lookup this file already has (`shape_members_at`,
             # `axis_configs_for` itself) keep working exactly as it does for an ordinary field's configs.
-            validations = { type: token }
-            validations[:of] = axis[:of] if axis && axis[:of]
-            validations[:shape] = axis[:shape] if axis && axis[:shape]
+            validations = {}
+            validations[:type] = token if token
+            validations[:of] = nested_of if nested_of
+            validations[:shape] = nested_shape if nested_shape
             AxisConfigView.new(validations)
           end
         end
@@ -1889,7 +1901,19 @@ module Axn
           # the union path below already leans on for a literal an ordinary typed branch can't reach.
           other_types = literal_json_types(sibling_literals) if other_types.empty?
 
-          return retarget_length_to_type(prop, other_types.first) if other_types.size <= 1
+          # `retarget_length_to_type`'s single-type branch retargets the bound BLINDLY — correct only when
+          # that one type actually HAS a size keyword (`minProperties`/`minItems`/`minLength`), since then
+          # the untouched sibling `enum` combined with the retargeted keyword still filters each literal
+          # correctly (both apply to the SAME instance). A sole type with NO size keyword (e.g. "integer")
+          # has no such safety net — the bound is simply dropped, with NOTHING left to filter the sibling
+          # literals by their actual (wire-rendered) size (Codex review, PR #278 round 29): an approximate
+          # `Object` member's `length: { minimum: 3 }` colliding with an untyped node whose `inclusion:` is
+          # `[1, 123]` (both Integers — a single, non-sized type) emitted both literals as valid, though
+          # the runtime's own length check (`#to_s.length`) rejects `1` (rendered length 1) and accepts
+          # `123` (rendered length 3). Routing this case through `retarget_length_to_union` too reuses its
+          # existing `literals_reachable_via_wire_rendering` fallback — the SAME filtering an inexpressible
+          # UNION branch already gets — rather than reinventing a second, narrower filter here.
+          return retarget_length_to_type(prop, other_types.first) if other_types.size == 1 && SIZE_CONSTRAINT_KEYS.key?(other_types.first)
 
           retarget_length_to_union(prop, other_types, sibling_literals)
         end
@@ -2048,7 +2072,7 @@ module Axn
           stripped = prop.except(:type, :anyOf, :enum, :const)
           coercible_klasses = coercible_target_klasses(configs)
           stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format)
-          stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop)
+          stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop, coercible_klasses)
           stripped = drop_bounds_contradicted_by_other_literals(stripped, other_prop)
           stripped = drop_length_bound_beside_sibling_pattern(stripped, other_prop)
           return stripped if coercible_klasses.empty?
@@ -2344,7 +2368,7 @@ module Axn
         # the SAME residual imprecision round 14 already established for the union's OTHER, non-numeric
         # branch (a wire String that coerces to a violating number is a case JSON Schema's numeric keywords
         # can never see, whichever branch they sit on) — an accepted trade, not a new one.
-        def drop_numeric_bounds_unless_type_admits_number(prop, other_prop)
+        def drop_numeric_bounds_unless_type_admits_number(prop, other_prop, coercible_klasses)
           return prop unless NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
           return prop if collision_types(other_prop).intersect?(NUMERIC_TYPES)
 
@@ -2362,17 +2386,27 @@ module Axn
           literals = declared_literals(other_prop) | declared_literals(prop)
           return prop.except(*NUMERIC_BOUND_ALL_KEYS) if literals.empty?
 
-          retarget_numeric_bound_to_literals(prop, literals)
+          retarget_numeric_bound_to_literals(prop, literals, coercible_klasses)
         end
 
         # The subset of `literals` a still-retained numeric bound on `prop` actually admits, as a
         # replacement `enum` — narrower than dropping the bound (which would admit every literal
         # unconditionally) and safer than leaving the bound in place beside an untyped position (which
         # JSON Schema would silently ignore for a non-numeric instance, wrongly admitting it).
-        def retarget_numeric_bound_to_literals(prop, literals)
+        # `literals` are checked through the SAME coercer this position's own runtime check reads its wire
+        # value through — a raw, uncoerced Numeric check misses a String literal that coerces into one
+        # (Codex review, PR #278 round 29): an untyped sibling `enum: ["6", "ok"]` beside a coercing
+        # Integer node's `comparison: { greater_than: 5 }` has the known coercer turn wire "6" into 6 (>
+        # 5, satisfying it) at runtime, but checking `"6".is_a?(Numeric)` directly says false, excluding
+        # it and leaving `enum: []` — unsatisfiable for a satisfiable contract. `coercible_klasses` empty
+        # (this bound's own side doesn't coerce) leaves a literal exactly as `is_a?(Numeric)` would judge
+        # it uncoerced, unchanged from before. The retained `enum` keeps each literal in its ORIGINAL
+        # (wire) form — "6", not 6 — since that original spelling is what the wire value must actually be.
+        def retarget_numeric_bound_to_literals(prop, literals, coercible_klasses)
           bound_keys = NUMERIC_BOUND_ALL_KEYS.select { |key| prop.key?(key) }
           satisfying = literals.select do |literal|
-            literal.is_a?(::Numeric) && bound_keys.none? { |key| bound_violation_for_literal(key, prop[key], literal) }
+            coerced = coercible_klasses.empty? ? literal : Axn::Internal::Coercion.coerce_value(literal, coercible_klasses)
+            coerced.is_a?(::Numeric) && bound_keys.none? { |key| bound_violation_for_literal(key, prop[key], coerced) }
           end
 
           retargeted = prop.except(*NUMERIC_BOUND_ALL_KEYS)

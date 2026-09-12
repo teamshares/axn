@@ -5758,6 +5758,37 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { deep: { x: { a: { b: 1 } } } })).to be_ok
           end
 
+          # A CLASSLESS axis (legally `klass:`-free — constraining only via its named `shape:` members)
+          # still has structure worth keeping even though it names no token at all — round 27's own fix
+          # skipped the WHOLE view whenever no `:klass` was found, discarding a classless axis's `:shape`
+          # right along with it (Codex review, PR #278 round 29): two `values: { shape: { members: [...] }
+          # }` axes colliding, one naming child `a` as `Object` and the other as `Hash`, needs the same
+          # per-child config lookup an ordinary object's `properties` collision already gets — without a
+          # view at all for either axis, `shape_members_at` found nothing for either side, and the `Object`
+          # child's approximate hint was conjoined as exact against the `Hash` child's real one. Fixed by
+          # only skipping an axis that is TRULY empty (no token, no `:of`, no `:shape`).
+          it "preserves a classless axis's own shape members through a collision" do
+            object_member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Object })
+            hash_member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Hash })
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :deep, type: Hash, of: { values: { shape: { members: [object_member] } } }
+              end
+              expects(:deep, on: :payload, type: Hash, of: { values: { shape: { members: [hash_member] } } })
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:deep]
+            expect(deep).to eq(
+              type: "object",
+              additionalProperties: { type: "object", properties: { a: { type: "object" } }, required: ["a"] },
+              minProperties: 1,
+            )
+            expect(klass.call(payload: { deep: { x: { a: { b: 1 } } } })).to be_ok
+          end
+
           # An approximate side's TYPE is untrustworthy, but a literal-value `enum` (from `inclusion:`) is
           # not premised on the type at all — JSON Schema applies it to the instance regardless of any
           # `type` keyword, and the runtime keeps enforcing it too. Dropping the whole member — type hint
@@ -6700,6 +6731,62 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 3 })).not_to be_ok # fails the node's own comparison: { greater_than: 5 }
             expect(klass.call(payload: { inner: 6 })).to be_ok
             expect(klass.call(payload: { inner: "ok" })).not_to be_ok # never coerced (not numeric-shaped) and fails the node's own Integer check
+          end
+
+          # A SOLE derived type with no size keyword (round 28's own fix, deriving "integer" from a
+          # literal-only survivor) went through `retarget_length_to_type`'s single-type branch, which
+          # retargets BLINDLY — safe only when that one type actually HAS a size keyword, since then the
+          # untouched sibling `enum` still filters each literal correctly alongside it. A type with NONE
+          # (like "integer") has no such safety net (Codex review, PR #278 round 29): an approximate
+          # `Object` member's `length: { minimum: 3 }` colliding with an untyped node whose `inclusion:` is
+          # `[1, 123]` (both Integers) emitted both as valid, though the runtime's own length check
+          # (`#to_s.length`) rejects `1` (rendered length 1) and accepts `123` (rendered length 3). Fixed
+          # by routing this case through `retarget_length_to_union` too, reusing its existing wire-
+          # rendering literal filter instead of leaving the bound with nothing to filter by.
+          it "filters literals by wire-rendered length when the survivor's sole type has no size keyword" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, inclusion: { in: [1, 123] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer", enum: [1, 123], allOf: [{ anyOf: [{ enum: [123] }] }])
+            expect(klass.call(payload: { inner: 1 })).not_to be_ok # "1".length is 1, fails the member's own length: { minimum: 3 }
+            expect(klass.call(payload: { inner: 123 })).to be_ok # "123".length is 3, satisfies the member's own length: { minimum: 3 }
+          end
+
+          # Checking a literal against a numeric bound with a RAW `is_a?(Numeric)` test misses a String
+          # literal that COERCES into a number — the same coercer this position's own runtime check reads
+          # its wire value through (Codex review, PR #278 round 29): an untyped sibling `enum: ["6", "ok"]`
+          # beside a coercing Integer node's `comparison: { greater_than: 5 }` has the known coercer turn
+          # wire "6" into 6 (satisfying `> 5`) at runtime, but `"6".is_a?(Numeric)` is false, so it was
+          # excluded and the schema kept `enum: []` — unsatisfiable for a satisfiable contract. Fixed by
+          # coercing each literal through the SAME coercer before checking whether it satisfies the bound,
+          # while still retaining the literal's ORIGINAL (wire) form in the narrowed `enum`.
+          it "coerces survivor literals through the declared coercer before retargeting a numeric bound" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, inclusion: { in: %w[6 ok] }
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { greater_than: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              enum: ["6"],
+              not: { type: "null" },
+              allOf: [{ type: "string", minLength: 1, enum: %w[6 ok] }],
+            )
+            expect(klass.call(payload: { inner: "6" })).to be_ok # coerces to 6, satisfying comparison: { greater_than: 5 }
+            expect(klass.call(payload: { inner: "ok" })).not_to be_ok # never coerces to a number and fails the node's own Integer check
           end
 
           # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
