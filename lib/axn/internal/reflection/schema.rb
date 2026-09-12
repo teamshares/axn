@@ -1691,7 +1691,18 @@ module Axn
             token = axis ? axis[:klass] : raw
             next nil if token.nil?
 
-            AxisConfigView.new({ type: token })
+            # `:of` is carried forward alongside the synthesized `:type`, not just the axis's own `:klass`
+            # — needed so a DOUBLY-nested collision (one axis's own values/keys is ANOTHER map bag) can
+            # recurse (Codex review, PR #278 round 26): outer `klass: Hash` axes whose NESTED values are
+            # respectively `Object` and `Hash` lost that inner structure here, since only the outer klass
+            # survived into the view — so when `merge_shape_member_property` recurses one level deeper for
+            # the INNER axis, `axis_configs_for(inner_configs, :values)` found no `:of` to read at all
+            # (this view's `.validations` had only `:type`), and the inner `Object` axis's approximate hint
+            # was conjoined as exact all over again, one level down. Threading the axis's OWN `:of` through
+            # is what lets `axis_configs_for` keep recursing exactly as far as the collision itself does.
+            validations = { type: token }
+            validations[:of] = axis[:of] if axis && axis[:of]
+            AxisConfigView.new(validations)
           end
         end
 
