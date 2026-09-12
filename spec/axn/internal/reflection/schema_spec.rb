@@ -5640,6 +5640,37 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: { deep: { a: "x" } } })).to be_ok
           end
 
+          # A map's `values:`/`keys:` axes (`additionalProperties`/`propertyNames`) are their own nested
+          # schema, both enforced when both colliding sides declare one — the object-vs-object merge above
+          # reconciles `properties`/`required`/the size bounds but, before this fix, still let the shallow
+          # `merge` at its TOP overwrite one side's `additionalProperties` with the other's outright
+          # (Codex review, PR #278 round 24): an ancestor `deep` Hash member whose values axis requires
+          # `> 0` beside a colliding node's own `deep` values axis requiring `< 10` emitted only the `< 10`
+          # constraint, so `deep: { x: -1 }` passed the schema though the ancestor's own validator (which
+          # runs unconditionally, regardless of what the node's own map declares) rejects it. Fixed by
+          # conjoining the two nested axis schemas the same way any other single-position collision is.
+          it "conjoins colliding values-axis constraints on a nested map rather than letting one win" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :deep, type: Hash, of: { values: { klass: Integer, comparison: { greater_than: 0 } } }
+              end
+              expects(:deep, on: :payload, type: Hash, of: { values: { klass: Integer, comparison: { less_than: 10 } } })
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:deep]
+            expect(deep).to eq(
+              type: "object",
+              additionalProperties: { type: "integer", exclusiveMaximum: 10, allOf: [{ type: "integer", exclusiveMinimum: 0 }] },
+              minProperties: 1,
+            )
+            expect(klass.call(payload: { deep: { x: 5 } })).to be_ok
+            expect(klass.call(payload: { deep: { x: -1 } })).not_to be_ok # fails the ancestor's own values-axis floor
+            expect(klass.call(payload: { deep: { x: 20 } })).not_to be_ok # fails the node's own values-axis ceiling
+          end
+
           # An approximate side's TYPE is untrustworthy, but a literal-value `enum` (from `inclusion:`) is
           # not premised on the type at all — JSON Schema applies it to the instance regardless of any
           # `type` keyword, and the runtime keeps enforcing it too. Dropping the whole member — type hint
@@ -6556,6 +6587,61 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(inner).to eq(enum: [5, "5"], not: { type: "null" }, allOf: [{ type: "string", minLength: 1 }])
             expect(klass.call(payload: { inner: "5" })).to be_ok
             expect(klass.call(payload: { inner: "6" })).not_to be_ok # coerces to 6, passes inclusion but fails equal_to: 5
+          end
+
+          # Intersecting the const:/enum: translated spellings via plain `&` compares candidates with
+          # Ruby's `eql?`/`hash` — which, unlike `==`, treats an Integer and a numerically-equal Float as
+          # DIFFERENT (`5.eql?(5.0)` is false) — so it never recognizes that two DIFFERENT wire spellings
+          # (one from each constraint) actually decode to the identical target value (Codex review, PR
+          # #278 round 24): a coercing Float node declaring BOTH `comparison: { equal_to: 5 }` (`const: 5`,
+          # an Integer) AND `inclusion: { in: [5.0] }` (`enum: [5.0]`, a Float) accepts wire "5" at runtime
+          # (it coerces to 5.0, which equals both 5 and 5.0), but the translated sets `[5, "5"]` and `[5.0,
+          # "5.0"]` share no member under plain equality, intersecting to an empty, unsatisfiable enum.
+          # Fixed by comparing candidates via their COERCED value instead of the raw candidate token.
+          it "intersects numeric const:/enum: candidates by their coerced value, not raw token equality" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Float, coerce: true }, comparison: { equal_to: 5 },
+                              inclusion: { in: [5.0] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: [5, "5", 5.0, "5.0"], not: { type: "null" }, allOf: [{ type: "string", minLength: 1 }])
+            expect(klass.call(payload: { inner: "5" })).to be_ok
+            expect(klass.call(payload: { inner: "6" })).not_to be_ok
+          end
+
+          # A native (non-string) whole-number Float candidate — `5.0`, from translating an `inclusion:`
+          # literal — is unsafe once the SURVIVING side admits a bare JSON number at this position: JSON
+          # Schema's own equality treats `5` and `5.0` as the identical value (a zero-fractional-part
+          # number satisfies `enum` matching regardless of how it was written), but `Coercion.coerce_value`
+          # only ever parses a STRING — a native JSON integer `5` reaching this position is left untouched
+          # and then fails the node's own (real) Float type check outright (Codex review, PR #278 round
+          # 24): a `type: Numeric` shape member (emits `type: "number"`, admitting a bare integer) beside a
+          # coercing Float node's `inclusion: { in: [5.0] }` let native `5` satisfy the schema (JSON
+          # equality matches it against `enum: [5.0]`), though the runtime rejects it (never coerced, and
+          # not a Float). There is no JSON Schema construct that admits `5.0` while excluding `5` — they
+          # are the same value in JSON's own number model — so this is dropped as an inexpressible,
+          # deliberately-unsatisfiable residual rather than left silently loose.
+          it "drops a native whole-number Float candidate the surviving side could receive unrendered" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Numeric
+              end
+              expects :inner, on: :payload, type: { klass: Float, coerce: true }, inclusion: { in: [5.0] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: ["5.0"], not: { type: "null" }, allOf: [{ type: "number" }])
+            expect(klass.call(payload: { inner: 5 })).not_to be_ok # native Integer 5 is never coerced (not a String) and fails the node's own Float check
           end
 
           # A numeric bound (`minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`) surviving a
