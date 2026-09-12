@@ -5607,6 +5607,39 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: { b: 1 } })).not_to be_ok # missing the ancestor's required `a`
           end
 
+          # When both colliding sides are OBJECT-shaped, `merge_shape_member_property`'s shallow keyword
+          # union lets the SECOND side's `:type` silently overwrite the first's — safe for `properties`/
+          # `required`/the size bounds (those are explicitly unioned/intersected), but NOT for nullability:
+          # a nullable `["object", "null"]` on one side must not overwrite the OTHER side's non-nullable
+          # `"object"` (Codex review, PR #278 round 22): an ancestor `deep` Hash member that REQUIRES `a`
+          # (non-nullable) beside a colliding node's OWN `deep` declared `allow_nil: true` (nullable) let
+          # the node's nullable type win outright, so the merged schema admitted `deep: null` even though
+          # the ancestor's own (unconditional, raw-value) check rejects null there. Both routes are
+          # enforced, so null survives only when BOTH tolerate it — `merge_emitted_type` reconciles this
+          # explicitly rather than leaving it to the shallow merge's "second side wins" default.
+          it "keeps a nested object collision non-nullable when either colliding side forbids null" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :deep, type: Hash do
+                    field :a, type: String
+                  end
+                end
+              end
+              expects(:inner, on: :payload, type: Hash) do
+                field :deep, type: Hash, allow_nil: true
+              end
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:inner][:properties][:deep]
+            expect(deep).to eq(type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1)
+            expect(klass.call(payload: { inner: { deep: nil } })).not_to be_ok # the ancestor's required `a` forbids null here
+            expect(klass.call(payload: { inner: { deep: { a: "x" } } })).to be_ok
+          end
+
           # An approximate side's TYPE is untrustworthy, but a literal-value `enum` (from `inclusion:`) is
           # not premised on the type at all — JSON Schema applies it to the instance regardless of any
           # `type` keyword, and the runtime keeps enforcing it too. Dropping the whole member — type hint
@@ -6148,6 +6181,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # `/\Aa+\z/` beside a colliding `preprocess: ->(_) { "b" }, format: /\Ab+\z/` node accepts raw "a"
           # at runtime (the node's own check runs on the CONSTANT "b", which its pattern matches
           # unconditionally), but conjoining both patterns requires one wire string to match both — none can.
+          # Once its own pattern AND its own presence floor (round 22's `drop_length_bound_beside_sibling_
+          # pattern` — see the test below) are both stripped, the node contributes NOTHING at all, so the
+          # conjunction routes through the empty-side merge and the ancestor's exact property (a plain,
+          # scalar `type: "string"`, which already excludes null on its own — no separate `not: {type:
+          # "null"}` needed) is the whole story.
           it "drops a preprocessing node's own pattern rather than conjoin it with the ancestor's disjoint one" do
             klass = Class.new do
               include Axn
@@ -6160,9 +6198,35 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(minLength: 1, not: { type: "null" }, allOf: [{ type: "string", minLength: 1, pattern: "^a+$" }])
+            expect(inner).to eq(type: "string", minLength: 1, pattern: "^a+$")
             expect(klass.call(payload: { inner: "a" })).to be_ok # matches the ancestor's raw pattern; node's own check is vacuous
             expect(klass.call(payload: { inner: "x" })).not_to be_ok # fails the ancestor's own raw pattern
+          end
+
+          # A retained `minLength`/`maxLength` has no cheap, always-correct compatibility check against a
+          # sibling `pattern`/`format` the way it does against a discrete literal set (regex satisfiability
+          # analysis isn't something reflection can do safely and generally) — so it is stood down
+          # UNCONDITIONALLY whenever the sibling has ANY pattern/format, the same "cannot verify, so don't
+          # risk it" resolution round 13 already uses for a transforming side's OWN pattern (Codex review,
+          # PR #278 round 22): an ancestor `format: { with: /\Aa\z/ }` (matching only the single string "a",
+          # length 1) beside a colliding node's `length: { minimum: 3 }, preprocess: ->(v) { v * 3 }` accepts
+          # wire "a" at runtime (the ancestor's own check matches "a" exactly; the node's own check runs on
+          # the preprocessed "aaa"), but conjoining `minLength: 3` with the ancestor's pattern produced a
+          # node no string can satisfy at all.
+          it "drops a transforming node's own length: bound when a sibling pattern's compatibility can't be verified" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, format: { with: /\Aa\z/ }
+              end
+              expects :inner, on: :payload, type: String, length: { minimum: 3 }, preprocess: ->(v) { v * 3 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", minLength: 1, pattern: "^a$")
+            expect(klass.call(payload: { inner: "a" })).to be_ok # matches the ancestor's raw pattern; node's own check runs on preprocessed "aaa"
           end
 
           # A wire-spelling candidate's SERIALIZED form matching the emitted literal isn't enough — a

@@ -1594,6 +1594,17 @@ module Axn
         def merge_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
           merged = member_prop.merge(own_prop)
           merged.delete(:format)
+          # `:type` is RECONCILED, not left to the shallow merge's "second side wins" default — a nullable
+          # `["object", "null"]` on either side must not silently overwrite the OTHER side's non-nullable
+          # `"object"` (Codex review, PR #278 round 22): an ancestor `deep` Hash member that REQUIRES `a`
+          # (non-nullable) beside a colliding node's OWN `deep` declared `allow_nil: true` (nullable) let
+          # `own_prop[:type]` — merged in SECOND — win outright, so the merged schema admitted `deep: null`
+          # even though the ancestor's own (unconditional, raw-value) check rejects null there. Both routes
+          # are enforced, so null survives only when BOTH tolerate it. This function also runs for a side
+          # that is simply EMPTY (own_prop.empty?/member_prop.empty? in conjoin_shape_member_property), not
+          # only a genuine object-vs-object merge, so the reconciliation must not hardcode "object" — it
+          # keeps whichever REAL base type either side names.
+          merged[:type] = merge_emitted_type(member_prop[:type], own_prop[:type]) if member_prop[:type] || own_prop[:type]
           # Reassigned only when at least one side actually HAS the key — both sides bare (e.g. two
           # colliding `type: Hash` declarations with no children on either) means merge_emitted_maps/
           # merge_emitted_required return nil (nothing to merge), and writing that nil through would leave
@@ -1609,6 +1620,21 @@ module Axn
           merged[:minProperties] = [member_prop[:minProperties], own_prop[:minProperties]].compact.max if merged[:minProperties]
           merged[:maxProperties] = [member_prop[:maxProperties], own_prop[:maxProperties]].compact.min if merged[:maxProperties]
           merged
+        end
+
+        # The reconciled `:type` for a merged property — nullable only when BOTH sides admit null, since
+        # either side rejecting it (its own unconditional check, at runtime) forbids it here regardless of
+        # what the other declares. `nil` on one side (that side is simply absent, not "typeless") returns
+        # the OTHER side's type untouched, so this is safe to call whenever EITHER side has a `:type` at
+        # all, not only when both are the SAME base type.
+        def merge_emitted_type(member_type, own_type)
+          return own_type if member_type.nil?
+          return member_type if own_type.nil?
+
+          base = (Array(member_type) + Array(own_type)).reject { |t| t == "null" }.uniq
+          base = base.first if base.size == 1
+          nullable = [member_type, own_type].all? { |type| Array(type).include?("null") }
+          nullable ? Array(base) + ["null"] : base
         end
 
         # Two emitted properties at ONE wire position, both enforced at runtime (PRO-3405): a shape member's
@@ -1902,6 +1928,7 @@ module Axn
           stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format)
           stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop)
           stripped = drop_bounds_contradicted_by_other_literals(stripped, other_prop)
+          stripped = drop_length_bound_beside_sibling_pattern(stripped, other_prop)
           return stripped if coercible_klasses.empty?
 
           spellings = translated_literal_constraint(prop, coercible_klasses, configs)
@@ -1999,6 +2026,24 @@ module Axn
           end
 
           contradicted.empty? ? prop : prop.except(*contradicted)
+        end
+
+        # A retained `minLength`/`maxLength` on `prop` has no cheap, always-correct compatibility check
+        # against a sibling `pattern`/`format` the way it does against a discrete literal set (round 17's
+        # `drop_bounds_contradicted_by_other_literals`) — regex satisfiability/length analysis is not
+        # something reflection can do safely and generally (Codex review, PR #278 round 22): an ancestor
+        # `format: { with: /\Aa\z/ }` (matching only the single string "a", length 1) beside a colliding
+        # node's `length: { minimum: 3 }, preprocess: ->(v) { v * 3 }` accepts wire "a" at runtime (the
+        # ancestor's own check matches "a" exactly; the node's own check runs on the preprocessed "aaa"),
+        # but conjoining `minLength: 3` with the ancestor's pattern produced a node no string can satisfy —
+        # `/\Aa\z/` admits only a 1-character string, `minLength: 3` requires at least 3. Rather than
+        # attempt regex analysis, this stands the length bound down UNCONDITIONALLY whenever the sibling has
+        # ANY pattern/format — the same "cannot verify, so don't risk it" resolution round 13 already uses
+        # for a transforming side's OWN pattern.
+        def drop_length_bound_beside_sibling_pattern(prop, other_prop)
+          return prop unless other_prop[:pattern] || other_prop[:format]
+
+          prop.except(:minLength, :maxLength)
         end
 
         # The TRUE value set a property's `const`/`enum` jointly admit — both are enforced when both are
