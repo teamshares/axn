@@ -6109,6 +6109,60 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "2026-01-01" })).not_to be_ok # coerces to a Date, never String "2026-01-01"
           end
 
+          # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
+          # declares both — translating each to its wire spellings and then CONCATENATING them turns an
+          # intersection into a union (Codex review, PR #278 round 14): `inclusion: { in: [5, 6] },
+          # comparison: { equal_to: 5 }` concatenated to `enum: [5, "5", 6, "6"]`, wrongly advertising "6" —
+          # it coerces to 6, which passes inclusion but fails the equality check (only 5 satisfies both).
+          # `translated_literal_constraint` intersects the two translated sets instead, keeping only the
+          # wire forms both constraints actually agree on.
+          it "intersects translated const: and enum: constraints rather than concatenating them" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, inclusion: { in: [5, 6] },
+                              comparison: { equal_to: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: [5, "5"], not: { type: "null" }, allOf: [{ type: "string", minLength: 1 }])
+            expect(klass.call(payload: { inner: "5" })).to be_ok
+            expect(klass.call(payload: { inner: "6" })).not_to be_ok # coerces to 6, passes inclusion but fails equal_to: 5
+          end
+
+          # A numeric bound (`minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`) surviving a
+          # transforming side is only trustworthy when the SURVIVING type actually admits a number — unlike
+          # `length:` under a coercing Symbol (whose rendered form has the same length as the wire string),
+          # a numeric bound describes the coerced value's magnitude, which has no relationship to a wire
+          # value the runtime never reads as a number at all (Codex review, PR #278 round 14): under a raw
+          # `String` ancestor, a colliding coercing `comparison: { greater_than: 5 }` node kept
+          # `exclusiveMinimum: 5` sitting beside `type: "string"`, where JSON Schema silently ignores it —
+          # so the schema enforced nothing, though the runtime's coercion+comparison check does. Unlike a
+          # discrete literal, an open-ended numeric range has no small, enumerable set of wire-string
+          # candidates to verify by round-trip, so it is dropped rather than left inert under a keyword
+          # JSON Schema will never apply — a residual, accepted imprecision (the schema can no longer
+          # express ">5 after coercion" at all) rather than a wrong answer in either direction.
+          it "drops a coercing node's own numeric bound when the surviving type does not admit a number" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { greater_than: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", minLength: 1)
+            expect(klass.call(payload: { inner: "6" })).to be_ok
+            expect(klass.call(payload: { inner: "3" })).not_to be_ok # coerces to 3, fails comparison: { greater_than: 5 }
+          end
+
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
             klass = Class.new do
               include Axn
