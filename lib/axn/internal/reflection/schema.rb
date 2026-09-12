@@ -1777,7 +1777,16 @@ module Axn
           other_types = collision_types(other_prop)
           return retarget_length_to_type(prop, other_types.first) if other_types.size <= 1
 
-          retarget_length_to_union(prop, other_types, declared_literals(other_prop))
+          # Both sides' literals, not just the OTHER side's (Codex review, PR #278 round 23): `prop`
+          # itself may be the one declaring the only witness of an inexpressible-type branch — an
+          # ancestor `type: Object, length: { minimum: 3 }, inclusion: { in: [123] }` colliding with an
+          # explicit `type: { klass: [String, Integer], coerce: false }` node has NO literal on the
+          # `other_prop` side at all (the node declares no `inclusion:` of its own), so reading only
+          # `declared_literals(other_prop)` found no witness for the Integer branch and omitted it
+          # entirely, leaving `enum: [123]` (retained on `prop`, unconditionally) conjoined against an
+          # `anyOf` with only a `type: "string"` branch — an Integer literal can never satisfy that,
+          # though `123` (`"123".length == 3`) passes the length floor at runtime.
+          retarget_length_to_union(prop, other_types, declared_literals(other_prop) | declared_literals(prop))
         end
 
         # Every real (non-null) JSON type the surviving side's collision could produce — a single `type`
@@ -2129,7 +2138,34 @@ module Axn
 
           lower_value, lower_exclusive = lower
           upper_value, upper_exclusive = upper
-          lower_value > upper_value || (lower_value == upper_value && (lower_exclusive || upper_exclusive))
+          return true if lower_value > upper_value || (lower_value == upper_value && (lower_exclusive || upper_exclusive))
+
+          integer_only_domain?(other_prop) && no_integer_in_interval?(lower_value, lower_exclusive, upper_value, upper_exclusive)
+        end
+
+        # Whether the surviving side's collision is restricted to JSON's "integer" type ALONE (never
+        # the broader "number", which admits every real value in between). Only then can a real-valued
+        # interval that's non-empty still admit no actual INSTANCE — see no_integer_in_interval?.
+        def integer_only_domain?(other_prop)
+          types = collision_types(other_prop)
+          types.include?("integer") && !types.include?("number")
+        end
+
+        # A continuous interval can be non-empty (`lower_value < upper_value`) while still containing no
+        # INTEGER — an open interval strictly between two consecutive integers (Codex review, PR #278
+        # round 23): an ancestor Integer member's `comparison: { greater_than: 1 }` (`exclusiveMinimum:
+        # 1`) beside a colliding Integer node's `preprocess: ->(v) { v - 1 }, comparison: { less_than: 2
+        # }` (`exclusiveMaximum: 2`) accepts raw `2` at runtime (the ancestor's own check reads the RAW
+        # value 2, which is `> 1`; the node's own check runs on the preprocessed `1`, which is `< 2`),
+        # but conjoining `exclusiveMinimum: 1` with `exclusiveMaximum: 2` describes an integer strictly
+        # between 1 and 2 — none exists — an unsatisfiable schema for a satisfiable contract.
+        # `numeric_bounds_conflict?`'s own plain `lower_value > upper_value` check only catches an
+        # interval empty over the REALS; this catches one empty over the INTEGERS specifically, by
+        # rounding each bound in to the nearest admissible integer endpoint before comparing.
+        def no_integer_in_interval?(lower_value, lower_exclusive, upper_value, upper_exclusive)
+          min_int = lower_exclusive ? (lower_value.floor + 1) : lower_value.ceil
+          max_int = upper_exclusive ? (upper_value.ceil - 1) : upper_value.floor
+          min_int > max_int
         end
 
         # The single strictest `[value, exclusive?]` bound across both props' entries for one keyword pair
