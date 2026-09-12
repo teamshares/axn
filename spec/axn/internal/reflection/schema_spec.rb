@@ -6651,6 +6651,57 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 123 })).to be_ok # "123".length is 3, satisfies the member's own length: { minimum: 3 }
           end
 
+          # An UNTYPED survivor (no `type:`/`anyOf` at all, only a literal `const`/`enum`) leaves
+          # `collision_types` empty, and retargeting onto `nil` DROPPED the length bound outright rather
+          # than merely narrowing it (Codex review, PR #278 round 28): an ancestor `type: Object, length: {
+          # minimum: 3 }` colliding with an untyped node whose `inclusion:` names both a one-key and a
+          # three-key Hash emitted only the `enum` — no `minProperties` anywhere — so the schema wrongly
+          # accepted the one-key Hash the runtime length floor rejects. Fixed by deriving the retargeted
+          # type(s) from the literal VALUES themselves (a Hash literal is "object" regardless of whether
+          # anything declared `type: Hash`) whenever there's no declared type to read at all.
+          it "retargets a length bound from the literal values themselves when the survivor is untyped" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, inclusion: { in: [{ a: 1 }, { a: 1, b: 2, c: 3 }] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: [{ a: 1 }, { a: 1, b: 2, c: 3 }], not: { type: "null" }, allOf: [{ minProperties: 3 }])
+            expect(klass.call(payload: { inner: { a: 1 } })).not_to be_ok # only 1 key, fails the ancestor's own length: { minimum: 3 }
+            expect(klass.call(payload: { inner: { a: 1, b: 2, c: 3 } })).to be_ok
+          end
+
+          # The SAME "no declared type to read" gap applies to a numeric bound, not just a length one
+          # (Codex review, PR #278 round 28): an untyped shape member's `inclusion: { in: [3, 6, "ok"] }`
+          # beside a colliding coercing Integer node requiring `> 5` dropped the bound entirely (collision_
+          # types is empty, so nothing "admits a number"), leaving just the raw `enum: [3, 6, "ok"]` — the
+          # schema wrongly accepted `3` and `"ok"`, though the runtime rejects both (3 fails the
+          # comparison; "ok" is never coerced, being a String, and fails the node's own Integer check) and
+          # accepts only `6`. Fixed by filtering the literals down to the ones the bound actually admits
+          # (never a non-Numeric one) and retargeting to `enum`, instead of discarding the bound wholesale.
+          it "retargets a numeric bound to only the literals it admits when the survivor is untyped" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, inclusion: { in: [3, 6, "ok"] }
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { greater_than: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: [6], not: { type: "null" }, allOf: [{ enum: [3, 6, "ok"] }])
+            expect(klass.call(payload: { inner: 3 })).not_to be_ok # fails the node's own comparison: { greater_than: 5 }
+            expect(klass.call(payload: { inner: 6 })).to be_ok
+            expect(klass.call(payload: { inner: "ok" })).not_to be_ok # never coerced (not numeric-shaped) and fails the node's own Integer check
+          end
+
           # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
           # declares both — translating each to its wire spellings and then CONCATENATING them turns an
           # intersection into a union (Codex review, PR #278 round 14): `inclusion: { in: [5, 6] },
