@@ -6789,6 +6789,32 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "ok" })).not_to be_ok # never coerces to a number and fails the node's own Integer check
           end
 
+          # `retarget_numeric_bound_to_literals` REPLACES the whole `:enum` from scratch — unlike the
+          # length-retargeting functions, which only ever add to or leave an existing `:enum` untouched —
+          # so silently losing a `nil` member here loses the position's own null-tolerance entirely, not
+          # merely simplifying an intersection (Codex review, PR #278 round 30): an untyped shape member's
+          # `inclusion: { in: [nil, 3] }, allow_nil: true` beside a colliding coercing Integer node's
+          # `comparison: { greater_than: 5 }, allow_nil: true` accepts wire `nil` at runtime (both
+          # declarations skip their own validator for it), but `3` alone fails the bound, and the resulting
+          # `enum: []` (nil dropped along with everything else) made the property reject every value, nil
+          # included. Fixed by preserving an admitted `nil` in the replacement enum.
+          it "preserves an admitted nil literal when retargeting a numeric bound" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, inclusion: { in: [nil, 3] }, allow_nil: true
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { greater_than: 5 }, allow_nil: true
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(enum: [nil], allOf: [{ enum: [nil, 3] }])
+            expect(klass.call(payload: { inner: nil })).to be_ok # both declarations skip their own validator for nil
+            expect(klass.call(payload: { inner: 3 })).not_to be_ok # fails the node's own comparison: { greater_than: 5 }
+          end
+
           # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
           # declares both — translating each to its wire spellings and then CONCATENATING them turns an
           # intersection into a union (Codex review, PR #278 round 14): `inclusion: { in: [5, 6] },
