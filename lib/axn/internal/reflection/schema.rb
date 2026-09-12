@@ -1720,16 +1720,57 @@ module Axn
         # `maxProperties` here (or `minItems`/`maxItems` for a surviving Array) is what keeps it enforced;
         # a surviving type with no JSON size keyword at all (Integer, boolean) has no way to express this
         # constraint, so it is dropped rather than left inert under the wrong keyword.
+        #
+        # A UNION survivor (`type: [Hash, Array]`) has no top-level `type` at all — its own emission spells
+        # itself as `anyOf` branches, one per member type — so reading `other_prop[:type]` alone missed it
+        # entirely and dropped the bound outright (Codex review, PR #278 round 15): `type: Object, length: {
+        # minimum: 3 }` beside a colliding `type: [Hash, Array]` node let a one-item Array OR a one-property
+        # Hash pass, though the member's real length floor rejects both. A single retargeted keyword can't
+        # serve every branch — `minProperties` would be silently ignored by JSON Schema for an Array
+        # instance, vacuously satisfying that branch regardless of size — so each applicable branch instead
+        # gets its OWN paired `{type:, sizeKey:}` entry in a NEW `anyOf`, which is what makes the bound
+        # actually discriminate by the instance's real type rather than passing vacuously for either one.
         def retarget_unknown_class_length(prop, other_prop)
           return prop unless prop[:minLength] || prop[:maxLength]
 
-          other_type = Array(other_prop[:type]).find { |t| t != "null" }
+          other_types = collision_types(other_prop)
+          return retarget_length_to_type(prop, other_types.first) if other_types.size <= 1
+
+          retarget_length_to_union(prop, other_types)
+        end
+
+        # Every real (non-null) JSON type the surviving side's collision could produce — a single `type`
+        # value/array, or one entry per `anyOf` branch for a union survivor.
+        def collision_types(other_prop)
+          types = other_prop[:type] ? Array(other_prop[:type]) : Array(other_prop[:anyOf]).map { |branch| branch[:type] }
+          types.flatten.compact.uniq.reject { |t| t == "null" }
+        end
+
+        def retarget_length_to_type(prop, other_type)
           floor_key = other_type && SIZE_CONSTRAINT_KEYS[other_type]
           ceiling_key = other_type && SIZE_CEILING_KEYS[other_type]
 
           retargeted = prop.except(:minLength, :maxLength)
           retargeted[floor_key] = prop[:minLength] if floor_key && prop[:minLength]
           retargeted[ceiling_key] = prop[:maxLength] if ceiling_key && prop[:maxLength]
+          retargeted
+        end
+
+        # One retargeted `{type:, sizeKey:}` pair per surviving branch type, as a NEW `anyOf` sibling to the
+        # rest of `prop` — a branch whose type has no matching size keyword (Integer, boolean) contributes
+        # a bare `{type:}` entry instead, so an instance of THAT type still satisfies the retargeted anyOf
+        # (unconstrained, matching the single-type "no way to express this, drop it" behavior) rather than
+        # being wrongly rejected for lacking a bound that was never expressible for it in the first place.
+        def retarget_length_to_union(prop, other_types)
+          retargeted = prop.except(:minLength, :maxLength)
+          retargeted[:anyOf] = other_types.map do |type|
+            branch = { type: }
+            floor_key = SIZE_CONSTRAINT_KEYS[type]
+            ceiling_key = SIZE_CEILING_KEYS[type]
+            branch[floor_key] = prop[:minLength] if floor_key && prop[:minLength]
+            branch[ceiling_key] = prop[:maxLength] if ceiling_key && prop[:maxLength]
+            branch
+          end
           retargeted
         end
 
@@ -1959,14 +2000,20 @@ module Axn
           end
         end
 
-        # The literal `raw_literals` holds that `value` (the already-normalized/emitted form) stands for —
-        # itself, when nothing in `raw_literals` renders to the same wire spelling (the numeric `const` path
+        # EVERY literal `raw_literals` holds that could stand for `value` (the already-normalized/emitted
+        # form) — not just the first, since two DIFFERENT declared literals can normalize to the identical
+        # wire spelling (Codex review, PR #278 round 15): `inclusion: { in: ["2026-01-01", Date.new(2026, 1,
+        # 1)] }` under a `[Date, String]` coercing type has both entries render to the same emitted string
+        # "2026-01-01", and picking only the first (the String) made a wire candidate round-trip against
+        # THAT one fail (it coerces to a Date, never the String) even though it round-trips fine against
+        # the SECOND (the Date literal itself). `[value]` when nothing matches (the numeric `const` path
         # never normalizes at all, so its value already IS its own raw form and this is always a no-op for
         # it).
-        def raw_literal_for(value, raw_literals)
-          raw_literals.find do |raw|
+        def raw_literals_for(value, raw_literals)
+          matches = raw_literals.select do |raw|
             raw.equal?(value) || raw == value || serializes_to?(raw, value)
-          end || value
+          end
+          matches.empty? ? [value] : matches
         end
 
         def serializes_to?(raw, value)
@@ -2013,8 +2060,10 @@ module Axn
             else []
             end
 
-          raw_literal = raw_literal_for(value, raw_literals)
-          candidates.select { |candidate| wire_candidate_round_trips?(candidate, raw_literal, coercible_klasses) }
+          matching_raw_literals = raw_literals_for(value, raw_literals)
+          candidates.select do |candidate|
+            matching_raw_literals.any? { |raw_literal| wire_candidate_round_trips?(candidate, raw_literal, coercible_klasses) }
+          end
         end
 
         def wire_candidate_round_trips?(candidate, raw_literal, coercible_klasses)
