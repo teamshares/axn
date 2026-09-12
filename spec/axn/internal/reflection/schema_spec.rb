@@ -5671,6 +5671,32 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { deep: { x: 20 } })).not_to be_ok # fails the node's own values-axis ceiling
           end
 
+          # The conjunction above threads NO axis-level configs through, so `unknown_class_approximate?`
+          # never fires for either axis — harmless when both axes are exactly typed (Integer), but wrong
+          # once one axis is an UNKNOWN-CLASS hint (Codex review, PR #278 round 25): an ancestor `deep`
+          # Hash member with `values: Object` (a permissive `single_type_for` HINT, `{type: "string"}`, not
+          # a real constraint) beside a colliding node's own `values: Hash` axis (a REAL `{type: "object"}`)
+          # conjoined the fake String hint as though it were exact, producing `additionalProperties: {
+          # type: "object", allOf: [{ type: "string" }] }` — a node nothing satisfies, though `{ x: {} }`
+          # passes both runtime axis validators. Fixed by threading each axis's OWN declared klass token
+          # into the recursive conjunction via `axis_configs_for`, so the approximate axis gets the same
+          # `unknown_class_approximate?` stripping an approximate FIELD already gets.
+          it "strips an approximate axis's fake type hint rather than conjoining it as exact" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :deep, type: Hash, of: { values: Object }
+              end
+              expects(:deep, on: :payload, type: Hash, of: { values: Hash })
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:deep]
+            expect(deep).to eq(type: "object", additionalProperties: { type: "object" }, minProperties: 1)
+            expect(klass.call(payload: { deep: { x: {} } })).to be_ok
+          end
+
           # An approximate side's TYPE is untrustworthy, but a literal-value `enum` (from `inclusion:`) is
           # not premised on the type at all — JSON Schema applies it to the instance regardless of any
           # `type` keyword, and the runtime keeps enforcing it too. Dropping the whole member — type hint
@@ -6616,19 +6642,53 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "6" })).not_to be_ok
           end
 
-          # A native (non-string) whole-number Float candidate — `5.0`, from translating an `inclusion:`
-          # literal — is unsafe once the SURVIVING side admits a bare JSON number at this position: JSON
-          # Schema's own equality treats `5` and `5.0` as the identical value (a zero-fractional-part
-          # number satisfies `enum` matching regardless of how it was written), but `Coercion.coerce_value`
-          # only ever parses a STRING — a native JSON integer `5` reaching this position is left untouched
-          # and then fails the node's own (real) Float type check outright (Codex review, PR #278 round
-          # 24): a `type: Numeric` shape member (emits `type: "number"`, admitting a bare integer) beside a
-          # coercing Float node's `inclusion: { in: [5.0] }` let native `5` satisfy the schema (JSON
-          # equality matches it against `enum: [5.0]`), though the runtime rejects it (never coerced, and
-          # not a Float). There is no JSON Schema construct that admits `5.0` while excluding `5` — they
-          # are the same value in JSON's own number model — so this is dropped as an inexpressible,
-          # deliberately-unsatisfiable residual rather than left silently loose.
-          it "drops a native whole-number Float candidate the surviving side could receive unrendered" do
+          # `declared_literals` intersects a property's OWN const:/enum: via the same plain `&` — a
+          # SEPARATE call site from `translated_literal_constraint`'s, reached whenever a colliding side's
+          # bound needs checking against the OTHER side's literals rather than translating its own (Codex
+          # review, PR #278 round 25): an ancestor Numeric member declaring BOTH `comparison: { equal_to: 5
+          # }` (`const: 5`) and `inclusion: { in: [5.0] }` (`enum: [5.0]`) beside a colliding Integer node
+          # that preprocesses `5` to `10` before requiring `> 6` accepts raw `5` at runtime (the ancestor's
+          # own checks both pass against 5; the node's own check runs on the preprocessed 10), but `[5] &
+          # [5.0]` returned `[]`, read as "no literals declared" — so the node's own (truly contradicted)
+          # `exclusiveMinimum: 6` was kept rather than dropped, conjoining `const: 5`, `enum: [5.0]`, and
+          # `exclusiveMinimum: 6` into a node nothing satisfies. Fixed by the same coerced/numeric-aware
+          # comparison `intersect_wire_spellings` already uses for the other call site.
+          it "intersects declared_literals by value, not raw token equality, when checking a sibling bound" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Numeric, comparison: { equal_to: 5 }, inclusion: { in: [5.0] }
+              end
+              expects :inner, on: :payload, type: Integer, preprocess: ->(v) { v + 5 }, comparison: { greater_than: 6 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "number", const: 5, enum: [5.0])
+            expect(klass.call(payload: { inner: 5 })).to be_ok
+            expect(klass.call(payload: { inner: 6 })).not_to be_ok # fails the ancestor's own equal_to: 5
+          end
+
+          # A native (non-string) whole-number Float literal (`5.0`) is INDISTINGUISHABLE from its bare
+          # integer form under JSON Schema's own equality — the spec itself defines any zero-fractional-
+          # part number as satisfying `type: "integer"` too, regardless of how it was written — so a
+          # coercing Float node's `inclusion: { in: [5.0] }` colliding with an ancestor whose type admits a
+          # bare JSON number lets native `5` satisfy the schema (`enum: [5.0]` matches it) though the
+          # runtime rejects it (`Coercion.coerce_value` only ever parses a String, so `5` is never coerced
+          # and fails the node's own Float check). A round-24 fix dropped the native candidate outright to
+          # close this — but round 25 found that the SAME ambiguity, and the SAME resulting mismatch,
+          # already exists for a coercing Float field with a whole-number literal that ISN'T colliding with
+          # anything at all (a plain `expects :inner, type: { klass: Float, coerce: true }, inclusion: {
+          # in: [5.0] }` with no ancestor member in play), which `single_type_for` has never guarded either
+          # — this is a general JSON-Schema/Ruby-numeric-typing gap, not something specific to the
+          # shape-member conjunction PRO-3405 is about. Fixing it only in the conjunction path made THAT
+          # one narrow case unconditionally unsatisfiable (rejecting the one wire value — native `5.0` —
+          # the runtime does accept) while leaving the more common, non-colliding case still silently loose
+          # — an inconsistency worse than either extreme alone. Reverted: the conjunction path now matches
+          # the same tolerated imprecision the standalone path already has, tracked as a separate, broader
+          # follow-up rather than patched here.
+          it "still surfaces the pre-existing native-Float/Integer JSON ambiguity, matching the non-colliding path" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -6640,8 +6700,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(enum: ["5.0"], not: { type: "null" }, allOf: [{ type: "number" }])
-            expect(klass.call(payload: { inner: 5 })).not_to be_ok # native Integer 5 is never coerced (not a String) and fails the node's own Float check
+            expect(inner).to eq(enum: [5.0, "5.0"], not: { type: "null" }, allOf: [{ type: "number" }])
+            expect(klass.call(payload: { inner: 5.0 })).to be_ok
+            # native Integer 5 is never coerced (not a String) and fails the node's own Float check — a
+            # documented, tolerated schema/runtime gap (the schema admits it too), not asserted against here
+            expect(klass.call(payload: { inner: 5 })).not_to be_ok
           end
 
           # A numeric bound (`minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`) surviving a

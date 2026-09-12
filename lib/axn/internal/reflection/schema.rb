@@ -1626,14 +1626,29 @@ module Axn
           # `> 0` beside a colliding node's own `deep` values axis requiring `< 10` emitted only the `< 10`
           # constraint, so `deep: { x: -1 }` passed the schema though the ancestor's own (unconditional)
           # validator rejects it. Conjoined via the SAME `conjoin_shape_member_property` recursion used
-          # everywhere else two schemas at one position both apply — with no configs of its own to check
-          # (the axis's OWN transform status isn't available at this level), so neither side is treated as
-          # transforming, which only means neither gets stripped, never that either gets loosened.
+          # everywhere else two schemas at one position both apply — with the AXIS's own klass token(s)
+          # threaded through (not the outer field's), because an approximate axis (`values: Object`) needs
+          # the SAME `unknown_class_approximate?` stripping an approximate FIELD gets (Codex review, PR
+          # #278 round 25): an ancestor axis with `klass: Object` beside a colliding node's axis with
+          # `klass: Hash` initially called this conjunction with no axis configs at all, so the emitted
+          # `{type: "string"}` HINT (`single_type_for`'s permissive Object fallback) was treated as an
+          # EXACT, competing type assertion rather than the approximation it is — conjoined via `allOf`
+          # with the real `{type: "object"}` schema into a node nothing satisfies (a value can never be
+          # both a string and an object), though `{ x: {} }` passes both runtime axis validators. An axis
+          # never carries `coerce:`/`preprocess:` at all (refused at declaration — "of: does not support
+          # coerce:"/"preprocess:"), so `axis_config_view` only ever needs to expose the axis's declared
+          # klass token, never a transform.
           if member_prop[:additionalProperties] || own_prop[:additionalProperties]
-            merged[:additionalProperties] = merge_emitted_nested_schema(member_prop[:additionalProperties], own_prop[:additionalProperties])
+            merged[:additionalProperties] = merge_emitted_nested_schema(
+              member_prop[:additionalProperties], own_prop[:additionalProperties],
+              axis_configs_for(member_configs, :values), axis_configs_for(own_configs, :values)
+            )
           end
           if member_prop[:propertyNames] || own_prop[:propertyNames]
-            merged[:propertyNames] = merge_emitted_nested_schema(member_prop[:propertyNames], own_prop[:propertyNames])
+            merged[:propertyNames] = merge_emitted_nested_schema(
+              member_prop[:propertyNames], own_prop[:propertyNames],
+              axis_configs_for(member_configs, :keys), axis_configs_for(own_configs, :keys)
+            )
           end
           merged
         end
@@ -1641,11 +1656,43 @@ module Axn
         # A nested map axis schema present on only one side is carried through as-is; present on both, it
         # is conjoined the same way any other two-declarations-at-one-position collision is (see
         # conjoin_shape_member_property) rather than letting either side simply win.
-        def merge_emitted_nested_schema(member_schema, own_schema)
+        def merge_emitted_nested_schema(member_schema, own_schema, member_axis_configs = [], own_axis_configs = [])
           return own_schema if member_schema.nil?
           return member_schema if own_schema.nil?
 
-          conjoin_shape_member_property(member_schema, own_schema)
+          conjoin_shape_member_property(member_schema, own_schema, member_configs: member_axis_configs, own_configs: own_axis_configs)
+        end
+
+        # A minimal stand-in for a field config, exposing only what `unknown_class_approximate?` reads
+        # (`.validations`) — enough to reuse that function UNCHANGED for an axis bag, which is never
+        # itself an `Internal::FieldConfig`. Deliberately has NO `preprocess` method at all, so
+        # `respond_to?(:preprocess)` reads false exactly as a shape member's does — `transforms_wire_
+        # value?`'s own doc explains why that must be the answer here: an axis bag can NEVER declare
+        # `coerce:`/`preprocess:` (both refused at declaration — "of: does not support coerce:"/
+        # "preprocess:"), so unlike an ordinary field's bare-coercible-klass case (ambient
+        # `coerce_input_types` MIGHT still coerce it, so reflection conservatively assumes it could), an
+        # axis's klass being coercible IN PRINCIPLE is never evidence it actually transforms here — the
+        # axis mechanism itself has no coercion seam at all, ambient setting or not. Defining `preprocess`
+        # to return nil would have made `respond_to?(:preprocess)` true, wrongly reusing the
+        # ambient-uncertainty conservatism a coercible axis klass (e.g. `values: Integer`) does not earn.
+        AxisConfigView = Struct.new(:validations)
+        private_constant :AxisConfigView
+
+        # The `axis_key` (`:values`/`:keys`) axis's own declared klass token(s), one view per outer config
+        # that declares an `of:` bag at all — empty for a config with none, which `unknown_class_
+        # approximate?`/`transforms_wire_value?` both already read as "nothing to distrust here."
+        def axis_configs_for(configs, axis_key)
+          configs.filter_map do |config|
+            bag = Axn::Internal::ShapeGraph.hash_or_nil(config.validations[:of])
+            next nil if bag.nil?
+
+            raw = bag[axis_key]
+            axis = Axn::Internal::ShapeGraph.hash_or_nil(raw)
+            token = axis ? axis[:klass] : raw
+            next nil if token.nil?
+
+            AxisConfigView.new({ type: token })
+          end
         end
 
         # The reconciled `:type` for a merged property — nullable only when BOTH sides admit null, since
@@ -1969,7 +2016,7 @@ module Axn
           spellings = translated_literal_constraint(prop, coercible_klasses, configs)
           return stripped if spellings.nil?
 
-          stripped[:enum] = drop_unsafe_native_float_equivalents(spellings, other_prop, coercible_klasses)
+          stripped[:enum] = spellings
           stripped
         end
 
@@ -2092,7 +2139,29 @@ module Axn
           return const_values if enum_values.empty?
           return enum_values if const_values.empty?
 
-          const_values & enum_values
+          intersect_declared_literals(const_values, enum_values)
+        end
+
+        # Ruby's Array#& compares members via `eql?`/`hash`, which treats an Integer and a numerically-
+        # equal Float as DIFFERENT (`5.eql?(5.0)` is false) — the SAME gap `intersect_wire_spellings` fixes
+        # for translated wire candidates, but here for the RAW declared literals themselves, reached by a
+        # DIFFERENT caller (Codex review, PR #278 round 25): an ancestor Numeric member declaring BOTH
+        # `comparison: { equal_to: 5 }` (`const: 5`) and `inclusion: { in: [5.0] }` (`enum: [5.0]`) beside a
+        # colliding Integer node that preprocesses `5` to `10` before requiring `> 6` accepts raw `5` at
+        # runtime (the ancestor's own checks both pass against 5; the node's own check runs on the
+        # preprocessed 10), but `declared_literals`'s plain `&` on `[5]` and `[5.0]` returned `[]` — read by
+        # `drop_bounds_contradicted_by_other_literals` as "no literals declared, nothing to contradict" —
+        # so the node's own (truly contradicted) `exclusiveMinimum: 6` was kept rather than dropped, and
+        # the schema conjoined `const: 5`, `enum: [5.0]`, and `exclusiveMinimum: 6` into a node nothing
+        # satisfies. Checked in both directions (matching `intersect_wire_spellings`'s own shape), since
+        # either side's specific literal may be the one a downstream reader keys its own logic off (e.g.
+        # `retarget_length_to_union`'s wire-rendering check, which cares which literal it got, not merely
+        # whether one exists).
+        def intersect_declared_literals(values_x, values_y)
+          from_x = values_x.select { |x| values_y.any? { |y| x == y } }
+          from_y = values_y.select { |y| values_x.any? { |x| x == y } }
+
+          (from_x + from_y).uniq
         end
 
         # Per bound keyword: the JSON type it applies to, the measurement it bounds (`#length`/`#size` for
@@ -2388,37 +2457,6 @@ module Axn
 
         def wire_candidate_round_trips?(candidate, raw_literal, coercible_klasses)
           Axn::Internal::Coercion.coerce_value(candidate, coercible_klasses) == raw_literal
-        end
-
-        # A native (non-string) whole-number Float candidate — e.g. `5.0` from `round_tripping_wire_
-        # spellings`'s own `[value, value.to_s]` — is unsafe to emit as-is whenever the SURVIVING side
-        # admits a bare JSON number at this position: JSON Schema's own equality treats `5` and `5.0` as
-        # the identical value (a zero-fractional-part number satisfies `enum`/`const` matching regardless
-        # of how it was written), but `Coercion.coerce_value` only ever parses a STRING — a native JSON
-        # integer `5` reaching this position is left untouched and then fails the node's own (real) Float
-        # type check outright (Codex review, PR #278 round 24): a `type: Numeric` shape member (emits
-        # `type: "number"`, admitting a bare JSON integer) beside a coercing Float node's `inclusion: { in:
-        # [5.0] }` accepted native `5` per the schema (JSON's own numeric equality matches `5` against
-        # `enum: [5.0]`), but the runtime rejects it (`5` is never coerced — only Strings are — and `5` is
-        # not a Float). There is no JSON Schema construct that admits `5.0` while excluding `5` (JSON's own
-        # number model has no "integer vs. float" distinction at all — the spec itself defines `5.0` as
-        # satisfying `type: "integer"` too, any zero-fractional-part number does, regardless of how it was
-        # written), so the two are provably inexpressible apart here — there is no schema that admits the
-        # one runtime-valid wire value (the native Float) without ALSO admitting the one runtime-invalid
-        # one (its bare integer equivalent). Dropping the native candidate outright picks "reject the
-        # position entirely" over "silently accept an extra value the runtime rejects" — accepting a
-        # fully-unsatisfiable narrow residual once this specific, deliberately-unusual combination is
-        # declared (a whole-number Float literal, coerced from a String, colliding with an ancestor whose
-        # real type admits a bare JSON number) rather than leaving the schema silently loose, consistent
-        # with this file's standing precedent that "never accept what the runtime rejects" outranks
-        # "never emit a node nothing satisfies" when a genuine ambiguity forces a choice between the two.
-        # Safe to skip entirely when `coercible_klasses` also accepts a bare Integer directly (a union
-        # target), since then a native `5` reaching this position is correctly valid, not a bug.
-        def drop_unsafe_native_float_equivalents(spellings, other_prop, coercible_klasses)
-          return spellings unless collision_types(other_prop).intersect?(NUMERIC_TYPES)
-          return spellings if coercible_klasses.include?(::Integer)
-
-          spellings.reject { |value| value.is_a?(::Float) && value.finite? && value == value.to_i }
         end
 
         # The coercible target klasses of the FIRST config in this route list that transforms its wire
