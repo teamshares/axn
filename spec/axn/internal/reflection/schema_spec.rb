@@ -5853,18 +5853,20 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "5" })).not_to be_ok # coerced then preprocessed to 6, fails equal_to: 5
           end
 
-          # A colliding node's OWN `nil_allowed?` is not the last word when it also has a `preprocess:` —
-          # the Proc runs BEFORE presence is judged, so a SYNTACTICALLY REQUIRED node can still admit a
-          # wire `nil` if its own preprocess turns it into something non-nil (Codex review, PR #278 round
-          # 20): a nil-tolerant ancestor member constrained to `inclusion: { in: [nil] }` beside a required
-          # node with `preprocess: ->(_) { "x" }` accepts wire `nil` at runtime (the ancestor's own
-          # validators skip for nil; the node's constant preprocess always produces "x", which passes its
-          # own type check) — but the conjoined property already carries `enum: [nil]` from the ancestor,
-          # and unconditionally adding `not: { type: "null" }` because the node is "required" produced a
-          # property that must simultaneously equal nil AND not be null — unsatisfiable, though the contract
-          # itself accepts nil. Coercion gets no such exemption (`Coercion.coerce_value` leaves nil
-          # untouched), only a `preprocess:` can rescue nil into something else.
-          it "does not reject null when a required node's own preprocess might rescue a nil-tolerant ancestor's nil" do
+          # Round 20 tried exempting a REQUIRED node's own `nil_allowed?` whenever it also has a
+          # `preprocess:`, on the premise that the Proc runs before presence is judged and so MIGHT turn a
+          # wire `nil` into something non-nil (`preprocess: ->(_) { "x" }` beside an ancestor member
+          # constrained to `inclusion: { in: [nil] }` does exactly that, and runtime accepts wire nil). But
+          # round 21 showed that same exemption cannot be scoped safely: reflection cannot tell that
+          # CONSTANT-preprocess case apart from an ordinary IDENTITY (or any other nil-preserving)
+          # `preprocess: ->(v) { v }`, where the Proc does NOT rescue nil and the required check correctly
+          # rejects it — `preprocess:` is an opaque Proc, and reflection must not execute it to find out
+          # which case it is. So this remains `not: { type: "null" }` even though round 20's OWN scenario
+          # would (if it were reachable) accept wire nil at runtime — a known, deliberately unfixed residual
+          # (the same "cannot execute user code" limit already accepted for pattern/format and numeric
+          # bounds under preprocess elsewhere in this file), preferred over risking the FAR more common
+          # identity/pass-through case silently becoming schema-loose.
+          it "still rejects null for a required, preprocessing node even beside a nil-tolerant ancestor" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -5876,9 +5878,34 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(minLength: 1, allOf: [{ type: %w[string null], enum: [nil] }])
-            expect(inner).not_to have_key(:not)
-            expect(klass.call(payload: { inner: nil })).to be_ok # ancestor skips validation for nil; node preprocesses to "x"
+            expect(inner).to eq(minLength: 1, allOf: [{ type: %w[string null], enum: [nil] }], not: { type: "null" })
+            # Deliberately NOT asserting be_ok here: this specific contract does runtime-accept wire nil (the
+            # ancestor's own validators skip for nil; the node's constant preprocess always produces "x"),
+            # but the schema above cannot honestly express that without the round-21 regression — see the
+            # comment above for why this residual is accepted rather than solved.
+          end
+
+          # The scenario round 21 actually flagged: an ORDINARY nil-tolerant ancestor (not the exotic
+          # "constrained to only nil" case above) beside a required node whose preprocess is IDENTITY —
+          # the far more common shape a `preprocess:`-plus-nullability collision takes, and the one round
+          # 20's (reverted) exemption got backwards: it would have skipped `reject_null!` here too, letting
+          # the schema accept wire `nil` though the identity preprocess never rescues it and the required
+          # check genuinely rejects it at runtime.
+          it "rejects null for a required, identity-preprocessing node beside an ordinary nil-tolerant ancestor" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, optional: true
+              end
+              expects :inner, on: :payload, type: String, preprocess: ->(v) { v }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to include(not: { type: "null" })
+            expect(klass.call(payload: { inner: nil })).not_to be_ok # identity preprocess never rescues nil; required check rejects it
+            expect(klass.call(payload: { inner: "abc" })).to be_ok
           end
 
           # A type-conditional bound (round 8's `length:`) is safe to KEEP from a `preprocess:`-tainted
