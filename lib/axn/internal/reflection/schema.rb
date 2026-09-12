@@ -1619,7 +1619,33 @@ module Axn
           merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required]) if member_prop[:required] || own_prop[:required]
           merged[:minProperties] = [member_prop[:minProperties], own_prop[:minProperties]].compact.max if merged[:minProperties]
           merged[:maxProperties] = [member_prop[:maxProperties], own_prop[:maxProperties]].compact.min if merged[:maxProperties]
+          # A map's `values:`/`keys:` axes (`additionalProperties`/`propertyNames`) are their OWN nested
+          # schema, both enforced when both sides declare one — the shallow `merge` above lets the SECOND
+          # side simply overwrite the first, the same bug `:properties`/`:type` already needed reconciling
+          # (Codex review, PR #278 round 24): an ancestor `deep` Hash member whose values axis requires
+          # `> 0` beside a colliding node's own `deep` values axis requiring `< 10` emitted only the `< 10`
+          # constraint, so `deep: { x: -1 }` passed the schema though the ancestor's own (unconditional)
+          # validator rejects it. Conjoined via the SAME `conjoin_shape_member_property` recursion used
+          # everywhere else two schemas at one position both apply — with no configs of its own to check
+          # (the axis's OWN transform status isn't available at this level), so neither side is treated as
+          # transforming, which only means neither gets stripped, never that either gets loosened.
+          if member_prop[:additionalProperties] || own_prop[:additionalProperties]
+            merged[:additionalProperties] = merge_emitted_nested_schema(member_prop[:additionalProperties], own_prop[:additionalProperties])
+          end
+          if member_prop[:propertyNames] || own_prop[:propertyNames]
+            merged[:propertyNames] = merge_emitted_nested_schema(member_prop[:propertyNames], own_prop[:propertyNames])
+          end
           merged
+        end
+
+        # A nested map axis schema present on only one side is carried through as-is; present on both, it
+        # is conjoined the same way any other two-declarations-at-one-position collision is (see
+        # conjoin_shape_member_property) rather than letting either side simply win.
+        def merge_emitted_nested_schema(member_schema, own_schema)
+          return own_schema if member_schema.nil?
+          return member_schema if own_schema.nil?
+
+          conjoin_shape_member_property(member_schema, own_schema)
         end
 
         # The reconciled `:type` for a merged property — nullable only when BOTH sides admit null, since
@@ -1943,7 +1969,7 @@ module Axn
           spellings = translated_literal_constraint(prop, coercible_klasses, configs)
           return stripped if spellings.nil?
 
-          stripped[:enum] = spellings
+          stripped[:enum] = drop_unsafe_native_float_equivalents(spellings, other_prop, coercible_klasses)
           stripped
         end
 
@@ -2237,8 +2263,29 @@ module Axn
           elsif enum_spellings == :none
             const_spellings
           else
-            const_spellings & enum_spellings
+            intersect_wire_spellings(const_spellings, enum_spellings, coercible_klasses)
           end
+        end
+
+        # Ruby's Array#& compares members via `eql?`/`hash`, which — unlike `==` — treats an Integer and a
+        # numerically-equal Float as DIFFERENT (`5.eql?(5.0)` is false), and never asks whether two
+        # DIFFERENT wire strings actually decode to the same target value (Codex review, PR #278 round
+        # 24): a coercing Float node declaring BOTH `comparison: { equal_to: 5 }` (`const: 5`, an Integer)
+        # and `inclusion: { in: [5.0] }` (`enum: [5.0]`, a Float) accepts wire "5" at runtime (it coerces
+        # to 5.0, which equals both 5 and 5.0), but `[5, "5"]` (const's own candidates) and `[5.0, "5.0"]`
+        # (enum's) share no member under Ruby's default equality, so a naive `&` produced an empty,
+        # unsatisfiable enum for a satisfiable contract. Two candidates express the SAME wire constraint
+        # here whenever they COERCE to the identical value — not whenever the raw candidates themselves
+        # are `==` — checked from BOTH sides, since either one may hold the specific wire spelling (e.g.
+        # the string "5") that only round-trips against the OTHER side's own raw literal.
+        def intersect_wire_spellings(candidates_x, candidates_y, coercible_klasses)
+          coerced_x = candidates_x.map { |candidate| [candidate, Axn::Internal::Coercion.coerce_value(candidate, coercible_klasses)] }
+          coerced_y = candidates_y.map { |candidate| [candidate, Axn::Internal::Coercion.coerce_value(candidate, coercible_klasses)] }
+
+          from_x = coerced_x.select { |_, coerced| coerced_y.any? { |_, other| coerced == other } }.map(&:first)
+          from_y = coerced_y.select { |_, coerced| coerced_x.any? { |_, other| coerced == other } }.map(&:first)
+
+          (from_x + from_y).uniq
         end
 
         # A literal set's wire-compatible spellings, or nil when NONE of them have a translation reflection
@@ -2341,6 +2388,37 @@ module Axn
 
         def wire_candidate_round_trips?(candidate, raw_literal, coercible_klasses)
           Axn::Internal::Coercion.coerce_value(candidate, coercible_klasses) == raw_literal
+        end
+
+        # A native (non-string) whole-number Float candidate — e.g. `5.0` from `round_tripping_wire_
+        # spellings`'s own `[value, value.to_s]` — is unsafe to emit as-is whenever the SURVIVING side
+        # admits a bare JSON number at this position: JSON Schema's own equality treats `5` and `5.0` as
+        # the identical value (a zero-fractional-part number satisfies `enum`/`const` matching regardless
+        # of how it was written), but `Coercion.coerce_value` only ever parses a STRING — a native JSON
+        # integer `5` reaching this position is left untouched and then fails the node's own (real) Float
+        # type check outright (Codex review, PR #278 round 24): a `type: Numeric` shape member (emits
+        # `type: "number"`, admitting a bare JSON integer) beside a coercing Float node's `inclusion: { in:
+        # [5.0] }` accepted native `5` per the schema (JSON's own numeric equality matches `5` against
+        # `enum: [5.0]`), but the runtime rejects it (`5` is never coerced — only Strings are — and `5` is
+        # not a Float). There is no JSON Schema construct that admits `5.0` while excluding `5` (JSON's own
+        # number model has no "integer vs. float" distinction at all — the spec itself defines `5.0` as
+        # satisfying `type: "integer"` too, any zero-fractional-part number does, regardless of how it was
+        # written), so the two are provably inexpressible apart here — there is no schema that admits the
+        # one runtime-valid wire value (the native Float) without ALSO admitting the one runtime-invalid
+        # one (its bare integer equivalent). Dropping the native candidate outright picks "reject the
+        # position entirely" over "silently accept an extra value the runtime rejects" — accepting a
+        # fully-unsatisfiable narrow residual once this specific, deliberately-unusual combination is
+        # declared (a whole-number Float literal, coerced from a String, colliding with an ancestor whose
+        # real type admits a bare JSON number) rather than leaving the schema silently loose, consistent
+        # with this file's standing precedent that "never accept what the runtime rejects" outranks
+        # "never emit a node nothing satisfies" when a genuine ambiguity forces a choice between the two.
+        # Safe to skip entirely when `coercible_klasses` also accepts a bare Integer directly (a union
+        # target), since then a native `5` reaching this position is correctly valid, not a bug.
+        def drop_unsafe_native_float_equivalents(spellings, other_prop, coercible_klasses)
+          return spellings unless collision_types(other_prop).intersect?(NUMERIC_TYPES)
+          return spellings if coercible_klasses.include?(::Integer)
+
+          spellings.reject { |value| value.is_a?(::Float) && value.finite? && value == value.to_i }
         end
 
         # The coercible target klasses of the FIRST config in this route list that transforms its wire
