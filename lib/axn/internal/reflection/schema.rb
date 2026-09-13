@@ -2772,14 +2772,26 @@ module Axn
           # PR #278 round 41): a `[Numeric, String], inclusion: { in: [1] }` survivor's type union nominally
           # admits "string", but its OWN `enum: [1]` restricts the position to just the number `1` — no
           # String witness ever satisfies BOTH the union and this narrower enum at once. When the survivor
-          # declares its own literal set, checking THAT set for a String/boolean-typed member (rather than
-          # the type union) is what actually answers whether a witness remains.
+          # declares its own literal set, checking THAT set for a non-numeric member is what actually
+          # answers whether a witness remains.
+          #
+          # But a non-numeric survivor literal's Ruby TYPE alone is not proof it survives either (Codex
+          # review, PR #278 round 42): a `[Numeric, String], inclusion: { in: [1, "no"] }` survivor has a
+          # String literal, "no" — but "no" is not a recognized boolean spelling at all (`coerce_boolean`
+          # raises for it), so it never round-trips to the node's own `inclusion: { in: [true] }` target —
+          # it was never a real witness, just a String that happened to be sitting there. Checking whether
+          # the literal actually round-trips through THIS node's own coercer to one of ITS OWN raw
+          # `inclusion:` values (the same `wire_candidate_round_trips?` check every other candidate here is
+          # filtered through) is what tells a genuine witness apart from an unrelated literal.
           collision = collision_types(other_prop)
           survivor_admits_native_number = collision.intersect?(NUMERIC_TYPES)
           survivor_literals = declared_literals(other_prop)
           non_numeric_witness_available =
             if survivor_literals.any?
-              survivor_literals.any? { |literal| literal.is_a?(::String) || [true, false].include?(literal) }
+              non_numeric_survivor_literals = survivor_literals.reject { |literal| literal.is_a?(::Numeric) }
+              non_numeric_survivor_literals.any? do |literal|
+                raw_literals.any? { |raw_literal| wire_candidate_round_trips?(literal, raw_literal, coercible_klasses) }
+              end
             else
               collision.intersect?(%w[string boolean])
             end

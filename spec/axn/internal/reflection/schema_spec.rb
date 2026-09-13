@@ -7150,6 +7150,32 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 1.0 })).not_to be_ok # the accepted loose residual
           end
 
+          # A non-numeric survivor literal's Ruby TYPE alone is not proof it survives as a witness (Codex
+          # review, PR #278 round 42): a `[Numeric, String], inclusion: { in: [1, "no"] }` survivor has a
+          # String literal, "no" — but "no" is not a recognized boolean spelling at all, so it never
+          # round-trips to the node's own `inclusion: { in: [true] }` target; it was never a real witness,
+          # just an unrelated String sitting alongside the real one.
+          it "keeps a boolean's own native numeric spelling when a non-numeric survivor literal never round-trips" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Numeric, String], inclusion: { in: [1, "no"] }
+              end
+              expects :inner, on: :payload, type: { klass: :boolean, coerce: true }, inclusion: { in: [true] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              enum: [true, 1, "1", "true", "t", "yes", "y", "on"],
+              not: { type: "null" },
+              allOf: [{ anyOf: [{ type: "number" }, { type: "string", minLength: 1 }], enum: [1, "no"] }],
+            )
+            expect(klass.call(payload: { inner: 1 })).to be_ok
+            expect(klass.call(payload: { inner: "no" })).not_to be_ok
+          end
+
           # `:description` is the one emitted key that is purely descriptive metadata, never a type or
           # value constraint (Codex review, PR #278 round 40): a node declaring ONLY `description:` (no
           # `type:` at all) is exactly as untyped as a genuinely empty property, so treating its non-empty
