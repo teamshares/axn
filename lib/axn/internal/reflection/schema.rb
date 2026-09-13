@@ -2123,6 +2123,15 @@ module Axn
           drop_type_inconsistent_with_enum(strip_intrinsically_typed_keys_before_consistency_check(prop, configs, other_prop))
         end
 
+        # Whether any config in this route list declares an opaque `preprocess:` — a Proc reflection must
+        # never execute (the standing "reflection is side-effect-free" rule), so nothing here can know
+        # what value it produces for a given wire input. Shared by every check that reasons about the
+        # RAW wire value a side's own bound/type actually applies to, since none of that reasoning extends
+        # past an opaque transform.
+        def opaque_preprocess?(configs)
+          configs.any? { |config| config.respond_to?(:preprocess) && config.preprocess }
+        end
+
         # Whether `prop`'s OWN declared type is a numeric type (`NUMERIC_TYPES`, i.e. never "string" or
         # any other JSON type) no broader than `other_prop`'s — the one case where stripping a
         # transforming side's own type for merely COMPETING with the other side's claim throws away a
@@ -2143,7 +2152,7 @@ module Axn
         # Gated on no `preprocess:` among `configs` — an arbitrary proc's output bears no such guaranteed
         # relationship to the raw wire value, so this proof does not extend to it.
         def numeric_type_safely_narrows?(prop, other_prop, configs)
-          return false if configs.any? { |config| config.respond_to?(:preprocess) && config.preprocess }
+          return false if opaque_preprocess?(configs)
 
           own_types = collision_types(prop)
           other_types = collision_types(other_prop)
@@ -2256,7 +2265,7 @@ module Axn
           # arbitrary non-empty string like `"garbage"`, which coercion leaves as a String (not one
           # matching a Date format) and the runtime's own Date type check rejects.
           stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern)
-          stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop, coercible_klasses, position_nullable?(prop, other_prop))
+          stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop, coercible_klasses, position_nullable?(prop, other_prop), configs)
           stripped = drop_bounds_contradicted_by_other_literals(stripped, other_prop)
           stripped = drop_length_bound_beside_sibling_pattern(stripped, other_prop)
           return stripped if coercible_klasses.empty?
@@ -2579,7 +2588,7 @@ module Axn
         # the SAME residual imprecision round 14 already established for the union's OTHER, non-numeric
         # branch (a wire String that coerces to a violating number is a case JSON Schema's numeric keywords
         # can never see, whichever branch they sit on) — an accepted trade, not a new one.
-        def drop_numeric_bounds_unless_type_admits_number(prop, other_prop, coercible_klasses, nullable)
+        def drop_numeric_bounds_unless_type_admits_number(prop, other_prop, coercible_klasses, nullable, configs)
           return prop unless NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
 
           # `declared_literals` deliberately DROPS a `nil` member (it never violates a size/numeric bound
@@ -2660,6 +2669,22 @@ module Axn
 
             return prop.except(*NUMERIC_BOUND_ALL_KEYS) unless nullable
           end
+
+          # `retarget_numeric_bound_to_literals` treats an EMPTY `coercible_klasses` as "this side doesn't
+          # coerce, so each literal IS the value the bound checks, unchanged" — true for a genuinely
+          # non-transforming `prop`, but not for one whose `coercible_klasses` is empty because it carries
+          # an opaque `preprocess:` instead (`coercible_target_klasses` deliberately excludes a
+          # preprocessing config even when it ALSO coerces) (Codex review, PR #278 round 44): a raw
+          # `String` member restricted to `"raw"` beside `type: { klass: Integer, coerce: false },
+          # preprocess: ->(_) { 10 }, comparison: { greater_than: 5 }` accepts wire "raw" at runtime (the
+          # ancestor's own check runs on the raw String; the node's own check runs on the PREPROCESSED
+          # constant `10`, which satisfies `> 5`), but checking `"raw".is_a?(Numeric)` directly (as though
+          # no transform occurred) excluded it, retargeting to `enum: []` — unsatisfiable for a satisfiable
+          # contract. Reflection cannot know what an opaque Proc produces for a given wire literal (the
+          # standing "reflection is side-effect-free" rule), so the bound is simply DROPPED here instead —
+          # the same response this file already gives the comparable `:pattern` "can't prove two opaque
+          # things compatible" gap (round 13).
+          return prop.except(*NUMERIC_BOUND_ALL_KEYS) if coercible_klasses.empty? && opaque_preprocess?(configs)
 
           retarget_numeric_bound_to_literals(prop, literals, coercible_klasses, nullable)
         end

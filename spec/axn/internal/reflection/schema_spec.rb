@@ -7208,6 +7208,32 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "garbage" })).not_to be_ok
           end
 
+          # `retarget_numeric_bound_to_literals` treats an empty `coercible_klasses` as "this side doesn't
+          # coerce, so each literal IS the value the bound checks, unchanged" — true for a genuinely
+          # non-transforming node, but not for one whose `coercible_klasses` is empty because it carries an
+          # opaque `preprocess:` instead (Codex review, PR #278 round 44): a raw `String` member restricted
+          # to `"raw"` beside `type: { klass: Integer, coerce: false }, preprocess: ->(_) { 10 },
+          # comparison: { greater_than: 5 }` accepts wire "raw" at runtime (the ancestor's own check runs on
+          # the raw String; the node's own check runs on the PREPROCESSED constant `10`, which satisfies
+          # `> 5`), but checking `"raw".is_a?(Numeric)` directly (as though no transform occurred) excluded
+          # it, retargeting to `enum: []` and rejecting everything. Reflection cannot know what an opaque
+          # Proc produces for a given wire literal, so the bound is dropped instead.
+          it "drops a numeric bound rather than filtering literals through an opaque preprocess" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, inclusion: { in: ["raw"] }
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: false }, preprocess: ->(_) { 10 }, comparison: { greater_than: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", enum: ["raw"], minLength: 1)
+            expect(klass.call(payload: { inner: "raw" })).to be_ok
+          end
+
           # `:description` is the one emitted key that is purely descriptive metadata, never a type or
           # value constraint (Codex review, PR #278 round 40): a node declaring ONLY `description:` (no
           # `type:` at all) is exactly as untyped as a genuinely empty property, so treating its non-empty
