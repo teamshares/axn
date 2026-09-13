@@ -7000,6 +7000,50 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "true" })).not_to be_ok # not in the sibling's own inclusion: { in: ["TRUE"] }
           end
 
+          # `Coercion.boolean_wire_spellings(true)` includes the native Integer `1` as a candidate — safe
+          # beside a sibling whose type excludes numbers entirely (like the String sibling above), but not
+          # when the survivor admits a bare JSON number directly (Codex review, PR #278 round 37): a
+          # `type: Numeric` shape member colliding with a coercing `:boolean` node restricted to `true`
+          # translates to `enum: [true, 1, ...]`, conjoined with the survivor's own `type: "number"` — JSON
+          # Schema considers `1.0` equal to the enum member `1`, so a schema-following client could send
+          # `1.0`, but `coerce_boolean` accepts only a native Integer `0`/`1` and the runtime rejects a
+          # Float as non-boolean. Unlike the acknowledged standalone Float/Integer ambiguity (round 24 —
+          # unfixable everywhere, including standalone), a STANDALONE boolean position emits `type:
+          # "boolean"`, which no number can ever satisfy — so this ambiguity is introduced only by the
+          # collision, and dropping the native numeric spelling here does not reopen an already-fine
+          # standalone case. Native `1`/`0` becomes a documented, narrow "schema stricter than runtime"
+          # residual at exactly this collision, rather than left silently loose.
+          it "drops a boolean's own native numeric spelling when the survivor admits a native number" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Numeric
+              end
+              expects :inner, on: :payload, type: { klass: :boolean, coerce: true }, inclusion: { in: [true] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              enum: [true, "1", "true", "t", "yes", "y", "on"],
+              not: { type: "null" },
+              allOf: [{ type: "number" }],
+            )
+            expect(klass.call(payload: { inner: 1.0 })).not_to be_ok # coerce_boolean accepts only a native Integer 0/1, never a Float
+            # The ancestor's own `type: Numeric` check runs UNCONDITIONALLY on the raw wire value, so `true`
+            # itself was never a valid input here regardless of coercion — native `1` is the ONLY value
+            # that ever satisfied both sides (Numeric raw check; coerces to `true`, satisfying inclusion).
+            # There is no JSON Schema construct that admits native `1` while excluding native `1.0` (the
+            # same dead end round 24 established), so dropping the candidate makes THIS narrow declaration
+            # unsatisfiable by the schema even though `1` remains genuinely valid at runtime — a
+            # documented, accepted "schema stricter than runtime" residual, not a new bug: rejecting the
+            # one runtime-valid wire form here is a strictly narrower cost than the alternative (silently
+            # admitting the invalid `1.0`), and never-loosen is the harder invariant when the two are this
+            # evenly matched.
+            expect(klass.call(payload: { inner: 1 })).to be_ok
+          end
+
           # `reject_unretargetable_length_bound` (round 31's own fix) left a PRE-EXISTING `:enum` alone
           # whenever the property already had one — but that stale enum is exactly the set
           # `sibling_literals` was built from, and reaching this branch at all means NONE of its non-null
@@ -7025,6 +7069,32 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(inner).to eq(type: %w[integer null], allOf: [{ enum: [nil] }])
             expect(klass.call(payload: { inner: nil })).to be_ok
             expect(klass.call(payload: { inner: 1 })).not_to be_ok # "1".length is 1, fails the member's own length: { minimum: 3 }
+          end
+
+          # The nullable-literal check above only looked at each side's raw `:enum` for a literal `nil` —
+          # but when BOTH sides use `allow_nil: true` with NO `inclusion:` at all, nullability shows up
+          # ONLY in their emitted `:type` (`[..., "null"]`), never as a literal enum member (Codex review,
+          # PR #278 round 37): a nullable `type: Object, length: { minimum: 3 }` member (no `inclusion:`)
+          # colliding with a nullable, non-coercing Integer node reaches this same dead end with NO literal
+          # `nil` anywhere to find, though BOTH sides admit it via their own `type: [..., "null"]` — the
+          # runtime accepts `nil` (and every integer whose decimal rendering is long enough), but the
+          # resulting `enum: []` wrongly rejected all of it, nil included. Fixed by deriving nullability
+          # from either side's emitted `:type` too, via `position_nullable?`, computed against the
+          # ORIGINAL (unstripped) properties before anything strips their own `:type` away.
+          it "derives nullability from an emitted type, not only a literal enum, when no witness survives" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }, allow_nil: true
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: false }, allow_nil: true
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: %w[integer null], allOf: [{ enum: [nil] }])
+            expect(klass.call(payload: { inner: nil })).to be_ok
           end
 
           # Checking a literal against a numeric bound with a RAW `is_a?(Numeric)` test misses a String
