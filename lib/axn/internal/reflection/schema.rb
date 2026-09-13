@@ -1822,6 +1822,17 @@ module Axn
           member_prop = strip_intrinsically_typed_keys(member_prop, member_configs, original_own_prop) if transforms_wire_value?(member_configs)
           own_prop = strip_intrinsically_typed_keys(own_prop, own_configs, original_member_prop) if transforms_wire_value?(own_configs)
 
+          # Whichever side's OWN type survived pass 1 may itself now be a safe numeric narrowing of the
+          # OTHER side's (Codex review, PR #278 round 38) — an `Integer`-coercing node's kept `type:
+          # "integer"` beside a `Numeric` member's `type: "number"` asserts strictly MORE than the
+          # member's own type ever did, so the member's type is redundant: dropped here rather than
+          # conjoined as a superfluous `allOf` branch that says nothing the narrower type doesn't already.
+          if numeric_type_safely_narrows?(own_prop, member_prop, own_configs)
+            member_prop = member_prop.except(:type, :anyOf)
+          elsif numeric_type_safely_narrows?(member_prop, own_prop, member_configs)
+            own_prop = own_prop.except(:type, :anyOf)
+          end
+
           member_unknown = unknown_class_approximate?(member_configs)
           own_unknown = unknown_class_approximate?(own_configs)
 
@@ -2103,6 +2114,46 @@ module Axn
           drop_type_inconsistent_with_enum(strip_intrinsically_typed_keys_before_consistency_check(prop, configs, other_prop))
         end
 
+        # Whether `prop`'s OWN declared type is a numeric type (`NUMERIC_TYPES`, i.e. never "string" or
+        # any other JSON type) no broader than `other_prop`'s — the one case where stripping a
+        # transforming side's own type for merely COMPETING with the other side's claim throws away a
+        # real, safe narrowing instead of avoiding a contradiction (Codex review, PR #278 round 38): a
+        # `Numeric` shape member (emits `type: "number"`) beside a colliding `type: { klass: Integer,
+        # coerce: true }` node stripped the node's own `type: "integer"` down to nothing merely because
+        # the member ALSO claims a type, leaving only the member's `type: "number"` — which admits a raw
+        # wire Float like `1.5` that the runtime rejects (`Coercion.coerce_value` is a no-op for any
+        # non-String value, so the node's own Integer check runs on that SAME raw `1.5`).
+        #
+        # Restricted to `NUMERIC_TYPES` specifically because "string" is the ONLY domain any
+        # `Coercion::SUPPORTED` target (other than `:boolean`, never itself a numeric type) actually
+        # transforms FROM — a non-String wire value always passes through coercion unchanged. So whenever
+        # NEITHER side's declared type ever admits "string", the wire value both checks read is
+        # guaranteed untouched by coercion, and retaining `prop`'s own (narrower-or-equal) type describes
+        # that exact same raw value rather than some post-transform value the other side never sees.
+        #
+        # Gated on no `preprocess:` among `configs` — an arbitrary proc's output bears no such guaranteed
+        # relationship to the raw wire value, so this proof does not extend to it.
+        def numeric_type_safely_narrows?(prop, other_prop, configs)
+          return false if configs.any? { |config| config.respond_to?(:preprocess) && config.preprocess }
+
+          own_types = collision_types(prop)
+          other_types = collision_types(other_prop)
+          return false if own_types.empty? || other_types.empty?
+          return false unless (own_types | other_types).all? { |type| NUMERIC_TYPES.include?(type) }
+
+          # An IDENTICAL type on both sides is not a narrowing at all — neither side describes any value
+          # the other doesn't equally describe, so there is nothing here for this check to have an
+          # opinion about, and it stays out of the way, leaving both sides exactly as untouched as they
+          # already were for a plain, non-transforming Integer-vs-Integer collision (round 7's own test).
+          return false if own_types.sort == other_types.sort
+
+          # "integer" and "number" are never literally the SAME element, so a plain set-subtraction
+          # subset check (as if these were unrelated tokens) never recognizes the one real narrowing
+          # relationship in `NUMERIC_TYPES` — every JSON integer instance also satisfies "number", so
+          # "integer" strictly narrows "number", never the other way around.
+          own_types.all? { |type| other_types.include?(type) || (type == "integer" && other_types.include?("number")) }
+        end
+
         # A last, UNCONDITIONAL safety net over every upfront heuristic above that decides whether to
         # KEEP a transforming side's own type — rounds 32-34 each found a narrower way that heuristic
         # could be wrong (an untyped sibling, a sibling with mixed literals, a node's own literal
@@ -2176,7 +2227,8 @@ module Axn
           prop_has_own_narrowing = NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
           other_prop_claims_type = other_prop.key?(:type) || other_prop.key?(:anyOf)
           other_prop_claims_literal = other_prop.key?(:enum) || other_prop.key?(:const)
-          strip_intrinsic_type = other_prop_claims_type || (other_prop_claims_literal && !prop_has_own_narrowing)
+          strip_for_competing_type = other_prop_claims_type && !numeric_type_safely_narrows?(prop, other_prop, configs)
+          strip_intrinsic_type = strip_for_competing_type || (other_prop_claims_literal && !prop_has_own_narrowing)
           intrinsic_type_keys = strip_intrinsic_type ? %i[type anyOf] : []
           stripped = prop.except(*intrinsic_type_keys, :enum, :const)
           coercible_klasses = coercible_target_klasses(configs)

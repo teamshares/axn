@@ -7044,6 +7044,23 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 1 })).to be_ok
           end
 
+          it "keeps a coercing node's own narrower numeric type instead of stripping it for a broader numeric sibling" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Numeric
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer")
+            expect(klass.call(payload: { inner: 1 })).to be_ok
+            expect(klass.call(payload: { inner: 1.5 })).not_to be_ok # coercion is a no-op for a non-String, so the node's own Integer check runs on the raw 1.5
+          end
+
           # `reject_unretargetable_length_bound` (round 31's own fix) left a PRE-EXISTING `:enum` alone
           # whenever the property already had one — but that stale enum is exactly the set
           # `sibling_literals` was built from, and reaching this branch at all means NONE of its non-null
