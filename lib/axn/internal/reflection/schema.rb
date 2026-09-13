@@ -1826,9 +1826,9 @@ module Axn
           own_unknown = unknown_class_approximate?(own_configs)
 
           if member_unknown && !own_unknown && !own_prop.empty?
-            member_prop = retarget_unknown_class_length(member_prop.except(:type, :anyOf), own_prop)
+            member_prop = retarget_unknown_class_length(member_prop.except(:type, :anyOf), own_prop, position_nullable?(member_prop, own_prop))
           elsif own_unknown && !member_unknown && !member_prop.empty?
-            own_prop = retarget_unknown_class_length(own_prop.except(:type, :anyOf), member_prop)
+            own_prop = retarget_unknown_class_length(own_prop.except(:type, :anyOf), member_prop, position_nullable?(own_prop, member_prop))
           end
 
           if own_prop.empty? || member_prop.empty? || (object_property?(member_prop) && object_property?(own_prop))
@@ -1874,7 +1874,7 @@ module Axn
         # instance, vacuously satisfying that branch regardless of size — so each applicable branch instead
         # gets its OWN paired `{type:, sizeKey:}` entry in a NEW `anyOf`, which is what makes the bound
         # actually discriminate by the instance's real type rather than passing vacuously for either one.
-        def retarget_unknown_class_length(prop, other_prop)
+        def retarget_unknown_class_length(prop, other_prop, nullable)
           return prop unless prop[:minLength] || prop[:maxLength]
 
           # Both sides' literals, not just the OTHER side's (Codex review, PR #278 round 23): `prop`
@@ -1915,8 +1915,7 @@ module Axn
           # UNION branch already gets — rather than reinventing a second, narrower filter here.
           return retarget_length_to_type(prop, other_types.first) if other_types.size == 1 && SIZE_CONSTRAINT_KEYS.key?(other_types.first)
 
-          nullable_literal = Array(other_prop[:enum]).include?(nil) || Array(prop[:enum]).include?(nil)
-          retarget_length_to_union(prop, other_types, sibling_literals, nullable_literal)
+          retarget_length_to_union(prop, other_types, sibling_literals, nullable)
         end
 
         # The unique JSON types the given literal VALUES themselves belong to, by their Ruby class alone —
@@ -1968,7 +1967,7 @@ module Axn
         # SAME bound via its own wire rendering (`#to_s.length`) and, if it passes, added to a dedicated
         # `enum`-only branch (no `type:`, since `enum`/`const` alone already pin the exact value regardless
         # of type) — narrower than admitting the whole type, but wide enough to keep this witness alive.
-        def retarget_length_to_union(prop, other_types, sibling_literals, nullable_literal)
+        def retarget_length_to_union(prop, other_types, sibling_literals, nullable)
           retargeted = prop.except(:minLength, :maxLength)
           branches = other_types.filter_map do |type|
             floor_key = SIZE_CONSTRAINT_KEYS[type]
@@ -1983,7 +1982,7 @@ module Axn
 
           reachable = literals_reachable_via_wire_rendering(prop, sibling_literals)
           branches << { enum: reachable } if reachable.any?
-          return reject_unretargetable_length_bound(retargeted, nullable_literal) if branches.empty?
+          return reject_unretargetable_length_bound(retargeted, nullable) if branches.empty?
 
           retargeted[:anyOf] = branches
           retargeted
@@ -2012,11 +2011,12 @@ module Axn
         # nullable, non-coercing Integer node has no retargetable branch (`1.to_s` is too short), but
         # leaving the ancestor's own stale `enum: [nil, 1]` in place admitted `1` anyway — the runtime
         # rejects it, though `nil` (which bypasses the bound entirely) proves the contract itself remains
-        # satisfiable. `nullable_literal` — whether either side's OWN raw enum admitted `nil` — is the one
-        # survivor worth keeping; every non-null literal already failed the same reachability check that
-        # got this function called in the first place.
-        def reject_unretargetable_length_bound(prop, nullable_literal)
-          prop.merge(enum: nullable_literal ? [nil] : [])
+        # satisfiable. `nullable` (see `position_nullable?` — checked against BOTH a literal `nil` in
+        # either side's own raw enum AND "null" in either side's own emitted `:type`, Codex review, PR
+        # #278 round 37) is the one survivor worth keeping; every non-null literal already failed the
+        # same reachability check that got this function called in the first place.
+        def reject_unretargetable_length_bound(prop, nullable)
+          prop.merge(enum: nullable ? [nil] : [])
         end
 
         # The sibling literals of a type with no NATIVE JSON size keyword (already covered by their own
@@ -2181,7 +2181,7 @@ module Axn
           stripped = prop.except(*intrinsic_type_keys, :enum, :const)
           coercible_klasses = coercible_target_klasses(configs)
           stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format)
-          stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop, coercible_klasses)
+          stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop, coercible_klasses, position_nullable?(prop, other_prop))
           stripped = drop_bounds_contradicted_by_other_literals(stripped, other_prop)
           stripped = drop_length_bound_beside_sibling_pattern(stripped, other_prop)
           return stripped if coercible_klasses.empty?
@@ -2316,6 +2316,23 @@ module Axn
           return enum_values if const_values.empty?
 
           intersect_declared_literals(const_values, enum_values)
+        end
+
+        # Whether a wire value of `nil` is admitted by BOTH `prop_a` and `prop_b` — both routes are
+        # enforced, so null survives only when NEITHER side's own unconditional check rejects it (the
+        # same "both, not either" doctrine `merge_emitted_type` already applies at the top level).
+        # Nullability can show up as a literal `nil` IN an `:enum` (an `inclusion:` naming it explicitly)
+        # OR as `"null"` in an emitted `:type` array (an `allow_nil:`-only position, no inclusion at all)
+        # — checking only the former misses the latter (Codex review, PR #278 round 37): a nullable
+        # `type: Object, length: { minimum: 3 }` member (no `inclusion:` at all) colliding with a nullable,
+        # non-coercing Integer node reached a length-retargeting dead end with no literal `nil` anywhere to
+        # find, though BOTH sides admit it via their own emitted `type: [..., "null"]`, and the resulting
+        # `enum: []` wrongly rejected nil (and every other otherwise-valid integer) at a position the
+        # runtime actually accepts nil at. Each side is checked in whatever form the CALLER passes it —
+        # typically the ORIGINAL, unstripped property, since `:type` may already be gone by the time the
+        # function that ultimately needs this answer runs.
+        def position_nullable?(prop_a, prop_b)
+          [prop_a, prop_b].all? { |prop| Array(prop[:type]).include?("null") || Array(prop[:enum]).include?(nil) }
         end
 
         # Ruby's Array#& compares members via `eql?`/`hash`, which treats an Integer and a numerically-
@@ -2477,7 +2494,7 @@ module Axn
         # the SAME residual imprecision round 14 already established for the union's OTHER, non-numeric
         # branch (a wire String that coerces to a violating number is a case JSON Schema's numeric keywords
         # can never see, whichever branch they sit on) — an accepted trade, not a new one.
-        def drop_numeric_bounds_unless_type_admits_number(prop, other_prop, coercible_klasses)
+        def drop_numeric_bounds_unless_type_admits_number(prop, other_prop, coercible_klasses, nullable)
           return prop unless NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
 
           # `declared_literals` deliberately DROPS a `nil` member (it never violates a size/numeric bound
@@ -2489,11 +2506,12 @@ module Axn
           # colliding coercing Integer node's `comparison: { greater_than: 5 }, allow_nil: true` accepts
           # wire `nil` at runtime (both declarations skip their own validator for it), but `3` alone fails
           # the bound, and the resulting `enum: []` (no `nil` anywhere) made the property reject every
-          # value, nil included. Checked directly against each side's RAW (pre-`declared_literals`) enum,
-          # since this is the one place nil's admissibility can still be read once the survivor is
-          # untyped (no `type: [..., "null"]` to fall back on here).
+          # value, nil included. `nullable` (see `position_nullable?`) is computed by the CALLER, against
+          # the ORIGINAL, unstripped `prop` this function's own caller received — this function only ever
+          # sees `prop` AFTER its own `:type` may have already been stripped, which would otherwise blind
+          # a type-only (no literal `nil`) nullability declaration to this check (Codex review, PR #278
+          # round 37 — see `position_nullable?`'s own doc for that exact scenario).
           literals = declared_literals(other_prop) | declared_literals(prop)
-          nullable = Array(other_prop[:enum]).include?(nil) || Array(prop[:enum]).include?(nil)
 
           survivor_types = collision_types(other_prop)
           numeric_survivor_types = survivor_types & NUMERIC_TYPES
@@ -2634,7 +2652,13 @@ module Axn
           # A sibling's own declared String literals are FINITE, CONCRETE wire values worth trying
           # alongside a numeric value's own generated candidates — see round_tripping_wire_spellings.
           sibling_wire_candidates = declared_literals(other_prop).select { |literal| literal.is_a?(::String) }
-          spellings = values.flat_map { |value| round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates) }.uniq
+          # Whether the survivor admits a bare, native JSON number directly (no coercion, no `type:
+          # "boolean"` of its own to keep it out) — needed so a BOOLEAN's own numeric spelling can be
+          # dropped when it would matter; see round_tripping_wire_spellings.
+          survivor_admits_native_number = collision_types(other_prop).intersect?(NUMERIC_TYPES)
+          spellings = values.flat_map do |value|
+            round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates, survivor_admits_native_number)
+          end.uniq
           spellings.empty? ? nil : spellings
         end
 
@@ -2720,7 +2744,28 @@ module Axn
         # ADDITIONAL candidates UNIVERSALLY (rather than trying to enumerate every non-canonical spelling
         # every coercer might accept) is what recovers exactly the finite set of wire values that could
         # ever actually reach this position, for whichever coercer is actually in play.
-        def round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates)
+        # `survivor_admits_native_number` drops a BOOLEAN's own native numeric spelling (`0`/`1`) when the
+        # survivor admits a bare JSON number directly, rather than treating a `true`/`false` literal
+        # exactly like a numeric one (Codex review, PR #278 round 37): a `type: Numeric` shape member
+        # colliding with a coercing `:boolean` node restricted to `true` translated to `enum: [true, 1,
+        # "1", "true", ...]`, conjoined with the survivor's own `type: "number"` — JSON Schema considers
+        # `1.0` equal to the enum member `1`, so a schema-following client could send `1.0`, but
+        # `coerce_boolean` accepts only a native Integer `0`/`1` and the runtime rejects a Float as
+        # non-boolean.
+        #
+        # There is no JSON Schema construct that admits native `1` while excluding native `1.0` — the same
+        # provable dead end round 24 already established for a coercing Float literal (`json_schemer`
+        # itself treats `type: "integer"`/`enum` membership as satisfied by ANY zero-fractional-part
+        # number, Ruby Float included) — so the native numeric spelling is dropped outright here too,
+        # accepting a narrow, documented "schema stricter than runtime" residual (native `1`/`0` no longer
+        # validates, though the runtime still accepts it) rather than leaving the schema loose. UNLIKE
+        # round 24 (reverted specifically because the identical ambiguity ALSO existed standalone, making
+        # a collision-only fix inconsistent), a STANDALONE boolean position emits `type: "boolean"` — a
+        # JSON type no number can ever satisfy, native OR float — so this ambiguity is introduced ONLY by
+        # the collision (this side's own type being stripped, leaving the survivor's `"number"` as the
+        # only type left standing), and dropping the candidate here does not reopen an already-fine
+        # standalone case the way round 24's attempt would have.
+        def round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates, survivor_admits_native_number)
           candidates =
             case value
             when nil then [nil]
@@ -2729,6 +2774,7 @@ module Axn
             when true, false then Axn::Internal::Coercion.boolean_wire_spellings(value)
             else []
             end
+          candidates = candidates.reject { |candidate| candidate.is_a?(::Integer) } if survivor_admits_native_number && [true, false].include?(value)
           candidates += sibling_wire_candidates unless value.nil?
 
           matching_raw_literals = raw_literals_for(value, raw_literals)
