@@ -15,6 +15,9 @@ require "axn/internal/reflection/pattern"
 # cannot load without their owner either.
 require "axn/internal/field_config"
 require "axn/internal/shape_graph"
+# transforms_wire_value? asks whether a token is one of Coercion::SUPPORTED's coercion targets, so the
+# builder cannot load without that constant either.
+require "axn/internal/coercion"
 
 # The graph this builder walks is one the class merely HOLDS, so the builder cannot load without the two
 # bounds every such walk needs (see `guard_contents_descent`).
@@ -1275,6 +1278,16 @@ module Axn
           # has no member to collide with at any key, so the per-key lookup below is skipped outright. Measured
           # at +15% allocations for a shape-free action with 21 subfield children before this guard, ~0 after.
           ancestor_shapes = ancestor_configs.any? { |c| c.validations[:shape] }
+          # The ENFORCED list (`ancestor_configs`, every route) is right for nullability, but wrong for "what
+          # did the ancestor actually EMIT here" — `apply_structured_schema!` builds a node's property from
+          # the REPRESENTATIVE route alone, so a later, non-representative route's shape member is declared
+          # but never reaches the document. Restricted the same way `property_representative` restricts
+          # everywhere else that has to name the config a property was built FROM (Codex review, PR #278
+          # round 4: judging every route let a merged node's non-representative EXACT route mask its
+          # representative's APPROXIMATE one — the property actually conjoined was the representative's fake
+          # hint, not the exact route the unrestricted list also saw). `carried` is already
+          # representative-restricted by construction, so it is unaffected here.
+          emitted_ancestor_configs = Array(property_representative(parent_configs)) + carried
           children.each do |key, node|
             if node.implicit?
               apply_implicit_node!(prop, key, node, ancestor_configs, ann)
@@ -1295,7 +1308,8 @@ module Axn
             next unless representative
 
             members = ancestor_shapes ? shape_members_at(ancestor_configs, key) : NO_SHAPE_MEMBERS
-            apply_explicit_child!(prop, key, node, representative, non_model_configs, members, ann)
+            emitted_members = ancestor_shapes ? shape_members_at(emitted_ancestor_configs, key) : NO_SHAPE_MEMBERS
+            apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
             prop[:required] << required_key(key) unless node_optional?(node, ann, non_model_configs)
           end
           # The sibling's OWN entry (a plain child of this same loop) always wins the property outright
@@ -1330,16 +1344,34 @@ module Axn
         # An ancestor `shape:` may describe this very key, and `apply_structured_schema!` has already emitted
         # its property into `prop[:properties][key]` (from `build_property`, before `apply_children!` ran at
         # all). Runtime enforces the member and the node alike, so the two are CONJOINED rather than one
-        # replacing the other, and the merged members are carried down so a deeper hop sees a
-        # member-of-a-member — the same two things `apply_implicit_node!` does at an implicit child. Without
-        # them this branch advertised a bare object for a position the contract still held to every nested
-        # member it declared: the document was looser than the runtime, and the same contract spelled with a
-        # dotted `on:` emitted it correctly (PRO-3399).
+        # replacing the other — the merged (object-shaped) members are carried down so a deeper hop sees a
+        # member-of-a-member, the same thing `apply_implicit_node!` does at an implicit child. Without this
+        # branch advertised a bare object for a position the contract still held to every nested member it
+        # declared: the document was looser than the runtime, and the same contract spelled with a dotted
+        # `on:` emitted it correctly (PRO-3399).
+        #
+        # PRO-3405: the conjoin runs whenever `member_prop` exists, not only when `merged_members` came back
+        # non-empty. `merged_explicit_members`'s gates (the node must nest; every colliding member must be
+        # object-shaped) answer a DIFFERENT question — whether to carry the member down for a deeper hop's
+        # member-of-a-member test — and the conjunction itself needs neither: conjoin_shape_member_property
+        # already knows how to combine two object-shaped properties (the keyword union above) and how to
+        # combine anything else (a sibling `allOf` branch), so a member the node "cannot nest" rides
+        # alongside as its own `allOf` branch rather than being dropped.
         #
         # The merge runs BEFORE the descent, not after: the nested pass reads `child_prop[:properties]` to
         # decide whether a generated `<leaf>_id` still needs writing, and `apply_implicit_node!` reads it again
         # to place a blocked merge's obligation on the member's own property. Merging afterwards left both of
         # them looking at a property the member's contribution had not reached yet.
+        #
+        # Codex review (PR #278): `member_configs`/`own_configs` (the collision's two sides, as ROUTE lists —
+        # `emitted_members` and `[representative]` here) let `conjoin_shape_member_property` judge each
+        # side's DECLARED type before trusting its emitted property as an exact constraint worth conjoining
+        # — see that method for the two separate reasons a side can be untrustworthy (a transform, or an
+        # unknown class) and how each is handled, and for how the same judgment recurses through
+        # `merge_emitted_maps` for a name colliding one level down. `emitted_members`, not `members`: at a
+        # merged node `apply_structured_schema!` only ever builds `member_prop` from the REPRESENTATIVE
+        # route, so approximateness is judged on that route alone — `members` (every route) stays for
+        # nullability just below, an ENFORCED question the representative restriction does not apply to.
         #
         # `null` survives only when every non-model route tolerates nil (runtime enforces all of them; the
         # property itself is built from the first non-model config), EVERY colliding shape member tolerates nil
@@ -1349,12 +1381,27 @@ module Axn
         # nil even for a non-object node whose subfield shape isn't nested here. The members are read via
         # nil_allowed?, the predicate `apply_implicit_node!` reads them with, never sniffed off the emitted
         # property: an untyped nil-tolerant member emits no `type`, leaving no null branch to find.
-        def apply_explicit_child!(prop, key, node, representative, non_model_configs, members, ann)
+        def apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
           merged_members = merged_explicit_members(node, members)
           child_prop = build_property(representative, subfield: true)
           member_prop = prop[:properties][key]
-          child_prop = merge_shape_member_property(member_prop, child_prop) if member_prop && !merged_members.empty?
+          child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
           apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
+          # Round 20 tried exempting a route with a `preprocess:` from its OWN `nil_allowed?` here, on the
+          # premise that the Proc runs before presence is judged and so MIGHT turn a wire `nil` into
+          # something non-nil (`preprocess: ->(_) { "x" }` on an otherwise-required node does exactly that).
+          # Round 21 showed the exemption cannot be scoped safely: reflection has no way to tell that
+          # CONSTANT-preprocess case apart from an ordinary IDENTITY (or any other nil-preserving)
+          # `preprocess: ->(v) { v }`, where the Proc does NOT rescue nil and the required check correctly
+          # rejects it at runtime — `preprocess:` is an opaque Proc, and reflection must not execute it to
+          # find out which case it is. Between the two directions this ambiguity forces a choice between —
+          # an unsatisfiable node for round 20's narrow, constant-preprocess scenario, or a schema that
+          # ACCEPTS a wire `nil` the far more common identity/pass-through case actually REJECTS — the
+          # latter is the one direction reflection may never take (`schema_wire_audit_spec`'s own hard
+          # invariant), so the exemption is reverted rather than kept as a broader, silent regression.
+          # Round 20's own scenario is deliberately left as a known, unfixable residual: this is the same
+          # "cannot execute user code" limit already accepted for pattern/format and numeric bounds under
+          # preprocess elsewhere in this file, not a new kind of gap.
           null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
                     members.all? { |m| nil_allowed?(m) } &&
                     !subtree_requires_presence?(node, ann)
@@ -1526,10 +1573,12 @@ module Axn
         # zero for a graph this walk has already descended.
         #
         # Three keys are not a plain overlay. `properties` and `required` are unioned, since each side names
-        # contents the other does not — the node's own winning a name collision, the precedence
-        # `apply_structured_schema!` already uses for `base_properties.merge(member_props)`. And a size bound
-        # declared on BOTH sides takes the STRICTER of the two: a value satisfying only the looser one is
-        # rejected at runtime by the other, and that is the one direction a plain overlay emits too loosely.
+        # contents the other does not — and a NAME both sides declare (PRO-3405) is not a collision to
+        # resolve by precedence either: each of the two schemas at that child key is itself conjoined,
+        # recursively, via merge_emitted_maps's own use of conjoin_shape_member_property, rather than one
+        # replacing the other. And a size bound declared on BOTH sides takes the STRICTER of the two: a
+        # value satisfying only the looser one is rejected at runtime by the other, and that is the one
+        # direction a plain overlay emits too loosely.
         #
         # Taken from what is AT the key rather than from the member config, which is also why the caller guards
         # on its presence: at a merged node `apply_structured_schema!` only ever emits the REPRESENTATIVE
@@ -1542,23 +1591,1331 @@ module Axn
         # from THAT declaration's `shape:` (Core::Contract#_derive_shaped_keys!), so a member carried from an
         # ancestor exempts no key at this node's map validator either. Re-running it would admit a key the
         # runtime rejects — measured, both spellings reject one.
-        def merge_shape_member_property(member_prop, own_prop)
+        def merge_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
           merged = member_prop.merge(own_prop)
           merged.delete(:format)
-          merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties])
-          merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required])
+          # `:type` is RECONCILED, not left to the shallow merge's "second side wins" default — a nullable
+          # `["object", "null"]` on either side must not silently overwrite the OTHER side's non-nullable
+          # `"object"` (Codex review, PR #278 round 22): an ancestor `deep` Hash member that REQUIRES `a`
+          # (non-nullable) beside a colliding node's OWN `deep` declared `allow_nil: true` (nullable) let
+          # `own_prop[:type]` — merged in SECOND — win outright, so the merged schema admitted `deep: null`
+          # even though the ancestor's own (unconditional, raw-value) check rejects null there. Both routes
+          # are enforced, so null survives only when BOTH tolerate it. This function also runs for a side
+          # that is simply EMPTY (own_prop.empty?/member_prop.empty? in conjoin_shape_member_property), not
+          # only a genuine object-vs-object merge, so the reconciliation must not hardcode "object" — it
+          # keeps whichever REAL base type either side names.
+          merged[:type] = merge_emitted_type(member_prop[:type], own_prop[:type]) if member_prop[:type] || own_prop[:type]
+          # Reassigned only when at least one side actually HAS the key — both sides bare (e.g. two
+          # colliding `type: Hash` declarations with no children on either) means merge_emitted_maps/
+          # merge_emitted_required return nil (nothing to merge), and writing that nil through would leave
+          # an explicit `properties: nil`/`required: nil` in the document: JSON Schema requires `properties`
+          # to be an object and `required` to be an array, so a null-valued keyword is an invalid document,
+          # not merely a permissive one (Codex review, PR #278 round 13 — the OUTER `.compact` calls this
+          # property eventually passes through are all shallow, so a nil written INTO this property here
+          # survives every one of them).
+          if member_prop[:properties] || own_prop[:properties]
+            merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties], member_configs:, own_configs:)
+          end
+          merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required]) if member_prop[:required] || own_prop[:required]
           merged[:minProperties] = [member_prop[:minProperties], own_prop[:minProperties]].compact.max if merged[:minProperties]
           merged[:maxProperties] = [member_prop[:maxProperties], own_prop[:maxProperties]].compact.min if merged[:maxProperties]
+          # A map's `values:`/`keys:` axes (`additionalProperties`/`propertyNames`) are their OWN nested
+          # schema, both enforced when both sides declare one — the shallow `merge` above lets the SECOND
+          # side simply overwrite the first, the same bug `:properties`/`:type` already needed reconciling
+          # (Codex review, PR #278 round 24): an ancestor `deep` Hash member whose values axis requires
+          # `> 0` beside a colliding node's own `deep` values axis requiring `< 10` emitted only the `< 10`
+          # constraint, so `deep: { x: -1 }` passed the schema though the ancestor's own (unconditional)
+          # validator rejects it. Conjoined via the SAME `conjoin_shape_member_property` recursion used
+          # everywhere else two schemas at one position both apply — with the AXIS's own klass token(s)
+          # threaded through (not the outer field's), because an approximate axis (`values: Object`) needs
+          # the SAME `unknown_class_approximate?` stripping an approximate FIELD gets (Codex review, PR
+          # #278 round 25): an ancestor axis with `klass: Object` beside a colliding node's axis with
+          # `klass: Hash` initially called this conjunction with no axis configs at all, so the emitted
+          # `{type: "string"}` HINT (`single_type_for`'s permissive Object fallback) was treated as an
+          # EXACT, competing type assertion rather than the approximation it is — conjoined via `allOf`
+          # with the real `{type: "object"}` schema into a node nothing satisfies (a value can never be
+          # both a string and an object), though `{ x: {} }` passes both runtime axis validators. An axis
+          # never carries `coerce:`/`preprocess:` at all (refused at declaration — "of: does not support
+          # coerce:"/"preprocess:"), so `axis_config_view` only ever needs to expose the axis's declared
+          # klass token, never a transform.
+          if member_prop[:additionalProperties] || own_prop[:additionalProperties]
+            merged[:additionalProperties] = merge_emitted_nested_schema(
+              member_prop[:additionalProperties], own_prop[:additionalProperties],
+              axis_configs_for(member_configs, :values), axis_configs_for(own_configs, :values)
+            )
+          end
+          if member_prop[:propertyNames] || own_prop[:propertyNames]
+            merged[:propertyNames] = merge_emitted_nested_schema(
+              member_prop[:propertyNames], own_prop[:propertyNames],
+              axis_configs_for(member_configs, :keys), axis_configs_for(own_configs, :keys)
+            )
+          end
           merged
         end
 
+        # A nested map axis schema present on only one side is carried through as-is; present on both, it
+        # is conjoined the same way any other two-declarations-at-one-position collision is (see
+        # conjoin_shape_member_property) rather than letting either side simply win.
+        def merge_emitted_nested_schema(member_schema, own_schema, member_axis_configs = [], own_axis_configs = [])
+          return own_schema if member_schema.nil?
+          return member_schema if own_schema.nil?
+
+          conjoin_shape_member_property(member_schema, own_schema, member_configs: member_axis_configs, own_configs: own_axis_configs)
+        end
+
+        # A minimal stand-in for a field config, exposing only what `unknown_class_approximate?` reads
+        # (`.validations`) — enough to reuse that function UNCHANGED for an axis bag, which is never
+        # itself an `Internal::FieldConfig`. Deliberately has NO `preprocess` method at all, so
+        # `respond_to?(:preprocess)` reads false exactly as a shape member's does — `transforms_wire_
+        # value?`'s own doc explains why that must be the answer here: an axis bag can NEVER declare
+        # `coerce:`/`preprocess:` (both refused at declaration — "of: does not support coerce:"/
+        # "preprocess:"), so unlike an ordinary field's bare-coercible-klass case (ambient
+        # `coerce_input_types` MIGHT still coerce it, so reflection conservatively assumes it could), an
+        # axis's klass being coercible IN PRINCIPLE is never evidence it actually transforms here — the
+        # axis mechanism itself has no coercion seam at all, ambient setting or not. Defining `preprocess`
+        # to return nil would have made `respond_to?(:preprocess)` true, wrongly reusing the
+        # ambient-uncertainty conservatism a coercible axis klass (e.g. `values: Integer`) does not earn.
+        AxisConfigView = Struct.new(:validations)
+        private_constant :AxisConfigView
+
+        # The `axis_key` (`:values`/`:keys`) axis's own declared klass token(s), one view per outer config
+        # that declares an `of:` bag at all — empty for a config with none, which `unknown_class_
+        # approximate?`/`transforms_wire_value?` both already read as "nothing to distrust here."
+        def axis_configs_for(configs, axis_key)
+          configs.filter_map do |config|
+            bag = Axn::Internal::ShapeGraph.hash_or_nil(config.validations[:of])
+            next nil if bag.nil?
+
+            raw = bag[axis_key]
+            axis = Axn::Internal::ShapeGraph.hash_or_nil(raw)
+            token = axis ? axis[:klass] : raw
+            nested_of = axis && axis[:of]
+            nested_shape = axis && axis[:shape]
+            # A CLASSLESS axis (legally `klass:`-free — e.g. `values: { shape: { members: [...] } }`,
+            # constraining only via its named members) still has a `:shape`/`:of` worth keeping even
+            # though it names no token at all (Codex review, PR #278 round 29): skipping the whole view
+            # whenever `token.nil?` — round 26/27's own gate — discarded that classless axis's `shape:`
+            # too, so when two colliding axes respectively described a child `a` as `Object` and `Hash`,
+            # the recursive `shape_members_at` lookup found NOTHING for either side, and the `Object`
+            # child's approximate hint was conjoined as exact all over again. Only a TRULY empty axis
+            # (no token, no `:of`, no `:shape` — nothing here distrusts or recurses into anything) is
+            # skipped now.
+            next nil if token.nil? && nested_of.nil? && nested_shape.nil?
+
+            # `:of` and `:shape` are carried forward alongside the synthesized `:type`, not just the
+            # axis's own `:klass` — needed so a DEEPER collision inside the axis (another map bag nested
+            # in `:of`, or named members declared via the axis's own `shape:`) can still be reconciled
+            # (Codex review, PR #278 round 26 for `:of`, round 27 for `:shape`): outer `klass: Hash` axes
+            # whose NESTED values are respectively `Object` and `Hash` lost that inner structure here,
+            # since only the outer klass survived into the view — so when `merge_shape_member_property`
+            # recursed one level deeper for the INNER axis, `axis_configs_for` found no `:of` to read at
+            # all, and the inner `Object` axis's approximate hint was conjoined as exact all over again.
+            # `shape_members_at` reads `config.validations.dig(:shape, :members)` the same way for a NAMED
+            # child inside the axis's own `shape:` block — two `values: { klass: Hash, shape: { … } }` axes
+            # colliding needs the SAME per-child config lookup `merge_emitted_maps` already does for an
+            # ordinary object, and without `:shape` on the view it found nothing, so a child typed `Object`
+            # in one axis's shape collided with `Hash` in the other's as though BOTH were exact. Threading
+            # both through is what lets every recursive lookup this file already has (`shape_members_at`,
+            # `axis_configs_for` itself) keep working exactly as it does for an ordinary field's configs.
+            validations = {}
+            validations[:type] = token if token
+            validations[:of] = nested_of if nested_of
+            validations[:shape] = nested_shape if nested_shape
+            AxisConfigView.new(validations)
+          end
+        end
+
+        # The reconciled `:type` for a merged property — nullable only when BOTH sides admit null, since
+        # either side rejecting it (its own unconditional check, at runtime) forbids it here regardless of
+        # what the other declares. `nil` on one side (that side is simply absent, not "typeless") returns
+        # the OTHER side's type untouched, so this is safe to call whenever EITHER side has a `:type` at
+        # all, not only when both are the SAME base type.
+        def merge_emitted_type(member_type, own_type)
+          return own_type if member_type.nil?
+          return member_type if own_type.nil?
+
+          base = (Array(member_type) + Array(own_type)).reject { |t| t == "null" }.uniq
+          base = base.first if base.size == 1
+          nullable = [member_type, own_type].all? { |type| Array(type).include?("null") }
+          nullable ? Array(base) + ["null"] : base
+        end
+
+        # Two emitted properties at ONE wire position, both enforced at runtime (PRO-3405): a shape member's
+        # own emission and the node's — or, recursively, two child properties a name collided on inside
+        # merge_emitted_maps. Neither may simply win: a name both sides declare means the runtime enforces
+        # both, so the document must say so too.
+        #
+        # Where both sides are already object-shaped, their keywords share a surface worth unioning
+        # (`properties`/`required`/the size bounds) — that IS merge_shape_member_property, unchanged since
+        # PRO-3399. Everywhere else — a scalar collides with a scalar, a union with an object, anything that
+        # doesn't share that surface — there is no keyword-by-keyword reading that means the same thing for
+        # every pair (the approach PRO-2877's pulled detectors already rejected: it invents an
+        # intersection-semantics per keyword, and every keyword nobody thought of stays silently wrong). JSON
+        # Schema already has the honest, keyword-agnostic spelling for "both of these apply" — `allOf`, free
+        # at a property (the same trick write_pattern! uses to compose two patterns) — so the member rides
+        # alongside as a sibling branch instead.
+        #
+        # `own_prop` being genuinely EMPTY (an explicit node with no type or shape of its own — the member is
+        # then the whole story) also routes through merge_shape_member_property rather than a bare `.dup`: a
+        # shallow dup would share `member_prop[:properties]` — the SAME nested Hash `apply_nested_subfields!`
+        # is about to add the node's own children into — mutating the ancestor's already-emitted property in
+        # place. merge_shape_member_property never has that problem (merge_emitted_maps dups the properties
+        # map whenever one side is absent), so routing every combination through the one function is what
+        # keeps this conjoin from being the aliasing bug AGENTS.md already names.
+        #
+        # `member_configs`/`own_configs` are the declarations each emitted property came from — a LIST,
+        # mirroring `shape_members_at`'s own return shape, since a merged node can carry more than one route
+        # to the same name. Empty (or omitted) on a side whose config is unknown at the call site, which
+        # reads as "trustworthy" (the conservative, pre-existing answer) rather than crashing.
+        #
+        # Two SEPARATE, ORTHOGONAL reasons an emitted property is untrustworthy — kept apart because they
+        # answer differently to "is anything left worth conjoining":
+        #
+        # PASS 1 — TRANSFORM (`transforms_wire_value?`: `preprocess:`, or a coercible declared type with no
+        # `coerce: false`). The config's OWN `type`/`anyOf`/`enum` — every keyword that carries an INTRINSIC
+        # type binding a mismatch with the OTHER side would turn into an absolute, value-independent
+        # contradiction — describes a value nothing else at this position ever sees: a Proc's output, or
+        # coercion's TARGET rather than the wire form the OTHER side's check actually reads (measured: an
+        # ancestor's own check is UNCONDITIONAL and reads the RAW wire value regardless of what any other
+        # declaration coerces — a `type: String` ancestor rejects an already-Integer wire value even when a
+        # coercing sibling would have accepted it, "... is not a String"). `enum`'s literal VALUES carry
+        # that same intrinsic type (an Integer `5` can never equal anything of a different JSON type), so it
+        # is stripped alongside `type`/`anyOf`, not kept the way an unknown class's is below (Codex review,
+        # PR #278 round 6: an ancestor `String` beside `type: { klass: Integer, coerce: true }, inclusion: {
+        # in: [5] } }` kept `enum: [5]` — the COERCED target's value — conjoined against the ancestor's
+        # raw-string type, an intersection nothing satisfies, though the runtime accepts the wire string
+        # "5"). Everything else — `length`/size bounds, `format`/`pattern` — is TYPE-CONDITIONAL (JSON
+        # Schema applies none of them to an instance of a non-matching type), so it can never manufacture
+        # that same absolute contradiction and is left on the property: dropping it would make a
+        # transforming side strictly LESS trustworthy than `single_type_for`'s own pre-existing,
+        # out-of-scope approximation for a transforming field reflected with no collision at all (which
+        # already emits its declared `length:`/`format:` bounds as though they described the wire form) —
+        # and round 8's finding is exactly that gap, one level up: `field :inner, type: String` beside
+        # `type: String, length: { minimum: 3 }, preprocess: ->(v) { v }` dropped the node's `length:`
+        # entirely, so `"a"` passed `input_schema` though the node's own (identity-preprocessed) length
+        # check rejects it at runtime.
+        #
+        # PASS 2 — UNKNOWN CLASS (`unknown_class_approximate?`: an `Object`/`Enumerable`-style token,
+        # `single_type_for`'s permissive `{type: "string"}` HINT rather than a promise). Nothing here
+        # transforms the value, so EVERY other keyword — `enum` and every type-conditional bound included —
+        # still describes the SAME raw value everything else at this position reads; only the fake TYPE
+        # (and `anyOf`, its union spelling) is untrustworthy, and only relative to something that MAKES A
+        # REAL, competing claim. Two sides that are BOTH unknown-class hints never contradict each other
+        # (they both fall back to the same permissive shape), so the plain conjoin runs UNSTRIPPED there;
+        # paired against something exact — including a transform-stripped sibling, which by this point
+        # asserts no type to contradict — an unknown-class side drops only `type`/`anyOf` (Codex review, PR
+        # #278 round 5: `type: Object, inclusion: { in: [...] }` beside an explicit `type: Hash` node used to
+        # drop the ancestor's exact `enum` along with its fake type — fixed by keeping `enum`; round 11:
+        # the same fix had gone too far the OTHER way, using `.slice(:enum)` to drop a REAL `length:` bound
+        # too — `type: Object, length: { minimum: 3 }` beside an explicit `type: String` node dropped the
+        # ancestor's `minLength: 3` entirely, since it isn't `enum`, though nothing here transforms the
+        # value and the bound is exactly as trustworthy as it would be on an exactly-typed member). A side
+        # already stripped by pass 1 is left alone in pass 2 — an UNKNOWN-CLASS side paired against it keeps
+        # its FULL property (Codex review, PR #278 round 6 again: an ancestor `Object` beside `type: {
+        # klass: Integer, coerce: true }` — pass 1 strips the Integer side down to `{}` here, having nothing
+        # else to keep, and keeping the ancestor's `{type: "string"}` hint, rather than also stripping it,
+        # is what lets the coercible wire string "5" the runtime accepts still validate).
+        def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
+          original_member_prop = member_prop
+          original_own_prop = own_prop
+
+          member_prop = strip_intrinsically_typed_keys(member_prop, member_configs, original_own_prop) if transforms_wire_value?(member_configs)
+          own_prop = strip_intrinsically_typed_keys(own_prop, own_configs, original_member_prop) if transforms_wire_value?(own_configs)
+
+          member_unknown = unknown_class_approximate?(member_configs)
+          own_unknown = unknown_class_approximate?(own_configs)
+
+          if member_unknown && !own_unknown && !own_prop.empty?
+            member_prop = retarget_unknown_class_length(member_prop.except(:type, :anyOf), own_prop, position_nullable?(member_prop, own_prop))
+          elsif own_unknown && !member_unknown && !member_prop.empty?
+            own_prop = retarget_unknown_class_length(own_prop.except(:type, :anyOf), member_prop, position_nullable?(own_prop, member_prop))
+          end
+
+          if own_prop.empty? || member_prop.empty? || (object_property?(member_prop) && object_property?(own_prop))
+            return merge_shape_member_property(member_prop, own_prop, member_configs:, own_configs:)
+          end
+
+          conjoined = own_prop.dup
+          conjoined[:allOf] = Array(conjoined[:allOf]) + [member_prop]
+          conjoined
+        end
+
+        # "object", nullable or not, at the TOP of a property — the one shape merge_shape_member_property's
+        # keyword union actually reads (`properties`/`required`/the size bounds). Anything else — a scalar
+        # `type:`, a bare `anyOf`/`enum` with no top-level `type` — has no such surface, so conjoin_shape_
+        # member_property falls back to allOf rather than guessing at a per-keyword meaning.
+        def object_property?(prop)
+          type = prop[:type]
+          type == "object" || (type.is_a?(::Array) && type.include?("object"))
+        end
+
+        # An unknown-class hint's `minLength`/`maxLength` (from `single_type_for`'s permissive "string"
+        # fallback — the only JSON type SIZE_CONSTRAINT_KEYS/SIZE_CEILING_KEYS give an approximate class,
+        # regardless of what the colliding side turns out to actually be) describes the SAME real, raw-
+        # value `length:`/size validator an exactly-typed member's would — but that validator calls `#length`
+        # on WHATEVER the runtime value actually is, and `minLength`/`maxLength` is a JSON Schema keyword
+        # JSON Schema applies ONLY to a string instance, silently ignoring it for anything else. Once the
+        # collision reveals the surviving side's REAL type, the constraint needs the JSON keyword THAT type
+        # actually honors, not the string-shaped one `single_type_for` merely guessed at (Codex review, PR
+        # #278 round 13): `type: Object, length: { minimum: 3 }` beside a colliding `type: Hash` node left
+        # `minLength: 3` sitting beside the object schema, which JSON Schema ignores for an object instance
+        # — so a one-property Hash passed the schema though the member's own (real) length validator, which
+        # DOES apply (`Hash#length` is its key count), rejects it at runtime. Retargeting to `minProperties`/
+        # `maxProperties` here (or `minItems`/`maxItems` for a surviving Array) is what keeps it enforced;
+        # a surviving type with no JSON size keyword at all (Integer, boolean) has no way to express this
+        # constraint, so it is dropped rather than left inert under the wrong keyword.
+        #
+        # A UNION survivor (`type: [Hash, Array]`) has no top-level `type` at all — its own emission spells
+        # itself as `anyOf` branches, one per member type — so reading `other_prop[:type]` alone missed it
+        # entirely and dropped the bound outright (Codex review, PR #278 round 15): `type: Object, length: {
+        # minimum: 3 }` beside a colliding `type: [Hash, Array]` node let a one-item Array OR a one-property
+        # Hash pass, though the member's real length floor rejects both. A single retargeted keyword can't
+        # serve every branch — `minProperties` would be silently ignored by JSON Schema for an Array
+        # instance, vacuously satisfying that branch regardless of size — so each applicable branch instead
+        # gets its OWN paired `{type:, sizeKey:}` entry in a NEW `anyOf`, which is what makes the bound
+        # actually discriminate by the instance's real type rather than passing vacuously for either one.
+        def retarget_unknown_class_length(prop, other_prop, nullable)
+          return prop unless prop[:minLength] || prop[:maxLength]
+
+          # Both sides' literals, not just the OTHER side's (Codex review, PR #278 round 23): `prop`
+          # itself may be the one declaring the only witness of an inexpressible-type branch — an
+          # ancestor `type: Object, length: { minimum: 3 }, inclusion: { in: [123] }` colliding with an
+          # explicit `type: { klass: [String, Integer], coerce: false }` node has NO literal on the
+          # `other_prop` side at all (the node declares no `inclusion:` of its own), so reading only
+          # `declared_literals(other_prop)` found no witness for the Integer branch and omitted it
+          # entirely, leaving `enum: [123]` (retained on `prop`, unconditionally) conjoined against an
+          # `anyOf` with only a `type: "string"` branch — an Integer literal can never satisfy that,
+          # though `123` (`"123".length == 3`) passes the length floor at runtime.
+          sibling_literals = declared_literals(other_prop) | declared_literals(prop)
+
+          other_types = collision_types(other_prop)
+          # An UNTYPED survivor (no `type:`/`anyOf` at all — only a literal `const`/`enum`, e.g. a bare
+          # `inclusion:` with no `type:` declared) leaves `collision_types` with nothing to read, and
+          # blindly retargeting onto `nil` DROPS the bound outright rather than merely narrowing it (Codex
+          # review, PR #278 round 28): an ancestor `type: Object, length: { minimum: 3 }` colliding with an
+          # untyped node whose `inclusion:` names both a one-key and a three-key Hash emitted only the
+          # `enum` — no `minProperties` anywhere — so the schema wrongly accepted the one-key Hash the
+          # runtime length floor rejects. The literal VALUES themselves still carry a real JSON type each
+          # (a Hash is "object" whether or not anything declared `type: Hash`), so when there is no typed
+          # collision to read, the types are derived from the literals instead — the exact same fallback
+          # the union path below already leans on for a literal an ordinary typed branch can't reach.
+          other_types = literal_json_types(sibling_literals) if other_types.empty?
+
+          # `retarget_length_to_type`'s single-type branch retargets the bound BLINDLY — correct only when
+          # that one type actually HAS a size keyword (`minProperties`/`minItems`/`minLength`), since then
+          # the untouched sibling `enum` combined with the retargeted keyword still filters each literal
+          # correctly (both apply to the SAME instance). A sole type with NO size keyword (e.g. "integer")
+          # has no such safety net — the bound is simply dropped, with NOTHING left to filter the sibling
+          # literals by their actual (wire-rendered) size (Codex review, PR #278 round 29): an approximate
+          # `Object` member's `length: { minimum: 3 }` colliding with an untyped node whose `inclusion:` is
+          # `[1, 123]` (both Integers — a single, non-sized type) emitted both literals as valid, though
+          # the runtime's own length check (`#to_s.length`) rejects `1` (rendered length 1) and accepts
+          # `123` (rendered length 3). Routing this case through `retarget_length_to_union` too reuses its
+          # existing `literals_reachable_via_wire_rendering` fallback — the SAME filtering an inexpressible
+          # UNION branch already gets — rather than reinventing a second, narrower filter here.
+          return retarget_length_to_type(prop, other_types.first) if other_types.size == 1 && SIZE_CONSTRAINT_KEYS.key?(other_types.first)
+
+          retarget_length_to_union(prop, other_types, sibling_literals, nullable)
+        end
+
+        # The unique JSON types the given literal VALUES themselves belong to, by their Ruby class alone —
+        # independent of whatever `type:`/`anyOf` (if anything) got declared. Used only as a fallback when
+        # there is no declared type to read at all, so a Hash/Array/String/numeric literal can still be
+        # retargeted onto its real size keyword rather than left to a bound that gets silently dropped.
+        def literal_json_types(literals)
+          literals.filter_map { |literal| map_type_for(Axn::Internal::Identity.class_of(literal)) }.uniq
+        end
+
+        # Every real (non-null) JSON type the surviving side's collision could produce — a single `type`
+        # value/array, or one entry per `anyOf` branch for a union survivor.
+        def collision_types(other_prop)
+          types = other_prop[:type] ? Array(other_prop[:type]) : Array(other_prop[:anyOf]).map { |branch| branch[:type] }
+          types.flatten.compact.uniq.reject { |t| t == "null" }
+        end
+
+        def retarget_length_to_type(prop, other_type)
+          floor_key = other_type && SIZE_CONSTRAINT_KEYS[other_type]
+          ceiling_key = other_type && SIZE_CEILING_KEYS[other_type]
+
+          retargeted = prop.except(:minLength, :maxLength)
+          retargeted[floor_key] = prop[:minLength] if floor_key && prop[:minLength]
+          retargeted[ceiling_key] = prop[:maxLength] if ceiling_key && prop[:maxLength]
+          retargeted
+        end
+
+        # One retargeted `{type:, sizeKey:}` pair per surviving branch type whose type actually HAS a
+        # matching JSON size keyword, as a NEW `anyOf` sibling to the rest of `prop` — a branch with no such
+        # keyword (Integer, boolean) is OMITTED entirely rather than left as a bare, unconstrained `{type:}`
+        # entry (Codex review, PR #278 round 19): the underlying `length:` validator still runs against
+        # WHATEVER the runtime value is (calling `#to_s.length` when the value has no native `#length`), so
+        # a bare Integer branch that admits every integer unconditionally would accept e.g. `1` even though
+        # the ancestor's real validator rejects it (`1.to_s.length` is 1, short of a `minimum: 3` floor).
+        # There is no JSON Schema keyword for "the STRING RENDERING of a non-string value has this size," so
+        # rather than invent one for an ARBITRARY value of that type, the branch itself is omitted —
+        # reflection is allowed to be STRICTER than the runtime (never looser), so rejecting every instance
+        # of a type this can't express a bound for is the safe default.
+        #
+        # But omitting the branch WHOLESALE is itself too strict when a SIBLING declaration at this same
+        # position ALSO names specific literals — `sibling_literals`, the exact side's own `const`/`enum`
+        # (Codex review, PR #278 round 20): `type: { klass: [String, Integer], coerce: false }, inclusion: {
+        # in: [123, "a"] }` beside the SAME ancestor `length: { minimum: 3 }` needs the Integer branch to
+        # admit `123` specifically — `"123".length` is 3, so the runtime's own length check (measuring via
+        # `#to_s.length`) accepts it — but the blanket omission rejected every integer, including this
+        # concretely-known-satisfiable one, turning a satisfiable contract's schema unsatisfiable once
+        # conjoined with the sibling `enum: [123, "a"]` (123 failing the string-only retained branch, "a"
+        # failing its own length). Each sibling literal of an inexpressible type is checked against the
+        # SAME bound via its own wire rendering (`#to_s.length`) and, if it passes, added to a dedicated
+        # `enum`-only branch (no `type:`, since `enum`/`const` alone already pin the exact value regardless
+        # of type) — narrower than admitting the whole type, but wide enough to keep this witness alive.
+        def retarget_length_to_union(prop, other_types, sibling_literals, nullable)
+          retargeted = prop.except(:minLength, :maxLength)
+          branches = other_types.filter_map do |type|
+            floor_key = SIZE_CONSTRAINT_KEYS[type]
+            ceiling_key = SIZE_CEILING_KEYS[type]
+            next unless floor_key || ceiling_key
+
+            branch = { type: }
+            branch[floor_key] = prop[:minLength] if floor_key && prop[:minLength]
+            branch[ceiling_key] = prop[:maxLength] if ceiling_key && prop[:maxLength]
+            branch
+          end
+
+          reachable = literals_reachable_via_wire_rendering(prop, sibling_literals)
+          branches << { enum: reachable } if reachable.any?
+          return reject_unretargetable_length_bound(retargeted, nullable) if branches.empty?
+
+          retargeted[:anyOf] = branches
+          retargeted
+        end
+
+        # No surviving type can express the bound and no literal witness rescues it — returning `prop`
+        # AS-IS here doesn't merely drop the bound, it deletes the ONLY constraint the property had, since
+        # the unknown-class side contributed nothing else (Codex review, PR #278 round 31): an ancestor
+        # `type: Object, length: { minimum: 3 }` member colliding with an exactly-typed-but-unsized
+        # `type: { klass: Integer, coerce: false }` node (no `inclusion:`/`comparison:` literal on either
+        # side to salvage a witness from) reached this branch with nothing left at all, so the emitted
+        # property was simply `{type: "integer"}` — admitting EVERY integer, though the runtime's own
+        # `length:` check (measuring via `#to_s.length`, JSON Schema's `minLength` having no meaning for a
+        # non-string instance) rejects `1` and accepts only integers whose decimal rendering is long
+        # enough. There is no JSON Schema keyword for "the string rendering of a non-string value has this
+        # size" (round 19's own limit), so — unlike a genuinely bare, unconstrained collision — this
+        # position had a REAL bound that's simply inexpressible here, and the honest answer is an
+        # unsatisfiable `enum: []` rather than silently admitting everything.
+        #
+        # ALWAYS overwrites whatever `:enum` the property already had, rather than leaving a pre-existing
+        # one alone (round 31's own first attempt at this): that stale enum is exactly the set
+        # `sibling_literals` was built from, and `reachable` (computed by the caller, always empty by the
+        # time this runs — a non-empty one would have kept `branches` non-empty) is the proof that NONE of
+        # its non-null members actually satisfy the bound (Codex review, PR #278 round 32): a nullable
+        # `type: Object, length: { minimum: 3 }, inclusion: { in: [nil, 1] }` member colliding with a
+        # nullable, non-coercing Integer node has no retargetable branch (`1.to_s` is too short), but
+        # leaving the ancestor's own stale `enum: [nil, 1]` in place admitted `1` anyway — the runtime
+        # rejects it, though `nil` (which bypasses the bound entirely) proves the contract itself remains
+        # satisfiable. `nullable` (see `position_nullable?` — checked against BOTH a literal `nil` in
+        # either side's own raw enum AND "null" in either side's own emitted `:type`, Codex review, PR
+        # #278 round 37) is the one survivor worth keeping; every non-null literal already failed the
+        # same reachability check that got this function called in the first place.
+        def reject_unretargetable_length_bound(prop, nullable)
+          prop.merge(enum: nullable ? [nil] : [])
+        end
+
+        # The sibling literals of a type with no NATIVE JSON size keyword (already covered by their own
+        # typed branch otherwise) whose WIRE RENDERING (`#to_s.length` — the same fallback the underlying
+        # `length:` validator itself uses for a value with no native `#length`/`#size`) satisfies `prop`'s
+        # original bound.
+        def literals_reachable_via_wire_rendering(prop, sibling_literals)
+          sibling_literals.reject { |literal| literal.is_a?(::String) || literal.is_a?(::Array) || literal.is_a?(::Hash) }
+                          .select { |literal| wire_rendered_length_satisfies?(prop, literal) }
+        end
+
+        def wire_rendered_length_satisfies?(prop, literal)
+          size = literal.to_s.length
+          (!prop[:minLength] || size >= prop[:minLength]) && (!prop[:maxLength] || size <= prop[:maxLength])
+        end
+
+        # Removes exactly the keywords that carry an INTRINSIC type binding — `type`/`anyOf` (the type
+        # assertion itself) and `enum`/`const` (a literal value is itself of some JSON type — `const:
+        # 5` is Integer 5, not any string, the same way an `enum` entry is — so a mismatch against
+        # either is as absolute a contradiction as a mismatched `type`; `const` is NUMERIC_BOUND_KEYS'
+        # spelling for a non-nullable `equal_to:`, found by auditing every keyword this emitter can
+        # produce for the same gap rather than waiting for another round to surface it one keyword at a
+        # time). Used for a TRANSFORMING side, where these four are untrustworthy (they describe the
+        # post-transform value, not the wire form another declaration reads) but everything else —
+        # `length`/size bounds, `format`/`pattern` — is TYPE-CONDITIONAL (JSON Schema applies none of
+        # them to an instance of some OTHER type), so keeping them can never manufacture that same
+        # absolute, value-independent contradiction; at worst they are imprecise in the same way
+        # `single_type_for`'s own pre-existing reflection of a transforming field already is, standalone,
+        # with no collision at all.
+        #
+        # Dropping `enum`/`const` outright (rather than merely dropping `type`/`anyOf`) has its OWN gap in
+        # the opposite direction (Codex review, PR #278 round 9): if nothing else on this side survives,
+        # the node contributes NOTHING beyond whatever the other side already asserts, so any wire value
+        # that satisfies the OTHER side's type alone now satisfies the whole conjunction — even one this
+        # node's own (dropped) equality/inclusion constraint would have rejected after coercion. So a
+        # literal is TRANSLATED to its wire spelling rather than dropped, wherever that translation is
+        # something reflection can vouch for WITHOUT executing user code — see wire_spellings_for.
+        #
+        # That translation is only sound when the transform is the KNOWN coercer, never when it is (even
+        # partly) an arbitrary `preprocess:` (Codex review, PR #278 round 10): under a String ancestor, a
+        # node `type: { klass: Integer, coerce: false }, preprocess: ->(v) { Integer(v) + 1 }, comparison:
+        # { equal_to: 5 }` accepts wire "4" (preprocessed to 5) and rejects wire "5" (preprocessed to 6) —
+        # the OPPOSITE of what a coercion-based `enum: [5, "5"]` would advertise. `coercible_target_klasses`
+        # asks the narrower question (coercion only, no preprocess bypass) for exactly this gate.
+        #
+        # A TYPE-CONDITIONAL bound (length/size/numeric) from a transforming side is safe to KEEP on its own
+        # (round 8) but NOT safe to keep once it would conjoin into an EMPTY interval with a bound the OTHER
+        # side independently asserts (Codex review, PR #278 round 11): an ancestor `type: String, length: {
+        # minimum: 3 }` beside a colliding node `type: String, length: { maximum: 1 }, preprocess: ->(v) {
+        # v[0] }` accepts raw `"abc"` at runtime (the ancestor checks the RAW value, the node's own check
+        # runs on the TRANSFORMED `"a"`), but keeping both bounds conjoins `minLength: 3` with `maxLength:
+        # 1` — a node no string can satisfy, for a satisfiable contract. Round 8's justification (a
+        # type-conditional keyword can never manufacture a contradiction on its own) holds for a MISMATCHED
+        # TYPE, but not here: both sides are strings, and the contradiction comes from the two bounds
+        # describing DIFFERENT underlying values (raw vs. a transform of it) that reflection cannot prove
+        # agree. `other_prop` — the OTHER side's property, captured before EITHER side is stripped so
+        # evaluation order can't change the answer — lets `drop_conflicting_size_bounds` detect exactly that
+        # empty-interval case and drop only the offending pair, leaving an unrelated bound (as in round 8's
+        # own, non-colliding-bound test) untouched.
+        #
+        # This check — and the `pattern`/`format` drop below it — runs UNCONDITIONALLY, over a COERCING side
+        # too, not only a preprocessing one: round 8's premise that a KNOWN coercer preserves a bound's
+        # measured property doesn't hold for every `Coercion::SUPPORTED` target, only for the ones whose
+        # rendered form is an EXACT inverse of what was parsed (Symbol's `.to_s`/`.to_sym`) — it fails for
+        # Time/DateTime/Date, whose canonical rendering can have a different length than whatever wire
+        # spelling was parsed (Codex review, PR #278 round 18): a raw `String` member's `length: { is: 20 }`
+        # beside a colliding `type: { klass: Time, coerce: true }, length: { is: 23 } }` node accepts
+        # "2026-08-25T12:00:00Z" (wire length 20) at runtime — the ancestor checks that raw string, the
+        # node's own check runs on `Time#to_s` of the parsed value (length 23) — but conjoining both
+        # `minLength`/`maxLength` pairs unstripped produced an interval (`>= 23` and `<= 20`) nothing can
+        # satisfy. Rather than special-case which SUPPORTED coercers preserve size, both checks now run
+        # regardless of transform kind.
+        #
+        # `pattern`/`format` get no interval check at all — unlike a numeric range, "do these two regexes
+        # share a match" has no cheap, always-correct answer reflection can compute, so a transforming
+        # side's pattern is dropped OUTRIGHT rather than risk conjoining two DISJOINT ones into a node
+        # nothing can satisfy (Codex review, PR #278 round 13): an ancestor `/\Aa+\z/` beside a colliding
+        # `preprocess: ->(_) { "b" }, format: /\Ab+\z/` node accepts raw "a" at runtime (its OWN check runs
+        # on the constant "b", which the node's pattern matches unconditionally), but conjoining both
+        # patterns requires one wire string to match both `/\Aa+\z/` AND `/\Ab+\z/` — impossible. This is
+        # the same "no execution-free proof available" limit `wire_spellings_for` hits for a literal value,
+        # applied to a regex instead — dropped as a tolerated imprecision, not solved.
+        def strip_intrinsically_typed_keys(prop, configs, other_prop)
+          drop_type_inconsistent_with_enum(strip_intrinsically_typed_keys_before_consistency_check(prop, configs, other_prop))
+        end
+
+        # A last, UNCONDITIONAL safety net over every upfront heuristic above that decides whether to
+        # KEEP a transforming side's own type — rounds 32-34 each found a narrower way that heuristic
+        # could be wrong (an untyped sibling, a sibling with mixed literals, a node's own literal
+        # translating to a mixed wire type), and round 35 found yet another: even the NUMERIC-BOUND
+        # exemption (round 34's own remaining case, believed safe because it keeps each retained literal
+        # in its ORIGINAL declared form) can retain a literal whose original form simply ISN'T the kept
+        # type (Codex review, PR #278 round 35): a sibling `inclusion: { in: ["6", true] }` (mixed literal
+        # types, genuinely untyped) beside a coercing Integer node's `comparison: { greater_than: 5 }`
+        # accepts wire "6" at runtime (coerces to 6, satisfying the bound), but `drop_numeric_bounds_
+        # unless_type_admits_number` retains the ORIGINAL literal "6" (a String) in the retargeted enum
+        # while the exemption keeps `type: "integer"` — "6" itself is never an integer, so the kept type
+        # and its own accompanying enum contradict each other before the sibling's own enum even enters
+        # the conjunction. Rather than trying to predict every way an upfront heuristic could be wrong,
+        # this checks the ACTUAL result: whenever `stripped` ends up with both a `:type` and an `:enum`,
+        # every enum member (`nil` aside — nullability is a separate, already-handled concern) must
+        # actually BE one of the kept type(s), or the type is dropped after all.
+        def drop_type_inconsistent_with_enum(prop)
+          return prop unless prop[:type] && prop[:enum]
+
+          types = collision_types(prop)
+          literals = prop[:enum].compact
+          return prop if literals.all? { |literal| types.include?(map_type_for(Axn::Internal::Identity.class_of(literal))) }
+
+          prop.except(:type, :anyOf)
+        end
+
+        def strip_intrinsically_typed_keys_before_consistency_check(prop, configs, other_prop)
+          # `:type`/`:anyOf` are stripped only when the OTHER side actually makes a competing type claim
+          # to strip them FOR — an ancestor that is genuinely UNTYPED (no `type:` at all, e.g. a bare
+          # `field :inner` with no validators) asserts nothing this side's own type could ever contradict,
+          # so stripping it anyway throws away the only type information the merged position had left
+          # (Codex review, PR #278 round 32): an untyped ancestor member colliding with an explicit
+          # `type: { klass: Integer, coerce: true }` node dropped the node's own `type: "integer"`
+          # unconditionally, and with no literal constraint to translate either, the merged schema kept
+          # only the ancestor's generic presence/null constraints — accepting a non-numeric string like
+          # "abc" the runtime's own (uncoerced, since coercion only parses valid Integer strings) type
+          # check rejects. `:enum`/`:const` are still stripped UNCONDITIONALLY regardless — those describe
+          # a literal VALUE, always translated to its wire spelling by the logic below regardless of
+          # whether the other side happens to compete for the same keyword.
+          #
+          # A sibling's OWN `:enum`/`:const` counts as a competing claim too, not just its `:type`/
+          # `:anyOf` — a literal value is itself of some JSON type (this file's own standing doctrine,
+          # see the intrinsic-key doc below), so an untyped-but-literal-constrained sibling can conflict
+          # with a kept transformed type exactly as a typed one can (Codex review, PR #278 round 33): a
+          # `field :inner, inclusion: { in: ["raw", true] }` sibling (no `type:` at all, but a mixed
+          # String/Boolean literal set) beside an Integer node whose `preprocess` always returns a
+          # constant accepted raw `"raw"` at runtime (the node's own check runs on the constant, always
+          # Integer-valid), but keeping the node's post-transform `type: "integer"` conjoined it with the
+          # sibling's `enum: ["raw", true]` — neither literal is ever an integer, so nothing satisfies
+          # both at once, though the sibling's own check alone is what the runtime actually applies.
+          #
+          # But NOT when `prop` itself already carries a numeric bound — that goes on, later in this same
+          # function, to populate a NARROWED `:enum` via `drop_numeric_bounds_unless_type_admits_number`'s
+          # literal retargeting, which keeps each RETAINED literal in its ORIGINAL declared form (never
+          # translating it into some OTHER wire spelling), so a kept type never conflicts with what ends
+          # up beside it — round 28/30's own tests collide an untyped-but-literal ancestor with exactly
+          # this shape (a coercing node with its own `comparison:`).
+          #
+          # Deliberately NOT exempted merely because `prop` has its OWN `enum`/`const` (round 33's first
+          # attempt at this exemption): that path runs through `translated_literal_constraint` instead,
+          # which translates each literal into EVERY wire spelling reflection can vouch for — routinely
+          # BOTH a native and a String form — so the eventual enum is not guaranteed to share the kept
+          # type at all (Codex review, PR #278 round 34): a sibling `inclusion: { in: ["5", true] }`
+          # (mixed literal types, so genuinely untyped) beside `type: { klass: Integer, coerce: true },
+          # inclusion: { in: [5] }` accepts wire "5" at runtime (coerces to 5, satisfying the node's own
+          # inclusion), but kept `type: "integer"` conjoined with the translated `enum: [5, "5"]` already
+          # excludes the String spelling "5" (it fails `type: "integer"`), and conjoining that against the
+          # sibling's own `enum: ["5", true]` (which the native `5` can never satisfy either) left nothing
+          # that could ever satisfy the whole schema. Checked against `prop` BEFORE anything strips it, so
+          # this reads the declaration as originally written.
+          prop_has_own_narrowing = NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
+          other_prop_claims_type = other_prop.key?(:type) || other_prop.key?(:anyOf)
+          other_prop_claims_literal = other_prop.key?(:enum) || other_prop.key?(:const)
+          strip_intrinsic_type = other_prop_claims_type || (other_prop_claims_literal && !prop_has_own_narrowing)
+          intrinsic_type_keys = strip_intrinsic_type ? %i[type anyOf] : []
+          stripped = prop.except(*intrinsic_type_keys, :enum, :const)
+          coercible_klasses = coercible_target_klasses(configs)
+          stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format)
+          stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop, coercible_klasses, position_nullable?(prop, other_prop))
+          stripped = drop_bounds_contradicted_by_other_literals(stripped, other_prop)
+          stripped = drop_length_bound_beside_sibling_pattern(stripped, other_prop)
+          return stripped if coercible_klasses.empty?
+
+          spellings = translated_literal_constraint(prop, coercible_klasses, configs, other_prop)
+          return stripped if spellings.nil?
+
+          # `drop_numeric_bounds_unless_type_admits_number` may already have written an `:enum` here (Codex
+          # review, PR #278 round 28's own fix) — both are real, independently-enforced constraints on the
+          # SAME position, so they intersect rather than one silently overwriting the other.
+          stripped[:enum] = stripped[:enum] ? intersect_declared_literals(stripped[:enum], spellings) : spellings
+          stripped
+        end
+
+        # The min/max keyword pairs a plain (inclusive-only) size bound can land in — checked together
+        # because a bound on either side of a pair is enough to create an empty interval against the other
+        # side's opposite bound (a floor with no matching ceiling anywhere is never a contradiction on its
+        # own). Numeric bounds are handled separately (see NUMERIC_LOWER_KEYS/NUMERIC_UPPER_KEYS below):
+        # unlike a length/items/properties floor or ceiling, a numeric one can ALSO be spelled exclusively
+        # (`exclusiveMinimum`/`exclusiveMaximum`), which this inclusive-only pairing cannot see at all
+        # (Codex review, PR #278 round 12: an ancestor `numericality: { greater_than: 3 }` emits
+        # `exclusiveMinimum: 3`, not `minimum`, so checking only `minimum`/`maximum` here missed the empty
+        # interval it forms with a colliding node's `exclusiveMaximum: 2`).
+        SIZE_BOUND_KEY_PAIRS = [
+          %i[minLength maxLength],
+          %i[minItems maxItems],
+          %i[minProperties maxProperties],
+        ].freeze
+        private_constant :SIZE_BOUND_KEY_PAIRS
+
+        # A numeric lower/upper bound's keyword and whether it excludes its own endpoint — `false` (0) for
+        # the inclusive spelling sorts before `true` (1) for the exclusive one in the tie-break `max_by`/
+        # `min_by` below, which is what makes an exclusive bound win a tie against an inclusive one AT THE
+        # SAME value (the exclusive reading is the stricter of the two).
+        NUMERIC_LOWER_KEYS = { minimum: false, exclusiveMinimum: true }.freeze
+        NUMERIC_UPPER_KEYS = { maximum: false, exclusiveMaximum: true }.freeze
+        private_constant :NUMERIC_LOWER_KEYS, :NUMERIC_UPPER_KEYS
+
+        # Drops a size/numeric bound pair from `prop` wherever combining it with whatever `other_prop`
+        # independently asserts on the SAME pair would admit no value at all (the effective floor exceeds
+        # the effective ceiling — or equals it while either side is exclusive there) — the narrow,
+        # empirical trigger for the round 11 gap, rather than dropping every bound merely because the OTHER
+        # side happens to declare one too (round 8's own test pairs a node `minLength: 3` against an
+        # ancestor's UNRELATED default `minLength: 1` floor, which combines to an ordinary, satisfiable
+        # `minLength: 3` and must survive untouched).
+        def drop_conflicting_size_bounds(prop, other_prop)
+          conflicting = SIZE_BOUND_KEY_PAIRS.flat_map do |min_key, max_key|
+            combined_min = [prop[min_key], other_prop[min_key]].compact.max
+            combined_max = [prop[max_key], other_prop[max_key]].compact.min
+            next [] unless combined_min && combined_max && combined_min > combined_max
+
+            [min_key, max_key]
+          end
+
+          conflicting += NUMERIC_LOWER_KEYS.keys + NUMERIC_UPPER_KEYS.keys if numeric_bounds_conflict?(prop, other_prop)
+
+          conflicting.empty? ? prop : prop.except(*conflicting)
+        end
+
+        # A size/numeric bound retained on `prop` can be unsatisfiable at the SCHEMA level even with no
+        # competing bound on the other side at all — `enum`/`const` on `other_prop` names the EXACT set of
+        # values the position may take, and JSON Schema evaluates every keyword against the SAME instance,
+        # so if not one of those literals could ever satisfy the bound, nothing can ever satisfy the
+        # conjunction (Codex review, PR #278 round 17): an ancestor `inclusion: { in: ["a"] }` beside a
+        # colliding node's `length: { minimum: 3 }, preprocess: ->(v) { v * 3 }` accepts raw "a" at runtime
+        # (the ancestor's own check requires the RAW value to equal "a"; the node's own check runs on the
+        # preprocessed "aaa"), but the SCHEMA requires one wire string to both equal "a" (length 1) and have
+        # length >= 3 — impossible, regardless of what runs at runtime, since `enum` and `minLength` are
+        # both being asked of the identical schema instance. This is a purely SCHEMA-level satisfiability
+        # question independent of transform type, so — unlike `drop_conflicting_size_bounds` — it runs
+        # unconditionally, even over a bound kept because coercion made it safe (round 11).
+        #
+        # `declared_literals` — the TRUE, intersected value set (not a bare concatenation of `const` and
+        # `enum`) — because a member declaring BOTH is enforced on BOTH, and treating them as a union can
+        # hide the one value that actually satisfies both (Codex review, PR #278 round 18): a member with
+        # `const: 1` (from `equal_to: 1`) AND `enum: [1, 5]` (from `inclusion: { in: [1, 5] }`) truly admits
+        # only `1` — `5` is in the inclusion list but fails the separate equality check — yet concatenating
+        # both lists into `[1, 1, 5]` let `5` alone survive the "does every literal violate this bound"
+        # check, hiding a real conflict a colliding `exclusiveMinimum: 3` has with the position's actual
+        # (intersected) value set of just `{1}`.
+        #
+        # Judged per BOUND FAMILY (`BOUND_VIOLATION_FAMILIES`), not per individual keyword — a floor and a
+        # ceiling in the SAME family are jointly retained or jointly dropped, and a literal only counts as a
+        # witness if it satisfies BOTH at once (Codex review, PR #278 round 19): an ancestor `enum: ["a",
+        # "aaaa"]` beside a colliding node's `length: { is: 2 }` has "a" (length 1) satisfy `maxLength: 2`
+        # but fail `minLength: 2`, and "aaaa" (length 4) satisfy `minLength: 2` but fail `maxLength: 2` — so
+        # judged independently, EACH keyword survives (some literal satisfies THAT one), yet no literal
+        # satisfies both together, and the true combined interval (exactly length 2) admits neither "a" nor
+        # "aaaa" at all — an unsatisfiable conjunction a per-key check cannot see.
+        def drop_bounds_contradicted_by_other_literals(prop, other_prop)
+          literals = declared_literals(other_prop)
+          return prop if literals.empty?
+
+          contradicted = BOUND_VIOLATION_FAMILIES.flat_map do |family|
+            present = family.select { |key| prop.key?(key) }
+            next [] if present.empty?
+
+            verdicts = literals.map { |literal| bound_family_satisfaction_for_literal(present, prop, literal) }.compact
+            verdicts.empty? || verdicts.any? ? [] : present
+          end
+
+          contradicted.empty? ? prop : prop.except(*contradicted)
+        end
+
+        # A retained `minLength`/`maxLength` on `prop` has no cheap, always-correct compatibility check
+        # against a sibling `pattern`/`format` the way it does against a discrete literal set (round 17's
+        # `drop_bounds_contradicted_by_other_literals`) — regex satisfiability/length analysis is not
+        # something reflection can do safely and generally (Codex review, PR #278 round 22): an ancestor
+        # `format: { with: /\Aa\z/ }` (matching only the single string "a", length 1) beside a colliding
+        # node's `length: { minimum: 3 }, preprocess: ->(v) { v * 3 }` accepts wire "a" at runtime (the
+        # ancestor's own check matches "a" exactly; the node's own check runs on the preprocessed "aaa"),
+        # but conjoining `minLength: 3` with the ancestor's pattern produced a node no string can satisfy —
+        # `/\Aa\z/` admits only a 1-character string, `minLength: 3` requires at least 3. Rather than
+        # attempt regex analysis, this stands the length bound down UNCONDITIONALLY whenever the sibling has
+        # ANY pattern/format — the same "cannot verify, so don't risk it" resolution round 13 already uses
+        # for a transforming side's OWN pattern.
+        def drop_length_bound_beside_sibling_pattern(prop, other_prop)
+          return prop unless other_prop[:pattern] || other_prop[:format]
+
+          prop.except(:minLength, :maxLength)
+        end
+
+        # The TRUE value set a property's `const`/`enum` jointly admit — both are enforced when both are
+        # declared (an AND, not an OR), so the combined set is their INTERSECTION, not a concatenation of
+        # the two (see drop_bounds_contradicted_by_other_literals). Either alone is used as-is; `enum`'s
+        # `nil` member (a nullable position's null branch) is dropped here since it never violates a size/
+        # numeric bound and only complicates the intersection.
+        def declared_literals(prop)
+          const_values = Array(prop[:const])
+          enum_values = Array(prop[:enum]).compact
+          return const_values if enum_values.empty?
+          return enum_values if const_values.empty?
+
+          intersect_declared_literals(const_values, enum_values)
+        end
+
+        # Whether a wire value of `nil` is admitted by BOTH `prop_a` and `prop_b` — both routes are
+        # enforced, so null survives only when NEITHER side's own unconditional check rejects it (the
+        # same "both, not either" doctrine `merge_emitted_type` already applies at the top level).
+        # Nullability can show up as a literal `nil` IN an `:enum` (an `inclusion:` naming it explicitly)
+        # OR as `"null"` in an emitted `:type` array (an `allow_nil:`-only position, no inclusion at all)
+        # — checking only the former misses the latter (Codex review, PR #278 round 37): a nullable
+        # `type: Object, length: { minimum: 3 }` member (no `inclusion:` at all) colliding with a nullable,
+        # non-coercing Integer node reached a length-retargeting dead end with no literal `nil` anywhere to
+        # find, though BOTH sides admit it via their own emitted `type: [..., "null"]`, and the resulting
+        # `enum: []` wrongly rejected nil (and every other otherwise-valid integer) at a position the
+        # runtime actually accepts nil at. Each side is checked in whatever form the CALLER passes it —
+        # typically the ORIGINAL, unstripped property, since `:type` may already be gone by the time the
+        # function that ultimately needs this answer runs.
+        def position_nullable?(prop_a, prop_b)
+          [prop_a, prop_b].all? { |prop| Array(prop[:type]).include?("null") || Array(prop[:enum]).include?(nil) }
+        end
+
+        # Ruby's Array#& compares members via `eql?`/`hash`, which treats an Integer and a numerically-
+        # equal Float as DIFFERENT (`5.eql?(5.0)` is false) — the SAME gap `intersect_wire_spellings` fixes
+        # for translated wire candidates, but here for the RAW declared literals themselves, reached by a
+        # DIFFERENT caller (Codex review, PR #278 round 25): an ancestor Numeric member declaring BOTH
+        # `comparison: { equal_to: 5 }` (`const: 5`) and `inclusion: { in: [5.0] }` (`enum: [5.0]`) beside a
+        # colliding Integer node that preprocesses `5` to `10` before requiring `> 6` accepts raw `5` at
+        # runtime (the ancestor's own checks both pass against 5; the node's own check runs on the
+        # preprocessed 10), but `declared_literals`'s plain `&` on `[5]` and `[5.0]` returned `[]` — read by
+        # `drop_bounds_contradicted_by_other_literals` as "no literals declared, nothing to contradict" —
+        # so the node's own (truly contradicted) `exclusiveMinimum: 6` was kept rather than dropped, and
+        # the schema conjoined `const: 5`, `enum: [5.0]`, and `exclusiveMinimum: 6` into a node nothing
+        # satisfies. Checked in both directions (matching `intersect_wire_spellings`'s own shape), since
+        # either side's specific literal may be the one a downstream reader keys its own logic off (e.g.
+        # `retarget_length_to_union`'s wire-rendering check, which cares which literal it got, not merely
+        # whether one exists).
+        def intersect_declared_literals(values_x, values_y)
+          from_x = values_x.select { |x| values_y.any? { |y| x == y } }
+          from_y = values_y.select { |y| values_x.any? { |x| x == y } }
+
+          (from_x + from_y).uniq
+        end
+
+        # Per bound keyword: the JSON type it applies to, the measurement it bounds (`#length`/`#size` for
+        # a container, the literal's own value for a number), and the comparison that means "fails the
+        # bound" for that keyword's floor/ceiling/exclusive reading.
+        BOUND_VIOLATION_CHECKS = {
+          minLength: [::String, :length, :<],
+          maxLength: [::String, :length, :>],
+          minItems: [::Array, :length, :<],
+          maxItems: [::Array, :length, :>],
+          minProperties: [::Hash, :size, :<],
+          maxProperties: [::Hash, :size, :>],
+          minimum: [::Numeric, :itself, :<],
+          maximum: [::Numeric, :itself, :>],
+          exclusiveMinimum: [::Numeric, :itself, :<=],
+          exclusiveMaximum: [::Numeric, :itself, :>=],
+        }.freeze
+        private_constant :BOUND_VIOLATION_CHECKS
+
+        # Whether `literal` — of whatever JSON type `key` actually applies to — fails the bound `key`
+        # asserts, or `nil` when `literal` isn't of a type `key` has any opinion about at all (a Hash literal
+        # says nothing about a `minLength` bound, since it could never be the String instance that keyword
+        # constrains). `nil` here is what lets the caller tell "every type-matching literal failed" (a real
+        # contradiction) apart from "no literal was even the relevant type" (nothing to contradict).
+        def bound_violation_for_literal(key, bound, literal)
+          klass, measure, comparator = BOUND_VIOLATION_CHECKS.fetch(key)
+          return nil unless literal.is_a?(klass)
+
+          literal.public_send(measure).public_send(comparator, bound)
+        end
+
+        # A floor and its ceiling share ONE underlying measurement (a String's length, an Integer's own
+        # value), so they must be judged — and dropped — TOGETHER: see bound_family_satisfaction_for_literal and
+        # drop_bounds_contradicted_by_other_literals for why judging them independently is unsound.
+        BOUND_VIOLATION_FAMILIES = [
+          %i[minLength maxLength],
+          %i[minItems maxItems],
+          %i[minProperties maxProperties],
+          %i[minimum maximum exclusiveMinimum exclusiveMaximum],
+        ].freeze
+        private_constant :BOUND_VIOLATION_FAMILIES
+
+        # Whether `literal` satisfies EVERY bound in `keys` (a family sharing one measurement) at once, or
+        # `nil` when `literal` isn't the type any of them applies to at all. `nil` here is what lets the
+        # caller tell "a real witness for the WHOLE family exists" apart from "no literal was even the
+        # relevant type" — checking each keyword independently (Codex review, PR #278 round 19) missed
+        # exactly the case where DIFFERENT literals each satisfy a DIFFERENT keyword in the family but none
+        # satisfies all of them together, which is what actually decides whether the family is satisfiable.
+        def bound_family_satisfaction_for_literal(keys, prop, literal)
+          klass = BOUND_VIOLATION_CHECKS.fetch(keys.first).first
+          return nil unless literal.is_a?(klass)
+
+          keys.none? { |key| bound_violation_for_literal(key, prop[key], literal) }
+        end
+
+        # Whether the numeric bounds `prop` and `other_prop` each declare (any mix of inclusive/exclusive)
+        # combine into an interval admitting no value — the strictest lower bound exceeds the strictest
+        # upper bound, or the two are equal with at least one side exclusive there (an inclusive `>= 3`
+        # paired with an inclusive `<= 3` still admits 3; an exclusive reading on either side admits
+        # nothing).
+        def numeric_bounds_conflict?(prop, other_prop)
+          lower = strictest_numeric_bound(NUMERIC_LOWER_KEYS, prop, other_prop) do |candidates|
+            candidates.max_by { |value, exclusive| [value, exclusive ? 1 : 0] }
+          end
+          upper = strictest_numeric_bound(NUMERIC_UPPER_KEYS, prop, other_prop) do |candidates|
+            candidates.min_by { |value, exclusive| [value, exclusive ? 0 : 1] }
+          end
+          return false unless lower && upper
+
+          lower_value, lower_exclusive = lower
+          upper_value, upper_exclusive = upper
+          return true if lower_value > upper_value || (lower_value == upper_value && (lower_exclusive || upper_exclusive))
+
+          integer_only_domain?(other_prop) && no_integer_in_interval?(lower_value, lower_exclusive, upper_value, upper_exclusive)
+        end
+
+        # Whether the surviving side's collision is restricted to JSON's "integer" type ALONE (never
+        # the broader "number", which admits every real value in between). Only then can a real-valued
+        # interval that's non-empty still admit no actual INSTANCE — see no_integer_in_interval?.
+        def integer_only_domain?(other_prop)
+          types = collision_types(other_prop)
+          types.include?("integer") && !types.include?("number")
+        end
+
+        # A continuous interval can be non-empty (`lower_value < upper_value`) while still containing no
+        # INTEGER — an open interval strictly between two consecutive integers (Codex review, PR #278
+        # round 23): an ancestor Integer member's `comparison: { greater_than: 1 }` (`exclusiveMinimum:
+        # 1`) beside a colliding Integer node's `preprocess: ->(v) { v - 1 }, comparison: { less_than: 2
+        # }` (`exclusiveMaximum: 2`) accepts raw `2` at runtime (the ancestor's own check reads the RAW
+        # value 2, which is `> 1`; the node's own check runs on the preprocessed `1`, which is `< 2`),
+        # but conjoining `exclusiveMinimum: 1` with `exclusiveMaximum: 2` describes an integer strictly
+        # between 1 and 2 — none exists — an unsatisfiable schema for a satisfiable contract.
+        # `numeric_bounds_conflict?`'s own plain `lower_value > upper_value` check only catches an
+        # interval empty over the REALS; this catches one empty over the INTEGERS specifically, by
+        # rounding each bound in to the nearest admissible integer endpoint before comparing.
+        def no_integer_in_interval?(lower_value, lower_exclusive, upper_value, upper_exclusive)
+          min_int = lower_exclusive ? (lower_value.floor + 1) : lower_value.ceil
+          max_int = upper_exclusive ? (upper_value.ceil - 1) : upper_value.floor
+          min_int > max_int
+        end
+
+        # The single strictest `[value, exclusive?]` bound across both props' entries for one keyword pair
+        # (e.g. `minimum`/`exclusiveMinimum`), or nil when neither prop declares either keyword.
+        def strictest_numeric_bound(keys, prop, other_prop)
+          candidates = keys.flat_map do |key, exclusive|
+            [prop[key], other_prop[key]].compact.map { |value| [value, exclusive] }
+          end
+          return nil if candidates.empty?
+
+          yield candidates
+        end
+
+        NUMERIC_BOUND_ALL_KEYS = (NUMERIC_LOWER_KEYS.keys + NUMERIC_UPPER_KEYS.keys).freeze
+        private_constant :NUMERIC_BOUND_ALL_KEYS
+
+        # A numeric bound on `prop` (kept this far because it's TYPE-CONDITIONAL — round 8's own
+        # justification) is only trustworthy when the surviving `other_prop`'s type actually ADMITS a
+        # number at this position — unlike `length:` under a coercing Symbol (whose rendered form has the
+        # SAME length as the wire string, round 11), a numeric bound describes the coerced/transformed
+        # value's magnitude, which has no relationship at all to a wire value the runtime never even reads
+        # as a number in the first place (Codex review, PR #278 round 14): under a raw `String` ancestor, a
+        # colliding `type: { klass: Integer, coerce: true }, comparison: { greater_than: 5 } }` node kept
+        # `exclusiveMinimum: 5` sitting beside the ancestor's `type: "string"` — JSON Schema ignores a
+        # numeric bound for a string instance, so it enforced nothing at all, though the runtime's own
+        # coercion+comparison check does. Unlike a discrete `const`/`enum` literal, an open-ended numeric
+        # RANGE has no small, enumerable set of wire-string candidates a round-trip check could verify, so
+        # there is no sound translation available here — the bound is dropped rather than left inert under
+        # the wrong (silently ignored) keyword, the same "stand down, don't solve" resolution `pattern`/
+        # `format` under an untranslatable transform already uses.
+        #
+        # `collision_types` (not a bare `other_prop[:type]` read), because a UNION survivor spells its types
+        # under `anyOf`, not a top-level `type` (Codex review, PR #278 round 17): an ancestor `type:
+        # [Integer, String]` beside the SAME coercing `comparison: { greater_than: 5 }` node let a raw
+        # (already-numeric) wire integer `3` through, since `other_prop[:type]` was nil for the union and
+        # the bound was dropped though an Integer branch genuinely admits — and needs — it. Keeping the
+        # bound unscoped (a plain top-level keyword, not retargeted per branch the way length: is) accepts
+        # the SAME residual imprecision round 14 already established for the union's OTHER, non-numeric
+        # branch (a wire String that coerces to a violating number is a case JSON Schema's numeric keywords
+        # can never see, whichever branch they sit on) — an accepted trade, not a new one.
+        def drop_numeric_bounds_unless_type_admits_number(prop, other_prop, coercible_klasses, nullable)
+          return prop unless NUMERIC_BOUND_ALL_KEYS.any? { |key| prop.key?(key) }
+
+          # `declared_literals` deliberately DROPS a `nil` member (it never violates a size/numeric bound
+          # and only complicates the intersection there), but THIS function replaces the whole `:enum`
+          # from scratch — unlike the length-retargeting functions, which only ever ADD to or leave an
+          # existing `:enum` untouched — so silently losing `nil` here is losing the position's own
+          # null-tolerance entirely, not merely simplifying an intersection (Codex review, PR #278 round
+          # 30): an untyped shape member's `inclusion: { in: [nil, 3] }, allow_nil: true` beside a
+          # colliding coercing Integer node's `comparison: { greater_than: 5 }, allow_nil: true` accepts
+          # wire `nil` at runtime (both declarations skip their own validator for it), but `3` alone fails
+          # the bound, and the resulting `enum: []` (no `nil` anywhere) made the property reject every
+          # value, nil included. `nullable` (see `position_nullable?`) is computed by the CALLER, against
+          # the ORIGINAL, unstripped `prop` this function's own caller received — this function only ever
+          # sees `prop` AFTER its own `:type` may have already been stripped, which would otherwise blind
+          # a type-only (no literal `nil`) nullability declaration to this check (Codex review, PR #278
+          # round 37 — see `position_nullable?`'s own doc for that exact scenario).
+          literals = declared_literals(other_prop) | declared_literals(prop)
+
+          survivor_types = collision_types(other_prop)
+          numeric_survivor_types = survivor_types & NUMERIC_TYPES
+          if numeric_survivor_types.any?
+            return prop if numeric_survivor_types == survivor_types
+
+            # The survivor admits a number AND something else (e.g. `type: [Integer, String]`) — keeping
+            # the bound as a bare top-level keyword leaves the NON-numeric branch completely uncontained,
+            # since JSON Schema silently ignores a numeric keyword for a non-numeric instance (Codex
+            # review, PR #278 round 33): a `[Integer, String]` shape member beside a coercing Integer
+            # node's `comparison: { greater_than: 5 }` kept `exclusiveMinimum: 5` sitting beside the
+            # survivor's own `anyOf: [{type: "integer"}, {type: "string"}]` — a wire STRING instance
+            # satisfies the `type: "string"` branch and is simply never checked against the bound at all,
+            # so the schema admitted wire "3" though the runtime coerces it to 3 and rejects it (not
+            # `> 5`). Narrowing THIS side's own `:type` down to just the numeric-admitting subset is what
+            # makes the eventual conjunction (this property ANDed with the survivor's own emission) require
+            # BOTH — so only an instance that is ALSO one of the numeric types can ever reach the bound.
+            #
+            # But narrowing the TYPE is only safe when there is no non-numeric LITERAL witness that would
+            # need it (Codex review, PR #278 round 36): a member declared as `type: [Integer, String],
+            # inclusion: { in: ["6"] }` beside the SAME coercing node accepts wire "6" at runtime (the
+            # member's own type union admits the String, and the node coerces it to 6, satisfying `> 5`),
+            # but narrowing to `type: "integer"` excludes "6" itself (it's a String) — conjoined with the
+            # member's own `enum: ["6"]`, nothing satisfies the result. Retargeting via the SAME literal
+            # mechanism the untyped case below already uses (keeping each literal that, once coerced,
+            # satisfies the bound, in its ORIGINAL form) is what preserves "6" as the witness it is; the
+            # type is narrowed only when there is no non-numeric literal to lose by doing so.
+            non_numeric_literals = literals.reject { |literal| literal.is_a?(::Numeric) }
+            return prop.merge(type: numeric_survivor_types.size == 1 ? numeric_survivor_types.first : numeric_survivor_types) if non_numeric_literals.empty?
+
+            return retarget_numeric_bound_to_literals(prop, literals, coercible_klasses, nullable)
+          end
+
+          # An UNTYPED survivor (no `type:`/`anyOf` — only a `const`/`enum` with mixed-type members, e.g.
+          # a bare `inclusion:` naming no `type:`) has no admitted type to check at all, but its own
+          # LITERALS are still concrete, known values the bound can be checked against directly — dropping
+          # the bound wholesale throws that information away for nothing (Codex review, PR #278 round 28):
+          # an untyped shape member's `inclusion: { in: [3, 6, "ok"] }` beside a colliding coercing Integer
+          # node requiring `> 5` emitted just that enum with the bound gone entirely, so the schema wrongly
+          # accepted `3` and `"ok"` — the runtime rejects both (3 fails the comparison; "ok" is never
+          # coerced, being a String, and fails the node's own Integer check) and accepts only `6`. Filtering
+          # the literals down to the ones the bound actually admits (never a non-Numeric one — the bound is
+          # type-conditional, but nothing else survives here to admit a non-numeric value either) and
+          # retargeting to `enum` is what keeps the constraint instead of discarding it.
+          return prop.except(*NUMERIC_BOUND_ALL_KEYS) if literals.empty? && !nullable
+
+          retarget_numeric_bound_to_literals(prop, literals, coercible_klasses, nullable)
+        end
+
+        # The subset of `literals` a still-retained numeric bound on `prop` actually admits, as a
+        # replacement `enum` — narrower than dropping the bound (which would admit every literal
+        # unconditionally) and safer than leaving the bound in place beside an untyped position (which
+        # JSON Schema would silently ignore for a non-numeric instance, wrongly admitting it).
+        # `literals` are checked through the SAME coercer this position's own runtime check reads its wire
+        # value through — a raw, uncoerced Numeric check misses a String literal that coerces into one
+        # (Codex review, PR #278 round 29): an untyped sibling `enum: ["6", "ok"]` beside a coercing
+        # Integer node's `comparison: { greater_than: 5 }` has the known coercer turn wire "6" into 6 (>
+        # 5, satisfying it) at runtime, but checking `"6".is_a?(Numeric)` directly says false, excluding
+        # it and leaving `enum: []` — unsatisfiable for a satisfiable contract. `coercible_klasses` empty
+        # (this bound's own side doesn't coerce) leaves a literal exactly as `is_a?(Numeric)` would judge
+        # it uncoerced, unchanged from before. The retained `enum` keeps each literal in its ORIGINAL
+        # (wire) form — "6", not 6 — since that original spelling is what the wire value must actually be.
+        def retarget_numeric_bound_to_literals(prop, literals, coercible_klasses, nullable)
+          bound_keys = NUMERIC_BOUND_ALL_KEYS.select { |key| prop.key?(key) }
+          satisfying = literals.select do |literal|
+            coerced = coercible_klasses.empty? ? literal : Axn::Internal::Coercion.coerce_value(literal, coercible_klasses)
+            coerced.is_a?(::Numeric) && bound_keys.none? { |key| bound_violation_for_literal(key, prop[key], coerced) }
+          end
+          satisfying = [nil] + satisfying if nullable
+
+          retargeted = prop.except(*NUMERIC_BOUND_ALL_KEYS)
+          retargeted[:enum] = satisfying
+          retargeted
+        end
+
+        # `const` (from `comparison:`/`numericality:`'s `equal_to:`) and `enum` (from `inclusion:`) are
+        # BOTH enforced when a node declares both — an AND, not an OR — so translating each to its wire
+        # spellings and then CONCATENATING the two sets turns an intersection into a union (Codex review,
+        # PR #278 round 14): a coercing node with `inclusion: { in: [5, 6] }, comparison: { equal_to: 5 }`
+        # concatenated to `enum: [5, "5", 6, "6"]`, advertising "6" as valid though the runtime's equality
+        # check rejects the 6 it coerces to (only 5 satisfies both). Translating each constraint SEPARATELY
+        # and intersecting the results (`:none` marks a constraint that was never declared at this position,
+        # contributing no restriction, as distinct from `nil` — a declared constraint with NO safe
+        # translation, which must invalidate the whole result rather than silently drop out of an
+        # intersection) is what keeps only the wire forms both constraints actually agree on.
+        def translated_literal_constraint(prop, coercible_klasses, configs, other_prop)
+          const_values = Array(prop[:const])
+          enum_values = Array(prop[:enum])
+          return nil if const_values.empty? && enum_values.empty?
+
+          const_spellings = const_values.empty? ? :none : wire_spellings_for(const_values, coercible_klasses, configs, other_prop)
+          enum_spellings = enum_values.empty? ? :none : wire_spellings_for(enum_values, coercible_klasses, configs, other_prop)
+          return nil if const_spellings.nil? || enum_spellings.nil?
+
+          if const_spellings == :none
+            enum_spellings
+          elsif enum_spellings == :none
+            const_spellings
+          else
+            intersect_wire_spellings(const_spellings, enum_spellings, coercible_klasses)
+          end
+        end
+
+        # Ruby's Array#& compares members via `eql?`/`hash`, which — unlike `==` — treats an Integer and a
+        # numerically-equal Float as DIFFERENT (`5.eql?(5.0)` is false), and never asks whether two
+        # DIFFERENT wire strings actually decode to the same target value (Codex review, PR #278 round
+        # 24): a coercing Float node declaring BOTH `comparison: { equal_to: 5 }` (`const: 5`, an Integer)
+        # and `inclusion: { in: [5.0] }` (`enum: [5.0]`, a Float) accepts wire "5" at runtime (it coerces
+        # to 5.0, which equals both 5 and 5.0), but `[5, "5"]` (const's own candidates) and `[5.0, "5.0"]`
+        # (enum's) share no member under Ruby's default equality, so a naive `&` produced an empty,
+        # unsatisfiable enum for a satisfiable contract. Two candidates express the SAME wire constraint
+        # here whenever they COERCE to the identical value — not whenever the raw candidates themselves
+        # are `==` — checked from BOTH sides, since either one may hold the specific wire spelling (e.g.
+        # the string "5") that only round-trips against the OTHER side's own raw literal.
+        def intersect_wire_spellings(candidates_x, candidates_y, coercible_klasses)
+          coerced_x = candidates_x.map { |candidate| [candidate, Axn::Internal::Coercion.coerce_value(candidate, coercible_klasses)] }
+          coerced_y = candidates_y.map { |candidate| [candidate, Axn::Internal::Coercion.coerce_value(candidate, coercible_klasses)] }
+
+          from_x = coerced_x.select { |_, coerced| coerced_y.any? { |_, other| coerced == other } }.map(&:first)
+          from_y = coerced_y.select { |_, coerced| coerced_x.any? { |_, other| coerced == other } }.map(&:first)
+
+          (from_x + from_y).uniq
+        end
+
+        # A literal set's wire-compatible spellings, or nil when NONE of them have a translation reflection
+        # can vouch for without executing user code. Each literal is judged INDEPENDENTLY (not as an
+        # all-or-nothing homogeneous set — see round_tripping_wire_spellings) and a literal with no safe
+        # spelling of its own simply contributes none, rather than poisoning the whole set (Codex review,
+        # PR #278 round 12: with a coercing declared type of `[Integer, String]`, an inclusion enum of
+        # `["5", "ok"]` needs "5" DROPPED — it decodes to Integer 5, never String "5", so no wire value
+        # could ever satisfy the inclusion check via that entry — while "ok" is untouched by either target
+        # and survives; an earlier all-or-nothing, class-only check couldn't see the difference and kept
+        # both, including the wire-unreachable "5"). `configs` recovers each literal's PRE-normalization
+        # provenance (see raw_literal_for) — necessary because the ALREADY-emitted `values` have had that
+        # provenance erased.
+        def wire_spellings_for(values, coercible_klasses, configs, other_prop)
+          raw_literals = raw_inclusion_literals(configs)
+          # A sibling's own declared String literals are FINITE, CONCRETE wire values worth trying
+          # alongside a numeric value's own generated candidates — see round_tripping_wire_spellings.
+          sibling_wire_candidates = declared_literals(other_prop).select { |literal| literal.is_a?(::String) }
+          # Whether the survivor admits a bare, native JSON number directly (no coercion, no `type:
+          # "boolean"` of its own to keep it out) — needed so a BOOLEAN's own numeric spelling can be
+          # dropped when it would matter; see round_tripping_wire_spellings.
+          survivor_admits_native_number = collision_types(other_prop).intersect?(NUMERIC_TYPES)
+          spellings = values.flat_map do |value|
+            round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates, survivor_admits_native_number)
+          end.uniq
+          spellings.empty? ? nil : spellings
+        end
+
+        # The declared (pre-normalization) `inclusion:` literal set across every config in this list —
+        # BEFORE `apply_inclusion_enum!` (via `normalize_schema_literal`/`Values.serialize_value`) renders
+        # each member into its own wire-string spelling. Needed to recover PROVENANCE (Codex review, PR
+        # #278 round 13): once rendered, a Date/Symbol/Time literal's spelling is indistinguishable from a
+        # NATIVE String literal that merely happens to render the same way — `Date.parse("2026-01-01")` and
+        # the plain string "2026-01-01" both serialize to "2026-01-01", but only a comparison against the
+        # ORIGINAL Ruby object (never a re-serialized one) can tell a coercing validator's actual match
+        # target apart from an unrelated literal that looks the same on the wire.
+        def raw_inclusion_literals(configs)
+          configs.flat_map do |config|
+            inclusion = config.validations[:inclusion]
+            inclusion ? Array(inclusion_enum_values(inclusion)) : []
+          end
+        end
+
+        # EVERY literal `raw_literals` holds that could stand for `value` (the already-normalized/emitted
+        # form) — not just the first, since two DIFFERENT declared literals can normalize to the identical
+        # wire spelling (Codex review, PR #278 round 15): `inclusion: { in: ["2026-01-01", Date.new(2026, 1,
+        # 1)] }` under a `[Date, String]` coercing type has both entries render to the same emitted string
+        # "2026-01-01", and picking only the first (the String) made a wire candidate round-trip against
+        # THAT one fail (it coerces to a Date, never the String) even though it round-trips fine against
+        # the SECOND (the Date literal itself). `[value]` when nothing matches (the numeric `const` path
+        # never normalizes at all, so its value already IS its own raw form and this is always a no-op for
+        # it).
+        def raw_literals_for(value, raw_literals)
+          matches = raw_literals.select do |raw|
+            raw.equal?(value) || raw == value || serializes_to?(raw, value)
+          end
+          matches.empty? ? [value] : matches
+        end
+
+        def serializes_to?(raw, value)
+          Values.serialize_value(raw) == value
+        rescue Axn::Extensions::Serialization::UnserializableValue
+          false
+        end
+
+        # The wire forms of ONE literal that reflection can PROVE the coercer accepts, by actually calling
+        # it (a pure parse function, not user code — the same boundary `Values.serialize_value` calls
+        # already cross elsewhere in this file) rather than assuming a spelling from the literal's Ruby
+        # class alone: a CANDIDATE wire form is safe only if coercing it reproduces the EXACT (raw,
+        # pre-normalization) literal a validator actually holds — the round-trip a class-only check (round
+        # 9-11's `.to_s`/"already a String" heuristics) cannot express, and a SERIALIZED-form comparison
+        # (this function's own first draft, round 12) still gets wrong: `Date.parse("2026-01-01")` and the
+        # plain string "2026-01-01" serialize identically, but only one of them is what a `[Date, String]`-
+        # coercing `inclusion:` validator is actually holding, and comparing serialized forms cannot tell
+        # them apart — comparing the coerced result against the RAW literal by plain `==` can, since a Date
+        # is never `==` a String even when they render the same (Codex review, PR #278 round 13: a
+        # `[Date, String]` coercing node's `inclusion: { in: ["2026-01-01", "fallback"] }` beside a String
+        # ancestor kept "2026-01-01" as a safe spelling — it coerces to a Date, which the SAME text renders
+        # back to, but the inclusion set holds the STRING "2026-01-01", never a Date, so no wire value could
+        # ever satisfy it via that entry; "fallback" is untouched by either coercion target and survives).
+        #
+        # `nil` needs no candidate beyond itself: `Coercion.coerce_value`/`coerce_boolean` both leave it
+        # untouched (never wire-transformed by coercion at all — round 8's original justification), so it
+        # trivially round-trips and this never has to special-case it as `values.compact`-and-reattach the
+        # way earlier rounds did (Codex review, PR #278 round 12: that reattachment code path returned nil
+        # — "no safe translation" — for an ALL-nil literal set, since compacting first left nothing to
+        # classify, dropping an entirely safe `enum: [nil]` outright).
+        #
+        # Integer/Float ALSO try their `#to_s` spelling (the coercer's String-parsing input, alongside the
+        # value's own already-JSON-native form); a boolean tries every spelling `Coercion.boolean_wire_
+        # spellings` names; anything else tries only itself. A candidate that fails to round-trip is
+        # silently excluded rather than raising: `coerce_value` itself never raises (a failed parse just
+        # returns its input unchanged).
+        #
+        # `sibling_wire_candidates` — the OTHER side's own declared String literals — are ALSO tried
+        # regardless of `value`'s own class, since `#to_s`/the canonical spelling table is never the
+        # COMPLETE inverse for any coercer: a numeric parser accepts non-canonical spellings a bare
+        # `#to_s` never generates (Codex review, PR #278 round 35): a raw String member restricted to
+        # `"05"` beside a coercing Integer node restricted to `5` is satisfiable at runtime (`Integer("05",
+        # 10) == 5`), but this function only ever generated `[5, "5"]` for the literal `5` — never "05" —
+        # so a schema built from `[5, "5"]` conjoined with the sibling's own `enum: ["05"]` had no member
+        # in common, though the runtime accepts wire "05". The SAME gap exists for every OTHER coercer,
+        # not just numeric ones (Codex review, PR #278 round 36): `Coercion.boolean_wire_spellings(true)`
+        # only names its OWN canonical spellings (`TRUTHY_STRINGS`, all lowercase), but `coerce_boolean`
+        # itself downcases before comparing — a raw String member restricted to `"TRUE"` beside a coercing
+        # `:boolean` node restricted to `true` is satisfiable at runtime (`coerce_boolean("TRUE") == true`)
+        # but "TRUE" was never among the generated candidates either. Trying the sibling's own literals as
+        # ADDITIONAL candidates UNIVERSALLY (rather than trying to enumerate every non-canonical spelling
+        # every coercer might accept) is what recovers exactly the finite set of wire values that could
+        # ever actually reach this position, for whichever coercer is actually in play.
+        # `survivor_admits_native_number` drops a BOOLEAN's own native numeric spelling (`0`/`1`) when the
+        # survivor admits a bare JSON number directly, rather than treating a `true`/`false` literal
+        # exactly like a numeric one (Codex review, PR #278 round 37): a `type: Numeric` shape member
+        # colliding with a coercing `:boolean` node restricted to `true` translated to `enum: [true, 1,
+        # "1", "true", ...]`, conjoined with the survivor's own `type: "number"` — JSON Schema considers
+        # `1.0` equal to the enum member `1`, so a schema-following client could send `1.0`, but
+        # `coerce_boolean` accepts only a native Integer `0`/`1` and the runtime rejects a Float as
+        # non-boolean.
+        #
+        # There is no JSON Schema construct that admits native `1` while excluding native `1.0` — the same
+        # provable dead end round 24 already established for a coercing Float literal (`json_schemer`
+        # itself treats `type: "integer"`/`enum` membership as satisfied by ANY zero-fractional-part
+        # number, Ruby Float included) — so the native numeric spelling is dropped outright here too,
+        # accepting a narrow, documented "schema stricter than runtime" residual (native `1`/`0` no longer
+        # validates, though the runtime still accepts it) rather than leaving the schema loose. UNLIKE
+        # round 24 (reverted specifically because the identical ambiguity ALSO existed standalone, making
+        # a collision-only fix inconsistent), a STANDALONE boolean position emits `type: "boolean"` — a
+        # JSON type no number can ever satisfy, native OR float — so this ambiguity is introduced ONLY by
+        # the collision (this side's own type being stripped, leaving the survivor's `"number"` as the
+        # only type left standing), and dropping the candidate here does not reopen an already-fine
+        # standalone case the way round 24's attempt would have.
+        def round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates, survivor_admits_native_number)
+          candidates =
+            case value
+            when nil then [nil]
+            when ::Integer, ::Float then [value, value.to_s]
+            when ::String then [value]
+            when true, false then Axn::Internal::Coercion.boolean_wire_spellings(value)
+            else []
+            end
+          candidates = candidates.reject { |candidate| candidate.is_a?(::Integer) } if survivor_admits_native_number && [true, false].include?(value)
+          candidates += sibling_wire_candidates unless value.nil?
+
+          matching_raw_literals = raw_literals_for(value, raw_literals)
+          candidates.uniq.select do |candidate|
+            matching_raw_literals.any? { |raw_literal| wire_candidate_round_trips?(candidate, raw_literal, coercible_klasses) }
+          end
+        end
+
+        def wire_candidate_round_trips?(candidate, raw_literal, coercible_klasses)
+          Axn::Internal::Coercion.coerce_value(candidate, coercible_klasses) == raw_literal
+        end
+
+        # The coercible target klasses of the FIRST config in this route list that transforms its wire
+        # value through COERCION ALONE — empty when none does. A literal translation gated on a non-empty
+        # result can trust that THESE klasses are what governs the wire-to-target mapping (see
+        # wire_spellings_for), rather than an opaque Proc reflection must not execute. A config with a
+        # `preprocess:` is excluded OUTRIGHT here even when it ALSO coerces: the two can compose in either
+        # order and a Proc can undo or rescale whatever coercion produced, so coercion's presence proves
+        # nothing about the config's net wire-to-value mapping the moment a preprocess sits alongside it
+        # (Codex review, PR #278 round 10 — the reported repro used `coerce: false` beside `preprocess:`,
+        # but the same unsoundness follows just as well from `coerce: true` beside a NON-identity
+        # `preprocess:`, so the exclusion is on `preprocess:` being present at all, not on whether coercion
+        # is explicitly disabled).
+        def coercible_target_klasses(configs)
+          configs.each do |config|
+            next unless config.respond_to?(:preprocess)
+            next if config.preprocess
+
+            type_opt = config.validations[:type]
+            next if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
+
+            klasses = Axn::Internal::Coercion.coercible_klasses(type_opt)
+            return klasses unless klasses.empty?
+          end
+
+          []
+        end
+
+        # Whether ANY config in this route list transforms the wire value it judges — a Proc
+        # (`preprocess:`), or a declared type with a coercible branch and no explicit `coerce: false`.
+        #
+        # A shape member (`Core::Contract::ShapeConfig`) can do NEITHER — `_reject_member_coerce!` refuses
+        # `coerce:`/`coerce: true` on one at declaration ("it has no reader for a coerced value to resolve
+        # onto"), and the same is true of `preprocess:` (`_reject_model_transform!`'s sibling guard). Both
+        # rejections are declaration-time GUARDS, not evidence the ambient `coerce_input_types` flag could
+        # somehow still apply where the explicit spelling cannot: coercion is fundamentally a FIELD/reader
+        # mechanism (`ContractForSubfields.resolve_value`'s read path), and a member never has one — so an
+        # `Integer`-typed member is never coerced, ambient flag or not, and treating it as approximate
+        # wrongly discarded its OWN exact constraints (`inclusion:`'s `enum` included) against a colliding
+        # node that cannot coerce it either (Codex review, PR #278 round 7: `type: Integer, inclusion: {
+        # in: [5] }` on a member, `type: { klass: Integer, coerce: false }` on the colliding node — NEITHER
+        # side can coerce, yet the member's own type being merely "coercible in principle" forced it to
+        # `{}`, dropping the `enum` a plain, un-coercing collision needed no protecting from at all).
+        # `respond_to?(:preprocess)` is reused as the "can this config transform at all" signal, since a
+        # shape member and a subfield/field config already differ on it for the identical reason.
+        #
+        # For a config that COULD carry either: `Coercion::SUPPORTED` is checked directly rather than
+        # through a bare `coerce:` key — a bare `coerce: <Type>` is sugar for `type: { klass:, coerce: true
+        # }`, `_expand_coerce_sugar!` settles it into the bag form before `validations` ever holds it, so
+        # there is no separate bare spelling left to check. An ABSENT `coerce:` on a coercible type is not
+        # evidence of no transform — the class/global `coerce_input_types` setting (always on under
+        # `Axn::Tools::Invoker`) coerces every such field whose own `coerce:` is silent, and reflection
+        # cannot resolve that per-call/per-class flag (the same conservatism
+        # `boolean_coercion_can_flip_truthiness?` already applies) — so only an explicit `coerce: false`
+        # rules a coercible token out, mirroring `Coercion.field_coerces?`'s own explicit-wins semantics.
+        def transforms_wire_value?(configs)
+          configs.any? do |config|
+            next false unless config.respond_to?(:preprocess) # a shape member has no reader, hence neither coerces nor preprocesses
+            next true if config.preprocess
+
+            type_opt = config.validations[:type]
+            next false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
+
+            !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
+          end
+        end
+
+        # Whether `single_type_for`'s INPUT branch for this token falls through to its permissive `{type:
+        # "string"}` fallback ("a JSON client can't send a Ruby object anyway") rather than asserting a real
+        # JSON type — the OTHER reason (beside a transform) an emitted property is untrustworthy, and
+        # deliberately UNRELATED to coercibility: `unknown_class_approximate?` (below) is asked only once
+        # `transforms_wire_value?` has already had first say, so a coercible token is never re-litigated
+        # here. Derived from the SAME branches `single_type_for` checks, in the same order, so the two
+        # cannot disagree about which classes are "known": boolean/uuid/params, a `TYPE_MAP` entry, or a
+        # Numeric excluding Complex (which falls through to the fallback on input too, exactly as
+        # `single_type_for` itself does).
+        def unknown_class_token?(token)
+          return false if Axn::Internal::Identity.same?(token, ::TrueClass)
+          return false if Axn::Internal::Identity.same?(token, ::FalseClass)
+          return false if Axn::Internal::Identity.same?(token, :uuid)
+          return false if Axn::Internal::Identity.same?(token, :params)
+          return false unless nil.equal?(map_type_for(token))
+
+          !numeric_but_not_complex?(token)
+        end
+
+        # Whether ANY branch of a config's declared type is an unknown-class hint. `.any?`, not `.all?`: a
+        # mixed union like `type: [Object, String]` has one exact branch, but `Object` alone already admits
+        # everything the union could ever narrow to, so the union as a whole asserts nothing more precise
+        # than the approximate branch does (Codex review, PR #278 round 2 — a `.all?` reading let a union
+        # with an approximate branch through as "exact"). Untyped (no declared type at all) is NOT
+        # approximate: it emits no `:type` key at all rather than a misleading one, which is the
+        # `own_prop.empty?` case `conjoin_shape_member_property` already handles on its own terms. And
+        # `.all?` across MULTIPLE configs (a merged node's routes) — the opposite quantifier from the
+        # per-config `.any?`, because the two lists mean opposite things: a config's own tokens are a UNION
+        # (an OR — any branch is enough to widen toward "everything"), while multiple ROUTES at one key are
+        # each independently enforced (an AND — one exact route already narrows the combined constraint
+        # regardless of an approximate route beside it), so the side counts as approximate only when NONE
+        # of its routes assert anything real. An empty list is NOT approximate — the conservative,
+        # pre-existing answer for a side this walk cannot judge.
+        def unknown_class_approximate?(configs)
+          !configs.empty? && configs.all? do |config|
+            tokens = declared_type_tokens(config.validations)
+            !tokens.empty? && tokens.any? { |t| unknown_class_token?(t) }
+          end
+        end
+
         # Duped when only one side has them: `apply_nested_subfields!` mutates the map it is handed as it adds
-        # children, and the member's own emission must not be written through.
-        def merge_emitted_maps(member_props, own_props)
+        # children, and the member's own emission must not be written through. A name BOTH sides declare is
+        # conjoined rather than let the second (`own_props`, the node's own child) win outright — PRO-3405;
+        # `apply_structured_schema!`'s own `base_properties.merge(member_props)` is a different question (an
+        # INFERRED property deferring to a DECLARED one), not two declarations colliding, and is unchanged.
+        #
+        # `member_configs`/`own_configs` — the routes each side's PARENT config came from — are re-resolved
+        # PER COLLIDING KEY via `shape_members_at`, the same locator emission and the drop pass already share:
+        # a name colliding one level down was declared by a DIFFERENT (nested) config than the one that
+        # produced `member_props`/`own_props` themselves, so the parent's approximateness says nothing about
+        # the child's (Codex review, PR #278 round 3 — the recursive twin of the top-level conjoin needed the
+        # SAME judgment, not a Hash-level heuristic: a real `type: String` and the `Object` fallback emit the
+        # byte-identical property, so only the declaration distinguishes them).
+        def merge_emitted_maps(member_props, own_props, member_configs: [], own_configs: [])
           return own_props if member_props.nil?
           return member_props.dup if own_props.nil?
 
-          member_props.merge(own_props)
+          member_props.merge(own_props) do |key, member_prop, own_prop|
+            conjoin_shape_member_property(
+              member_prop, own_prop,
+              member_configs: shape_members_at(member_configs, key),
+              own_configs: shape_members_at(own_configs, key)
+            )
+          end
         end
 
         def merge_emitted_required(member_required, own_required)
