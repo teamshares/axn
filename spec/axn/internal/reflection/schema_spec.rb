@@ -7069,6 +7069,57 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 1 })).to be_ok # valid at runtime, but no longer schema-admitted — an accepted, non-empty residual
           end
 
+          # A remaining candidate after the drop is always a String spelling or the native `true`/`false`
+          # itself — never a Hash, Array, or anything else — so a non-numeric type in the survivor's
+          # collision is not, by itself, proof a witness remains (Codex review, PR #278 round 40): a
+          # `[Numeric, Hash]` shape member colliding with the SAME coercing `:boolean` node as the tests
+          # above names "object" in its collision (a non-numeric type), but no boolean-derived candidate is
+          # ever a Hash, so dropping native `1` still emptied the schema entirely though `klass.call(inner:
+          # 1)` succeeds at runtime.
+          it "keeps a boolean's own native numeric spelling when the surviving non-numeric branch is unreachable" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Numeric, Hash]
+              end
+              expects :inner, on: :payload, type: { klass: :boolean, coerce: true }, inclusion: { in: [true] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              enum: [true, 1, "1", "true", "t", "yes", "y", "on"],
+              not: { type: "null" },
+              allOf: [{ anyOf: [{ type: "number" }, { type: "object", minProperties: 1 }] }],
+            )
+            expect(klass.call(payload: { inner: 1 })).to be_ok
+            expect(klass.call(payload: { inner: 1.0 })).not_to be_ok # the accepted loose residual, same as the Numeric-only case
+          end
+
+          # `:description` is the one emitted key that is purely descriptive metadata, never a type or
+          # value constraint (Codex review, PR #278 round 40): a node declaring ONLY `description:` (no
+          # `type:` at all) is exactly as untyped as a genuinely empty property, so treating its non-empty
+          # HASH as a real competing claim retargeted the ancestor's length bound against no surviving
+          # type, emptying the enum and rejecting `"abc"` — valid under both the ancestor's own length
+          # check and the runtime.
+          it "does not treat a node with only descriptive metadata as a competing type claim" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, description: "some description"
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(description: "some description", allOf: [{ type: "string", minLength: 3 }], not: { type: "null" })
+            expect(klass.call(payload: { inner: "abc" })).to be_ok
+            expect(klass.call(payload: { inner: "a" })).not_to be_ok
+          end
+
           it "keeps a coercing node's own narrower numeric type instead of stripping it for a broader numeric sibling" do
             klass = Class.new do
               include Axn

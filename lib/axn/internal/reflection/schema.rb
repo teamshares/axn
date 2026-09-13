@@ -1836,9 +1836,18 @@ module Axn
           member_unknown = unknown_class_approximate?(member_configs)
           own_unknown = unknown_class_approximate?(own_configs)
 
-          if member_unknown && !own_unknown && !own_prop.empty?
+          # `:description` is the one emitted key that is PURELY descriptive metadata — never a type or
+          # value constraint of any kind — so a property holding nothing else is exactly as untyped as a
+          # genuinely EMPTY one for the purpose of "does the other side make a real competing claim to
+          # retarget against" (Codex review, PR #278 round 40): `expects :inner, on: :payload, description:
+          # "..."` (no `type:`/constraint at all) beside an ancestor `type: Object, length: { minimum: 3 }`
+          # member made `!own_prop.empty?` true purely from the description, so the ancestor's length bound
+          # was retargeted against NO surviving type at all — the same "no size-bearing branch, no literal
+          # witness" dead end `reject_unretargetable_length_bound` hits, emptying the enum down to `[]` and
+          # rejecting `"abc"`, which both the ancestor's own length check and the runtime accept.
+          if member_unknown && !own_unknown && !own_prop.except(:description).empty?
             member_prop = retarget_unknown_class_length(member_prop.except(:type, :anyOf), own_prop, position_nullable?(member_prop, own_prop))
-          elsif own_unknown && !member_unknown && !member_prop.empty?
+          elsif own_unknown && !member_unknown && !member_prop.except(:description).empty?
             own_prop = retarget_unknown_class_length(own_prop.except(:type, :anyOf), member_prop, position_nullable?(own_prop, member_prop))
           end
 
@@ -2716,23 +2725,30 @@ module Axn
           sibling_wire_candidates = declared_literals(other_prop).select { |literal| literal.is_a?(::String) }
           # Whether it is SAFE to drop a BOOLEAN's own native numeric spelling (`0`/`1`) — needed only
           # when the survivor admits a bare JSON number directly (no coercion, no `type: "boolean"` of its
-          # own to keep it out), AND only when the survivor ALSO admits some other type a non-numeric
-          # candidate (a String spelling, or the native `true`/`false` itself) could still satisfy (Codex
-          # review, PR #278 round 39): a `Numeric` shape member colliding with a coercing `:boolean` node
-          # restricted to `true` has NO type in its collision besides "number" — native `1` is the ONLY
-          # candidate (of any form) that ever satisfies both the member's raw-numeric check and the node's
-          # own boolean-coercion-plus-inclusion check — so dropping it left every remaining candidate
-          # (String/native-boolean spellings) failing the survivor's `type: "number"` too, emitting a
-          # schema NOTHING satisfies though `klass.call(payload: { inner: 1 })` succeeds at runtime. Unlike
-          # the ORIGINAL round-37 problem (a survivor admitting ONLY numbers, where keeping the native
-          # spelling let an invalid `1.0` also validate), dropping it here doesn't merely narrow the
-          # schema — with no other witness left, it empties it, which is the WORSE of the two residuals:
-          # an unsatisfiable node for a satisfiable contract, not merely one this file already documents as
-          # unavoidably stricter than runtime. So the drop only fires when some non-numeric candidate could
-          # still survive — i.e. the survivor's own collision names a type besides "integer"/"number" too.
+          # own to keep it out), AND only when a remaining candidate could still witness the survivor
+          # (Codex review, PR #278 round 39): a `Numeric` shape member colliding with a coercing `:boolean`
+          # node restricted to `true` has NO type in its collision besides "number" — native `1` is the
+          # ONLY candidate (of any form) that ever satisfies both the member's raw-numeric check and the
+          # node's own boolean-coercion-plus-inclusion check — so dropping it left every remaining
+          # candidate (String/native-boolean spellings) failing the survivor's `type: "number"` too,
+          # emitting a schema NOTHING satisfies though `klass.call(payload: { inner: 1 })` succeeds at
+          # runtime. Unlike the ORIGINAL round-37 problem (a survivor admitting ONLY numbers, where keeping
+          # the native spelling let an invalid `1.0` also validate), dropping it here doesn't merely narrow
+          # the schema — with no other witness left, it empties it, which is the WORSE of the two
+          # residuals: an unsatisfiable node for a satisfiable contract, not merely one this file already
+          # documents as unavoidably stricter than runtime.
+          #
+          # Checking merely "the survivor's collision names some non-numeric type too" is not enough (Codex
+          # review, PR #278 round 40): every remaining candidate, after this drop, is either a String
+          # spelling or the native `true`/`false` itself — so the ONLY JSON types such a candidate could
+          # EVER satisfy are "string" or "boolean", never "object"/"array"/anything else. A survivor typed
+          # `[Numeric, Hash]` names a non-numeric type ("object") that a round-38 style check would have
+          # accepted as a witness, but no boolean-derived candidate is ever a Hash either — dropping still
+          # emptied the schema for that union. So the drop is safe only when the survivor's collision
+          # intersects the actual candidate-inhabitable types, "string"/"boolean" specifically.
           collision = collision_types(other_prop)
           survivor_admits_native_number = collision.intersect?(NUMERIC_TYPES)
-          safe_to_drop_native_number = survivor_admits_native_number && (collision - NUMERIC_TYPES).any?
+          safe_to_drop_native_number = survivor_admits_native_number && collision.intersect?(%w[string boolean])
           spellings = values.flat_map do |value|
             round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates, safe_to_drop_native_number)
           end.uniq
