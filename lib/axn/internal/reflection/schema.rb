@@ -1593,7 +1593,6 @@ module Axn
         # runtime rejects — measured, both spellings reject one.
         def merge_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
           merged = member_prop.merge(own_prop)
-          merged.delete(:format)
           # `:type` is RECONCILED, not left to the shallow merge's "second side wins" default — a nullable
           # `["object", "null"]` on either side must not silently overwrite the OTHER side's non-nullable
           # `"object"` (Codex review, PR #278 round 22): an ancestor `deep` Hash member that REQUIRES `a`
@@ -1605,6 +1604,19 @@ module Axn
           # only a genuine object-vs-object merge, so the reconciliation must not hardcode "object" — it
           # keeps whichever REAL base type either side names.
           merged[:type] = merge_emitted_type(member_prop[:type], own_prop[:type]) if member_prop[:type] || own_prop[:type]
+          # `:format` describes a SCALAR "string"-typed value — never an object — so it is dropped only
+          # when the RECONCILED type above actually ended up "object" (where it would be a meaningless
+          # keyword sitting beside `properties`), not unconditionally (Codex review, PR #278 round 45):
+          # this function also runs for a side that is simply EMPTY (see the type comment above), not
+          # only a genuine object-vs-object merge, and an unconditional delete here discarded a SCALAR
+          # member's own real format in that case too — a `type: :uuid` shape member beside an Integer
+          # node with an opaque `preprocess: ->(_) { 1 }` (stripped down to `{}` by pass 1) is satisfiable
+          # only for a valid UUID string at runtime, but the merged property dropped `format: "uuid"`
+          # entirely, accepting any non-empty string. The plain `merge` above already carries over
+          # whichever side's `:format` survives (at most one non-empty side ever has one, since a
+          # `:format` and `:properties` are mutually exclusive on any one side) — deleting it here just
+          # needs to be conditional, not removed.
+          merged.delete(:format) if object_property?(merged)
           # Reassigned only when at least one side actually HAS the key — both sides bare (e.g. two
           # colliding `type: Hash` declarations with no children on either) means merge_emitted_maps/
           # merge_emitted_required return nil (nothing to merge), and writing that nil through would leave

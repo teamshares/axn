@@ -7234,6 +7234,30 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "raw" })).to be_ok
           end
 
+          # `merge_shape_member_property` also runs for a side that is simply EMPTY, not only a genuine
+          # object-vs-object merge — its unconditional `merged.delete(:format)` discarded a SCALAR
+          # member's own real format in that case too (Codex review, PR #278 round 45): a `type: :uuid`
+          # shape member beside an Integer node with an opaque `preprocess: ->(_) { 1 }` (stripped down to
+          # `{}` by pass 1, since it has nothing else to keep) is satisfiable only for a valid UUID string
+          # at runtime, but the merged property dropped `format: "uuid"` entirely, accepting any
+          # non-empty string.
+          it "keeps a shape member's own format when merged against an emptied, transforming node" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: :uuid
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: false }, preprocess: ->(_) { 1 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "string", format: "uuid", minLength: 1)
+            expect(klass.call(payload: { inner: "550e8400-e29b-41d4-a716-446655440000" })).to be_ok
+            expect(klass.call(payload: { inner: "not-a-uuid" })).not_to be_ok
+          end
+
           # `:description` is the one emitted key that is purely descriptive metadata, never a type or
           # value constraint (Codex review, PR #278 round 40): a node declaring ONLY `description:` (no
           # `type:` at all) is exactly as untyped as a genuinely empty property, so treating its non-empty
