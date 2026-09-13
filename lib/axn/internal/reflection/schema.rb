@@ -2383,8 +2383,18 @@ module Axn
         # runtime actually accepts nil at. Each side is checked in whatever form the CALLER passes it —
         # typically the ORIGINAL, unstripped property, since `:type` may already be gone by the time the
         # function that ultimately needs this answer runs.
+        #
+        # A multi-type declaration's null branch can ALSO live nested inside `:anyOf` rather than in a
+        # top-level `:type` array or a literal `:enum` member (Codex review, PR #278 round 39): a nullable,
+        # non-coercing `[Integer, Float]` node emits `anyOf: [{type: "integer"}, {type: "number"}, {type:
+        # "null"}]` — no top-level `:type` at all — so checking only the top-level `:type`/`:enum` read
+        # this position as non-nullable, and length retargeting emptied the enum down to `enum: []` for a
+        # position the runtime actually accepts both `nil` and an ordinary integer at.
         def position_nullable?(prop_a, prop_b)
-          [prop_a, prop_b].all? { |prop| Array(prop[:type]).include?("null") || Array(prop[:enum]).include?(nil) }
+          [prop_a, prop_b].all? do |prop|
+            Array(prop[:type]).include?("null") || Array(prop[:enum]).include?(nil) ||
+              Array(prop[:anyOf]).any? { |branch| Array(branch[:type]).include?("null") }
+          end
         end
 
         # Ruby's Array#& compares members via `eql?`/`hash`, which treats an Integer and a numerically-
@@ -2704,12 +2714,27 @@ module Axn
           # A sibling's own declared String literals are FINITE, CONCRETE wire values worth trying
           # alongside a numeric value's own generated candidates — see round_tripping_wire_spellings.
           sibling_wire_candidates = declared_literals(other_prop).select { |literal| literal.is_a?(::String) }
-          # Whether the survivor admits a bare, native JSON number directly (no coercion, no `type:
-          # "boolean"` of its own to keep it out) — needed so a BOOLEAN's own numeric spelling can be
-          # dropped when it would matter; see round_tripping_wire_spellings.
-          survivor_admits_native_number = collision_types(other_prop).intersect?(NUMERIC_TYPES)
+          # Whether it is SAFE to drop a BOOLEAN's own native numeric spelling (`0`/`1`) — needed only
+          # when the survivor admits a bare JSON number directly (no coercion, no `type: "boolean"` of its
+          # own to keep it out), AND only when the survivor ALSO admits some other type a non-numeric
+          # candidate (a String spelling, or the native `true`/`false` itself) could still satisfy (Codex
+          # review, PR #278 round 39): a `Numeric` shape member colliding with a coercing `:boolean` node
+          # restricted to `true` has NO type in its collision besides "number" — native `1` is the ONLY
+          # candidate (of any form) that ever satisfies both the member's raw-numeric check and the node's
+          # own boolean-coercion-plus-inclusion check — so dropping it left every remaining candidate
+          # (String/native-boolean spellings) failing the survivor's `type: "number"` too, emitting a
+          # schema NOTHING satisfies though `klass.call(payload: { inner: 1 })` succeeds at runtime. Unlike
+          # the ORIGINAL round-37 problem (a survivor admitting ONLY numbers, where keeping the native
+          # spelling let an invalid `1.0` also validate), dropping it here doesn't merely narrow the
+          # schema — with no other witness left, it empties it, which is the WORSE of the two residuals:
+          # an unsatisfiable node for a satisfiable contract, not merely one this file already documents as
+          # unavoidably stricter than runtime. So the drop only fires when some non-numeric candidate could
+          # still survive — i.e. the survivor's own collision names a type besides "integer"/"number" too.
+          collision = collision_types(other_prop)
+          survivor_admits_native_number = collision.intersect?(NUMERIC_TYPES)
+          safe_to_drop_native_number = survivor_admits_native_number && (collision - NUMERIC_TYPES).any?
           spellings = values.flat_map do |value|
-            round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates, survivor_admits_native_number)
+            round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates, safe_to_drop_native_number)
           end.uniq
           spellings.empty? ? nil : spellings
         end
@@ -2796,28 +2821,31 @@ module Axn
         # ADDITIONAL candidates UNIVERSALLY (rather than trying to enumerate every non-canonical spelling
         # every coercer might accept) is what recovers exactly the finite set of wire values that could
         # ever actually reach this position, for whichever coercer is actually in play.
-        # `survivor_admits_native_number` drops a BOOLEAN's own native numeric spelling (`0`/`1`) when the
-        # survivor admits a bare JSON number directly, rather than treating a `true`/`false` literal
-        # exactly like a numeric one (Codex review, PR #278 round 37): a `type: Numeric` shape member
+        # `safe_to_drop_native_number` drops a BOOLEAN's own native numeric spelling (`0`/`1`) when the
+        # survivor admits a bare JSON number directly AND some other candidate form could still witness the
+        # position (Codex review, PR #278 round 37, corrected round 39): a `type: Numeric` shape member
         # colliding with a coercing `:boolean` node restricted to `true` translated to `enum: [true, 1,
         # "1", "true", ...]`, conjoined with the survivor's own `type: "number"` — JSON Schema considers
         # `1.0` equal to the enum member `1`, so a schema-following client could send `1.0`, but
         # `coerce_boolean` accepts only a native Integer `0`/`1` and the runtime rejects a Float as
-        # non-boolean.
+        # non-boolean. There is no JSON Schema construct that admits native `1` while excluding native
+        # `1.0` — the same provable dead end round 24 already established for a coercing Float literal
+        # (`json_schemer` itself treats `type: "integer"`/`enum` membership as satisfied by ANY
+        # zero-fractional-part number, Ruby Float included).
         #
-        # There is no JSON Schema construct that admits native `1` while excluding native `1.0` — the same
-        # provable dead end round 24 already established for a coercing Float literal (`json_schemer`
-        # itself treats `type: "integer"`/`enum` membership as satisfied by ANY zero-fractional-part
-        # number, Ruby Float included) — so the native numeric spelling is dropped outright here too,
-        # accepting a narrow, documented "schema stricter than runtime" residual (native `1`/`0` no longer
-        # validates, though the runtime still accepts it) rather than leaving the schema loose. UNLIKE
-        # round 24 (reverted specifically because the identical ambiguity ALSO existed standalone, making
-        # a collision-only fix inconsistent), a STANDALONE boolean position emits `type: "boolean"` — a
-        # JSON type no number can ever satisfy, native OR float — so this ambiguity is introduced ONLY by
-        # the collision (this side's own type being stripped, leaving the survivor's `"number"` as the
-        # only type left standing), and dropping the candidate here does not reopen an already-fine
-        # standalone case the way round 24's attempt would have.
-        def round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates, survivor_admits_native_number)
+        # Round 37 dropped the native spelling unconditionally whenever the survivor admitted a number,
+        # reasoning the residual (native `1`/`0` no longer validating, though the runtime still accepts it)
+        # was merely a documented "schema stricter than runtime" case. That reasoning missed that when the
+        # survivor's ONLY admitted type is numeric (no String/Boolean type alongside it), NONE of the
+        # remaining candidates (String spellings, the native `true`/`false` itself) can ever satisfy the
+        # survivor either — dropping the number candidate then empties the position ENTIRELY, emitting a
+        # node NOTHING satisfies for a contract `1` genuinely does (round 39's own repro: `klass.call(inner:
+        # 1)` succeeds, `input_schema` accepts nothing). An unsatisfiable node for a satisfiable contract is
+        # the WORSE of this file's two forbidden residuals, so the drop is now conditioned on a surviving
+        # witness actually remaining — the caller (`wire_spellings_for`) only passes `true` here when the
+        # survivor's collision names some type besides "integer"/"number" too, which some non-numeric
+        # candidate could satisfy.
+        def round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates, safe_to_drop_native_number)
           candidates =
             case value
             when nil then [nil]
@@ -2826,7 +2854,7 @@ module Axn
             when true, false then Axn::Internal::Coercion.boolean_wire_spellings(value)
             else []
             end
-          candidates = candidates.reject { |candidate| candidate.is_a?(::Integer) } if survivor_admits_native_number && [true, false].include?(value)
+          candidates = candidates.reject { |candidate| candidate.is_a?(::Integer) } if safe_to_drop_native_number && [true, false].include?(value)
           candidates += sibling_wire_candidates unless value.nil?
 
           matching_raw_literals = raw_literals_for(value, raw_literals)

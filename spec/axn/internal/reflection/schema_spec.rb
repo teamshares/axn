@@ -7013,7 +7013,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # collision, and dropping the native numeric spelling here does not reopen an already-fine
           # standalone case. Native `1`/`0` becomes a documented, narrow "schema stricter than runtime"
           # residual at exactly this collision, rather than left silently loose.
-          it "drops a boolean's own native numeric spelling when the survivor admits a native number" do
+          it "keeps a boolean's own native numeric spelling when the survivor admits no other witness form" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -7026,22 +7026,47 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner).to eq(
-              enum: [true, "1", "true", "t", "yes", "y", "on"],
+              enum: [true, 1, "1", "true", "t", "yes", "y", "on"],
               not: { type: "null" },
               allOf: [{ type: "number" }],
             )
-            expect(klass.call(payload: { inner: 1.0 })).not_to be_ok # coerce_boolean accepts only a native Integer 0/1, never a Float
             # The ancestor's own `type: Numeric` check runs UNCONDITIONALLY on the raw wire value, so `true`
             # itself was never a valid input here regardless of coercion — native `1` is the ONLY value
             # that ever satisfied both sides (Numeric raw check; coerces to `true`, satisfying inclusion).
             # There is no JSON Schema construct that admits native `1` while excluding native `1.0` (the
-            # same dead end round 24 established), so dropping the candidate makes THIS narrow declaration
-            # unsatisfiable by the schema even though `1` remains genuinely valid at runtime — a
-            # documented, accepted "schema stricter than runtime" residual, not a new bug: rejecting the
-            # one runtime-valid wire form here is a strictly narrower cost than the alternative (silently
-            # admitting the invalid `1.0`), and never-loosen is the harder invariant when the two are this
-            # evenly matched.
+            # same dead end round 24 established), so dropping the native `1` candidate (round 37's own
+            # first attempt) left every OTHER candidate here — a String or the native `true` itself —
+            # failing the survivor's `type: "number"` too, emitting a schema NOTHING satisfies though `1`
+            # is genuinely valid at runtime (Codex review, PR #278 round 39). Keeping it instead accepts a
+            # narrower, already-documented "schema looser than runtime" residual for `1.0` specifically —
+            # strictly better than a fully unsatisfiable node for a satisfiable contract.
             expect(klass.call(payload: { inner: 1 })).to be_ok
+            # coerce_boolean accepts only a native Integer 0/1, never a Float — the accepted loose residual
+            expect(klass.call(payload: { inner: 1.0 })).not_to be_ok
+          end
+
+          it "still drops a boolean's own native numeric spelling when a non-numeric witness survives" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Numeric, String]
+              end
+              expects :inner, on: :payload, type: { klass: :boolean, coerce: true }, inclusion: { in: [true] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              enum: [true, "1", "true", "t", "yes", "y", "on"],
+              not: { type: "null" },
+              allOf: [{ anyOf: [{ type: "number" }, { type: "string", minLength: 1 }] }],
+            )
+            # Unlike the previous example, the survivor here ALSO admits a String — so the native `1`
+            # candidate can be safely dropped (round 37's original fix): a String spelling like "1"/"true"
+            # still witnesses the position, so dropping the number candidate narrows rather than empties it.
+            expect(klass.call(payload: { inner: "1" })).to be_ok
+            expect(klass.call(payload: { inner: 1 })).to be_ok # valid at runtime, but no longer schema-admitted — an accepted, non-empty residual
           end
 
           it "keeps a coercing node's own narrower numeric type instead of stripping it for a broader numeric sibling" do
@@ -7111,6 +7136,33 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner).to eq(type: %w[integer null], allOf: [{ enum: [nil] }])
+            expect(klass.call(payload: { inner: nil })).to be_ok
+          end
+
+          # A MULTI-type node's null branch lives nested inside its OWN `:anyOf`, never in a top-level
+          # `:type` array or a literal `:enum` member — `position_nullable?` checked only the latter two,
+          # missing this third spelling (Codex review, PR #278 round 39): a nullable `type: Object, length:
+          # { minimum: 3 }` member colliding with a nullable, non-coercing `[Integer, Float]` node emits
+          # `anyOf: [{type: "integer"}, {type: "number"}, {type: "null"}]` for the node — no top-level
+          # `:type` at all — so this position read as non-nullable, and the SAME length-retargeting dead
+          # end as the test above emptied the enum down to `[]` rather than `[nil]`, wrongly rejecting nil
+          # too even though both sides admit it.
+          it "derives nullability from a null branch nested in anyOf, not only a top-level type" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }, allow_nil: true
+              end
+              expects :inner, on: :payload, type: { klass: [Integer, Float], coerce: false }, allow_nil: true
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              anyOf: [{ type: "integer" }, { type: "number" }, { type: "null" }],
+              allOf: [{ enum: [nil] }],
+            )
             expect(klass.call(payload: { inner: nil })).to be_ok
           end
 
