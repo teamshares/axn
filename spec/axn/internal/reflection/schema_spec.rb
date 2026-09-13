@@ -6561,8 +6561,14 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # at runtime — the ancestor checks that raw string; the node's own check runs on `Time#to_s` of
           # the parsed value (length 23) — but conjoining both `minLength`/`maxLength` pairs unstripped
           # produced an interval nothing satisfies (`>= 23` and `<= 20`). `drop_conflicting_size_bounds` (and
-          # the `pattern`/`format` drop beside it) now run regardless of transform kind, not only under
-          # `preprocess:`.
+          # the `pattern` drop beside it) now run regardless of transform kind, not only under `preprocess:`.
+          #
+          # The node's own `format: "date-time"` survives here (round 43) since it is TYPE-CONDITIONAL, not
+          # an intrinsic type binding — this is a genuine improvement, not a loosening: the ancestor's own
+          # `length: { is: 20 }` alone would ALSO accept a 20-character string that isn't a valid date-time
+          # at all (e.g. "aaaaaaaaaaaaaaaaaaaa"), though the runtime rejects it (coercion leaves an
+          # unparseable string unchanged, and the node's own Time-type check then fails it) — keeping
+          # `format: "date-time"` closes that gap rather than opening one.
           it "drops a coercing node's own conflicting length: bound when the coercer does not preserve size" do
             klass = Class.new do
               include Axn
@@ -6575,8 +6581,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(type: "string", minLength: 20, maxLength: 20)
+            expect(inner).to eq(format: "date-time", not: { type: "null" }, allOf: [{ type: "string", minLength: 20, maxLength: 20 }])
             expect(klass.call(payload: { inner: "2026-08-25T12:00:00Z" })).to be_ok # wire length 20; Time#to_s (length 23) never schema-checked
+            expect(klass.call(payload: { inner: "aaaaaaaaaaaaaaaaaaaa" })).not_to be_ok # wire length 20, but not a valid date-time
           end
 
           # `drop_bounds_contradicted_by_other_literals` (round 17) concatenated the other side's `const`
@@ -7174,6 +7181,31 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             )
             expect(klass.call(payload: { inner: 1 })).to be_ok
             expect(klass.call(payload: { inner: "no" })).not_to be_ok
+          end
+
+          # This file's ONLY writer of `:format` is `single_type_for`'s type-derived hint for a coercible
+          # token like Date/Time/`:uuid` — it describes the wire STRING form coercion parses FROM, the
+          # same domain every non-boolean `Coercion::SUPPORTED` target transforms from, so it is never a
+          # POST-transform artifact the way an author's `:pattern` (from a `format:` VALIDATOR) can be
+          # (Codex review, PR #278 round 43): a raw `String` shape member colliding with a coercing `type:
+          # { klass: Date, coerce: true }` node dropped the node's own `format: "date"` unconditionally
+          # alongside its `:type`, admitting an arbitrary non-empty string like `"garbage"` that coercion
+          # leaves as a String (not a Date-formatted one) and the runtime's own Date type check rejects.
+          it "keeps a coercing node's own type-derived format even when its type is stripped for a competing claim" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Date, coerce: true }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(format: "date", minLength: 1, not: { type: "null" }, allOf: [{ type: "string", minLength: 1 }])
+            expect(klass.call(payload: { inner: "2026-01-01" })).to be_ok
+            expect(klass.call(payload: { inner: "garbage" })).not_to be_ok
           end
 
           # `:description` is the one emitted key that is purely descriptive metadata, never a type or

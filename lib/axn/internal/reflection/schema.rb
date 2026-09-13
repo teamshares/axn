@@ -2241,7 +2241,21 @@ module Axn
           intrinsic_type_keys = strip_intrinsic_type ? %i[type anyOf] : []
           stripped = prop.except(*intrinsic_type_keys, :enum, :const)
           coercible_klasses = coercible_target_klasses(configs)
-          stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern, :format)
+          # `:format` is TYPE-CONDITIONAL — JSON Schema silently ignores it for a non-matching instance,
+          # exactly like a `length`/size bound (measured: `JSONSchemer.schema({format: "date"}).valid?(5)`
+          # is `true`) — so it never needed the unconditional drop `:pattern` gets below, and is left off
+          # this `.except(...)` entirely (Codex review, PR #278 round 43). This file's ONLY writer of
+          # `:format` is `single_type_for`'s type-derived hint for a coercible token like Date/Time/`:uuid`
+          # (`format: "date"`, `format: "uuid"`, …), which describes the wire STRING form coercion parses
+          # FROM — the same "string" domain every `Coercion::SUPPORTED` target (besides `:boolean`)
+          # transforms from — so it is never a POST-transform artifact the way an author's `:pattern`
+          # (from a `format:` VALIDATOR, which CAN run after a `preprocess:`) can be. A raw `String` shape
+          # member colliding with a coercing `type: { klass: Date, coerce: true }` node dropped the node's
+          # own `format: "date"` unconditionally here, though nothing here ever produces a `:format` that
+          # could describe anything OTHER than the raw wire value — the merged schema accepted an
+          # arbitrary non-empty string like `"garbage"`, which coercion leaves as a String (not one
+          # matching a Date format) and the runtime's own Date type check rejects.
+          stripped = drop_conflicting_size_bounds(stripped, other_prop).except(:pattern)
           stripped = drop_numeric_bounds_unless_type_admits_number(stripped, other_prop, coercible_klasses, position_nullable?(prop, other_prop))
           stripped = drop_bounds_contradicted_by_other_literals(stripped, other_prop)
           stripped = drop_length_bound_beside_sibling_pattern(stripped, other_prop)
