@@ -2627,7 +2627,25 @@ module Axn
           # the literals down to the ones the bound actually admits (never a non-Numeric one — the bound is
           # type-conditional, but nothing else survives here to admit a non-numeric value either) and
           # retargeting to `enum` is what keeps the constraint instead of discarding it.
-          return prop.except(*NUMERIC_BOUND_ALL_KEYS) if literals.empty? && !nullable
+          #
+          # But when there is NO literal on either side to retarget onto at all, `prop`'s OWN type may
+          # still be sitting right alongside the bound, completely untouched — `other_prop` made no
+          # competing type OR literal claim for pass 1 to strip it against (Codex review, PR #278 round
+          # 41): a bare `field :inner` shape member (no `type:`, no `inclusion:`) beside a coercing Integer
+          # node's `comparison: { greater_than: 5 }` left `prop[:type]` as "integer", never stripped, yet
+          # this branch dropped the bound anyway as though it were an orphaned keyword with no type to
+          # anchor it — the untyped-AND-no-literal case this branch exists for. The bound is already safely
+          # scoped whenever `prop` still carries a genuinely, ENTIRELY numeric type of its own: JSON Schema
+          # applies a numeric keyword only to an instance of the type declared alongside it in the SAME
+          # property, so keeping both together needs no retargeting at all. Checked only when `literals` is
+          # empty — a real literal witness (round 28's own test) already has a MORE PRECISE retargeted
+          # `enum` worth keeping instead, not just the bare type+bound pairing this exemption would leave.
+          if literals.empty?
+            own_types = collision_types(prop)
+            return prop if own_types.any? && own_types.all? { |type| NUMERIC_TYPES.include?(type) }
+
+            return prop.except(*NUMERIC_BOUND_ALL_KEYS) unless nullable
+          end
 
           retarget_numeric_bound_to_literals(prop, literals, coercible_klasses, nullable)
         end
@@ -2746,9 +2764,26 @@ module Axn
           # accepted as a witness, but no boolean-derived candidate is ever a Hash either — dropping still
           # emptied the schema for that union. So the drop is safe only when the survivor's collision
           # intersects the actual candidate-inhabitable types, "string"/"boolean" specifically.
+          #
+          # But the survivor's TYPE union alone can still overstate what it actually admits when the
+          # survivor ALSO carries its own literal `enum`/`const` — that further restricts the position to
+          # SPECIFIC values, intersected with (not merely unioned into) the type union, so a type nominally
+          # present in the union can still have NO witness once the literal set is applied (Codex review,
+          # PR #278 round 41): a `[Numeric, String], inclusion: { in: [1] }` survivor's type union nominally
+          # admits "string", but its OWN `enum: [1]` restricts the position to just the number `1` — no
+          # String witness ever satisfies BOTH the union and this narrower enum at once. When the survivor
+          # declares its own literal set, checking THAT set for a String/boolean-typed member (rather than
+          # the type union) is what actually answers whether a witness remains.
           collision = collision_types(other_prop)
           survivor_admits_native_number = collision.intersect?(NUMERIC_TYPES)
-          safe_to_drop_native_number = survivor_admits_native_number && collision.intersect?(%w[string boolean])
+          survivor_literals = declared_literals(other_prop)
+          non_numeric_witness_available =
+            if survivor_literals.any?
+              survivor_literals.any? { |literal| literal.is_a?(::String) || [true, false].include?(literal) }
+            else
+              collision.intersect?(%w[string boolean])
+            end
+          safe_to_drop_native_number = survivor_admits_native_number && non_numeric_witness_available
           spellings = values.flat_map do |value|
             round_tripping_wire_spellings(value, coercible_klasses, raw_literals, sibling_wire_candidates, safe_to_drop_native_number)
           end.uniq

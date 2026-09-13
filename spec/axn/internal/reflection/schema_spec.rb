@@ -6773,6 +6773,30 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "ok" })).not_to be_ok # never coerced (not numeric-shaped) and fails the node's own Integer check
           end
 
+          # Unlike the test above, the ancestor here declares NO `inclusion:` at all — no literal on
+          # either side to retarget the bound onto — but `prop`'s own `type: "integer"` is still sitting
+          # right alongside the bound, untouched, since a genuinely bare ancestor makes no competing type
+          # OR literal claim for pass 1 to strip it against (Codex review, PR #278 round 41): dropping the
+          # bound here (as though it were an orphaned keyword with nothing to anchor it) admitted `3`,
+          # though the runtime — which leaves this non-String value unchanged and still applies the node's
+          # own `comparison:` check — rejects it.
+          it "keeps a numeric bound beside the node's own surviving numeric type when the survivor is bare" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { greater_than: 5 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer", exclusiveMinimum: 5)
+            expect(klass.call(payload: { inner: 3 })).not_to be_ok
+            expect(klass.call(payload: { inner: 6 })).to be_ok
+          end
+
           # A SOLE derived type with no size keyword (round 28's own fix, deriving "integer" from a
           # literal-only survivor) went through `retarget_length_to_type`'s single-type branch, which
           # retargets BLINDLY — safe only when that one type actually HAS a size keyword, since then the
@@ -7095,6 +7119,35 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             )
             expect(klass.call(payload: { inner: 1 })).to be_ok
             expect(klass.call(payload: { inner: 1.0 })).not_to be_ok # the accepted loose residual, same as the Numeric-only case
+          end
+
+          # The survivor's TYPE union alone can overstate what it actually admits when the survivor ALSO
+          # carries its own literal `enum` — that further restricts the position to specific values,
+          # intersected with the type union rather than merely widening it (Codex review, PR #278 round
+          # 41): a `[Numeric, String], inclusion: { in: [1] }` survivor's type union nominally admits
+          # "string" (which round 40's fix alone would accept as a witness), but its own `enum: [1]`
+          # restricts the position to just the number `1` — no String ever satisfies both the union AND
+          # this narrower enum at once, so dropping native `1` still emptied the schema though `1` succeeds
+          # at runtime.
+          it "keeps a boolean's own native numeric spelling when the survivor's own literal excludes every non-numeric witness" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Numeric, String], inclusion: { in: [1] }
+              end
+              expects :inner, on: :payload, type: { klass: :boolean, coerce: true }, inclusion: { in: [true] }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(
+              enum: [true, 1, "1", "true", "t", "yes", "y", "on"],
+              not: { type: "null" },
+              allOf: [{ anyOf: [{ type: "number" }, { type: "string", minLength: 1 }], enum: [1] }],
+            )
+            expect(klass.call(payload: { inner: 1 })).to be_ok
+            expect(klass.call(payload: { inner: 1.0 })).not_to be_ok # the accepted loose residual
           end
 
           # `:description` is the one emitted key that is purely descriptive metadata, never a type or
