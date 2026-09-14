@@ -12,3 +12,83 @@ RSpec.describe Axn::Failure do
     end
   end
 end
+
+RSpec.describe "Axn::Failure originating-axn readers" do
+  describe "#originating_axn_class" do
+    it "names the axn whose fail! raised" do
+      action = build_axn { def call = fail!("nope") }
+
+      expect(action.call.exception.originating_axn_class).to eq(action)
+    end
+
+    it "is nil when no axn decided the failure" do
+      expect(Axn::Failure.new("nope").originating_axn_class).to be_nil
+    end
+
+    it "is nil when the failure carries something that is not an axn" do
+      expect(Axn::Failure.new("nope", action: "not an action").originating_axn_class).to be_nil
+    end
+  end
+
+  describe "#originating_result" do
+    it "carries the exposures set before the fail!" do
+      action = build_axn do
+        exposes :code, optional: true
+
+        def call
+          expose code: "guard_x"
+          fail!("nope")
+        end
+      end
+
+      expect(action.call.exception.originating_result.code).to eq("guard_x")
+    end
+
+    it "is nil when no axn decided the failure" do
+      expect(Axn::Failure.new("nope").originating_result).to be_nil
+    end
+
+    # `Axn::Failure.new` is public and validates nothing, so `action:` is not guaranteed to be an
+    # action at all. Both readers answer for the same question, so both stand down on the same one.
+    it "is nil when the failure carries something that is not an axn" do
+      expect(Axn::Failure.new("nope", action: "not an action").originating_result).to be_nil
+    end
+
+    # The reason this reader exists rather than handing back the action instance: a consumer
+    # dispatching `result` by name on that instance reads the user's field, not the outbound facade.
+    it "is not shadowed by an expects :result declaration" do
+      action = build_axn do
+        expects :result, type: String, optional: true
+        exposes :code, optional: true
+
+        def call
+          expose code: "guard_x"
+          fail!("nope")
+        end
+      end
+
+      exception = action.call(result: "USER STRING").exception
+
+      expect(exception.__originating_action.result).to eq("USER STRING")
+      expect(exception.originating_result.code).to eq("guard_x")
+    end
+
+    it "is not shadowed by a def result" do
+      action = build_axn do
+        exposes :code, optional: true
+
+        def result = "DEF SHADOW"
+
+        def call
+          expose code: "guard_x"
+          fail!("nope")
+        end
+      end
+
+      exception = action.call.exception
+
+      expect(exception.__originating_action.result).to eq("DEF SHADOW")
+      expect(exception.originating_result.code).to eq("guard_x")
+    end
+  end
+end
