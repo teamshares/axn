@@ -6199,6 +6199,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               "a literal no surviving size bound admits" => [
                 { type: String, inclusion: { in: ["ab"] } }, { type: String, length: { minimum: 5 } }, "abcde"
               ],
+              # A finite value set against an emitted `format`. `format` was silently ignored by the witness
+              # check and so counted as satisfied — the keyword class the `witness_judgeable?` guard now
+              # closes by construction.
+              "a literal the surviving format rejects" => [
+                { type: :uuid }, { type: String, inclusion: { in: ["not-a-uuid"] } }, "not-a-uuid"
+              ],
               # A finite value set against the only side naming a `pattern`. There is no pattern PAIR here,
               # so the literals settle it: a value set either holds something the pattern admits or it does
               # not.
@@ -6261,6 +6267,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
               expect(inner[:description]).to start_with("numeric identifier ")
               expect(inner[:description]).to include("cannot express")
+            end
+
+            # The control for the format axis: a literal the format DOES admit still conjoins, judged by
+            # `TypeValidator`'s own matcher so the document and the runtime cannot disagree about what a
+            # uuid is.
+            it "still conjoins a gated member whose format the node's literal satisfies" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: :uuid, if: -> { false } }
+                expects :inner, on: :payload, type: String, inclusion: { in: ["550e8400-e29b-41d4-a716-446655440000"] }
+                def call = nil
+              end
+
+              expect(klass.input_schema[:properties][:payload][:properties][:inner]).to have_key(:allOf)
+              expect(residue_summaries(klass)).to be_empty
             end
 
             # The control for the lone-pattern axis: a literal the pattern DOES admit is compatibility
@@ -6337,6 +6358,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
               expect { klass.input_schema }.not_to raise_error
               expect(klass.input_schema[:properties][:cfg][:default]).to eq(Axn::Internal::Reflection::Schema::RESIDUE_KEY => ["value"])
+            end
+
+            # The guard that makes the witness check complete by CONSTRUCTION rather than by enumeration.
+            # No emitted property reaches it today — every keyword the emitter writes is judged — so it is
+            # asserted directly: a keyword nobody has taught the check about must make it decline to find a
+            # witness, which stands the gated side down, rather than be ignored and counted as satisfied.
+            # That silent-ignore is exactly how `format` slipped through.
+            it "declines to find a witness in a property carrying a keyword it cannot judge" do
+              judged = { type: "string", enum: %w[a], minLength: 1, format: "uuid", pattern: "^a$" }
+              expect(described_class.send(:witness_judgeable?, judged)).to be true
+              expect(described_class.send(:witness_judgeable?, judged.merge(description: "prose"))).to be true
+
+              # A structural keyword this check has no value-level test for.
+              expect(described_class.send(:witness_judgeable?, { type: "object", properties: { a: {} } })).to be false
+              expect(described_class.send(:witness_judgeable?, { enum: %w[a], multipleOf: 2 })).to be false
             end
 
             it "reports nothing when both sides describe the same wire value" do

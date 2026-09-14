@@ -113,6 +113,7 @@ RSpec.describe "standalone require completeness" do
       ["axn/internal/shape_graph.rb", "Axn::Internal::Reflection::PropertyNames"],
       ["axn/internal/reflection/schema.rb", "Axn::Core::Contract::GENERATED_READER_SOURCE_PATH"],
       ["axn/internal/reflection/schema.rb", "Axn::Validation::Base"],
+      ["axn/internal/reflection/schema.rb", "Axn::Validators::TypeValidator"],
       ["axn/internal/reflection/schema/gates.rb", "Axn::Validation::Base"],
       ["axn/internal/reflection/schema/contents.rb", "Axn::Validation::Base"],
       ["axn/internal/reflection/schema/sizing.rb", "Axn::Validation::Base"],

@@ -1683,7 +1683,9 @@ module Axn
         # ignores a numeric bound and a non-string ignores a `pattern` rather than failing them.
         def literal_satisfies?(value, prop_a, prop_b)
           type = json_type_of(value)
+          return false unless [prop_a, prop_b].all? { |prop| witness_judgeable?(prop) }
           return false unless [prop_a, prop_b].all? { |prop| type_admitted?(type, prop) && literal_admitted?(value, prop) }
+          return false unless [prop_a, prop_b].all? { |prop| format_admitted?(value, prop[:format]) }
 
           return false if value.is_a?(::Numeric) && !within?(value, combined_interval(prop_a, prop_b, NUMERIC_BOUND_PAIRS.first))
 
@@ -1693,6 +1695,48 @@ module Axn
           return true unless value.is_a?(::String)
 
           [prop_a[:pattern], prop_b[:pattern]].compact.all? { |pattern| literal_matches_pattern?(value, pattern) }
+        end
+
+        # The keys this check knows how to judge ONE value against, and the keys that say nothing about
+        # whether a value is admissible. A property carrying anything else is one no witness can be found
+        # in — see `witness_judgeable?`.
+        WITNESS_JUDGED_KEYS = %i[
+          type anyOf enum const format pattern
+          minimum exclusiveMinimum maximum exclusiveMaximum
+          minLength maxLength minItems maxItems minProperties maxProperties
+        ].freeze
+
+        WITNESS_INERT_KEYS = %i[description].freeze
+
+        # Whether every key on this property is one the witness check can actually judge. This is what makes
+        # the check complete BY CONSTRUCTION rather than by enumeration: a keyword nobody taught it about —
+        # `format` was exactly that, silently ignored and so counted as satisfied — makes it decline to find
+        # a witness at all, which stands the gated side down. A keyword the emitter learns to write later is
+        # therefore conservative until it is taught here, instead of quietly admitting a value that fails it.
+        def witness_judgeable?(prop)
+          (prop.keys - WITNESS_JUDGED_KEYS - WITNESS_INERT_KEYS - [RESIDUE_KEY]).empty?
+        end
+
+        # Whether a value satisfies an emitted `format`. The set is the one this emitter writes (`:uuid`, and
+        # `FORMAT_MAP`'s date/date-time), and a format outside it is not judged as satisfied — same rule as
+        # an unknown keyword above. The uuid test is `TypeValidator`'s own matcher, so the document and the
+        # runtime cannot disagree about what a uuid is.
+        def format_admitted?(value, format)
+          return true if format.nil? || !value.is_a?(::String)
+
+          case format
+          when "uuid" then Axn::Validators::TypeValidator.value_matches?(value, klass: :uuid)
+          when "date" then parses?(::Date, value)
+          when "date-time" then parses?(::Time, value)
+          else false
+          end
+        end
+
+        def parses?(klass, value)
+          klass.iso8601(value)
+          true
+        rescue ::ArgumentError, ::TypeError
+          false
         end
 
         # A property admits this JSON type when it names none, names it, or names "number" for an integer —
