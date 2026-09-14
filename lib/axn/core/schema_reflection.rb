@@ -29,6 +29,30 @@ module Axn
       end
       private_class_method :_extend_reflection
 
+      # Report the constraints an inbound projection could not state. Module-level because it has TWO
+      # callers and one message: the reader below, and `Axn::Tools.validate_contracts!`, which builds a
+      # tool's projection through `PropertyNames` precisely BECAUSE the reader may not be axn's — an
+      # adapter base owning `input_schema` means `InputSchemaMethod` was never installed, so a warning
+      # living only there reaches nobody for exactly the classes most likely to be read by a model.
+      #
+      # Path segments arrive RAW — the emitter may not dispatch on a caller-supplied name — so they are
+      # rendered here through PropertyNames' own escaping labeler, the same rule the declaration errors
+      # use: a declared name may hold bytes with no UTF-8 rendering, and interpolating those raw once
+      # raised `Encoding::CompatibilityError` from inside the warning itself.
+      def self.warn_inexpressible_constraints(label, residues)
+        return if residues.empty?
+
+        gaps = residues.map do |path, residue|
+          rendered = path.map { |segment| Axn::Internal::Reflection::PropertyNames.renderable_label(segment) }.join(".")
+          "#{rendered}: #{residue.summary}"
+        end
+        Axn.config.logger.warn(
+          "[Axn] #{label} input_schema cannot state every constraint the contract enforces — " \
+          "#{gaps.join('; ')}. Each is reported in that property's `description`; a caller obeying the " \
+          "schema may still be rejected at runtime.",
+        )
+      end
+
       module InputSchemaMethod
         # The property-name rules run here rather than at declaration: a projection is the only thing a
         # colliding or unrenderable name can harm, and this is where one is first demanded. Validated once per
@@ -51,14 +75,7 @@ module Axn
           return if @_axn_residue_warning_emitted || residues.empty?
 
           @_axn_residue_warning_emitted = true
-          # Path segments arrive RAW — the emitter may not dispatch on a caller-supplied name — so they are
-          # rendered here through the same escaping labeler the deep-subfield warning uses.
-          gaps = residues.map { |path, residue| "#{path.map { |s| _schema_name_label(s) }.join('.')}: #{residue.summary}" }
-          Axn.config.logger.warn(
-            "[Axn] #{resolved_axn_name} input_schema cannot state every constraint the contract enforces — " \
-            "#{gaps.join('; ')}. Each is reported in that property's `description`; a caller obeying the " \
-            "schema may still be rejected at runtime.",
-          )
+          SchemaReflection.warn_inexpressible_constraints(resolved_axn_name, residues)
         end
 
         # A deep subfield whose chain passes through a `model:` or non-object parent has no JSON-object

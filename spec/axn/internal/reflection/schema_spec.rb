@@ -6147,6 +6147,60 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(inner[:description]).to include('{"minLength":3}')
             end
 
+            # Reflection is static-maximal, so a gated bound is normally emitted as though its gate were
+            # open — stricter than the runtime, which is licensed. It stops being licensed when the
+            # conjunction admits NOTHING, because the contract still does: every call the gate closes
+            # accepts a Hash here. So the gated side stands down on the type axis and is reported.
+            it "keeps the node satisfiable when a gated member's type cannot hold beside the node's" do
+              klass = Class.new do
+                include Axn
+                expects :payload, type: Hash do
+                  field :inner, type: String, if: -> { false }
+                end
+                expects :inner, on: :payload, type: Hash
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(constraints(inner)).to eq(type: "object", minProperties: 1)
+              expect(inner[:description]).to include('{"type":"string","minLength":1}')
+              expect(klass.call(payload: { inner: { a: 1 } })).to be_ok # the working contract this protects
+            end
+
+            # The gate is only a licence to stand down where the types CONTRADICT. Two that can both hold
+            # still conjoin, so the static-maximal document a caller relies on is unchanged.
+            it "still conjoins a gated member whose type can hold beside the node's" do
+              klass = Class.new do
+                include Axn
+                expects :payload, type: Hash do
+                  field :inner, type: Hash, if: -> { false } do
+                    field :a, type: String
+                  end
+                end
+                expects :inner, on: :payload, type: Hash
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner).to include(properties: { a: { type: "string", minLength: 1 } }, required: ["a"])
+              expect(residue_summaries(klass)).to be_empty
+            end
+
+            # The carrier key rides on emitted NODES, so the walk that strips it descends only into the
+            # keywords that hold one. Walking every Hash reached a declaration's own literals, where a
+            # value of this shape was deleted and then read as residues — `NoMethodError` on a String,
+            # raised from inside reflection, over a legal declaration.
+            it "leaves a literal that happens to use the carrier key alone" do
+              klass = Class.new do
+                include Axn
+                expects :cfg, type: Hash, default: { Axn::Internal::Reflection::Schema::RESIDUE_KEY => ["value"] }, optional: true
+                def call = nil
+              end
+
+              expect { klass.input_schema }.not_to raise_error
+              expect(klass.input_schema[:properties][:cfg][:default]).to eq(Axn::Internal::Reflection::Schema::RESIDUE_KEY => ["value"])
+            end
+
             it "reports nothing when both sides describe the same wire value" do
               klass = Class.new do
                 include Axn

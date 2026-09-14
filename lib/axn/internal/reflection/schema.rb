@@ -116,6 +116,17 @@ module Axn
 
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
 
+        GATED_RESIDUE = "a conditional declaration at this position names a type that cannot hold at the same time as this one, " \
+                        "so it applies only on the calls its condition opens"
+
+        # Where a subschema can live in what this emitter emits — a map of name => subschema, a single
+        # subschema, or a list of them. Kept to the keywords it actually writes (`build_property`,
+        # `apply_structured_schema!`, `conditional_requiredness_clause`, `write_pattern!`) so the
+        # residue walk descends only into NODES and never into a declaration's own literal values.
+        SUBSCHEMA_MAPS = %i[properties].freeze
+        SUBSCHEMA_NODES = %i[items additionalProperties propertyNames not if then else].freeze
+        SUBSCHEMA_LISTS = %i[allOf anyOf].freeze
+
         # Extracted modules are mixed in rather than delegated to: their methods stay reachable as
         # `Schema.foo` for the callers outside this file, and as a bare call from every method inside it,
         # so the split is about where the code LIVES, not about re-routing anyone.
@@ -163,23 +174,30 @@ module Axn
             schema[:description] = [schema[:description], clause].compact.join(" ")
           end
 
-          schema.each do |key, value|
-            case value
-            when ::Hash
-              # `properties`/`patternProperties` name the next path segment; every other Hash-valued keyword
-              # (`items`, `additionalProperties`, `propertyNames`, a nested node) is the same position.
-              if %i[properties patternProperties].include?(key)
-                # The segment is carried RAW, never rendered here: a declared name is caller-supplied and
-                # reflection may not dispatch on one (a `to_s` that raises took the whole reflection down
-                # once already, and one that counts its calls sees this walk as a second ask). Whoever
-                # reports a residue renders the path through PropertyNames' own escaping labeler.
-                value.each { |name, sub| finalize_residues!(sub, path: path + [name], collected:) }
-              else
-                finalize_residues!(value, path:, collected:)
-              end
-            when ::Array
-              value.each { |sub| finalize_residues!(sub, path:, collected:) }
-            end
+          # Only the keywords that HOLD a subschema are descended into. Walking every Hash and Array
+          # instead reaches a declaration's own literals — a `default:`/`enum:`/`const:` value is the
+          # author's data, not a node — and a literal `{ __axn_residues: [...] }` there was deleted and
+          # then read as residues, raising `NoMethodError` on a String mid-reflection. The three shapes
+          # below are the ones this emitter actually writes; a keyword it does not emit is not listed,
+          # since a position nothing writes is one nothing has to be protected from.
+          SUBSCHEMA_MAPS.each do |key|
+            node = schema[key]
+            next unless node.is_a?(::Hash)
+
+            # The segment is carried RAW, never rendered here: a declared name is caller-supplied and
+            # reflection may not dispatch on one (a `to_s` that raises took the whole reflection down
+            # once already, and one that counts its calls sees this walk as a second ask). Whoever
+            # reports a residue renders the path through PropertyNames' own escaping labeler.
+            node.each { |name, sub| finalize_residues!(sub, path: path + [name], collected:) }
+          end
+
+          SUBSCHEMA_NODES.each { |key| finalize_residues!(schema[key], path:, collected:) }
+
+          SUBSCHEMA_LISTS.each do |key|
+            node = schema[key]
+            next unless node.is_a?(::Array)
+
+            node.each { |sub| finalize_residues!(sub, path:, collected:) }
           end
 
           [schema, collected]
@@ -1539,6 +1557,24 @@ module Axn
             return stand_down_from(kept, dropped, TRANSFORM_RESIDUE)
           end
 
+          # A GATED side's checks do not run on every call, and `allOf` asserts its branch on every one. That
+          # is licensed while the result still admits something — reflection is static-maximal on input, so a
+          # gated bound is emitted as though the gate were open, which is stricter and no worse. It stops
+          # being licensed when the conjunction admits NOTHING: a gated `type: String` member beside an
+          # ungated `type: Hash` node describes a position no value satisfies, while the runtime accepts a
+          # Hash on every call the gate closes — a satisfiable contract projected to an unsatisfiable node,
+          # which AGENTS.md names as the worse of the two forbidden residuals.
+          #
+          # So the gated side stands down exactly where it would empty the node, judged on the TYPE axis and
+          # nowhere else. That axis is what a collision makes contradictory and is decidable by set
+          # intersection — no reasoning about what any value would satisfy, and so no repeat of the
+          # satisfiability chase the transform branch above exists to avoid. Where the types DO intersect the
+          # gated side is conjoined as before, keeping the static-maximal document a caller can rely on.
+          if types_disjoint?(member_prop, own_prop) && (type_check_gated?(member_configs) || type_check_gated?(own_configs))
+            kept, dropped = type_check_gated?(member_configs) ? [own_prop, member_prop] : [member_prop, own_prop]
+            return stand_down_from(kept, dropped, GATED_RESIDUE)
+          end
+
           member_unknown = unknown_class_approximate?(member_configs)
           own_unknown = unknown_class_approximate?(own_configs)
           member_prop = drop_fabricated_type(member_prop) if member_unknown && !own_unknown && !asserts_nothing?(own_prop)
@@ -1567,6 +1603,35 @@ module Axn
         # Whether a property constrains nothing — genuinely empty, or holding only the metadata an emitted
         # node carries without narrowing it (`description`, and the residues waiting to be rendered into it).
         def asserts_nothing?(prop) = prop.except(:description, RESIDUE_KEY).empty?
+
+        # Whether this side's own TYPE check can be skipped on a call — a declaration-level `if:`/`unless:`,
+        # or one on the `type:` entry itself. Only the type check matters here: it is the claim a collision
+        # can contradict outright, and a gate on some OTHER validator leaves the type asserted on every call.
+        def type_check_gated?(configs)
+          configs.any? do |config|
+            validations = config.validations
+            gated_validations?(validations) || entry_self_gated?(validations[:type])
+          end
+        end
+
+        # Whether two emitted properties name JSON types that cannot both hold — read off `type` or, for a
+        # union, off its `anyOf` branches. An UNTYPED side asserts no type and so contradicts nothing, and
+        # `"null"` is left in the sets deliberately: two sides that both admit null still share a value, so
+        # the intersection is what decides rather than a comparison of the non-null halves.
+        def types_disjoint?(prop_a, prop_b)
+          a = emitted_json_types(prop_a)
+          b = emitted_json_types(prop_b)
+          return false if a.empty? || b.empty?
+
+          !a.intersect?(b)
+        end
+
+        def emitted_json_types(prop)
+          return Array(prop[:type]) if prop[:type]
+          return [] unless prop[:anyOf].is_a?(::Array)
+
+          prop[:anyOf].flat_map { |branch| branch.is_a?(::Hash) ? Array(branch[:type]) : [] }
+        end
 
         # Drop an unknown-class side's fabricated type, and with it the keywords that only had a meaning
         # BECAUSE of it. `minLength`/`maxLength`/`pattern`/`format` exist in JSON Schema only for a string

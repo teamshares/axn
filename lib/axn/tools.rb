@@ -95,7 +95,11 @@ module Axn
           # PropertyNames performs the same builds and the same validations against axn's own projections, and the
           # outbound call additionally records the verdict `render` reads — so a tool validated at setup also
           # renders without paying for an output-schema build on its first result.
-          Axn::Internal::Reflection::PropertyNames.validate_inbound!(klass)
+          # Residues are collected and reported HERE rather than left to the reader: an adapter base owning
+          # `input_schema` means axn's reflection reader was never installed on this class, so the warning
+          # that reader emits would never fire for exactly the tools a model reads.
+          residues = Axn::Internal::Reflection::PropertyNames.validate_inbound!(klass)
+          Axn::Core::SchemaReflection.warn_inexpressible_constraints(klass.resolved_axn_name, Array(residues))
           Axn::Internal::Reflection::PropertyNames.validate_outbound!(klass)
         rescue Axn::ContractViolation, ArgumentError => e
           # Named, because this runs over every tool at once: the underlying error describes the property and the

@@ -350,6 +350,12 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       "map member" => proc { field :inner, type: Hash, of: { keys: { klass: Symbol }, values: { klass: String } } },
       "mixed-union member" => proc { field :inner, type: [Hash, Array] },
       "scalar member" => proc { field :inner, type: String },
+      # A GATED member, whose checks are skipped on the calls its condition closes. Conjoining one
+      # unconditionally can project a satisfiable contract onto a node nothing satisfies — the failure
+      # example 2 below exists for — and no member in this axis was gated, so that whole interaction went
+      # unwatched. Gated SCALAR specifically: a gated Hash member's type can still hold beside the node's,
+      # so it never reaches the contradiction.
+      "gated scalar member" => proc { field :inner, type: String, if: -> { false } },
     }
   end
 
@@ -439,5 +445,43 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     # by simply not having anything to exclude.
     expect(reported).to be > 5
     expect(wrong).to be_empty, "these nested schemas accept what the runtime rejects:\n  #{wrong.join("\n  ")}"
+  end
+
+  # The satisfiability corollary over the NESTED walk. The flat example above asked it of one field, and
+  # nothing asked it of a collision — which is exactly where it fails, because conjoining two declarations
+  # is the operation that can empty a node. A gated member is the case: its checks are skipped on the calls
+  # its condition closes, so the contract keeps accepting values that an unconditional `allOf` of both types
+  # admits none of. That went unwatched through this whole PR; the flat product cannot reach it, since it
+  # declares a single field and so has nothing to conjoin.
+  it "never emits a nested node nothing satisfies for a contract something satisfies" do
+    live = 0
+    wrong = []
+
+    nested_members.each do |mname, member|
+      nested_nodes.each do |nname, node|
+        klass = declare_nested(member, node)
+        next if klass.nil?
+        next if unrepresentable_deep_drop?(klass)
+
+        accepted = nested_payloads.select do |payload|
+          klass.call(payload:).ok?
+        rescue StandardError
+          false
+        end
+        next if accepted.empty? # nothing satisfies the contract either, so an empty node is faithful
+
+        live += 1
+        document = schemer(klass.input_schema)
+        next if nested_payloads.any? { |payload| document.valid?(JSON.parse(JSON.generate("payload" => payload))) }
+
+        wrong << "#{mname} / #{nname}: runtime accepts #{accepted.first.inspect}, document accepts nothing " \
+                 "at all — #{klass.input_schema[:properties][:payload].inspect}"
+      end
+    end
+
+    # Per ROW here, not per cell: the product is {member} x {node}, and a row counts once if any payload
+    # satisfies its contract. Measured at 40.
+    expect(live).to be > 30
+    expect(wrong).to be_empty, "these nested contracts are satisfiable and their schemas are not:\n  #{wrong.join("\n  ")}"
   end
 end

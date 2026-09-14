@@ -647,6 +647,42 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     end
   end
 
+  # Setup validation builds a tool's inbound projection through PropertyNames rather than through
+  # `input_schema`, precisely because an adapter base may own that name — which also means axn's reflection
+  # READER, and the warning it emits, was never installed on the class. So whatever the projection could not
+  # state has to be reported from here, or it is reported nowhere for exactly the tools a model reads.
+  describe "a contract the projection cannot fully state" do
+    def transforming_tool(name = "ToolContractsSpec::Transforming")
+      stub_const(name, Class.new do
+        include Axn
+        tool(:mcp)
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+        def call; end
+      end)
+    end
+
+    it "warns naming the position and what still applies" do
+      Axn::Tools.register_adapter(:mcp)
+      transforming_tool
+      expect(Axn.config.logger).to receive(:warn).at_least(:once) do |message|
+        expect(message).to include("ToolContractsSpec::Transforming input_schema cannot state every constraint")
+        expect(message).to include("payload.inner")
+        expect(message).to include('{"type":"integer"}')
+      end
+
+      Axn::Tools.validate_contracts!
+    end
+
+    it "says nothing for a tool whose contract it can state in full" do
+      Axn::Tools.register_adapter(:mcp)
+      valid_tool
+      expect(Axn.config.logger).not_to receive(:warn)
+
+      Axn::Tools.validate_contracts!
+    end
+  end
+
   describe "Registry.tool_classes" do
     # The registry is process-global, so this asserts membership rather than an exact set: another spec's named
     # tool class may legitimately still be defined.
