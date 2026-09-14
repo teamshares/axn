@@ -692,6 +692,17 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
       expect(warnings).to eq(1)
     end
 
+    # A name is caller-supplied text and may be valid non-UTF-8 (an ISO-8859-1 String holding `é`).
+    # Interpolated raw into this UTF-8 message it raised Encoding::CompatibilityError before the logger was
+    # reached — so reflecting a schema blew up over the name of the very action the warning names.
+    it "renders a non-UTF-8 axn name rather than raising while reporting it" do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool
+      tool.define_singleton_method(:resolved_axn_name) { "café".dup.force_encoding("ISO-8859-1") }
+
+      expect { Axn::Tools.validate_contracts! }.not_to raise_error
+    end
+
     it "says nothing for a tool whose contract it can state in full" do
       Axn::Tools.register_adapter(:mcp)
       valid_tool

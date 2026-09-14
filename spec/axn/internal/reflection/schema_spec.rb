@@ -6189,6 +6189,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               "a size floor above the other's ceiling" => [
                 { type: String, length: { minimum: 10 } }, { type: String, length: { maximum: 3 } }, "ab"
               ],
+              # A finite value set against the two sides' BOUNDS — the axis neither the literal comparison
+              # nor the interval comparison sees, since there is only one literal set and only one
+              # floor/ceiling pair between them.
+              "a literal no surviving numeric bound admits" => [
+                { type: { klass: Integer, coerce: false }, inclusion: { in: [1] } },
+                { type: { klass: Integer, coerce: false }, comparison: { greater_than: 5 } }, 6
+              ],
+              "a literal no surviving size bound admits" => [
+                { type: String, inclusion: { in: ["ab"] } }, { type: String, length: { minimum: 5 } }, "abcde"
+              ],
               # The UNDECIDABLE axis, where the burden inverts: two different patterns cannot be shown to
               # share a match at this cost, so they are not conjoined rather than conjoined on faith.
               "two patterns that cannot be shown to overlap" => [
@@ -6208,6 +6218,43 @@ RSpec.describe Axn::Internal::Reflection::Schema do
                 expect(inner[:description]).to include("applies only on the calls its condition opens")
                 expect(klass.call(payload: { inner: accepted })).to be_ok
               end
+            end
+
+            # The gate need not be the DECLARATION's. A gate on a single validator entry skips that entry
+            # alone, and the keyword a collision contradicts is not always the type — here `inclusion:`
+            # carries the gate and contributes the contradictory `enum`, while the type is asserted on
+            # every call. A check reading only the type entry conjoined that enum as though it always
+            # applied.
+            it "honors a gate nested on the validator that carries the contradicting keyword" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String, inclusion: { in: ["member"], if: -> { false } } }
+                expects :inner, on: :payload, type: String, inclusion: { in: ["node"] }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner).not_to have_key(:allOf)
+              expect(constraints(inner)).to include(enum: ["node"])
+              expect(klass.call(payload: { inner: "node" })).to be_ok
+            end
+
+            # A stood-down declaration loses its CONSTRAINTS, not its prose: a `description:` describes the
+            # position for a reader rather than the value for a validator, so nothing about it is
+            # untrustworthy across a transform. A shape member cannot transform, so the explicit node is
+            # nearly always the side that stands down — dropping its description silently lost the one
+            # piece of it that was still true.
+            it "keeps an authored description from the side it stands down" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String }
+                expects :inner, on: :payload, type: { klass: Integer, coerce: true }, description: "numeric identifier"
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:description]).to start_with("numeric identifier ")
+              expect(inner[:description]).to include("cannot express")
             end
 
             # Identical patterns ARE trivially compatible, which keeps the inverted burden from swallowing

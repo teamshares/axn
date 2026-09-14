@@ -1602,13 +1602,23 @@ module Axn
         # node carries without narrowing it (`description`, and the residues waiting to be rendered into it).
         def asserts_nothing?(prop) = prop.except(:description, RESIDUE_KEY).empty?
 
-        # Whether this side's own TYPE check can be skipped on a call — a declaration-level `if:`/`unless:`,
-        # or one on the `type:` entry itself. Only the type check matters here: it is the claim a collision
-        # can contradict outright, and a gate on some OTHER validator leaves the type asserted on every call.
+        # Whether ANY of this side's checks can be skipped on a call — a declaration-level `if:`/`unless:`,
+        # or a gate on any single validator entry. Asked of every entry rather than of the `type:` one,
+        # because the keyword a collision contradicts is not always the type: an `inclusion: { in: [...],
+        # if: ... }` contributes the contradictory `enum` while the type is asserted unconditionally, and a
+        # check that read only the type entry conjoined that enum as though it always applied.
+        #
+        # Deliberately broad rather than asking which validator produced the contradicting keyword. The
+        # emitter keeps no provenance from keyword back to validator, and re-deriving one is the kind of
+        # bookkeeping this file has already paid for once. The two errors do not cost the same: reading a
+        # side as gated when the contradicting keyword was not loses a bound from a document that was only
+        # ever static-maximal speculation, while missing a gate emits a node no caller can satisfy.
         def gate_check_gated?(configs)
           configs.any? do |config|
             validations = config.validations
-            gated_validations?(validations) || entry_self_gated?(validations[:type])
+            next true if gated_validations?(validations)
+
+            Axn::Validation::Base.validator_entries(validations).any? { |_key, entry| entry_self_gated?(entry) }
           end
         end
 
@@ -1634,7 +1644,61 @@ module Axn
             literals_disjoint?(prop_a, prop_b) ||
             interval_empty?(prop_a, prop_b, NUMERIC_BOUND_PAIRS) ||
             interval_empty?(prop_a, prop_b, SIZE_BOUND_PAIRS) ||
+            literals_out_of_bounds?(prop_a, prop_b) ||
+            literals_out_of_bounds?(prop_b, prop_a) ||
             patterns_unprovable?(prop_a, prop_b)
+        end
+
+        # One side names a finite value set and the two sides' BOUNDS together admit none of it — the axis
+        # neither the literal comparison nor the interval comparison sees, since there is only one literal
+        # set and only one floor/ceiling pair between them.
+        #
+        # A literal is judged only by the bounds its own JSON type answers to, because that is what a
+        # validator does: JSON Schema ignores `minimum` for a string and `minLength` for a number, so a
+        # non-numeric literal does not violate a numeric bound and is not counted as a contradiction.
+        def literals_out_of_bounds?(prop_with_literals, other)
+          literals = emitted_literals(prop_with_literals)
+          return false if literals.nil? || literals.empty?
+
+          numeric = combined_interval(prop_with_literals, other, NUMERIC_BOUND_PAIRS.first)
+          sized = SIZE_BOUND_PAIRS.filter_map do |family|
+            interval = combined_interval(prop_with_literals, other, family)
+            interval unless interval.compact.empty?
+          end
+          return false if numeric.compact.empty? && sized.empty?
+
+          literals.none? { |value| literal_within?(value, numeric, sized) }
+        end
+
+        def literal_within?(value, numeric, sized)
+          return within?(value, numeric) if value.is_a?(::Numeric)
+
+          size = literal_size(value)
+          return true if size.nil?
+
+          sized.all? { |interval| within?(size, interval) }
+        end
+
+        def literal_size(value)
+          case value
+          when ::String, ::Array then value.length
+          when ::Hash then value.size
+          end
+        end
+
+        def within?(value, (floor, floor_exclusive, ceiling, ceiling_exclusive))
+          return false if floor && (floor_exclusive ? value <= floor : value < floor)
+          return false if ceiling && (ceiling_exclusive ? value >= ceiling : value > ceiling)
+
+          true
+        end
+
+        # Both sides' bounds on one axis as [floor, floor_exclusive, ceiling, ceiling_exclusive].
+        def combined_interval(prop_a, prop_b, family)
+          inclusive_floor, exclusive_floor, inclusive_ceiling, exclusive_ceiling = family
+          floor, floor_exclusive = strictest_bound(prop_a, prop_b, inclusive_floor, exclusive_floor, :max)
+          ceiling, ceiling_exclusive = strictest_bound(prop_a, prop_b, inclusive_ceiling, exclusive_ceiling, :min)
+          [floor, floor_exclusive, ceiling, ceiling_exclusive]
         end
 
         # Two DIFFERENT patterns, one on each side. Identical ones are trivially compatible and conjoin;
@@ -1699,9 +1763,8 @@ module Axn
         # as one constraint set, since that is what conjoining them would assert; an axis either side leaves
         # open cannot contradict.
         def interval_empty?(prop_a, prop_b, families)
-          families.any? do |inclusive_floor, exclusive_floor, inclusive_ceiling, exclusive_ceiling|
-            floor, floor_exclusive = strictest_bound(prop_a, prop_b, inclusive_floor, exclusive_floor, :max)
-            ceiling, ceiling_exclusive = strictest_bound(prop_a, prop_b, inclusive_ceiling, exclusive_ceiling, :min)
+          families.any? do |family|
+            floor, floor_exclusive, ceiling, ceiling_exclusive = combined_interval(prop_a, prop_b, family)
             next false if floor.nil? || ceiling.nil?
 
             floor_exclusive || ceiling_exclusive ? floor >= ceiling : floor > ceiling
@@ -1781,10 +1844,25 @@ module Axn
         def stand_down_from(kept, dropped, reason)
           kept = kept.dup
           kept[:properties] = kept[:properties].dup if kept[:properties].is_a?(::Hash)
+          kept[:description] = carried_description(kept[:description], dropped[:description])
+          kept.delete(:description) if kept[:description].nil?
           result = residues_on(dropped).reduce(kept) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
           constraint = dropped.except(:description, RESIDUE_KEY).compact
           summary = constraint.empty? ? reason : "#{reason} (#{JSON.generate(constraint)})"
           record_residue(result, summary)
+        end
+
+        # An authored `description:` survives a stand-down even though the declaration's constraints do not:
+        # it describes the POSITION for a reader, not the value for a validator, so nothing about it is
+        # untrustworthy across a transform or a closed gate. Dropping it silently lost the explicit node's
+        # own prose in the ordinary case — a shape member cannot transform, so the node is nearly always the
+        # side that stands down, and its description was published before this. Both are kept when both
+        # exist, and an identical pair collapses.
+        def carried_description(kept, dropped)
+          return kept if dropped.nil? || kept == dropped
+          return dropped if kept.nil?
+
+          "#{kept} #{dropped}"
         end
 
         # "object", nullable or not, at the TOP of a property — the one shape merge_shape_member_property's

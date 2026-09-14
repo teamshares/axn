@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/internal/reflection"
+require "axn/internal/text"
 
 module Axn
   module Core
@@ -49,7 +50,11 @@ module Axn
         return if klass.instance_variable_get(:@_axn_residue_warning_emitted)
 
         klass.instance_variable_set(:@_axn_residue_warning_emitted, true)
-        label = klass.resolved_axn_name
+        # The NAME goes through the same seam the segments do. A valid non-UTF-8 `axn_name` (an ISO-8859-1
+        # String holding `é`) interpolated into this UTF-8 message raised Encoding::CompatibilityError
+        # before the logger was reached, so reflecting a schema blew up over the name of the very action
+        # whose gap the warning exists to mention.
+        label = Axn::Internal::Text.renderable(klass.resolved_axn_name.to_s)
         gaps = residues.map do |path, residue|
           rendered = path.map { |segment| Axn::Internal::Reflection::PropertyNames.renderable_label(segment) }.join(".")
           "#{rendered}: #{residue.summary}"
@@ -99,7 +104,7 @@ module Axn
           # blew up over a subfield the warning exists to mention in passing.
           paths = dropped.map { |c| "#{_schema_name_label(c.field)} (on: #{_schema_name_label(c.on)})" }.join(", ")
           Axn.config.logger.warn(
-            "[Axn] #{resolved_axn_name} input_schema omits deep subfield(s) with no JSON representation — " \
+            "[Axn] #{Axn::Internal::Text.renderable(resolved_axn_name.to_s)} input_schema omits deep subfield(s) with no JSON representation — " \
             "nested under a model: or non-object parent: #{paths}. They validate at runtime but are absent " \
             "from the reflected input schema; restructure the parent as a Hash/:params field, or handle " \
             "them in the adapter.",
