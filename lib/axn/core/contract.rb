@@ -2927,7 +2927,7 @@ module Axn
         # only that, so a declaration-time guard depending upward on it would be a layer inversion
         # (AGENTS.md's namespace doctrine). `FieldConfig` is the shared, value-level home both this guard
         # and the reflection layer's own AR-inference map
-        # (`Reflection::Schema::AR_PRIMARY_KEY_TYPE_TOKENS`) read the SAME vocabulary from, so a declared
+        # (`Reflection::Schema::ModelId::AR_PRIMARY_KEY_TYPE_TOKENS`) read the SAME vocabulary from, so a declared
         # `id_type:` and an inferred one can never mean two different things.
         def _reject_unsupported_model_id_type!(validations)
           return unless validations.key?(:model)

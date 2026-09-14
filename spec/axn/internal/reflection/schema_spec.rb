@@ -1384,7 +1384,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
 
     it "keeps the declared and inferable vocabularies from drifting apart" do
-      inferable = Axn::Internal::Reflection::Schema::AR_PRIMARY_KEY_TYPE_TOKENS.values
+      inferable = Axn::Internal::Reflection::Schema::ModelId::AR_PRIMARY_KEY_TYPE_TOKENS.values
       declarable = Axn::Internal::FieldConfig::MODEL_ID_TYPE_TOKENS
 
       expect(inferable.uniq).to match_array(declarable)

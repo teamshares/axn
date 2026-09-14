@@ -94,7 +94,7 @@ module Axn
       # `Internal::Reflection::Schema`: it is read from BOTH sides of a layer boundary reflection may
       # not cross upward — Contract's `_reject_unsupported_model_id_type!` confines a declared
       # `id_type:` to exactly this set at DECLARATION time, and
-      # `Reflection::Schema::AR_PRIMARY_KEY_TYPE_TOKENS` maps every inferable ActiveRecord primary-key
+      # `Reflection::Schema::ModelId::AR_PRIMARY_KEY_TYPE_TOKENS` maps every inferable ActiveRecord primary-key
       # type onto one of these SAME tokens — so a declared token and an inferred one can never mean two
       # different things. `Internal::X` is the home for a value-level mechanism more than one layer
       # needs with no presence in the action's surface (AGENTS.md); `model_id_key`, right above, is the

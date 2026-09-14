@@ -114,7 +114,8 @@ RSpec.describe "standalone require completeness" do
       ["axn/internal/reflection/schema.rb", "Axn::Core::Contract::GENERATED_READER_SOURCE_PATH"],
       ["axn/internal/reflection/schema.rb", "Axn::Validation::Base"],
       ["axn/internal/reflection/schema/gates.rb", "Axn::Validation::Base"],
-      ["axn/internal/reflection/schema.rb", "::ActiveRecord::Base"],
+      ["axn/internal/reflection/schema/contents.rb", "Axn::Validation::Base"],
+      ["axn/internal/reflection/schema/model_id.rb", "::ActiveRecord::Base"],
     ]
   end
 
