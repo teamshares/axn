@@ -195,6 +195,28 @@ module Axn
 
     def standalone? = @standalone
 
+    # The axn that decided this failure, and the result it had built by the time it did.
+    #
+    # These are what a consumer reads, not `__originating_action`: handing back the action INSTANCE
+    # forces a `action.result` dispatch BY NAME, and a user's `expects :result` -- or a plain
+    # `def result` -- answers that name instead of the outbound facade, so the consumer silently
+    # reads the user's own value and never learns it missed. `ActionState` binds the real method
+    # rather than naming it, the same reason axn's own internals never dispatch `result` either.
+    #
+    # Both are nil when no action decided the failure (`action:` defaults to nil), which is the only
+    # answer available for an exception raised outside `fail!`.
+    def originating_axn_class
+      return nil if Axn::Internal::Identity.nil_value?(@__originating_action)
+
+      Axn::Internal::Identity.class_of(@__originating_action)
+    end
+
+    def originating_result
+      return nil if Axn::Internal::Identity.nil_value?(@__originating_action)
+
+      Axn::Internal::ActionState.result(@__originating_action)
+    end
+
     # The reason the caller handed `fail!`, or nil when they handed none — the undispatched form of
     # `raw_reason.presence`.
     #
