@@ -170,3 +170,62 @@ RSpec.describe "reflection never dispatches to an authored description:" do
     end
   end
 end
+
+# The same derivation for an authored `axn_name`. A name is caller-supplied text on exactly the paths the
+# description axis above covers — both warnings that report a gap read one while composing their message — so
+# it is the second slot on the reporting path where the caller's own code could run, and it was missed when
+# that axis was written because the audit instrumented only the description.
+#
+# Unlike a description, the tolerated set here CANNOT be empty: `resolved_axn_name` is `axn_name.presence ||
+# ...`, and `presence` asks the name whether it is blank. That read is the contract of resolving a name at
+# all — every caller of `resolved_axn_name` pays it, on paths far outside reflection — so it is DERIVED here
+# rather than listed: the baseline is whatever resolving the name costs on its own, and the assertion is that
+# reporting adds nothing on top of it. A hand-written exclusion list would have to be widened by anyone who
+# added a site, which is the property this file exists to avoid.
+#
+# The probe is the description's, reused: the same String subclass, in a different slot.
+module AxnNameDispatchProbe
+  # Each shape drives one of the two warnings that name the action. Without a warning there is no read of the
+  # name at all and the example would pass vacuously, which is why each asserts the warning actually fired.
+  SHAPES = {
+    "the inexpressible-constraint warning" => lambda { |name|
+      Class.new do
+        include Axn
+        axn_name name
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, preprocess: ->(v) { v }
+        def call; end
+      end
+    },
+    "the dropped-deep-subfield warning" => lambda { |name|
+      Class.new do
+        include Axn
+        axn_name name
+        expects :user, model: { klass: Struct.new(:id, :profile), finder: :find }
+        expects :field_under_a_model, on: "user.profile", type: String
+        def call; end
+      end
+    },
+  }.freeze
+end
+
+RSpec.describe "reflection never dispatches to an authored axn_name" do
+  AxnNameDispatchProbe::SHAPES.each do |label, build|
+    it "adds no read of the name beyond resolving it, while composing #{label}" do
+      allow(Axn.config.logger).to receive(:warn)
+      log = []
+      name = DescriptionDispatchProbe.instrumented(log).new("HostileName")
+      action = build.call(name)
+
+      log.clear
+      action.resolved_axn_name
+      baseline = log.uniq
+
+      log.clear
+      action.input_schema
+
+      expect(Axn.config.logger).to have_received(:warn).at_least(:once)
+      expect(log.uniq - baseline).to be_empty
+    end
+  end
+end

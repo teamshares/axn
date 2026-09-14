@@ -134,7 +134,14 @@ module Axn
         # only ever restored where some config's ungated `presence:` rejects blank, and such a config also
         # answers `nil_allowed?` false, so naming nil here cannot narrow a nil-tolerant position; it closes
         # the axis path, where that separate null pass does not reach.
-        BLANK_WIRE_VALUES = ["", [], {}, false, nil].freeze
+        #
+        # Deep-frozen on the same terms as `BLANK_BRANCH_WITNESS`, and for the same measured reason: these
+        # members ride INSIDE an emitted schema, schemas are rebuilt per call and caller-mutable, and a
+        # shared mutable `[]`/`{}` lets one consumer's mutation reach every schema emitted afterwards —
+        # appending to one action's floor changed a DIFFERENT action class's `enum` to `["", [:x], {}, false,
+        # nil]`. Freezing rather than copying is what the neighbours do, so a mutating consumer gets a
+        # FrozenError instead of silently corrupting every later schema.
+        BLANK_WIRE_VALUES = ["", [].freeze, {}.freeze, false, nil].freeze
 
         # Keys a gate can never remove, so a diff between the full and always-run properties must not read
         # them as removed. `default:` is not a validator entry — it is applied whatever any condition says —

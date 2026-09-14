@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/internal/reflection"
-require "axn/internal/text"
+require "axn/internal/rendering"
 
 module Axn
   module Core
@@ -30,6 +30,22 @@ module Axn
       end
       private_class_method :_extend_reflection
 
+      # An action's name rendered for a message axn is building: its BYTES through the same encoding seam the
+      # path segments take, with nothing of the name's own dispatched. Both halves matter and each was a
+      # separate failure. A valid non-UTF-8 `axn_name` (an ISO-8859-1 String holding é) interpolated into
+      # this UTF-8 message raised Encoding::CompatibilityError before the logger was reached, so reflecting a
+      # schema blew up over the name of the very action whose gap the warning exists to mention. And a name
+      # is caller-supplied text, which the reporting path may no more RUN than it may run a description:
+      # `resolved_axn_name` is a String by construction (`axn_name` refuses anything else at declaration,
+      # `Module#name` answers a String or nil, and the fallback is a literal), and `value_rendering` reads a
+      # String through bound methods — so a String SUBCLASS whose `to_s` raises still renders as its text
+      # rather than replacing the schema with the caller's exception. The class name is the fallback for an
+      # override answering something that is not a String at all.
+      def self.axn_name_label(klass)
+        name = klass.resolved_axn_name
+        Axn::Internal::Rendering.value_rendering(name) || Axn::Internal::Rendering.class_name(name)
+      end
+
       # Report the constraints an inbound projection could not state. Module-level because it has TWO
       # callers and one message: the reader below, and `Axn::Tools.validate_contracts!`, which builds a
       # tool's projection through `PropertyNames` precisely BECAUSE the reader may not be axn's — an
@@ -53,11 +69,7 @@ module Axn
       def self.warn_inexpressible_constraints(klass, residues)
         return if residues.empty?
 
-        # The NAME goes through the same seam the segments do. A valid non-UTF-8 `axn_name` (an ISO-8859-1
-        # String holding `é`) interpolated into this UTF-8 message raised Encoding::CompatibilityError
-        # before the logger was reached, so reflecting a schema blew up over the name of the very action
-        # whose gap the warning exists to mention.
-        label = Axn::Internal::Text.renderable(klass.resolved_axn_name.to_s)
+        label = axn_name_label(klass)
         all_gaps = residues.map do |path, residue|
           rendered = path.map { |segment| Axn::Internal::Reflection::PropertyNames.renderable_label(segment) }.join(".")
           "#{rendered}: #{residue.summary}"
@@ -112,7 +124,7 @@ module Axn
           # blew up over a subfield the warning exists to mention in passing.
           paths = dropped.map { |c| "#{_schema_name_label(c.field)} (on: #{_schema_name_label(c.on)})" }.join(", ")
           Axn.config.logger.warn(
-            "[Axn] #{Axn::Internal::Text.renderable(resolved_axn_name.to_s)} input_schema omits deep subfield(s) with no JSON representation — " \
+            "[Axn] #{SchemaReflection.axn_name_label(self)} input_schema omits deep subfield(s) with no JSON representation — " \
             "nested under a model: or non-object parent: #{paths}. They validate at runtime but are absent " \
             "from the reflected input schema; restructure the parent as a Hash/:params field, or handle " \
             "them in the adapter.",
