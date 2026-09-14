@@ -90,3 +90,83 @@ RSpec.describe "reflection never dispatches to a declared type token" do
     end
   end
 end
+
+# The same derivation for an authored `description:`. A description is PROSE — the emitter reads its bytes
+# to write them into a document and has no legitimate reason to ask it anything — so unlike a `default:` or
+# an `inclusion:` member (whose blankness the emitter must genuinely consult) the tolerated set here is
+# EMPTY, and the assertion needs no exclusion list that could hide a new site.
+#
+# It earns its place on the residue paths: a description is the String a residue clause is appended to, so
+# every stand-down, projection and merge reads one while composing the report — and five separate reads of
+# it (`to_s`, `==`, two `nil?`, and the `true`/`false` test beside it) each took `input_schema` down with
+# the caller's own exception before this existed.
+module DescriptionDispatchProbe
+  WATCHED = %i[
+    nil? == != eql? hash to_s to_str inspect to_json dup clone frozen? freeze length size empty?
+    encoding valid_encoding? ascii_only? encode each bytes chars <=> =~ + * % respond_to?
+  ].freeze
+
+  def self.instrumented(log)
+    Class.new(::String) do
+      WATCHED.each do |name|
+        define_method(name) do |*args, &blk|
+          log << name
+          super(*args, &blk)
+        end
+      end
+    end
+  end
+
+  # Each shape puts the prose somewhere a residue path reads it. The transforming pair covers the stand-down
+  # and the description carried through it; the gated pair covers the projection; the last is the ordinary
+  # no-residue node, which must be just as quiet.
+  SHAPES = {
+    "a transforming stand-down" => lambda { |prose|
+      Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, description: prose, preprocess: ->(v) { v }
+        def call; end
+      end
+    },
+    "a transforming stand-down with prose on both sides" => lambda { |prose|
+      Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String, description: prose }
+        expects :inner, on: :payload, type: String, optional: true, description: prose, preprocess: ->(v) { v }
+        def call; end
+      end
+    },
+    "a gated projection" => lambda { |prose|
+      Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, description: prose,
+                        length: { minimum: 5, if: -> { false } }
+        def call; end
+      end
+    },
+    "an ordinary node carrying no residue" => lambda { |prose|
+      Class.new do
+        include Axn
+        expects :f, type: String, optional: true, description: prose
+        def call; end
+      end
+    },
+  }.freeze
+end
+
+RSpec.describe "reflection never dispatches to an authored description:" do
+  DescriptionDispatchProbe::SHAPES.each do |label, build|
+    it "runs none of the description's own code while reflecting #{label}" do
+      log = []
+      prose = DescriptionDispatchProbe.instrumented(log).new("authored prose")
+      action = build.call(prose)
+      log.clear
+
+      action.input_schema
+
+      expect(log.uniq).to be_empty
+    end
+  end
+end

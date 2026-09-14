@@ -1728,7 +1728,7 @@ module Axn
         def carry_metadata(projected, original)
           projected = projected.merge(RESIDUE_KEY => residues_on(original)) if residues_on(original).any?
           description = original[:description]
-          description.nil? ? projected : projected.merge(description:)
+          Axn::Internal::Identity.nil_value?(description) ? projected : projected.merge(description:)
         end
 
         # The one thing a projection can lose that is NOT conditional. `minLength`/`minItems`/`minProperties`
@@ -1785,7 +1785,7 @@ module Axn
           kept = kept.dup
           kept[:properties] = kept[:properties].dup if kept[:properties].is_a?(::Hash)
           kept[:description] = carried_description(kept[:description], dropped[:description])
-          kept.delete(:description) if kept[:description].nil?
+          kept.delete(:description) if Axn::Internal::Identity.nil_value?(kept[:description])
           result = residues_on(dropped).reduce(kept) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
           constraint = dropped.except(:description, RESIDUE_KEY).compact
           summary = constraint.empty? ? reason : "#{reason} (#{render_constraint(constraint)})"
@@ -1857,6 +1857,11 @@ module Axn
         # Both descriptions are the AUTHOR'S OWN prose, so neither is asked anything: each is reduced through
         # the rendering seam first, and the equal-pair collapse then compares two plain Strings axn owns
         # rather than dispatching a `==` the description's class may define.
+        #
+        # `nil?` is overridable too, so every nil test this reporting path makes of a caller's own object —
+        # here, in `carry_metadata`, and in `stand_down_from` — goes through `Identity.nil_value?`. The rule
+        # is the region's, not this method's: a value reaches the guarded rendering seam WITHOUT having been
+        # asked anything on the way.
         def carried_description(kept, dropped)
           return kept if Axn::Internal::Identity.nil_value?(dropped)
           return dropped if Axn::Internal::Identity.nil_value?(kept)

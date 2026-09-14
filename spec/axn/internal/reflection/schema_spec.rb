@@ -4356,6 +4356,34 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(klass.input_schema.dig(:properties, :payload, :properties, :inner, :description)).to include("authored")
     end
 
+    it "carries a description: onto a gated projection without dispatching its nil?" do
+      hostile = Class.new(String) { def nil? = raise(NotImplementedError, "carry nil? ran") }
+      prose = hostile.new("authored")
+      klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, description: prose,
+                        length: { minimum: 5, if: -> { false } }
+        def call; end
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
+
+    it "stands a transforming side down beside a description: without dispatching its nil?" do
+      hostile = Class.new(String) { def nil? = raise(NotImplementedError, "stand-down nil? ran") }
+      prose = hostile.new("authored")
+      klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true,
+                        description: prose, preprocess: ->(v) { v }
+        def call; end
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
+
     it "collapses an identical description pair without dispatching the description's ==" do
       hostile = Class.new(String) { def ==(_other) = raise(NotImplementedError, "description == ran") }
       prose = hostile.new("shared prose")
