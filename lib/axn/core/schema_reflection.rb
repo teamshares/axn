@@ -34,11 +34,32 @@ module Axn
         # colliding or unrenderable name can harm, and this is where one is first demanded. Validated once per
         # class, over the schema being returned rather than a second build of it.
         def input_schema
-          Axn::Internal::Reflection::PropertyNames.validated_input(self) { Axn::Internal::Reflection::Schema.build_input_for(self) }
+          residues = []
+          Axn::Internal::Reflection::PropertyNames.validated_input(self) { Axn::Internal::Reflection::Schema.build_input_for(self, residues:) }
                                                   .tap { _warn_dropped_deep_subfields }
+                                                  .tap { _warn_inexpressible_constraints(residues) }
         end
 
         private
+
+        # A constraint the runtime enforces that this document cannot state — a position whose value is
+        # transformed before its own checks run, or one whose declared type JSON has no form for. The schema
+        # itself says so in the relevant `description` (which is what an adapter passes on to its caller);
+        # this is the same gap said once, to the author, for the same reason the deep-subfield warning
+        # above exists: a silent narrowing of the document is what PRO-3405 set out to stop.
+        def _warn_inexpressible_constraints(residues)
+          return if @_axn_residue_warning_emitted || residues.empty?
+
+          @_axn_residue_warning_emitted = true
+          # Path segments arrive RAW — the emitter may not dispatch on a caller-supplied name — so they are
+          # rendered here through the same escaping labeler the deep-subfield warning uses.
+          gaps = residues.map { |path, residue| "#{path.map { |s| _schema_name_label(s) }.join('.')}: #{residue.summary}" }
+          Axn.config.logger.warn(
+            "[Axn] #{resolved_axn_name} input_schema cannot state every constraint the contract enforces — " \
+            "#{gaps.join('; ')}. Each is reported in that property's `description`; a caller obeying the " \
+            "schema may still be rejected at runtime.",
+          )
+        end
 
         # A deep subfield whose chain passes through a `model:` or non-object parent has no JSON-object
         # representation, so it validates at runtime but is absent from the input schema. Surface that

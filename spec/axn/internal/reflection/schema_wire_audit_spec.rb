@@ -324,6 +324,23 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     !Axn::Internal::Reflection::Schema.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs).empty?
   end
 
+  # The other excluded shape, asked of the emitter for the same reason: a declaration this document cannot
+  # state in full REPORTS that, as a residue rendered into the relevant `description`. A transforming node
+  # colliding with a member is the case — its keywords judge the coercion's target, and translating them
+  # back to the wire form means inverting the transform, which reflection cannot do. So the emitter stands
+  # down to the side that does describe the wire, and the position is knowingly looser than the runtime.
+  #
+  # Asking for the residue rather than re-deriving the condition is what keeps this from drifting: a row
+  # excluded here is exactly a row the document admits it cannot describe, and one that stops reporting a
+  # residue stops being excluded on the same commit.
+  def residues_for(klass)
+    residues = []
+    Axn::Internal::Reflection::Schema.build_input_for(klass, residues:)
+    residues
+  end
+
+  def reported_inexpressible?(klass) = !residues_for(klass).empty?
+
   def nested_members
     {
       "object member" => proc { field :inner, type: Hash },
@@ -353,6 +370,15 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       # "neither side is object-shaped" branch at the TOP level rather than at a nested key. Without it,
       # the fix's least-tested branch is unguarded.
       "explicit non-nesting node" => proc { expects :inner, on: :payload, type: [Hash, Array] },
+      # A node that TRANSFORMS the value it judges. Its keywords describe the coercion's target, not the
+      # wire form the member's own check reads, so the emitter stands down rather than conjoining them —
+      # and these are the only rows in this walk that produce a residue. Without them the stand-down is
+      # unexercised and this walk's clean run says nothing about it.
+      "coercing node" => proc { expects :inner, on: :payload, type: { klass: Integer, coerce: true } },
+      "coercing node with a bound" => proc {
+        expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { equal_to: 5 }
+      },
+      "preprocessing node" => proc { expects :inner, on: :payload, type: String, preprocess: ->(v) { v } },
     }
   end
 
@@ -377,6 +403,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
   it "never accepts inbound a nested value the runtime rejects" do
     checked = 0
+    reported = 0
     wrong = []
 
     nested_members.each do |mname, member|
@@ -384,6 +411,11 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         klass = declare_nested(member, node)
         next if klass.nil?
         next if unrepresentable_deep_drop?(klass)
+
+        if reported_inexpressible?(klass)
+          reported += 1
+          next
+        end
 
         document = schemer(klass.input_schema)
         nested_payloads.each do |payload|
@@ -402,6 +434,10 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     end
 
     expect(checked).to be > 150
+    # The transforming rows must actually REACH the stand-down: an exclusion that never fires would make
+    # the rows above decorative, and a change that silently stopped emitting residues would pass this walk
+    # by simply not having anything to exclude.
+    expect(reported).to be > 5
     expect(wrong).to be_empty, "these nested schemas accept what the runtime rejects:\n  #{wrong.join("\n  ")}"
   end
 end
