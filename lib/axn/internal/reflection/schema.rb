@@ -1630,18 +1630,37 @@ module Axn
         # `apply_structured_schema!` and the conjoin's callers select it — so the projection describes the
         # same declaration the property does rather than a sibling route's.
         def project_ungated(prop, configs)
-          config = configs.find { |c| conditional_checks?(c) }
-          return [prop, nil] if config.nil?
+          return [prop, nil] if configs.none? { |config| conditional_checks?(config) }
 
-          ungated = config.validations.reject do |key, opt|
-            next false if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.include?(key)
-
-            Axn::Validation::Base.entry_effectively_gated?(opt, declaration_gates(config))
-          end
-          projected = restore_blank_floor(build_property(config.with(validations: ungated), subfield: true), ungated, prop)
+          # EVERY contributing config is projected, not just the conditional one. A property at a merged
+          # position is composed from more than one source, so rebuilding it from a single config discards
+          # the others — and what it discarded included constraints that run on every call, which is
+          # looseness rather than a smaller document. The projections are intersected because that is what
+          # "everything that always runs" means, and intersection can only narrow.
+          projected = configs.map { |config| ungated_property(config) }
+                             .reduce { |left, right| intersect_projections(left, right) } || {}
           conditional = Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(prop.except(:description, RESIDUE_KEY).compact)})",
                                     kind: :conditional)
           [carry_metadata(projected, prop), conditional]
+        end
+
+        # One config's property as emitted from the checks that run on every call.
+        def ungated_property(config)
+          gates = declaration_gates(config)
+          ungated = config.validations.reject do |key, opt|
+            next false if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.include?(key)
+
+            Axn::Validation::Base.entry_effectively_gated?(opt, gates)
+          end
+          restore_blank_floor(build_property(config.with(validations: ungated), subfield: true), ungated,
+                              build_property(config, subfield: true))
+        end
+
+        def intersect_projections(left, right)
+          return left if asserts_nothing?(right)
+          return right if asserts_nothing?(left)
+
+          left.merge(allOf: Array(left[:allOf]) + [right])
         end
 
         def conditional_checks?(config)

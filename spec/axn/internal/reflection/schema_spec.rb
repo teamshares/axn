@@ -6376,6 +6376,29 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(klass.input_schema[:properties][:payload][:properties][:inner][:description]).to include("cannot express")
             end
 
+            # A property at a merged position is composed from more than one source, so a projection
+            # rebuilt from a single config discards the others — and what it discarded here runs on every
+            # call, which is looseness rather than a smaller document.
+            it "keeps every contributing source when projecting a merged position" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) do
+                  field(:deep, type: Hash) { field :inner, type: String, inclusion: { in: %w[allowed] } }
+                end
+                expects(:deep, on: :payload, type: Hash) do
+                  field :inner, type: String, inclusion: { in: %w[gated], if: -> { false } }
+                end
+                expects :inner, on: "payload.deep", type: String
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:deep][:properties][:inner]
+
+              # The OUTER member's unconditional enum survives, wherever the composition puts it.
+              expect(JSON.generate(inner)).to include('"enum":["allowed"]')
+              expect(klass.call(payload: { deep: { inner: "allowed" } })).to be_ok
+              expect(klass.call(payload: { deep: { inner: "other" } })).not_to be_ok
+            end
+
             it "reports nothing when both sides describe the same wire value" do
               klass = Class.new do
                 include Axn
