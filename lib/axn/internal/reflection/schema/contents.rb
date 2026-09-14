@@ -327,7 +327,7 @@ module Axn
           # so widening there would advertise a key the runtime refuses.
           #
           # `pattern` and `minLength` are dropped rather than widened because JSON Schema cannot say "empty or
-          # matching" in one keyword — only as an `anyOf` composition, which is the shape change PRO-3240 carries
+          # matching" in one keyword — only as an `anyOf` composition, which is the shape change PRO-3244 carries
           # for the whole blank-tolerance class. `maxLength` needs nothing: an empty name satisfies every emittable
           # ceiling. An `enum` is WIDENED instead of dropped, since naming one more member says exactly what is
           # true and loses nothing.
@@ -400,7 +400,7 @@ module Axn
             #
             # Only nil. The other blanks `presence:` rejects (`""`, `[]`, `{}`, `false`) need to know that
             # presence is WHY the position is non-nullable — a `klass:` that simply excludes NilClass says nothing
-            # about them — and that plumbing is PRO-3240's, alongside the rest of the blank axis.
+            # about them — and that plumbing is PRO-3244's, alongside the rest of the blank axis.
             #
             # INBOUND only, and the asymmetry is the doctrine rather than an omission: outbound the schema may say
             # LESS than the contract and never more, and an untyped output position is untyped precisely because

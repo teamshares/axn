@@ -8592,7 +8592,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
 
       # The string branch is the one this may not touch: bare `numericality:` really does accept a numeric
-      # string, so the branch is reachable. That it carries no PATTERN saying which strings is PRO-3240 item 3,
+      # string, so the branch is reachable. That it carries no PATTERN saying which strings is PRO-3245,
       # excluded by name in the wire audit; what this pins is that the branch stays.
       it "keeps the string branch, whose numeric strings the validator accepts" do
         action = build_axn { expects :n, type: [String, Integer], numericality: true }

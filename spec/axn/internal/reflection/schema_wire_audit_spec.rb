@@ -85,7 +85,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # `""`, `[]`, `{}` and `false` at runtime and its document refuses them.
   #
   # This is PRO-3016's axis conflation surfacing in reflection, it predates the work this file was written for,
-  # and closing it is a contract decision rather than a bug fix (PRO-3240: stand the keyword down, which is looser, or
+  # and closing it is a contract decision rather than a bug fix (PRO-3244: stand the keyword down, which is looser, or
   # widen the emitted set with the blank). Excluded by NAME so the residue below stays meaningful, and so that
   # deleting these two lines is all it takes to hold the emitter to it once that call is made.
   def known_blank_tolerance_divergence?(tolerance_name, value)
@@ -97,7 +97,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # accepts every shorter value as well (`type: String, length: { is: 3 }, optional: true` emits `maxLength: 3`
   # with no `minLength`, so `"a"` passes the document and fails the runtime). One root, two symptoms: outbound
   # the document refuses the blank it accepts, inbound it accepts the non-blanks the constraint refuses. The
-  # honest spelling is an `anyOf` of the blank and the constrained form, which is the decision PRO-3240 carries.
+  # honest spelling is an `anyOf` of the blank and the constrained form, which is the decision PRO-3244 carries.
   def floor_bearing_validators = ["length is:3"]
 
   def known_blank_tolerance_floor_drop?(tolerance_name, validator_name)
@@ -127,7 +127,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
   def numeric_token?(token) = token.is_a?(Module) && token <= Numeric
 
-  # PRO-3240 item 3. A bare `numericality:` on a String position accepts a numeric string and rejects the rest,
+  # PRO-3245. A bare `numericality:` on a String position accepts a numeric string and rejects the rest,
   # and the document says nothing — so it accepts every string. The seam exists (`only_integer:` emits the exact
   # test via `merge_integer_literal_pattern`), but an EXACT pattern for bare numericality is hard: ActiveModel
   # funnels through `Kernel.Float`, which takes underscores (`Float("1_000")`) and surrounding whitespace, while
@@ -137,7 +137,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     validator_name == "numericality:true" && tokens.any? { |t| t == String }
   end
 
-  # PRO-3240 item 4. `single_type_for` renders an UNKNOWN class as the permissive `"string"` — right for a
+  # PRO-3246. `single_type_for` renders an UNKNOWN class as the permissive `"string"` — right for a
   # narrow custom value class, which serializes through `to_s`, and wrong for a token like `Object` or
   # `Comparable` that admits numbers and everything else besides. Two consequences, both pre-existing and both
   # rooted in that one fallback rather than in any validator:
