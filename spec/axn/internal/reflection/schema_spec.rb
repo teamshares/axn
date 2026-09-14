@@ -6167,6 +6167,77 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(klass.call(payload: { inner: { a: 1 } })).to be_ok # the working contract this protects
             end
 
+            # The type axis is not the only one a collision can contradict. These are the other axes the
+            # emptiness test can PROVE — literals, a literal against the other side's type, and a
+            # floor/ceiling interval — each of which produced a node nothing satisfies for a contract the
+            # closed gate keeps satisfiable. A `pattern` pair is deliberately not among them: regex
+            # intersection has no cheap always-correct answer, so such a collision stays conjoined.
+            {
+              "literal sets that share no member" => [
+                { type: String, inclusion: { in: ["member"] } }, { type: String, inclusion: { in: ["node"] } }, "node"
+              ],
+              # `coerce: false` on the node is load-bearing in these two: a coercible declared type makes the
+              # node TRANSFORMING, which stands down one branch earlier and would leave the gate path
+              # untested here (it did, until these examples said so).
+              "a literal of a type the other side rejects" => [
+                { type: String, inclusion: { in: ["x"] } }, { type: { klass: Integer, coerce: false } }, 5
+              ],
+              "a numeric floor above the other's ceiling" => [
+                { type: { klass: Integer, coerce: false }, comparison: { greater_than: 10 } },
+                { type: { klass: Integer, coerce: false }, comparison: { less_than: 3 } }, 1
+              ],
+              "a size floor above the other's ceiling" => [
+                { type: String, length: { minimum: 10 } }, { type: String, length: { maximum: 3 } }, "ab"
+              ],
+              # The UNDECIDABLE axis, where the burden inverts: two different patterns cannot be shown to
+              # share a match at this cost, so they are not conjoined rather than conjoined on faith.
+              "two patterns that cannot be shown to overlap" => [
+                { type: String, format: { with: /\Aa+\z/ } }, { type: String, format: { with: /\Ab+\z/ } }, "b"
+              ],
+            }.each do |axis, (member_decl, node_decl, accepted)|
+              it "keeps the node satisfiable when a gated member contradicts it by #{axis}" do
+                klass = Class.new do
+                  include Axn
+                  expects(:payload, type: Hash) { field(:inner, **member_decl, if: -> { false }) }
+                  expects :inner, on: :payload, **node_decl
+                  def call = nil
+                end
+                inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+                expect(inner).not_to have_key(:allOf)
+                expect(inner[:description]).to include("applies only on the calls its condition opens")
+                expect(klass.call(payload: { inner: accepted })).to be_ok
+              end
+            end
+
+            # Identical patterns ARE trivially compatible, which keeps the inverted burden from swallowing
+            # every pattern pair.
+            it "still conjoins a gated member whose pattern is identical to the node's" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String, format: { with: /\Aa+\z/ }, if: -> { false } }
+                expects :inner, on: :payload, type: String, format: { with: /\Aa+\z/ }
+                def call = nil
+              end
+
+              expect(residue_summaries(klass)).to be_empty
+            end
+
+            # The negative control for the axis above: a floor BELOW the other's ceiling is no
+            # contradiction, so the gated side is conjoined and nothing is reported.
+            it "still conjoins a gated member whose bounds leave a satisfiable interval" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String, length: { minimum: 2 }, if: -> { false } }
+                expects :inner, on: :payload, type: String, length: { maximum: 9 }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner).to have_key(:allOf)
+              expect(residue_summaries(klass)).to be_empty
+            end
+
             # The gate is only a licence to stand down where the types CONTRADICT. Two that can both hold
             # still conjoin, so the static-maximal document a caller relies on is unchanged.
             it "still conjoins a gated member whose type can hold beside the node's" do

@@ -99,7 +99,7 @@ module Axn
           # `input_schema` means axn's reflection reader was never installed on this class, so the warning
           # that reader emits would never fire for exactly the tools a model reads.
           residues = Axn::Internal::Reflection::PropertyNames.validate_inbound!(klass)
-          Axn::Core::SchemaReflection.warn_inexpressible_constraints(klass.resolved_axn_name, Array(residues))
+          Axn::Core::SchemaReflection.warn_inexpressible_constraints(klass, Array(residues))
           Axn::Internal::Reflection::PropertyNames.validate_outbound!(klass)
         rescue Axn::ContractViolation, ArgumentError => e
           # Named, because this runs over every tool at once: the underlying error describes the property and the

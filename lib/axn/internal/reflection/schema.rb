@@ -116,8 +116,8 @@ module Axn
 
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
 
-        GATED_RESIDUE = "a conditional declaration at this position names a type that cannot hold at the same time as this one, " \
-                        "so it applies only on the calls its condition opens"
+        GATED_RESIDUE = "a conditional declaration at this position contradicts this one, so it applies only on the calls " \
+                        "its condition opens"
 
         # Where a subschema can live in what this emitter emits — a map of name => subschema, a single
         # subschema, or a list of them. Kept to the keywords it actually writes (`build_property`,
@@ -1565,13 +1565,11 @@ module Axn
           # Hash on every call the gate closes — a satisfiable contract projected to an unsatisfiable node,
           # which AGENTS.md names as the worse of the two forbidden residuals.
           #
-          # So the gated side stands down exactly where it would empty the node, judged on the TYPE axis and
-          # nowhere else. That axis is what a collision makes contradictory and is decidable by set
-          # intersection — no reasoning about what any value would satisfy, and so no repeat of the
-          # satisfiability chase the transform branch above exists to avoid. Where the types DO intersect the
-          # gated side is conjoined as before, keeping the static-maximal document a caller can rely on.
-          if types_disjoint?(member_prop, own_prop) && (type_check_gated?(member_configs) || type_check_gated?(own_configs))
-            kept, dropped = type_check_gated?(member_configs) ? [own_prop, member_prop] : [member_prop, own_prop]
+          # So the gated side stands down exactly where the conjunction can be PROVEN empty
+          # (`gated_conjunction_unsafe?`). What it can conjoin safely it still conjoins, keeping the static-maximal
+          # document a caller can rely on.
+          if (gate_check_gated?(member_configs) || gate_check_gated?(own_configs)) && gated_conjunction_unsafe?(member_prop, own_prop)
+            kept, dropped = gate_check_gated?(member_configs) ? [own_prop, member_prop] : [member_prop, own_prop]
             return stand_down_from(kept, dropped, GATED_RESIDUE)
           end
 
@@ -1607,10 +1605,125 @@ module Axn
         # Whether this side's own TYPE check can be skipped on a call — a declaration-level `if:`/`unless:`,
         # or one on the `type:` entry itself. Only the type check matters here: it is the claim a collision
         # can contradict outright, and a gate on some OTHER validator leaves the type asserted on every call.
-        def type_check_gated?(configs)
+        def gate_check_gated?(configs)
           configs.any? do |config|
             validations = config.validations
             gated_validations?(validations) || entry_self_gated?(validations[:type])
+          end
+        end
+
+        # Whether conjoining these two properties risks a node nothing satisfies. Asked only of a GATED
+        # collision, where the alternative to standing down is a document that contradicts itself while the
+        # contract stays satisfiable.
+        #
+        # Two kinds of answer, and the asymmetry is the point. Most axes are DECIDABLE between two
+        # constraint sets over one value — a type set, a literal set, a floor against a ceiling — so a
+        # contradiction is proven outright. `pattern` is not: "do two regexes share a match" has no cheap
+        # always-correct answer, the same limit this file already stands down at for a transforming side's
+        # pattern. For an undecidable axis the burden inverts and the pair is treated as unsafe unless it
+        # can be shown COMPATIBLE, because the cost of the two mistakes is not symmetric: standing down
+        # loses a bound from a document that was only ever static-maximal speculation about a gated
+        # declaration, while conjoining wrongly emits a node no caller can satisfy.
+        #
+        # None of this is the coercion inverse the transform branch above refuses to compute. Every axis
+        # here compares two constraint sets over the SAME value, which is why the enumeration converges:
+        # adding an axis can only move a pair from "conjoined" to "stood down", never reverse an earlier
+        # answer.
+        def gated_conjunction_unsafe?(prop_a, prop_b)
+          types_disjoint?(prop_a, prop_b) ||
+            literals_disjoint?(prop_a, prop_b) ||
+            interval_empty?(prop_a, prop_b, NUMERIC_BOUND_PAIRS) ||
+            interval_empty?(prop_a, prop_b, SIZE_BOUND_PAIRS) ||
+            patterns_unprovable?(prop_a, prop_b)
+        end
+
+        # Two DIFFERENT patterns, one on each side. Identical ones are trivially compatible and conjoin;
+        # anything else cannot be shown to share a match at this cost, so it is not conjoined.
+        def patterns_unprovable?(prop_a, prop_b)
+          a = prop_a[:pattern]
+          b = prop_b[:pattern]
+          a.is_a?(::String) && b.is_a?(::String) && a != b
+        end
+
+        # Two literal SETS that share no member, or a literal set none of whose members the other side's
+        # type admits. Compared by `==` rather than `eql?`: an emitted `5` and `5.0` are the same JSON
+        # number and different Ruby objects, and `Array#&` would read them as disjoint.
+        def literals_disjoint?(prop_a, prop_b)
+          a = emitted_literals(prop_a)
+          b = emitted_literals(prop_b)
+
+          return a.none? { |x| b.any? { |y| x == y } } if a && b
+
+          literals, other = a ? [a, prop_b] : [b, prop_a]
+          return false if literals.nil?
+
+          types = emitted_json_types(other)
+          return false if types.empty?
+
+          literals.none? { |value| types.include?(json_type_of(value)) }
+        end
+
+        # A property's admitted values when it names them outright, or nil when it does not constrain the
+        # value set at all. `const` and `enum` are intersected rather than concatenated: both apply.
+        def emitted_literals(prop)
+          const = prop.key?(:const) ? [prop[:const]] : nil
+          enum = prop[:enum].is_a?(::Array) ? prop[:enum] : nil
+          return enum if const.nil?
+          return const if enum.nil?
+
+          const.select { |x| enum.any? { |y| x == y } }
+        end
+
+        def json_type_of(value)
+          case value
+          when nil then "null"
+          when true, false then "boolean"
+          when ::Integer then "integer"
+          when ::Numeric then "number"
+          when ::String then "string"
+          when ::Array then "array"
+          when ::Hash then "object"
+          end
+        end
+
+        # The floor/ceiling keyword pairs whose combined interval can be empty, each as
+        # [inclusive floor, exclusive floor, inclusive ceiling, exclusive ceiling].
+        NUMERIC_BOUND_PAIRS = [%i[minimum exclusiveMinimum maximum exclusiveMaximum]].freeze
+        SIZE_BOUND_PAIRS = [
+          [:minLength, nil, :maxLength, nil],
+          [:minItems, nil, :maxItems, nil],
+          [:minProperties, nil, :maxProperties, nil],
+        ].freeze
+
+        # Whether the two sides together impose a floor above their ceiling on some axis. Reads both sides
+        # as one constraint set, since that is what conjoining them would assert; an axis either side leaves
+        # open cannot contradict.
+        def interval_empty?(prop_a, prop_b, families)
+          families.any? do |inclusive_floor, exclusive_floor, inclusive_ceiling, exclusive_ceiling|
+            floor, floor_exclusive = strictest_bound(prop_a, prop_b, inclusive_floor, exclusive_floor, :max)
+            ceiling, ceiling_exclusive = strictest_bound(prop_a, prop_b, inclusive_ceiling, exclusive_ceiling, :min)
+            next false if floor.nil? || ceiling.nil?
+
+            floor_exclusive || ceiling_exclusive ? floor >= ceiling : floor > ceiling
+          end
+        end
+
+        # The tighter of the two sides' bounds on one end of an axis, as [value, exclusive?]. A FLOOR is
+        # tighter the higher it sits and a CEILING the lower; at equal values the EXCLUSIVE one is tighter
+        # either way, which is why the tie-break flips with the direction rather than being a fixed order.
+        def strictest_bound(prop_a, prop_b, inclusive_key, exclusive_key, direction)
+          candidates = [prop_a, prop_b].flat_map do |prop|
+            found = []
+            found << [prop[inclusive_key], false] if prop[inclusive_key].is_a?(::Numeric)
+            found << [prop[exclusive_key], true] if exclusive_key && prop[exclusive_key].is_a?(::Numeric)
+            found
+          end
+          return [nil, false] if candidates.empty?
+
+          if direction == :max
+            candidates.max_by { |value, exclusive| [value, exclusive ? 1 : 0] }
+          else
+            candidates.min_by { |value, exclusive| [value, exclusive ? 0 : 1] }
           end
         end
 

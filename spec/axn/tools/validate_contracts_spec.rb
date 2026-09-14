@@ -674,6 +674,24 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
       Axn::Tools.validate_contracts!
     end
 
+    # An engine runs `validate_contracts!` from `after_initialize` AND every `to_prepare`, and an adapter
+    # may reach the reader afterwards — so the guard has to live where both callers share it (the class),
+    # not on either one, or the same gap is announced again on every boot and reload.
+    it "warns once per class across repeated setup passes and a later reader call" do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool
+      warnings = 0
+      allow(Axn.config.logger).to receive(:warn) do |message|
+        warnings += 1 if message.include?("cannot state every constraint")
+      end
+
+      Axn::Tools.validate_contracts!
+      Axn::Tools.validate_contracts!
+      tool.input_schema
+
+      expect(warnings).to eq(1)
+    end
+
     it "says nothing for a tool whose contract it can state in full" do
       Axn::Tools.register_adapter(:mcp)
       valid_tool

@@ -356,6 +356,13 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       # unwatched. Gated SCALAR specifically: a gated Hash member's type can still hold beside the node's,
       # so it never reaches the contradiction.
       "gated scalar member" => proc { field :inner, type: String, if: -> { false } },
+      # No gated LITERAL member here, deliberately. This example reads "no probe payload satisfies the
+      # document" as its proxy for unsatisfiable, and that proxy cannot police a literal collision: with a
+      # payload-reachable literal on the member the runtime accepts nothing either and the row is skipped,
+      # and with one on the node the surviving document is satisfiable by a value outside the payload set,
+      # which is licensed strictness rather than emptiness. Both arrangements were measured by mutation and
+      # neither moved. The literal, numeric-bound, size-bound and pattern axes are covered directly in
+      # `schema_spec.rb`, each verified by mutation there.
     }
   end
 

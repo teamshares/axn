@@ -39,9 +39,17 @@ module Axn
       # rendered here through PropertyNames' own escaping labeler, the same rule the declaration errors
       # use: a declared name may hold bytes with no UTF-8 rendering, and interpolating those raw once
       # raised `Encoding::CompatibilityError` from inside the warning itself.
-      def self.warn_inexpressible_constraints(label, residues)
+      #
+      # Guarded ONCE PER CLASS here rather than at either call site: `validate_contracts!` runs from an
+      # engine's `after_initialize` AND every `to_prepare`, and an adapter may later reach the reader too,
+      # so a guard held by one caller lets the other repeat the same warning on every boot and reload. The
+      # memo lives on the class, which is what both callers share.
+      def self.warn_inexpressible_constraints(klass, residues)
         return if residues.empty?
+        return if klass.instance_variable_get(:@_axn_residue_warning_emitted)
 
+        klass.instance_variable_set(:@_axn_residue_warning_emitted, true)
+        label = klass.resolved_axn_name
         gaps = residues.map do |path, residue|
           rendered = path.map { |segment| Axn::Internal::Reflection::PropertyNames.renderable_label(segment) }.join(".")
           "#{rendered}: #{residue.summary}"
@@ -72,10 +80,7 @@ module Axn
         # this is the same gap said once, to the author, for the same reason the deep-subfield warning
         # above exists: a silent narrowing of the document is what PRO-3405 set out to stop.
         def _warn_inexpressible_constraints(residues)
-          return if @_axn_residue_warning_emitted || residues.empty?
-
-          @_axn_residue_warning_emitted = true
-          SchemaReflection.warn_inexpressible_constraints(resolved_axn_name, residues)
+          SchemaReflection.warn_inexpressible_constraints(self, residues)
         end
 
         # A deep subfield whose chain passes through a `model:` or non-object parent has no JSON-object
