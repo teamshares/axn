@@ -6326,6 +6326,56 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(klass.input_schema[:properties][:cfg][:default]).to eq(Axn::Internal::Reflection::Schema::RESIDUE_KEY => ["value"])
             end
 
+            # An axis view is synthesized rather than declared, so it only carries what it is built with.
+            # Carrying the klass alone hid the axis's OWN validators and the gates nested on them, and a
+            # conditional axis constraint was conjoined as though it always applied.
+            it "reflects a conditional axis constraint by what it always enforces" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) do
+                  field :inner, type: Hash, of: { values: { klass: String, inclusion: { in: %w[member], if: -> { false } } } }
+                end
+                expects :inner, on: :payload, type: Hash, of: { values: { klass: String, inclusion: { in: %w[node] } } }
+                def call = nil
+              end
+              values = klass.input_schema[:properties][:payload][:properties][:inner][:additionalProperties]
+
+              expect(values[:enum]).to eq(%w[node])
+              expect(values[:allOf]).to eq([{ type: "string" }])
+              expect(values[:description]).to include('"enum":["member"]')
+              expect(klass.call(payload: { inner: { k: "node" } })).to be_ok
+            end
+
+            # A residue only MENTIONS the fragment it declined to conjoin, so it must not impose a
+            # requirement ordinary reflection does not: `normalize_scalar_literal` deliberately keeps a
+            # `Float::INFINITY` default, and JSON cannot encode one.
+            it "mentions a literal JSON cannot encode without failing" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String }
+                expects :inner, on: :payload, type: Float, default: Float::INFINITY, optional: true, preprocess: ->(v) { v }
+                def call = nil
+              end
+
+              expect { klass.input_schema }.not_to raise_error
+              expect(klass.input_schema[:properties][:payload][:properties][:inner][:description]).to include("cannot express")
+            end
+
+            # An author's `description:` is caller-supplied text and may be valid in an encoding this
+            # generated prose cannot be concatenated with. Joining first and rendering after raises from
+            # inside the composition, which is the same class as the warning path's own encoding fix.
+            it "composes a description whose encoding cannot be joined to generated prose" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String, description: "hi".encode("UTF-16") }
+                expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+                def call = nil
+              end
+
+              expect { klass.input_schema }.not_to raise_error
+              expect(klass.input_schema[:properties][:payload][:properties][:inner][:description]).to include("cannot express")
+            end
+
             it "reports nothing when both sides describe the same wire value" do
               klass = Class.new do
                 include Axn

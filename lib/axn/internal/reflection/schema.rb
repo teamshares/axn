@@ -5,6 +5,11 @@ require "time"
 # A residue renders the fragment it declined to conjoin verbatim, so the builder cannot load without an encoder.
 require "json"
 
+# Prose a residue composes is caller-supplied in part, and a literal it mentions need not be JSON-encodable,
+# so both go through the seams that own rendering rather than being concatenated or encoded directly.
+require "axn/internal/text"
+require "axn/internal/rendering"
+
 require "axn/internal/identity"
 require "axn/internal/native_methods"
 require "axn/internal/subfield_tree"
@@ -175,7 +180,10 @@ module Axn
           if residues&.any?
             residues.each { |r| collected << [path.dup, r] }
             clause = "#{RESIDUE_PREFACE}#{residues.map(&:summary).join('; ')}."
-            schema[:description] = [schema[:description], clause].compact.join(" ")
+            # Each part is rendered BEFORE the join. An author's `description:` is caller-supplied text and
+            # may be valid in an encoding this generated prose cannot concatenate with (a UTF-16 String
+            # raises outright); joining first and rendering after would raise from inside the composition.
+            schema[:description] = join_prose(schema[:description], clause)
           end
 
           # Only the keywords that HOLD a subschema are descended into. Walking every Hash and Array
@@ -1439,7 +1447,11 @@ module Axn
         # axis mechanism itself has no coercion seam at all, ambient setting or not. Defining `preprocess`
         # to return nil would have made `respond_to?(:preprocess)` true, wrongly reusing the
         # ambient-uncertainty conservatism a coercible axis klass (e.g. `values: Integer`) does not earn.
-        AxisConfigView = Struct.new(:validations)
+        AxisConfigView = Struct.new(:validations) do
+          # So a view can be PROJECTED like any other config (`project_ungated`): an axis's own validators
+          # carry nested gates, and reflecting those by what always runs needs the same re-emission.
+          def with(validations:) = self.class.new(validations)
+        end
         private_constant :AxisConfigView
 
         # The `axis_key` (`:values`/`:keys`) axis's own declared klass token(s), one view per outer config
@@ -1480,7 +1492,11 @@ module Axn
             # collided with `Hash` in the other's as though BOTH were exact. Threading both through is what
             # lets every recursive lookup this file already has (`shape_members_at`, `axis_configs_for`
             # itself) keep working exactly as it does for an ordinary field's configs.
-            validations = {}
+            # The axis's OWN validators come across too, derived by subtracting the three bag keys this
+            # view maps itself rather than by naming Core's positional-validator list — a view that carried
+            # only the klass hid an axis's `inclusion:`/bounds AND the nested gates on them, so a
+            # conditional axis constraint was conjoined as though it always applied.
+            validations = axis ? axis.except(:klass, :of, :shape) : {}
             validations[:type] = token if token
             validations[:of] = nested_of if nested_of
             validations[:shape] = nested_shape if nested_shape
@@ -1623,7 +1639,7 @@ module Axn
             Axn::Validation::Base.entry_effectively_gated?(opt, declaration_gates(config))
           end
           projected = restore_blank_floor(build_property(config.with(validations: ungated), subfield: true), ungated, prop)
-          conditional = Residue.new(summary: "#{GATED_RESIDUE} (#{JSON.generate(prop.except(:description, RESIDUE_KEY).compact)})",
+          conditional = Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(prop.except(:description, RESIDUE_KEY).compact)})",
                                     kind: :conditional)
           [carry_metadata(projected, prop), conditional]
         end
@@ -1706,8 +1722,27 @@ module Axn
           kept.delete(:description) if kept[:description].nil?
           result = residues_on(dropped).reduce(kept) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
           constraint = dropped.except(:description, RESIDUE_KEY).compact
-          summary = constraint.empty? ? reason : "#{reason} (#{JSON.generate(constraint)})"
+          summary = constraint.empty? ? reason : "#{reason} (#{render_constraint(constraint)})"
           record_residue(result, summary)
+        end
+
+        # The fragment a residue MENTIONS, rendered without requiring the caller's literals to be
+        # JSON-encodable. They need not be: `normalize_scalar_literal` deliberately keeps a
+        # `Float::INFINITY` default and its kind, so ordinary reflection does not fail on one — and a path
+        # that merely NAMES such a value must not be the one that fails instead.
+        def render_constraint(prop)
+          JSON.generate(prop)
+        rescue ::StandardError
+          JSON.generate(prop.transform_values { |value| json_mentionable(value) })
+        end
+
+        # The value itself when JSON can carry it, else its rendering — through `Rendering`, so a `to_s` of
+        # the caller's own cannot raise here either.
+        def json_mentionable(value)
+          JSON.generate([value])
+          value
+        rescue ::StandardError
+          Axn::Internal::Rendering.value_rendering(value) || Axn::Internal::Rendering.class_name(value)
         end
 
         # An authored `description:` survives a stand-down even though the declaration's constraints do not:
@@ -1720,7 +1755,14 @@ module Axn
           return kept if dropped.nil? || kept == dropped
           return dropped if kept.nil?
 
-          "#{kept} #{dropped}"
+          join_prose(kept, dropped)
+        end
+
+        # Two pieces of prose joined through the text seam, either of which may be caller-supplied and in
+        # an encoding the other cannot be concatenated with.
+        def join_prose(*parts)
+          rendered = parts.compact.map { |part| Axn::Internal::Text.renderable(part.to_s) }
+          rendered.empty? ? nil : rendered.join(" ")
         end
 
         # "object", nullable or not, at the TOP of a property — the one shape merge_shape_member_property's
