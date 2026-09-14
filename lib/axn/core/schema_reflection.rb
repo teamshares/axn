@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+# Both warnings below go through Extensions.best_effort, so this component needs it whether or not the
+# umbrella entrypoint loaded it.
+require "axn/extensions"
 require "axn/internal/reflection"
 require "axn/internal/rendering"
 
@@ -79,11 +82,18 @@ module Axn
         return if gaps.empty?
 
         klass.instance_variable_set(:@_axn_residue_warnings, warned + gaps)
-        Axn.config.logger.warn(
-          "[Axn] #{label} input_schema cannot state every constraint the contract enforces — " \
-          "#{gaps.join('; ')}. Each is reported in that property's `description`; a caller obeying the " \
-          "schema may still be rejected at runtime.",
-        )
+        # A diagnostic may not decide whether reflection SUCCEEDS. A configured logger that raises — a closed
+        # stream, a backend that is gone — otherwise propagates out of `input_schema` and out of
+        # `Axn::Tools.validate_contracts!`, failing a projection that was built correctly, over the reporting
+        # of a gap rather than the gap itself. The memo above is deliberately set BEFORE this: the attempt is
+        # what it records, so a broken logger cannot turn one warning into one per reflection.
+        Axn::Extensions.best_effort("warning that #{label} input_schema cannot state every constraint", action: klass) do
+          Axn.config.logger.warn(
+            "[Axn] #{label} input_schema cannot state every constraint the contract enforces — " \
+            "#{gaps.join('; ')}. Each is reported in that property's `description`; a caller obeying the " \
+            "schema may still be rejected at runtime.",
+          )
+        end
       end
 
       module InputSchemaMethod
@@ -123,12 +133,16 @@ module Axn
           # UTF-8 message raised Encoding::CompatibilityError from the warning itself — so reflecting a schema
           # blew up over a subfield the warning exists to mention in passing.
           paths = dropped.map { |c| "#{_schema_name_label(c.field)} (on: #{_schema_name_label(c.on)})" }.join(", ")
-          Axn.config.logger.warn(
-            "[Axn] #{SchemaReflection.axn_name_label(self)} input_schema omits deep subfield(s) with no JSON representation — " \
-            "nested under a model: or non-object parent: #{paths}. They validate at runtime but are absent " \
-            "from the reflected input schema; restructure the parent as a Hash/:params field, or handle " \
-            "them in the adapter.",
-          )
+          # Guarded for the same reason its sibling above is, and at the same time: these two are the only
+          # log lines `input_schema` emits, so a raising logger reaching either one is the same failure.
+          Axn::Extensions.best_effort("warning that input_schema omits deep subfield(s)", action: self) do
+            Axn.config.logger.warn(
+              "[Axn] #{SchemaReflection.axn_name_label(self)} input_schema omits deep subfield(s) with no JSON representation — " \
+              "nested under a model: or non-object parent: #{paths}. They validate at runtime but are absent " \
+              "from the reflected input schema; restructure the parent as a Hash/:params field, or handle " \
+              "them in the adapter.",
+            )
+          end
         end
 
         # The UTF-8 property a declared name renders as, falling back to the escaped `inspect` when its bytes

@@ -6377,6 +6377,26 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               ["", {}, []].each { |blank| expect(klass.call(payload: { inner: blank })).not_to be_ok }
             end
 
+            # Both sides are ENFORCED, so a value-level set from each conjoins: the node admits only what
+            # satisfies both. A SCALAR pair gets that from the `allOf` branch, which conjoins by
+            # construction. Two OBJECT-shaped sides merge instead of branching, and a shallow merge left
+            # "second side wins" — the node advertised the later `inclusion:` verbatim and accepted a value
+            # the runtime rejects, the one direction inbound reflection may never take.
+            it "intersects the inclusion sets of two colliding object positions rather than taking the later one" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ a: 1 }, { b: 2 }] }
+                expects :inner, on: :payload, type: Hash, inclusion: [{ b: 2 }, { c: 3 }]
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:enum]).to eq([{ b: 2 }])
+              # The runtime is the reference: each side's own set is enforced, so only the shared member runs.
+              expect(klass.call(payload: { inner: { b: 2 } })).to be_ok
+              [{ a: 1 }, { c: 3 }].each { |v| expect(klass.call(payload: { inner: v })).not_to be_ok }
+            end
+
             it "honors a gate nested on the validator that carries the contradicting keyword" do
               klass = Class.new do
                 include Axn

@@ -1414,6 +1414,15 @@ module Axn
             merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties], member_configs:, own_configs:)
           end
           merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required]) if member_prop[:required] || own_prop[:required]
+          # `:enum` is a VALUE constraint, and both sides are enforced, so the merged node admits only what
+          # satisfies both — the same intersection `merge_enum!` composes a single property's enum by. The
+          # shallow merge above leaves "second side wins", which advertised the later `inclusion:` set alone:
+          # measured through json_schemer, two colliding object positions declaring `[{a: 1}, {b: 2}]` and
+          # `[{b: 2}, {c: 3}]` emitted the second verbatim and ACCEPTED `{c: 3}`, which the runtime rejects.
+          # A scalar pair never reached this — it takes the `allOf` branch, which conjoins by construction —
+          # so only the object-shaped path, which merges rather than branches, needed saying. An empty
+          # intersection is `enum: []`, already this emitter's spelling for a position nothing satisfies.
+          merged[:enum] = member_prop[:enum] & own_prop[:enum] if member_prop[:enum] && own_prop[:enum]
           merged[:minProperties] = [member_prop[:minProperties], own_prop[:minProperties]].compact.max if merged[:minProperties]
           merged[:maxProperties] = [member_prop[:maxProperties], own_prop[:maxProperties]].compact.min if merged[:maxProperties]
           # A map's `values:`/`keys:` axes (`additionalProperties`/`propertyNames`) are their OWN nested

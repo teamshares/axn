@@ -513,6 +513,29 @@ RSpec.describe "Axn class-level schema reflection" do
       3.times { deep_klass.input_schema }
     end
 
+    # A diagnostic may not decide whether reflection SUCCEEDS. A configured logger that raises — a closed
+    # stream, a backend that has gone away — otherwise propagates out of `input_schema` and out of
+    # `Axn::Tools.validate_contracts!`, failing a projection that was built correctly over the REPORTING of a
+    # gap rather than the gap itself. Both of the two log lines `input_schema` can emit are covered, because
+    # a guard on one of a matched pair is how the last one of these was missed.
+    it "still returns the schema when the logger itself raises" do
+      allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
+
+      expect(deep_klass.input_schema).to include(:properties)
+    end
+
+    it "still returns the schema when the logger raises on the inexpressible-constraint warning" do
+      allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
+      residue_klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, preprocess: ->(v) { v }
+        def call; end
+      end
+
+      expect(residue_klass.input_schema).to include(:properties)
+    end
+
     it "does not warn for a representable deep chain (object-shaped parents)" do
       representable = Class.new do
         include Axn
