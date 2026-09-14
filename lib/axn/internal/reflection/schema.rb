@@ -1635,25 +1635,52 @@ module Axn
           # EVERY contributing config is projected, not just the conditional one. A property at a merged
           # position is composed from more than one source, so rebuilding it from a single config discards
           # the others — and what it discarded included constraints that run on every call, which is
-          # looseness rather than a smaller document. The projections are intersected because that is what
-          # "everything that always runs" means, and intersection can only narrow.
-          projected = configs.map { |config| ungated_property(config) }
-                             .reduce { |left, right| intersect_projections(left, right) } || {}
-          conditional = Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(prop.except(:description, RESIDUE_KEY).compact)})",
-                                    kind: :conditional)
-          [carry_metadata(projected, prop), conditional]
+          # looseness rather than a smaller document.
+          projections = configs.map { |config| [config, build_property(config, subfield: true)] }
+                               .map { |config, full| [config, projected_property(config, full), full] }
+
+          # Reconciled before intersecting, for the reason the conjunction itself reconciles: an
+          # unknown-class route's type is `single_type_for`'s fabricated stand-in, and intersecting that
+          # against a route making a REAL claim describes a position nothing satisfies. The projections are
+          # separate properties, so the pairwise reconciliation the conjoin does has to be repeated here
+          # rather than inherited.
+          real_claim = projections.any? { |config, projected, _full| !unknown_class_approximate?([config]) && !asserts_nothing?(projected) }
+          reconciled = projections.map do |config, projected, _full|
+            real_claim && unknown_class_approximate?([config]) ? drop_fabricated_type(projected) : projected
+          end
+
+          projected = reconciled.reduce { |left, right| intersect_projections(left, right) } || {}
+          [carry_metadata(projected, prop), gating_residue(projections)]
         end
 
         # One config's property as emitted from the checks that run on every call.
-        def ungated_property(config)
+        def projected_property(config, full)
+          ungated = ungated_validations(config)
+          restore_blank_floor(build_property(config.with(validations: ungated), subfield: true), ungated, full)
+        end
+
+        def ungated_validations(config)
           gates = declaration_gates(config)
-          ungated = config.validations.reject do |key, opt|
+          config.validations.reject do |key, opt|
             next false if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.include?(key)
 
             Axn::Validation::Base.entry_effectively_gated?(opt, gates)
           end
-          restore_blank_floor(build_property(config.with(validations: ungated), subfield: true), ungated,
-                              build_property(config, subfield: true))
+        end
+
+        # What GATING removed, and nothing else. Rendering the whole pre-projection property instead named
+        # a position's unconditional constraints inside prose saying they apply only when a condition opens
+        # — contradictory guidance, and the residue exists to give a reader something it can act on. So the
+        # summary is the difference between what each config emits and what its always-run subset emits.
+        def gating_residue(projections)
+          removed = projections.each_with_object({}) do |(_config, projected, full), acc|
+            full.except(:description, RESIDUE_KEY).each do |key, value|
+              acc[key] = value unless projected[key] == value
+            end
+          end
+          return nil if removed.empty?
+
+          Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(removed)})", kind: :conditional)
         end
 
         def intersect_projections(left, right)

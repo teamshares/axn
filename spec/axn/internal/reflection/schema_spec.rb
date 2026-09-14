@@ -6252,7 +6252,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
               expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
-              expect(inner[:description]).to include('{"type":"string","enum":["x"],"minLength":1}')
+              # ONLY what gating removed — the unconditional `type`/`minLength` are asserted above, so naming
+              # them as conditional would be contradictory guidance.
+              expect(inner[:description]).to include('{"enum":["x"]}')
+              expect(inner[:description]).not_to include("minLength")
               # Nothing satisfies the runtime under either condition state, so a node nothing satisfies is
               # the faithful projection rather than the forbidden one.
               expect(klass.call(payload: { inner: { a: 1 } })).not_to be_ok
@@ -6397,6 +6400,28 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(JSON.generate(inner)).to include('"enum":["allowed"]')
               expect(klass.call(payload: { deep: { inner: "allowed" } })).to be_ok
               expect(klass.call(payload: { deep: { inner: "other" } })).not_to be_ok
+            end
+
+            # An unknown-class route's type is `single_type_for`'s fabricated stand-in, and the projections
+            # are separate properties — so the reconciliation the conjunction does pairwise has to be
+            # repeated when they are intersected, or the fake `"string"` meets a real `"object"` and the
+            # position admits nothing the runtime accepts.
+            it "reconciles a fabricated type before intersecting projections" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field(:deep, type: Hash) { field :inner, type: Object } }
+                expects(:deep, on: :payload, type: Hash) do
+                  field :inner, type: Hash, inclusion: { in: [{ a: 1 }], if: -> { false } }
+                end
+                expects :inner, on: "payload.deep", type: Hash
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:deep][:properties][:inner]
+
+              # No branch may assert the fabricated `"string"` against the real `"object"`.
+              expect(JSON.generate(inner)).not_to include('"type":"string"')
+              expect(inner).to include(type: "object")
+              expect(klass.call(payload: { deep: { inner: { k: 1 } } })).to be_ok
             end
 
             it "reports nothing when both sides describe the same wire value" do
