@@ -6199,6 +6199,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               "a literal no surviving size bound admits" => [
                 { type: String, inclusion: { in: ["ab"] } }, { type: String, length: { minimum: 5 } }, "abcde"
               ],
+              # A finite value set against the only side naming a `pattern`. There is no pattern PAIR here,
+              # so the literals settle it: a value set either holds something the pattern admits or it does
+              # not.
+              "a literal no lone pattern admits" => [
+                { type: String, inclusion: { in: ["a"] } }, { type: String, format: { with: /\Ab\z/ } }, "b"
+              ],
               # The UNDECIDABLE axis, where the burden inverts: two different patterns cannot be shown to
               # share a match at this cost, so they are not conjoined rather than conjoined on faith.
               "two patterns that cannot be shown to overlap" => [
@@ -6255,6 +6261,20 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
               expect(inner[:description]).to start_with("numeric identifier ")
               expect(inner[:description]).to include("cannot express")
+            end
+
+            # The control for the lone-pattern axis: a literal the pattern DOES admit is compatibility
+            # shown, so the gated side is conjoined and nothing is reported.
+            it "still conjoins a gated member whose literal the node's lone pattern admits" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String, inclusion: { in: ["b"] }, if: -> { false } }
+                expects :inner, on: :payload, type: String, format: { with: /\Ab\z/ }
+                def call = nil
+              end
+
+              expect(klass.input_schema[:properties][:payload][:properties][:inner]).to have_key(:allOf)
+              expect(residue_summaries(klass)).to be_empty
             end
 
             # Identical patterns ARE trivially compatible, which keeps the inverted burden from swallowing

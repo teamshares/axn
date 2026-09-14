@@ -1626,59 +1626,92 @@ module Axn
         # collision, where the alternative to standing down is a document that contradicts itself while the
         # contract stays satisfiable.
         #
-        # Two kinds of answer, and the asymmetry is the point. Most axes are DECIDABLE between two
-        # constraint sets over one value — a type set, a literal set, a floor against a ceiling — so a
-        # contradiction is proven outright. `pattern` is not: "do two regexes share a match" has no cheap
-        # always-correct answer, the same limit this file already stands down at for a transforming side's
-        # pattern. For an undecidable axis the burden inverts and the pair is treated as unsafe unless it
-        # can be shown COMPATIBLE, because the cost of the two mistakes is not symmetric: standing down
-        # loses a bound from a document that was only ever static-maximal speculation about a gated
-        # declaration, while conjoining wrongly emits a node no caller can satisfy.
+        # Three shapes of answer, and the differences between them are the design:
         #
-        # None of this is the coercion inverse the transform branch above refuses to compute. Every axis
-        # here compares two constraint sets over the SAME value, which is why the enumeration converges:
-        # adding an axis can only move a pair from "conjoined" to "stood down", never reverse an earlier
-        # answer.
+        # A side naming a FINITE value set collapses the question — the conjunction is satisfiable exactly
+        # when one of those values satisfies everything both sides assert, so `no_literal_satisfies?` asks
+        # that and is COMPLETE for the case. It replaced three pair-wise checks (literals against a type,
+        # against bounds, against a lone pattern), each of which had been added after the previous one
+        # turned out not to cover the next pair: a pair enumeration is only ever as complete as the pairs
+        # someone thought of, and this one is not an enumeration.
+        #
+        # With no finite set on either side, the remaining axes are decidable between two constraint sets —
+        # type against type, a floor against a ceiling — and prove a contradiction outright.
+        #
+        # `pattern` against `pattern` is the exception: "do two regexes share a match" has no cheap
+        # always-correct answer, the same limit this file already stands down at for a transforming side's
+        # pattern. There the burden inverts and the pair is unsafe unless shown COMPATIBLE, because the two
+        # mistakes do not cost the same — standing down loses a bound from a document that was only ever
+        # static-maximal speculation about a gated declaration, while conjoining wrongly emits a node no
+        # caller can satisfy.
+        #
+        # None of this is the coercion inverse the transform branch above refuses to compute: every check
+        # here compares two constraint sets over the SAME value, which is what keeps it from being that
+        # chase.
         def gated_conjunction_unsafe?(prop_a, prop_b)
           types_disjoint?(prop_a, prop_b) ||
-            literals_disjoint?(prop_a, prop_b) ||
             interval_empty?(prop_a, prop_b, NUMERIC_BOUND_PAIRS) ||
             interval_empty?(prop_a, prop_b, SIZE_BOUND_PAIRS) ||
-            literals_out_of_bounds?(prop_a, prop_b) ||
-            literals_out_of_bounds?(prop_b, prop_a) ||
+            no_literal_satisfies?(prop_a, prop_b) ||
+            no_literal_satisfies?(prop_b, prop_a) ||
             patterns_unprovable?(prop_a, prop_b)
         end
 
-        # One side names a finite value set and the two sides' BOUNDS together admit none of it — the axis
-        # neither the literal comparison nor the interval comparison sees, since there is only one literal
-        # set and only one floor/ceiling pair between them.
-        #
-        # A literal is judged only by the bounds its own JSON type answers to, because that is what a
-        # validator does: JSON Schema ignores `minimum` for a string and `minLength` for a number, so a
-        # non-numeric literal does not violate a numeric bound and is not counted as a contradiction.
-        def literals_out_of_bounds?(prop_with_literals, other)
+        def literal_matches_pattern?(value, pattern)
+          return false if value.include?("\n")
+
+          !::Regexp.new(pattern).match(value).nil?
+        rescue ::RegexpError, ::ArgumentError
+          false
+        end
+
+        # One side names a FINITE value set, which collapses the whole question: the conjunction is
+        # satisfiable exactly when one of those values satisfies every keyword both sides assert. So this
+        # asks that directly instead of comparing the literal axis against each other axis in turn —
+        # complete for the finite case, where a pair-by-pair enumeration is only ever as complete as the
+        # pairs someone thought of (literals against a type, then against bounds, then against a lone
+        # pattern, each found after the last).
+        def no_literal_satisfies?(prop_with_literals, other)
           literals = emitted_literals(prop_with_literals)
           return false if literals.nil? || literals.empty?
 
-          numeric = combined_interval(prop_with_literals, other, NUMERIC_BOUND_PAIRS.first)
-          sized = SIZE_BOUND_PAIRS.filter_map do |family|
-            interval = combined_interval(prop_with_literals, other, family)
-            interval unless interval.compact.empty?
-          end
-          return false if numeric.compact.empty? && sized.empty?
-
-          literals.none? { |value| literal_within?(value, numeric, sized) }
+          literals.none? { |value| literal_satisfies?(value, prop_with_literals, other) }
         end
 
-        def literal_within?(value, numeric, sized)
-          return within?(value, numeric) if value.is_a?(::Numeric)
+        # Whether one concrete value satisfies both sides at once, judged the way a validator judges it:
+        # every keyword applies only to the instance types JSON Schema applies it to, so a non-numeric value
+        # ignores a numeric bound and a non-string ignores a `pattern` rather than failing them.
+        def literal_satisfies?(value, prop_a, prop_b)
+          type = json_type_of(value)
+          return false unless [prop_a, prop_b].all? { |prop| type_admitted?(type, prop) && literal_admitted?(value, prop) }
+
+          return false if value.is_a?(::Numeric) && !within?(value, combined_interval(prop_a, prop_b, NUMERIC_BOUND_PAIRS.first))
 
           size = literal_size(value)
-          return true if size.nil?
+          return false if size && !SIZE_BOUND_PAIRS.all? { |family| within?(size, combined_interval(prop_a, prop_b, family)) }
 
-          sized.all? { |interval| within?(size, interval) }
+          return true unless value.is_a?(::String)
+
+          [prop_a[:pattern], prop_b[:pattern]].compact.all? { |pattern| literal_matches_pattern?(value, pattern) }
         end
 
+        # A property admits this JSON type when it names none, names it, or names "number" for an integer —
+        # a JSON integer is a number, and the emitted types are not otherwise related by subtyping.
+        def type_admitted?(type, prop)
+          types = emitted_json_types(prop)
+          return true if types.empty?
+          return true if types.include?(type)
+
+          type == "integer" && types.include?("number")
+        end
+
+        # A property admits this value when it names no value set of its own, or names one holding it.
+        def literal_admitted?(value, prop)
+          literals = emitted_literals(prop)
+          literals.nil? || literals.any? { |other| other == value }
+        end
+
+        # The size a bound would measure on this value, or nil for one no size keyword applies to.
         def literal_size(value)
           case value
           when ::String, ::Array then value.length
@@ -1707,24 +1740,6 @@ module Axn
           a = prop_a[:pattern]
           b = prop_b[:pattern]
           a.is_a?(::String) && b.is_a?(::String) && a != b
-        end
-
-        # Two literal SETS that share no member, or a literal set none of whose members the other side's
-        # type admits. Compared by `==` rather than `eql?`: an emitted `5` and `5.0` are the same JSON
-        # number and different Ruby objects, and `Array#&` would read them as disjoint.
-        def literals_disjoint?(prop_a, prop_b)
-          a = emitted_literals(prop_a)
-          b = emitted_literals(prop_b)
-
-          return a.none? { |x| b.any? { |y| x == y } } if a && b
-
-          literals, other = a ? [a, prop_b] : [b, prop_a]
-          return false if literals.nil?
-
-          types = emitted_json_types(other)
-          return false if types.empty?
-
-          literals.none? { |value| types.include?(json_type_of(value)) }
         end
 
         # A property's admitted values when it names them outright, or nil when it does not constrain the
