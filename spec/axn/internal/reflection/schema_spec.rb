@@ -6504,6 +6504,46 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(JSON.generate(klass.input_schema)).not_to include('"enum":[true]')
             end
 
+            # Two sources can write ONE keyword: a gated `TrueClass` emits `enum: [true]` and so does an
+            # unconditional `inclusion:`. Subtracting the type's contribution BY KEY removed the
+            # inclusion's with it, and the position went back to accepting what that always-running
+            # validator rejects.
+            it "keeps an unconditional constraint that shares a keyword with the conditional type" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) do
+                  field :inner, type: { klass: TrueClass, if: -> { false } }, inclusion: { in: [true] }
+                end
+                expects :inner, on: :payload, inclusion: { in: [true, "x"] }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(JSON.generate(inner[:allOf])).to include('"enum":[true]')
+              expect(klass.call(payload: { inner: true })).to be_ok
+              expect(klass.call(payload: { inner: "x" })).not_to be_ok
+            end
+
+            # Reflection may never run a caller's code, and `JSON.generate` dispatches `to_json` — so the
+            # report is composed from values reduced to primitives FIRST, not encoded and rescued. A
+            # `to_json` raising outside StandardError escaped the rescue and took `input_schema` down while
+            # it was only naming a default it had declined to conjoin.
+            it "composes a report without dispatching a literal's own serializer" do
+              opaque = Class.new do
+                def to_json(*) = raise(NotImplementedError, "nope")
+                def to_s = "opaque"
+              end
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String }
+                expects :inner, on: :payload, type: String, default: opaque.new, optional: true,
+                                preprocess: ->(v) { v }
+                def call = nil
+              end
+
+              expect { klass.input_schema }.not_to raise_error
+            end
+
             it "reports nothing when both sides describe the same wire value" do
               klass = Class.new do
                 include Axn

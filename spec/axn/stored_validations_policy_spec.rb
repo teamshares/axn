@@ -64,18 +64,19 @@ RSpec.describe "constructors of a stored validations bag" do
   # entry from an already-cleared bag. Dropping entries preserves it; rewriting a retained entry's VALUE does
   # not, even though it adds no key — that needs a seam.
   #
-  # The four are `effective_validations` (drops per-validator-gated entries on the outbound projection) and
-  # `projected_property`'s three, which reflect a conditional declaration by what it enforces on every call:
-  # the ungated subset; that subset with the config's OWN `type:` entry put back, so an unconditional
-  # `length:`/`presence:` keeps the JSON spelling the type gives it; and the type entry ALONE, whose emitted
-  # keys are then subtracted so the gated type's own claims (`enum: [true]` for a TrueClass, `format` for a
-  # `:uuid`) do not survive it.
+  # The five are `effective_validations` (drops per-validator-gated entries on the outbound projection) and
+  # `projected_property`'s four, which reflect a conditional declaration by what it enforces on every call:
+  # the ungated subset, built twice — once alone (what the other validators say with no type at all) and
+  # once with the config's OWN `type:` entry put back (so an unconditional `length:`/`presence:` keeps the
+  # JSON spelling the type gives it) — plus the type entry ALONE, whose keys mark what the gated type claims
+  # for itself and must not survive it. Two builds of the ungated subset rather than one because a gated
+  # type and an unconditional validator can write the SAME keyword, and subtracting by key alone loses both.
   #
   # All four hold the property: every retained entry is an unmodified entry from an already-cleared bag.
   # Dropping preserves it, and so does putting an entry BACK unchanged from the same bag — what it forbids
   # is rewriting a retained entry's value, which none of them does.
   EXPECTED_BAG_DERIVATIONS = {
-    "lib/axn/internal/reflection/schema.rb" => 4,
+    "lib/axn/internal/reflection/schema.rb" => 5,
   }.freeze
 
   DERIVATION_PATTERN = /\.with\((?:[^()]|\([^()]*\))*\bvalidations:/

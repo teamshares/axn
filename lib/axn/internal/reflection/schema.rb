@@ -1664,9 +1664,16 @@ module Axn
           return restore_blank_floor(build_property(config.with(validations: ungated), subfield: true), ungated, full) if
             type.nil? || ungated.key?(:type)
 
+          typeless = build_property(config.with(validations: ungated), subfield: true)
           emitted = build_property(config.with(validations: ungated.merge(type:)), subfield: true)
           type_only = build_property(config.with(validations: { type: }), subfield: true)
-          restore_blank_floor(emitted.except(*type_only.keys), ungated, full)
+
+          # Three builds, because two sources can write ONE keyword and subtracting by key loses both: a
+          # gated `TrueClass` and an unconditional `inclusion:` each emit `enum`, and removing the type's
+          # `enum` removed the inclusion's with it. So the always-run property is what the other validators
+          # say WITHOUT the type (`typeless`), plus the keywords they could only spell THROUGH it — which is
+          # every key the type does not claim for itself.
+          restore_blank_floor(typeless.merge(emitted.reject { |key, _| type_only.key?(key) }), ungated, full)
         end
 
         def ungated_validations(config)
@@ -1783,17 +1790,30 @@ module Axn
         # `Float::INFINITY` default and its kind, so ordinary reflection does not fail on one — and a path
         # that merely NAMES such a value must not be the one that fails instead.
         def render_constraint(prop)
-          JSON.generate(prop)
-        rescue ::StandardError
-          JSON.generate(prop.transform_values { |value| json_mentionable(value) })
+          JSON.generate(json_mentionable(prop))
         end
 
-        # The value itself when JSON can carry it, else its rendering — through `Rendering`, so a `to_s` of
-        # the caller's own cannot raise here either.
+        # `value` reduced to something JSON can carry WITHOUT asking it anything. Reducing first rather than
+        # encoding and rescuing is the point: `JSON.generate` dispatches `to_json`, so encoding a caller's
+        # own object runs its code — which this layer may never do, and which a `StandardError` rescue does
+        # not contain anyway (a `to_json` raising `NotImplementedError` escaped one and took `input_schema`
+        # down while it was merely composing a report).
+        #
+        # Everything that reaches the encoder is a plain primitive: a String through `Text.renderable`, so
+        # neither a subclass's `to_json` nor bytes with no UTF-8 rendering reach it, and anything else
+        # through `Rendering`, whose reads are bound.
         def json_mentionable(value)
-          JSON.generate([value])
-          value
-        rescue ::StandardError
+          case value
+          when nil, true, false, ::Integer then value
+          when ::Float then value.finite? ? value : mentionable_rendering(value)
+          when ::String, ::Symbol then Axn::Internal::Text.renderable(value.to_s)
+          when ::Array then value.map { |element| json_mentionable(element) }
+          when ::Hash then value.to_h { |key, nested| [json_mentionable(key), json_mentionable(nested)] }
+          else mentionable_rendering(value)
+          end
+        end
+
+        def mentionable_rendering(value)
           Axn::Internal::Rendering.value_rendering(value) || Axn::Internal::Rendering.class_name(value)
         end
 
