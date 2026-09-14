@@ -4323,6 +4323,52 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect { klass.input_schema }.not_to raise_error
       end
     end
+
+    # The same rule again at the two OTHER reads the reporting path makes of a caller's own object: the
+    # `true`/`false` test the reduction opens with, and the author's `description:`, which is joined and
+    # compared while the residue prose is appended to it.
+    it "tests a literal against true/false without dispatching its own ==" do
+      hostile = Class.new { def ==(_other) = raise(NotImplementedError, "== ran") }
+      literal = hostile.new
+      klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true,
+                        default: literal, preprocess: ->(v) { v }
+        def call; end
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
+
+    it "appends residue prose to a String-subclass description: without running its to_s" do
+      hostile = Class.new(String) { def to_s = raise(NotImplementedError, "description to_s ran") }
+      prose = hostile.new("authored")
+      klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true,
+                        description: prose, preprocess: ->(v) { v }
+        def call; end
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+      expect(klass.input_schema.dig(:properties, :payload, :properties, :inner, :description)).to include("authored")
+    end
+
+    it "collapses an identical description pair without dispatching the description's ==" do
+      hostile = Class.new(String) { def ==(_other) = raise(NotImplementedError, "description == ran") }
+      prose = hostile.new("shared prose")
+      klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String, description: prose }
+        expects :inner, on: :payload, type: String, optional: true,
+                        description: prose, preprocess: ->(v) { v }
+        def call; end
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
   end
 
   # Deep subfields (PRO-2872): a dotted `on:` path, a subfield-of-a-subfield, and a dotted field

@@ -119,6 +119,13 @@ module Axn
 
         RESIDUE_PREFACE = "Additional constraints apply that JSON Schema cannot express: "
 
+        # The container reads the residue reduction makes, held UNBOUND. Exact class is not enough on its
+        # own: an exact Array or Hash can still carry a singleton `map`/`each_pair`, so the reduction reaches
+        # for Array's and Hash's own.
+        MENTIONABLE_MAP = ::Array.instance_method(:map)
+        MENTIONABLE_EACH_PAIR = ::Hash.instance_method(:each_pair)
+        private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
+
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
 
         # Every blank a JSON document can carry. `false` is among them: ActiveSupport counts it blank, which
@@ -1803,21 +1810,38 @@ module Axn
         # neither a subclass's `to_json` nor bytes with no UTF-8 rendering reach it, and anything else
         # through `Rendering`, whose reads are bound.
         #
-        # Matched with `instance_of?`, never `===`/`is_a?`, for the reason `normalize_schema_literal` already
-        # traverses exact built-ins only: a String/Array/Hash SUBCLASS can override the very `to_s`/`map`/
-        # `to_h` a reduction would reach for, so it is opaque here and renders as one. Reducing is only a
-        # defence if the reduction itself dispatches nothing.
+        # EVERY test and read here is undispatched, because a reduction is only a defence if the reduction
+        # itself runs nothing. `nil?`, `==`, `instance_of?` and `map` are all overridable by the literal, so
+        # identity comes from `Identity.same?`, the class from `Identity.class_of`, and the two container
+        # walks from Array's and Hash's own unbound methods. Only an EXACT built-in is traversed, the rule
+        # `normalize_schema_literal` already follows: a subclass is opaque and renders as one.
+        #
+        # Integer/Float/Symbol need no bound read beyond the class test — none of the three can carry a
+        # singleton method, so an exact one answers with its own implementation or not at all.
         def json_mentionable(value)
-          return value if value.nil? || value == true || value == false || value.instance_of?(::Integer)
-          return value.finite? ? value : mentionable_rendering(value) if value.instance_of?(::Float)
+          return value if Axn::Internal::Identity.nil_value?(value) || Axn::Internal::Identity.same?(value, true) || Axn::Internal::Identity.same?(value, false)
+          return value if exactly?(value, ::Integer)
+          return value.finite? ? value : mentionable_rendering(value) if exactly?(value, ::Float)
           # `Text.renderable` reads the bytes through bound methods, so the String itself goes in — asking it
           # for `to_s` first would dispatch, which is the thing this method exists not to do.
-          return Axn::Internal::Text.renderable(value) if value.instance_of?(::String)
-          return Axn::Internal::Text.renderable(value.name) if value.instance_of?(::Symbol)
-          return value.map { |element| json_mentionable(element) } if value.instance_of?(::Array)
-          return value.to_h { |key, nested| [json_mentionable(key), json_mentionable(nested)] } if value.instance_of?(::Hash)
+          return Axn::Internal::Text.renderable(value) if exactly?(value, ::String)
+          return Axn::Internal::Text.renderable(value.name) if exactly?(value, ::Symbol)
+          return MENTIONABLE_MAP.bind_call(value) { |element| json_mentionable(element) } if exactly?(value, ::Array)
+          return mentionable_pairs(value) if exactly?(value, ::Hash)
 
           mentionable_rendering(value)
+        end
+
+        # `value` is an instance of `klass` ITSELF, asking neither the value nor its class. A subclass
+        # answers false: it may override the reads a traversal would make.
+        def exactly?(value, klass) = Axn::Internal::Identity.same?(Axn::Internal::Identity.class_of(value), klass)
+
+        # An exact Hash walked through Hash's own `each_pair`. Every reduced key is a plain primitive, so the
+        # `[]=` that collects them hashes something axn built rather than something it was handed.
+        def mentionable_pairs(value)
+          MENTIONABLE_EACH_PAIR.bind_call(value).each_with_object({}) do |(key, nested), reduced|
+            reduced[json_mentionable(key)] = json_mentionable(nested)
+          end
         end
 
         def mentionable_rendering(value)
@@ -1830,17 +1854,26 @@ module Axn
         # own prose in the ordinary case — a shape member cannot transform, so the node is nearly always the
         # side that stands down, and its description was published before this. Both are kept when both
         # exist, and an identical pair collapses.
+        # Both descriptions are the AUTHOR'S OWN prose, so neither is asked anything: each is reduced through
+        # the rendering seam first, and the equal-pair collapse then compares two plain Strings axn owns
+        # rather than dispatching a `==` the description's class may define.
         def carried_description(kept, dropped)
-          return kept if dropped.nil? || kept == dropped
-          return dropped if kept.nil?
+          return kept if Axn::Internal::Identity.nil_value?(dropped)
+          return dropped if Axn::Internal::Identity.nil_value?(kept)
 
-          join_prose(kept, dropped)
+          kept_prose = mentionable_rendering(kept)
+          dropped_prose = mentionable_rendering(dropped)
+          kept_prose == dropped_prose ? kept_prose : join_prose(kept_prose, dropped_prose)
         end
 
         # Two pieces of prose joined through the text seam, either of which may be caller-supplied and in
         # an encoding the other cannot be concatenated with.
+        #
+        # Reduced through `mentionable_rendering`, never `to_s`: a String SUBCLASS description can override
+        # `to_s`, and one that raises took `input_schema` down from inside the append. The seam reads a
+        # String's bytes through bound methods and guards everything else.
         def join_prose(*parts)
-          rendered = parts.compact.map { |part| Axn::Internal::Text.renderable(part.to_s) }
+          rendered = parts.reject { |part| Axn::Internal::Identity.nil_value?(part) }.map { |part| mentionable_rendering(part) }
           rendered.empty? ? nil : rendered.join(" ")
         end
 
