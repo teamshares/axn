@@ -1448,7 +1448,7 @@ module Axn
         # to return nil would have made `respond_to?(:preprocess)` true, wrongly reusing the
         # ambient-uncertainty conservatism a coercible axis klass (e.g. `values: Integer`) does not earn.
         AxisConfigView = Struct.new(:validations) do
-          # So a view can be PROJECTED like any other config (`project_ungated`): an axis's own validators
+          # So a view can be PROJECTED like any other config (`gate_resolved_sides`): an axis's own validators
           # carry nested gates, and reflecting those by what always runs needs the same re-emission.
           def with(validations:) = self.class.new(validations)
         end
@@ -1569,89 +1569,71 @@ module Axn
         # Two sides that are both unknown-class hints fall back to the same permissive shape and cannot
         # contradict each other, so neither is stripped.
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
-          member_transforms = transforms_wire_value?(member_configs)
-          own_transforms = transforms_wire_value?(own_configs)
+          sides, residues = gate_resolved_sides([[member_prop, member_configs], [own_prop, own_configs]])
+          prop, carried = left_of(sides.reduce { |left, right| combine_two(left, right) })
+          (carried + residues).reduce(prop) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
+        end
 
-          if member_transforms ^ own_transforms
-            kept, dropped = member_transforms ? [own_prop, member_prop] : [member_prop, own_prop]
-            return stand_down_from(kept, dropped, TRANSFORM_RESIDUE)
+        # Every side to be combined, with each CONDITIONAL one replaced by the always-run property of each
+        # config that contributed to it — and the residues naming what those conditions still enforce.
+        #
+        # A conditional side expands to one side PER config rather than being collapsed here, which is the
+        # whole point of the shape: the combination then runs through `combine_two` exactly as any other
+        # pair does, so a fabricated type is reconciled, an empty side is merged rather than branched, and a
+        # transform stands down — none of it reimplemented. Combining projections with bespoke logic beside
+        # the real conjunction is what diverged from it three times.
+        def gate_resolved_sides(sides)
+          residues = []
+          expanded = sides.flat_map do |prop, configs|
+            next [[prop, configs]] if configs.none? { |config| conditional_checks?(config) }
+
+            projections = configs.map { |config| [config, build_property(config, subfield: true)] }
+                                 .map { |config, full| [config, projected_property(config, full), full] }
+            residues.concat(gating_residues(projections))
+            projections.map { |config, projected, _full| [carry_metadata(projected, prop), [config]] }
+          end
+          [expanded, residues]
+        end
+
+        # Two sides combined: the one place that decides what "both of these apply" emits, whatever the
+        # sides came from.
+        def combine_two((left_prop, left_configs), (right_prop, right_configs))
+          left_transforms = transforms_wire_value?(left_configs)
+          right_transforms = transforms_wire_value?(right_configs)
+
+          if left_transforms ^ right_transforms
+            kept, dropped = left_transforms ? [right_prop, left_prop] : [left_prop, right_prop]
+            return [stand_down_from(kept, dropped, TRANSFORM_RESIDUE), left_configs + right_configs]
           end
 
-          # A CONDITIONAL declaration is reflected here by what it enforces on EVERY call, not by pretending
-          # its condition holds. Elsewhere the emitter is static-maximal — it reflects `if:`/`unless:` as
-          # though the gate were open, which is stricter and therefore licensed. At a COLLISION that reading
-          # states something false: a gated `type: String` member beside an ungated `type: Hash` node
-          # describes a position no value satisfies, while the runtime accepts a Hash on every call the
-          # condition closes. A document nothing satisfies is not a conservative document, it is a wrong one
-          # — AGENTS.md names it the worse of the two forbidden residuals.
-          #
-          # So each side is conjoined through its UNGATED PROJECTION (`ungated_projection`): the property it
-          # emits from the checks that always run. That is a statement true of every call rather than of
-          # some, it needs no reasoning about whether the two sides can be satisfied together — the question
-          # six review rounds could not answer completely — and what the condition still enforces is
-          # reported as a residue instead of asserted.
-          member_prop, member_conditional = project_ungated(member_prop, member_configs)
-          own_prop, own_conditional = project_ungated(own_prop, own_configs)
-          conditional = Array(member_conditional) + Array(own_conditional)
-
-          member_unknown = unknown_class_approximate?(member_configs)
-          own_unknown = unknown_class_approximate?(own_configs)
-          member_prop = drop_fabricated_type(member_prop) if member_unknown && !own_unknown && !asserts_nothing?(own_prop)
-          own_prop = drop_fabricated_type(own_prop) if own_unknown && !member_unknown && !asserts_nothing?(member_prop)
+          left_unknown = unknown_class_approximate?(left_configs)
+          right_unknown = unknown_class_approximate?(right_configs)
+          left_prop = drop_fabricated_type(left_prop) if left_unknown && !right_unknown && !asserts_nothing?(right_prop)
+          right_prop = drop_fabricated_type(right_prop) if right_unknown && !left_unknown && !asserts_nothing?(left_prop)
 
           # Residues belong to the POSITION, not to whichever branch happened to raise them: a reader looks
           # at the property, and a sentence buried in one `allOf` entry reads as a note about that entry.
-          # So they come off both sides here and go back on the finished node below.
-          carried = residues_on(member_prop) + residues_on(own_prop) + conditional
-          member_prop = member_prop.except(RESIDUE_KEY)
-          own_prop = own_prop.except(RESIDUE_KEY)
+          # So they come off both sides here and are re-recorded on the finished node.
+          carried = residues_on(left_prop) + residues_on(right_prop)
+          left_prop = left_prop.except(RESIDUE_KEY)
+          right_prop = right_prop.except(RESIDUE_KEY)
 
           # A side stripped down to nothing is not a branch either — an `allOf` entry asserting no keyword
           # constrains nothing — so it routes through the merge, which already handles an absent side.
-          conjoined =
-            if asserts_nothing?(member_prop) || asserts_nothing?(own_prop) ||
-               (object_property?(member_prop) && object_property?(own_prop))
-              merge_shape_member_property(member_prop, own_prop, member_configs:, own_configs:)
+          combined =
+            if asserts_nothing?(left_prop) || asserts_nothing?(right_prop) ||
+               (object_property?(left_prop) && object_property?(right_prop))
+              merge_shape_member_property(left_prop, right_prop, member_configs: left_configs, own_configs: right_configs)
             else
-              own_prop.merge(allOf: Array(own_prop[:allOf]) + [member_prop])
+              right_prop.merge(allOf: Array(right_prop[:allOf]) + [left_prop])
             end
 
-          carried.reduce(conjoined) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
+          [carried.reduce(combined) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }, left_configs + right_configs]
         end
 
-        # This side re-emitted from the checks that run on EVERY call, paired with a residue naming what its
-        # conditional checks still enforce — or the property untouched and no residue, when nothing about it
-        # is conditional (the ordinary case).
-        #
-        # Gatedness is asked of EFFECTIVE gates, never of an entry's own: a declaration-level `if:` belongs
-        # to no single entry and stops every one of them just the same, so a test consulting only nested
-        # gates answers "ungated" for the commonest spelling there is.
-        #
-        # The config projected is the one the property was BUILT from — the representative, as
-        # `apply_structured_schema!` and the conjoin's callers select it — so the projection describes the
-        # same declaration the property does rather than a sibling route's.
-        def project_ungated(prop, configs)
-          return [prop, []] if configs.none? { |config| conditional_checks?(config) }
-
-          # EVERY contributing config is projected, not just the conditional one. A property at a merged
-          # position is composed from more than one source, so rebuilding it from a single config discards
-          # the others — and what it discarded included constraints that run on every call, which is
-          # looseness rather than a smaller document.
-          projections = configs.map { |config| [config, build_property(config, subfield: true)] }
-                               .map { |config, full| [config, projected_property(config, full), full] }
-
-          # Reconciled before intersecting, for the reason the conjunction itself reconciles: an
-          # unknown-class route's type is `single_type_for`'s fabricated stand-in, and intersecting that
-          # against a route making a REAL claim describes a position nothing satisfies. The projections are
-          # separate properties, so the pairwise reconciliation the conjoin does has to be repeated here
-          # rather than inherited.
-          real_claim = projections.any? { |config, projected, _full| !unknown_class_approximate?([config]) && !asserts_nothing?(projected) }
-          reconciled = projections.map do |config, projected, _full|
-            real_claim && unknown_class_approximate?([config]) ? drop_fabricated_type(projected) : projected
-          end
-
-          projected = reconciled.reduce { |left, right| intersect_projections(left, right) } || {}
-          [carry_metadata(projected, prop), gating_residues(projections)]
+        # The finished property and the residues still riding on it.
+        def left_of((prop, _configs))
+          [prop.except(RESIDUE_KEY), residues_on(prop)]
         end
 
         # One config's property as emitted from the checks that run on every call.
@@ -1685,13 +1667,6 @@ module Axn
 
             Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(removed)})", kind: :conditional)
           end
-        end
-
-        def intersect_projections(left, right)
-          return left if asserts_nothing?(right)
-          return right if asserts_nothing?(left)
-
-          left.merge(allOf: Array(left[:allOf]) + [right])
         end
 
         def conditional_checks?(config)
