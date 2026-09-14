@@ -6167,11 +6167,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(klass.call(payload: { inner: { a: 1 } })).to be_ok # the working contract this protects
             end
 
-            # The type axis is not the only one a collision can contradict. These are the other axes the
-            # emptiness test can PROVE — literals, a literal against the other side's type, and a
-            # floor/ceiling interval — each of which produced a node nothing satisfies for a contract the
-            # closed gate keeps satisfiable. A `pattern` pair is deliberately not among them: regex
-            # intersection has no cheap always-correct answer, so such a collision stays conjoined.
+            # A conditional declaration is reflected by what it enforces on EVERY call, so none of these
+            # contradictions can reach the document at all — whatever the gated half would have asserted is
+            # reported instead. Each row is a shape that previously produced a node nothing satisfies for a
+            # contract the closed condition keeps satisfiable, and each is now satisfiable by construction
+            # rather than because some emptiness prover recognised it. That is the point: there is no prover
+            # left to be incomplete.
             {
               "literal sets that share no member" => [
                 { type: String, inclusion: { in: ["member"] } }, { type: String, inclusion: { in: ["node"] } }, "node"
@@ -6237,6 +6238,45 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             # carries the gate and contributes the contradictory `enum`, while the type is asserted on
             # every call. A check reading only the type entry conjoined that enum as though it always
             # applied.
+            # The half that always runs is NOT given up. This is the pair the projection exists to keep
+            # apart: an unconditional `type: String` beside a conditional `inclusion:` — the type reaches
+            # the document (and here contradicts the node, correctly, since the runtime accepts nothing
+            # either way), while only the conditional enum is reported.
+            it "keeps the unconditional half of a partly conditional declaration" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String, inclusion: { in: %w[x], if: -> { false } } }
+                expects :inner, on: :payload, type: Hash
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
+              expect(inner[:description]).to include('{"type":"string","enum":["x"],"minLength":1}')
+              # Nothing satisfies the runtime under either condition state, so a node nothing satisfies is
+              # the faithful projection rather than the forbidden one.
+              expect(klass.call(payload: { inner: { a: 1 } })).not_to be_ok
+              expect(klass.call(payload: { inner: "x" })).not_to be_ok
+            end
+
+            # The only thing a projection can lose that is not conditional. `minLength`/`minProperties` are
+            # derived from the TYPE, so stripping a conditional `type:` also strips the JSON spelling of an
+            # UNCONDITIONAL `presence:`. Restated as a value-level floor, the one spelling left when no type
+            # survives — without it the node comes back admitting blanks the runtime rejects on every call.
+            it "restates the blank floor when the conditional half was the type" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: { klass: String, if: -> { false } } }
+                expects :inner, on: :payload, type: { klass: Hash, if: -> { false } }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              floors = [inner[:not], *Array(inner[:allOf]).map { |b| b[:not] }].compact
+              expect(floors).to include(enum: ["", [], {}, false])
+              ["", {}, []].each { |blank| expect(klass.call(payload: { inner: blank })).not_to be_ok }
+            end
+
             it "honors a gate nested on the validator that carries the contradicting keyword" do
               klass = Class.new do
                 include Axn
@@ -6246,8 +6286,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
-              expect(inner).not_to have_key(:allOf)
+              # The gated `enum` is reported, never asserted; the member's unconditional type rides alongside.
+              expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
               expect(constraints(inner)).to include(enum: ["node"])
+              expect(inner[:description]).to include('"enum":["member"]')
               expect(klass.call(payload: { inner: "node" })).to be_ok
             end
 
@@ -6269,82 +6311,6 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(inner[:description]).to include("cannot express")
             end
 
-            # The control for the format axis: a literal the format DOES admit still conjoins, judged by
-            # `TypeValidator`'s own matcher so the document and the runtime cannot disagree about what a
-            # uuid is.
-            it "still conjoins a gated member whose format the node's literal satisfies" do
-              klass = Class.new do
-                include Axn
-                expects(:payload, type: Hash) { field :inner, type: :uuid, if: -> { false } }
-                expects :inner, on: :payload, type: String, inclusion: { in: ["550e8400-e29b-41d4-a716-446655440000"] }
-                def call = nil
-              end
-
-              expect(klass.input_schema[:properties][:payload][:properties][:inner]).to have_key(:allOf)
-              expect(residue_summaries(klass)).to be_empty
-            end
-
-            # The control for the lone-pattern axis: a literal the pattern DOES admit is compatibility
-            # shown, so the gated side is conjoined and nothing is reported.
-            it "still conjoins a gated member whose literal the node's lone pattern admits" do
-              klass = Class.new do
-                include Axn
-                expects(:payload, type: Hash) { field :inner, type: String, inclusion: { in: ["b"] }, if: -> { false } }
-                expects :inner, on: :payload, type: String, format: { with: /\Ab\z/ }
-                def call = nil
-              end
-
-              expect(klass.input_schema[:properties][:payload][:properties][:inner]).to have_key(:allOf)
-              expect(residue_summaries(klass)).to be_empty
-            end
-
-            # Identical patterns ARE trivially compatible, which keeps the inverted burden from swallowing
-            # every pattern pair.
-            it "still conjoins a gated member whose pattern is identical to the node's" do
-              klass = Class.new do
-                include Axn
-                expects(:payload, type: Hash) { field :inner, type: String, format: { with: /\Aa+\z/ }, if: -> { false } }
-                expects :inner, on: :payload, type: String, format: { with: /\Aa+\z/ }
-                def call = nil
-              end
-
-              expect(residue_summaries(klass)).to be_empty
-            end
-
-            # The negative control for the axis above: a floor BELOW the other's ceiling is no
-            # contradiction, so the gated side is conjoined and nothing is reported.
-            it "still conjoins a gated member whose bounds leave a satisfiable interval" do
-              klass = Class.new do
-                include Axn
-                expects(:payload, type: Hash) { field :inner, type: String, length: { minimum: 2 }, if: -> { false } }
-                expects :inner, on: :payload, type: String, length: { maximum: 9 }
-                def call = nil
-              end
-              inner = klass.input_schema[:properties][:payload][:properties][:inner]
-
-              expect(inner).to have_key(:allOf)
-              expect(residue_summaries(klass)).to be_empty
-            end
-
-            # The gate is only a licence to stand down where the types CONTRADICT. Two that can both hold
-            # still conjoin, so the static-maximal document a caller relies on is unchanged.
-            it "still conjoins a gated member whose type can hold beside the node's" do
-              klass = Class.new do
-                include Axn
-                expects :payload, type: Hash do
-                  field :inner, type: Hash, if: -> { false } do
-                    field :a, type: String
-                  end
-                end
-                expects :inner, on: :payload, type: Hash
-                def call = nil
-              end
-              inner = klass.input_schema[:properties][:payload][:properties][:inner]
-
-              expect(inner).to include(properties: { a: { type: "string", minLength: 1 } }, required: ["a"])
-              expect(residue_summaries(klass)).to be_empty
-            end
-
             # The carrier key rides on emitted NODES, so the walk that strips it descends only into the
             # keywords that hold one. Walking every Hash reached a declaration's own literals, where a
             # value of this shape was deleted and then read as residues — `NoMethodError` on a String,
@@ -6358,21 +6324,6 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
               expect { klass.input_schema }.not_to raise_error
               expect(klass.input_schema[:properties][:cfg][:default]).to eq(Axn::Internal::Reflection::Schema::RESIDUE_KEY => ["value"])
-            end
-
-            # The guard that makes the witness check complete by CONSTRUCTION rather than by enumeration.
-            # No emitted property reaches it today — every keyword the emitter writes is judged — so it is
-            # asserted directly: a keyword nobody has taught the check about must make it decline to find a
-            # witness, which stands the gated side down, rather than be ignored and counted as satisfied.
-            # That silent-ignore is exactly how `format` slipped through.
-            it "declines to find a witness in a property carrying a keyword it cannot judge" do
-              judged = { type: "string", enum: %w[a], minLength: 1, format: "uuid", pattern: "^a$" }
-              expect(described_class.send(:witness_judgeable?, judged)).to be true
-              expect(described_class.send(:witness_judgeable?, judged.merge(description: "prose"))).to be true
-
-              # A structural keyword this check has no value-level test for.
-              expect(described_class.send(:witness_judgeable?, { type: "object", properties: { a: {} } })).to be false
-              expect(described_class.send(:witness_judgeable?, { enum: %w[a], multipleOf: 2 })).to be false
             end
 
             it "reports nothing when both sides describe the same wire value" do
@@ -6390,29 +6341,37 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           end
         end
 
-        # Reflection is static-maximal on input, so a gate changes nothing about what is merged.
-        it "merges a gated member exactly as an ungated one" do
+        # DELIBERATELY the inverse of what this asserted before: reflection is static-maximal everywhere
+        # else, but at a COLLISION a conditional declaration is reflected by what it enforces on every call.
+        # Pretending the condition holds states something false about a position two declarations bind — it
+        # can describe a value nothing satisfies while the runtime accepts values on every call the
+        # condition closes — so the conditional half is reported rather than asserted.
+        #
+        # The cost is visible here and is the trade: the gated member's nested shape (`properties`/`required`
+        # for `a`) no longer reaches the document, so a client is told less about that position than before.
+        # It is told nothing FALSE, which is the direction that matters, and the `description` carries what
+        # was withheld.
+        it "reflects a gated member by what it enforces on every call, not as an ungated one" do
           gated = Class.new do
             include Axn
-            expects :payload, type: Hash do
-              field :inner, type: Hash, if: -> { false } do
-                field :a, type: String
-              end
-            end
+            expects(:payload, type: Hash) { field(:inner, type: Hash, if: -> { false }) { field :a, type: String } }
             expects :inner, on: :payload, type: Hash
+            def call = nil
           end
           ungated = Class.new do
             include Axn
-            expects :payload, type: Hash do
-              field :inner, type: Hash do
-                field :a, type: String
-              end
-            end
+            expects(:payload, type: Hash) { field(:inner, type: Hash) { field :a, type: String } }
             expects :inner, on: :payload, type: Hash
+            def call = nil
           end
 
-          expect(described_class.build_input(gated.internal_field_configs, gated.subfield_configs))
-            .to eq(described_class.build_input(ungated.internal_field_configs, ungated.subfield_configs))
+          gated_inner = gated.input_schema[:properties][:payload][:properties][:inner]
+          ungated_inner = ungated.input_schema[:properties][:payload][:properties][:inner]
+
+          expect(ungated_inner).to include(properties: { a: { type: "string", minLength: 1 } }, required: ["a"])
+          expect(gated_inner).not_to have_key(:properties)
+          expect(gated_inner[:description]).to include('"required":["a"]')
+          expect(constraints(gated_inner)).to eq(type: "object", minProperties: 1)
         end
       end
 

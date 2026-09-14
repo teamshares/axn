@@ -339,7 +339,16 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     residues
   end
 
-  def reported_inexpressible?(klass) = !residues_for(klass).empty?
+  # Narrowed to the TRANSFORM kind, and the narrowing matters more than the exclusion. Written as "any
+  # residue at all", this laundered every conditional stand-down out of the walk below — and since a
+  # conditional stand-down is the one thing here that RELAXES a document, that hid the entire class of
+  # inbound looseness it can cause. Six review rounds then had to find those cases by reading, in a file
+  # whose whole purpose is to find them by measuring.
+  #
+  # A transform residue is different in kind: nothing about it relaxes what the document says relative to
+  # the wire form it can describe — it names a constraint on a value the wire never carries, which no
+  # keyword could have expressed. That one stays excluded; a conditional residue does not.
+  def reported_inexpressible?(klass) = residues_for(klass).any? { |_path, residue| residue.kind == :inherent }
 
   def nested_members
     {
@@ -356,6 +365,11 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       # unwatched. Gated SCALAR specifically: a gated Hash member's type can still hold beside the node's,
       # so it never reaches the contradiction.
       "gated scalar member" => proc { field :inner, type: String, if: -> { false } },
+      # An UNCONDITIONAL type beside an unrelated CONDITIONAL entry — the shape of every inbound breach the
+      # narrowed exclusion above now lets this walk see. Standing the whole side down here drops a check
+      # that runs on every call, which is the one direction reflection may never take; the axis had no such
+      # row, so nothing measured it.
+      "partly gated scalar member" => proc { field :inner, type: String, inclusion: { in: %w[s], if: -> { false } } },
       # No gated LITERAL member here, deliberately. This example reads "no probe payload satisfies the
       # document" as its proxy for unsatisfiable, and that proxy cannot police a literal collision: with a
       # payload-reachable literal on the member the runtime accepts nothing either and the row is skipped,

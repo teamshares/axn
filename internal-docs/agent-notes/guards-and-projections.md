@@ -93,6 +93,18 @@ Three mechanics that made the single test possible, each an instance of a rule a
 
 The stand-downs split along whether the emitted NODE survives, not whether the runtime does. A nil tolerance rescues, because the tolerated nil is a passing value and the node stays satisfiable through its null branch. An `if:`/`unless:` gate does not, because reflection is static-maximal and emits the gated bound anyway — so the runtime is satisfiable while the document is not, which is the original defect wearing a gate.
 
+## …and at a COLLISION, static-maximal is what produces that defect, so it stops applying there
+
+PRO-3405 reached the same wall from the emitter's side and had to move the doctrine rather than the projection. Where TWO declarations bind one wire position and one is conditional, emitting the gated bound anyway is not merely strict — it is false about the position: a gated `type: String` member beside an ungated `type: Hash` node describes a value nothing can be, while the runtime accepts a Hash on every call the condition closes.
+
+Six review rounds tried to keep static-maximal there and stand the gated side down only where the conjunction could be PROVEN empty. Every one of those provers was incomplete in a new way the next round found — type sets, then literal sets, then literals against bounds, then against a lone pattern, then against `format` — and the round that made the prover broadest introduced the opposite defect: marking a side gated because SOME entry was, and so dropping constraints that run on every call, which is looseness rather than vacuity. Three rules came out of it:
+
+- **Conjunction is intersection, so it can never breach the directional invariant; every relaxation can.** A stand-down, an ungated projection and an `anyOf` all ADD values, which is why each needs measuring in the loose direction and an unconditional conjunction does not.
+- **What replaced the prover is a projection, not a better prover.** Each side is re-emitted from the checks that run on every call (`project_ungated`), which is a statement true of every call and needs no satisfiability reasoning at all. There is no prover left to be incomplete.
+- **A projection loses one thing that is NOT conditional, and it is an EMISSION gap again.** `minLength`/`minItems`/`minProperties` are derived from the type, so stripping a conditional `type:` also strips the JSON spelling of an unconditional `presence:`. Restated as a value-level blank floor — the same lesson as the `absence:` bound above, reached from the other direction.
+
+The audit lesson is sharper than any of them: the exclusion added in the round that introduced the stand-down skipped EVERY residue-bearing row from the inbound walk, and a conditional stand-down is the one thing there that relaxes a document. The whole class was laundered out of the differential test by the same commit that created it, which is why six rounds found these by reading. An exclusion must name the kind it excludes, never "anything that reported something".
+
 ## A biased-stricter projection is not evidence about the contract
 
 `absence:` rejects every non-blank value. On an `Array` that means size 0 exactly, so a `maxItems: 0` is its faithful projection. On a `String` it does not: ActiveSupport gives String its own `blank?`, under which `"  "` is blank and two characters long. Emitting `maxLength: 0` there is still *permissible* — it is biased stricter, the documented direction for reflection to err in — and PRO-3220 first shipped it that way.

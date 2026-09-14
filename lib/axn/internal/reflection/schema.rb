@@ -116,6 +116,10 @@ module Axn
 
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
 
+        # Every blank a JSON document can carry. `false` is among them: ActiveSupport counts it blank, which
+        # is what an ungated `presence:` rejects.
+        BLANK_WIRE_VALUES = ["", [], {}, false].freeze
+
         GATED_RESIDUE = "a conditional declaration at this position contradicts this one, so it applies only on the calls " \
                         "its condition opens"
 
@@ -1557,21 +1561,21 @@ module Axn
             return stand_down_from(kept, dropped, TRANSFORM_RESIDUE)
           end
 
-          # A GATED side's checks do not run on every call, and `allOf` asserts its branch on every one. That
-          # is licensed while the result still admits something — reflection is static-maximal on input, so a
-          # gated bound is emitted as though the gate were open, which is stricter and no worse. It stops
-          # being licensed when the conjunction admits NOTHING: a gated `type: String` member beside an
-          # ungated `type: Hash` node describes a position no value satisfies, while the runtime accepts a
-          # Hash on every call the gate closes — a satisfiable contract projected to an unsatisfiable node,
-          # which AGENTS.md names as the worse of the two forbidden residuals.
+          # A CONDITIONAL declaration is reflected here by what it enforces on EVERY call, not by pretending
+          # its condition holds. Elsewhere the emitter is static-maximal — it reflects `if:`/`unless:` as
+          # though the gate were open, which is stricter and therefore licensed. At a COLLISION that reading
+          # states something false: a gated `type: String` member beside an ungated `type: Hash` node
+          # describes a position no value satisfies, while the runtime accepts a Hash on every call the
+          # condition closes. A document nothing satisfies is not a conservative document, it is a wrong one
+          # — AGENTS.md names it the worse of the two forbidden residuals.
           #
-          # So the gated side stands down exactly where the conjunction can be PROVEN empty
-          # (`gated_conjunction_unsafe?`). What it can conjoin safely it still conjoins, keeping the static-maximal
-          # document a caller can rely on.
-          if (gate_check_gated?(member_configs) || gate_check_gated?(own_configs)) && gated_conjunction_unsafe?(member_prop, own_prop)
-            kept, dropped = gate_check_gated?(member_configs) ? [own_prop, member_prop] : [member_prop, own_prop]
-            return stand_down_from(kept, dropped, GATED_RESIDUE)
-          end
+          # So each side is conjoined through its UNGATED PROJECTION (`ungated_projection`): the property it
+          # emits from the checks that always run. That is a statement true of every call rather than of
+          # some, it needs no reasoning about whether the two sides can be satisfied together — the question
+          # six review rounds could not answer completely — and what the condition still enforces is
+          # reported as a residue instead of asserted.
+          member_prop, member_conditional = project_ungated(member_prop, member_configs)
+          own_prop, own_conditional = project_ungated(own_prop, own_configs)
 
           member_unknown = unknown_class_approximate?(member_configs)
           own_unknown = unknown_class_approximate?(own_configs)
@@ -1581,7 +1585,7 @@ module Axn
           # Residues belong to the POSITION, not to whichever branch happened to raise them: a reader looks
           # at the property, and a sentence buried in one `allOf` entry reads as a note about that entry.
           # So they come off both sides here and go back on the finished node below.
-          carried = residues_on(member_prop) + residues_on(own_prop)
+          carried = residues_on(member_prop) + residues_on(own_prop) + [member_conditional, own_conditional].compact
           member_prop = member_prop.except(RESIDUE_KEY)
           own_prop = own_prop.except(RESIDUE_KEY)
 
@@ -1598,275 +1602,70 @@ module Axn
           carried.reduce(conjoined) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
         end
 
+        # This side re-emitted from the checks that run on EVERY call, paired with a residue naming what its
+        # conditional checks still enforce — or the property untouched and no residue, when nothing about it
+        # is conditional (the ordinary case).
+        #
+        # Gatedness is asked of EFFECTIVE gates, never of an entry's own: a declaration-level `if:` belongs
+        # to no single entry and stops every one of them just the same, so a test consulting only nested
+        # gates answers "ungated" for the commonest spelling there is.
+        #
+        # The config projected is the one the property was BUILT from — the representative, as
+        # `apply_structured_schema!` and the conjoin's callers select it — so the projection describes the
+        # same declaration the property does rather than a sibling route's.
+        def project_ungated(prop, configs)
+          config = configs.find { |c| conditional_checks?(c) }
+          return [prop, nil] if config.nil?
+
+          ungated = config.validations.reject do |key, opt|
+            next false if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.include?(key)
+
+            Axn::Validation::Base.entry_effectively_gated?(opt, declaration_gates(config))
+          end
+          projected = restore_blank_floor(build_property(config.with(validations: ungated), subfield: true), ungated, prop)
+          conditional = Residue.new(summary: "#{GATED_RESIDUE} (#{JSON.generate(prop.except(:description, RESIDUE_KEY).compact)})",
+                                    kind: :conditional)
+          [carry_metadata(projected, prop), conditional]
+        end
+
+        def conditional_checks?(config)
+          return false unless config.respond_to?(:validations)
+
+          gates = declaration_gates(config)
+          config.validations.any? do |key, opt|
+            next false if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.include?(key)
+
+            Axn::Validation::Base.entry_effectively_gated?(opt, gates)
+          end
+        end
+
+        def declaration_gates(config) = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+
+        # A projection keeps the `description` and pending residues of the property it replaces: those
+        # describe the POSITION, and nothing about them is conditional.
+        def carry_metadata(projected, original)
+          projected = projected.merge(RESIDUE_KEY => residues_on(original)) if residues_on(original).any?
+          description = original[:description]
+          description.nil? ? projected : projected.merge(description:)
+        end
+
+        # The one thing a projection can lose that is NOT conditional. `minLength`/`minItems`/`minProperties`
+        # are derived from the TYPE, so when the gated entry is the `type:` itself, stripping it also strips
+        # the JSON spelling of an UNGATED `presence:` — the node comes back admitting `""`/`[]`/`{}` on every
+        # call, which the runtime rejects on every call. That is this file's own rule that a missing bound is
+        # a missing EMISSION first, so the floor is restated as a value-level one, the only spelling left
+        # once no type survives to hang a size keyword on.
+        def restore_blank_floor(projected, ungated, original)
+          return projected unless projected[:type].nil? && projected[:anyOf].nil?
+          return projected if original[:type].nil? && original[:anyOf].nil?
+          return projected unless presence_rejects_blank?(ungated)
+
+          projected.merge(not: { enum: BLANK_WIRE_VALUES })
+        end
+
         # Whether a property constrains nothing — genuinely empty, or holding only the metadata an emitted
         # node carries without narrowing it (`description`, and the residues waiting to be rendered into it).
         def asserts_nothing?(prop) = prop.except(:description, RESIDUE_KEY).empty?
-
-        # Whether ANY of this side's checks can be skipped on a call — a declaration-level `if:`/`unless:`,
-        # or a gate on any single validator entry. Asked of every entry rather than of the `type:` one,
-        # because the keyword a collision contradicts is not always the type: an `inclusion: { in: [...],
-        # if: ... }` contributes the contradictory `enum` while the type is asserted unconditionally, and a
-        # check that read only the type entry conjoined that enum as though it always applied.
-        #
-        # Deliberately broad rather than asking which validator produced the contradicting keyword. The
-        # emitter keeps no provenance from keyword back to validator, and re-deriving one is the kind of
-        # bookkeeping this file has already paid for once. The two errors do not cost the same: reading a
-        # side as gated when the contradicting keyword was not loses a bound from a document that was only
-        # ever static-maximal speculation, while missing a gate emits a node no caller can satisfy.
-        def gate_check_gated?(configs)
-          configs.any? do |config|
-            validations = config.validations
-            next true if gated_validations?(validations)
-
-            Axn::Validation::Base.validator_entries(validations).any? { |_key, entry| entry_self_gated?(entry) }
-          end
-        end
-
-        # Whether conjoining these two properties risks a node nothing satisfies. Asked only of a GATED
-        # collision, where the alternative to standing down is a document that contradicts itself while the
-        # contract stays satisfiable.
-        #
-        # Three shapes of answer, and the differences between them are the design:
-        #
-        # A side naming a FINITE value set collapses the question — the conjunction is satisfiable exactly
-        # when one of those values satisfies everything both sides assert, so `no_literal_satisfies?` asks
-        # that and is COMPLETE for the case. It replaced three pair-wise checks (literals against a type,
-        # against bounds, against a lone pattern), each of which had been added after the previous one
-        # turned out not to cover the next pair: a pair enumeration is only ever as complete as the pairs
-        # someone thought of, and this one is not an enumeration.
-        #
-        # With no finite set on either side, the remaining axes are decidable between two constraint sets —
-        # type against type, a floor against a ceiling — and prove a contradiction outright.
-        #
-        # `pattern` against `pattern` is the exception: "do two regexes share a match" has no cheap
-        # always-correct answer, the same limit this file already stands down at for a transforming side's
-        # pattern. There the burden inverts and the pair is unsafe unless shown COMPATIBLE, because the two
-        # mistakes do not cost the same — standing down loses a bound from a document that was only ever
-        # static-maximal speculation about a gated declaration, while conjoining wrongly emits a node no
-        # caller can satisfy.
-        #
-        # None of this is the coercion inverse the transform branch above refuses to compute: every check
-        # here compares two constraint sets over the SAME value, which is what keeps it from being that
-        # chase.
-        def gated_conjunction_unsafe?(prop_a, prop_b)
-          types_disjoint?(prop_a, prop_b) ||
-            interval_empty?(prop_a, prop_b, NUMERIC_BOUND_PAIRS) ||
-            interval_empty?(prop_a, prop_b, SIZE_BOUND_PAIRS) ||
-            no_literal_satisfies?(prop_a, prop_b) ||
-            no_literal_satisfies?(prop_b, prop_a) ||
-            patterns_unprovable?(prop_a, prop_b)
-        end
-
-        def literal_matches_pattern?(value, pattern)
-          return false if value.include?("\n")
-
-          !::Regexp.new(pattern).match(value).nil?
-        rescue ::RegexpError, ::ArgumentError
-          false
-        end
-
-        # One side names a FINITE value set, which collapses the whole question: the conjunction is
-        # satisfiable exactly when one of those values satisfies every keyword both sides assert. So this
-        # asks that directly instead of comparing the literal axis against each other axis in turn —
-        # complete for the finite case, where a pair-by-pair enumeration is only ever as complete as the
-        # pairs someone thought of (literals against a type, then against bounds, then against a lone
-        # pattern, each found after the last).
-        def no_literal_satisfies?(prop_with_literals, other)
-          literals = emitted_literals(prop_with_literals)
-          return false if literals.nil? || literals.empty?
-
-          literals.none? { |value| literal_satisfies?(value, prop_with_literals, other) }
-        end
-
-        # Whether one concrete value satisfies both sides at once, judged the way a validator judges it:
-        # every keyword applies only to the instance types JSON Schema applies it to, so a non-numeric value
-        # ignores a numeric bound and a non-string ignores a `pattern` rather than failing them.
-        def literal_satisfies?(value, prop_a, prop_b)
-          type = json_type_of(value)
-          return false unless [prop_a, prop_b].all? { |prop| witness_judgeable?(prop) }
-          return false unless [prop_a, prop_b].all? { |prop| type_admitted?(type, prop) && literal_admitted?(value, prop) }
-          return false unless [prop_a, prop_b].all? { |prop| format_admitted?(value, prop[:format]) }
-
-          return false if value.is_a?(::Numeric) && !within?(value, combined_interval(prop_a, prop_b, NUMERIC_BOUND_PAIRS.first))
-
-          size = literal_size(value)
-          return false if size && !SIZE_BOUND_PAIRS.all? { |family| within?(size, combined_interval(prop_a, prop_b, family)) }
-
-          return true unless value.is_a?(::String)
-
-          [prop_a[:pattern], prop_b[:pattern]].compact.all? { |pattern| literal_matches_pattern?(value, pattern) }
-        end
-
-        # The keys this check knows how to judge ONE value against, and the keys that say nothing about
-        # whether a value is admissible. A property carrying anything else is one no witness can be found
-        # in — see `witness_judgeable?`.
-        WITNESS_JUDGED_KEYS = %i[
-          type anyOf enum const format pattern
-          minimum exclusiveMinimum maximum exclusiveMaximum
-          minLength maxLength minItems maxItems minProperties maxProperties
-        ].freeze
-
-        WITNESS_INERT_KEYS = %i[description].freeze
-
-        # Whether every key on this property is one the witness check can actually judge. This is what makes
-        # the check complete BY CONSTRUCTION rather than by enumeration: a keyword nobody taught it about —
-        # `format` was exactly that, silently ignored and so counted as satisfied — makes it decline to find
-        # a witness at all, which stands the gated side down. A keyword the emitter learns to write later is
-        # therefore conservative until it is taught here, instead of quietly admitting a value that fails it.
-        def witness_judgeable?(prop)
-          (prop.keys - WITNESS_JUDGED_KEYS - WITNESS_INERT_KEYS - [RESIDUE_KEY]).empty?
-        end
-
-        # Whether a value satisfies an emitted `format`. The set is the one this emitter writes (`:uuid`, and
-        # `FORMAT_MAP`'s date/date-time), and a format outside it is not judged as satisfied — same rule as
-        # an unknown keyword above. The uuid test is `TypeValidator`'s own matcher, so the document and the
-        # runtime cannot disagree about what a uuid is.
-        def format_admitted?(value, format)
-          return true if format.nil? || !value.is_a?(::String)
-
-          case format
-          when "uuid" then Axn::Validators::TypeValidator.value_matches?(value, klass: :uuid)
-          when "date" then parses?(::Date, value)
-          when "date-time" then parses?(::Time, value)
-          else false
-          end
-        end
-
-        def parses?(klass, value)
-          klass.iso8601(value)
-          true
-        rescue ::ArgumentError, ::TypeError
-          false
-        end
-
-        # A property admits this JSON type when it names none, names it, or names "number" for an integer —
-        # a JSON integer is a number, and the emitted types are not otherwise related by subtyping.
-        def type_admitted?(type, prop)
-          types = emitted_json_types(prop)
-          return true if types.empty?
-          return true if types.include?(type)
-
-          type == "integer" && types.include?("number")
-        end
-
-        # A property admits this value when it names no value set of its own, or names one holding it.
-        def literal_admitted?(value, prop)
-          literals = emitted_literals(prop)
-          literals.nil? || literals.any? { |other| other == value }
-        end
-
-        # The size a bound would measure on this value, or nil for one no size keyword applies to.
-        def literal_size(value)
-          case value
-          when ::String, ::Array then value.length
-          when ::Hash then value.size
-          end
-        end
-
-        def within?(value, (floor, floor_exclusive, ceiling, ceiling_exclusive))
-          return false if floor && (floor_exclusive ? value <= floor : value < floor)
-          return false if ceiling && (ceiling_exclusive ? value >= ceiling : value > ceiling)
-
-          true
-        end
-
-        # Both sides' bounds on one axis as [floor, floor_exclusive, ceiling, ceiling_exclusive].
-        def combined_interval(prop_a, prop_b, family)
-          inclusive_floor, exclusive_floor, inclusive_ceiling, exclusive_ceiling = family
-          floor, floor_exclusive = strictest_bound(prop_a, prop_b, inclusive_floor, exclusive_floor, :max)
-          ceiling, ceiling_exclusive = strictest_bound(prop_a, prop_b, inclusive_ceiling, exclusive_ceiling, :min)
-          [floor, floor_exclusive, ceiling, ceiling_exclusive]
-        end
-
-        # Two DIFFERENT patterns, one on each side. Identical ones are trivially compatible and conjoin;
-        # anything else cannot be shown to share a match at this cost, so it is not conjoined.
-        def patterns_unprovable?(prop_a, prop_b)
-          a = prop_a[:pattern]
-          b = prop_b[:pattern]
-          a.is_a?(::String) && b.is_a?(::String) && a != b
-        end
-
-        # A property's admitted values when it names them outright, or nil when it does not constrain the
-        # value set at all. `const` and `enum` are intersected rather than concatenated: both apply.
-        def emitted_literals(prop)
-          const = prop.key?(:const) ? [prop[:const]] : nil
-          enum = prop[:enum].is_a?(::Array) ? prop[:enum] : nil
-          return enum if const.nil?
-          return const if enum.nil?
-
-          const.select { |x| enum.any? { |y| x == y } }
-        end
-
-        def json_type_of(value)
-          case value
-          when nil then "null"
-          when true, false then "boolean"
-          when ::Integer then "integer"
-          when ::Numeric then "number"
-          when ::String then "string"
-          when ::Array then "array"
-          when ::Hash then "object"
-          end
-        end
-
-        # The floor/ceiling keyword pairs whose combined interval can be empty, each as
-        # [inclusive floor, exclusive floor, inclusive ceiling, exclusive ceiling].
-        NUMERIC_BOUND_PAIRS = [%i[minimum exclusiveMinimum maximum exclusiveMaximum]].freeze
-        SIZE_BOUND_PAIRS = [
-          [:minLength, nil, :maxLength, nil],
-          [:minItems, nil, :maxItems, nil],
-          [:minProperties, nil, :maxProperties, nil],
-        ].freeze
-
-        # Whether the two sides together impose a floor above their ceiling on some axis. Reads both sides
-        # as one constraint set, since that is what conjoining them would assert; an axis either side leaves
-        # open cannot contradict.
-        def interval_empty?(prop_a, prop_b, families)
-          families.any? do |family|
-            floor, floor_exclusive, ceiling, ceiling_exclusive = combined_interval(prop_a, prop_b, family)
-            next false if floor.nil? || ceiling.nil?
-
-            floor_exclusive || ceiling_exclusive ? floor >= ceiling : floor > ceiling
-          end
-        end
-
-        # The tighter of the two sides' bounds on one end of an axis, as [value, exclusive?]. A FLOOR is
-        # tighter the higher it sits and a CEILING the lower; at equal values the EXCLUSIVE one is tighter
-        # either way, which is why the tie-break flips with the direction rather than being a fixed order.
-        def strictest_bound(prop_a, prop_b, inclusive_key, exclusive_key, direction)
-          candidates = [prop_a, prop_b].flat_map do |prop|
-            found = []
-            found << [prop[inclusive_key], false] if prop[inclusive_key].is_a?(::Numeric)
-            found << [prop[exclusive_key], true] if exclusive_key && prop[exclusive_key].is_a?(::Numeric)
-            found
-          end
-          return [nil, false] if candidates.empty?
-
-          if direction == :max
-            candidates.max_by { |value, exclusive| [value, exclusive ? 1 : 0] }
-          else
-            candidates.min_by { |value, exclusive| [value, exclusive ? 0 : 1] }
-          end
-        end
-
-        # Whether two emitted properties name JSON types that cannot both hold — read off `type` or, for a
-        # union, off its `anyOf` branches. An UNTYPED side asserts no type and so contradicts nothing, and
-        # `"null"` is left in the sets deliberately: two sides that both admit null still share a value, so
-        # the intersection is what decides rather than a comparison of the non-null halves.
-        def types_disjoint?(prop_a, prop_b)
-          a = emitted_json_types(prop_a)
-          b = emitted_json_types(prop_b)
-          return false if a.empty? || b.empty?
-
-          !a.intersect?(b)
-        end
-
-        def emitted_json_types(prop)
-          return Array(prop[:type]) if prop[:type]
-          return [] unless prop[:anyOf].is_a?(::Array)
-
-          prop[:anyOf].flat_map { |branch| branch.is_a?(::Hash) ? Array(branch[:type]) : [] }
-        end
 
         # Drop an unknown-class side's fabricated type, and with it the keywords that only had a meaning
         # BECAUSE of it. `minLength`/`maxLength`/`pattern`/`format` exist in JSON Schema only for a string

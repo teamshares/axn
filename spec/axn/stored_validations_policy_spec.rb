@@ -58,13 +58,17 @@ RSpec.describe "constructors of a stored validations bag" do
   # The constructor scan cannot see such a site, because the class name is absent from it — the receiver is a
   # variable (`config.with(...)`) — so the bag-REPLACING form is pinned by its own keyword instead.
   #
-  # The one pinned site is sound by construction rather than by inspection: `effective_validations` only
-  # `reject`s entries, so it returns a subset of a bag a seam already cleared, and a subset cannot introduce a
-  # key. That is the property a new site needs: every retained entry must be an unmodified entry from an
-  # already-cleared bag. Dropping entries preserves it; rewriting a retained entry's VALUE does not, even
-  # though it adds no key — that needs a seam.
+  # Both pinned sites are sound by construction rather than by inspection, and by the SAME construction:
+  # each only `reject`s entries, so each returns a subset of a bag a seam already cleared, and a subset
+  # cannot introduce a key. That is the property a new site needs: every retained entry must be an unmodified
+  # entry from an already-cleared bag. Dropping entries preserves it; rewriting a retained entry's VALUE does
+  # not, even though it adds no key — that needs a seam.
+  #
+  # The two are `effective_validations` (drops per-validator-gated entries on the outbound projection) and
+  # `project_ungated` (drops effectively-gated entries so a conditional declaration is reflected by what it
+  # enforces on every call). Neither rewrites a value.
   EXPECTED_BAG_DERIVATIONS = {
-    "lib/axn/internal/reflection/schema.rb" => 1,
+    "lib/axn/internal/reflection/schema.rb" => 2,
   }.freeze
 
   DERIVATION_PATTERN = /\.with\((?:[^()]|\([^()]*\))*\bvalidations:/
