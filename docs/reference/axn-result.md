@@ -39,14 +39,14 @@ result = Foo.call # [!code focus]
 
 ## Which Axn decided a failure
 
-When a call settles as a *failure*, `result.exception` is an `Axn::Failure`, and that exception knows which axn's `fail!` raised it. This matters when a nested call tree bubbles a failure up through `call!`: the outermost caller holds one exception, and the guard that actually fired may be several actions down.
+`fail!` raises an `Axn::Failure`, and that exception knows which axn raised it. This matters when a nested call tree bubbles a failure up through `call!`: the outermost caller holds one exception, and the guard that actually fired may be several actions down.
 
 | Method | Description |
 | -- | -- |
 | `originating_axn_class` | The class of the axn whose `fail!` raised, or `nil` |
 | `originating_result` | That axn's result — carrying anything it had `expose`d before failing — or `nil` |
 
-Both are `nil` when no axn decided the failure, which is the case for every exception raised outside `fail!`. Only `Axn::Failure` carries them, so guard on the class before reading:
+These are defined on `Axn::Failure` alone, and a failed *outcome* does not imply one: a [`fails_on`](/reference/class#fails-on)-classified exception keeps its own class, and a [`user_facing:`](/reference/class#user-facing) contract violation settles as an `Axn::InboundValidationError`. Both report `outcome.failure?` while carrying no originating axn at all, so test the exception's class rather than the outcome:
 
 ```ruby
 rescue StandardError => e
@@ -55,6 +55,8 @@ rescue StandardError => e
   Rails.logger.warn("rejected by #{e.originating_axn_class}: #{e.originating_result.reason_code}")
 end
 ```
+
+Within an `Axn::Failure`, both read `nil` only when it was built without an action, which axn does when resolving a default message.
 
 Reading `originating_result` is how you get at values the failing action exposed on its way down — an `exposes :reason_code, optional: true` set immediately before a `fail!` is readable here, because `expose` runs before the `fail!` that raises. Prefer it to reaching for the action instance: the result reader cannot be shadowed by a field the action happens to declare.
 
