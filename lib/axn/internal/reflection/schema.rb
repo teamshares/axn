@@ -1802,15 +1802,22 @@ module Axn
         # Everything that reaches the encoder is a plain primitive: a String through `Text.renderable`, so
         # neither a subclass's `to_json` nor bytes with no UTF-8 rendering reach it, and anything else
         # through `Rendering`, whose reads are bound.
+        #
+        # Matched with `instance_of?`, never `===`/`is_a?`, for the reason `normalize_schema_literal` already
+        # traverses exact built-ins only: a String/Array/Hash SUBCLASS can override the very `to_s`/`map`/
+        # `to_h` a reduction would reach for, so it is opaque here and renders as one. Reducing is only a
+        # defence if the reduction itself dispatches nothing.
         def json_mentionable(value)
-          case value
-          when nil, true, false, ::Integer then value
-          when ::Float then value.finite? ? value : mentionable_rendering(value)
-          when ::String, ::Symbol then Axn::Internal::Text.renderable(value.to_s)
-          when ::Array then value.map { |element| json_mentionable(element) }
-          when ::Hash then value.to_h { |key, nested| [json_mentionable(key), json_mentionable(nested)] }
-          else mentionable_rendering(value)
-          end
+          return value if value.nil? || value == true || value == false || value.instance_of?(::Integer)
+          return value.finite? ? value : mentionable_rendering(value) if value.instance_of?(::Float)
+          # `Text.renderable` reads the bytes through bound methods, so the String itself goes in — asking it
+          # for `to_s` first would dispatch, which is the thing this method exists not to do.
+          return Axn::Internal::Text.renderable(value) if value.instance_of?(::String)
+          return Axn::Internal::Text.renderable(value.name) if value.instance_of?(::Symbol)
+          return value.map { |element| json_mentionable(element) } if value.instance_of?(::Array)
+          return value.to_h { |key, nested| [json_mentionable(key), json_mentionable(nested)] } if value.instance_of?(::Hash)
+
+          mentionable_rendering(value)
         end
 
         def mentionable_rendering(value)

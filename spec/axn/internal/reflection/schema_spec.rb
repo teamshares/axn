@@ -4301,6 +4301,28 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
       expect { klass.input_schema }.not_to raise_error
     end
+
+    # The same rule one layer on: a residue summary QUOTES the constraints it could not state, and those are
+    # the author's own literals too. A String/Array/Hash SUBCLASS can override the very `to_s`/`map`/`to_h` a
+    # reduction reaches for, so reducing is a defence only while the reduction itself dispatches nothing —
+    # each of these raised out of `input_schema` while the message describing the gap was being built.
+    {
+      "a String subclass" => Class.new(String) { def to_s = raise(NotImplementedError, "to_s ran") },
+      "an Array subclass" => Class.new(Array) { def map(*) = raise(NotImplementedError, "map ran") },
+      "a Hash subclass" => Class.new(Hash) { def to_h(*) = raise(NotImplementedError, "to_h ran") },
+    }.each do |label, hostile|
+      it "renders a residue summary quoting #{label} literal without running its own code" do
+        klass = Class.new do
+          include Axn
+          expects(:payload, type: Hash) { field :inner, type: String }
+          expects :inner, on: :payload, type: String, optional: true,
+                          default: hostile.new, preprocess: ->(v) { v }
+          def call; end
+        end
+
+        expect { klass.input_schema }.not_to raise_error
+      end
+    end
   end
 
   # Deep subfields (PRO-2872): a dotted `on:` path, a subfield-of-a-subfield, and a dotted field
