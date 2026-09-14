@@ -6424,6 +6424,24 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(klass.call(payload: { deep: { inner: { k: 1 } } })).to be_ok
             end
 
+            # Asserted on the helper directly: two routes gating the SAME keyword is the shape that broke
+            # it, and building a declaration whose two ancestor routes both reach one position with
+            # independently gated inclusions is considerably harder than the bug. Merging their fragments
+            # by key kept only the last, so the report enumerated one conditional constraint and omitted the
+            # other — worse than reporting neither, since a caller rejected by the omitted one was told the
+            # list was complete.
+            it "keeps every gated fragment when two routes gate the same keyword" do
+              projections = [
+                [nil, { type: "string" }, { type: "string", enum: %w[first] }],
+                [nil, { type: "string" }, { type: "string", enum: %w[second] }],
+              ]
+
+              summaries = described_class.send(:gating_residues, projections).map(&:summary)
+
+              expect(summaries.size).to eq(2)
+              expect(summaries.join(" ")).to include('{"enum":["first"]}').and include('{"enum":["second"]}')
+            end
+
             it "reports nothing when both sides describe the same wire value" do
               klass = Class.new do
                 include Axn

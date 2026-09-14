@@ -703,6 +703,30 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
       expect { Axn::Tools.validate_contracts! }.not_to raise_error
     end
 
+    # The flip side of deduplicating: a boolean guard silenced the class permanently, so an action
+    # reopened to add ANOTHER collision — the ordinary shape of a reload, and of a concern included after
+    # the first reflection — got the new residue in its schema and no warning about it ever. Keyed on what
+    # was warned rather than on whether anything was.
+    it "still warns when a later declaration adds a collision the first read never saw" do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool
+      warnings = 0
+      allow(Axn.config.logger).to receive(:warn) do |message|
+        warnings += 1 if message.include?("cannot state every constraint")
+      end
+
+      tool.input_schema
+      expect(warnings).to eq(1)
+
+      tool.class_eval do
+        expects(:other, type: Hash) { field :x, type: String }
+        expects :x, on: :other, type: { klass: Integer, coerce: true }
+      end
+      tool.input_schema
+
+      expect(warnings).to eq(2)
+    end
+
     it "says nothing for a tool whose contract it can state in full" do
       Axn::Tools.register_adapter(:mcp)
       valid_tool

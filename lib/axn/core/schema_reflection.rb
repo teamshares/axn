@@ -41,24 +41,32 @@ module Axn
       # use: a declared name may hold bytes with no UTF-8 rendering, and interpolating those raw once
       # raised `Encoding::CompatibilityError` from inside the warning itself.
       #
-      # Guarded ONCE PER CLASS here rather than at either call site: `validate_contracts!` runs from an
+      # Deduplicated ONCE PER CLASS here rather than at either call site: `validate_contracts!` runs from an
       # engine's `after_initialize` AND every `to_prepare`, and an adapter may later reach the reader too,
       # so a guard held by one caller lets the other repeat the same warning on every boot and reload. The
       # memo lives on the class, which is what both callers share.
+      #
+      # Keyed on WHAT was warned, not a boolean. A boolean silenced the class permanently, so an action
+      # reopened to add another collision — the ordinary shape of a reload, and of a concern included after
+      # the first reflection — got the new residue in its schema and no warning about it ever. Keying on the
+      # rendered gaps keeps repeated reads quiet while a genuinely new one still speaks.
       def self.warn_inexpressible_constraints(klass, residues)
         return if residues.empty?
-        return if klass.instance_variable_get(:@_axn_residue_warning_emitted)
 
-        klass.instance_variable_set(:@_axn_residue_warning_emitted, true)
         # The NAME goes through the same seam the segments do. A valid non-UTF-8 `axn_name` (an ISO-8859-1
         # String holding `é`) interpolated into this UTF-8 message raised Encoding::CompatibilityError
         # before the logger was reached, so reflecting a schema blew up over the name of the very action
         # whose gap the warning exists to mention.
         label = Axn::Internal::Text.renderable(klass.resolved_axn_name.to_s)
-        gaps = residues.map do |path, residue|
+        all_gaps = residues.map do |path, residue|
           rendered = path.map { |segment| Axn::Internal::Reflection::PropertyNames.renderable_label(segment) }.join(".")
           "#{rendered}: #{residue.summary}"
         end
+        warned = klass.instance_variable_get(:@_axn_residue_warnings) || []
+        gaps = all_gaps - warned
+        return if gaps.empty?
+
+        klass.instance_variable_set(:@_axn_residue_warnings, warned + gaps)
         Axn.config.logger.warn(
           "[Axn] #{label} input_schema cannot state every constraint the contract enforces — " \
           "#{gaps.join('; ')}. Each is reported in that property's `description`; a caller obeying the " \

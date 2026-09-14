@@ -1592,6 +1592,7 @@ module Axn
           # reported as a residue instead of asserted.
           member_prop, member_conditional = project_ungated(member_prop, member_configs)
           own_prop, own_conditional = project_ungated(own_prop, own_configs)
+          conditional = Array(member_conditional) + Array(own_conditional)
 
           member_unknown = unknown_class_approximate?(member_configs)
           own_unknown = unknown_class_approximate?(own_configs)
@@ -1601,7 +1602,7 @@ module Axn
           # Residues belong to the POSITION, not to whichever branch happened to raise them: a reader looks
           # at the property, and a sentence buried in one `allOf` entry reads as a note about that entry.
           # So they come off both sides here and go back on the finished node below.
-          carried = residues_on(member_prop) + residues_on(own_prop) + [member_conditional, own_conditional].compact
+          carried = residues_on(member_prop) + residues_on(own_prop) + conditional
           member_prop = member_prop.except(RESIDUE_KEY)
           own_prop = own_prop.except(RESIDUE_KEY)
 
@@ -1630,7 +1631,7 @@ module Axn
         # `apply_structured_schema!` and the conjoin's callers select it — so the projection describes the
         # same declaration the property does rather than a sibling route's.
         def project_ungated(prop, configs)
-          return [prop, nil] if configs.none? { |config| conditional_checks?(config) }
+          return [prop, []] if configs.none? { |config| conditional_checks?(config) }
 
           # EVERY contributing config is projected, not just the conditional one. A property at a merged
           # position is composed from more than one source, so rebuilding it from a single config discards
@@ -1650,7 +1651,7 @@ module Axn
           end
 
           projected = reconciled.reduce { |left, right| intersect_projections(left, right) } || {}
-          [carry_metadata(projected, prop), gating_residue(projections)]
+          [carry_metadata(projected, prop), gating_residues(projections)]
         end
 
         # One config's property as emitted from the checks that run on every call.
@@ -1672,15 +1673,18 @@ module Axn
         # a position's unconditional constraints inside prose saying they apply only when a condition opens
         # — contradictory guidance, and the residue exists to give a reader something it can act on. So the
         # summary is the difference between what each config emits and what its always-run subset emits.
-        def gating_residue(projections)
-          removed = projections.each_with_object({}) do |(_config, projected, full), acc|
-            full.except(:description, RESIDUE_KEY).each do |key, value|
-              acc[key] = value unless projected[key] == value
-            end
-          end
-          return nil if removed.empty?
+        #
+        # One residue PER config rather than one merged hash across them: two routes at a position can gate
+        # the SAME keyword, and merging their fragments by key silently kept only the last — the report then
+        # enumerated one conditional constraint and omitted the other, which is worse than reporting neither
+        # since a caller rejected by the omitted one has been told the list was complete.
+        def gating_residues(projections)
+          projections.filter_map do |_config, projected, full|
+            removed = full.except(:description, RESIDUE_KEY).reject { |key, value| projected[key] == value }
+            next nil if removed.empty?
 
-          Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(removed)})", kind: :conditional)
+            Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(removed)})", kind: :conditional)
+          end
         end
 
         def intersect_projections(left, right)
