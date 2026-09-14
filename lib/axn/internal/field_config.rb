@@ -78,11 +78,10 @@ module Axn
       # THE single owner of that question, so it cannot drift across its four readers: the generated
       # `<field>_id` reader's fast path, top-level (Contract#_define_model_id_reader — a
       # directly-supplied, non-blank id IS the pk there, so no lookup is needed to answer it) AND
-      # nested (ContractForSubfields#_define_subfield_model_id_reader — Codex review round 3, PR #269,
-      # caught this one still re-deriving it inline after the other three were unified); the runtime
-      # record/id consistency check (Executor#_id_based_model?); and schema reflection's
-      # primary-key-type inference (Reflection::Schema — it only trusts the class's OWN primary key
-      # type when the id token IS that primary key).
+      # nested (ContractForSubfields#_define_subfield_model_id_reader); the runtime record/id
+      # consistency check (Executor#_id_based_model?); and schema reflection's primary-key-type
+      # inference (Reflection::Schema — it only trusts the class's OWN primary key type when the id
+      # token IS that primary key).
       #
       # @param model_options the field config's `validations[:model]` bag
       # @return [Boolean]
@@ -92,9 +91,9 @@ module Axn
 
       # The closed vocabulary a `model:` field's generated `<field>_id` can be typed as — a scalar
       # lookup token, never a union or a structured type. Lives here rather than under
-      # `Internal::Reflection::Schema` (Codex review round 3, PR #269): it is read from BOTH sides of a
-      # layer boundary reflection may not cross upward — Contract's `_reject_unsupported_model_id_type!`
-      # confines a declared `id_type:` to exactly this set at DECLARATION time, and
+      # `Internal::Reflection::Schema`: it is read from BOTH sides of a layer boundary reflection may
+      # not cross upward — Contract's `_reject_unsupported_model_id_type!` confines a declared
+      # `id_type:` to exactly this set at DECLARATION time, and
       # `Reflection::Schema::AR_PRIMARY_KEY_TYPE_TOKENS` maps every inferable ActiveRecord primary-key
       # type onto one of these SAME tokens — so a declared token and an inferred one can never mean two
       # different things. `Internal::X` is the home for a value-level mechanism more than one layer

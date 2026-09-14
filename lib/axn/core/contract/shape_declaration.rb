@@ -188,7 +188,7 @@ module Axn
         # the shape only ANSWERS is invisible to it, and every REAL entry beside it (however few) reads as
         # unknown. This used to defer to `_walk_shape_graph!`'s own `reject_defaulting_option_container!` call,
         # on the assumption that it always runs after this one — true when there is no block, but this guard
-        # ALSO runs ahead of a block/subblock overwrite (PRO-3387, Codex round 2, PR #275), and that overwrite
+        # ALSO runs ahead of a block/subblock overwrite (PRO-3387), and that overwrite
         # replaces `validations[:shape]` before `_walk_shape_graph!` ever reaches the ORIGINAL defaulting Hash
         # — so deferring there let a defaulting raw shape beside a block skip this check entirely, real
         # entries included. Raising here closes that: the SAME shared helper, so the underlying defect is

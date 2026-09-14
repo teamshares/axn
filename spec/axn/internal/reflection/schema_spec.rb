@@ -1390,10 +1390,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(inferable.uniq).to match_array(declarable)
     end
 
-    # Codex review round 1 (PR #269): an explicit `<field>_id` sibling ALWAYS wins the emitted property
-    # over the model-generated one (declaration-order independent — tested above), so a declared
-    # `id_type:` that disagrees with the sibling's own `type:` was being silently discarded rather than
-    # flagged as the authored contradiction it is.
+    # an explicit `<field>_id` sibling ALWAYS wins the emitted property over the model-generated one
+    # (declaration-order independent — tested above), so a declared `id_type:` that disagrees with the
+    # sibling's own `type:` was being silently discarded rather than flagged as the authored
+    # contradiction it is.
     describe "conflicting with an explicit <field>_id sibling's own type:" do
       it "rejects id_type: Integer beside an explicit type: String sibling" do
         klass = Class.new do
@@ -1501,10 +1501,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(company_id[:type]).to eq("integer")
       end
 
-      # Codex review round 3 (PR #269): comparing base :type alone missed the REVERSE asymmetry —
-      # id_type: :uuid asserts a format the plain explicit type: String sibling does not carry, so the
-      # uuid-shape requirement silently vanished with no error, the same swallowed-contradiction class
-      # the round-1 fix existed to close.
+      # comparing base :type alone missed the REVERSE asymmetry — id_type: :uuid asserts a format the
+      # plain explicit type: String sibling does not carry, so the uuid-shape requirement silently
+      # vanished with no error, the same swallowed-contradiction class the round-1 fix existed to
+      # close.
       it "rejects id_type: :uuid beside an explicit type: String sibling (the sibling admits any " \
          "string, silently dropping the uuid-format requirement)" do
         klass = Class.new do
@@ -1516,13 +1516,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
       end
 
-      # Codex review round 18 (PR #269): the round-3 rule above is right for a BARE type: String
-      # sibling — but a sibling narrowed by its OWN inclusion: to uuid-shaped literals is not the same
-      # "admits any string" case, and the plain type-pair comparison alone can't see that (it reads only
-      # :type/:anyOf, never :enum). An explicit type: String sitting beside the SAME inclusion: made the
-      # check treat the pairing as STRICTER than a bare inclusion: sibling with no type: at all — which
-      # already tolerates this (see the enum-only branch's documented known limitation, just above) — so
-      # this raised for a value-level-compatible declaration purely because a type: was also present.
+      # the rule above is right for a BARE type: String sibling — but a sibling narrowed by its OWN
+      # inclusion: to uuid-shaped literals is not the same "admits any string" case, and the plain
+      # type-pair comparison alone can't see that (it reads only :type/:anyOf, never :enum). An explicit
+      # type: String sitting beside the SAME inclusion: made the check treat the pairing as STRICTER
+      # than a bare inclusion: sibling with no type: at all — which already tolerates this (see the
+      # enum-only branch's documented known limitation, just above) — so this raised for a
+      # value-level-compatible declaration purely because a type: was also present.
       it "does not reject id_type: :uuid beside an explicit type: String, inclusion: [uuid-shaped " \
          "literal] sibling — an inclusion: set is checked on its own terms, the same tolerance the " \
          "enum-only case already gets, whether or not an explicit type: also sits beside it" do
@@ -1535,9 +1535,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect { klass.input_schema }.not_to raise_error
       end
 
-      # Codex review round 4 (PR #269): the "any branch satisfies" check let a widening UNION sibling
-      # through, since the branch that happened to match id_type: was enough to accept the whole thing
-      # — but the WINNING property is the entire union, including the branch that doesn't satisfy it.
+      # the "any branch satisfies" check let a widening UNION sibling through, since the branch that
+      # happened to match id_type: was enough to accept the whole thing — but the WINNING property
+      # is the entire union, including the branch that doesn't satisfy it.
       it "rejects id_type: Integer beside an explicit union type: [Integer, String] sibling (one " \
          "branch matches, but the whole union — including the string branch — is what wins, silently " \
          "widening past what id_type: promised)" do
@@ -1565,12 +1565,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
-    # Codex review round 3 (PR #269): a merged wire node reached by TWO `model:` routes (a dotted
-    # `on:` path and a nested subfield resolving to the same wire path — `as:` disambiguates their
-    # shared reader name so they still merge, the same construction schema_spec's own "merged node"
-    # examples use elsewhere in this file) each carry their own `id_type:`, but only `model_configs.first`
-    # was ever consulted — silently dropping whichever route was declared second, and changing the
-    # answer with declaration order.
+    # a merged wire node reached by TWO `model:` routes (a dotted `on:` path and a nested subfield
+    # resolving to the same wire path — `as:` disambiguates their shared reader name so they still
+    # merge, the same construction schema_spec's own "merged node" examples use elsewhere in this file)
+    # each carry their own `id_type:`, but only `model_configs.first` was ever consulted — silently
+    # dropping whichever route was declared second, and changing the answer with declaration order.
     describe "reconciling id_type: across multiple model: routes at one merged node" do
       it "rejects two model: routes at the same node declaring disagreeing id_type: values" do
         klass = Class.new do
@@ -1611,12 +1610,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
-    # Codex review round 10 (PR #269): a `shape:` member on the PARENT — declared via a `do...end`
-    # block, not a subfield — can ALSO claim the generated `<field>_id` key by name. It's merged into
-    # `prop[:properties]` by `apply_structured_schema!`, entirely BEFORE `apply_children!` (and so this
-    # conflict check) ever runs, and outside the subfield tree `children` searches at all — so the
-    # explicit-sibling lookup found nothing, the check never ran, and the shape member's `||=`-preserved
-    # property silently discarded a declared `id_type:`.
+    # a `shape:` member on the PARENT — declared via a `do...end` block, not a subfield — can ALSO claim
+    # the generated `<field>_id` key by name. It's merged into `prop[:properties]` by
+    # `apply_structured_schema!`, entirely BEFORE `apply_children!` (and so this conflict check) ever
+    # runs, and outside the subfield tree `children` searches at all — so the explicit-sibling lookup
+    # found nothing, the check never ran, and the shape member's `||=`-preserved property silently
+    # discarded a declared `id_type:`.
     it "rejects a PARENT shape: member sharing the generated id's name, which the subfield-tree " \
        "lookup alone would miss entirely" do
       klass = Class.new do
@@ -1643,15 +1642,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(payload[:properties][:company_id]).to include(type: "integer")
     end
 
-    # Codex review round 11 (PR #269): at a MERGED parent node (two routes reaching the same wire path —
-    # `as:` disambiguates their shared reader, the same construction this file's own "merged node"
-    # examples use elsewhere), `apply_structured_schema!` merges a shape member into the emitted
-    # property ONLY from the representative (first non-model) route — a member on a LATER, non-
-    # representative route never reaches `prop[:properties]` at all. Searching every route
-    # (`shape_members_at` alone) found a member that was never actually emitted, so the check believed
-    # something had already claimed the key while nothing had: the model's own property was skipped in
-    # favor of it, but nothing replaced it — `company_id` ended up `required` with no matching entry in
-    # `properties`, JSON Schema admitting any value there.
+    # at a MERGED parent node (two routes reaching the same wire path — `as:` disambiguates their shared
+    # reader, the same construction this file's own "merged node" examples use elsewhere),
+    # `apply_structured_schema!` merges a shape member into the emitted property ONLY from the
+    # representative (first non-model) route — a member on a LATER, non- representative route never
+    # reaches `prop[:properties]` at all. Searching every route (`shape_members_at` alone) found a
+    # member that was never actually emitted, so the check believed something had already claimed the
+    # key while nothing had: the model's own property was skipped in favor of it, but nothing replaced
+    # it — `company_id` ended up `required` with no matching entry in `properties`, JSON Schema
+    # admitting any value there.
     it "ignores a shape: member on a NON-representative route at a merged parent node — it never " \
        "reaches the emitted property, so it must not suppress the model's own generated id" do
       klass = Class.new do
@@ -1670,9 +1669,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(payload[:required]).to include("company_id")
     end
 
-    # Codex review round 10 (PR #269): an `inclusion:` set's members are the AUTHOR'S OWN literals, and
-    # one whose `inspect` raises would replace this ArgumentError with its own exception while the
-    # message describing the conflict was still being built.
+    # an `inclusion:` set's members are the AUTHOR'S OWN literals, and one whose `inspect` raises would
+    # replace this ArgumentError with its own exception while the message describing the conflict was
+    # still being built.
     it "renders a hostile enum literal (raising #inspect) safely rather than crashing the message itself" do
       hostile = Object.new
       def hostile.inspect = raise "hostile inspect ran"
@@ -1686,7 +1685,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end.to raise_error(ArgumentError, /disagrees.*enum/)
     end
 
-    # Codex review round 5 (PR #269): `json_type_pairs` strips the `null` branch before comparing (see
+    # `json_type_pairs` strips the `null` branch before comparing (see
     # `reject_model_id_type_conflict!`), so a sibling whose type is NilClass-only reduced to an empty
     # set — and a bare `.all?` on that empty set is vacuously true, letting a null-only sibling silently
     # win over a declared `id_type:` with no error at all.
@@ -1701,11 +1700,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
     end
 
-    # Codex review round 16 (PR #269): the round-5 rule above is right when the model itself REQUIRES a
-    # real id (verified: `.call` with no args raises there, so the id genuinely can never be supplied) —
-    # but the same null-only sibling is not a conflict at all when the model ALSO tolerates nil
-    # throughout (`allow_nil: true`): verified `.call` succeeds both with the id omitted and with it
-    # explicitly nil, so nothing the declared `id_type:` asserts is ever actually contradicted.
+    # the rule above is right when the model itself REQUIRES a real id (verified: `.call` with no args
+    # raises there, so the id genuinely can never be supplied) — but the same null-only sibling is not a
+    # conflict at all when the model ALSO tolerates nil throughout (`allow_nil: true`): verified `.call`
+    # succeeds both with the id omitted and with it explicitly nil, so nothing the declared `id_type:`
+    # asserts is ever actually contradicted.
     it "does not raise a null-only explicit sibling beside a declared id_type: when the model ALSO " \
        "tolerates nil throughout — a genuinely callable pairing, not a swallowed contradiction" do
       klass = Class.new do
@@ -1718,13 +1717,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(klass.input_schema[:properties][:company_id]).to eq(type: "null")
     end
 
-    # Codex review round 17 (PR #269): the merged type must not resurrect a null branch the
-    # required-id null pass already stripped. An untyped `allow_nil:` sibling beside a REQUIRED
-    # (non-nilable) model merges as `type: ["integer", "null"]` on the SIBLING's own nullability, but
-    # the id is required by the MODEL, and a required nested model id can never actually resolve from
-    # nil at runtime (verified: `.call(payload: { company_id: nil })` fails). The merge has to run
-    # BEFORE the required-null pass so that pass gets the last, correct word — not after, where it
-    # would silently widen a required property past what runtime accepts.
+    # the merged type must not resurrect a null branch the required-id null pass already stripped.
+    # An untyped `allow_nil:` sibling beside a REQUIRED (non-nilable) model merges as `type:
+    # ["integer", "null"]` on the SIBLING's own nullability, but the id is required by the MODEL,
+    # and a required nested model id can never actually resolve from nil at runtime (verified:
+    # `.call(payload: { company_id: nil })` fails). The merge has to run BEFORE the required-null
+    # pass so that pass gets the last, correct word — not after, where it would silently widen a
+    # required property past what runtime accepts.
     it "does not let a nested untyped allow_nil: sibling reintroduce a null branch the required-id " \
        "null pass already removed (the model itself is required, not the sibling)" do
       klass = Class.new do
@@ -1739,13 +1738,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:required]).to include("company_id")
     end
 
-    # Codex review round 7 (PR #269): comparing against `json_type_for` alone missed a RUNTIME
-    # relaxation `build_property` applies afterward — a blank-tolerant explicit `type: :uuid` sibling
-    # still projects `format: "uuid"` through `json_type_for` alone, so the check saw "satisfies" and
-    # passed, but the ACTUAL winning property (built through `apply_single_type!`, which drops the uuid
-    # format for a blank-tolerant field per its own documented reasoning) silently lost the format —
-    # exactly the class of swallowed contradiction every earlier round's fix here already closed for
-    # other shapes.
+    # comparing against `json_type_for` alone missed a RUNTIME relaxation `build_property` applies
+    # afterward — a blank-tolerant explicit `type: :uuid` sibling still projects `format: "uuid"`
+    # through `json_type_for` alone, so the check saw "satisfies" and passed, but the ACTUAL winning
+    # property (built through `apply_single_type!`, which drops the uuid format for a blank-tolerant
+    # field per its own documented reasoning) silently lost the format — exactly the class of swallowed
+    # contradiction every earlier round's fix here already closed for other shapes.
     it "rejects a blank-tolerant explicit type: :uuid sibling beside a required id_type: :uuid (the " \
        "sibling's OWN blank-tolerance drops its uuid format at emission, so the winning property " \
        "silently admits \"\" though the required model resolution never would)" do
@@ -1771,9 +1769,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:properties][:company_id]).not_to have_key(:format)
     end
 
-    # Codex review round 7 (PR #269): the generated `<field>_id` Symbol was interpolated raw into this
-    # message's own UTF-8 text — a legal, ASCII-compatible but non-UTF-8 field name (a Latin-1 Symbol)
-    # raised Encoding::CompatibilityError from the MESSAGE ITSELF, replacing the intended, actionable
+    # the generated `<field>_id` Symbol was interpolated raw into this message's own UTF-8 text — a
+    # legal, ASCII-compatible but non-UTF-8 field name (a Latin-1 Symbol) raised
+    # Encoding::CompatibilityError from the MESSAGE ITSELF, replacing the intended, actionable
     # ArgumentError with an unrelated crash.
     it "renders a non-UTF-8 (but ASCII-compatible) field name safely rather than crashing the message itself" do
       name = "caf\xE9".dup.force_encoding("ISO-8859-1").to_sym
@@ -1787,11 +1785,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end.to raise_error(ArgumentError, /disagrees/)
     end
 
-    # Codex review round 8 (PR #269): gating the comparison on `explicit_id.validations.key?(:type)`
-    # skipped a sibling that carries no `type:` at all but still gets one INFERRED by `inclusion:`/
-    # `numericality:` (the same `json_type_for` branches `build_property` itself reads) — so the winning
-    # property (a plain string, `inclusion:`-derived) silently discarded a declared `id_type: Integer`
-    # with no error, the very thing the round-1 fix exists to catch.
+    # gating the comparison on `explicit_id.validations.key?(:type)` skipped a sibling that carries no
+    # `type:` at all but still gets one INFERRED by `inclusion:`/ `numericality:` (the same
+    # `json_type_for` branches `build_property` itself reads) — so the winning property (a plain string,
+    # `inclusion:`-derived) silently discarded a declared `id_type: Integer` with no error, the very
+    # thing the round-1 fix exists to catch.
     it "rejects an explicit sibling with no type: of its own whose OTHER validator (inclusion:) still " \
        "makes build_property infer a conflicting type" do
       klass = Class.new do
@@ -1803,10 +1801,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
     end
 
-    # Codex review round 9 (PR #269): a HETEROGENEOUS `inclusion:` set (mixed value types) can't reduce
-    # to one base type at all, so `json_type_for` emits `enum:` alone — neither `:type` nor `:anyOf` —
-    # which the round-8 fix's gate didn't check, letting a declared `id_type: Integer` silently lose to
-    # a sibling whose enum admits a String literal too.
+    # a HETEROGENEOUS `inclusion:` set (mixed value types) can't reduce to one base type at all, so
+    # `json_type_for` emits `enum:` alone — neither `:type` nor `:anyOf` — which the round-8 fix's
+    # gate didn't check, letting a declared `id_type: Integer` silently lose to a sibling whose enum
+    # admits a String literal too.
     it "rejects an explicit sibling whose HETEROGENEOUS inclusion: set emits only enum: (no derivable " \
        "type at all), when a literal violates the declared id_type:" do
       klass = Class.new do
@@ -1844,9 +1842,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # covered above by "does not raise when the explicit sibling has no type: of its own to disagree
     # with"; re-verified passing unchanged by this round's fix, not duplicated here.)
 
-    # Codex review round 8 (PR #269): `id_type:` types the generated `<field>_id` `expects` builds on
-    # the INPUT schema; `exposes` never generates one at all (output reflects the exposed value itself),
-    # so `id_type:` there was accepted at declaration and then silently did nothing.
+    # `id_type:` types the generated `<field>_id` `expects` builds on the INPUT schema; `exposes`
+    # never generates one at all (output reflects the exposed value itself), so `id_type:` there was
+    # accepted at declaration and then silently did nothing.
     it "rejects id_type: on an exposes model: declaration — there is no generated <field>_id on output " \
        "for it to type" do
       expect do
@@ -1866,10 +1864,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end.not_to raise_error
     end
 
-    # Codex review round 1 (PR #269): an explicit sibling always wins, so building the model's OWN
-    # property (and, for an ActiveRecord class, dispatching into it to infer the id's type) is wasted
-    # work whenever one exists — verified here with a token whose inference methods raise if reached;
-    # the AR-specific case (a real primary_key/type_for_attribute call that must never run) lives in
+    # an explicit sibling always wins, so building the model's OWN property (and, for an
+    # ActiveRecord class, dispatching into it to infer the id's type) is wasted work whenever one
+    # exists — verified here with a token whose inference methods raise if reached; the AR-specific
+    # case (a real primary_key/type_for_attribute call that must never run) lives in
     # spec_rails/dummy_app/spec/axn/internal/reflection/model_id_type_spec.rb.
     describe "skips id_type inference entirely when an explicit sibling will win" do
       it "never calls model_id_type_token for the discarded property, top-level" do
@@ -1906,12 +1904,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
-    # Codex review round 2 (PR #269): the "an explicit sibling will win" skip above matched ANY field
-    # config named `<field>_id`, including one that is ITSELF a `model:` field — but such a config never
-    # writes to that wire key at all (it emits its OWN generated id one level deeper,
-    # `<field>_id_id`), so treating it as "something will provide this property" left the FIRST
-    # model's id in `required` with no matching property at all — an invalid, previously-untyped-but-at-
-    # least-PRESENT schema regressed to entirely absent.
+    # the "an explicit sibling will win" skip above matched ANY field config named `<field>_id`,
+    # including one that is ITSELF a `model:` field — but such a config never writes to that wire key at
+    # all (it emits its OWN generated id one level deeper, `<field>_id_id`), so treating it as
+    # "something will provide this property" left the FIRST model's id in `required` with no matching
+    # property at all — an invalid, previously-untyped-but-at- least-PRESENT schema regressed to
+    # entirely absent.
     describe "a model field's generated id sharing a name with ANOTHER model field (not an explicit sibling)" do
       it "still emits company_id's own generated property when company_id is itself a model: field" do
         klass = Class.new do
@@ -5339,13 +5337,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # like `Object`/`Enumerable`, which `single_type_for` reflects on input as a permissive `{type:
           # "string"}` HINT rather than a real constraint — must not be conjoined as if that hint were
           # exact: doing so emits a string-vs-object intersection nothing satisfies, though the runtime
-          # accepts any Hash for both sides (Codex review, PR #278). Only the fake TYPE (`type`/`anyOf`) is
-          # dropped from the approximate side; everything else — here, the presence floor `single_type_for`
-          # attached under its "string" assumption — survives as a harmless residue, RETARGETED to the
-          # surviving object type's own keyword (`minProperties`, not `minLength` — round 13:
-          # `retarget_unknown_class_length` translates it once the collision reveals the real type, since
-          # JSON Schema would otherwise silently ignore a `minLength` on an object instance and the presence
-          # floor would enforce nothing at all).
+          # accepts any Hash for both sides. Only the fake TYPE (`type`/`anyOf`) is dropped from the
+          # approximate side; everything else — here, the presence floor `single_type_for` attached under
+          # its "string" assumption — survives as a harmless residue, RETARGETED to the surviving object
+          # type's own keyword (`minProperties`, not `minLength` — `retarget_unknown_class_length`
+          # translates it once the collision reveals the real type, since JSON Schema would otherwise
+          # silently ignore a `minLength` on an object instance and the presence floor would enforce nothing
+          # at all).
           it "does not conjoin an ancestor member's approximate type hint against the node's real object shape" do
             klass = Class.new do
               include Axn
@@ -5364,10 +5362,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
           # The mirror: the NODE's own type is the approximate one, and the ancestor member's real Hash
           # shape survives — its `properties`/`required` reach the document, rather than the node's fake
-          # "string" hint discarding them. The node's own presence floor (`single_type_for`'s "string"
-          # fallback) survives too, RETARGETED to `minProperties` (round 13's `retarget_unknown_class_
-          # length`, same reasoning as the sibling test above) as a harmless top-level sibling of the
-          # ancestor's real shape in `allOf`.
+          # "string" hint discarding them. The node's own presence floor came from that same fabricated
+          # "string", so it is reported rather than restated under a keyword chosen for a type only the
+          # collision revealed.
           it "does not conjoin the node's own approximate type hint against a real ancestor shape, and keeps the ancestor's" do
             klass = Class.new do
               include Axn
@@ -5409,9 +5406,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
           # A mixed union with ONE exact branch is still approximate as a WHOLE: `Object` alone already
           # admits everything the union could narrow to, so the exact `String` branch beside it adds
-          # nothing the runtime doesn't already accept via `Object`. Codex review (PR #278 round 2) — an
-          # earlier `.all?` reading let this union through as "exact" because String isn't approximate,
-          # conjoining the union's collapsed `"string"` emission as though it meant only strings.
+          # nothing the runtime doesn't already accept via `Object`. an earlier `.all?` reading let this
+          # union through as "exact" because String isn't approximate, conjoining the union's collapsed
+          # `"string"` emission as though it meant only strings.
           it "treats a mixed union with an approximate branch as approximate as a whole" do
             klass = Class.new do
               include Axn
@@ -5432,9 +5429,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # NESTED field and the node's OWN shape block (spelling B, reached through merge_emitted_maps
           # rather than apply_explicit_child!). `merge_emitted_maps` re-resolves each side's config PER
           # COLLIDING KEY via `shape_members_at` rather than trusting the property Hash, so it can tell a
-          # real `type: String` from the `Object` fallback apart at THIS depth too (Codex review, PR #278
-          # round 3 — this was a KNOWN RESIDUAL through round 2, left deliberately unfixed pending exactly
-          # this plumbing).
+          # real `type: String` from the `Object` fallback apart at THIS depth too.
           it "does not conjoin an approximate type hint one level deeper either, through merge_emitted_maps" do
             klass = Class.new do
               include Axn
@@ -5532,9 +5527,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # matching the key: at a merged ancestor node, `apply_structured_schema!` builds `member_prop`
           # from the REPRESENTATIVE route alone, so a LATER, non-representative route's exact type never
           # reaches the document at all — judging the whole `members` list let that unreached route mask
-          # the representative's own approximate one (Codex review, PR #278 round 4). Two routes to
-          # `outer.mid.payload`, the FIRST (representative) declaring `inner` as the approximate `Object`,
-          # the SECOND (never emitted) declaring it as the real `Hash`.
+          # the representative's own approximate one. Two routes to `outer.mid.payload`, the FIRST
+          # (representative) declaring `inner` as the approximate `Object`, the SECOND (never emitted)
+          # declaring it as the real `Hash`.
           it "judges approximateness on the route that actually produced member_prop, not every merged route" do
             klass = Class.new do
               include Axn
@@ -5561,9 +5556,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # `Integer` branch that's ALSO approximate (coercible) does not shield the union from the
           # ancestor — the whole node collapses to the ancestor's real Hash-shape requirement, because
           # nothing satisfies the ancestor without also being the Hash the union's other branch names
-          # (Codex review, PR #278 round 4 — measured: even a wire value the Integer branch would coerce
-          # successfully, or one that's already a valid Integer, fails the ancestor's Hash check either
-          # way, so there is nothing for the Integer branch to protect).
+          # (even a wire value the Integer branch would coerce successfully, or one that's already a
+          # valid Integer, fails the ancestor's Hash check either way, so there is nothing for the
+          # Integer branch to protect).
           it "conjoins the ancestor's real constraint over a union node with one coercible branch" do
             klass = Class.new do
               include Axn
@@ -5587,8 +5582,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # preprocess: is judged the same way as coercion — the node's own emitted type is approximate,
           # even with NO declared type token to weigh at all, since a Proc can rewrite the wire value into
           # anything. The ancestor's constraint is still independently enforced against the RAW value, so
-          # it must not be discarded just because the node also transforms its own reading (Codex review,
-          # PR #278 round 5).
+          # it must not be discarded just because the node also transforms its own reading.
           it "conjoins the ancestor's real constraint over a node whose own declaration preprocesses" do
             klass = Class.new do
               include Axn
@@ -5616,12 +5610,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # union lets the SECOND side's `:type` silently overwrite the first's — safe for `properties`/
           # `required`/the size bounds (those are explicitly unioned/intersected), but NOT for nullability:
           # a nullable `["object", "null"]` on one side must not overwrite the OTHER side's non-nullable
-          # `"object"` (Codex review, PR #278 round 22): an ancestor `deep` Hash member that REQUIRES `a`
-          # (non-nullable) beside a colliding node's OWN `deep` declared `allow_nil: true` (nullable) let
-          # the node's nullable type win outright, so the merged schema admitted `deep: null` even though
-          # the ancestor's own (unconditional, raw-value) check rejects null there. Both routes are
-          # enforced, so null survives only when BOTH tolerate it — `merge_emitted_type` reconciles this
-          # explicitly rather than leaving it to the shallow merge's "second side wins" default.
+          # `"object"`: an ancestor `deep` Hash member that REQUIRES `a` (non-nullable) beside a colliding
+          # node's OWN `deep` declared `allow_nil: true` (nullable) let the node's nullable type win
+          # outright, so the merged schema admitted `deep: null` even though the ancestor's own
+          # (unconditional, raw-value) check rejects null there. Both routes are enforced, so null survives
+          # only when BOTH tolerate it — `merge_emitted_type` reconciles this explicitly rather than
+          # leaving it to the shallow merge's "second side wins" default.
           it "keeps a nested object collision non-nullable when either colliding side forbids null" do
             klass = Class.new do
               include Axn
@@ -5648,12 +5642,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # A map's `values:`/`keys:` axes (`additionalProperties`/`propertyNames`) are their own nested
           # schema, both enforced when both colliding sides declare one — the object-vs-object merge above
           # reconciles `properties`/`required`/the size bounds but, before this fix, still let the shallow
-          # `merge` at its TOP overwrite one side's `additionalProperties` with the other's outright
-          # (Codex review, PR #278 round 24): an ancestor `deep` Hash member whose values axis requires
-          # `> 0` beside a colliding node's own `deep` values axis requiring `< 10` emitted only the `< 10`
-          # constraint, so `deep: { x: -1 }` passed the schema though the ancestor's own validator (which
-          # runs unconditionally, regardless of what the node's own map declares) rejects it. Fixed by
-          # conjoining the two nested axis schemas the same way any other single-position collision is.
+          # `merge` at its TOP overwrite one side's `additionalProperties` with the other's outright: an
+          # ancestor `deep` Hash member whose values axis requires `> 0` beside a colliding node's own
+          # `deep` values axis requiring `< 10` emitted only the `< 10` constraint, so `deep: { x: -1 }`
+          # passed the schema though the ancestor's own validator (which runs unconditionally, regardless
+          # of what the node's own map declares) rejects it. Fixed by conjoining the two nested axis
+          # schemas the same way any other single-position collision is.
           it "conjoins colliding values-axis constraints on a nested map rather than letting one win" do
             klass = Class.new do
               include Axn
@@ -5678,13 +5672,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
           # The conjunction above threads NO axis-level configs through, so `unknown_class_approximate?`
           # never fires for either axis — harmless when both axes are exactly typed (Integer), but wrong
-          # once one axis is an UNKNOWN-CLASS hint (Codex review, PR #278 round 25): an ancestor `deep`
-          # Hash member with `values: Object` (a permissive `single_type_for` HINT, `{type: "string"}`, not
-          # a real constraint) beside a colliding node's own `values: Hash` axis (a REAL `{type: "object"}`)
-          # conjoined the fake String hint as though it were exact, producing `additionalProperties: {
-          # type: "object", allOf: [{ type: "string" }] }` — a node nothing satisfies, though `{ x: {} }`
-          # passes both runtime axis validators. Fixed by threading each axis's OWN declared klass token
-          # into the recursive conjunction via `axis_configs_for`, so the approximate axis gets the same
+          # once one axis is an UNKNOWN-CLASS hint: an ancestor `deep` Hash member with `values: Object` (a
+          # permissive `single_type_for` HINT, `{type: "string"}`, not a real constraint) beside a colliding
+          # node's own `values: Hash` axis (a REAL `{type: "object"}`) conjoined the fake String hint as
+          # though it were exact, producing `additionalProperties: { type: "object", allOf: [{ type:
+          # "string" }] }` — a node nothing satisfies, though `{ x: {} }` passes both runtime axis
+          # validators. Fixed by threading each axis's OWN declared klass token into the recursive
+          # conjunction via `axis_configs_for`, so the approximate axis gets the same
           # `unknown_class_approximate?` stripping an approximate FIELD already gets.
           it "strips an approximate axis's fake type hint rather than conjoining it as exact" do
             klass = Class.new do
@@ -5704,14 +5698,14 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
           # `axis_configs_for` only carried each axis's own `:klass` into its view, dropping the REST of
           # the axis bag — harmless one level deep, but wrong once the axis itself is ANOTHER map bag with
-          # its own nested `values:`/`keys:` axis (Codex review, PR #278 round 26): outer `klass: Hash`
-          # axes whose nested values are respectively `Object` and `Hash` lost that inner structure here,
-          # so when the merge recursed one level deeper for the INNER axis, `axis_configs_for` found no
-          # `:of` to read on the view at all, and the inner `Object` axis's approximate `{type: "string"}`
-          # hint was conjoined as exact all over again — the runtime accepts a value containing the nested
-          # Hash, but the emitted `additionalProperties` node was unsatisfiable. Fixed by carrying the
-          # axis's own `:of` forward into the view alongside its synthesized `:type`, so `axis_configs_for`
-          # can keep recursing exactly as deep as the collision itself goes.
+          # its own nested `values:`/`keys:` axis: outer `klass: Hash` axes whose nested values are
+          # respectively `Object` and `Hash` lost that inner structure here, so when the merge recursed one
+          # level deeper for the INNER axis, `axis_configs_for` found no `:of` to read on the view at all,
+          # and the inner `Object` axis's approximate `{type: "string"}` hint was conjoined as exact all
+          # over again — the runtime accepts a value containing the nested Hash, but the emitted
+          # `additionalProperties` node was unsatisfiable. Fixed by carrying the axis's own `:of` forward
+          # into the view alongside its synthesized `:type`, so `axis_configs_for` can keep recursing
+          # exactly as deep as the collision itself goes.
           it "preserves nested axis provenance through a doubly-nested map collision" do
             klass = Class.new do
               include Axn
@@ -5734,13 +5728,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
           # An axis's OWN `shape:` names members the same way a field's `shape:` does — `shape_members_at`
           # reads `config.validations.dig(:shape, :members)` off whatever config it's handed — but the
-          # view built above only carried `:type`/`:of` forward, not `:shape` (Codex review, PR #278 round
-          # 27): two `values: { klass: Hash, shape: { … } }` axes colliding, one naming a child `a` as
-          # `Object` and the other as `Hash`, needs the SAME per-child lookup an ordinary object's
-          # `properties` collision already gets — without `:shape` on the view, `shape_members_at` found
-          # nothing, so the `Object` child's approximate hint was conjoined as exact against the `Hash`
-          # child's real one, producing a node nothing satisfies though a nonempty Hash passes both
-          # runtime axis validators. Fixed by carrying the axis's own `:shape` forward too.
+          # view built above only carried `:type`/`:of` forward, not `:shape`: two `values: { klass: Hash,
+          # shape: { … } }` axes colliding, one naming a child `a` as `Object` and the other as `Hash`,
+          # needs the SAME per-child lookup an ordinary object's `properties` collision already gets —
+          # without `:shape` on the view, `shape_members_at` found nothing, so the `Object` child's
+          # approximate hint was conjoined as exact against the `Hash` child's real one, producing a node
+          # nothing satisfies though a nonempty Hash passes both runtime axis validators. Fixed by
+          # carrying the axis's own `:shape` forward too.
           it "preserves an axis's own shape members through a collision" do
             object_member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Object })
             hash_member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Hash })
@@ -5764,14 +5758,14 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           end
 
           # A CLASSLESS axis (legally `klass:`-free — constraining only via its named `shape:` members)
-          # still has structure worth keeping even though it names no token at all — round 27's own fix
-          # skipped the WHOLE view whenever no `:klass` was found, discarding a classless axis's `:shape`
-          # right along with it (Codex review, PR #278 round 29): two `values: { shape: { members: [...] }
-          # }` axes colliding, one naming child `a` as `Object` and the other as `Hash`, needs the same
-          # per-child config lookup an ordinary object's `properties` collision already gets — without a
-          # view at all for either axis, `shape_members_at` found nothing for either side, and the `Object`
-          # child's approximate hint was conjoined as exact against the `Hash` child's real one. Fixed by
-          # only skipping an axis that is TRULY empty (no token, no `:of`, no `:shape`).
+          # still has structure worth keeping even though it names no token at all. Skipping the whole
+          # view whenever no `:klass` is found would discard a classless axis's `:shape` along with it: two
+          # `values: { shape: { members: [...] } }` axes colliding, one naming child `a` as `Object` and the
+          # other as `Hash`, needs the same per-child config lookup an
+          # ordinary object's `properties` collision already gets — without a view at all for either axis,
+          # `shape_members_at` found nothing for either side, and the `Object` child's approximate hint was
+          # conjoined as exact against the `Hash` child's real one. Fixed by only skipping an axis that is
+          # TRULY empty (no token, no `:of`, no `:shape`).
           it "preserves a classless axis's own shape members through a collision" do
             object_member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Object })
             hash_member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Hash })
@@ -5798,7 +5792,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # not premised on the type at all — JSON Schema applies it to the instance regardless of any
           # `type` keyword, and the runtime keeps enforcing it too. Dropping the whole member — type hint
           # AND exact enum together — let the document accept a value the runtime's inclusion check
-          # rejects (Codex review, PR #278 round 5).
+          # rejects.
           it "keeps an approximate member's exact inclusion enum even though its type hint is dropped" do
             klass = Class.new do
               include Axn
@@ -5821,9 +5815,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # TRANSFORMING node is a different pairing: the node's own emission is forced to `{}` first (it
           # names a post-transform value nothing else reads), and the ancestor's hint, having nothing real
           # to contradict, keeps its FULL property rather than being stripped to just its (here, absent)
-          # enum. That is what lets the coercible wire string the runtime accepts still validate (Codex
-          # review, PR #278 round 6 — treating both emitted type hints as exact here produced an integer
-          # node with an incompatible string allOf branch, admitting nothing).
+          # enum. That is what lets the coercible wire string the runtime accepts still validate (treating
+          # both emitted type hints as exact here produced an integer node with an incompatible string
+          # allOf branch, admitting nothing).
           it "keeps an unknown-class ancestor's full hint beside a node that transforms, rather than stripping both" do
             klass = Class.new do
               include Axn
@@ -5840,27 +5834,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "5" })).to be_ok
           end
 
-          # An approximate side's `enum` survives stripping only when it describes the SAME (raw) value
-          # the other side reads — a TRANSFORMING side's enum describes its OWN post-transform value
-          # instead, so `type`/`anyOf`/`enum` are all still stripped in pass 1 before pass 2 (the
-          # enum-preserving stand-down for an unknown-class side) ever runs, unlike the plain-`inclusion:`-
-          # on-an-unknown-class case above (Codex review, PR #278 round 6: keeping `enum: [5]` — a target
-          # Integer — unstripped conjoined against the ancestor's raw String requirement produced a node
-          # nothing satisfies, though the runtime accepts the wire string "5").
-          #
-          # But dropping the enum's VALUES entirely (rather than just the `type` binding it came with) is
-          # its own, opposite-direction gap (Codex review, PR #278 round 9): with nothing surviving beside
-          # it, the node contributes nothing beyond the ancestor's bare `type: "string"`, so the schema
-          # admits every non-empty string — including "6", though the runtime coerces "6" to Integer 6 and
-          # rejects it (only 5 is in the inclusion list). Since `Integer(s, 10)` and `Float(s)` both
-          # round-trip through `#to_s`, a numeric enum value's decimal string spelling is a wire form the
-          # coercer accepts for it — retaining both spellings (`enum: [5, "5"]`) keeps the schema correct
-          # without dropping the constraint or inventing a general coercion inverse.
-          # coerce: false only rules out the COERCION reason a type is approximate — it says nothing about
-          # the SEPARATE unknown-class reason, so an unknown class explicitly opted out of coercion is
-          # still approximate on its own terms (Codex review, PR #278 round 6 — the opt-out was short-
-          # circuiting the whole approximateness check, so `Object` conjoined its fake string type against
-          # a real ancestor Hash shape and admitted nothing).
+          # `coerce: false` rules out the TRANSFORM reason, but an `Object` token is still one
+          # `single_type_for` has no real JSON type for — the two reasons are independent, and ruling out one
+          # does not make the side exact.
           it "keeps an unknown class approximate even when coerce: false rules out the coercion reason" do
             klass = Class.new do
               include Axn
@@ -5886,8 +5862,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # `coerce_input_types` flag is a FIELD/reader mechanism a member never routes through either. So
           # an `Integer`-typed member's declared type being merely "coercible in principle" is not a reason
           # to distrust it — its own exact `inclusion:` enum must survive a collision with a node that
-          # cannot coerce it either (Codex review, PR #278 round 7 — treating the member as approximate
-          # here dropped its `enum` for no reason, since neither side could ever coerce this value).
+          # cannot coerce it either (treating the member as approximate here dropped its `enum` for no
+          # reason, since neither side could ever coerce this value).
           it "never treats a shape member as coercible, even when its declared type is one of Coercion::SUPPORTED" do
             klass = Class.new do
               include Axn
@@ -5905,65 +5881,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 6 })).not_to be_ok # not in the member's inclusion list
           end
 
-          # A transforming node's own `length:` is TYPE-CONDITIONAL (JSON Schema never applies it to an
-          # instance of some other type), unlike `type`/`anyOf`/`enum` — so it survives stripping alongside
-          # the ancestor's real constraint, matching `single_type_for`'s own pre-existing, out-of-scope
-          # approximation for how a transforming field's declared size bounds already reflect with no
-          # collision at all (Codex review, PR #278 round 8: dropping `length:` here entirely let `"a"`
-          # pass `input_schema` though the node's own — identity-preprocessed — length floor rejects it).
-          # `const` (NUMERIC_BOUND_KEYS' spelling for a non-nullable `equal_to:`) carries the SAME intrinsic
-          # type binding `enum` does — a literal value is itself of some JSON type — so it belongs beside
-          # `type`/`anyOf`/`enum` in strip_intrinsically_typed_keys, not among the type-conditional keywords
-          # that survive. Found by auditing every keyword the emitter can produce for this same class of gap,
-          # rather than waiting for another round to surface it one keyword at a time.
-          #
-          # DROPPING it outright (Codex review, PR #278 round 9) is its OWN gap in the opposite direction:
-          # once `const` is gone with nothing left to survive alongside it, the node contributes NOTHING
-          # beyond the ancestor's bare `type: "string"` — so the schema admits every non-empty string,
-          # including "6", though the runtime coerces "6" to Integer 6 and rejects it (only 5 passes the
-          # equality check). Schema looser than runtime — the one forbidden direction.
-          #
-          # The fix: since `Coercion::COERCERS[Integer]` parses via `Integer(s, 10)` and `Float` via
-          # `Float(s)`, both round-trip through `#to_s` — so a numeric const/enum value's decimal string
-          # spelling is a WIRE form the coercer accepts, and retaining both spellings as an `enum` (rather
-          # than dropping the constraint) keeps the schema correct without inventing a general coercion-
-          # inverse: `enum: [5, "5"]` accepts "5" (matches runtime) and rejects "6" (matches runtime) and
-          # rejects the JSON integer 5 too (correctly — the ancestor's own raw-wire `type: "string"`, kept
-          # in the `allOf` sibling, still requires the wire form itself to be a String). A non-numeric
-          # literal (Symbol/Date/anything else) has no such safe, construction-only translation available
-          # and is dropped as before — a narrower, still-tolerated imprecision, filed as a follow-up rather
-          # than solved here.
-          # By the time an inclusion enum reaches this function, apply_inclusion_enum! has already rendered
-          # any Symbol/Date/Time/DateTime member into its own wire-string spelling (Values.serialize_value —
-          # the SAME encoder used for output normalization elsewhere in this file) — `:allowed` became
-          # `"allowed"` before strip_intrinsically_typed_keys ever saw it. Dropping a String literal here
-          # for being "non-numeric" (Codex review, PR #278 round 10) throws away a spelling that is ALREADY
-          # the coercer's accepted wire input (`.to_sym` inverts `.to_s` exactly), leaving the schema unable
-          # to distinguish "allowed" (passes) from "other" (coerces to :other, fails inclusion).
-          # A numeric literal's wire-string translation (the round 9 fix, two tests above) is only sound
-          # when the transform IS the known coercer — a `preprocess:` can compose with coercion in either
-          # order and arbitrarily rescale the result, so its presence invalidates any inference about the
-          # net wire-to-value mapping regardless of whether `coerce:` is ALSO explicitly true (Codex
-          # review, PR #278 round 10: the reported repro paired `preprocess:` with `coerce: false`, but
-          # `coerce: true` alongside the SAME preprocess is just as unsound and isn't already caught by the
-          # explicit-`coerce: false` branch — under `coerce: true, preprocess: ->(v) { Integer(v) + 1 },
-          # comparison: { equal_to: 5 }`, wire "4" is accepted (coerced then preprocessed to 5) and wire "5"
-          # is rejected (preprocessed to 6) — the OPPOSITE of what synthesizing `enum: [5, "5"]` would have
-          # advertised). Falls back to dropping the constraint entirely, same as before the round 9 fix
-          # existed — a known, tolerated imprecision reflection cannot close without executing the Proc.
-          # Round 20 tried exempting a REQUIRED node's own `nil_allowed?` whenever it also has a
-          # `preprocess:`, on the premise that the Proc runs before presence is judged and so MIGHT turn a
-          # wire `nil` into something non-nil (`preprocess: ->(_) { "x" }` beside an ancestor member
-          # constrained to `inclusion: { in: [nil] }` does exactly that, and runtime accepts wire nil). But
-          # round 21 showed that same exemption cannot be scoped safely: reflection cannot tell that
-          # CONSTANT-preprocess case apart from an ordinary IDENTITY (or any other nil-preserving)
-          # `preprocess: ->(v) { v }`, where the Proc does NOT rescue nil and the required check correctly
-          # rejects it — `preprocess:` is an opaque Proc, and reflection must not execute it to find out
-          # which case it is. So this remains `not: { type: "null" }` even though round 20's OWN scenario
-          # would (if it were reachable) accept wire nil at runtime — a known, deliberately unfixed residual
-          # (the same "cannot execute user code" limit already accepted for pattern/format and numeric
-          # bounds under preprocess elsewhere in this file), preferred over risking the FAR more common
-          # identity/pass-through case silently becoming schema-loose.
+          # A transforming node cannot say anything about the wire form, so the ancestor is emitted alone. Its
+          # `inclusion: { in: [nil] }` admits only nil while the node's requiredness strips the null branch,
+          # leaving a node nothing satisfies. That is a known, deliberately unfixed residual: telling a
+          # CONSTANT `preprocess: ->(_) { "x" }` (which does rescue a wire nil) apart from an identity
+          # `->(v) { v }` (which does not) needs the Proc executed, and reflection may never run user code.
+          # The residue reports the stand-down, so the gap is at least stated rather than silent.
           it "still rejects null for a required, preprocessing node even beside a nil-tolerant ancestor" do
             klass = Class.new do
               include Axn
@@ -5983,12 +5906,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             # comment above for why this residual is accepted rather than solved.
           end
 
-          # The scenario round 21 actually flagged: an ORDINARY nil-tolerant ancestor (not the exotic
-          # "constrained to only nil" case above) beside a required node whose preprocess is IDENTITY —
-          # the far more common shape a `preprocess:`-plus-nullability collision takes, and the one round
-          # 20's (reverted) exemption got backwards: it would have skipped `reject_null!` here too, letting
-          # the schema accept wire `nil` though the identity preprocess never rescues it and the required
-          # check genuinely rejects it at runtime.
+          # The ordinary shape of the same collision: a nil-tolerant ancestor (not the exotic "constrained
+          # to only nil" case above) beside a required node whose preprocess is IDENTITY. Exempting a
+          # preprocessing route from `reject_null!` would get this backwards — the schema would accept wire
+          # `nil` though the identity preprocess never rescues it and the required check rejects it.
           it "rejects null for a required, identity-preprocessing node beside an ordinary nil-tolerant ancestor" do
             klass = Class.new do
               include Axn
@@ -6008,21 +5929,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "abc" })).to be_ok
           end
 
-          # A type-conditional bound (round 8's `length:`) is safe to KEEP from a `preprocess:`-tainted
-          # side ONLY when it does not conjoin into an EMPTY interval with a bound the OTHER side
-          # independently asserts (Codex review, PR #278 round 11): the ancestor's `minLength: 3` runs
-          # against the RAW value, the node's own `maxLength: 1` runs against `v[0]` (always a single
-          # character) — genuinely satisfiable at runtime (a 3+ char string always has a 1-char first
-          # character), but conjoining both bounds unstripped produces `minLength: 3, maxLength: 1`, which
-          # no string can satisfy. `drop_conflicting_size_bounds` detects the empty interval and drops the
-          # node's own (untrustworthy, preprocess-derived) pair rather than emitting it.
-          # An unknown-class member's TYPE-CONDITIONAL constraints are just as trustworthy as an exactly-
-          # typed member's — nothing about it transforms the value, so a real `length:` validator still
-          # runs against the SAME raw value the colliding node reads. Slicing the approximate side down to
-          # `.slice(:enum)` (rather than `.except(:type, :anyOf)`, dropping only the fake type) discarded
-          # this along with the fake type for no reason (Codex review, PR #278 round 11): `type: Object,
-          # length: { minimum: 3 }` beside an explicit `type: String` node let a 1-character string pass
-          # the schema though the member's real length floor rejects it at runtime.
+          # The member's `inclusion:` names literals, which carry their own type and mean the same thing
+          # whatever this side's type was guessed to be — so the enum survives. Its `length:` does not: a
+          # `minLength` is a string-only keyword that came from the fabricated type, and JSON Schema ignores
+          # it beside the object this position turns out to be. It is reported instead of left looking like a
+          # constraint that enforces nothing.
           it "keeps an unknown-class member's real length: validator, not just its enum" do
             klass = Class.new do
               include Axn
@@ -6040,68 +5951,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "a" })).not_to be_ok # fails the member's own real length: { minimum: 3 }
           end
 
-          # `minLength`/`maxLength` is only the RIGHT keyword when the surviving side turns out to be a
-          # String — `single_type_for`'s "string" fallback names it regardless of what the collision reveals
-          # the real type to be, and JSON Schema silently ignores `minLength` for a non-string instance
-          # (Codex review, PR #278 round 13, following directly from the fix above): `type: Object, length:
-          # { minimum: 3 }` beside a colliding `type: Hash` node kept `minLength: 3` sitting inertly beside
-          # the object schema, so a one-property Hash passed the schema though the member's real length
-          # floor (`Hash#length`, its key count) rejects it at runtime. `retarget_unknown_class_length`
-          # renames it to `minProperties` once the surviving type is known to be an object (or `minItems`
-          # for an Array), so the constraint is actually enforced rather than left type-inapplicable.
-          # A UNION survivor (`type: [Hash, Array]`) has no top-level `type` — its own emission is `anyOf`
-          # branches, one per member type — so reading `other_prop[:type]` alone (the fix above) missed it
-          # and dropped the bound entirely (Codex review, PR #278 round 15): `type: Object, length: {
-          # minimum: 3 }` beside a colliding `type: [Hash, Array]` node let a one-item Array OR a
-          # one-property Hash pass, though the member's real length floor rejects both. A single retargeted
-          # keyword can't serve every branch — `minProperties` would be silently ignored (vacuously true)
-          # for an Array instance — so each branch gets its OWN paired `{type:, sizeKey:}` entry in a new
-          # `anyOf`, which is what makes the bound actually discriminate by the instance's real type.
-          # `:boolean` accepts several wire spellings for one native value, unlike Integer/Float's single
-          # canonical `#to_s` — but `Coercion.boolean_wire_spellings` is the single source for the WHOLE
-          # accepted set, so a coercible boolean literal is translated the same way a numeric one is
-          # (Codex review, PR #278 round 11): dropping it entirely let a raw String ancestor's schema
-          # accept "false", though coercion turns that into `false` and fails `inclusion: { in: [true] }`
-          # at runtime.
-          # `drop_conflicting_size_bounds` (round 11) checked only `minimum`/`maximum`, missing exactly the
-          # keywords `numericality:`/`comparison:` actually emit for a strict bound — `exclusiveMinimum`/
-          # `exclusiveMaximum` (Codex review, PR #278 round 12): an ancestor `numericality: { greater_than:
-          # 3 }` beside a colliding preprocessing node's `comparison: { less_than: 2 }` accepts raw `4` at
-          # runtime (the ancestor checks 4 > 3; the node's own check runs on `4 - 3 = 1 < 2`), but keeping
-          # both bounds conjoined `exclusiveMinimum: 3` with `exclusiveMaximum: 2` — a node no integer can
-          # satisfy.
-          # Round 12's own conflict check compares the bounds as a CONTINUOUS interval — it misses an
-          # interval that's non-empty over the reals but contains no INTEGER at all (Codex review, PR #278
-          # round 23): an ancestor Integer member's `comparison: { greater_than: 1 }` (`exclusiveMinimum:
-          # 1`) beside a colliding Integer node's `preprocess: ->(v) { v - 1 }, comparison: { less_than: 2
-          # }` (`exclusiveMaximum: 2`) accepts raw `2` at runtime (the ancestor's own check reads the raw
-          # value 2, which is `> 1`; the node's own check runs on the preprocessed `1`, which is `< 2`),
-          # but `exclusiveMinimum: 1` conjoined with `exclusiveMaximum: 2` describes an integer strictly
-          # between 1 and 2 — none exists — an unsatisfiable schema for a satisfiable contract. Fixed by
-          # also treating an integer-only domain with no integral point in the combined interval as a
-          # conflict, so the node's own bound stands down the same way an outright-empty interval already
-          # does.
-          # A wire-spelling candidate is safe only if it ACTUALLY round-trips through the real coercer for
-          # THIS declared type — a union target changes which candidates survive, which a class-only check
-          # (round 9-11: "it's a String, so it's already safe") cannot see (Codex review, PR #278 round
-          # 12): under a `[Integer, String]` coercing type, the literal "5" decodes to Integer 5 (Integer is
-          # tried first and succeeds), never remaining String "5" — so no wire value could ever satisfy an
-          # inclusion check against the literal String "5", and it must be dropped; "ok" is untouched by
-          # either coercion target and survives unchanged.
-          # An all-`nil` literal set must not be discarded merely because compacting it first (to classify
-          # the REST) leaves nothing behind — `nil` is never wire-transformed by coercion at all (round 8's
-          # own justification), so `enum: [nil]` round-trips trivially and is exactly as safe to keep as any
-          # other coercible literal (Codex review, PR #278 round 12): a nil-tolerant coercing `Integer` node
-          # with `inclusion: { in: [nil] }` beside a nil-tolerant String ancestor accepts nil and rejects
-          # every non-nil wire value at runtime (nothing else is in the inclusion set), but the previous
-          # compact-first check returned `nil` — "no safe translation" — for this literal set, dropping the
-          # constraint and letting the schema accept "5".
-          # `merge_shape_member_property` reassigns `properties`/`required` unconditionally from the
-          # recursive merge/merge_emitted_required result, which is `nil` (nothing to merge) when NEITHER
-          # colliding side has any children at all — writing that `nil` through leaves an INVALID document:
-          # JSON Schema requires `properties` to be an object and `required` to be an array, never `null`
-          # (Codex review, PR #278 round 13). Two colliding bare `type: Hash` declarations, neither with a
-          # `field`/`expects` block, is the minimal repro.
+          # Neither colliding side declares children, so neither contributes `properties`/`required`. They are
+          # omitted rather than written in as `nil` — a `properties: null` is not a schema, and `.compact`
+          # on the outer property alone never reaches a nested one.
           it "omits properties:/required: entirely rather than writing them in as null when neither colliding side has children" do
             klass = Class.new do
               include Axn
@@ -6124,310 +5976,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: { deep: { a: 1 } } })).to be_ok
           end
 
-          # A `pattern`/`format` retained from a `preprocess:`-tainted side has no cheap, always-correct
-          # emptiness check the way a numeric interval does ("do these two regexes share a match" isn't
-          # decidable at this cost), so it is dropped outright rather than risk conjoining two DISJOINT
-          # patterns into a node nothing can satisfy (Codex review, PR #278 round 13): an ancestor
-          # `/\Aa+\z/` beside a colliding `preprocess: ->(_) { "b" }, format: /\Ab+\z/` node accepts raw "a"
-          # at runtime (the node's own check runs on the CONSTANT "b", which its pattern matches
-          # unconditionally), but conjoining both patterns requires one wire string to match both — none can.
-          # Once its own pattern AND its own presence floor (round 22's `drop_length_bound_beside_sibling_
-          # pattern` — see the test below) are both stripped, the node contributes NOTHING at all, so the
-          # conjunction routes through the empty-side merge and the ancestor's exact property (a plain,
-          # scalar `type: "string"`, which already excludes null on its own — no separate `not: {type:
-          # "null"}` needed) is the whole story.
-          # A retained `minLength`/`maxLength` has no cheap, always-correct compatibility check against a
-          # sibling `pattern`/`format` the way it does against a discrete literal set (regex satisfiability
-          # analysis isn't something reflection can do safely and generally) — so it is stood down
-          # UNCONDITIONALLY whenever the sibling has ANY pattern/format, the same "cannot verify, so don't
-          # risk it" resolution round 13 already uses for a transforming side's OWN pattern (Codex review,
-          # PR #278 round 22): an ancestor `format: { with: /\Aa\z/ }` (matching only the single string "a",
-          # length 1) beside a colliding node's `length: { minimum: 3 }, preprocess: ->(v) { v * 3 }` accepts
-          # wire "a" at runtime (the ancestor's own check matches "a" exactly; the node's own check runs on
-          # the preprocessed "aaa"), but conjoining `minLength: 3` with the ancestor's pattern produced a
-          # node no string can satisfy at all.
-          # A wire-spelling candidate's SERIALIZED form matching the emitted literal isn't enough — a
-          # `Date`/`Symbol`/`Time` value and a plain String that merely happens to render the same way are
-          # indistinguishable once serialized, but only one of them is what a coercing `inclusion:`
-          # validator actually holds (Codex review, PR #278 round 13): under `type: { klass: [Date, String],
-          # coerce: true }, inclusion: { in: ["2026-01-01", "fallback"] } }`, the literal "2026-01-01" was
-          # DECLARED as a plain String — but `Date.parse("2026-01-01")` renders back to the identical text,
-          # so a serialized-form comparison wrongly treated it as a safe spelling. It coerces to a Date,
-          # which is never `==` a String even when they render the same, so no wire value could ever satisfy
-          # the inclusion check via that entry; "fallback" is untouched by either coercion target and
-          # survives (comparing the coerced result against the RAW, pre-normalization literal by plain `==`
-          # is what tells the two apart).
-          # Two DIFFERENT declared literals can normalize to the identical wire spelling — matching only
-          # the FIRST one that renders that way (the fix above) still gets this wrong when the first match
-          # happens to be the wrong-typed one (Codex review, PR #278 round 15): `inclusion: { in:
-          # ["2026-01-01", Date.new(2026, 1, 1)] }` under a `[Date, String]` coercing type has BOTH entries
-          # render to "2026-01-01" — picking only the String (declared first) made the candidate "2026-01-01"
-          # fail to round-trip (it coerces to a Date, never that String) even though it round-trips fine
-          # against the SECOND entry, the Date literal itself. Checking every raw literal sharing that
-          # spelling — not just the first — is what recovers the safe spelling.
-          # A size/numeric bound retained on a transforming side can be unsatisfiable at the SCHEMA level
-          # even with no COMPETING bound on the other side at all — `enum`/`const` names the EXACT set of
-          # values the position may take, and JSON Schema evaluates every keyword against the SAME instance,
-          # so if not one of those literals could ever satisfy the bound, nothing can ever satisfy the
-          # conjunction (Codex review, PR #278 round 17): an ancestor `inclusion: { in: ["a"] }` (a single,
-          # 1-character literal) beside a colliding node's `length: { minimum: 3 }, preprocess: ->(v) { v *
-          # 3 } }` accepts raw "a" at runtime (the ancestor's own check requires the RAW value to equal "a";
-          # the node's own check runs on the preprocessed "aaa"), but the SCHEMA required one wire string to
-          # both equal "a" (length 1) and have length >= 3 — impossible, regardless of what preprocess does
-          # at runtime, since `enum` and `minLength` are both asked of the identical schema instance.
-          # `collision_types` (round 13/15's union-aware helper), not a bare `other_prop[:type]` read: a
-          # UNION survivor spells its types under `anyOf`, not a top-level `type` (Codex review, PR #278
-          # round 17): an ancestor `type: [Integer, String]` beside the SAME coercing `comparison: {
-          # greater_than: 5 }` node let a raw (already-numeric) wire integer `3` through, since
-          # `other_prop[:type]` was nil for the union and the bound was dropped though an Integer branch
-          # genuinely admits — and needs — it. Round 17 kept the bound UNSCOPED (a plain top-level keyword,
-          # not retargeted per branch the way length: is), documenting the union's OTHER, non-numeric
-          # branch (a wire String that coerces to a violating number) as an accepted residual — but round
-          # 33 closed that residual too: a bare `exclusiveMinimum:` beside the survivor's own `anyOf` left
-          # the STRING branch completely uncontained (JSON Schema silently ignores a numeric keyword for a
-          # non-numeric instance), so wire `"3"` satisfied `type: "string"` and was never checked against
-          # the bound at all — the schema admitted it though the runtime coerces it to `3` and rejects it.
-          # Fixed by narrowing THIS side's own `:type` to just the numeric-admitting subset, so the eventual
-          # conjunction with the survivor's own `anyOf` requires an instance to be BOTH.
-          # Narrowing the survivor's TYPE down to just the numeric branch (the fix directly above) is only
-          # safe when there's no non-numeric LITERAL witness that specifically needs the excluded branch
-          # (Codex review, PR #278 round 36): a member declared as `type: [Integer, String], inclusion: {
-          # in: ["6"] }` beside the SAME coercing node accepts wire "6" at runtime (the member's own type
-          # union admits the String, and the node coerces it to 6, satisfying `> 5`), but narrowing to
-          # `type: "integer"` excludes "6" itself (it's a String) — conjoined with the member's own `enum:
-          # ["6"]`, nothing satisfies the result. Fixed by retargeting via the SAME literal mechanism the
-          # untyped case already uses (keeping each literal that, once coerced, satisfies the bound, in
-          # its ORIGINAL form) whenever a non-numeric literal witness exists, narrowing the type only when
-          # there is none to lose.
-          # Round 8's premise (a KNOWN coercer preserves a bound's measured property) holds for Symbol
-          # (`.to_s`/`.to_sym` are exact inverses) but not for Time/DateTime/Date, whose canonical rendering
-          # can have a different length than whatever wire spelling was actually parsed (Codex review, PR
-          # #278 round 18): a raw `String` member's `length: { is: 20 }` beside a colliding `type: { klass:
-          # Time, coerce: true }, length: { is: 23 } }` node accepts "2026-08-25T12:00:00Z" (wire length 20)
-          # at runtime — the ancestor checks that raw string; the node's own check runs on `Time#to_s` of
-          # the parsed value (length 23) — but conjoining both `minLength`/`maxLength` pairs unstripped
-          # produced an interval nothing satisfies (`>= 23` and `<= 20`). `drop_conflicting_size_bounds` (and
-          # the `pattern` drop beside it) now run regardless of transform kind, not only under `preprocess:`.
-          #
-          # The node's own `format: "date-time"` survives here (round 43) since it is TYPE-CONDITIONAL, not
-          # an intrinsic type binding — this is a genuine improvement, not a loosening: the ancestor's own
-          # `length: { is: 20 }` alone would ALSO accept a 20-character string that isn't a valid date-time
-          # at all (e.g. "aaaaaaaaaaaaaaaaaaaa"), though the runtime rejects it (coercion leaves an
-          # unparseable string unchanged, and the node's own Time-type check then fails it) — keeping
-          # `format: "date-time"` closes that gap rather than opening one.
-          # `drop_bounds_contradicted_by_other_literals` (round 17) concatenated the other side's `const`
-          # and `enum` instead of intersecting them, even though both are enforced (an AND, not an OR) when
-          # both are declared — hiding a real conflict (Codex review, PR #278 round 18): an ancestor member
-          # with `const: 1` (from `comparison: { equal_to: 1 }`) AND `enum: [1, 5]` (from `inclusion: { in:
-          # [1, 5] } }`) truly admits only `1` (`5` is in the inclusion list but fails the separate equality
-          # check) — but concatenating `[1, 1, 5]` let the unrelated `5` survive the "does every literal
-          # violate this bound" check, hiding the conflict a colliding `comparison: { greater_than: 3 }`
-          # (after a preprocess mapping 1 -> 4) actually has with the position's TRUE, intersected value set
-          # of just `{1}`.
-          # A floor and its ceiling in the SAME family must be judged TOGETHER, not independently — a
-          # DIFFERENT literal can satisfy EACH one on its own while no literal satisfies both at once
-          # (Codex review, PR #278 round 19): an ancestor `enum: ["a", "aaaa"]` beside a colliding node's
-          # `length: { is: 2 }, preprocess: ->(_) { "aa" }` has "a" (length 1) satisfy `maxLength: 2` but
-          # fail `minLength: 2`, and "aaaa" (length 4) satisfy `minLength: 2` but fail `maxLength: 2` — so
-          # judged independently EACH keyword survives (some literal satisfies THAT one), yet the true
-          # combined interval (exactly length 2) admits neither literal at all.
-          # A union branch whose type has no matching JSON size keyword (Integer) must be OMITTED from the
-          # retargeted `anyOf`, not left as a bare, unconstrained `{type:}` — the underlying `length:`
-          # validator still runs against whatever the runtime value is (`#to_s.length` when the value has
-          # no native `#length`), so admitting every instance of that type unconditionally accepts values
-          # the validator actually rejects (Codex review, PR #278 round 19): an ancestor `type: Object,
-          # length: { minimum: 3 }` beside an explicit `type: { klass: [String, Integer], coerce: false }`
-          # node let wire integer `1` through unconstrained, though `1.to_s.length` (1) fails `minimum: 3`.
-          # Reflection may be STRICTER than the runtime (never looser), so omitting the inexpressible branch
-          # — rejecting every integer at this position rather than admitting all of them — is the safe
-          # direction, even though some individually-valid integers are no longer admitted either.
-          # Omitting an inexpressible union branch WHOLESALE (the fix above) is itself too strict when a
-          # SIBLING declaration at the SAME position names a specific literal of that type — the runtime's
-          # `length:` validator measures a non-string value via `#to_s.length`, so a literal whose rendered
-          # form happens to satisfy the bound is a CONCRETE, known-satisfiable witness the schema should not
-          # discard (Codex review, PR #278 round 20): `type: { klass: [String, Integer], coerce: false },
-          # inclusion: { in: [123, "a"] }` beside the SAME ancestor `length: { minimum: 3 }` needs the
-          # Integer branch to admit `123` specifically — `"123".length` is 3 — but the blanket omission
-          # rejected every integer, turning a satisfiable contract's schema unsatisfiable once conjoined
-          # with the sibling `enum: [123, "a"]` (123 failing the string-only branch, "a" failing its own
-          # length). Each sibling literal of an inexpressible type is checked against the bound via its own
-          # wire rendering and, if it passes, added to a dedicated `enum`-only branch.
-          # Round 20's fix only reads the SIBLING's own literals (`declared_literals(other_prop)`) — it
-          # misses the case where the approximate MEMBER ITSELF is the only side naming a literal witness
-          # (Codex review, PR #278 round 23): an ancestor `type: Object, length: { minimum: 3 },
-          # inclusion: { in: [123] }` colliding with an explicit `type: { klass: [String, Integer], coerce:
-          # false }` node (no `inclusion:` of its own) accepts raw `123` at runtime ("123".length is 3,
-          # satisfying the ancestor's own length floor), but the member's OWN retained `enum: [123]` was
-          # conjoined against an `anyOf` that omitted the inexpressible Integer branch entirely (there was
-          # no literal on the OTHER side to rescue it), leaving `enum: [123]` unsatisfiable beside a
-          # `type: "string"`-only `anyOf`. Fixed by also checking the member's own literals when recovering
-          # an inexpressible branch, not only the sibling's.
-          # An UNTYPED survivor (no `type:`/`anyOf` at all, only a literal `const`/`enum`) leaves
-          # `collision_types` empty, and retargeting onto `nil` DROPPED the length bound outright rather
-          # than merely narrowing it (Codex review, PR #278 round 28): an ancestor `type: Object, length: {
-          # minimum: 3 }` colliding with an untyped node whose `inclusion:` names both a one-key and a
-          # three-key Hash emitted only the `enum` — no `minProperties` anywhere — so the schema wrongly
-          # accepted the one-key Hash the runtime length floor rejects. Fixed by deriving the retargeted
-          # type(s) from the literal VALUES themselves (a Hash literal is "object" regardless of whether
-          # anything declared `type: Hash`) whenever there's no declared type to read at all.
-          # The SAME "no declared type to read" gap applies to a numeric bound, not just a length one
-          # (Codex review, PR #278 round 28): an untyped shape member's `inclusion: { in: [3, 6, "ok"] }`
-          # beside a colliding coercing Integer node requiring `> 5` dropped the bound entirely (collision_
-          # types is empty, so nothing "admits a number"), leaving just the raw `enum: [3, 6, "ok"]` — the
-          # schema wrongly accepted `3` and `"ok"`, though the runtime rejects both (3 fails the
-          # comparison; "ok" is never coerced, being a String, and fails the node's own Integer check) and
-          # accepts only `6`. Fixed by filtering the literals down to the ones the bound actually admits
-          # (never a non-Numeric one) and retargeting to `enum`, instead of discarding the bound wholesale.
-          # Unlike the test above, the ancestor here declares NO `inclusion:` at all — no literal on
-          # either side to retarget the bound onto — but `prop`'s own `type: "integer"` is still sitting
-          # right alongside the bound, untouched, since a genuinely bare ancestor makes no competing type
-          # OR literal claim for pass 1 to strip it against (Codex review, PR #278 round 41): dropping the
-          # bound here (as though it were an orphaned keyword with nothing to anchor it) admitted `3`,
-          # though the runtime — which leaves this non-String value unchanged and still applies the node's
-          # own `comparison:` check — rejects it.
-          # A SOLE derived type with no size keyword (round 28's own fix, deriving "integer" from a
-          # literal-only survivor) went through `retarget_length_to_type`'s single-type branch, which
-          # retargets BLINDLY — safe only when that one type actually HAS a size keyword, since then the
-          # untouched sibling `enum` still filters each literal correctly alongside it. A type with NONE
-          # (like "integer") has no such safety net (Codex review, PR #278 round 29): an approximate
-          # `Object` member's `length: { minimum: 3 }` colliding with an untyped node whose `inclusion:` is
-          # `[1, 123]` (both Integers) emitted both as valid, though the runtime's own length check
-          # (`#to_s.length`) rejects `1` (rendered length 1) and accepts `123` (rendered length 3). Fixed
-          # by routing this case through `retarget_length_to_union` too, reusing its existing wire-
-          # rendering literal filter instead of leaving the bound with nothing to filter by.
-          # With no literal witness on EITHER side to salvage (no `inclusion:`/`comparison:` anywhere),
-          # a sole survivor type with no size keyword left `retarget_length_to_union` with an empty
-          # `branches` list — returning `prop` as-is there doesn't merely drop the bound, it deletes the
-          # ONLY constraint the property had (Codex review, PR #278 round 31): an ancestor `type: Object,
-          # length: { minimum: 3 }` member colliding with an exactly-typed-but-unsized `type: { klass:
-          # Integer, coerce: false }` node emitted just `{type: "integer"}` — admitting EVERY integer,
-          # though the runtime's own length check (`#to_s.length`) rejects `1` and accepts only integers
-          # whose decimal rendering is long enough. There is no JSON Schema keyword for "the string
-          # rendering of a non-string value has this size" (round 19's own limit), and round 19 already
-          # established the doctrine for exactly this situation in the MULTI-type union case — omit
-          # (reject) a type this can't express a bound for, rather than admit it unconditionally. This
-          # extends that SAME doctrine to the single-type case round 28/29 introduced, rather than leaving
-          # it as the one path that still silently drops the bound.
-          # `strip_intrinsically_typed_keys` dropped a transforming node's own `type`/`anyOf`
-          # UNCONDITIONALLY — correct only when the OTHER side actually makes a competing type claim to
-          # strip them FOR (Codex review, PR #278 round 32): an ancestor `field :inner` (genuinely
-          # UNTYPED — no `type:` at all, no validators) colliding with an explicit `type: { klass: Integer,
-          # coerce: true }` node dropped the node's own `type: "integer"` anyway, and with no literal
-          # constraint to translate either, the merged schema retained only the ancestor's generic
-          # presence/null constraints — accepting a non-numeric string like "abc" the runtime's own
-          # (uncoerced, since coercion only parses valid Integer strings) type check rejects. Fixed by only
-          # stripping `type`/`anyOf` when the other side actually has one to conflict with.
-          # Round 32's fix checked only the sibling's `:type`/`:anyOf` — a sibling with NO type at all but
-          # a mixed-literal `:enum`/`:const` still carries an intrinsic type claim through its literal
-          # VALUES, and can conflict with a kept transformed type exactly as a typed sibling can (Codex
-          # review, PR #278 round 33): a `field :inner, inclusion: { in: ["raw", true] }` sibling (no
-          # `type:`, but a String/Boolean literal set) beside an Integer node whose `preprocess` always
-          # returns a constant accepted raw "raw" at runtime (the node's own check runs on the constant,
-          # always Integer-valid), but keeping the node's post-transform `type: "integer"` — with NOTHING
-          # of its own to keep it consistent, since this node has no `comparison:`/`inclusion:` of its own
-          # to populate a narrowing `enum:` — conjoined it with the sibling's `enum: ["raw", true]`, and
-          # neither literal is ever an integer. Fixed by treating the sibling's own `enum`/`const` as a
-          # competing claim too — UNLESS `prop` itself has a numeric bound or its own `const`/`enum` that
-          # will populate a consistent narrowed enum later in this same function (round 28/30's own tests
-          # cover exactly that case, and keeping the type there is correct, not a bug).
-          # Round 33's own exemption also spared the kept type whenever `prop` had its OWN `enum`/`const`
-          # — reasoning that its eventual narrowed enum would keep the type consistent. But a node's own
-          # `enum`/`const` runs through `translated_literal_constraint`, which translates a literal into
-          # EVERY wire spelling reflection can vouch for — routinely BOTH a native and a String form — so
-          # the eventual enum is not guaranteed to share the kept type at all, unlike the numeric-bound
-          # path (which keeps each retained literal in its ORIGINAL form) round 28/30 actually exercise
-          # (Codex review, PR #278 round 34): a sibling `inclusion: { in: ["5", true] }` (mixed literal
-          # types, so genuinely untyped) beside `type: { klass: Integer, coerce: true }, inclusion: { in:
-          # [5] }` accepts wire "5" at runtime (coerces to 5, satisfying the node's own inclusion), but
-          # kept `type: "integer"` conjoined with the translated `enum: [5, "5"]` already excludes the
-          # String spelling "5" (it fails `type: "integer"`), and conjoining THAT against the sibling's own
-          # `enum: ["5", true]` (which the native `5` can never satisfy either) left nothing that could
-          # ever satisfy the whole schema. Fixed by only exempting the NUMERIC-bound path, not a node's own
-          # enum/const.
-          # Even the NUMERIC-BOUND exemption itself (round 34's remaining case, believed safe because it
-          # keeps each retained literal in its ORIGINAL declared form) can retain a literal whose original
-          # form simply ISN'T the kept type (Codex review, PR #278 round 35): a sibling `inclusion: { in:
-          # ["6", true] }` (mixed literal types, genuinely untyped) beside a coercing Integer node's
-          # `comparison: { greater_than: 5 }` accepts wire "6" at runtime (coerces to 6, satisfying the
-          # bound), but `drop_numeric_bounds_unless_type_admits_number` retains the ORIGINAL literal "6"
-          # (a String) in the retargeted enum while the exemption keeps `type: "integer"` — "6" itself is
-          # never an integer. Rather than adding yet another narrower upfront heuristic, this is caught by
-          # a single, unconditional POST-HOC check: whenever the stripped result ends up with both a
-          # `:type` and an `:enum`, every enum member must actually BE one of the kept type(s).
-          # `round_tripping_wire_spellings` only ever tried a numeric literal's OWN native form and its
-          # canonical `#to_s` spelling — but a numeric coercer's actual inverse admits other spellings too
-          # (Codex review, PR #278 round 35): a raw String member restricted to `inclusion: { in: ["05"] }`
-          # beside a coercing Integer node restricted to `comparison: { equal_to: 5 }` is satisfiable at
-          # runtime (`Integer("05", 10) == 5`), but this function only generated `[5, "5"]` for the literal
-          # `5` — never "05" — so the translated enum shared no member with the sibling's own `enum:
-          # ["05"]`, though the runtime accepts wire "05". Fixed by also trying the sibling's own declared
-          # String literals as round-trip candidates, rather than assuming `#to_s` is the complete inverse.
-          # The SAME gap exists for every OTHER coercer, not just a numeric one (Codex review, PR #278
-          # round 36): `Coercion.boolean_wire_spellings(true)` only names its OWN canonical spellings
-          # (`TRUTHY_STRINGS`, all lowercase), but `coerce_boolean` itself downcases before comparing — a
-          # raw String member restricted to `inclusion: { in: ["TRUE"] }` beside a coercing `:boolean` node
-          # restricted to `inclusion: { in: [true] }` is satisfiable at runtime (`coerce_boolean("TRUE") ==
-          # true`), but "TRUE" was never among the generated candidates either, since round 35's fix only
-          # added sibling candidates for the Integer/Float branch. Fixed by trying sibling candidates
-          # universally, regardless of which coercer is actually in play.
-          # `Coercion.boolean_wire_spellings(true)` includes the native Integer `1` as a candidate — safe
-          # beside a sibling whose type excludes numbers entirely (like the String sibling above), but not
-          # when the survivor admits a bare JSON number directly (Codex review, PR #278 round 37): a
-          # `type: Numeric` shape member colliding with a coercing `:boolean` node restricted to `true`
-          # translates to `enum: [true, 1, ...]`, conjoined with the survivor's own `type: "number"` — JSON
-          # Schema considers `1.0` equal to the enum member `1`, so a schema-following client could send
-          # `1.0`, but `coerce_boolean` accepts only a native Integer `0`/`1` and the runtime rejects a
-          # Float as non-boolean. Unlike the acknowledged standalone Float/Integer ambiguity (round 24 —
-          # unfixable everywhere, including standalone), a STANDALONE boolean position emits `type:
-          # "boolean"`, which no number can ever satisfy — so this ambiguity is introduced only by the
-          # collision, and dropping the native numeric spelling here does not reopen an already-fine
-          # standalone case. Native `1`/`0` becomes a documented, narrow "schema stricter than runtime"
-          # residual at exactly this collision, rather than left silently loose.
-          # A remaining candidate after the drop is always a String spelling or the native `true`/`false`
-          # itself — never a Hash, Array, or anything else — so a non-numeric type in the survivor's
-          # collision is not, by itself, proof a witness remains (Codex review, PR #278 round 40): a
-          # `[Numeric, Hash]` shape member colliding with the SAME coercing `:boolean` node as the tests
-          # above names "object" in its collision (a non-numeric type), but no boolean-derived candidate is
-          # ever a Hash, so dropping native `1` still emptied the schema entirely though `klass.call(inner:
-          # 1)` succeeds at runtime.
-          # The survivor's TYPE union alone can overstate what it actually admits when the survivor ALSO
-          # carries its own literal `enum` — that further restricts the position to specific values,
-          # intersected with the type union rather than merely widening it (Codex review, PR #278 round
-          # 41): a `[Numeric, String], inclusion: { in: [1] }` survivor's type union nominally admits
-          # "string" (which round 40's fix alone would accept as a witness), but its own `enum: [1]`
-          # restricts the position to just the number `1` — no String ever satisfies both the union AND
-          # this narrower enum at once, so dropping native `1` still emptied the schema though `1` succeeds
-          # at runtime.
-          # A non-numeric survivor literal's Ruby TYPE alone is not proof it survives as a witness (Codex
-          # review, PR #278 round 42): a `[Numeric, String], inclusion: { in: [1, "no"] }` survivor has a
-          # String literal, "no" — but "no" is not a recognized boolean spelling at all, so it never
-          # round-trips to the node's own `inclusion: { in: [true] }` target; it was never a real witness,
-          # just an unrelated String sitting alongside the real one.
-          # This file's ONLY writer of `:format` is `single_type_for`'s type-derived hint for a coercible
-          # token like Date/Time/`:uuid` — it describes the wire STRING form coercion parses FROM, the
-          # same domain every non-boolean `Coercion::SUPPORTED` target transforms from, so it is never a
-          # POST-transform artifact the way an author's `:pattern` (from a `format:` VALIDATOR) can be
-          # (Codex review, PR #278 round 43): a raw `String` shape member colliding with a coercing `type:
-          # { klass: Date, coerce: true }` node dropped the node's own `format: "date"` unconditionally
-          # alongside its `:type`, admitting an arbitrary non-empty string like `"garbage"` that coercion
-          # leaves as a String (not a Date-formatted one) and the runtime's own Date type check rejects.
-          # `retarget_numeric_bound_to_literals` treats an empty `coercible_klasses` as "this side doesn't
-          # coerce, so each literal IS the value the bound checks, unchanged" — true for a genuinely
-          # non-transforming node, but not for one whose `coercible_klasses` is empty because it carries an
-          # opaque `preprocess:` instead (Codex review, PR #278 round 44): a raw `String` member restricted
-          # to `"raw"` beside `type: { klass: Integer, coerce: false }, preprocess: ->(_) { 10 },
-          # comparison: { greater_than: 5 }` accepts wire "raw" at runtime (the ancestor's own check runs on
-          # the raw String; the node's own check runs on the PREPROCESSED constant `10`, which satisfies
-          # `> 5`), but checking `"raw".is_a?(Numeric)` directly (as though no transform occurred) excluded
-          # it, retargeting to `enum: []` and rejecting everything. Reflection cannot know what an opaque
-          # Proc produces for a given wire literal, so the bound is dropped instead.
-          # `merge_shape_member_property` also runs for a side that is simply EMPTY, not only a genuine
-          # object-vs-object merge — its unconditional `merged.delete(:format)` discarded a SCALAR
-          # member's own real format in that case too (Codex review, PR #278 round 45): a `type: :uuid`
-          # shape member beside an Integer node with an opaque `preprocess: ->(_) { 1 }` (stripped down to
-          # `{}` by pass 1, since it has nothing else to keep) is satisfiable only for a valid UUID string
-          # at runtime, but the merged property dropped `format: "uuid"` entirely, accepting any
-          # non-empty string.
+          # A transforming node stands down whole, so the shape member beside it is emitted on its own —
+          # its `format:` included. The merge path handles an emptied side, and an unconditional
+          # `delete(:format)` there would discard a SCALAR member's real format: this contract is satisfiable
+          # only for a valid UUID string, and dropping `format: "uuid"` would accept any non-empty one.
           it "keeps a shape member's own format when merged against an emptied, transforming node" do
             klass = Class.new do
               include Axn
@@ -6446,11 +5998,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           end
 
           # `:description` is the one emitted key that is purely descriptive metadata, never a type or
-          # value constraint (Codex review, PR #278 round 40): a node declaring ONLY `description:` (no
-          # `type:` at all) is exactly as untyped as a genuinely empty property, so treating its non-empty
-          # HASH as a real competing claim retargeted the ancestor's length bound against no surviving
-          # type, emptying the enum and rejecting `"abc"` — valid under both the ancestor's own length
-          # check and the runtime.
+          # value constraint: a node declaring ONLY `description:` (no `type:` at all) is exactly as
+          # untyped as a genuinely empty property, so treating its non-empty HASH as a real competing
+          # claim retargeted the ancestor's length bound against no surviving type, emptying the enum and
+          # rejecting `"abc"` — valid under both the ancestor's own length check and the runtime.
           it "does not treat a node with only descriptive metadata as a competing type claim" do
             klass = Class.new do
               include Axn
@@ -6468,78 +6019,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "a" })).not_to be_ok
           end
 
-          # `reject_unretargetable_length_bound` (round 31's own fix) left a PRE-EXISTING `:enum` alone
-          # whenever the property already had one — but that stale enum is exactly the set
-          # `sibling_literals` was built from, and reaching this branch at all means NONE of its non-null
-          # members survived the wire-rendering reachability check (Codex review, PR #278 round 32): a
-          # nullable `type: Object, length: { minimum: 3 }, inclusion: { in: [nil, 1] }` member colliding
-          # with a nullable, non-coercing Integer node has no retargetable branch (`1.to_s` is too short),
-          # but leaving the ancestor's own stale `enum: [nil, 1]` in place admitted `1` anyway — the
-          # runtime rejects it, though `nil` (which bypasses the bound entirely) proves the contract
-          # itself remains satisfiable. Fixed by ALWAYS overwriting the enum, keeping only an admitted
-          # `nil` (every non-null literal already failed the same reachability check).
-          # The nullable-literal check above only looked at each side's raw `:enum` for a literal `nil` —
-          # but when BOTH sides use `allow_nil: true` with NO `inclusion:` at all, nullability shows up
-          # ONLY in their emitted `:type` (`[..., "null"]`), never as a literal enum member (Codex review,
-          # PR #278 round 37): a nullable `type: Object, length: { minimum: 3 }` member (no `inclusion:`)
-          # colliding with a nullable, non-coercing Integer node reaches this same dead end with NO literal
-          # `nil` anywhere to find, though BOTH sides admit it via their own `type: [..., "null"]` — the
-          # runtime accepts `nil` (and every integer whose decimal rendering is long enough), but the
-          # resulting `enum: []` wrongly rejected all of it, nil included. Fixed by deriving nullability
-          # from either side's emitted `:type` too, via `position_nullable?`, computed against the
-          # ORIGINAL (unstripped) properties before anything strips their own `:type` away.
-          # A MULTI-type node's null branch lives nested inside its OWN `:anyOf`, never in a top-level
-          # `:type` array or a literal `:enum` member — `position_nullable?` checked only the latter two,
-          # missing this third spelling (Codex review, PR #278 round 39): a nullable `type: Object, length:
-          # { minimum: 3 }` member colliding with a nullable, non-coercing `[Integer, Float]` node emits
-          # `anyOf: [{type: "integer"}, {type: "number"}, {type: "null"}]` for the node — no top-level
-          # `:type` at all — so this position read as non-nullable, and the SAME length-retargeting dead
-          # end as the test above emptied the enum down to `[]` rather than `[nil]`, wrongly rejecting nil
-          # too even though both sides admit it.
-          # Checking a literal against a numeric bound with a RAW `is_a?(Numeric)` test misses a String
-          # literal that COERCES into a number — the same coercer this position's own runtime check reads
-          # its wire value through (Codex review, PR #278 round 29): an untyped sibling `enum: ["6", "ok"]`
-          # beside a coercing Integer node's `comparison: { greater_than: 5 }` has the known coercer turn
-          # wire "6" into 6 (satisfying `> 5`) at runtime, but `"6".is_a?(Numeric)` is false, so it was
-          # excluded and the schema kept `enum: []` — unsatisfiable for a satisfiable contract. Fixed by
-          # coercing each literal through the SAME coercer before checking whether it satisfies the bound,
-          # while still retaining the literal's ORIGINAL (wire) form in the narrowed `enum`.
-          # `retarget_numeric_bound_to_literals` REPLACES the whole `:enum` from scratch — unlike the
-          # length-retargeting functions, which only ever add to or leave an existing `:enum` untouched —
-          # so silently losing a `nil` member here loses the position's own null-tolerance entirely, not
-          # merely simplifying an intersection (Codex review, PR #278 round 30): an untyped shape member's
-          # `inclusion: { in: [nil, 3] }, allow_nil: true` beside a colliding coercing Integer node's
-          # `comparison: { greater_than: 5 }, allow_nil: true` accepts wire `nil` at runtime (both
-          # declarations skip their own validator for it), but `3` alone fails the bound, and the resulting
-          # `enum: []` (nil dropped along with everything else) made the property reject every value, nil
-          # included. Fixed by preserving an admitted `nil` in the replacement enum.
-          # `const` (from `comparison:`) and `enum` (from `inclusion:`) are BOTH enforced when a node
-          # declares both — translating each to its wire spellings and then CONCATENATING them turns an
-          # intersection into a union (Codex review, PR #278 round 14): `inclusion: { in: [5, 6] },
-          # comparison: { equal_to: 5 }` concatenated to `enum: [5, "5", 6, "6"]`, wrongly advertising "6" —
-          # it coerces to 6, which passes inclusion but fails the equality check (only 5 satisfies both).
-          # `translated_literal_constraint` intersects the two translated sets instead, keeping only the
-          # wire forms both constraints actually agree on.
-          # Intersecting the const:/enum: translated spellings via plain `&` compares candidates with
-          # Ruby's `eql?`/`hash` — which, unlike `==`, treats an Integer and a numerically-equal Float as
-          # DIFFERENT (`5.eql?(5.0)` is false) — so it never recognizes that two DIFFERENT wire spellings
-          # (one from each constraint) actually decode to the identical target value (Codex review, PR
-          # #278 round 24): a coercing Float node declaring BOTH `comparison: { equal_to: 5 }` (`const: 5`,
-          # an Integer) AND `inclusion: { in: [5.0] }` (`enum: [5.0]`, a Float) accepts wire "5" at runtime
-          # (it coerces to 5.0, which equals both 5 and 5.0), but the translated sets `[5, "5"]` and `[5.0,
-          # "5.0"]` share no member under plain equality, intersecting to an empty, unsatisfiable enum.
-          # Fixed by comparing candidates via their COERCED value instead of the raw candidate token.
-          # `declared_literals` intersects a property's OWN const:/enum: via the same plain `&` — a
-          # SEPARATE call site from `translated_literal_constraint`'s, reached whenever a colliding side's
-          # bound needs checking against the OTHER side's literals rather than translating its own (Codex
-          # review, PR #278 round 25): an ancestor Numeric member declaring BOTH `comparison: { equal_to: 5
-          # }` (`const: 5`) and `inclusion: { in: [5.0] }` (`enum: [5.0]`) beside a colliding Integer node
-          # that preprocesses `5` to `10` before requiring `> 6` accepts raw `5` at runtime (the ancestor's
-          # own checks both pass against 5; the node's own check runs on the preprocessed 10), but `[5] &
-          # [5.0]` returned `[]`, read as "no literals declared" — so the node's own (truly contradicted)
-          # `exclusiveMinimum: 6` was kept rather than dropped, conjoining `const: 5`, `enum: [5.0]`, and
-          # `exclusiveMinimum: 6` into a node nothing satisfies. Fixed by the same coerced/numeric-aware
-          # comparison `intersect_wire_spellings` already uses for the other call site.
+          # The node's own `exclusiveMinimum: 6` judges the coercion's OUTPUT, so it stands down and the
+          # member's exact literals survive untouched. `5` and `5.0` are the same number and different Ruby
+          # objects, which is why the emitted `const`/`enum` keep the member's own spellings rather than
+          # being intersected by object identity.
           it "intersects declared_literals by value, not raw token equality, when checking a sibling bound" do
             klass = Class.new do
               include Axn
@@ -6557,36 +6040,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: 6 })).not_to be_ok # fails the ancestor's own equal_to: 5
           end
 
-          # A native (non-string) whole-number Float literal (`5.0`) is INDISTINGUISHABLE from its bare
-          # integer form under JSON Schema's own equality — the spec itself defines any zero-fractional-
-          # part number as satisfying `type: "integer"` too, regardless of how it was written — so a
-          # coercing Float node's `inclusion: { in: [5.0] }` colliding with an ancestor whose type admits a
-          # bare JSON number lets native `5` satisfy the schema (`enum: [5.0]` matches it) though the
-          # runtime rejects it (`Coercion.coerce_value` only ever parses a String, so `5` is never coerced
-          # and fails the node's own Float check). A round-24 fix dropped the native candidate outright to
-          # close this — but round 25 found that the SAME ambiguity, and the SAME resulting mismatch,
-          # already exists for a coercing Float field with a whole-number literal that ISN'T colliding with
-          # anything at all (a plain `expects :inner, type: { klass: Float, coerce: true }, inclusion: {
-          # in: [5.0] }` with no ancestor member in play), which `single_type_for` has never guarded either
-          # — this is a general JSON-Schema/Ruby-numeric-typing gap, not something specific to the
-          # shape-member conjunction PRO-3405 is about. Fixing it only in the conjunction path made THAT
-          # one narrow case unconditionally unsatisfiable (rejecting the one wire value — native `5.0` —
-          # the runtime does accept) while leaving the more common, non-colliding case still silently loose
-          # — an inconsistency worse than either extreme alone. Reverted: the conjunction path now matches
-          # the same tolerated imprecision the standalone path already has, tracked as a separate, broader
-          # follow-up rather than patched here.
-          # A numeric bound (`minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`) surviving a
-          # transforming side is only trustworthy when the SURVIVING type actually admits a number — unlike
-          # `length:` under a coercing Symbol (whose rendered form has the same length as the wire string),
-          # a numeric bound describes the coerced value's magnitude, which has no relationship to a wire
-          # value the runtime never reads as a number at all (Codex review, PR #278 round 14): under a raw
-          # `String` ancestor, a colliding coercing `comparison: { greater_than: 5 }` node kept
-          # `exclusiveMinimum: 5` sitting beside `type: "string"`, where JSON Schema silently ignores it —
-          # so the schema enforced nothing, though the runtime's coercion+comparison check does. Unlike a
-          # discrete literal, an open-ended numeric range has no small, enumerable set of wire-string
-          # candidates to verify by round-trip, so it is dropped rather than left inert under a keyword
-          # JSON Schema will never apply — a residual, accepted imprecision (the schema can no longer
-          # express ">5 after coercion" at all) rather than a wrong answer in either direction.
+          # An Array member's `of:` describes its ELEMENTS, so its `items` can never merge into a node
+          # describing the position itself — it rides alongside as an `allOf` branch instead. Nothing
+          # satisfies the result, which is honest: Hash and Array are disjoint and the runtime rejects both
+          # spellings too.
           it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
             klass = Class.new do
               include Axn
@@ -7413,7 +6870,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop[:properties][:note][:type]).to eq("string")
     end
 
-    it "drops output requiredness for a gated shape member when the outbound gate is closed (Codex round 2)" do
+    it "drops output requiredness for a gated shape member when the outbound gate is closed" do
       action = build_axn do
         expects :flag, type: :boolean
         exposes :payload, type: Hash, allow_blank: true do
@@ -7442,7 +6899,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(input_action.input_schema[:properties][:payload][:required]).to include("note")
     end
 
-    it "drops output requiredness for a shape member whose presence is only NESTED-gated (Codex round 13)" do
+    it "drops output requiredness for a shape member whose presence is only NESTED-gated" do
       action = build_axn do
         expects :flag, type: :boolean
         exposes :payload, type: Hash, allow_blank: true do
@@ -7544,7 +7001,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema).not_to have_key(:allOf)
     end
 
-    describe "per-validator (nested) gates reach reflection (Codex round 12)" do
+    describe "per-validator (nested) gates reach reflection" do
       it "does not force ancestors for a subfield gated by a nested presence condition (own-level required kept)" do
         action = build_axn do
           expects :data, optional: true
@@ -7892,7 +7349,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(action.input_schema[:allOf]).not_to be_nil
       end
 
-      it "falls back when a blank same-key nested override un-gates a nil-rejecting entry (Codex round 14)" do
+      it "falls back when a blank same-key nested override un-gates a nil-rejecting entry" do
         # `presence: { if: nil }` OVERRIDES and drops the declaration `if: :flag` for the presence check
         # (AM's measured per-key merge), so presence runs UNCONDITIONALLY — name is required for every
         # call. An allOf conditioning name on `flag` would be looser than runtime (it would accept
@@ -10314,13 +9771,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
-  # Codex round 1 found six emission defects, all confirmed with a real JSON Schema validator. They are three
-  # root causes, not six instances, and each is fixed at the root:
+  # found six emission defects, all confirmed with a real JSON Schema validator. They are three root causes, not
+  # six instances, and each is fixed at the root:
   #
-  #   * a keyword ASSIGNED where it should be RECONCILED with what is already there (enum vs a singleton type
-  #     enum; a bound from one validator vs the same bound from another; a range-derived bound vs an explicit one)
-  #   * a position's nullability HARD-CODED false, where a field's is derived
-  #   * an escape passed through whose character set differs between the two dialects
+  # * a keyword ASSIGNED where it should be RECONCILED with what is already there (enum vs a singleton type
+  # enum; a bound from one validator vs the same bound from another; a range-derived bound vs an explicit one)
+  # * a position's nullability HARD-CODED false, where a field's is derived
+  # * an escape passed through whose character set differs between the two dialects
   describe "reconciling a keyword with what is already on the node" do
     def prop_for(field = :f, &declaration)
       build_axn(&declaration).input_schema[:properties][field]
@@ -10544,7 +10001,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a b])
     end
 
-    # Round 11 gated the ENUM on this, which was the keyword rather than the class: a JSON key is a String, so
+    # Gating the ENUM on this reads the keyword rather than the class: a JSON key is a String, so
     # a `keys:` axis whose declared class excludes String can never be satisfied from JSON AT ALL, and every
     # inbound `propertyNames` keyword is equally a lie there — not just the set.
     it "stands down entirely on input when the axis excludes String keys" do
