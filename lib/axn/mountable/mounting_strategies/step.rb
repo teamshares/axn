@@ -152,7 +152,7 @@ module Axn
 
               # Unfiltered by design — a step's output must reach later steps even when this parent
               # does not declare it, which is what makes the chain a chain.
-              _absorb_result_exposures!(step_result, fields: step_result.declared_fields)
+              _absorb_result_exposures!(step_result, fields: step_result.__declared_fields__)
             end
           end
         end

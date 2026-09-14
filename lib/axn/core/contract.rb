@@ -736,7 +736,7 @@ module Axn
         # never a wrong answer, only an avoidable rebuild.
         #
         # The cached Array is FROZEN before it's stored: `ContextFacade` exposes this exact object
-        # publicly as `Result#declared_fields`, so a fresh Array per call used to confine any caller
+        # publicly as `Result#__declared_fields__`, so a fresh Array per call used to confine any caller
         # mutation to that one facade — reusing the same object across every future call turns that
         # mutation into permanent cache corruption (a caller-appended field name would start defining
         # readers/passing `expose` for undeclared output on every subsequent call of the class) unless
@@ -6119,11 +6119,11 @@ module Axn
 
         # Sugar reaching sugar is the same defect as an internal dispatching one: a user who takes
         # `internal_context` would otherwise redirect these two at their own value.
-        def default_error = Axn::Internal::ActionState.internal_context(self).default_error
-        def default_success = Axn::Internal::ActionState.internal_context(self).default_success
+        def default_error = Axn::Internal::ActionState.internal_context(self)._default_error
+        def default_success = Axn::Internal::ActionState.internal_context(self)._default_success
 
         # Accepts:
-        # - a single Axn::Result: forwards (result.declared_fields & own outbound declared fields)
+        # - a single Axn::Result: forwards (result.__declared_fields__ & own outbound declared fields)
         # - two positional arguments (key, value)
         # - a hash of key/value pairs
         def expose(*args, **kwargs)
@@ -6241,12 +6241,12 @@ module Axn
         # passes `require_overlap: false` so a side-effect-only or under-declared child forwards
         # cleanly instead of raising.
         def _expose_from_result(source_result, require_overlap: true)
-          forwardable = source_result.declared_fields & self.class._declared_fields(:outbound)
+          forwardable = source_result.__declared_fields__ & self.class._declared_fields(:outbound)
 
           if forwardable.empty? && source_result.ok? && require_overlap
             raise Axn::ContractViolation::NoMatchingExposures.new(
               declared: self.class._declared_fields(:outbound),
-              exposed: source_result.declared_fields,
+              exposed: source_result.__declared_fields__,
             )
           end
 

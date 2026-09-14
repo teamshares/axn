@@ -5,7 +5,10 @@
 # than restating the rule: axn's own sugar is surrendered, everything else is refused at declaration.
 RSpec.describe "reserved names for expectations" do
   describe "names a user may take" do
-    %i[result log info error expose inputs forward! execution_context internal_context].each do |name|
+    # context/action/action_name/declared_fields/default_error are here rather than below because the
+    # facade's own plumbing no longer answers to them (PRO-3423) — they were reserved by accident.
+    %i[result log info error expose inputs forward! execution_context internal_context
+       context action action_name declared_fields default_error].each do |name|
       it "allows `expects :#{name}`" do
         expect { build_axn { expects name } }.not_to raise_error
       end
@@ -81,8 +84,8 @@ RSpec.describe "reserved names for expectations" do
     # sugar — and are refused as WIRE KEYS: the inbound facade builds a reader per declared field and
     # declines to define over its own methods, so a key naming one reads back the facade's method
     # result instead of the caller's value.
-    %i[declared_fields action action_name context inspect method_missing
-       default_error default_success fail! _msg_resolver].each do |name|
+    %i[__declared_fields__ _action _action_name _context inspect method_missing
+       _default_error _default_success fail! _msg_resolver].each do |name|
       it "rejects `expects :#{name}`, which the inbound facade owns" do
         expect { build_axn { expects name } }.to raise_error(Axn::ContractViolation::ReservedAttributeError)
       end
@@ -190,7 +193,7 @@ RSpec.describe "reserved names for expectations" do
   # reader over one of its own methods, then answered the field with its own method result: the caller
   # passed a value, the action read "Something went wrong", and `ok?` was true.
   describe "the wire key, not the reader" do
-    %i[default_error default_success declared_fields action context inspect].each do |key|
+    %i[_default_error _default_success __declared_fields__ _action _context inspect].each do |key|
       it "rejects a reserved wire key `#{key}` behind an `as:` reader" do
         expect { build_axn { expects key, as: :aliased } }
           .to raise_error(Axn::ContractViolation::ReservedAttributeError, /#{key}/)
@@ -203,9 +206,9 @@ RSpec.describe "reserved names for expectations" do
     end
 
     it "names the wire key and does not offer a rename that cannot help" do
-      expect { build_axn { expects :default_error, as: :de } }
+      expect { build_axn { expects :_default_error, as: :de } }
         .to raise_error(Axn::ContractViolation::ReservedAttributeError,
-                        /inbound field named `default_error`.*Rename the field/m)
+                        /inbound field named `_default_error`.*Rename the field/m)
     end
 
     # The facade is asked only about its OWN surface, so a wire key owned by Ruby stays legal — the
@@ -294,7 +297,7 @@ end
 RSpec.describe "reserved names for exposures" do
   describe "names Result owns" do
     %i[error message ok? outcome exception elapsed_time finalized? fail!
-       declared_fields deconstruct_keys hash class inspect __action__ __exposed_keys__].each do |name|
+       __declared_fields__ deconstruct_keys hash class inspect __action__ __exposed_keys__].each do |name|
       it "rejects `exposes :#{name}`" do
         expect { build_axn { exposes name } }
           .to raise_error(Axn::ContractViolation::ReservedAttributeError)
@@ -324,7 +327,7 @@ RSpec.describe "reserved names for exposures" do
   # exposure named after one of that facade's own methods answers nil in the body instead of running
   # it — the two names that reach only this way.
   describe "names the inbound facade owns" do
-    %i[default_error default_success].each do |name|
+    %i[_default_error _default_success].each do |name|
       it "rejects `exposes :#{name}`" do
         expect { build_axn { exposes name } }
           .to raise_error(Axn::ContractViolation::ReservedAttributeError, /#{name}/)
@@ -382,7 +385,7 @@ RSpec.describe "reserved names for exposures" do
   end
 
   describe "names lifted because nothing owns or emits them" do
-    %i[each_pair result inputs ambient_context].each do |name|
+    %i[each_pair result inputs ambient_context context action declared_fields default_success].each do |name|
       it "allows `exposes :#{name}`" do
         klass = build_axn do
           exposes name
@@ -455,9 +458,13 @@ RSpec.describe "reserved names for exposures" do
         exposes :probe
         def call = expose(probe: default_error)
       end
-      config = Axn::Core::Contract::FieldConfig.new(field: :default_error, validations: {}, reader_as: :default_error)
+      config = Axn::Core::Contract::FieldConfig.new(field: :_default_error, validations: {}, reader_as: :_default_error)
       klass.external_field_configs = (klass.external_field_configs + [config]).freeze
 
+      # An exposure is also an implicitly-allowed INBOUND field, so the injected config reaches
+      # InternalContext's reader loop. `default_error` here is the action-side sugar, which dispatches
+      # `_default_error` on the facade: a reader defined over that method would answer
+      # provided_data[:_default_error] — nil — instead of resolving the default message.
       expect(klass.call.probe).to eq("Something went wrong")
     end
 
