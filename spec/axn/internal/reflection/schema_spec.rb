@@ -6276,7 +6276,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
               floors = [inner[:not], *Array(inner[:allOf]).map { |b| b[:not] }].compact
-              expect(floors).to include(enum: ["", [], {}, false])
+              # `nil` belongs to the set for the same reason `false` does — an ungated `presence:` rejects it.
+              expect(floors).to include(enum: ["", [], {}, false, nil])
               ["", {}, []].each { |blank| expect(klass.call(payload: { inner: blank })).not_to be_ok }
             end
 
@@ -6440,6 +6441,31 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
               expect(summaries.size).to eq(2)
               expect(summaries.join(" ")).to include('{"enum":["first"]}').and include('{"enum":["second"]}')
+            end
+
+            # `default:` is not a validator entry, so no condition can remove it — and comparing it by VALUE
+            # misreported it anyway, since `Float::NAN == Float::NAN` is false and a NaN default therefore
+            # read as removed on every call, putting an always-applied default into prose that says it
+            # applies only when a condition opens.
+            it "never reports an unconditional default as removed, NaN included" do
+              full = { type: "number", default: Float::NAN, enum: [1.0] }
+              projected = { type: "number", default: Float::NAN }
+
+              summaries = described_class.send(:gating_residues, [[nil, projected, full]]).map(&:summary)
+
+              expect(summaries.size).to eq(1)
+              expect(summaries.first).to include('{"enum":[1.0]}')
+              expect(summaries.first).not_to include("default")
+            end
+
+            # The last residue path that rendered its fragment with a bare `JSON.generate`. Asserted on the
+            # helper: the declaration spellings I tried never put a non-encodable value in an inert keyword,
+            # so this pins the seam rather than a reachable contract — the same class as the transform
+            # path's own fix, closed rather than left as the one remaining instance.
+            it "renders an inert fabricated keyword JSON cannot encode without failing" do
+              prop = { type: "string", minLength: Float::INFINITY, enum: %w[a] }
+
+              expect { described_class.send(:drop_fabricated_type, prop) }.not_to raise_error
             end
 
             it "reports nothing when both sides describe the same wire value" do

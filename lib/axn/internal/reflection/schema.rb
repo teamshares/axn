@@ -122,8 +122,18 @@ module Axn
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
 
         # Every blank a JSON document can carry. `false` is among them: ActiveSupport counts it blank, which
-        # is what an ungated `presence:` rejects.
-        BLANK_WIRE_VALUES = ["", [], {}, false].freeze
+        # is what an ungated `presence:` rejects — and so is `nil`, which is why it is listed here even
+        # though `reject_null!` independently strips a null branch on the nested-child path. The floor is
+        # only ever restored where some config's ungated `presence:` rejects blank, and such a config also
+        # answers `nil_allowed?` false, so naming nil here cannot narrow a nil-tolerant position; it closes
+        # the axis path, where that separate null pass does not reach.
+        BLANK_WIRE_VALUES = ["", [], {}, false, nil].freeze
+
+        # Keys a gate can never remove, so a diff between the full and always-run properties must not read
+        # them as removed. `default:` is not a validator entry — it is applied whatever any condition says —
+        # and comparing it by VALUE misreported it anyway, since `Float::NAN == Float::NAN` is false and a
+        # NaN default therefore looked removed on every call.
+        RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY].freeze
 
         GATED_RESIDUE = "a conditional declaration at this position contradicts this one, so it applies only on the calls " \
                         "its condition opens"
@@ -1662,7 +1672,7 @@ module Axn
         # since a caller rejected by the omitted one has been told the list was complete.
         def gating_residues(projections)
           projections.filter_map do |_config, projected, full|
-            removed = full.except(:description, RESIDUE_KEY).reject { |key, value| projected[key] == value }
+            removed = full.except(*RESIDUE_UNGATEABLE_KEYS).reject { |key, value| projected[key] == value }
             next nil if removed.empty?
 
             Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(removed)})", kind: :conditional)
@@ -1728,7 +1738,7 @@ module Axn
 
           record_residue(stripped.except(*FABRICATED_STRING_KEYS),
                          "the declared type is not one JSON can carry, so this position's own " \
-                         "#{JSON.generate(inert)} cannot be stated against it")
+                         "#{render_constraint(inert)} cannot be stated against it")
         end
 
         # Emit the trustworthy side alone, carrying over anything the dropped side already had to report and
