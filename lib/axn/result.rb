@@ -46,7 +46,7 @@ module Axn
     end
 
     # External interface
-    delegate :ok?, :exception, :elapsed_time, :finalized?, to: :context
+    delegate :ok?, :exception, :elapsed_time, :finalized?, to: :_context
 
     # Memoized once the context is finalized, so resolution (which can invoke user-supplied message
     # blocks) runs a single time across the lifecycle (logging) and every caller read. A Result is the
@@ -99,7 +99,7 @@ module Axn
     def __action__ = @action
 
     # Internal accessor for the keys this result genuinely carries a value for, as opposed to the
-    # ones it merely declared. `declared_fields` is the static contract and includes a key with no
+    # ones it merely declared. `__declared_fields__` is the static contract and includes a key with no
     # value anywhere, whose reader reads nil; this instead reports a key as present the moment the
     # body exposes it directly, an outbound `default:` supplies it, or a matching `expects`+`exposes`
     # auto-copies it — all three mean the result reads a real value for that key. Absorbing one
@@ -150,7 +150,7 @@ module Axn
                 #      memoized above, without re-running a caller's `fails_on if:`/`unless:` proc.
                 failure = @context.__classified_as_failure? ||
                           Internal::ExceptionClassification.failure?(exception) ||
-                          action.class._unconditionally_fails_on?(exception) ||
+                          _action.class._unconditionally_fails_on?(exception) ||
                           Axn::ValidationError.user_facing?(exception)
                 failure ? OUTCOME_FAILURE : OUTCOME_EXCEPTION
               else
@@ -166,8 +166,8 @@ module Axn
     def _context_data_source = @context.exposed_data
 
     def _define_boolean_predicate_readers
-      action.class.external_field_configs.each do |config|
-        next unless declared_fields.include?(config.field)
+      _action.class.external_field_configs.each do |config|
+        next unless __declared_fields__.include?(config.field)
         next unless config.boolean?
 
         _define_boolean_predicate_reader(config.field)
@@ -290,7 +290,7 @@ module Axn
       return false unless Axn::Internal::Identity.kind?(exception, Axn::Failure)
       # standalone: is scoped to the action that called fail!. A bubbled child Failure resolved at an
       # ancestor still gets the ancestor's base (child opt-out is local) → not standalone here.
-      return false unless exception.__originating_action.equal?(action)
+      return false unless exception.__originating_action.equal?(_action)
 
       exception.standalone?
     end
@@ -300,7 +300,7 @@ module Axn
         msg = <<~MSG
           Method ##{method_name} is not available on Action::Result!
 
-          #{action_name} may be missing a line like:
+          #{_action_name} may be missing a line like:
             exposes :#{method_name}
         MSG
 

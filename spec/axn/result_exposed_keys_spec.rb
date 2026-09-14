@@ -8,7 +8,7 @@ RSpec.describe "Axn::Result#__exposed_keys__" do
     end
 
     result = action.call
-    expect(result.declared_fields).to contain_exactly(:a, :b)
+    expect(result.__declared_fields__).to contain_exactly(:a, :b)
     expect(result.__exposed_keys__).to eq([:a])
   end
 

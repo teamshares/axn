@@ -44,12 +44,12 @@ RSpec.describe Axn::Internal::NameOwnership do
 
   describe ".owner_within" do
     it "names an owner the class itself contributes" do
-      expect(described_class.owner_within(Axn::Core::InternalContext, :default_error))
+      expect(described_class.owner_within(Axn::Core::InternalContext, :_default_error))
         .to eq(Axn::Core::InternalContext)
     end
 
     it "reaches an owner inherited from below the boundary" do
-      expect(described_class.owner_within(Axn::Core::InternalContext, :declared_fields))
+      expect(described_class.owner_within(Axn::Core::InternalContext, :__declared_fields__))
         .to eq(Axn::Core::ContextFacade)
     end
 

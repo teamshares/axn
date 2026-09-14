@@ -115,7 +115,7 @@ module Axn
       def rendered_field_name(field) = Axn::Internal::Reflection::PropertyNames.renderable_label(field)
 
       def class_name = facade.class.name
-      def declared_fields = facade.send(:declared_fields)
+      def declared_fields = facade.__declared_fields__
 
       def format_for_inspect(field, value)
         return value.inspect if value.nil?

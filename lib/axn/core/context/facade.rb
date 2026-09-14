@@ -26,7 +26,7 @@ module Axn
         (@declared_fields + Array(implicitly_allowed_fields)).each do |field|
           # Never define over a name the facade ITSELF answers to — its own ancestry up to Object,
           # private methods included, since those are the ones it dispatches on itself
-          # (`default_error`, `_msg_resolver`). Declarations that would land such a name are refused up
+          # (`_default_error`, `_msg_resolver`). Declarations that would land such a name are refused up
           # front (Contract::ClassMethods#_reject_shadowed_exposure_name! and its inbound twin); this is
           # the definition-site half of that rule, so a config reaching a facade without passing through
           # the DSL cannot silently take a method away. Object/Kernel are deliberately NOT asked: an
@@ -38,9 +38,12 @@ module Axn
         end
       end
 
-      attr_reader :declared_fields
+      # Namespaced like `Axn::Result`'s `__action__`/`__exposed_keys__` rather than left as
+      # `declared_fields`: every name this class owns is one an `expects`/`exposes` declaration may not
+      # take, so the facade's own surface stays out of the namespace an author writes field names in.
+      def __declared_fields__ = @declared_fields
 
-      def inspect = ContextFacadeInspector.new(facade: self, action:, context:).call
+      def inspect = ContextFacadeInspector.new(facade: self, action: _action, context: _context).call
 
       def fail!(...)
         raise Axn::ContractViolation::MethodNotAllowed, "Call fail! directly rather than on the context"
@@ -48,7 +51,14 @@ module Axn
 
       private
 
-      attr_reader :action, :context
+      # Underscored, like everything else this class owns. The facade's method table IS the set of
+      # field names a declaration is refused (Contract::ClassMethods#_reject_shadowed_wire_key! and
+      # its exposure twin ask it by ownership), so a helper named `action` or `context` would take two
+      # ordinary domain words away from every author while offering them nothing — neither name is
+      # reachable from an action or documented anywhere. Keep new helpers here underscored;
+      # spec/axn/core/context/facade_name_surface_spec.rb enforces it.
+      def _action = @action
+      def _context = @context
 
       # Define one field's reader. The base (outbound Result) facade reads the data source directly;
       # InternalContext overrides this to resolve declared inbound fields through the read path.
@@ -62,9 +72,9 @@ module Axn
         end
       end
 
-      def _model_fields = action.class._model_fields
+      def _model_fields = _action.class._model_fields
 
-      def action_name = @action.class.name.presence || "The action"
+      def _action_name = @action.class.name.presence || "The action"
 
       def _define_model_field_method(field, options)
         Axn::Internal::Memoization.define_memoized_reader_method(@__singleton, field) do
@@ -81,9 +91,9 @@ module Axn
 
       def _msg_resolver(event_type, exception:)
         Axn::Core::Flow::Handlers::Resolvers::MessageResolver.new(
-          action.class._messages_registry,
+          _action.class._messages_registry,
           event_type,
-          action:,
+          action: _action,
           exception:,
         )
       end

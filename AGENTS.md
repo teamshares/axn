@@ -172,6 +172,14 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   control kwarg `fail!`/`done!` reads ahead of exposures — so those are guarded separately, derived
   from the consumer's own output rather than hand-listed alongside it. To make a new helper
   surrenderable, add its MODULE to `SURRENDERABLE_OWNERS` — never a bare name.
+- **The context facade's method table is a namespace it shares with every author's field names.**
+  Because ownership is what the guards read, every helper on `ContextFacade`/`InternalContext` —
+  private ones included — takes that word away from `expects`/`exposes` everywhere. So the facade's
+  own surface stays inside its own `_`-prefixed namespace (`_action`, `_context`, `_msg_resolver`,
+  `__declared_fields__`), with only Ruby's protocol names unprefixed; adding a plain `def helper`
+  there would silently reserve `helper` for everyone. `spec/axn/core/context/facade_name_surface_spec.rb`
+  enforces it. `Axn::Result`'s public API is the one deliberate exception — `result.message` must
+  mean the framework's message — and is named in that spec rather than exempted by rule.
 - **Whether axn may DEFINE a name is one question asked at two receivers.**
   `Axn::Core::MethodShadowing` answers it for the class-method DSL and for the instance helpers, and
   both answers skip `Axn::Core::*` owners *only*, so a satellite adapter's module (`Axn::MCP::*`)
