@@ -64,11 +64,18 @@ RSpec.describe "constructors of a stored validations bag" do
   # entry from an already-cleared bag. Dropping entries preserves it; rewriting a retained entry's VALUE does
   # not, even though it adds no key — that needs a seam.
   #
-  # The two are `effective_validations` (drops per-validator-gated entries on the outbound projection) and
-  # `project_ungated` (drops effectively-gated entries so a conditional declaration is reflected by what it
-  # enforces on every call). Neither rewrites a value.
+  # The four are `effective_validations` (drops per-validator-gated entries on the outbound projection) and
+  # `projected_property`'s three, which reflect a conditional declaration by what it enforces on every call:
+  # the ungated subset; that subset with the config's OWN `type:` entry put back, so an unconditional
+  # `length:`/`presence:` keeps the JSON spelling the type gives it; and the type entry ALONE, whose emitted
+  # keys are then subtracted so the gated type's own claims (`enum: [true]` for a TrueClass, `format` for a
+  # `:uuid`) do not survive it.
+  #
+  # All four hold the property: every retained entry is an unmodified entry from an already-cleared bag.
+  # Dropping preserves it, and so does putting an entry BACK unchanged from the same bag — what it forbids
+  # is rewriting a retained entry's value, which none of them does.
   EXPECTED_BAG_DERIVATIONS = {
-    "lib/axn/internal/reflection/schema.rb" => 2,
+    "lib/axn/internal/reflection/schema.rb" => 4,
   }.freeze
 
   DERIVATION_PATTERN = /\.with\((?:[^()]|\([^()]*\))*\bvalidations:/

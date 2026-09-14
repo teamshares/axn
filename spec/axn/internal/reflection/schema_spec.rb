@@ -6468,6 +6468,42 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect { described_class.send(:drop_fabricated_type, prop) }.not_to raise_error
             end
 
+            # A type is not only a claim — it is what gives every OTHER validator a JSON spelling. Stripping
+            # a conditional `type:` therefore took an UNCONDITIONAL `length:`'s `minItems` with it, and the
+            # position came back admitting a one-element array the runtime rejects on every call. Same class
+            # as the blank floor below, one keyword wider.
+            it "keeps a type-derived bound from an unconditional validator when the type is conditional" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) do
+                  field :inner, type: { klass: Array, if: -> { false } }, length: { minimum: 2 }
+                end
+                expects :inner, on: :payload, type: Array
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(JSON.generate(inner)).to include('"minItems":2')
+              # and the unconditional bound is not reported AS conditional
+              expect(inner[:description]).not_to include("minItems")
+              expect(klass.call(payload: { inner: [1] })).not_to be_ok
+              expect(klass.call(payload: { inner: [1, 2] })).to be_ok
+            end
+
+            # The other half: what the gated type asserts FOR ITSELF must not survive it. Keeping the type
+            # in the bag for emission would otherwise assert a `TrueClass`'s `enum: [true]` or a `:uuid`'s
+            # `format` on every call, which is the gated claim wearing a different keyword.
+            it "does not keep what the conditional type asserts for itself" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: { klass: TrueClass, if: -> { false } } }
+                expects :inner, on: :payload, type: String
+                def call = nil
+              end
+
+              expect(JSON.generate(klass.input_schema)).not_to include('"enum":[true]')
+            end
+
             it "reports nothing when both sides describe the same wire value" do
               klass = Class.new do
                 include Axn

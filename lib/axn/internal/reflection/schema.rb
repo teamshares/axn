@@ -1647,9 +1647,26 @@ module Axn
         end
 
         # One config's property as emitted from the checks that run on every call.
+        #
+        # A gated `type:` is the awkward case, because a type is not only a claim — it is also what gives
+        # every OTHER validator a JSON spelling. Strip it from the bag and an UNCONDITIONAL `length:` loses
+        # its `minItems`, an unconditional `presence:` loses its floor, and the position comes back
+        # admitting values the runtime rejects on every call.
+        #
+        # So the type stays in the bag for EMISSION and is then subtracted from the result — and subtracted
+        # by rebuilding from the type alone (`type_only`) rather than by naming keywords, because which
+        # keywords a type asserts for itself is exactly the enumeration that would go stale. A `TrueClass`
+        # asserts `enum: [true]`, a `:uuid` asserts `format`; those are the gated claim and must not
+        # survive. What `length:`/`presence:` contributed THROUGH the type is not in that set and does.
         def projected_property(config, full)
           ungated = ungated_validations(config)
-          restore_blank_floor(build_property(config.with(validations: ungated), subfield: true), ungated, full)
+          type = config.validations[:type]
+          return restore_blank_floor(build_property(config.with(validations: ungated), subfield: true), ungated, full) if
+            type.nil? || ungated.key?(:type)
+
+          emitted = build_property(config.with(validations: ungated.merge(type:)), subfield: true)
+          type_only = build_property(config.with(validations: { type: }), subfield: true)
+          restore_blank_floor(emitted.except(*type_only.keys), ungated, full)
         end
 
         def ungated_validations(config)
