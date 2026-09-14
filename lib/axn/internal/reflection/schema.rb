@@ -25,6 +25,17 @@ require "axn/internal/coercion"
 # bounds every such walk needs (see `guard_contents_descent`).
 require "axn/internal/cycle_guard"
 
+# Blankness asks a RUNTIME VALUE whether it is blank/empty and how big it is — no JSON Schema in it at all,
+# and `Core::Contract`'s declaration guards read the same answers, so it lives in its own file.
+require "axn/internal/reflection/schema/blankness"
+
+# Gates forwards every validator-set question to `Validation::Base`, so a config's own `optional?` and the
+# emitted property's requiredness cannot answer differently.
+require "axn/internal/reflection/schema/gates"
+
+# TypeTokens maps one declared type token to one JSON type — the leaf every typing decision bottoms out in.
+require "axn/internal/reflection/schema/type_tokens"
+
 module Axn
   module Internal
     module Reflection
@@ -44,25 +55,6 @@ module Axn
       # recoverable validation error. A required subfield at ANY depth forces its whole ancestor chain
       # required and non-nullable (a nil/omitted ancestor yields every descendant absent, PRO-2857).
       module Schema
-        TYPE_MAP = {
-          String => "string",
-          Symbol => "string",
-          # `null` is a first-class JSON type, so a declared `NilClass` has an exact spelling here. Without the
-          # entry it reached single_type_for's unknown-class fallback and reflected as "string" — whose premise
-          # ("a JSON client can't send a Ruby object anyway") is true of a PORO and false of nil.
-          NilClass => "null",
-          Integer => "integer",
-          Float => "number",
-          Numeric => "number",
-          Hash => "object",
-          Array => "array",
-          # NOTE: TrueClass/FalseClass are intentionally absent — TypeValidator accepts only the singleton
-          # value, so single_type_for reflects them as boolean + a single-member enum, not the full domain.
-          Date => "string",
-          DateTime => "string",
-          Time => "string",
-        }.freeze
-
         # Which JSON Schema keyword each ActiveModel comparison operator becomes. The exclusive pair is the
         # draft-06+ NUMERIC form (`exclusiveMinimum: 0`), not draft-04's boolean flag beside `minimum:`.
         NUMERIC_BOUND_KEYS = {
@@ -98,12 +90,6 @@ module Axn
           integer: Integer,
           string: String,
           uuid: :uuid,
-        }.freeze
-
-        FORMAT_MAP = {
-          Date => "date",
-          DateTime => "date-time",
-          Time => "date-time",
         }.freeze
 
         # JSON Schema spells the emptiness floor differently per type. A type absent here (integer, boolean,
@@ -150,6 +136,13 @@ module Axn
         RESIDUE_PREFACE = "Additional constraints apply that JSON Schema cannot express: "
 
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
+
+        # Extracted modules are mixed in rather than delegated to: their methods stay reachable as
+        # `Schema.foo` for the callers outside this file, and as a bare call from every method inside it,
+        # so the split is about where the code LIVES, not about re-routing anyone.
+        extend Blankness
+        extend Gates
+        extend TypeTokens
 
         module_function
 
@@ -1129,155 +1122,6 @@ module Axn
           return true if validations.key?(Axn::Internal::FieldConfig::NON_EMPTINESS_KEY)
 
           presence_rejects_blank?(validations)
-        end
-
-        # Parameters is identified by rendered class NAME rather than by the constant: this file is one an adapter
-        # gem loads directly, and naming a Rails constant here would put an unresolvable reference in its load graph
-        # for every consumer running without Rails. It is the same identify-by-name form TypeValidator already uses
-        # to recognize a test double, and the rendering is read natively (`Internal::ClassName.of_module`) so a class
-        # cannot answer this question for itself.
-        PARAMS_CLASS_NAME = "ActionController::Parameters"
-
-        # The container classes whose `empty?` is RUBY'S OWN — the ones the emptiness axis is declared on. `Set` sits
-        # behind `defined?` because `set` is not always loaded.
-        EMPTY_CONTAINER_CLASSES = [::Hash, ::Array, ::String].freeze
-
-        # Whether a default is an EMPTY container, decided by WHOSE `empty?` would answer it. Ownership is the whole
-        # test, because it separates the two things a subclass can be: one that INHERITS the built-in's `empty?`
-        # answers with Ruby's own code, so running it is safe and its empty instance is as empty as the built-in's;
-        # one that OVERRIDES it (or carries a singleton) is caller code, which a reflection verdict must not run —
-        # and not recognizing it is also what matches the runtime, since that same override is what the emptiness
-        # check will ask. Anything else — a lazy collection, an arbitrary object — is unrecognized for the same
-        # reason, so no `empty?` of a caller's writing is ever dispatched here.
-        #
-        # The owner read is bound (`NativeMethods.method_owner`); the call that follows it needs no guard, because
-        # the implementation it dispatches is the one whose owner was just established.
-        def empty_container?(value)
-          owner = Axn::Internal::NativeMethods.method_owner(value, :empty?)
-          return false unless owner && native_empty_owner?(owner)
-
-          value.empty?
-        end
-
-        # How many elements a literal holds, or nil where a check could measure it differently. Read where a
-        # declared literal has to be weighed against the sizes a contract admits (the empty-interval guard's
-        # inclusion branch).
-        #
-        # FOUR checks can hold a size bound, and each asks the value by a different method — the complete list:
-        #
-        #   `length:`             `value.length`   (activemodel 8.1.3.1, length.rb:48)     floor and ceiling
-        #   `presence:`           `value.blank?`   (presence.rb)                           floor
-        #   the emptiness check   `value.empty?`   (NonEmptinessValidator)                 floor
-        #   `absence:`            `value.present?` (absence.rb)                            ceiling
-        #
-        # Which check holds a given bound is not this method's to know — the floor of 1 is `presence:`'s on one
-        # declaration and `length:`'s on the next — so a value is measured only where every one of them is
-        # Ruby's own, and there they agree by construction. `size` is deliberately not among them: no check
-        # asks it, and reading it is how an `Array` subclass overriding `length` was measured as empty here
-        # while `length:` and `inclusion:` both accepted it at runtime.
-        #
-        # And a bound-holding check does not reach its measurement directly: it asks the value whether it CAN
-        # answer first, and takes a different measurement when the answer is no. `length:` reads
-        # `value.respond_to?(:length) ? value.length : value.to_s.length`, and ActiveSupport's `Object#blank?`
-        # is `respond_to?(:empty?) ? !!empty? : false`. So the capability probe is part of the measurement, and
-        # a value carrying its own `respond_to?` is measured by an answer IT wrote however native the method
-        # that answer names: an exact `Array` answering `false` for `:length` is measured as `"[]"` — two
-        # characters — and not as `Array#length`'s zero, so a floor of 2 it appears to fail is one it meets.
-        # `respond_to?` is therefore on the list beside the four measurements it selects between.
-        #
-        # That override is not deception to be refused: answering for a method it forwards is the ordinary
-        # shape of a proxy or delegator, which is why axn's own emptiness check asks the capability through a
-        # BOUND `Object#respond_to?` (`NonEmptinessValidator::CAPABILITY_CHECK`) rather than trusting the
-        # value's answer. ActiveModel dispatches it, so a declaration weighing what ActiveModel will measure
-        # has to count the caller's answer as part of the measurement — reading the unforgeable one here would
-        # measure something no check performs.
-        #
-        # The list grows with the bounds. `present?` belongs to it because PRO-3220 taught `absence:` to name a
-        # ceiling; adding that bound without revisiting this list is what let a member answering
-        # `present? => false` be weighed against a ceiling it does not obey.
-        #
-        # Ownership is the whole test, the same one `empty_container?` applies and for the same reason: a
-        # measurement a caller wrote is caller code, which a declaration-time verdict must neither run nor
-        # second-guess. Standing down leaves the declaration legal, the direction this guard must err in.
-        #
-        # The owner reads are bound (`NativeMethods.method_owner`); the call that follows needs no guard,
-        # because the implementation it dispatches is the one whose owner was just established.
-        def container_size(value)
-          return nil unless ASKED_BY_A_BOUNDING_CHECK.all? { |method_name| natively_answered?(value, method_name) }
-
-          value.length
-        end
-
-        # The methods the BLANK axis asks a value by: ActiveModel's presence/absence validators call `blank?`
-        # and `present?`, and ActiveSupport's generic pair answers out of `empty?` behind a `respond_to?` probe.
-        # `length` is deliberately absent — blankness is not size, which is the whole reason a `String` member
-        # needs this at all.
-        ASKED_BY_THE_BLANK_AXIS = %i[blank? present? empty? respond_to?].freeze
-
-        # Whether this value's BLANKNESS is Ruby's own to answer, on exactly the terms `container_size` applies
-        # to its measurement and for the same reason: a member whose `present?` or `blank?` is its own decides
-        # for itself whether an `absence:` accepts it, and a declaration-time verdict may neither run that code
-        # nor second-guess it. Answering false stands the judgment down, which leaves the declaration legal.
-        def blankness_natively_answered?(value)
-          ASKED_BY_THE_BLANK_AXIS.all? { |method_name| natively_answered?(value, method_name) }
-        end
-
-        # Every method a check that holds a size bound asks the value by — the four measurements plus the
-        # `respond_to?` those checks select between them with. All must be Ruby's own, so the order is
-        # immaterial.
-        ASKED_BY_A_BOUNDING_CHECK = %i[length empty? blank? present? respond_to?].freeze
-
-        # `Object` and `Kernel` are admitted as owners, and neither can end up owning a MEASUREMENT here:
-        # `Object` only ever owns `blank?`/`present?` and `Kernel` only ever owns `respond_to?`, since none of
-        # them defines `length` or `empty?`. ActiveSupport's `Object#blank?` is
-        # `respond_to?(:empty?) ? !!empty? : false` and its `present?` is `!blank?`, so both answer out of the
-        # very `empty?` this method has already required to be native: for a `Set`, whose blankness AS does not
-        # specialize, that is the whole reason a member is measurable at all. `Kernel#respond_to?` is Ruby's
-        # own capability probe, which every value answers with until one carries an override.
-        def natively_answered?(value, method_name)
-          owner = Axn::Internal::NativeMethods.method_owner(value, method_name)
-          return false if owner.nil?
-
-          native_empty_owner?(owner) || ::Object.equal?(owner) || ::Kernel.equal?(owner)
-        end
-
-        def native_empty_owner?(owner)
-          return true if EMPTY_CONTAINER_CLASSES.any? { |klass| klass.equal?(owner) }
-          return true if defined?(Set) && ::Set.equal?(owner)
-
-          # The rendered name is a Ruby-made String (the bound `Module#to_s`), so comparing it dispatches String's
-          # own `==` whatever the owner is.
-          Axn::Internal::ClassName.of_module(owner) == PARAMS_CLASS_NAME
-        end
-
-        # A default value ActiveModel's presence validator treats as blank (and so rejects): `false`, a
-        # whitespace-only String, or an empty container. (nil is handled by the caller.)
-        def presence_blank?(value)
-          return true if value.equal?(false)
-          return value.strip.empty? if value.instance_of?(String)
-
-          empty_container?(value)
-        end
-
-        # Whether a default is EMPTY — the question `allow_empty: false`'s own check asks of a value, which is
-        # not blankness: a whitespace-only String is blank but not empty, and `false` has no empty state at all.
-        def empty_default?(value) = empty_container?(value)
-
-        # Whether an `<field>_id` default can actually serve as a model LOOKUP token — the shared test
-        # for every id-rescue site (sibling_id_rescued?, which serves both the annotation credit and the
-        # contradictions loop, and SubfieldContradictions' model_omittable?). usable_default? judges a default for the FIELD's OWN
-        # omission, where a blank literal ("" / {}) is usable when no presence validator rejects it — but
-        # the model resolver blank-guards the id (Model#derive_value: `return nil if id_value.blank?`), so
-        # a blank id default can never resolve a record and never rescues an omitted model. It must
-        # therefore be satisfiability-usable AND not a blank literal. A Proc default stays optimistic
-        # (unknowable at declaration), matching usable_default?'s satisfiability doctrine.
-        def usable_id_token_default?(config)
-          return false unless usable_default?(config, subfield: true, satisfiability: true)
-
-          value = declared_attribute(config, :default)
-          return true if value.is_a?(Proc)
-
-          !presence_blank?(value)
         end
 
         # Mutates `prop` to nest the node's children as `prop[:properties]`/`prop[:required]`, recursing
@@ -4060,123 +3904,6 @@ module Axn
           members.flat_map { |m| Array(m[:type]).reject { |t| t == "null" }.map { |t| { type: t, format: m[:format] } } }
         end
 
-        # Forbid `null` on a property (a required model-id token can't be null). Strips the null branch from
-        # an explicit type/anyOf; for the generated id property (untyped — a model PK has no fixed JSON type)
-        # there's no branch to strip, so add an explicit `not: { type: "null" }` constraint.
-        def reject_null!(prop)
-          if prop[:type].is_a?(Array)
-            non_null = prop[:type] - ["null"]
-            prop[:type] = non_null.size == 1 ? non_null.first : non_null
-          elsif prop[:anyOf].is_a?(Array)
-            prop[:anyOf] = prop[:anyOf].reject { |member| member[:type] == "null" }
-          elsif !prop.key?(:type)
-            prop[:not] = { type: "null" }
-          end
-        end
-
-        # Every question here is put to the token WITHOUT dispatching, and the reason is not only reflection's
-        # own rule that a walk may run none of a caller's code: a declaration GUARD reads this — the blank axis
-        # asks whether a declared type's branch can carry a size at all (`token_carries_a_size?`) — so a token
-        # answering for itself would decide whether a contract is refused, and one whose method raises would
-        # replace that verdict with its own exception, at class-definition time. Measured on an `Array` subclass
-        # with a singleton `hash`: `TYPE_MAP.key?(token)` ran it.
-        #
-        # So the four spellings a token could otherwise answer are each replaced by a native one. Identity
-        # (`Identity.same?`, a bound `equal?`) stands in for `==` against a known token; `Identity.kind?`
-        # (`Module#===`, C-level) for `is_a?`; `NativeMethods.includes_module?` — which reads the ancestry out
-        # of the method table — for `<`/`<=`/`>=`; and `map_type_for`/`map_format_for` scan the emitter's own
-        # maps by identity rather than looking a token up by its `hash`/`eql?`. The answers are identical for
-        # every token that does not define one of those methods, which is every token a declaration means.
-        def single_type_for(klass, for_output:)
-          return { type: "boolean" } if Axn::Internal::Identity.same?(klass, :boolean)
-          # TypeValidator accepts only the singleton value for TrueClass/FalseClass, so constrain the schema
-          # to it (a bare `type: "boolean"` would let a client send the other value and pass validation).
-          return { type: "boolean", enum: [true] } if Axn::Internal::Identity.same?(klass, ::TrueClass)
-          return { type: "boolean", enum: [false] } if Axn::Internal::Identity.same?(klass, ::FalseClass)
-          return { type: "string", format: "uuid" } if Axn::Internal::Identity.same?(klass, :uuid)
-          return { type: "object" } if Axn::Internal::Identity.same?(klass, :params)
-
-          # A declared type that ADMITS a Complex value (`type: Numeric` or `type: Complex`, i.e. Complex is
-          # the class or one of its ancestors) can serialize to a JSON number (real Numerics) OR a String
-          # (Complex — Float() rejects it, so Values.serialize_value falls back to to_s). Its output wire
-          # form isn't knowable from the declaration, so leave it UNTYPED on output rather than assert
-          # "number" the serialized value could contradict. Input still resolves below: `Numeric` maps to
-          # "number" (a JSON number is a real Numeric and validates), `Complex` to the permissive "string".
-          return {} if for_output && class_token?(klass) && Axn::Internal::NativeMethods.includes_module?(::Complex, klass)
-
-          mapped = map_type_for(klass)
-          unless nil.equal?(mapped)
-            result = { type: mapped }
-            format = map_format_for(klass)
-            result[:format] = format unless nil.equal?(format)
-            return result
-          end
-
-          # A Numeric subclass not in TYPE_MAP (BigDecimal, Rational, …) serializes to a JSON number
-          # (Values.serialize_value coerces it via Float()), so reflect it as "number" rather than the
-          # object/string fallback. Complex is the exception: Float() rejects it, so on input it drops to
-          # the permissive "string" below (a JSON client can't send a Complex anyway; output is handled
-          # above).
-          return { type: "number" } if numeric_but_not_complex?(klass)
-
-          # Unknown class: the serialized shape is only knowable at runtime (Values.serialize_value emits
-          # an object for an as_json/to_h value but a string for a to_s-only one), so on output leave it
-          # UNTYPED rather than assert `object` the serialized value might contradict. On input, keep a
-          # permissive `string` hint (a JSON client can't send a Ruby object anyway — see the reflection
-          # docs on coercing Ruby-object input types).
-          return {} if for_output
-
-          { type: "string" }
-        end
-
-        # Whether the token is a Class at all, asked through `Module#===` rather than the token's own `is_a?`.
-        # The Complex and Numeric branches both need it: `Complex`'s ancestry holds `Comparable`, a MODULE, and
-        # the old `klass.is_a?(Class)` guard is what kept a declared `Comparable` out of the output-untyped
-        # branch.
-        def class_token?(klass) = Axn::Internal::Identity.kind?(klass, ::Class)
-
-        # `klass < mod` — STRICT descent — read out of the token's ancestry rather than through its own `<`.
-        # Strict matters at every call site: `Data` and `Struct` are not themselves member-keyed, only their
-        # subclasses are, and `Hash` is tested by identity separately where it counts.
-        #
-        # Establishes Class-ness FIRST, which is the precondition every `NativeMethods` module reader states:
-        # binding `ancestors` to a non-Module is a TypeError, and that would replace the verdict being decided
-        # with an error from the reader meant to protect it. The `<` this replaces raised NoMethodError on a
-        # non-Module for the same reason, so each caller guarded separately; holding the precondition here
-        # keeps the three of them from having to remember it (measured — one forgot, and a nil `type:` bag's
-        # `klass:` took the reflection down).
-        def strict_descendant?(klass, mod)
-          return false unless class_token?(klass)
-          return false if Axn::Internal::Identity.same?(klass, mod)
-
-          Axn::Internal::NativeMethods.includes_module?(klass, mod)
-        end
-
-        # A Numeric subclass other than Complex — `klass < Numeric && !(klass <= Complex)`, read out of the
-        # token's ancestry rather than through its own `<`/`<=`. STRICT descent, so `Numeric` itself falls
-        # through to `TYPE_MAP` (where it is "number" already) exactly as it did.
-        def numeric_but_not_complex?(klass)
-          return false unless class_token?(klass)
-          return false if Axn::Internal::Identity.same?(klass, ::Numeric)
-          return false unless Axn::Internal::NativeMethods.includes_module?(klass, ::Numeric)
-
-          !Axn::Internal::NativeMethods.includes_module?(klass, ::Complex)
-        end
-
-        def map_type_for(klass) = identity_lookup(TYPE_MAP, klass)
-
-        def map_format_for(klass) = identity_lookup(FORMAT_MAP, klass)
-
-        # One of the emitter's own maps, looked up by IDENTITY: `Hash#[]`/`#key?` would hash the TOKEN and
-        # compare it with `eql?`, both of which a caller's Class can define. The maps are axn's own frozen
-        # Hashes keyed by ten core classes, so the scan is bounded and its receiver is never the token. `nil`
-        # means "not in this map" — no value in either map is nil.
-        def identity_lookup(map, klass)
-          map.each { |key, value| return value if Axn::Internal::Identity.same?(key, klass) }
-
-          nil
-        end
-
         def json_type_for(validations, for_output: false)
           if validations[:type]
             tokens = declared_type_tokens(validations)
@@ -4476,118 +4203,6 @@ module Axn
           return "number" if value.is_a?(Float)
 
           nil
-        end
-
-        # Whether the field's validators, taken together, permit a nil/omitted value — the one question
-        # requiredness and nullability turn on, owned by Validation::Base so a field config's own
-        # `optional?` answers it identically.
-        def nil_accepted?(config) = Axn::Validation::Base.nil_accepted?(config.validations)
-
-        # Whether the config's declaration carries a declaration-level if:/unless: gate — the signal
-        # that its enforcement (NOT its shape) is conditional at runtime. Asked of a config here and of
-        # already-read validations in `shape_property_plan` (which holds nothing but the reduced Hash); one
-        # predicate, so the two cannot answer differently. The reduction never removes a declaration-level gate
-        # key, so both spellings see the same keys.
-        def conditionally_gated?(config) = gated_validations?(config.validations)
-
-        def gated_validations?(validations)
-          Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| validations.key?(k) }
-        end
-
-        # Whether a single validator ENTRY carries a real per-validator (nested) if:/unless: gate — one that can
-        # skip that entry alone (e.g. `presence: { if: -> { ... } }`, `type: { klass: Integer, if: :flag }`).
-        # Owned by Validation::Base so the emptiness axis's deferral test and this reasoning judge one entry the
-        # same way.
-        def entry_self_gated?(opt) = Axn::Validation::Base.entry_self_gated?(opt)
-
-        # Whether a single validator ENTRY's options MENTION a per-validator gate key at all — blank or
-        # not (contrast entry_self_gated?, which requires a NON-blank value). A blank nested gate is not inert
-        # for the declaration-level requiredness clause: per AM's measured per-key merge
-        # (fields.rb#validator_gate_open?), a blank nested same-key value OVERRIDES and drops the shared
-        # (declaration) gate for that key before AM ignores it — un-gating the entry. So an entry that
-        # mentions ANY gate key no longer inherits the declaration gate verbatim. Owned by Validation::Base
-        # so this reasoning and the declaration-time nil-skip push-down (contract.rb `_type_rejects_nil?`)
-        # judge one entry the same way.
-        def entry_mentions_gate_key?(opt) = Axn::Validation::Base.entry_mentions_gate_key?(opt)
-
-        # Which gate keys EFFECTIVELY gate a single validator entry, given the declaration-level gates
-        # (`decl_gates` = the sliced :if/:unless off the whole declaration, already blank-canonicalized).
-        # Owned by Validation::Base so the declaration-time nil-skip push-down judges runtime skippability
-        # identically; structural (never evaluates a condition), which is what keeps reflection
-        # side-effect-free.
-        def entry_effective_gate_keys(entry_opts, decl_gates) = Axn::Validation::Base.entry_effective_gate_keys(entry_opts, decl_gates)
-
-        # Whether a config's requiredness can be RELAXED at runtime by a conditional GATE — the signal
-        # that a required-looking route can't oblige an omitted/nil ancestor to be present, because a
-        # closed gate skips the check that would otherwise reject the nil ancestor. Reasoned on EFFECTIVE
-        # gates (entry_effective_gate_keys), which model AM's measured per-key merge of the declaration
-        # gate with each entry's nested gate — so the two tiers combine exactly as at runtime without ever
-        # evaluating a condition. Relaxable iff BOTH:
-        #   * some gate exists anywhere — a declaration-level one (already blank-canonicalized) or a real
-        #     (non-blank) nested one; AND
-        #   * every NIL-REJECTING entry is effectively gated — the gate a closed runtime pass would skip is
-        #     precisely the check that rejects the nil/absent ancestor, so nothing forces it. A nil-tolerant
-        #     entry never rejects nil, so it imposes no ancestor obligation to relax.
-        # The measured merge is what makes the corner cases correct: a declaration gate with a BLANK
-        # same-key nested override on the lone presence check leaves it effectively UN-gated (the override
-        # drops the shared gate, then AM ignores the blank), so an ungated nil-rejecting check still forces
-        # the ancestor — NOT relaxable. A DISTINCT-key declaration gate (`unless:`) surviving alongside a
-        # blank nested `if:` still gates the entry — relaxable.
-        #
-        # The "some gate exists" conjunct is load-bearing: a STATICALLY nil-tolerant config (`optional:`/
-        # `allow_nil:`, no gate) must NOT be relaxed. Static tolerance does not skip a required child's
-        # validators (a nil optional parent still strands a required descendant — PRO-2857), so such a
-        # config stays in the subset for node_optional?'s subtree-stranding test to apply; dropping it would
-        # vacuously (`[].all?`) mark the node omittable and lose that test. Only a GATE — which skips the
-        # gated check entirely when closed — genuinely relaxes requiredness. Own-level emission is
-        # unaffected (this governs ancestor propagation only; see annotate_node!).
-        def requiredness_conditionally_relaxable?(config)
-          gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
-          decl_gates = config.validations.slice(*gate_keys)
-          # `entries` are the real VALIDATORS — shared options (strict:, on:, …) aren't validators and
-          # must not be mistaken for a nil-rejecting one (see nil_accepted?/validator_entries).
-          entries = Axn::Validation::Base.validator_entries(config.validations)
-
-          some_gate = decl_gates.any? || entries.any? { |_key, opt| entry_self_gated?(opt) }
-          return false unless some_gate
-
-          shared = shared_validation_options(config.validations)
-          entries.all? do |key, opt|
-            nil_tolerant_validation?(key, opt, shared) || entry_effective_gate_keys(opt, decl_gates).any?
-          end
-        end
-
-        # The declaration-wide options every entry of a config rides alongside — the tier the per-entry
-        # judgments resolve against. The slice itself is Validation::Base's one definition, so a judgment made
-        # from a bare validations bag (the declaration guards, before any config exists) reads the same tier.
-        def shared_validation_options(validations)
-          Axn::Validation::Base.shared_validation_options(validations)
-        end
-
-        def nil_tolerant_validation?(key, opt, declaration_options) = Axn::Validation::Base.nil_tolerant_validation?(key, opt, declaration_options)
-        def set_includes_nil?(opt) = Axn::Validation::Base.set_includes_nil?(opt)
-        def validator_entry_options(entry) = Axn::Validation::Base.validator_entry_options(entry)
-
-        # An entry's options as `validates` will hand them over — the declaration-wide shared options with the
-        # entry's own merged on top, so a shared tolerance is judged here exactly as at runtime.
-        def effective_entry_options(entry, declaration_options) = Axn::Validation::Base.effective_entry_options(entry, declaration_options)
-
-        def nil_allowed?(config)
-          nil_tolerance_rescues_absence?(config)
-        end
-
-        # Whether the TYPE validator itself tolerates a blank value (`type: :uuid, allow_blank: true`
-        # folds `allow_blank` into the type validator's options). Only the type validator's own option
-        # matters for dropping `format: "uuid"` — a blank-tolerant `length:`/other validator doesn't make
-        # `TypeValidator` accept `""`, so the format must stay.
-        def type_allows_blank?(config)
-          effective_entry_options(config.validations[:type], shared_validation_options(config.validations))[:allow_blank] == true
-        end
-
-        # Strip `format: "uuid"` from anyOf members: a blank-tolerant uuid accepts "" at runtime, which a
-        # strict `format: uuid` validator would reject (mirrors the scalar-type relaxation above).
-        def drop_uuid_format(members)
-          members.map { |m| m[:format] == "uuid" ? m.except(:format) : m }
         end
       end
     end
