@@ -22,18 +22,25 @@ module Axn
     # reads the user's own value and never learns it missed. `ActionState` binds the real method
     # rather than naming it, the same reason axn's own internals never dispatch `result` either.
     #
-    # Both are nil when no action decided the failure (`action:` defaults to nil), which is the only
-    # answer available for an exception raised outside `fail!`.
+    # Both are nil when no action decided the failure -- `action:` defaults to nil, which is the only
+    # answer available for an exception raised outside `fail!`, and `Axn::Failure.new` is public and
+    # validates nothing, so what it was handed is not guaranteed to be an action either. One predicate
+    # decides both, since both answer the same question; `ActionState.result` may only be bound to a
+    # genuine action, which is exactly what that predicate establishes.
     def originating_axn_class
-      return nil if Axn::Internal::Identity.nil_value?(@__originating_action)
+      return nil unless _originating_axn?
 
       Axn::Internal::Identity.class_of(@__originating_action)
     end
 
     def originating_result
-      return nil if Axn::Internal::Identity.nil_value?(@__originating_action)
+      return nil unless _originating_axn?
 
       Axn::Internal::ActionState.result(@__originating_action)
     end
+
+    private
+
+    def _originating_axn? = Axn::Internal::ActionState.instance?(@__originating_action)
   end
 end

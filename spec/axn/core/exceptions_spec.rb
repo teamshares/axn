@@ -24,6 +24,10 @@ RSpec.describe "Axn::Failure originating-axn readers" do
     it "is nil when no axn decided the failure" do
       expect(Axn::Failure.new("nope").originating_axn_class).to be_nil
     end
+
+    it "is nil when the failure carries something that is not an axn" do
+      expect(Axn::Failure.new("nope", action: "not an action").originating_axn_class).to be_nil
+    end
   end
 
   describe "#originating_result" do
@@ -42,6 +46,12 @@ RSpec.describe "Axn::Failure originating-axn readers" do
 
     it "is nil when no axn decided the failure" do
       expect(Axn::Failure.new("nope").originating_result).to be_nil
+    end
+
+    # `Axn::Failure.new` is public and validates nothing, so `action:` is not guaranteed to be an
+    # action at all. Both readers answer for the same question, so both stand down on the same one.
+    it "is nil when the failure carries something that is not an axn" do
+      expect(Axn::Failure.new("nope", action: "not an action").originating_result).to be_nil
     end
 
     # The reason this reader exists rather than handing back the action instance: a consumer
