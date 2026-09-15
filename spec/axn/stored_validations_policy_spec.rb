@@ -59,9 +59,10 @@ RSpec.describe "constructors of a stored validations bag" do
   # variable (`config.with(...)`) — so the bag-REPLACING form is pinned by its own keyword instead.
   #
   # Six projection-only derivations live in Schema: effective_validations, projected_property,
-  # type_agnostic_property's two paths, and gating_residues' baseline/fragment pair. They retain
+  # type_agnostic_property, property_for_type_branches, and gating_residues' baseline/fragment pair. They retain
   # unchanged entries from a guarded declaration, except for the type-agnostic validator path:
-  # it substitutes WIRE_TYPE_CONTEXTS, a framework-owned array of native type tokens with no
+  # it substitutes each WIRE_TYPE_CONTEXTS token, or each declared union token with its original
+  # type options preserved. The synthetic domain contains only native type tokens with no
   # validator option bags (and therefore no context-scoped options to smuggle past the seam).
   # These configs only feed build_property; none is stored back onto the action or reaches the
   # declaration predicates whose decisions affect runtime nil/empty handling.

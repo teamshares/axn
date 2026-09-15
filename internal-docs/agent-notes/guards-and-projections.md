@@ -133,6 +133,12 @@ their gates and value phase. It does not invent a numeric interval from a string
 walk is deliberately an over-approximation: ignoring enums and value bounds may leave a redundant,
 type-scoped warning, but must never loosen the schema or reject a declaration.
 
+A standalone approximation cannot be assumed safe under intersection. Narrowing a numeric union
+to numbers is stricter on its own, but conjoining it with a String declaration erases every
+passing numeric string. Collision projections build each type branch independently, both for
+synthetic type domains and explicit numeric unions, and report bounds the surviving branch
+cannot express. The same rule keeps nullable equality enums local to their numeric branch.
+
 Blankness must remain a value-level constraint when type projection changes its domain.
 `absence:` is not equivalent to size zero: it admits `false` and `nil`, rejects every number,
 and judges strings by Ruby's whitespace rules. Collision projection conjoins the complete

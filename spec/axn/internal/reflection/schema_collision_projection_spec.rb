@@ -149,6 +149,22 @@ RSpec.describe "collision projection ownership" do
     expect(action.call(**input('{"a":"x"}'))).to be_ok
   end
 
+  it "preserves numeric strings when projecting a gated type with a numeric bound" do
+    action = collision({ type: { klass: String, if: -> { false } }, numericality: { greater_than: 10 } },
+                       { type: String })
+    expect(action.call(**input("11"))).to be_ok
+    expect(checker(action).valid?(input("11"))).to be(true)
+    residues = []
+    Axn::Internal::Reflection::Schema.build_input_for(action, residues:)
+    expect(residues.map(&:last).map(&:summary).join).to include("numericality", "greater_than")
+  end
+
+  it "preserves numeric strings from an explicit type union at a collision too" do
+    action = collision({ type: [String, Integer], numericality: { greater_than: 10 } }, { type: String })
+    expect(action.call(**input("11"))).to be_ok
+    expect(checker(action).valid?(input("11"))).to be(true)
+  end
+
   it "preserves absence when an approximate type reveals a boolean" do
     action = collision({ type: Object, presence: false, absence: true }, { type: { klass: :boolean, coerce: false }, presence: false })
     schema = checker(action)
@@ -407,6 +423,38 @@ RSpec.describe "collision projection ownership" do
             (values + [nil]).each do |value|
               result = action.call(**input(JSON.generate(value)))
               expect(post_transform_schema.valid?(value)).to eq(result.ok?), "gate=#{gate_open}, value=#{value.inspect}"
+            end
+          end
+        end
+      end
+    end
+  end
+
+  context "numeric bounds across string and numeric branches", :slow do
+    Axn::Internal::Reflection::Schema::NUMERIC_BOUND_KEYS.each_key do |operator|
+      %i[gated unknown union].each do |origin|
+        [false, true].each do |nullable|
+          [String, [String, Integer]].each do |target|
+            it "preserves #{operator} values from #{origin} into #{target}, nullable=#{nullable}" do
+              source = case origin
+                       when :gated then { klass: String, if: -> { false } }
+                       when :unknown then Object
+                       else [String, Integer]
+                       end
+              member = { type: source, numericality: { operator => 10 }, allow_nil: nullable }
+              each_collision_route(member, { type: target, allow_nil: nullable }) do |action, depth|
+                schema = checker(action)
+                residues = []
+                Axn::Internal::Reflection::Schema.build_input_for(action, residues:)
+                numeric_reports = residues.map(&:last).select { |r| r.summary.include?("numericality") }
+                ["9", "10", "11", "+11", "1.1e1", "foo", "", 9, 10, 11, nil].each do |value|
+                  data = nested_input(value, depth)
+                  passed = action.call(**data).ok?
+                  accepted = schema.valid?(data)
+                  expect(accepted).to be(true), "lost passing #{value.inspect}" if passed
+                  expect(numeric_reports).not_to be_empty if accepted && !passed
+                end
+              end
             end
           end
         end

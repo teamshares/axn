@@ -1646,7 +1646,7 @@ module Axn
         def gate_resolved_sides(sides)
           residues = []
           expanded = sides.flat_map do |prop, configs, complete|
-            projections = if configs.none? { |config| conditional_checks?(config) }
+            projections = if configs.none? { |config| conditional_checks?(config) || branch_projection_required?(config) }
                             [[prop, configs]]
                           else
                             residues.concat(gating_residues(configs))
@@ -1714,6 +1714,8 @@ module Axn
           ungated = ungated_validations(config)
           projected = if config.validations[:type] && !ungated.key?(:type)
                         type_agnostic_property(config, ungated)
+                      elsif branch_projection_required?(config)
+                        property_for_type_branches(config, ungated, declared_type_tokens(ungated))
                       else
                         build_property(config.with(validations: ungated), subfield: true)
                       end
@@ -1728,10 +1730,7 @@ module Axn
           validations = validations.except(:type)
           return build_property(config.with(validations:), subfield: true) if Axn::Validation::Base.validator_entries(validations).empty?
 
-          # Every validator goes through the normal property builder over the complete wire domain.
-          # Selecting individual validator families here created a second emitter: numericality
-          # received its numeric context while comparison silently lost the same numeric bounds.
-          prop = build_property(config.with(validations: validations.merge(type: WIRE_TYPE_CONTEXTS)), subfield: true)
+          prop = property_for_type_branches(config, validations, WIRE_TYPE_CONTEXTS)
           Sizing::SIZE_CONSTRAINT_KEYS.each_key do |type|
             context = { type: }
             token = TypeTokens::TYPE_MAP.find { |_token, json_type| json_type == type }.first
@@ -1740,6 +1739,23 @@ module Axn
             prop.merge!(context)
           end
           presence_rejects_blank?(validations) ? prop.merge(not: { enum: BLANK_WIRE_VALUES }) : prop
+        end
+
+        def branch_projection_required?(config)
+          declared_type_tokens(config.validations).size > 1 &&
+            NUMERIC_BOUND_ENTRIES.keys.any? { |key| config.validations[key] }
+        end
+
+        # A standalone numeric union may narrow to numbers. At a collision that can erase the
+        # other declaration's only satisfiable branch. Emit branches independently instead,
+        # preserving type options and keeping unexpressible bounds in the reporting path.
+        def property_for_type_branches(config, validations, types)
+          branches = types.map do |type|
+            type = validations[:type].merge(klass: type) if validations[:type].is_a?(Hash)
+            build_property(config.with(validations: validations.merge(type:)), subfield: true)
+          end
+          metadata = branches.first.slice(:description, :default)
+          metadata.merge(anyOf: branches.map { |branch| branch.except(:description, :default) })
         end
 
         # Only type assertions are needed here, not a satisfiability prover. Ignoring enum, not,
@@ -1767,21 +1783,26 @@ module Axn
 
         # Length and format can validate a non-string's Ruby string form. Their JSON keywords
         # cannot: ask their actual emitters per surviving type rather than assume a keyword
-        # somewhere in an anyOf covers every branch. Numeric producers instead narrow through
-        # restrict_union_to_bounded_branches!; enum/const constraints apply to all JSON types.
+        # somewhere in an anyOf covers every branch. Numeric bounds likewise cannot constrain
+        # numeric strings; enum/const constraints apply to all JSON types.
         # Absence is exact on non-strings through project_collision_checks; strings and gated
         # absence still need a report rather than a different interpretation of blankness.
         def report_unexpressed_checks(prop, configs)
-          sources = configs.select { |config| config.validations[:length] || config.validations[:format] || config.validations[:absence] }
+          keys = %i[length format absence] + NUMERIC_BOUND_ENTRIES.keys
+          sources = configs.select { |config| keys.any? { |key| config.validations[key] } }
           return prop if sources.empty?
 
           types = projected_types(prop)
           sources.reduce(prop) do |projected, config|
             applicable_types = nil_allowed?(config) ? types - ["null"] : types
-            Axn::Validation::Base.validator_entries(config.validations).slice(:length, :format, :absence).reduce(projected) do |reported, (key, options)|
+            Axn::Validation::Base.validator_entries(config.validations).slice(*keys).reduce(projected) do |reported, (key, options)|
+              if NUMERIC_BOUND_ENTRIES.key?(key)
+                bounds = Axn::Validation::Base.declared_numeric_bounds(options, ranged: NUMERIC_BOUND_ENTRIES.fetch(key))
+                next reported if bounds.empty?
+              end
               conditional = Axn::Validation::Base.entry_effectively_gated?(options, declaration_gates(config))
               missing = applicable_types.reject do |type|
-                key == :absence ? !conditional && type != "string" : string_check_emitted?(type, key, options)
+                key == :absence ? !conditional && type != "string" : value_check_emitted?(type, key, options)
               end
               next reported if missing.empty?
 
@@ -1795,13 +1816,13 @@ module Axn
           end
         end
 
-        def string_check_emitted?(type, key, options)
+        def value_check_emitted?(type, key, options)
           prop = { type: }
           validations = { key => options }
-          if key == :length
-            apply_size_constraints!(prop, validations)
-          else
-            apply_pattern!(prop, validations, for_output: false)
+          case key
+          when :length then apply_size_constraints!(prop, validations)
+          when :format then apply_pattern!(prop, validations, for_output: false)
+          else apply_numeric_bounds!(prop, validations, nullable: false, for_output: false)
           end
           prop.keys != [:type]
         end

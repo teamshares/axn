@@ -5902,7 +5902,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner).to include(type: "object", minProperties: 1)
-            expect(inner[:allOf]).to include(include(enum: [{ allowed: true }]))
+            validator = JSONSchemer.schema(JSON.parse(JSON.generate(inner)))
+            expect(validator.valid?({ "allowed" => true })).to be(true)
+            expect(validator.valid?({ "other" => true })).to be(false)
             expect(klass.call(payload: { inner: { allowed: true } })).to be_ok
             expect(klass.call(payload: { inner: { other: true } })).not_to be_ok # not in the ancestor's inclusion list
           end
