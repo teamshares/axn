@@ -675,7 +675,7 @@ module Axn
           # (`user`), never a synthesized `user_id`, and neither output validation nor `build_output` ever
           # reads this option. Declaring it here would decorate the field while doing nothing whatsoever —
           # the same defect `_reject_model_transform!` closes for `coerce:`/`preprocess:` on a model field,
-          # on the outbound side instead of a transform (Codex review round 8, PR #269).
+          # on the outbound side instead of a transform.
           if (bag = validations[:model]).is_a?(::Hash) && bag.key?(:id_type)
             raise ArgumentError,
                   "`exposes` does not support model: id_type: on #{fields.map(&:to_s).inspect} — " \
@@ -2505,25 +2505,25 @@ module Axn
         # (PRO-3191, PRO-3387). The block always wins outright — `validations[:shape] = _build_shape(...) if
         # block` replaces the raw Hash unconditionally, never merges with it — so this is the only chance
         # anything ever gets to judge what the author actually wrote there; every check below has already been
-        # found, one Codex round at a time, to have a downstream twin the overwrite makes unreachable:
+        # found, one at a time, to have a downstream twin the overwrite makes unreachable:
         # `_reject_unshaped_shape!`/`_reject_unknown_shape_keys!` normally run from `_snapshot_declared_shape!`,
         # and `_reject_validator_context_scope!`/`_except_on!`/`_strict!` normally run from
-        # `_parse_field_validations` — both stages the overwrite has already happened by the time either
-        # reaches `validations[:shape]`.
+        # `_parse_field_validations` — both stages the overwrite has already happened by the time either reaches
+        # `validations[:shape]`.
         #
-        # `carrier.slice(:shape)` — never the whole `carrier` — is handed to the three shared-option scans:
-        # they read `Validation::Base.validator_entries`, one ENTRY of which is the `:shape` key itself (the
-        # same mechanism that already lets `_reject_validator_context_scope!` catch `on:` written directly
-        # inside a `model:`/`type:`/`of:` bag), so scoping the input to just `:shape` reaches exactly the
-        # shape's own `on:`/`except_on:`/`strict:` and none of this field's other bags — those are judged at
-        # their own, later, canonicalized time, by the very same three calls this method's caller still reaches
-        # through the normal `_parse_field_validations` path. Running the FULL `carrier` here instead would let
-        # this earlier, pre-canonicalization pass decide an ordering question (which of two defects in another
-        # bag is reported first) it has no business deciding.
+        # `carrier.slice(:shape)` — never the whole `carrier` — is handed to the three shared-option scans: they
+        # read `Validation::Base.validator_entries`, one ENTRY of which is the `:shape` key itself (the same
+        # mechanism that already lets `_reject_validator_context_scope!` catch `on:` written directly inside a
+        # `model:`/`type:`/`of:` bag), so scoping the input to just `:shape` reaches exactly the shape's own
+        # `on:`/`except_on:`/`strict:` and none of this field's other bags — those are judged at their own,
+        # later, canonicalized time, by the very same three calls this method's caller still reaches through the
+        # normal `_parse_field_validations` path. Running the FULL `carrier` here instead would let this
+        # earlier, pre-canonicalization pass decide an ordering question (which of two defects in another bag is
+        # reported first) it has no business deciding.
         #
         # `where`/`declaration_where` are two different renderings of the same field, because the two guard
-        # families were never unified and format it differently: `where` is `_reject_unshaped_shape!`'s own
-        # `` `shape:` on :h `` form, `declaration_where` is `_reject_validator_context_scope!`'s own
+        # families were never unified and format it differently: `where` is `_reject_unshaped_shape!`'s own ``
+        # `shape:` on :h `` form, `declaration_where` is `_reject_validator_context_scope!`'s own
         # `fields.map(&:to_s).inspect` form (`["h"]`) — passed separately so each renders through this early
         # call exactly as it would have downstream, and a message pinned against the ordinary (block-free)
         # spelling of the defect does not have to change to also cover this one.
@@ -2561,7 +2561,7 @@ module Axn
           # (then `to_a`) before wrapping it, so a caller-supplied klass defining either decided how it got
           # read here — a `to_ary` returning `[Array]` would wave a genuinely unsupported `type:` through as
           # though it named the container directly, and one that raises would replace this declaration error
-          # with whatever it threw (PRO-3207, Codex review round 4).
+          # with whatever it threw (PRO-3207).
           declared = _declared_type_tokens(declared_klass)
           container = declared.first if declared.size == 1
           # Identity, not `==`: the declared class is the caller's, and one answering `==` for its own
@@ -2801,11 +2801,11 @@ module Axn
         # EVERY falsy `klass:` — not just the `true`/absent spellings that mean "please infer" — as a request
         # to infer: `model: false` and `model: {klass: nil}` fall into the same `||=` as `model: true` and
         # silently become "please infer" too, an accident of `||=` treating `false` and `nil` as
-        # indistinguishable from "not yet set" (PRO-3207, Codex review round 4). That makes the SAME
-        # declaration mean two different things depending on unrelated global state: `model: false` raises
-        # `NameError: uninitialized constant User` when no such constant exists, and silently, successfully
-        # resolves through `User` when one happens to — an author's boolean typo (`false` for `true`) either
-        # blows up or quietly works depending on what else the app happens to define.
+        # indistinguishable from "not yet set" (PRO-3207). That makes the SAME declaration mean two different
+        # things depending on unrelated global state: `model: false` raises `NameError: uninitialized
+        # constant User` when no such constant exists, and silently, successfully resolves through `User`
+        # when one happens to — an author's boolean typo (`false` for `true`) either blows up or quietly
+        # works depending on what else the app happens to define.
         #
         # Never documented as a spelling (`model: true`/`model: TheModelClass`/`model: { klass:, finder: }`
         # are the only ones `docs/reference/class.md` and `AGENTS-consuming.md` show), so nothing legitimate
@@ -2814,8 +2814,8 @@ module Axn
         # separate guard rather than folded into `_reject_unsupported_model_klass!` below (that one runs
         # AFTER sugar, once the erasure has already happened). Keyed on `carries_key?`, not mere nil-ness, so
         # an absent `klass:` — the legitimate `model: { finder: :find_by_slug }`, which infers the class and
-        # only overrides the finder — is untouched; only a `klass:` the author WROTE, and wrote as `false`
-        # or `nil`, is refused. `true` is excluded on the same terms: it is the one falsy-adjacent value that
+        # only overrides the finder — is untouched; only a `klass:` the author WROTE, and wrote as `false` or
+        # `nil`, is refused. `true` is excluded on the same terms: it is the one falsy-adjacent value that
         # unambiguously means "please infer", checked by identity (`.equal?`) so a caller's own `==` never
         # decides whether its object reads as `true`.
         def _reject_falsy_model_klass!(validations)
@@ -2923,11 +2923,11 @@ module Axn
         # union through) and never a Class the emitter has no JSON Schema spelling for.
         #
         # Reads `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS`, not a copy of that set here or a read from
-        # `Internal::Reflection::Schema` (Codex review round 3, PR #269): `Internal::Reflection::X`
-        # derives a JSON view of a contract and only that, so a declaration-time guard depending upward
-        # on it would be a layer inversion (AGENTS.md's namespace doctrine). `FieldConfig` is the shared,
-        # value-level home both this guard and the reflection layer's own AR-inference map
-        # (`Reflection::Schema::AR_PRIMARY_KEY_TYPE_TOKENS`) read the SAME vocabulary from, so a declared
+        # `Internal::Reflection::Schema`: `Internal::Reflection::X` derives a JSON view of a contract and
+        # only that, so a declaration-time guard depending upward on it would be a layer inversion
+        # (AGENTS.md's namespace doctrine). `FieldConfig` is the shared, value-level home both this guard
+        # and the reflection layer's own AR-inference map
+        # (`Reflection::Schema::ModelId::AR_PRIMARY_KEY_TYPE_TOKENS`) read the SAME vocabulary from, so a declared
         # `id_type:` and an inferred one can never mean two different things.
         def _reject_unsupported_model_id_type!(validations)
           return unless validations.key?(:model)

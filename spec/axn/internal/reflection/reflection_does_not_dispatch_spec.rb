@@ -90,3 +90,142 @@ RSpec.describe "reflection never dispatches to a declared type token" do
     end
   end
 end
+
+# The same derivation for an authored `description:`. A description is PROSE — the emitter reads its bytes
+# to write them into a document and has no legitimate reason to ask it anything — so unlike a `default:` or
+# an `inclusion:` member (whose blankness the emitter must genuinely consult) the tolerated set here is
+# EMPTY, and the assertion needs no exclusion list that could hide a new site.
+#
+# It earns its place on the residue paths: a description is the String a residue clause is appended to, so
+# every stand-down, projection and merge reads one while composing the report — and five separate reads of
+# it (`to_s`, `==`, two `nil?`, and the `true`/`false` test beside it) each took `input_schema` down with
+# the caller's own exception before this existed.
+module DescriptionDispatchProbe
+  WATCHED = %i[
+    nil? == != eql? hash to_s to_str inspect to_json dup clone frozen? freeze length size empty?
+    encoding valid_encoding? ascii_only? encode each bytes chars <=> =~ + * % respond_to?
+  ].freeze
+
+  def self.instrumented(log)
+    Class.new(::String) do
+      WATCHED.each do |name|
+        define_method(name) do |*args, &blk|
+          log << name
+          super(*args, &blk)
+        end
+      end
+    end
+  end
+
+  # Each shape puts the prose somewhere a residue path reads it. The transforming pair covers the stand-down
+  # and the description carried through it; the gated pair covers the projection; the last is the ordinary
+  # no-residue node, which must be just as quiet.
+  SHAPES = {
+    "a transforming stand-down" => lambda { |prose|
+      Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, description: prose, preprocess: ->(v) { v }
+        def call; end
+      end
+    },
+    "a transforming stand-down with prose on both sides" => lambda { |prose|
+      Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String, description: prose }
+        expects :inner, on: :payload, type: String, optional: true, description: prose, preprocess: ->(v) { v }
+        def call; end
+      end
+    },
+    "a gated projection" => lambda { |prose|
+      Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, description: prose,
+                        length: { minimum: 5, if: -> { false } }
+        def call; end
+      end
+    },
+    "an ordinary node carrying no residue" => lambda { |prose|
+      Class.new do
+        include Axn
+        expects :f, type: String, optional: true, description: prose
+        def call; end
+      end
+    },
+  }.freeze
+end
+
+RSpec.describe "reflection never dispatches to an authored description:" do
+  DescriptionDispatchProbe::SHAPES.each do |label, build|
+    it "runs none of the description's own code while reflecting #{label}" do
+      log = []
+      prose = DescriptionDispatchProbe.instrumented(log).new("authored prose")
+      action = build.call(prose)
+      log.clear
+
+      action.input_schema
+
+      expect(log.uniq).to be_empty
+    end
+  end
+end
+
+# The same derivation for an authored `axn_name`. A name is caller-supplied text on exactly the paths the
+# description axis above covers — both warnings that report a gap read one while composing their message — so
+# it is the second slot on the reporting path where the caller's own code could run, and it was missed when
+# that axis was written because the audit instrumented only the description.
+#
+# Unlike a description, the tolerated set here CANNOT be empty: `resolved_axn_name` is `axn_name.presence ||
+# ...`, and `presence` asks the name whether it is blank. That read is the contract of resolving a name at
+# all — every caller of `resolved_axn_name` pays it, on paths far outside reflection — so it is DERIVED here
+# rather than listed: the baseline is whatever resolving the name costs on its own, and the assertion is that
+# reporting adds nothing on top of it. A hand-written exclusion list would have to be widened by anyone who
+# added a site, which is the property this file exists to avoid.
+#
+# The probe is the description's, reused: the same String subclass, in a different slot.
+module AxnNameDispatchProbe
+  # Each shape drives one of the two warnings that name the action. Without a warning there is no read of the
+  # name at all and the example would pass vacuously, which is why each asserts the warning actually fired.
+  SHAPES = {
+    "the inexpressible-constraint warning" => lambda { |name|
+      Class.new do
+        include Axn
+        axn_name name
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, preprocess: ->(v) { v }
+        def call; end
+      end
+    },
+    "the dropped-deep-subfield warning" => lambda { |name|
+      Class.new do
+        include Axn
+        axn_name name
+        expects :user, model: { klass: Struct.new(:id, :profile), finder: :find }
+        expects :field_under_a_model, on: "user.profile", type: String
+        def call; end
+      end
+    },
+  }.freeze
+end
+
+RSpec.describe "reflection never dispatches to an authored axn_name" do
+  AxnNameDispatchProbe::SHAPES.each do |label, build|
+    it "adds no read of the name beyond resolving it, while composing #{label}" do
+      allow(Axn.config.logger).to receive(:warn)
+      log = []
+      name = DescriptionDispatchProbe.instrumented(log).new("HostileName")
+      action = build.call(name)
+
+      log.clear
+      action.resolved_axn_name
+      baseline = log.uniq
+
+      log.clear
+      action.input_schema
+
+      expect(Axn.config.logger).to have_received(:warn).at_least(:once)
+      expect(log.uniq - baseline).to be_empty
+    end
+  end
+end

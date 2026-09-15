@@ -513,6 +513,77 @@ RSpec.describe "Axn class-level schema reflection" do
       3.times { deep_klass.input_schema }
     end
 
+    it "warns once without writing to a frozen action class" do
+      deep_klass.freeze
+      expect(Axn.config.logger).to receive(:warn).with(/input_schema omits deep subfield/).once
+      3.times { expect(deep_klass.input_schema).to include(:properties) }
+    end
+
+    it "keeps residue diagnostics harmless and deduplicated for a frozen action class" do
+      klass = build_axn do
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: Integer, preprocess: :to_i.to_proc
+      end
+      # Prime the legitimate schema cache without emitting diagnostics, isolating the memo failure.
+      Axn::Internal::Reflection::Schema.build_input_for(klass)
+      klass.freeze
+      expect(Axn.config.logger).to receive(:warn).with(/cannot state every constraint/).once
+      3.times { expect(klass.input_schema).to include(:properties) }
+    end
+
+    it "keeps frozen warning deduplication through garbage collection", :slow do
+      deep_klass.freeze
+      expect(Axn.config.logger).to receive(:warn).with(/input_schema omits deep subfield/).once
+      deep_klass.input_schema
+      GC.start
+      deep_klass.input_schema
+    end
+
+    it "still returns a schema if preparing a diagnostic fails" do
+      deep_klass.define_singleton_method(:resolved_axn_name) { raise "name backend unavailable" }
+      expect(deep_klass.input_schema).to include(:properties)
+    end
+
+    # A diagnostic may not decide whether reflection SUCCEEDS. A configured logger that raises — a closed
+    # stream, a backend that has gone away — otherwise propagates out of `input_schema` and out of
+    # `Axn::Tools.validate_contracts!`, failing a projection that was built correctly over the REPORTING of a
+    # gap rather than the gap itself. Both of the two log lines `input_schema` can emit are covered, because
+    # a guard on one of a matched pair is how the last one of these was missed.
+    it "still returns the schema when the logger itself raises" do
+      allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
+
+      expect(deep_klass.input_schema).to include(:properties)
+    end
+
+    # The residue memo is axn's own state kept on a CALLER-SUPPLIED class, so reading it must not dispatch a
+    # method the class can define. `instance_variable_get`/`_set` are ordinary overridable Kernel methods, and
+    # a raising override took `input_schema` down before the best_effort guard was even reached.
+    it "still returns the schema when the action overrides instance_variable_get/set" do
+      hostile = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, preprocess: ->(v) { v }
+        def call; end
+
+        def self.instance_variable_get(_name) = raise("hostile instance_variable_get ran")
+        def self.instance_variable_set(_name, _value) = raise("hostile instance_variable_set ran")
+      end
+
+      expect(hostile.input_schema).to include(:properties)
+    end
+
+    it "still returns the schema when the logger raises on the inexpressible-constraint warning" do
+      allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
+      residue_klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, preprocess: ->(v) { v }
+        def call; end
+      end
+
+      expect(residue_klass.input_schema).to include(:properties)
+    end
+
     it "does not warn for a representable deep chain (object-shaped parents)" do
       representable = Class.new do
         include Axn

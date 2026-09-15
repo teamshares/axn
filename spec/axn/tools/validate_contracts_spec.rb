@@ -42,6 +42,12 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
   end
 
+  it "still rejects an invalid frozen contract" do
+    Axn::Tools.register_adapter(:mcp)
+    colliding_tool.freeze
+    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render/)
+  end
+
   # THE case that matters most, and the one the guarantee used to miss: a tool subclassing its adapter's base
   # class, which is the ordinary shape of one (`Axn::MCP::Tool < ::MCP::Tool`). That base already defines
   # `input_schema`/`output_schema`, so axn deliberately does not install its own (see Core::SchemaReflection) —
@@ -644,6 +650,112 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
       Axn::Tools.validate_contracts!
 
       expect(Axn::Extensions::Serialization.render(klass.call, reject_opaque: true)).to eq("thing" => { "a" => 1 })
+    end
+  end
+
+  # Setup validation builds a tool's inbound projection through PropertyNames rather than through
+  # `input_schema`, precisely because an adapter base may own that name — which also means axn's reflection
+  # READER, and the warning it emits, was never installed on the class. So whatever the projection could not
+  # state has to be reported from here, or it is reported nowhere for exactly the tools a model reads.
+  describe "a contract the projection cannot fully state" do
+    def transforming_tool(name = "ToolContractsSpec::Transforming")
+      stub_const(name, Class.new do
+        include Axn
+        tool(:mcp)
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+        def call; end
+      end)
+    end
+
+    it "warns naming the position and what still applies" do
+      Axn::Tools.register_adapter(:mcp)
+      transforming_tool
+      expect(Axn.config.logger).to receive(:warn).at_least(:once) do |message|
+        expect(message).to include("ToolContractsSpec::Transforming input_schema cannot state every constraint")
+        expect(message).to include("payload.inner")
+        expect(message).to include('{"type":"integer"}')
+      end
+
+      Axn::Tools.validate_contracts!
+    end
+
+    # An engine runs `validate_contracts!` from `after_initialize` AND every `to_prepare`, and an adapter
+    # may reach the reader afterwards — so the guard has to live where both callers share it (the class),
+    # not on either one, or the same gap is announced again on every boot and reload.
+    it "warns once per class across repeated setup passes and a later reader call" do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool
+      warnings = 0
+      allow(Axn.config.logger).to receive(:warn) do |message|
+        warnings += 1 if message.include?("cannot state every constraint")
+      end
+
+      Axn::Tools.validate_contracts!
+      Axn::Tools.validate_contracts!
+      tool.input_schema
+
+      expect(warnings).to eq(1)
+    end
+
+    it "validates frozen tools and shares their warning memo with reflection" do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool.freeze
+      expect(Axn.config.logger).to receive(:warn).with(/cannot state every constraint/).once
+      2.times { expect { Axn::Tools.validate_contracts! }.not_to raise_error }
+      expect(tool.input_schema).to include(:properties)
+    end
+
+    it "keeps frozen residue warning deduplication through garbage collection", :slow do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool.freeze
+      expect(Axn.config.logger).to receive(:warn).with(/cannot state every constraint/).once
+      Axn::Tools.validate_contracts!
+      GC.start
+      tool.input_schema
+    end
+
+    # A name is caller-supplied text and may be valid non-UTF-8 (an ISO-8859-1 String holding `é`).
+    # Interpolated raw into this UTF-8 message it raised Encoding::CompatibilityError before the logger was
+    # reached — so reflecting a schema blew up over the name of the very action the warning names.
+    it "renders a non-UTF-8 axn name rather than raising while reporting it" do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool
+      tool.define_singleton_method(:resolved_axn_name) { "café".dup.force_encoding("ISO-8859-1") }
+
+      expect { Axn::Tools.validate_contracts! }.not_to raise_error
+    end
+
+    # The flip side of deduplicating: a boolean guard silenced the class permanently, so an action
+    # reopened to add ANOTHER collision — the ordinary shape of a reload, and of a concern included after
+    # the first reflection — got the new residue in its schema and no warning about it ever. Keyed on what
+    # was warned rather than on whether anything was.
+    it "still warns when a later declaration adds a collision the first read never saw" do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool
+      warnings = 0
+      allow(Axn.config.logger).to receive(:warn) do |message|
+        warnings += 1 if message.include?("cannot state every constraint")
+      end
+
+      tool.input_schema
+      expect(warnings).to eq(1)
+
+      tool.class_eval do
+        expects(:other, type: Hash) { field :x, type: String }
+        expects :x, on: :other, type: { klass: Integer, coerce: true }
+      end
+      tool.input_schema
+
+      expect(warnings).to eq(2)
+    end
+
+    it "says nothing for a tool whose contract it can state in full" do
+      Axn::Tools.register_adapter(:mcp)
+      valid_tool
+      expect(Axn.config.logger).not_to receive(:warn)
+
+      Axn::Tools.validate_contracts!
     end
   end
 

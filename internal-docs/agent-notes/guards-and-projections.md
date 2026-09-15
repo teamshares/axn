@@ -93,6 +93,64 @@ Three mechanics that made the single test possible, each an instance of a rule a
 
 The stand-downs split along whether the emitted NODE survives, not whether the runtime does. A nil tolerance rescues, because the tolerated nil is a passing value and the node stays satisfiable through its null branch. An `if:`/`unless:` gate does not, because reflection is static-maximal and emits the gated bound anyway — so the runtime is satisfiable while the document is not, which is the original defect wearing a gate.
 
+## …and at a COLLISION, static-maximal is what produces that defect, so it stops applying there
+
+PRO-3405 reached the same wall from the emitter's side and had to move the doctrine rather than the projection. Where TWO declarations bind one wire position and one is conditional, emitting the gated bound anyway is not merely strict — it is false about the position: a gated `type: String` member beside an ungated `type: Hash` node describes a value nothing can be, while the runtime accepts a Hash on every call the condition closes.
+
+Six review rounds tried to keep static-maximal there and stand the gated side down only where the conjunction could be PROVEN empty. Every one of those provers was incomplete in a new way the next round found — type sets, then literal sets, then literals against bounds, then against a lone pattern, then against `format` — and the round that made the prover broadest introduced the opposite defect: marking a side gated because SOME entry was, and so dropping constraints that run on every call, which is looseness rather than vacuity. Three rules came out of it:
+
+- **Conjunction is intersection, so it can never breach the directional invariant; every relaxation can.** A stand-down, an ungated projection and an `anyOf` all ADD values, which is why each needs measuring in the loose direction and an unconditional conjunction does not.
+- **What replaced the prover is a projection, not a better prover.** Each side is re-emitted from the checks that run on every call (`project_ungated`), which is a statement true of every call and needs no satisfiability reasoning at all. There is no prover left to be incomplete.
+- **A projection loses one thing that is NOT conditional, and it is an EMISSION gap again.** `minLength`/`minItems`/`minProperties` are derived from the type, so stripping a conditional `type:` also strips the JSON spelling of an unconditional `presence:`. Restated as a value-level blank floor — the same lesson as the `absence:` bound above, reached from the other direction.
+
+The audit lesson is sharper than any of them: the exclusion added in the round that introduced the stand-down skipped EVERY residue-bearing row from the inbound walk, and a conditional stand-down is the one thing there that relaxes a document. The whole class was laundered out of the differential test by the same commit that created it, which is why six rounds found these by reading. An exclusion must name the kind it excludes, never "anything that reported something".
+
+## Preserve validator context and value phase independently
+
+Removing a type claim does not remove the context other validators need to emit. A typeless
+rebuild silently loses numeric `comparison:` bounds; special-casing `numericality:` only fixes
+one producer. `type_agnostic_property` instead runs the normal builder over the complete JSON
+domain. Sized positions additionally use the existing sizing emitter per type, because an
+`absence:` ceiling has different meanings for strings and containers. Keep validator selection
+out of this projection: new producers must enter through the normal builder.
+
+Whether a check runs (its gate) and which value it judges (before or after transformation) are
+independent. Resolve the position's gates, complete its descendant subtree, then decide whether
+that projection constrains the wire value or belongs in a post-transform report. Skipping gate
+resolution to preserve descendants reports conditional checks as unconditional; rebuilding after
+attaching descendants loses those descendants. The completion callback establishes that order.
+
+Test both products: numeric producers/operators derived from the emitter, and reported
+post-transform constraints evaluated with gates open and closed. Compare with real runtime
+acceptance, and include accepting controls: removing a bound and rejecting every value are both
+projection failures, in opposite directions.
+
+A constraint can survive in the declaration while having no keyword on a surviving type:
+ActiveModel's `length:` measures `1.to_s.length`, and `format:` matches `1.to_s`, but JSON Schema
+has neither an integer size nor a pattern on numbers. Collision reporting therefore asks each
+check's existing emitter about the finished type assertions and reports missing checks with
+their gates and value phase. It does not invent a numeric interval from a string length. The type
+walk is deliberately an over-approximation: ignoring enums and value bounds may leave a redundant,
+type-scoped warning, but must never loosen the schema or reject a declaration.
+
+A standalone approximation cannot be assumed safe under intersection. Narrowing a numeric union
+to numbers is stricter on its own, but conjoining it with a String declaration erases every
+passing numeric string. Collision projections build each type branch independently, both for
+synthetic type domains and explicit numeric unions, and report bounds the surviving branch
+cannot express. The same rule keeps nullable equality enums local to their numeric branch.
+
+Blankness must remain a value-level constraint when type projection changes its domain.
+`absence:` is not equivalent to size zero: it admits `false` and `nil`, rejects every number,
+and judges strings by Ruby's whitespace rules. Collision projection conjoins the complete
+non-string blank set plus a string branch, then reports the string-only remainder. This keeps
+size keywords from becoming the sole representation of an unconditional absence check, and
+keeps conditional absence in the reporting path instead of enforcing it on every call.
+
+Turning a subtree into report text is a finalization boundary. Its descendant residue carriers
+must become readable descriptions first, while the schema vocabulary still distinguishes nodes
+from caller literals. The finalizer's copy mode detaches those nodes so mentioning a subtree
+cannot consume reports another projection still needs.
+
 ## A biased-stricter projection is not evidence about the contract
 
 `absence:` rejects every non-blank value. On an `Array` that means size 0 exactly, so a `maxItems: 0` is its faithful projection. On a `String` it does not: ActiveSupport gives String its own `blank?`, under which `"  "` is blank and two characters long. Emitting `maxLength: 0` there is still *permissible* — it is biased stricter, the documented direction for reflection to err in — and PRO-3220 first shipped it that way.

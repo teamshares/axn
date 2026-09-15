@@ -154,7 +154,7 @@ module Axn
             finite_number!(value, source: value, path:)
           when Symbol
             # JSON has no symbol type — render deterministically as its String form, matching
-            # the schema's `type: Symbol` => "string" mapping (Axn::Internal::Reflection::Schema::TYPE_MAP),
+            # the schema's `type: Symbol` => "string" mapping (Axn::Internal::Reflection::Schema::TypeTokens::TYPE_MAP),
             # rather than relying on the generic `to_s` fallback below (which happens to agree).
             encodable_string!(value.to_s, source: value, path:)
           when Numeric
@@ -195,7 +195,7 @@ module Axn
             end
           when Time, DateTime, Date
             # Rendered as RFC3339/ISO-8601 regardless of Rails, matching the schema's
-            # `date`/`date-time` `format:` (see Reflection::Schema::FORMAT_MAP) — both inside and
+            # `date`/`date-time` `format:` (see Reflection::Schema::TypeTokens::FORMAT_MAP) — both inside and
             # outside Rails, so `serialize_exposed` output validates against the reflected schema.
             encodable_string!(value.iso8601, source: value, path:)
           else

@@ -2,6 +2,7 @@
 
 require "axn/core/validation/fields"
 require "axn/internal/coercion"
+require "axn/internal/native_methods"
 require "axn/internal/resolved_subfields"
 require "axn/internal/reflection/schema"
 require "axn/core/contract/subfield_contradictions"
@@ -585,7 +586,8 @@ module Axn
           return cached.value if cached && cached.fields.equal?(fields) && cached.subfields.equal?(subfields)
 
           value = Axn::Internal::ResolvedSubfields.build(fields, subfields)
-          @_axn_resolved_subfields = ResolvedSubfieldsCacheEntry.new(fields:, subfields:, value:)
+          # A frozen action can still be reflected; caching is optional, resolution is not.
+          @_axn_resolved_subfields = ResolvedSubfieldsCacheEntry.new(fields:, subfields:, value:) unless Axn::Internal::NativeMethods.frozen?(self)
           value
         end
 

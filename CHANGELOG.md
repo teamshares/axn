@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+* [INTERNAL] Adapter guidance covers conditional collision reports, post-transform checks, and checks without an equivalent JSON Schema keyword. Preserve descriptions inside schema branches; the report may include validator options as well as schema fragments.
+
+* [BUGFIX] Reflection and tool-contract validation work on frozen action classes without requiring cache warmup. Lazy resolution and validation still run when their results cannot be cached. Both schema-warning paths guard diagnostic preparation and bookkeeping as well as logging; frozen classes use weak-key warning memos so diagnostics remain deduplicated without retaining unloaded classes.
+
+* [BUGFIX] Collision projections emit type branches independently, preserving numeric strings when a numeric bound meets a String declaration through a gated type, an unknown type, or an explicit union. Numeric bounds remain enforced on numeric branches; checks with no JSON Schema spelling on other surviving branches are reported. Nullable equality bounds no longer constrain unrelated branches through a shared enum.
+
+* [BUGFIX] Schema collisions conjoin overlapping declarations without losing their constraints. Conditional checks are reported separately from unconditional checks; transformed subtrees retain their own descendants and readable nested reports. Unknown or conditional types retain numeric, size, pattern, and blankness constraints. Unconditional `absence:` preserves every non-string JSON blank (`false`, `null`, empty arrays and objects); string blankness keeps Ruby's whitespace semantics and is reported as a runtime-only check. Other unexpressible checks are reported with their gate and transformation context. Schema-warning state uses reserved framework ivars.
+
 ## 0.1.0-alpha.6.1
 
 ### Added
