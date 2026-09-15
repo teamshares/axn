@@ -3,6 +3,7 @@
 # Both warnings below go through Extensions.best_effort, so this component needs it whether or not the
 # umbrella entrypoint loaded it.
 require "axn/extensions"
+require "axn/internal/native_methods"
 require "axn/internal/reflection"
 require "axn/internal/rendering"
 
@@ -77,11 +78,16 @@ module Axn
           rendered = path.map { |segment| Axn::Internal::Reflection::PropertyNames.renderable_label(segment) }.join(".")
           "#{rendered}: #{residue.summary}"
         end
-        warned = klass.instance_variable_get(:@_axn_residue_warnings) || []
+        # The memo is axn's own framework state living on a CALLER-SUPPLIED class, so it is read and written
+        # through the bound `Kernel` pair rather than dispatched: `instance_variable_get`/`_set` are ordinary
+        # overridable methods, and an action that redefines one would otherwise decide what this memo reads
+        # back as — or, on the write side, keep it from being stored at all and turn one warning into one per
+        # reflection. A raising override took `input_schema` down before the `best_effort` below was reached.
+        warned = Axn::Internal::NativeMethods.ivar_get(klass, :@_axn_residue_warnings) || []
         gaps = all_gaps - warned
         return if gaps.empty?
 
-        klass.instance_variable_set(:@_axn_residue_warnings, warned + gaps)
+        Axn::Internal::NativeMethods.ivar_set(klass, :@_axn_residue_warnings, warned + gaps)
         # A diagnostic may not decide whether reflection SUCCEEDS. A configured logger that raises — a closed
         # stream, a backend that is gone — otherwise propagates out of `input_schema` and out of
         # `Axn::Tools.validate_contracts!`, failing a projection that was built correctly, over the reporting

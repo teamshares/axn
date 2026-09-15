@@ -524,6 +524,23 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(deep_klass.input_schema).to include(:properties)
     end
 
+    # The residue memo is axn's own state kept on a CALLER-SUPPLIED class, so reading it must not dispatch a
+    # method the class can define. `instance_variable_get`/`_set` are ordinary overridable Kernel methods, and
+    # a raising override took `input_schema` down before the best_effort guard was even reached.
+    it "still returns the schema when the action overrides instance_variable_get/set" do
+      hostile = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, preprocess: ->(v) { v }
+        def call; end
+
+        def self.instance_variable_get(_name) = raise("hostile instance_variable_get ran")
+        def self.instance_variable_set(_name, _value) = raise("hostile instance_variable_set ran")
+      end
+
+      expect(hostile.input_schema).to include(:properties)
+    end
+
     it "still returns the schema when the logger raises on the inexpressible-constraint warning" do
       allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
       residue_klass = Class.new do
