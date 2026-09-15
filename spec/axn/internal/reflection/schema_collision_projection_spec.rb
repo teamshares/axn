@@ -149,6 +149,53 @@ RSpec.describe "collision projection ownership" do
     expect(action.call(**input('{"a":"x"}'))).to be_ok
   end
 
+  it "reports a length check that the surviving integer cannot express" do
+    action = collision({ type: Object, length: { minimum: 2 } }, { type: { klass: Integer, coerce: false } })
+    prop = action.input_schema.dig(:properties, :payload, :properties, :inner)
+    expect(checker(action).valid?(input(1))).to be(true)
+    expect(action.call(**input(1))).not_to be_ok
+    expect(action.call(**input(12))).to be_ok
+    expect(prop[:description]).to include("Additional constraints apply", "length", '"minimum":2')
+  end
+
+  it "reports a format check on a surviving non-string value" do
+    action = collision({ type: Object, format: { with: /\A\d{2}\z/ } }, { type: { klass: Integer, coerce: false } })
+    prop = action.input_schema.dig(:properties, :payload, :properties, :inner)
+    expect(checker(action).valid?(input(1))).to be(true)
+    expect(action.call(**input(1))).not_to be_ok
+    expect(action.call(**input(12))).to be_ok
+    expect(prop[:description]).to include("Additional constraints apply", "format")
+  end
+
+  it "finalizes nested reports before mentioning a transformed subtree" do
+    action = build_axn do
+      expects(:payload, type: Hash) { field :inner, type: String }
+      expects(:inner, on: :payload, type: Hash, preprocess: ->(value) { JSON.parse(value) }) { field :a, type: String }
+      expects :a, on: "payload.inner", type: Integer, preprocess: :to_i.to_proc
+      def call = nil
+    end
+    schema = action.input_schema
+    description = schema.dig(:properties, :payload, :properties, :inner, :description)
+    expect(description).not_to include("__axn_residues", "Schema::Residue")
+    fragment = JSON.parse(description.split(" (", 2).last.delete_suffix(")."))
+    expect(fragment.dig("properties", "a", "description")).to include("Additional constraints apply", "transformed")
+    expect(action.input_schema).to eq(schema)
+  end
+
+  it "reports unsized conditional checks on the transformed value too" do
+    opened = false
+    action = collision({ type: String }, { type: Integer, preprocess: :to_i.to_proc, length: { minimum: 2, if: -> { opened } } })
+    residues = []
+    Axn::Internal::Reflection::Schema.build_input_for(action, residues:)
+    report = residues.map(&:last).find { |r| r.summary.include?("JSON Schema cannot fully express this check") }
+    expect(report&.kind).to eq(:conditional)
+    expect(report.summary).to include("after transformation", "length")
+    expect(action.call(**input("1"))).to be_ok
+    opened = true
+    expect(action.call(**input("1"))).not_to be_ok
+    expect(action.call(**input("12"))).to be_ok
+  end
+
   # Exercise the two routes into conjunction: an explicit subfield and a same-named member
   # reached recursively while merging object properties. Test both operand orders.
   def each_collision_route(member, node, &block)
@@ -190,6 +237,92 @@ RSpec.describe "collision projection ownership" do
   def reported_fragment(residue)
     json = residue.summary.split(" (", 2).last
     json.start_with?("{") ? JSON.parse(json.delete_suffix(")")) : {}
+  end
+
+  it "finalizes only schema nodes in a mentioned copy, retaining the original reports and literals" do
+    emitter = Axn::Internal::Reflection::Schema
+    residue = emitter::Residue.new(summary: "a nested check", kind: :conditional)
+    literal = { __axn_residues: ["authored data"] }
+    child = { type: "string", default: literal, emitter::RESIDUE_KEY => [residue] }
+    tree = { properties: { member: child }, items: child, allOf: [child] }
+
+    rendered = JSON.parse(emitter.render_constraint(tree))
+    [rendered.dig("properties", "member"), rendered["items"], rendered["allOf"].first].each do |node|
+      expect(node["description"]).to include("a nested check")
+      expect(node).not_to have_key("__axn_residues")
+      expect(node["default"]).to eq("__axn_residues" => ["authored data"])
+    end
+    expect(child[emitter::RESIDUE_KEY]).to eq([residue])
+    expect(child).not_to have_key(:description)
+    expect(child[:default]).to equal(literal)
+  end
+
+  context "lengths without a JSON size", :slow do
+    [{ minimum: 2 }, { maximum: 2 }, { is: 2 }, { in: 2..3 }].each do |length|
+      [Integer, Float, :boolean, [String, Integer]].each do |type|
+        %i[unknown gated_type gated_length].each do |origin|
+          it "reports #{length} on #{type} from #{origin} across collision routes" do
+            member = { type: Object, length:, allow_nil: true }
+            member[:type] = { klass: String, if: -> { false } } if origin == :gated_type
+            member[:length] = length.merge(if: -> { true }) if origin == :gated_length
+            each_collision_route(member, { type:, allow_nil: true }) do |action, depth|
+              residues = []
+              Axn::Internal::Reflection::Schema.build_input_for(action, residues:)
+              reports = residues.map(&:last).select { |r| r.summary.include?("JSON Schema cannot fully express this check") }
+              expect(reports).not_to be_empty
+              expect(reports.map(&:kind)).to all(eq(origin == :gated_length ? :conditional : :inherent))
+              expect(reports.map(&:summary).join).to include("length")
+              values = case type
+                       when :boolean then [true, false]
+                       when Array then [1, 12, 123, "a", "ab"]
+                       else [1, 12, 123, 1234]
+                       end
+              values = values.map(&:to_f) if type == Float
+              emitted = checker(action)
+              (values + [nil]).each do |value|
+                data = nested_input(value, depth)
+                accepted = emitted.valid?(data)
+                passed = action.call(**data).ok?
+                expect(reports).not_to be_empty if accepted && !passed
+                expect(passed).to be(true) if value.nil?
+              end
+            end
+          end
+        end
+      end
+    end
+
+    [String, Array, Hash].each do |type|
+      it "does not report an unsized-value gap after conjunction narrows to #{type}" do
+        each_collision_route({ type: Object, length: { minimum: 2 }, allow_nil: true }, { type:, allow_nil: true }) do |action, _depth|
+          expect(JSON.generate(action.input_schema)).not_to include("JSON Schema cannot fully express this check")
+        end
+      end
+    end
+  end
+
+  context "patterns outside string positions", :slow do
+    [String, Integer, Array, Hash].each do |type|
+      %i[unknown gated_type gated_format].each do |origin|
+        it "reports a pattern on #{type} from #{origin} only where its emitter cannot enforce it" do
+          member = { type: Object, format: { with: /\A\d{2}\z/ }, allow_nil: true }
+          member[:type] = { klass: String, if: -> { false } } if origin == :gated_type
+          member[:format] = member[:format].merge(if: -> { true }) if origin == :gated_format
+          each_collision_route(member, { type:, allow_nil: true }) do |action, _depth|
+            residues = []
+            Axn::Internal::Reflection::Schema.build_input_for(action, residues:)
+            reports = residues.map(&:last).select { |r| r.summary.include?("JSON Schema cannot fully express this check") }
+            if type == String
+              expect(reports).to be_empty
+            else
+              expect(reports).not_to be_empty
+              expect(reports.map(&:kind)).to all(eq(origin == :gated_format ? :conditional : :inherent))
+              expect(reports.map(&:summary).join).to include("format")
+            end
+          end
+        end
+      end
+    end
   end
 
   context "gate and transform composition", :slow do

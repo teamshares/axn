@@ -125,6 +125,19 @@ post-transform constraints evaluated with gates open and closed. Compare with re
 acceptance, and include accepting controls: removing a bound and rejecting every value are both
 projection failures, in opposite directions.
 
+A constraint can survive in the declaration while having no keyword on a surviving type:
+ActiveModel's `length:` measures `1.to_s.length`, and `format:` matches `1.to_s`, but JSON Schema
+has neither an integer size nor a pattern on numbers. Collision reporting therefore asks each
+check's existing emitter about the finished type assertions and reports missing checks with
+their gates and value phase. It does not invent a numeric interval from a string length. The type
+walk is deliberately an over-approximation: ignoring enums and value bounds may leave a redundant,
+type-scoped warning, but must never loosen the schema or reject a declaration.
+
+Turning a subtree into report text is a finalization boundary. Its descendant residue carriers
+must become readable descriptions first, while the schema vocabulary still distinguishes nodes
+from caller literals. The finalizer's copy mode detaches those nodes so mentioning a subtree
+cannot consume reports another projection still needs.
+
 ## A biased-stricter projection is not evidence about the contract
 
 `absence:` rejects every non-blank value. On an `Array` that means size 0 exactly, so a `maxItems: 0` is its faithful projection. On a `String` it does not: ActiveSupport gives String its own `blank?`, under which `"  "` is blank and two characters long. Emitting `maxLength: 0` there is still *permissible* — it is biased stricter, the documented direction for reflection to err in — and PRO-3220 first shipped it that way.

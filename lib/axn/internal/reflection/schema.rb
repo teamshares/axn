@@ -193,11 +193,13 @@ module Axn
         # A FROZEN node is skipped whole: the emitter hands out shared frozen constants for the fixed
         # shapes (NULL_BRANCH, EMPTY_ENUM) and for the witnesses a consumer must not be able to mutate
         # into another action's schema, and none of them can carry a residue — so descending into one
-        # could only ever raise.
-        def finalize_residues!(schema, path: [], collected: [])
+        # could only ever raise. With copy: true, detach only schema nodes and their child maps/lists;
+        # default/enum/const literals remain data and are neither traversed nor mutated.
+        def finalize_residues!(schema, path: [], collected: [], copy: false)
           return [schema, collected] unless schema.is_a?(::Hash)
           return [schema, collected] if schema.frozen?
 
+          schema = schema.dup if copy
           residues = schema.delete(RESIDUE_KEY)
           if residues&.any?
             residues.each { |r| collected << [path.dup, r] }
@@ -222,16 +224,20 @@ module Axn
             # reflection may not dispatch on one (a `to_s` that raises took the whole reflection down
             # once already, and one that counts its calls sees this walk as a second ask). Whoever
             # reports a residue renders the path through PropertyNames' own escaping labeler.
-            node.each { |name, sub| finalize_residues!(sub, path: path + [name], collected:) }
+            node = node.dup if copy
+            node.each { |name, sub| node[name] = finalize_residues!(sub, path: path + [name], collected:, copy:).first }
+            schema[key] = node
           end
 
-          SUBSCHEMA_NODES.each { |key| finalize_residues!(schema[key], path:, collected:) }
+          SUBSCHEMA_NODES.each do |key|
+            schema[key] = finalize_residues!(schema[key], path:, collected:, copy:).first if schema.key?(key)
+          end
 
           SUBSCHEMA_LISTS.each do |key|
             node = schema[key]
             next unless node.is_a?(::Array)
 
-            node.each { |sub| finalize_residues!(sub, path:, collected:) }
+            schema[key] = node.map { |sub| finalize_residues!(sub, path:, collected:, copy:).first }
           end
 
           [schema, collected]
@@ -1623,7 +1629,9 @@ module Axn
         # contradict each other, so neither is stripped.
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [], &complete_own)
           sides, residues = gate_resolved_sides([[member_prop, member_configs], [own_prop, own_configs, complete_own]])
-          prop, carried = left_of(sides.reduce { |left, right| combine_two(left, right) })
+          combined, origins = sides.reduce { |left, right| combine_two(left, right) }
+          combined = report_unexpressed_string_checks(combined, origins)
+          prop, carried = left_of([combined, origins])
           (carried + residues).reduce(prop) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
         end
 
@@ -1662,6 +1670,8 @@ module Axn
           right_transforms = transforms_wire_value?(right_configs)
 
           if left_transforms ^ right_transforms
+            left_prop = report_unexpressed_string_checks(left_prop, left_configs) if left_transforms
+            right_prop = report_unexpressed_string_checks(right_prop, right_configs) if right_transforms
             kept, dropped = left_transforms ? [right_prop, left_prop] : [left_prop, right_prop]
             # Only retained origins may classify the next collision in this fold.
             return [stand_down_from(kept, dropped, TRANSFORM_RESIDUE), left_transforms ? right_configs : left_configs]
@@ -1730,6 +1740,54 @@ module Axn
             prop.merge!(context)
           end
           presence_rejects_blank?(validations) ? prop.merge(not: { enum: BLANK_WIRE_VALUES }) : prop
+        end
+
+        # Only type assertions are needed here, not a satisfiability prover. Ignoring enum, not,
+        # and value bounds can add a scoped warning, never remove a constraint or reject a call.
+        # Number includes integers in JSON Schema, so expand it before intersecting assertions.
+        def projected_types(prop)
+          universe = WIRE_TYPE_CONTEXTS.flat_map { |token| Array(single_type_for(token, for_output: false)[:type]) }.uniq
+          types = prop[:type] ? Array(prop[:type]) : universe
+          types |= ["integer"] if types.include?("number")
+          types &= prop[:anyOf].flat_map { |branch| projected_types(branch) } if prop[:anyOf]
+          Array(prop[:allOf]).each { |branch| types &= projected_types(branch) }
+          types
+        end
+
+        # Length and format can validate a non-string's Ruby string form. Their JSON keywords
+        # cannot: ask their actual emitters per surviving type rather than assume a keyword
+        # somewhere in an anyOf covers every branch. Numeric producers instead narrow through
+        # restrict_union_to_bounded_branches!; enum/const constraints apply to all JSON types.
+        def report_unexpressed_string_checks(prop, configs)
+          sources = configs.select { |config| config.validations[:length] || config.validations[:format] }
+          return prop if sources.empty?
+
+          types = projected_types(prop)
+          sources.reduce(prop) do |projected, config|
+            applicable_types = nil_allowed?(config) ? types - ["null"] : types
+            config.validations.slice(:length, :format).reduce(projected) do |reported, (key, options)|
+              missing = applicable_types.reject { |type| string_check_emitted?(type, key, options) }
+              next reported if missing.empty?
+
+              conditional = Axn::Validation::Base.entry_effectively_gated?(options, declaration_gates(config))
+              prefix = conditional ? "#{GATED_RESIDUE}; " : ""
+              prefix += "after transformation, " if transforms_wire_value?([config])
+              record_residue(reported, "#{prefix}#{key} checks the runtime value or its string form for #{missing.join(', ')} values; " \
+                                       "JSON Schema cannot fully express this check (#{render_constraint({ key => options })})",
+                             kind: conditional ? :conditional : :inherent)
+            end
+          end
+        end
+
+        def string_check_emitted?(type, key, options)
+          prop = { type: }
+          validations = { key => options }
+          if key == :length
+            apply_size_constraints!(prop, validations)
+          else
+            apply_pattern!(prop, validations, for_output: false)
+          end
+          prop.keys != [:type]
         end
 
         def ungated_validations(config)
@@ -1837,7 +1895,10 @@ module Axn
         # `Float::INFINITY` default and its kind, so ordinary reflection does not fail on one — and a path
         # that merely NAMES such a value must not be the one that fails instead.
         def render_constraint(prop)
-          JSON.generate(json_mentionable(prop))
+          # A mentioned subtree no longer participates in the final schema walk. Finalize its
+          # reports now, on a copy, while schema nodes can still be distinguished from literals.
+          finalized, = finalize_residues!(prop, copy: true)
+          JSON.generate(json_mentionable(finalized))
         end
 
         # `value` reduced to something JSON can carry WITHOUT asking it anything. Reducing first rather than
