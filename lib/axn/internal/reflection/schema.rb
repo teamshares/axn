@@ -2,6 +2,13 @@
 
 require "date"
 require "time"
+# A residue renders the fragment it declined to conjoin verbatim, so the builder cannot load without an encoder.
+require "json"
+
+# Prose a residue composes is caller-supplied in part, and a literal it mentions need not be JSON-encodable,
+# so both go through the seams that own rendering rather than being concatenated or encoded directly.
+require "axn/internal/text"
+require "axn/internal/rendering"
 
 require "axn/internal/identity"
 require "axn/internal/native_methods"
@@ -15,10 +22,38 @@ require "axn/internal/reflection/pattern"
 # cannot load without their owner either.
 require "axn/internal/field_config"
 require "axn/internal/shape_graph"
+# transforms_wire_value? asks whether a token is one of Coercion::SUPPORTED's coercion targets, so the
+# builder cannot load without that constant either.
+require "axn/internal/coercion"
 
 # The graph this builder walks is one the class merely HOLDS, so the builder cannot load without the two
 # bounds every such walk needs (see `guard_contents_descent`).
 require "axn/internal/cycle_guard"
+
+# Blankness asks a RUNTIME VALUE whether it is blank/empty and how big it is — no JSON Schema in it at all,
+# and `Core::Contract`'s declaration guards read the same answers, so it lives in its own file.
+require "axn/internal/reflection/schema/blankness"
+
+# Gates forwards every validator-set question to `Validation::Base`, so a config's own `optional?` and the
+# emitted property's requiredness cannot answer differently.
+require "axn/internal/reflection/schema/gates"
+
+# TypeTokens maps one declared type token to one JSON type — the leaf every typing decision bottoms out in.
+require "axn/internal/reflection/schema/vocabulary"
+require "axn/internal/reflection/schema/type_tokens"
+
+# Contents is the recursive descent into a container's elements/values/keys and a shape's named members.
+require "axn/internal/reflection/schema/contents"
+
+# ModelId owns the generated `<field>_id` property and the reconciliation deciding its type.
+require "axn/internal/reflection/schema/model_id"
+
+# Sizing owns the size and blank axes — including the derivations Contract's declaration guard reads back.
+require "axn/internal/reflection/schema/sizing"
+
+# Nestability answers whether a position can hold JSON object properties — the drop pass and the emitter
+# both read it, so neither can decide for itself.
+require "axn/internal/reflection/schema/nestability"
 
 module Axn
   module Internal
@@ -39,25 +74,6 @@ module Axn
       # recoverable validation error. A required subfield at ANY depth forces its whole ancestor chain
       # required and non-nullable (a nil/omitted ancestor yields every descendant absent, PRO-2857).
       module Schema
-        TYPE_MAP = {
-          String => "string",
-          Symbol => "string",
-          # `null` is a first-class JSON type, so a declared `NilClass` has an exact spelling here. Without the
-          # entry it reached single_type_for's unknown-class fallback and reflected as "string" — whose premise
-          # ("a JSON client can't send a Ruby object anyway") is true of a PORO and false of nil.
-          NilClass => "null",
-          Integer => "integer",
-          Float => "number",
-          Numeric => "number",
-          Hash => "object",
-          Array => "array",
-          # NOTE: TrueClass/FalseClass are intentionally absent — TypeValidator accepts only the singleton
-          # value, so single_type_for reflects them as boolean + a single-member enum, not the full domain.
-          Date => "string",
-          DateTime => "string",
-          Time => "string",
-        }.freeze
-
         # Which JSON Schema keyword each ActiveModel comparison operator becomes. The exclusive pair is the
         # draft-06+ NUMERIC form (`exclusiveMinimum: 0`), not draft-04's boolean flag beside `minimum:`.
         NUMERIC_BOUND_KEYS = {
@@ -75,48 +91,6 @@ module Axn
         # The two entries that compare a value against a bound, and whether ActiveModel reads an `in:` range for
         # each — `numericality:` does (`RANGE_CHECKS`), `comparison:` has no range check.
         NUMERIC_BOUND_ENTRIES = { numericality: true, comparison: false }.freeze
-
-        # Satisfied by no value — what an unsatisfiable intersection projects to. See `apply_numeric_bounds!`.
-        EMPTY_ENUM = [].freeze
-
-        NULL_BRANCH = { type: "null" }.freeze
-
-        # Which token `model_id_type_token` infers for each ActiveRecord primary-key attribute type
-        # (`klass.type_for_attribute(klass.primary_key).type`). Every value here is one of
-        # `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS` — that constant, not a copy of it here, is what
-        # Contract's declaration-time `id_type:` guard also reads, so the declared and inferable
-        # vocabularies cannot drift apart (moved there from here in Codex review round 3, PR #269:
-        # `Internal::Reflection::X` derives a JSON view and nothing runs upward FROM it into
-        # declaration-time code, per AGENTS.md). An AR type with no entry (`:binary`, `:decimal`, a
-        # custom `ActiveRecord::Type` this table doesn't know) falls back to today's untyped property
-        # rather than guessing.
-        AR_PRIMARY_KEY_TYPE_TOKENS = {
-          integer: Integer,
-          string: String,
-          uuid: :uuid,
-        }.freeze
-
-        FORMAT_MAP = {
-          Date => "date",
-          DateTime => "date-time",
-          Time => "date-time",
-        }.freeze
-
-        # JSON Schema spells the emptiness floor differently per type. A type absent here (integer, boolean,
-        # number) has no empty state, so no floor is expressible for it.
-        SIZE_CONSTRAINT_KEYS = {
-          "array" => :minItems,
-          "object" => :minProperties,
-          "string" => :minLength,
-        }.freeze
-
-        # The ceiling half of the same mapping. A type absent here has no size to bound.
-        SIZE_CEILING_KEYS = {
-          "array" => :maxItems,
-          "object" => :maxProperties,
-          "string" => :maxLength,
-        }.freeze
-
         EXCLUDED_FROM_INPUT_SCHEMA = %i[ambient_context].freeze
 
         # Per-node result of the single bottom-up derivation pass (derive_annotations): `required` means
@@ -129,7 +103,145 @@ module Axn
         # never read from here).
         NodeAnnotation = Data.define(:required, :nullable)
 
+        # A constraint the contract enforces and the emitted document cannot state, recorded where it is
+        # declined so the gap is reported rather than silent. `summary` is one clause naming what still
+        # applies ("must equal 5 after coercion to Integer"); `kind` separates a limit of JSON Schema
+        # itself (`:inherent`) from one axn has simply not taught the emitter yet (`:unfixed`), so the
+        # audit's exclusion list can shrink as the latter are closed and can never silently grow.
+        Residue = Data.define(:summary, :kind)
+
+        # Residues ride on the property they belong to under this key while it is being built, and are
+        # rendered into `description` and stripped by `finalize_residues!` before the schema is returned.
+        # A non-emitted key rather than a parallel accumulator threaded through every builder: a property
+        # already travels the whole emission path, and the one place that knows how to render them is then
+        # also the one place that has to know they exist.
+        RESIDUE_KEY = :__axn_residues
+
+        RESIDUE_PREFACE = "Additional constraints apply that JSON Schema cannot express: "
+
+        # The container reads the residue reduction makes, held UNBOUND. Exact class is not enough on its
+        # own: an exact Array or Hash can still carry a singleton `map`/`each_pair`, so the reduction reaches
+        # for Array's and Hash's own.
+        MENTIONABLE_MAP = ::Array.instance_method(:map)
+        MENTIONABLE_EACH_PAIR = ::Hash.instance_method(:each_pair)
+        private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
+
+        TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
+
+        # Every blank a JSON document can carry. `false` is among them: ActiveSupport counts it blank, which
+        # is what an ungated `presence:` rejects — and so is `nil`, which is why it is listed here even
+        # though `reject_null!` independently strips a null branch on the nested-child path. The floor is
+        # only ever restored where some config's ungated `presence:` rejects blank, and such a config also
+        # answers `nil_allowed?` false, so naming nil here cannot narrow a nil-tolerant position; it closes
+        # the axis path, where that separate null pass does not reach.
+        #
+        # Deep-frozen on the same terms as `BLANK_BRANCH_WITNESS`, and for the same measured reason: these
+        # members ride INSIDE an emitted schema, schemas are rebuilt per call and caller-mutable, and a
+        # shared mutable `[]`/`{}` lets one consumer's mutation reach every schema emitted afterwards —
+        # appending to one action's floor changed a DIFFERENT action class's `enum` to `["", [:x], {}, false,
+        # nil]`. Freezing rather than copying is what the neighbours do, so a mutating consumer gets a
+        # FrozenError instead of silently corrupting every later schema.
+        BLANK_WIRE_VALUES = ["", [].freeze, {}.freeze, false, nil].freeze
+
+        # Metadata is not a validator contribution. In particular, a default applies independently
+        # of validator gates and must never be included in a conditional fragment.
+        RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY].freeze
+
+        GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
+                        "its condition opens"
+
+        # Where a subschema can live in what this emitter emits — a map of name => subschema, a single
+        # subschema, or a list of them. Kept to the keywords it actually writes (`build_property`,
+        # `apply_structured_schema!`, `conditional_requiredness_clause`, `write_pattern!`) so the
+        # residue walk descends only into NODES and never into a declaration's own literal values.
+        SUBSCHEMA_MAPS = %i[properties].freeze
+        SUBSCHEMA_NODES = %i[items additionalProperties propertyNames not if then else].freeze
+        SUBSCHEMA_LISTS = %i[allOf anyOf].freeze
+
+        # Extracted modules are mixed in rather than delegated to: their methods stay reachable as
+        # `Schema.foo` for the callers outside this file, and as a bare call from every method inside it,
+        # so the split is about where the code LIVES, not about re-routing anyone.
+        include Vocabulary
+        extend Blankness
+        extend Gates
+        extend TypeTokens
+        extend Contents
+        extend ModelId
+        extend Sizing
+        extend Nestability
+
         module_function
+
+        # Attach a residue to the property it qualifies, returning the property. Deduplicated by summary —
+        # a collision judged at two depths reports the same clause once.
+        def record_residue(prop, summary, kind: :inherent)
+          return prop if summary.nil?
+
+          existing = prop[RESIDUE_KEY] || []
+          return prop if existing.any? { |r| r.summary == summary }
+
+          prop.merge(RESIDUE_KEY => existing + [Residue.new(summary:, kind:)])
+        end
+
+        def residues_on(prop) = prop.is_a?(::Hash) ? (prop[RESIDUE_KEY] || []) : []
+
+        # Render every residue in a finished schema into its property's `description` and strip the
+        # carrier key, collecting `[path, residue]` pairs for the once-per-class warning. The rendering
+        # APPENDS: an author's own `description:` is the field's documentation and this is a footnote to
+        # it, never a replacement.
+        #
+        # A FROZEN node is skipped whole: the emitter hands out shared frozen constants for the fixed
+        # shapes (NULL_BRANCH, EMPTY_ENUM) and for the witnesses a consumer must not be able to mutate
+        # into another action's schema, and none of them can carry a residue — so descending into one
+        # could only ever raise. With copy: true, detach only schema nodes and their child maps/lists;
+        # default/enum/const literals remain data and are neither traversed nor mutated.
+        def finalize_residues!(schema, path: [], collected: [], copy: false)
+          return [schema, collected] unless schema.is_a?(::Hash)
+          return [schema, collected] if schema.frozen?
+
+          schema = schema.dup if copy
+          residues = schema.delete(RESIDUE_KEY)
+          if residues&.any?
+            residues.each { |r| collected << [path.dup, r] }
+            clause = "#{RESIDUE_PREFACE}#{residues.map(&:summary).join('; ')}."
+            # Each part is rendered BEFORE the join. An author's `description:` is caller-supplied text and
+            # may be valid in an encoding this generated prose cannot concatenate with (a UTF-16 String
+            # raises outright); joining first and rendering after would raise from inside the composition.
+            schema[:description] = join_prose(schema[:description], clause)
+          end
+
+          # Only the keywords that HOLD a subschema are descended into. Walking every Hash and Array
+          # instead reaches a declaration's own literals — a `default:`/`enum:`/`const:` value is the
+          # author's data, not a node — and a literal `{ __axn_residues: [...] }` there was deleted and
+          # then read as residues, raising `NoMethodError` on a String mid-reflection. The three shapes
+          # below are the ones this emitter actually writes; a keyword it does not emit is not listed,
+          # since a position nothing writes is one nothing has to be protected from.
+          SUBSCHEMA_MAPS.each do |key|
+            node = schema[key]
+            next unless node.is_a?(::Hash)
+
+            # The segment is carried RAW, never rendered here: a declared name is caller-supplied and
+            # reflection may not dispatch on one (a `to_s` that raises took the whole reflection down
+            # once already, and one that counts its calls sees this walk as a second ask). Whoever
+            # reports a residue renders the path through PropertyNames' own escaping labeler.
+            node = node.dup if copy
+            node.each { |name, sub| node[name] = finalize_residues!(sub, path: path + [name], collected:, copy:).first }
+            schema[key] = node
+          end
+
+          SUBSCHEMA_NODES.each do |key|
+            schema[key] = finalize_residues!(schema[key], path:, collected:, copy:).first if schema.key?(key)
+          end
+
+          SUBSCHEMA_LISTS.each do |key|
+            node = schema[key]
+            next unless node.is_a?(::Array)
+
+            schema[key] = node.map { |sub| finalize_residues!(sub, path:, collected:, copy:).first }
+          end
+
+          [schema, collected]
+        end
 
         # An attribute a config may or may not carry, read tolerantly: `#description` and `#default`, enumerated at
         # each call site. A `FieldConfig` answers both and a `ShapeConfig` answers `#description` only (a member is
@@ -198,11 +310,16 @@ module Axn
         # The inbound projection OF A CLASS. The one place `build_input`'s argument list is assembled from a
         # class, so the reflected reader and the setup-time validator cannot drift into building two different
         # schemas from the same declaration.
-        def build_input_for(klass)
-          build_input(klass.internal_field_configs, klass.subfield_configs, resolved: klass._resolved_subfields, klass:)
+        #
+        # `residues:` is an optional array to collect `[path_segments, Residue]` pairs into — what the contract
+        # enforces and this document cannot state. The schema always carries them as prose in the relevant
+        # `description`; a caller passing this array also gets them structured, which is what the
+        # once-per-class warning and the wire audit's exclusion list read.
+        def build_input_for(klass, residues: nil)
+          build_input(klass.internal_field_configs, klass.subfield_configs, resolved: klass._resolved_subfields, klass:, residues:)
         end
 
-        def build_input(field_configs, subfield_configs = [], resolved: nil, klass: nil)
+        def build_input(field_configs, subfield_configs = [], resolved: nil, klass: nil, residues: nil)
           tree = resolved&.tree || Axn::Internal::SubfieldTree.build(field_configs, Array(subfield_configs))
           ann = resolved&.annotations || derive_annotations(tree.roots)
           properties = {}
@@ -218,8 +335,8 @@ module Axn
             # — not the ones belonging to whoever holds the name.
             node = tree.index[config].node
             if config.validations[:model]
-              # Emit the generated `<field>_id` property (don't clobber an explicitly-declared one).
-              # Its requiredness/nullability is decided in the post-pass below so it can account for an
+              # Emit the generated `<field>_id` property (don't clobber an explicitly-declared one). Its
+              # requiredness/nullability is decided in the post-pass below so it can account for an
               # explicit `<field>_id` sibling regardless of declaration order.
               #
               # A NON-model sibling ALWAYS wins the property regardless of which is visited first (its
@@ -230,11 +347,11 @@ module Axn
               # `primary_key`/`type_for_attribute` (PRO-3384) to infer the id's type, and that dispatch,
               # and the DB/schema access behind it, has no reason to run for a result nothing will use.
               #
-              # MODEL configs sharing this name are excluded from that check (Codex review round 2, PR
-              # #269): a field named `company_id` that is ITSELF a `model:` field emits at
-              # `company_id_id`, not at `company_id` — it never touches this key at all — so treating it
-              # as the winning sibling skipped the ONLY thing that would have written `company_id`'s
-              # property, leaving a `required` entry with no matching property.
+              # MODEL configs sharing this name are excluded from that check: a field named `company_id`
+              # that is ITSELF a `model:` field emits at `company_id_id`, not at `company_id` — it never
+              # touches this key at all — so treating it as the winning sibling skipped the ONLY thing
+              # that would have written `company_id`'s property, leaving a `required` entry with no
+              # matching property.
               id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
               unless field_configs.any? { |c| c.field == id_field && !c.validations[:model] }
                 id_type = reconciled_model_id_type_token([config], id_field)
@@ -263,6 +380,7 @@ module Axn
           schema = { type: "object", properties: }
           schema[:allOf] = conditionals unless conditionals.empty?
           schema[:required] = required.uniq unless required.empty?
+          finalize_residues!(schema, collected: residues || [])
           schema
         end
 
@@ -418,180 +536,11 @@ module Axn
           Array(property_representative(path.parent_node.configs)) + carried
         end
 
-        # Whether a field's declared type can be represented as a JSON object (so its subfields can nest
-        # as object properties): Hash, `:params`, or untyped. A `type: Array` (or other non-object) parent
-        # is not — its subfields are extracted differently at runtime and have no object-property shape.
-        # ANY admissible branch is object-shaped (Hash/`:params`/untyped) — so runtime's `{}` synthesis from
-        # subfield defaults can satisfy the parent type (`{}` is a Hash, matching an object branch).
-        def object_shaped?(config)
-          object_type_branches(config).any? { |k| [Hash, :params].include?(k) }
-        end
-
-        # Whether an object (`{}`) could stand in for this config's value: its declared type must admit an
-        # object AND it must not be a `model:` route (a `{}` there is rejected by ModelValidator and would
-        # be preferred by the model resolver over a caller-supplied `<field>_id`). `required_child?` uses
-        # this to decide whether the parent's OWN applied default materializes an object that would then
-        # enforce its required shape members.
-        def synthesizable?(config)
-          object_shaped?(config) && !config.validations[:model]
-        end
-
-        # ALL admissible branches are object-shaped — so the subfields may nest as `properties` without
-        # rejecting a valid non-object branch. A mixed union (`type: [Hash, Array]`) is NOT nestable: at
-        # runtime the subfield can be read from the Array branch too (e.g. `Array#length`), so forcing
-        # `type: object` would disallow a valid array input.
-        def nestable_as_object?(config)
-          object_type_branches(config).all? { |k| [Hash, :params].include?(k) }
-        end
-
-        # Whether the configs declared at a subfield node forbid nesting its children as object properties:
-        # a `model:` route (the client sends `<field>_id`, not the object) or a non-nestable type (a
-        # non-object type or a mixed union) on ANY config. Single source of truth for the drop pass
-        # (blocking_ancestor?, via path_blocked?) and emission (apply_nested_subfields!), so the two never
-        # disagree on which deep structure is representable — a node the tree drops from is never re-nested
-        # in the schema. Every route is enforced at runtime, so any one non-nestable route defeats nesting.
-        def node_configs_block_nesting?(configs)
-          configs.any? { |c| c.validations[:model] || !nestable_as_object?(c) }
-        end
-
-        # The config a subfield node's own object property is BUILT from: the first route that is not a `model:`
-        # one (a model route emits `<leaf>_id` in place of the object, so it shapes no object property). Nil at a
-        # pure-model node, which emits no object property at all.
-        #
-        # One owner for three readers, because each of them has to name the SAME config: `apply_children!`, which
-        # emits the property; `annotate_node!`, which decides its nullability; and the projection size cap, which
-        # charges that config's shape and must charge no other — a second route to one wire path is enforced at
-        # runtime but its `shape:`/`of:` is never emitted, so charging it rejected a contract over a schema it
-        # does not have.
-        def property_representative(configs) = configs.reject { |c| c.validations[:model] }.first
-
-        def object_type_branches(config)
-          type_opt = config.validations[:type]
-          return [Hash] unless type_opt # untyped parent — object-shaped for both any?/all?
-
-          declared_type_tokens(config.validations)
-        end
-
-        # The builtin scalars whose reader-method surface we judge as the class's own public methods:
-        # an instance answers a segment read iff the declared class publicly defines the method
-        # (post-PRO-2886 extraction: a Hash-like source reads any key; everything else is a
-        # public_send). Anything outside this list — Data/Struct/custom classes, model records —
-        # may answer dynamically, so it is never judged (optimistic: rejection needs proof).
-        #
-        # ACCEPTED DIVERGENCE from the strict no-false-rejection doctrine. TypeValidator is `is_a?`, so
-        # a `type: String` value can be a String SUBCLASS that adds methods, or a plain String carrying a
-        # singleton method — either is contract-valid yet answers a segment this judgment refutes. We
-        # judge anyway, deliberately: the approved design takes the DECLARED class's method surface as the
-        # contract (`type: String` promises the String surface, not whatever an exotic subclass bolts on),
-        # so a subclass adding readers doesn't hold the declaration hostage. The conventional instance of
-        # each listed class IS exactly that class, so the judgment matches real inputs; the subclass/
-        # singleton case is the narrow, documented exception. The membership test below is `k <= s`, so a
-        # declared class equal to (or a subclass of) a judged entry is judged on that entry's surface.
-        #
-        # `Numeric` and `Date` are excluded — the boundary is drawn narrower there for a different reason:
-        # every contract-valid `type: Numeric` value is a STRICT subclass (Integer/Float/Rational/
-        # BigDecimal/…) whose surface is wider than `Numeric` itself (`Integer#bit_length` exists but
-        # `Numeric.public_method_defined?(:bit_length)` is false), and `type: Date` admits `DateTime`
-        # (adding `hour`/`minute`/…). There the subclass IS the conventional instance, so judging on the
-        # abstract class would refute a segment ordinary valid input answers — a real false positive — so
-        # both stay optimistic, same as Data/Struct/unknown classes.
-        SEGMENT_JUDGED_SCALARS = [String, Symbol, Integer, Float, Array, DateTime, Time, TrueClass, FalseClass].freeze
-
-        # Whether ONE admissible declared branch can answer reading `segment` off its value.
-        def branch_answers_segment?(branch, segment)
-          return true if branch == :params
-
-          klasses = case branch
-                    when :uuid then [String]
-                    when :boolean then [TrueClass, FalseClass]
-                    else [branch]
-                    end
-          klasses.any? do |k|
-            next true unless Axn::Internal::Identity.kind?(k, ::Class)
-            next true if k <= Hash
-
-            # Read from the method table, on the same terms as `custom_serialization?` and
-            # `framework_generated_reader?` — the three sites that ask this class of question now ask it one
-            # way. (The `<=` comparisons around it stay dispatched: those are declared-type checks whose
-            # failure mode is a self-correcting declaration error.)
-            judged = SEGMENT_JUDGED_SCALARS.any? { |s| k <= s }
-            !judged || Axn::Internal::NativeMethods.public_instance_method?(k, segment)
-          end
-        end
-
-        # Whether a config's declared type admits SOME branch that can answer `segment`. A `model:`
-        # route resolves to a record, whose method surface is never statically refutable.
-        def config_answers_segment?(config, segment)
-          return true if config.validations[:model]
-
-          object_type_branches(config).any? { |branch| branch_answers_segment?(branch, segment) }
-        end
-
-        # Whether a shaped field's value serializes to a member-keyed JSON object (so advertising `object` +
-        # the shape's properties on OUTPUT matches serialize_exposed). Only asserted for types with a
-        # language-guaranteed member-keyed serialization: `:params`, an untyped shape (caller supplies a
-        # Hash), Hash, or a Data/Struct that does NOT define its OWN `as_json`. Values.serialize_value
-        # follows a value's own `as_json` before `to_h`, so a Data/Struct that overrides `as_json` may emit
-        # a scalar/array/differently-keyed hash — treat it (like any reader-only or custom-`to_h` class) as
-        # statically unknowable and leave it untyped on output.
-        #
-        # Takes VALIDATIONS rather than a config because its one caller (shape_property_plan) has already
-        # reduced the config to the validations the projection is built from — see effective_validations.
-        def shape_serializes_to_object?(validations)
-          type_klass = validations.dig(:type, :klass)
-          return true if type_klass.nil?
-
-          Axn::Internal::ShapeGraph.type_tokens(type_klass).all? { |k| member_keyed_object_type?(k) }
-        end
-
-        def member_keyed_object_type?(klass)
-          return true if Axn::Internal::Identity.same?(klass, :params)
-          return false unless class_token?(klass)
-          return true if Axn::Internal::Identity.same?(klass, ::Hash)
-          return false unless strict_descendant?(klass, ::Data) || strict_descendant?(klass, ::Struct)
-
-          # A Data/Struct serializes member-keyed via its built-in to_h — unless it carries a CUSTOM as_json
-          # OR a custom to_h, either of which serialize_value would follow instead (as_json first) and which
-          # may emit a scalar/array/differently-keyed hash.
-          !custom_serialization?(klass, :as_json, dispatchable_only: true) &&
-            !custom_serialization?(klass, :to_h, dispatchable_only: false)
-        end
-
-        # active_support reopens Data/Struct/Hash (and Object) with member-keyed `as_json`/`to_h`; those
-        # owners are safe. Any other owner means the value class (or an included module) overrides the
-        # method, which serialize_value would follow — so the serialized shape is no longer provably an
-        # object keyed by the declared members.
-        FRAMEWORK_SERIALIZATION_OWNERS = [Data, Struct, Hash, Object].freeze
-        # Read out of the method table (`NativeMethods`) rather than asked of the class: `klass` is the caller's
-        # declared type, and `method_defined?`/`instance_method` are as overridable as anything else — one
-        # answering wrongly inverts whether a shape is judged provable.
-        #
-        # `dispatchable_only:` is the visibility rule, and the two serializers need DIFFERENT ones because they
-        # are reached differently. Verified by serializing each case in both environments (with and without
-        # ActiveSupport's json core_ext), since the mechanism differs but the verdict does not:
-        #
-        #   `as_json` is reached by DISPATCH — `Values.projection_for` gates on `respond_to?` — so only a PUBLIC
-        #     override displaces anything. A protected/private one cannot be called at all, the value falls
-        #     through to the public built-in `to_h`, and what is emitted IS member-keyed (`{"name" => "x"}`).
-        #     Counting one as custom drops `type: object` from a schema the serializer does honour.
-        #
-        #   `to_h` is the FALLBACK, and an override at ANY visibility shadows `Struct#to_h`, so the built-in is
-        #     gone regardless: without the core_ext the value degrades to `to_s`, and with it `Struct#as_json`
-        #     is `to_h.as_json` — an implicit-receiver call, which reaches a non-public override — so the
-        #     override's own keys are emitted. Neither is keyed by the declared members.
-        def custom_serialization?(klass, method, dispatchable_only:)
-          return false unless Axn::Internal::Identity.kind?(klass, ::Module)
-          return false if dispatchable_only && !Axn::Internal::NativeMethods.public_instance_method?(klass, method)
-
-          owner = Axn::Internal::NativeMethods.declared_instance_method(klass, method)&.owner
-          !owner.nil? && !FRAMEWORK_SERIALIZATION_OWNERS.include?(owner)
-        end
-
         # One bottom-up pass over the whole subfield tree, computed once from build_input and threaded
         # through every emission site below (apply_nested_subfields!/apply_children!/apply_implicit_node!/
         # apply_model_id_requiredness!) instead of each of them independently re-walking the subtree via
-        # subtree_requires_presence?/required_child? — the repeated-recomputation pattern behind PR #149's
-        # rounds-5/8/9 findings (a dropped/blocked deep shape agreeing at some sites but not others).
+        # subtree_requires_presence?/required_child? — the repeated-recomputation pattern that let a
+        # dropped/blocked deep shape agree at some sites but not others.
         # `compare_by_identity`: SubfieldTree::Node is a plain Data value, so identity (not #==/#hash on its
         # contents) is what distinguishes one tree position from another.
         def derive_annotations(roots, satisfiability: false)
@@ -1048,155 +997,6 @@ module Axn
           presence_rejects_blank?(validations)
         end
 
-        # Parameters is identified by rendered class NAME rather than by the constant: this file is one an adapter
-        # gem loads directly, and naming a Rails constant here would put an unresolvable reference in its load graph
-        # for every consumer running without Rails. It is the same identify-by-name form TypeValidator already uses
-        # to recognize a test double, and the rendering is read natively (`Internal::ClassName.of_module`) so a class
-        # cannot answer this question for itself.
-        PARAMS_CLASS_NAME = "ActionController::Parameters"
-
-        # The container classes whose `empty?` is RUBY'S OWN — the ones the emptiness axis is declared on. `Set` sits
-        # behind `defined?` because `set` is not always loaded.
-        EMPTY_CONTAINER_CLASSES = [::Hash, ::Array, ::String].freeze
-
-        # Whether a default is an EMPTY container, decided by WHOSE `empty?` would answer it. Ownership is the whole
-        # test, because it separates the two things a subclass can be: one that INHERITS the built-in's `empty?`
-        # answers with Ruby's own code, so running it is safe and its empty instance is as empty as the built-in's;
-        # one that OVERRIDES it (or carries a singleton) is caller code, which a reflection verdict must not run —
-        # and not recognizing it is also what matches the runtime, since that same override is what the emptiness
-        # check will ask. Anything else — a lazy collection, an arbitrary object — is unrecognized for the same
-        # reason, so no `empty?` of a caller's writing is ever dispatched here.
-        #
-        # The owner read is bound (`NativeMethods.method_owner`); the call that follows it needs no guard, because
-        # the implementation it dispatches is the one whose owner was just established.
-        def empty_container?(value)
-          owner = Axn::Internal::NativeMethods.method_owner(value, :empty?)
-          return false unless owner && native_empty_owner?(owner)
-
-          value.empty?
-        end
-
-        # How many elements a literal holds, or nil where a check could measure it differently. Read where a
-        # declared literal has to be weighed against the sizes a contract admits (the empty-interval guard's
-        # inclusion branch).
-        #
-        # FOUR checks can hold a size bound, and each asks the value by a different method — the complete list:
-        #
-        #   `length:`             `value.length`   (activemodel 8.1.3.1, length.rb:48)     floor and ceiling
-        #   `presence:`           `value.blank?`   (presence.rb)                           floor
-        #   the emptiness check   `value.empty?`   (NonEmptinessValidator)                 floor
-        #   `absence:`            `value.present?` (absence.rb)                            ceiling
-        #
-        # Which check holds a given bound is not this method's to know — the floor of 1 is `presence:`'s on one
-        # declaration and `length:`'s on the next — so a value is measured only where every one of them is
-        # Ruby's own, and there they agree by construction. `size` is deliberately not among them: no check
-        # asks it, and reading it is how an `Array` subclass overriding `length` was measured as empty here
-        # while `length:` and `inclusion:` both accepted it at runtime.
-        #
-        # And a bound-holding check does not reach its measurement directly: it asks the value whether it CAN
-        # answer first, and takes a different measurement when the answer is no. `length:` reads
-        # `value.respond_to?(:length) ? value.length : value.to_s.length`, and ActiveSupport's `Object#blank?`
-        # is `respond_to?(:empty?) ? !!empty? : false`. So the capability probe is part of the measurement, and
-        # a value carrying its own `respond_to?` is measured by an answer IT wrote however native the method
-        # that answer names: an exact `Array` answering `false` for `:length` is measured as `"[]"` — two
-        # characters — and not as `Array#length`'s zero, so a floor of 2 it appears to fail is one it meets.
-        # `respond_to?` is therefore on the list beside the four measurements it selects between.
-        #
-        # That override is not deception to be refused: answering for a method it forwards is the ordinary
-        # shape of a proxy or delegator, which is why axn's own emptiness check asks the capability through a
-        # BOUND `Object#respond_to?` (`NonEmptinessValidator::CAPABILITY_CHECK`) rather than trusting the
-        # value's answer. ActiveModel dispatches it, so a declaration weighing what ActiveModel will measure
-        # has to count the caller's answer as part of the measurement — reading the unforgeable one here would
-        # measure something no check performs.
-        #
-        # The list grows with the bounds. `present?` belongs to it because PRO-3220 taught `absence:` to name a
-        # ceiling; adding that bound without revisiting this list is what let a member answering
-        # `present? => false` be weighed against a ceiling it does not obey.
-        #
-        # Ownership is the whole test, the same one `empty_container?` applies and for the same reason: a
-        # measurement a caller wrote is caller code, which a declaration-time verdict must neither run nor
-        # second-guess. Standing down leaves the declaration legal, the direction this guard must err in.
-        #
-        # The owner reads are bound (`NativeMethods.method_owner`); the call that follows needs no guard,
-        # because the implementation it dispatches is the one whose owner was just established.
-        def container_size(value)
-          return nil unless ASKED_BY_A_BOUNDING_CHECK.all? { |method_name| natively_answered?(value, method_name) }
-
-          value.length
-        end
-
-        # The methods the BLANK axis asks a value by: ActiveModel's presence/absence validators call `blank?`
-        # and `present?`, and ActiveSupport's generic pair answers out of `empty?` behind a `respond_to?` probe.
-        # `length` is deliberately absent — blankness is not size, which is the whole reason a `String` member
-        # needs this at all.
-        ASKED_BY_THE_BLANK_AXIS = %i[blank? present? empty? respond_to?].freeze
-
-        # Whether this value's BLANKNESS is Ruby's own to answer, on exactly the terms `container_size` applies
-        # to its measurement and for the same reason: a member whose `present?` or `blank?` is its own decides
-        # for itself whether an `absence:` accepts it, and a declaration-time verdict may neither run that code
-        # nor second-guess it. Answering false stands the judgment down, which leaves the declaration legal.
-        def blankness_natively_answered?(value)
-          ASKED_BY_THE_BLANK_AXIS.all? { |method_name| natively_answered?(value, method_name) }
-        end
-
-        # Every method a check that holds a size bound asks the value by — the four measurements plus the
-        # `respond_to?` those checks select between them with. All must be Ruby's own, so the order is
-        # immaterial.
-        ASKED_BY_A_BOUNDING_CHECK = %i[length empty? blank? present? respond_to?].freeze
-
-        # `Object` and `Kernel` are admitted as owners, and neither can end up owning a MEASUREMENT here:
-        # `Object` only ever owns `blank?`/`present?` and `Kernel` only ever owns `respond_to?`, since none of
-        # them defines `length` or `empty?`. ActiveSupport's `Object#blank?` is
-        # `respond_to?(:empty?) ? !!empty? : false` and its `present?` is `!blank?`, so both answer out of the
-        # very `empty?` this method has already required to be native: for a `Set`, whose blankness AS does not
-        # specialize, that is the whole reason a member is measurable at all. `Kernel#respond_to?` is Ruby's
-        # own capability probe, which every value answers with until one carries an override.
-        def natively_answered?(value, method_name)
-          owner = Axn::Internal::NativeMethods.method_owner(value, method_name)
-          return false if owner.nil?
-
-          native_empty_owner?(owner) || ::Object.equal?(owner) || ::Kernel.equal?(owner)
-        end
-
-        def native_empty_owner?(owner)
-          return true if EMPTY_CONTAINER_CLASSES.any? { |klass| klass.equal?(owner) }
-          return true if defined?(Set) && ::Set.equal?(owner)
-
-          # The rendered name is a Ruby-made String (the bound `Module#to_s`), so comparing it dispatches String's
-          # own `==` whatever the owner is.
-          Axn::Internal::ClassName.of_module(owner) == PARAMS_CLASS_NAME
-        end
-
-        # A default value ActiveModel's presence validator treats as blank (and so rejects): `false`, a
-        # whitespace-only String, or an empty container. (nil is handled by the caller.)
-        def presence_blank?(value)
-          return true if value.equal?(false)
-          return value.strip.empty? if value.instance_of?(String)
-
-          empty_container?(value)
-        end
-
-        # Whether a default is EMPTY — the question `allow_empty: false`'s own check asks of a value, which is
-        # not blankness: a whitespace-only String is blank but not empty, and `false` has no empty state at all.
-        def empty_default?(value) = empty_container?(value)
-
-        # Whether an `<field>_id` default can actually serve as a model LOOKUP token — the shared test
-        # for every id-rescue site (sibling_id_rescued?, which serves both the annotation credit and the
-        # contradictions loop, and SubfieldContradictions' model_omittable?). usable_default? judges a default for the FIELD's OWN
-        # omission, where a blank literal ("" / {}) is usable when no presence validator rejects it — but
-        # the model resolver blank-guards the id (Model#derive_value: `return nil if id_value.blank?`), so
-        # a blank id default can never resolve a record and never rescues an omitted model. It must
-        # therefore be satisfiability-usable AND not a blank literal. A Proc default stays optimistic
-        # (unknowable at declaration), matching usable_default?'s satisfiability doctrine.
-        def usable_id_token_default?(config)
-          return false unless usable_default?(config, subfield: true, satisfiability: true)
-
-          value = declared_attribute(config, :default)
-          return true if value.is_a?(Proc)
-
-          !presence_blank?(value)
-        end
-
         # Mutates `prop` to nest the node's children as `prop[:properties]`/`prop[:required]`, recursing
         # through the whole subtree. Forces the parent to `type: object` (it now has structure). The parent
         # is nullable only when it tolerates nil AND strands no required descendant: runtime treats a nil
@@ -1275,6 +1075,16 @@ module Axn
           # has no member to collide with at any key, so the per-key lookup below is skipped outright. Measured
           # at +15% allocations for a shape-free action with 21 subfield children before this guard, ~0 after.
           ancestor_shapes = ancestor_configs.any? { |c| c.validations[:shape] }
+          # The ENFORCED list (`ancestor_configs`, every route) is right for nullability, but wrong for "what
+          # did the ancestor actually EMIT here" — `apply_structured_schema!` builds a node's property from
+          # the REPRESENTATIVE route alone, so a later, non-representative route's shape member is declared
+          # but never reaches the document. Restricted the same way `property_representative` restricts
+          # everywhere else that has to name the config a property was built FROM (judging every route let a
+          # merged node's non-representative EXACT route mask its representative's APPROXIMATE one — the
+          # property actually conjoined was the representative's fake hint, not the exact route the
+          # unrestricted list also saw). `carried` is already representative-restricted by construction, so
+          # it is unaffected here.
+          emitted_ancestor_configs = Array(property_representative(parent_configs)) + carried
           children.each do |key, node|
             if node.implicit?
               apply_implicit_node!(prop, key, node, ancestor_configs, ann)
@@ -1295,25 +1105,26 @@ module Axn
             next unless representative
 
             members = ancestor_shapes ? shape_members_at(ancestor_configs, key) : NO_SHAPE_MEMBERS
-            apply_explicit_child!(prop, key, node, representative, non_model_configs, members, ann)
+            emitted_members = ancestor_shapes ? shape_members_at(emitted_ancestor_configs, key) : NO_SHAPE_MEMBERS
+            apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
             prop[:required] << required_key(key) unless node_optional?(node, ann, non_model_configs)
           end
           # The sibling's OWN entry (a plain child of this same loop) always wins the property outright
           # regardless of visitation order, so `prop[:properties][id_field]` is only guaranteed to hold
-          # the sibling's FINAL emission once every key has been visited (Codex review round 15, PR
-          # #269) — merging mid-loop risked reading a not-yet-overwritten model placeholder.
+          # the sibling's FINAL emission once every key has been visited — merging mid-loop risked
+          # reading a not-yet-overwritten model placeholder.
           #
-          # Ordered BEFORE the required-null pass just below, not after (Codex review round 17, PR
-          # #269): merging the declared `id_type:` in uses the SIBLING's OWN `allow_nil:`/`allow_blank:`
-          # to decide whether `"null"` joins the merged type (an untyped `company_id, allow_nil: true`
-          # sibling beside a REQUIRED model reconstructed `type: ["integer", "null"]`) — but requiredness
-          # here is decided by the MODEL, not the sibling, and a required model id can never actually
-          # resolve from `nil` at runtime. Merging first and then letting the null pass strip `"null"`
-          # from whatever type it finds lets that pass win regardless of which ran the type in; the
-          # reverse order let the sibling's own nullability reintroduce a null branch the null pass had
-          # already correctly removed, silently admitting a value runtime always rejects for a required
-          # id (top-level `apply_model_id_requiredness!` never had this bug — its merge already ran
-          # before its own `reject_null!`, being a single sequential method rather than two loops here).
+          # Ordered BEFORE the required-null pass just below, not after: merging the declared `id_type:`
+          # in uses the SIBLING's OWN `allow_nil:`/`allow_blank:` to decide whether `"null"` joins the
+          # merged type (an untyped `company_id, allow_nil: true` sibling beside a REQUIRED model
+          # reconstructed `type: ["integer", "null"]`) — but requiredness here is decided by the MODEL,
+          # not the sibling, and a required model id can never actually resolve from `nil` at runtime.
+          # Merging first and then letting the null pass strip `"null"` from whatever type it finds lets
+          # that pass win regardless of which ran the type in; the reverse order let the sibling's own
+          # nullability reintroduce a null branch the null pass had already correctly removed, silently
+          # admitting a value runtime always rejects for a required id (top-level
+          # `apply_model_id_requiredness!` never had this bug — its merge already ran before its own
+          # `reject_null!`, being a single sequential method rather than two loops here).
           model_id_siblings.each do |id_field, model_configs, explicit_id|
             merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id, id_field) if prop[:properties][id_field]
           end
@@ -1324,22 +1135,40 @@ module Axn
 
         # Builds and writes the property for one EXPLICIT child. Extracted from `apply_children!`'s loop for the
         # reason `apply_model_id_child!` was: conjoining an ancestor `shape:` member here pushed that single
-        # method back over this file's own complexity budget, and another key folded into one already-large
-        # loop body is what the earlier extraction was avoiding.
+        # method back over this file's own complexity budget, and another key folded into one already-large loop
+        # body is what the earlier extraction was avoiding.
         #
         # An ancestor `shape:` may describe this very key, and `apply_structured_schema!` has already emitted
         # its property into `prop[:properties][key]` (from `build_property`, before `apply_children!` ran at
         # all). Runtime enforces the member and the node alike, so the two are CONJOINED rather than one
-        # replacing the other, and the merged members are carried down so a deeper hop sees a
-        # member-of-a-member — the same two things `apply_implicit_node!` does at an implicit child. Without
-        # them this branch advertised a bare object for a position the contract still held to every nested
-        # member it declared: the document was looser than the runtime, and the same contract spelled with a
-        # dotted `on:` emitted it correctly (PRO-3399).
+        # replacing the other — the merged (object-shaped) members are carried down so a deeper hop sees a
+        # member-of-a-member, the same thing `apply_implicit_node!` does at an implicit child. Without this
+        # branch advertised a bare object for a position the contract still held to every nested member it
+        # declared: the document was looser than the runtime, and the same contract spelled with a dotted `on:`
+        # emitted it correctly (PRO-3399).
         #
-        # The merge runs BEFORE the descent, not after: the nested pass reads `child_prop[:properties]` to
+        # PRO-3405: the conjoin runs whenever `member_prop` exists, not only when `merged_members` came back
+        # non-empty. `merged_explicit_members`'s gates (the node must nest; every colliding member must be
+        # object-shaped) answer a DIFFERENT question — whether to carry the member down for a deeper hop's
+        # member-of-a-member test — and the conjunction itself needs neither: conjoin_shape_member_property
+        # already knows how to combine two object-shaped properties (the keyword union above) and how to combine
+        # anything else (a sibling `allOf` branch), so a member the node "cannot nest" rides alongside as its
+        # own `allOf` branch rather than being dropped.
+        #
+        # For an untransformed node the merge precedes descent: the nested pass reads `child_prop[:properties]` to
         # decide whether a generated `<leaf>_id` still needs writing, and `apply_implicit_node!` reads it again
         # to place a blocked merge's obligation on the member's own property. Merging afterwards left both of
         # them looking at a property the member's contribution had not reached yet.
+        #
+        # `member_configs`/`own_configs` (the collision's two sides, as ROUTE lists — `emitted_members` and
+        # `[representative]` here) let `conjoin_shape_member_property` judge each side's DECLARED type before
+        # trusting its emitted property as an exact constraint worth conjoining — see that method for the two
+        # separate reasons a side can be untrustworthy (a transform, or an unknown class) and how each is
+        # handled, and for how the same judgment recurses through `merge_emitted_maps` for a name colliding one
+        # level down. `emitted_members`, not `members`: at a merged node `apply_structured_schema!` only ever
+        # builds `member_prop` from the REPRESENTATIVE route, so approximateness is judged on that route alone —
+        # `members` (every route) stays for nullability just below, an ENFORCED question the representative
+        # restriction does not apply to.
         #
         # `null` survives only when every non-model route tolerates nil (runtime enforces all of them; the
         # property itself is built from the first non-model config), EVERY colliding shape member tolerates nil
@@ -1349,12 +1178,33 @@ module Axn
         # nil even for a non-object node whose subfield shape isn't nested here. The members are read via
         # nil_allowed?, the predicate `apply_implicit_node!` reads them with, never sniffed off the emitted
         # property: an untyped nil-tolerant member emits no `type`, leaving no null branch to find.
-        def apply_explicit_child!(prop, key, node, representative, non_model_configs, members, ann)
+        def apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
           merged_members = merged_explicit_members(node, members)
           child_prop = build_property(representative, subfield: true)
           member_prop = prop[:properties][key]
-          child_prop = merge_shape_member_property(member_prop, child_prop) if member_prop && !merged_members.empty?
-          apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
+          # Descendants of a transformed value belong to its post-transform contract. Finish that
+          # subtree before the collision can stand it down; otherwise descent rewrites the retained
+          # wire type and attaches post-transform children to it.
+          if member_prop && transforms_wire_value?([representative])
+            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) do |projected|
+              apply_nested_subfields!(projected, node, ann)
+            end
+          else
+            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
+            apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
+          end
+          # A route carrying `preprocess:` is NOT exempted from its own `nil_allowed?` here, though the Proc
+          # does run before presence is judged and so might turn a wire `nil` into something non-nil
+          # (`preprocess: ->(_) { "x" }` on an otherwise-required node does exactly that). The exemption
+          # cannot be scoped safely: reflection has no way to tell that CONSTANT-preprocess case apart from
+          # an ordinary IDENTITY (or any other nil-preserving) `preprocess: ->(v) { v }`, where the Proc does
+          # NOT rescue nil and the required check correctly rejects it at runtime — `preprocess:` is an
+          # opaque Proc, and reflection must not execute it to find out which. Of the two directions that
+          # ambiguity forces a choice between — an unsatisfiable node for the constant-preprocess case, or a
+          # schema that ACCEPTS a wire `nil` the far more common pass-through case REJECTS — the latter is
+          # the one direction reflection may never take (`schema_wire_audit_spec`'s own hard invariant). So
+          # the constant-preprocess case is left as a known, unfixable residual: the same "cannot execute
+          # user code" limit already accepted for a transforming side's constraints generally.
           null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
                     members.all? { |m| nil_allowed?(m) } &&
                     !subtree_requires_presence?(node, ann)
@@ -1362,11 +1212,10 @@ module Axn
           prop[:properties][key] = child_prop.compact
         end
 
-        # The nested twin of `build_input`'s own model branch — extracted from `apply_children!` (which
-        # a growing product of Codex findings against the SAME conflict/reconciliation logic pushed over
-        # this file's own complexity budget) rather than folding another key into that method's single
-        # already-large loop body. Mutates `prop`/`required_model_ids` in place, exactly as the inlined
-        # code it replaces did.
+        # The nested twin of `build_input`'s own model branch — its own method rather than another key
+        # folded into `apply_children!`'s single already-large loop body, which the conflict/reconciliation
+        # logic here had pushed past this file's complexity budget. Mutates `prop`/`required_model_ids` in
+        # place, exactly as the inlined code it replaces did.
         def apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
                                   model_id_siblings, carried)
           # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
@@ -1377,42 +1226,40 @@ module Axn
           # `primary_key`/`type_for_attribute` (PRO-3384), and there is no reason to pay that (or the
           # DB/schema access behind it) for a result an explicit sibling is about to replace anyway.
           #
-          # Gated on `explicit_id`, not merely `sibling_node`'s presence (Codex review round 2, PR
-          # #269): a sibling node whose OWN field is itself a `model:` (e.g. `company_id, model:
-          # ...` beside `company, model: ...`) never writes to THIS key at all — it emits its own
-          # generated id one level deeper (`company_id_id`) — so treating its mere existence as
-          # "something will write here" skipped the only thing that would have.
+          # Gated on `explicit_id`, not merely `sibling_node`'s presence: a sibling node whose OWN
+          # field is itself a `model:` (e.g. `company_id, model: ...` beside `company, model: ...`)
+          # never writes to THIS key at all — it emits its own generated id one level deeper
+          # (`company_id_id`) — so treating its mere existence as "something will write here" skipped
+          # the only thing that would have.
           id_field = Internal::FieldConfig.model_id_key(key)
           sibling_node = children[id_field]
           explicit_id = sibling_node&.configs&.find { |c| !c.validations[:model] }
           # A `shape:` member on the PARENT (`parent_configs`) can ALSO claim `id_field` by name — a
-          # wire-property source `apply_structured_schema!` merges into `prop[:properties]` BEFORE
-          # this method ever runs (called from `build_property`, ahead of `apply_nested_subfields!`),
-          # entirely outside the subfield tree `children` searches (Codex review round 10, PR #269):
-          # `field :company_id, type: String` inside a `do...end` block beside `expects :company,
-          # on: ..., model: { id_type: Integer }` left `explicit_id` nil (no SUBFIELD sibling exists),
-          # so the conflict check never ran, and the shape member's `||=`-preserved string property
-          # silently discarded the declared integer id_type.
+          # wire-property source `apply_structured_schema!` merges into `prop[:properties]` BEFORE this
+          # method ever runs (called from `build_property`, ahead of `apply_nested_subfields!`), entirely
+          # outside the subfield tree `children` searches: `field :company_id, type: String` inside a
+          # `do...end` block beside `expects :company, on: ..., model: { id_type: Integer }` left
+          # `explicit_id` nil (no SUBFIELD sibling exists), so the conflict check never ran, and the shape
+          # member's `||=`-preserved string property silently discarded the declared integer id_type.
           #
-          # Restricted to the REPRESENTATIVE config's OWN shape, not every route at a merged parent node
-          # (Codex review round 11, PR #269): at a merged node `apply_structured_schema!` (building the
-          # parent's OWN property, via `property_representative`) only ever merges the FIRST non-model
-          # route's shape — a member declared on a LATER, non-representative route never reaches
-          # `prop[:properties]` at all. Searching every `parent_configs` (what `shape_members_at` alone
-          # does — correct for `apply_implicit_node!`'s use, an intermediate node with no representative
-          # of its own) found a member that was never actually emitted, so the check believed something
-          # had already claimed the key while NOTHING had: the model's own property was skipped, but
-          # nothing replaced it, leaving `id_field` `required` with no matching entry in `properties` at
-          # all — worse than losing the type, JSON Schema then admits any value there.
-          # The representative's own shape PLUS the members carried from a shallower hop — the ancestor's
-          # shape reaches this node's property too (PRO-3399), so a carried `field :company_id, type: String`
-          # claims the key exactly as one on the node's own route does, and leaving the carry out would
-          # discard the declared `id_type:` one level up.
+          # Restricted to the REPRESENTATIVE config's OWN shape, not every route at a merged parent node: at
+          # a merged node `apply_structured_schema!` (building the parent's OWN property, via
+          # `property_representative`) only ever merges the FIRST non-model route's shape — a member declared
+          # on a LATER, non-representative route never reaches `prop[:properties]` at all. Searching every
+          # `parent_configs` (what `shape_members_at` alone does — correct for `apply_implicit_node!`'s use,
+          # an intermediate node with no representative of its own) found a member that was never actually
+          # emitted, so the check believed something had already claimed the key while NOTHING had: the
+          # model's own property was skipped, but nothing replaced it, leaving `id_field` `required` with no
+          # matching entry in `properties` at all — worse than losing the type, JSON Schema then admits any
+          # value there. The representative's own shape PLUS the members carried from a shallower hop — the
+          # ancestor's shape reaches this node's property too (PRO-3399), so a carried `field :company_id,
+          # type: String` claims the key exactly as one on the node's own route does, and leaving the carry
+          # out would discard the declared `id_type:` one level up.
           representative = property_representative(parent_configs)
           explicit_id ||= emitted_shape_member_at(prop, representative, carried, id_field)
-          # `model_configs`, every route at THIS merged node — not just `.first` (Codex review round
-          # 3, PR #269): two `model:` routes reaching the same wire node may each carry their own
-          # `id_type:`/`klass:`, and reading only one silently dropped the other's claim.
+          # `model_configs`, every route at THIS merged node — not just `.first`: two `model:`
+          # routes reaching the same wire node may each carry their own `id_type:`/`klass:`, and
+          # reading only one silently dropped the other's claim.
           reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
           if explicit_id
             # Deferred rather than merged here directly (see the post-loop pass in `apply_children!`):
@@ -1440,9 +1287,9 @@ module Axn
         # member on a later route is found by `shape_members_at` while nothing of it is in the document.
         # Treating such a member as the sibling that claims the key skipped the generated id property, and the
         # deferred `merge_model_id_type_into_sibling!` pass then found nothing at that key to merge into:
-        # `id_field` came out `required` with no entry in `properties` at all, which JSON Schema reads as
-        # "any value permitted" — looser than emitting nothing, and the same failure the route restriction
-        # here was originally written to prevent (Codex review round 2, PR #276).
+        # `id_field` came out `required` with no entry in `properties` at all, which JSON Schema reads as "any
+        # value permitted" — looser than emitting nothing, and the same failure the route restriction here was
+        # originally written to prevent.
         #
         # A `prop[:properties]` question rather than a route question, because it is the one the emitter can
         # actually answer at this point: a shape member's property is written by `build_property` (and the
@@ -1526,10 +1373,12 @@ module Axn
         # zero for a graph this walk has already descended.
         #
         # Three keys are not a plain overlay. `properties` and `required` are unioned, since each side names
-        # contents the other does not — the node's own winning a name collision, the precedence
-        # `apply_structured_schema!` already uses for `base_properties.merge(member_props)`. And a size bound
-        # declared on BOTH sides takes the STRICTER of the two: a value satisfying only the looser one is
-        # rejected at runtime by the other, and that is the one direction a plain overlay emits too loosely.
+        # contents the other does not — and a NAME both sides declare (PRO-3405) is not a collision to
+        # resolve by precedence either: each of the two schemas at that child key is itself conjoined,
+        # recursively, via merge_emitted_maps's own use of conjoin_shape_member_property, rather than one
+        # replacing the other. And a size bound declared on BOTH sides takes the STRICTER of the two: a
+        # value satisfying only the looser one is rejected at runtime by the other, and that is the one
+        # direction a plain overlay emits too loosely.
         #
         # Taken from what is AT the key rather than from the member config, which is also why the caller guards
         # on its presence: at a merged node `apply_structured_schema!` only ever emits the REPRESENTATIVE
@@ -1542,23 +1391,731 @@ module Axn
         # from THAT declaration's `shape:` (Core::Contract#_derive_shaped_keys!), so a member carried from an
         # ancestor exempts no key at this node's map validator either. Re-running it would admit a key the
         # runtime rejects — measured, both spellings reject one.
-        def merge_shape_member_property(member_prop, own_prop)
+        # Both sides' `enum`, kept as separate branches on a merged node. `:enum` is a VALUE constraint and
+        # both sides are enforced, so both apply — the shallow merge leaves "second side wins", which
+        # advertised the later `inclusion:` set alone and ACCEPTED a value the runtime rejects.
+        #
+        # BRANCHED rather than intersected, because the emitter may not decide which members the two sets
+        # share: comparing an author's literals means running their `==`/`eql?`/`hash`, and reflection runs
+        # none of a caller's code (`enum_for_inclusion` takes an identity check for this same reason).
+        # `Array#&` does exactly that, and its `eql?` semantics are not even the runtime's — `[{a: 1}] &
+        # [{a: 1.0}]` is empty while the runtime accepts `{a: 1}` against both sets, so the node came back
+        # `enum: []`, satisfied by nothing, for a contract that IS satisfiable. Branching hands the question
+        # to the consumer's own JSON Schema equality, which is value-based and numeric-aware (measured: an
+        # `allOf` of those two sets accepts both spellings), and is what a scalar collision already does —
+        # the object path merges rather than branches, which is the only reason it ever differed.
+        def branch_both_enums!(merged, member_prop, own_prop)
+          return unless member_prop[:enum] && own_prop[:enum]
+
+          merged.delete(:enum)
+          merged[:allOf] = Array(merged[:allOf]) + [{ enum: member_prop[:enum] }, { enum: own_prop[:enum] }]
+        end
+
+        def merge_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
           merged = member_prop.merge(own_prop)
-          merged.delete(:format)
-          merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties])
-          merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required])
+          # `:type` is RECONCILED, not left to the shallow merge's "second side wins" default — a nullable
+          # `["object", "null"]` on either side must not silently overwrite the OTHER side's non-nullable
+          # `"object"`: an ancestor `deep` Hash member that REQUIRES `a` (non-nullable) beside a colliding
+          # node's OWN `deep` declared `allow_nil: true` (nullable) let `own_prop[:type]` — merged in
+          # SECOND — win outright, so the merged schema admitted `deep: null` even though the ancestor's
+          # own (unconditional, raw-value) check rejects null there. Both routes are enforced, so null
+          # survives only when BOTH tolerate it. This function also runs for a side that is simply EMPTY
+          # (own_prop.empty?/member_prop.empty? in conjoin_shape_member_property), not only a genuine
+          # object-vs-object merge, so the reconciliation must not hardcode "object" — it keeps whichever
+          # REAL base type either side names.
+          merged[:type] = merge_emitted_type(member_prop[:type], own_prop[:type]) if member_prop[:type] || own_prop[:type]
+          # `:format` describes a SCALAR "string"-typed value — never an object — so it is dropped only
+          # when the RECONCILED type above actually ended up "object" (where it would be a meaningless
+          # keyword sitting beside `properties`), not unconditionally: this function also runs for a side
+          # that is simply EMPTY (see the type comment above), not only a genuine object-vs-object merge,
+          # and an unconditional delete here discarded a SCALAR member's own real format in that case too
+          # — a `type: :uuid` shape member beside an Integer node with an opaque `preprocess: ->(_) { 1 }`
+          # (stripped down to `{}` by pass 1) is satisfiable only for a valid UUID string at runtime, but
+          # the merged property dropped `format: "uuid"` entirely, accepting any non-empty string. The
+          # plain `merge` above already carries over whichever side's `:format` survives (at most one
+          # non-empty side ever has one, since a `:format` and `:properties` are mutually exclusive on any
+          # one side) — deleting it here just needs to be conditional, not removed.
+          merged.delete(:format) if object_property?(merged)
+          # Reassigned only when at least one side actually HAS the key — both sides bare (e.g. two
+          # colliding `type: Hash` declarations with no children on either) means merge_emitted_maps/
+          # merge_emitted_required return nil (nothing to merge), and writing that nil through would leave
+          # an explicit `properties: nil`/`required: nil` in the document: JSON Schema requires `properties`
+          # to be an object and `required` to be an array, so a null-valued keyword is an invalid document,
+          # not merely a permissive one (the OUTER `.compact` calls this property eventually passes through
+          # are all shallow, so a nil written INTO this property here survives every one of them).
+          if member_prop[:properties] || own_prop[:properties]
+            merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties], member_configs:, own_configs:)
+          end
+          merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required]) if member_prop[:required] || own_prop[:required]
+          branch_both_enums!(merged, member_prop, own_prop)
           merged[:minProperties] = [member_prop[:minProperties], own_prop[:minProperties]].compact.max if merged[:minProperties]
           merged[:maxProperties] = [member_prop[:maxProperties], own_prop[:maxProperties]].compact.min if merged[:maxProperties]
+          # A map's `values:`/`keys:` axes (`additionalProperties`/`propertyNames`) are their OWN nested
+          # schema, both enforced when both sides declare one — the shallow `merge` above lets the SECOND
+          # side simply overwrite the first, the same bug `:properties`/`:type` already needed reconciling:
+          # an ancestor `deep` Hash member whose values axis requires `> 0` beside a colliding node's own
+          # `deep` values axis requiring `< 10` emitted only the `< 10` constraint, so `deep: { x: -1 }`
+          # passed the schema though the ancestor's own (unconditional) validator rejects it. Conjoined via
+          # the SAME `conjoin_shape_member_property` recursion used everywhere else two schemas at one
+          # position both apply — with the AXIS's own klass token(s) threaded through (not the outer
+          # field's), because an approximate axis (`values: Object`) needs the SAME
+          # `unknown_class_approximate?` stripping an approximate FIELD gets: an ancestor axis with `klass:
+          # Object` beside a colliding node's axis with `klass: Hash` initially called this conjunction
+          # with no axis configs at all, so the emitted `{type: "string"}` HINT (`single_type_for`'s
+          # permissive Object fallback) was treated as an EXACT, competing type assertion rather than the
+          # approximation it is — conjoined via `allOf` with the real `{type: "object"}` schema into a node
+          # nothing satisfies (a value can never be both a string and an object), though `{ x: {} }` passes
+          # both runtime axis validators. An axis never carries `coerce:`/`preprocess:` at all (refused at
+          # declaration — "of: does not support coerce:"/"preprocess:"), so `axis_config_view` only ever
+          # needs to expose the axis's declared klass token, never a transform.
+          if member_prop[:additionalProperties] || own_prop[:additionalProperties]
+            merged[:additionalProperties] = merge_emitted_nested_schema(
+              member_prop[:additionalProperties], own_prop[:additionalProperties],
+              axis_configs_for(member_configs, :values), axis_configs_for(own_configs, :values)
+            )
+          end
+          if member_prop[:propertyNames] || own_prop[:propertyNames]
+            merged[:propertyNames] = merge_emitted_nested_schema(
+              member_prop[:propertyNames], own_prop[:propertyNames],
+              axis_configs_for(member_configs, :keys), axis_configs_for(own_configs, :keys)
+            )
+          end
           merged
         end
 
+        # A nested map axis schema present on only one side is carried through as-is; present on both, it
+        # is conjoined the same way any other two-declarations-at-one-position collision is (see
+        # conjoin_shape_member_property) rather than letting either side simply win.
+        def merge_emitted_nested_schema(member_schema, own_schema, member_axis_configs = [], own_axis_configs = [])
+          return own_schema if member_schema.nil?
+          return member_schema if own_schema.nil?
+
+          conjoin_shape_member_property(member_schema, own_schema, member_configs: member_axis_configs, own_configs: own_axis_configs)
+        end
+
+        # A minimal stand-in for a field config, exposing only what `unknown_class_approximate?` reads
+        # (`.validations`) — enough to reuse that function UNCHANGED for an axis bag, which is never
+        # itself an `Internal::FieldConfig`. Deliberately has NO `preprocess` method at all, so
+        # `respond_to?(:preprocess)` reads false exactly as a shape member's does — `transforms_wire_
+        # value?`'s own doc explains why that must be the answer here: an axis bag can NEVER declare
+        # `coerce:`/`preprocess:` (both refused at declaration — "of: does not support coerce:"/
+        # "preprocess:"), so unlike an ordinary field's bare-coercible-klass case (ambient
+        # `coerce_input_types` MIGHT still coerce it, so reflection conservatively assumes it could), an
+        # axis's klass being coercible IN PRINCIPLE is never evidence it actually transforms here — the
+        # axis mechanism itself has no coercion seam at all, ambient setting or not. Defining `preprocess`
+        # to return nil would have made `respond_to?(:preprocess)` true, wrongly reusing the
+        # ambient-uncertainty conservatism a coercible axis klass (e.g. `values: Integer`) does not earn.
+        AxisConfigView = Struct.new(:validations) do
+          # So a view can be PROJECTED like any other config (`gate_resolved_sides`): an axis's own validators
+          # carry nested gates, and reflecting those by what always runs needs the same re-emission.
+          def with(validations:) = self.class.new(validations)
+        end
+        private_constant :AxisConfigView
+
+        # The `axis_key` (`:values`/`:keys`) axis's own declared klass token(s), one view per outer config
+        # that declares an `of:` bag at all — empty for a config with none, which `unknown_class_
+        # approximate?`/`transforms_wire_value?` both already read as "nothing to distrust here."
+        def axis_configs_for(configs, axis_key)
+          configs.filter_map do |config|
+            bag = Axn::Internal::ShapeGraph.hash_or_nil(config.validations[:of])
+            next nil if bag.nil?
+
+            raw = bag[axis_key]
+            axis = Axn::Internal::ShapeGraph.hash_or_nil(raw)
+            token = axis ? axis[:klass] : raw
+            nested_of = axis && axis[:of]
+            nested_shape = axis && axis[:shape]
+            # A CLASSLESS axis (legally `klass:`-free — e.g. `values: { shape: { members: [...] } }`,
+            # constraining only via its named members) still has a `:shape`/`:of` worth keeping even
+            # though it names no token at all: skipping the whole view whenever `token.nil?` — that gate
+            # — discarded that classless axis's `shape:` too, so when two colliding axes respectively
+            # described a child `a` as `Object` and `Hash`, the recursive `shape_members_at` lookup
+            # found NOTHING for either side, and the `Object` child's approximate hint was conjoined as
+            # exact all over again. Only a TRULY empty axis (no token, no `:of`, no `:shape` — nothing
+            # here distrusts or recurses into anything) is skipped now.
+            next nil if token.nil? && nested_of.nil? && nested_shape.nil?
+
+            # `:of` and `:shape` are carried forward alongside the synthesized `:type`, not just the axis's
+            # own `:klass` — needed so a DEEPER collision inside the axis (another map bag nested in `:of`,
+            # or named members declared via the axis's own `shape:`) can still be reconciled: outer
+            # `klass: Hash` axes whose NESTED values are respectively `Object` and `Hash` lost that inner
+            # structure here, since only the outer klass survived into the view — so
+            # when `merge_shape_member_property` recursed one level deeper for the INNER axis,
+            # `axis_configs_for` found no `:of` to read at all, and the inner `Object` axis's approximate
+            # hint was conjoined as exact all over again. `shape_members_at` reads
+            # `config.validations.dig(:shape, :members)` the same way for a NAMED child inside the axis's
+            # own `shape:` block — two `values: { klass: Hash, shape: { … } }` axes colliding needs the
+            # SAME per-child config lookup `merge_emitted_maps` already does for an ordinary object, and
+            # without `:shape` on the view it found nothing, so a child typed `Object` in one axis's shape
+            # collided with `Hash` in the other's as though BOTH were exact. Threading both through is what
+            # lets every recursive lookup this file already has (`shape_members_at`, `axis_configs_for`
+            # itself) keep working exactly as it does for an ordinary field's configs.
+            # The axis's OWN validators come across too, derived by subtracting the three bag keys this
+            # view maps itself rather than by naming Core's positional-validator list — a view that carried
+            # only the klass hid an axis's `inclusion:`/bounds AND the nested gates on them, so a
+            # conditional axis constraint was conjoined as though it always applied.
+            validations = axis ? axis.except(:klass, :of, :shape) : {}
+            validations[:type] = token if token
+            validations[:of] = nested_of if nested_of
+            validations[:shape] = nested_shape if nested_shape
+            AxisConfigView.new(validations)
+          end
+        end
+
+        # The reconciled `:type` for a merged property — nullable only when BOTH sides admit null, since
+        # either side rejecting it (its own unconditional check, at runtime) forbids it here regardless of
+        # what the other declares. `nil` on one side (that side is simply absent, not "typeless") returns
+        # the OTHER side's type untouched, so this is safe to call whenever EITHER side has a `:type` at
+        # all, not only when both are the SAME base type.
+        def merge_emitted_type(member_type, own_type)
+          return own_type if member_type.nil?
+          return member_type if own_type.nil?
+
+          base = (Array(member_type) + Array(own_type)).reject { |t| t == "null" }.uniq
+          base = base.first if base.size == 1
+          nullable = [member_type, own_type].all? { |type| Array(type).include?("null") }
+          nullable ? Array(base) + ["null"] : base
+        end
+
+        # Two emitted properties at ONE wire position, both enforced at runtime (PRO-3405): a shape member's
+        # own emission and the node's — or, recursively, two child properties a name collided on inside
+        # merge_emitted_maps. Neither may simply win: a name both sides declare means the runtime enforces
+        # both, so the document must say so too.
+        #
+        # Where both sides are already object-shaped, their keywords share a surface worth unioning
+        # (`properties`/`required`/the size bounds) — that IS merge_shape_member_property, unchanged since
+        # PRO-3399. Everywhere else — a scalar collides with a scalar, a union with an object, anything that
+        # doesn't share that surface — there is no keyword-by-keyword reading that means the same thing for
+        # every pair (the approach PRO-2877's pulled detectors already rejected: it invents an
+        # intersection-semantics per keyword, and every keyword nobody thought of stays silently wrong). JSON
+        # Schema already has the honest, keyword-agnostic spelling for "both of these apply" — `allOf`, free
+        # at a property (the same trick write_pattern! uses to compose two patterns) — so the member rides
+        # alongside as a sibling branch instead.
+        #
+        # `own_prop` being genuinely EMPTY (an explicit node with no type or shape of its own — the member is
+        # then the whole story) also routes through merge_shape_member_property rather than a bare `.dup`: a
+        # shallow dup would share `member_prop[:properties]` — the SAME nested Hash `apply_nested_subfields!`
+        # is about to add the node's own children into — mutating the ancestor's already-emitted property in
+        # place. merge_shape_member_property never has that problem (merge_emitted_maps dups the properties
+        # map whenever one side is absent), so routing every combination through the one function is what
+        # keeps this conjoin from being the aliasing bug AGENTS.md already names.
+        #
+        # `member_configs`/`own_configs` are the declarations each emitted property came from — a LIST,
+        # mirroring `shape_members_at`'s own return shape, since a merged node can carry more than one route
+        # to the same name. Empty (or omitted) on a side whose config is unknown at the call site, which
+        # reads as "trustworthy" (the conservative, pre-existing answer) rather than crashing.
+        #
+        # A side is CONJOINABLE only where its emitted keywords describe the same value everything else at
+        # this position reads, and two separate things can make them not — kept apart because the honest
+        # response differs:
+        #
+        # TRANSFORM (`transforms_wire_value?`: `preprocess:`, or a coercible declared type with no explicit
+        # `coerce: false`). EVERY keyword on that side judges the transform's output, while the wire carries
+        # its input. `allOf` asserts every branch of ONE instance, so conjoining such a side states a
+        # contract that never runs — and translating it back means inverting an arbitrary Proc, which
+        # reflection cannot do and must not try. So the side stands down whole: the other one is emitted
+        # alone and what this one still enforces is reported as a residue, in the property's `description`
+        # and to the once-per-class warning. That is looser than the runtime here — the direction reflection
+        # otherwise may not take — and it is the deliberate trade: a named, reported, bounded gap in place of
+        # an unbounded approximation no guard could trust anyway.
+        #
+        # UNKNOWN CLASS (`unknown_class_approximate?`: an `Object`/`Enumerable`-style token, for which
+        # `single_type_for` emits a permissive `{type: "string"}` hint rather than a claim). Nothing here
+        # transforms anything, so every OTHER keyword still describes the same raw value — only the
+        # fabricated type is untrustworthy, and only against a side making a real competing claim. So this
+        # re-emits the value constraints without the fabricated type, rather than deleting a union
+        # that may also carry real bounds.
+        # Two sides that are both unknown-class hints fall back to the same permissive shape and cannot
+        # contradict each other, so neither is stripped.
+        def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [], &complete_own)
+          sides, residues = gate_resolved_sides([[member_prop, member_configs], [own_prop, own_configs, complete_own]])
+          combined, origins = sides.reduce { |left, right| combine_two(left, right) }
+          combined = project_collision_checks(combined, origins)
+          prop, carried = left_of([combined, origins])
+          (carried + residues).reduce(prop) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
+        end
+
+        # Every side to be combined, with each CONDITIONAL one replaced by the always-run property of each
+        # config that contributed to it — and the residues naming what those conditions still enforce.
+        #
+        # A conditional side expands to one side PER config rather than being collapsed here, which is the
+        # whole point of the shape: the combination then runs through `combine_two` exactly as any other
+        # pair does, so a fabricated type is reconciled, an empty side is merged rather than branched, and a
+        # transform stands down — none of it reimplemented. Combining projections with bespoke logic beside
+        # the real conjunction is what diverged from it three times.
+        def gate_resolved_sides(sides)
+          residues = []
+          expanded = sides.flat_map do |prop, configs, complete|
+            projections = if configs.none? { |config| conditional_checks?(config) || branch_projection_required?(config) }
+                            [[prop, configs]]
+                          else
+                            residues.concat(gating_residues(configs))
+                            configs.map do |config|
+                              full = build_property(config, subfield: true)
+                              [carry_metadata(projected_property(config, full), prop), [config]]
+                            end
+                          end
+            # Gating and transformation are independent axes. Complete a post-transform subtree
+            # after projecting its own gates, but before deciding which value a collision describes.
+            projections.each { |side| complete.call(side.first) } if complete
+            projections
+          end
+          [expanded, residues]
+        end
+
+        # Two sides combined: the one place that decides what "both of these apply" emits, whatever the
+        # sides came from.
+        def combine_two((left_prop, left_configs), (right_prop, right_configs))
+          left_transforms = transforms_wire_value?(left_configs)
+          right_transforms = transforms_wire_value?(right_configs)
+
+          if left_transforms ^ right_transforms
+            left_prop = project_collision_checks(left_prop, left_configs) if left_transforms
+            right_prop = project_collision_checks(right_prop, right_configs) if right_transforms
+            kept, dropped = left_transforms ? [right_prop, left_prop] : [left_prop, right_prop]
+            # Only retained origins may classify the next collision in this fold.
+            return [stand_down_from(kept, dropped, TRANSFORM_RESIDUE), left_transforms ? right_configs : left_configs]
+          end
+
+          left_unknown = unknown_class_approximate?(left_configs)
+          right_unknown = unknown_class_approximate?(right_configs)
+          left_prop = drop_fabricated_type(left_prop, left_configs) if left_unknown && !right_unknown && !asserts_nothing?(right_prop)
+          right_prop = drop_fabricated_type(right_prop, right_configs) if right_unknown && !left_unknown && !asserts_nothing?(left_prop)
+
+          # Residues belong to the POSITION, not to whichever branch happened to raise them: a reader looks
+          # at the property, and a sentence buried in one `allOf` entry reads as a note about that entry.
+          # So they come off both sides here and are re-recorded on the finished node.
+          carried = residues_on(left_prop) + residues_on(right_prop)
+          left_prop = left_prop.except(RESIDUE_KEY)
+          right_prop = right_prop.except(RESIDUE_KEY)
+
+          # A side stripped down to nothing is not a branch either — an `allOf` entry asserting no keyword
+          # constrains nothing — so it routes through the merge, which already handles an absent side.
+          combined =
+            if asserts_nothing?(left_prop) || asserts_nothing?(right_prop) ||
+               (object_property?(left_prop) && object_property?(right_prop))
+              merge_shape_member_property(left_prop, right_prop, member_configs: left_configs, own_configs: right_configs)
+            else
+              right_prop.merge(allOf: Array(right_prop[:allOf]) + [left_prop])
+            end
+
+          [carried.reduce(combined) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }, left_configs + right_configs]
+        end
+
+        # The finished property and the residues still riding on it.
+        def left_of((prop, _configs))
+          [prop.except(RESIDUE_KEY), residues_on(prop)]
+        end
+
+        # Remove conditional entries before emission. A type supplies both a claim and the context
+        # in which other validators acquire their JSON keywords; when its claim disappears, those
+        # validators must still describe every applicable wire type.
+        def projected_property(config, full)
+          ungated = ungated_validations(config)
+          projected = if config.validations[:type] && !ungated.key?(:type)
+                        type_agnostic_property(config, ungated)
+                      elsif branch_projection_required?(config)
+                        property_for_type_branches(config, ungated, declared_type_tokens(ungated))
+                      else
+                        build_property(config.with(validations: ungated), subfield: true)
+                      end
+          restore_blank_floor(projected, ungated, full)
+        end
+
+        # Re-emit against the complete JSON domain when the authored type supplies no unconditional
+        # wire constraint. Keep type-dependent validator semantics in the normal property builder.
+        WIRE_TYPE_CONTEXTS = [String, Array, Hash, Integer, Float, :boolean, NilClass].freeze
+
+        def type_agnostic_property(config, validations)
+          validations = validations.except(:type)
+          return build_property(config.with(validations:), subfield: true) if Axn::Validation::Base.validator_entries(validations).empty?
+
+          prop = property_for_type_branches(config, validations, WIRE_TYPE_CONTEXTS)
+          Sizing::SIZE_CONSTRAINT_KEYS.each_key do |type|
+            context = { type: }
+            token = TypeTokens::TYPE_MAP.find { |_token, json_type| json_type == type }.first
+            apply_size_constraints!(context, validations.merge(type: token))
+            context.delete(:type)
+            prop.merge!(context)
+          end
+          presence_rejects_blank?(validations) ? prop.merge(not: { enum: BLANK_WIRE_VALUES }) : prop
+        end
+
+        def branch_projection_required?(config)
+          declared_type_tokens(config.validations).size > 1 &&
+            NUMERIC_BOUND_ENTRIES.keys.any? { |key| config.validations[key] }
+        end
+
+        # A standalone numeric union may narrow to numbers. At a collision that can erase the
+        # other declaration's only satisfiable branch. Emit branches independently instead,
+        # preserving type options and keeping unexpressible bounds in the reporting path.
+        def property_for_type_branches(config, validations, types)
+          branches = types.map do |type|
+            type = validations[:type].merge(klass: type) if validations[:type].is_a?(Hash)
+            build_property(config.with(validations: validations.merge(type:)), subfield: true)
+          end
+          metadata = branches.first.slice(:description, :default)
+          metadata.merge(anyOf: branches.map { |branch| branch.except(:description, :default) })
+        end
+
+        # Only type assertions are needed here, not a satisfiability prover. Ignoring enum, not,
+        # and value bounds can add a scoped warning, never remove a constraint or reject a call.
+        # Number includes integers in JSON Schema, so expand it before intersecting assertions.
+        def projected_types(prop)
+          universe = WIRE_TYPE_CONTEXTS.flat_map { |token| Array(single_type_for(token, for_output: false)[:type]) }.uniq
+          types = prop[:type] ? Array(prop[:type]) : universe
+          types |= ["integer"] if types.include?("number")
+          types &= prop[:anyOf].flat_map { |branch| projected_types(branch) } if prop[:anyOf]
+          Array(prop[:allOf]).each { |branch| types &= projected_types(branch) }
+          types
+        end
+
+        # Blankness is a value constraint, not just a container size. On the JSON domain every
+        # non-string blank is in BLANK_WIRE_VALUES; strings retain Ruby's whitespace semantics,
+        # which we report rather than replace with a different regular-expression dialect.
+        def project_collision_checks(prop, configs)
+          if configs.any? { |config| absence_bounds_blankness?(config.validations) }
+            blank = { anyOf: [{ type: "string" }, { enum: BLANK_WIRE_VALUES }] }
+            prop = prop.merge(allOf: Array(prop[:allOf]) + [blank])
+          end
+          report_unexpressed_checks(prop, configs)
+        end
+
+        # Length and format can validate a non-string's Ruby string form. Their JSON keywords
+        # cannot: ask their actual emitters per surviving type rather than assume a keyword
+        # somewhere in an anyOf covers every branch. Numeric bounds likewise cannot constrain
+        # numeric strings; enum/const constraints apply to all JSON types.
+        # Absence is exact on non-strings through project_collision_checks; strings and gated
+        # absence still need a report rather than a different interpretation of blankness.
+        def report_unexpressed_checks(prop, configs)
+          keys = %i[length format absence] + NUMERIC_BOUND_ENTRIES.keys
+          sources = configs.select { |config| keys.any? { |key| config.validations[key] } }
+          return prop if sources.empty?
+
+          types = projected_types(prop)
+          sources.reduce(prop) do |projected, config|
+            applicable_types = nil_allowed?(config) ? types - ["null"] : types
+            Axn::Validation::Base.validator_entries(config.validations).slice(*keys).reduce(projected) do |reported, (key, options)|
+              if NUMERIC_BOUND_ENTRIES.key?(key)
+                bounds = Axn::Validation::Base.declared_numeric_bounds(options, ranged: NUMERIC_BOUND_ENTRIES.fetch(key))
+                next reported if bounds.empty?
+              end
+              conditional = Axn::Validation::Base.entry_effectively_gated?(options, declaration_gates(config))
+              missing = applicable_types.reject do |type|
+                key == :absence ? !conditional && type != "string" : value_check_emitted?(type, key, options)
+              end
+              next reported if missing.empty?
+
+              prefix = conditional ? "#{GATED_RESIDUE}; " : ""
+              prefix += "after transformation, " if transforms_wire_value?([config])
+              subject = key == :absence ? "blankness" : "the runtime value or its string form"
+              record_residue(reported, "#{prefix}#{key} checks #{subject} for #{missing.join(', ')} values; " \
+                                       "JSON Schema cannot fully express this check (#{render_constraint({ key => options })})",
+                             kind: conditional ? :conditional : :inherent)
+            end
+          end
+        end
+
+        def value_check_emitted?(type, key, options)
+          prop = { type: }
+          validations = { key => options }
+          case key
+          when :length then apply_size_constraints!(prop, validations)
+          when :format then apply_pattern!(prop, validations, for_output: false)
+          else apply_numeric_bounds!(prop, validations, nullable: false, for_output: false)
+          end
+          prop.keys != [:type]
+        end
+
+        def ungated_validations(config)
+          gates = declaration_gates(config)
+          config.validations.reject do |key, opt|
+            next false if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.include?(key)
+
+            Axn::Validation::Base.entry_effectively_gated?(opt, gates)
+          end
+        end
+
+        # Project each gated validator in isolation. Comparing full and ungated schemas confuses
+        # composition with ownership: two patterns become allOf, while one remains a plain pattern.
+        # No unconditional validator participates in the fragment reported here.
+        def gating_residues(configs)
+          configs.flat_map do |config|
+            gates = declaration_gates(config)
+            shared = shared_validation_options(config.validations)
+            Axn::Validation::Base.validator_entries(config.validations).filter_map do |key, opt|
+              next unless Axn::Validation::Base.entry_effectively_gated?(opt, gates)
+
+              context = shared.merge(config.validations.slice(:type))
+              context = context.except(:type) if key == :type
+              baseline = build_property(config.with(validations: context), subfield: true)
+              fragment = build_property(config.with(validations: context.merge(key => opt)), subfield: true)
+              fragment = fragment.except(*RESIDUE_UNGATEABLE_KEYS).reject { |name, value| baseline[name] == value }
+              next if fragment.empty?
+
+              phase = transforms_wire_value?([config]) ? "after transformation, " : ""
+              Residue.new(summary: "#{phase}#{GATED_RESIDUE} (#{render_constraint(fragment)})", kind: :conditional)
+            end
+          end
+        end
+
+        def conditional_checks?(config)
+          return false unless config.respond_to?(:validations)
+
+          gates = declaration_gates(config)
+          config.validations.any? do |key, opt|
+            next false if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.include?(key)
+
+            Axn::Validation::Base.entry_effectively_gated?(opt, gates)
+          end
+        end
+
+        def declaration_gates(config) = config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+
+        # A projection keeps the `description` and pending residues of the property it replaces: those
+        # describe the POSITION, and nothing about them is conditional.
+        def carry_metadata(projected, original)
+          projected = projected.merge(RESIDUE_KEY => residues_on(original)) if residues_on(original).any?
+          description = original[:description]
+          Axn::Internal::Identity.nil_value?(description) ? projected : projected.merge(description:)
+        end
+
+        # The one thing a projection can lose that is NOT conditional. `minLength`/`minItems`/`minProperties`
+        # are derived from the TYPE, so when the gated entry is the `type:` itself, stripping it also strips
+        # the JSON spelling of an UNGATED `presence:` — the node comes back admitting `""`/`[]`/`{}` on every
+        # call, which the runtime rejects on every call. That is this file's own rule that a missing bound is
+        # a missing EMISSION first, so the floor is restated as a value-level one, the only spelling left
+        # once no type survives to hang a size keyword on.
+        def restore_blank_floor(projected, ungated, original)
+          return projected unless projected[:type].nil? && projected[:anyOf].nil?
+          return projected if original[:type].nil? && original[:anyOf].nil?
+          return projected unless presence_rejects_blank?(ungated)
+
+          projected.merge(not: { enum: BLANK_WIRE_VALUES })
+        end
+
+        # Whether a property constrains nothing — genuinely empty, or holding only the metadata an emitted
+        # node carries without narrowing it (`description`, and the residues waiting to be rendered into it).
+        def asserts_nothing?(prop) = prop.except(:description, RESIDUE_KEY).empty?
+
+        # Re-emit from the declarations while their origins are still available. A fabricated and a
+        # genuine branch may both say "string", so the emitted shape cannot identify either one.
+        # Keep this separate from transforms: these validators still judge the same wire value.
+        def drop_fabricated_type(prop, configs)
+          projected = configs.map { |config| type_agnostic_property(config, ungated_validations(config)) }
+                             .reduce { |left, right| combine_two([left, []], [right, []]).first }
+          carry_metadata(projected, prop)
+        end
+
+        # Emit the trustworthy side alone, carrying over anything the dropped side already had to report and
+        # naming what it still enforces. The dropped fragment IS the constraint, so it is rendered verbatim
+        # rather than described: a reader (or an LLM choosing an argument) can act on `{"type":"integer",
+        # "const":5}` in a way it cannot act on "some other constraint also applies".
+        #
+        # The kept side is detached from its nested `properties` map before it leaves here: that map may be
+        # the ancestor's own already-emitted one, which `apply_nested_subfields!` is about to add this
+        # node's children into — the aliasing merge_shape_member_property avoids by duping, and which a
+        # bare hand-back would reintroduce on this path.
+        def stand_down_from(kept, dropped, reason)
+          kept = kept.dup
+          kept[:properties] = kept[:properties].dup if kept[:properties].is_a?(::Hash)
+          kept[:description] = carried_description(kept[:description], dropped[:description])
+          kept.delete(:description) if Axn::Internal::Identity.nil_value?(kept[:description])
+          result = residues_on(dropped).reduce(kept) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
+          constraint = dropped.except(:description, RESIDUE_KEY).compact
+          summary = constraint.empty? ? reason : "#{reason} (#{render_constraint(constraint)})"
+          record_residue(result, summary)
+        end
+
+        # The fragment a residue MENTIONS, rendered without requiring the caller's literals to be
+        # JSON-encodable. They need not be: `normalize_scalar_literal` deliberately keeps a
+        # `Float::INFINITY` default and its kind, so ordinary reflection does not fail on one — and a path
+        # that merely NAMES such a value must not be the one that fails instead.
+        def render_constraint(prop)
+          # A mentioned subtree no longer participates in the final schema walk. Finalize its
+          # reports now, on a copy, while schema nodes can still be distinguished from literals.
+          finalized, = finalize_residues!(prop, copy: true)
+          JSON.generate(json_mentionable(finalized))
+        end
+
+        # `value` reduced to something JSON can carry WITHOUT asking it anything. Reducing first rather than
+        # encoding and rescuing is the point: `JSON.generate` dispatches `to_json`, so encoding a caller's
+        # own object runs its code — which this layer may never do, and which a `StandardError` rescue does
+        # not contain anyway (a `to_json` raising `NotImplementedError` escaped one and took `input_schema`
+        # down while it was merely composing a report).
+        #
+        # Everything that reaches the encoder is a plain primitive: a String through `Text.renderable`, so
+        # neither a subclass's `to_json` nor bytes with no UTF-8 rendering reach it, and anything else
+        # through `Rendering`, whose reads are bound.
+        #
+        # EVERY test and read here is undispatched, because a reduction is only a defence if the reduction
+        # itself runs nothing. `nil?`, `==`, `instance_of?` and `map` are all overridable by the literal, so
+        # identity comes from `Identity.same?`, the class from `Identity.class_of`, and the two container
+        # walks from Array's and Hash's own unbound methods. Only an EXACT built-in is traversed, the rule
+        # `normalize_schema_literal` already follows: a subclass is opaque and renders as one.
+        #
+        # Integer/Float/Symbol need no bound read beyond the class test — none of the three can carry a
+        # singleton method, so an exact one answers with its own implementation or not at all.
+        def json_mentionable(value)
+          return value if Axn::Internal::Identity.nil_value?(value) || Axn::Internal::Identity.same?(value, true) || Axn::Internal::Identity.same?(value, false)
+          return value if exactly?(value, ::Integer)
+          return value.finite? ? value : mentionable_rendering(value) if exactly?(value, ::Float)
+          # `Text.renderable` reads the bytes through bound methods, so the String itself goes in — asking it
+          # for `to_s` first would dispatch, which is the thing this method exists not to do.
+          return Axn::Internal::Text.renderable(value) if exactly?(value, ::String)
+          return Axn::Internal::Text.renderable(value.name) if exactly?(value, ::Symbol)
+          return MENTIONABLE_MAP.bind_call(value) { |element| json_mentionable(element) } if exactly?(value, ::Array)
+          return mentionable_pairs(value) if exactly?(value, ::Hash)
+
+          mentionable_rendering(value)
+        end
+
+        # `value` is an instance of `klass` ITSELF, asking neither the value nor its class. A subclass
+        # answers false: it may override the reads a traversal would make.
+        def exactly?(value, klass) = Axn::Internal::Identity.same?(Axn::Internal::Identity.class_of(value), klass)
+
+        # An exact Hash walked through Hash's own `each_pair`. Every reduced key is a plain primitive, so the
+        # `[]=` that collects them hashes something axn built rather than something it was handed.
+        def mentionable_pairs(value)
+          MENTIONABLE_EACH_PAIR.bind_call(value).each_with_object({}) do |(key, nested), reduced|
+            reduced[json_mentionable(key)] = json_mentionable(nested)
+          end
+        end
+
+        def mentionable_rendering(value)
+          Axn::Internal::Rendering.value_rendering(value) || Axn::Internal::Rendering.class_name(value)
+        end
+
+        # An authored `description:` survives a stand-down even though the declaration's constraints do not:
+        # it describes the POSITION for a reader, not the value for a validator, so nothing about it is
+        # untrustworthy across a transform or a closed gate. Dropping it silently lost the explicit node's
+        # own prose in the ordinary case — a shape member cannot transform, so the node is nearly always the
+        # side that stands down, and its description was published before this. Both are kept when both
+        # exist, and an identical pair collapses.
+        # Both descriptions are the AUTHOR'S OWN prose, so neither is asked anything: each is reduced through
+        # the rendering seam first, and the equal-pair collapse then compares two plain Strings axn owns
+        # rather than dispatching a `==` the description's class may define.
+        #
+        # `nil?` is overridable too, so every nil test this reporting path makes of a caller's own object —
+        # here, in `carry_metadata`, and in `stand_down_from` — goes through `Identity.nil_value?`. The rule
+        # is the region's, not this method's: a value reaches the guarded rendering seam WITHOUT having been
+        # asked anything on the way.
+        def carried_description(kept, dropped)
+          return kept if Axn::Internal::Identity.nil_value?(dropped)
+          return dropped if Axn::Internal::Identity.nil_value?(kept)
+
+          kept_prose = mentionable_rendering(kept)
+          dropped_prose = mentionable_rendering(dropped)
+          kept_prose == dropped_prose ? kept_prose : join_prose(kept_prose, dropped_prose)
+        end
+
+        # Two pieces of prose joined through the text seam, either of which may be caller-supplied and in
+        # an encoding the other cannot be concatenated with.
+        #
+        # Reduced through `mentionable_rendering`, never `to_s`: a String SUBCLASS description can override
+        # `to_s`, and one that raises took `input_schema` down from inside the append. The seam reads a
+        # String's bytes through bound methods and guards everything else.
+        def join_prose(*parts)
+          rendered = parts.reject { |part| Axn::Internal::Identity.nil_value?(part) }.map { |part| mentionable_rendering(part) }
+          rendered.empty? ? nil : rendered.join(" ")
+        end
+
+        # "object", nullable or not, at the TOP of a property — the one shape merge_shape_member_property's
+        # keyword union actually reads (`properties`/`required`/the size bounds). Anything else — a scalar
+        # `type:`, a bare `anyOf`/`enum` with no top-level `type` — has no such surface, so conjoin_shape_
+        # member_property falls back to allOf rather than guessing at a per-keyword meaning.
+        def object_property?(prop)
+          type = prop[:type]
+          type == "object" || (type.is_a?(::Array) && type.include?("object"))
+        end
+
+        # Whether ANY config in this route list transforms the wire value it judges — a Proc
+        # (`preprocess:`), or a declared type with a coercible branch and no explicit `coerce: false`.
+        #
+        # A shape member (`Core::Contract::ShapeConfig`) can do NEITHER — `_reject_member_coerce!` refuses
+        # `coerce:`/`coerce: true` on one at declaration ("it has no reader for a coerced value to resolve
+        # onto"), and the same is true of `preprocess:` (`_reject_model_transform!`'s sibling guard). Both
+        # rejections are declaration-time GUARDS, not evidence the ambient `coerce_input_types` flag could
+        # somehow still apply where the explicit spelling cannot: coercion is fundamentally a FIELD/reader
+        # mechanism (`ContractForSubfields.resolve_value`'s read path), and a member never has one — so an
+        # `Integer`-typed member is never coerced, ambient flag or not, and treating it as approximate
+        # wrongly discarded its OWN exact constraints (`inclusion:`'s `enum` included) against a colliding
+        # node that cannot coerce it either (`type: Integer, inclusion: { in: [5] }` on a member, `type: {
+        # klass: Integer, coerce: false }` on the colliding node — NEITHER side can coerce, yet the
+        # member's own type being merely "coercible in principle" forced it to `{}`, dropping the `enum` a
+        # plain, un-coercing collision needed no protecting from at all). `respond_to?(:preprocess)` is
+        # reused as the "can this config transform at all" signal, since a shape member and a
+        # subfield/field config already differ on it for the identical reason.
+        #
+        # For a config that COULD carry either: `Coercion::SUPPORTED` is checked directly rather than
+        # through a bare `coerce:` key — a bare `coerce: <Type>` is sugar for `type: { klass:, coerce: true
+        # }`, `_expand_coerce_sugar!` settles it into the bag form before `validations` ever holds it, so
+        # there is no separate bare spelling left to check. An ABSENT `coerce:` on a coercible type is not
+        # evidence of no transform — the class/global `coerce_input_types` setting (always on under
+        # `Axn::Tools::Invoker`) coerces every such field whose own `coerce:` is silent, and reflection
+        # cannot resolve that per-call/per-class flag (the same conservatism
+        # `boolean_coercion_can_flip_truthiness?` already applies) — so only an explicit `coerce: false`
+        # rules a coercible token out, mirroring `Coercion.field_coerces?`'s own explicit-wins semantics.
+        def transforms_wire_value?(configs)
+          configs.any? do |config|
+            next false unless config.respond_to?(:preprocess) # a shape member has no reader, hence neither coerces nor preprocesses
+            next true if config.preprocess
+
+            type_opt = config.validations[:type]
+            next false if type_opt.is_a?(::Hash) && type_opt[:coerce] == false
+
+            !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
+          end
+        end
+
+        # Ask the emitter whether this token reached its fallback; a parallel classifier missed
+        # :boolean and mistook a real boolean constraint for another unknown-class hint.
+        def unknown_class_token?(token) = known_type_for(token, for_output: false).nil?
+
+        # Whether ANY branch of a config's declared type is an unknown-class hint. `.any?`, not `.all?`: a
+        # mixed union like `type: [Object, String]` has one exact branch, but `Object` alone already admits
+        # everything the union could ever narrow to, so the union as a whole asserts nothing more precise
+        # than the approximate branch does (a `.all?` reading let a union with an approximate branch
+        # through as "exact"). Untyped (no declared type at all) is NOT approximate: it emits no `:type`
+        # key at all rather than a misleading one, which is the `own_prop.empty?` case
+        # `conjoin_shape_member_property` already handles on its own terms. And `.all?` across MULTIPLE
+        # configs (a merged node's routes) — the opposite quantifier from the per-config `.any?`, because
+        # the two lists mean opposite things: a config's own tokens are a UNION (an OR — any branch is
+        # enough to widen toward "everything"), while multiple ROUTES at one key are each independently
+        # enforced (an AND — one exact route already narrows the combined constraint regardless of an
+        # approximate route beside it), so the side counts as approximate only when NONE of its routes
+        # assert anything real. An empty list is NOT approximate — the conservative, pre-existing answer
+        # for a side this walk cannot judge.
+        def unknown_class_approximate?(configs)
+          !configs.empty? && configs.all? do |config|
+            tokens = declared_type_tokens(config.validations)
+            !tokens.empty? && tokens.any? { |t| unknown_class_token?(t) }
+          end
+        end
+
         # Duped when only one side has them: `apply_nested_subfields!` mutates the map it is handed as it adds
-        # children, and the member's own emission must not be written through.
-        def merge_emitted_maps(member_props, own_props)
+        # children, and the member's own emission must not be written through. A name BOTH sides declare is
+        # conjoined rather than let the second (`own_props`, the node's own child) win outright — PRO-3405;
+        # `apply_structured_schema!`'s own `base_properties.merge(member_props)` is a different question (an
+        # INFERRED property deferring to a DECLARED one), not two declarations colliding, and is unchanged.
+        #
+        # `member_configs`/`own_configs` — the routes each side's PARENT config came from — are re-resolved
+        # PER COLLIDING KEY via `shape_members_at`, the same locator emission and the drop pass already share:
+        # a name colliding one level down was declared by a DIFFERENT (nested) config than the one that
+        # produced `member_props`/`own_props` themselves, so the parent's approximateness says nothing about
+        # the child's (a real `type: String` and the `Object` fallback emit the byte-identical property, so
+        # only the declaration distinguishes them).
+        def merge_emitted_maps(member_props, own_props, member_configs: [], own_configs: [])
           return own_props if member_props.nil?
           return member_props.dup if own_props.nil?
 
-          member_props.merge(own_props)
+          member_props.merge(own_props) do |key, member_prop, own_prop|
+            conjoin_shape_member_property(
+              member_prop, own_prop,
+              member_configs: shape_members_at(member_configs, key),
+              own_configs: shape_members_at(own_configs, key)
+            )
+          end
         end
 
         def merge_emitted_required(member_required, own_required)
@@ -1911,8 +2468,6 @@ module Axn
         # rejects it. `absence:` needs no entry: it emits nothing into a `propertyNames` node at all. `format:`
         # is deliberately absent, being the one validator whose subject IS the wire string — ActiveModel matches
         # `value.to_s`, which is what `canonical_wire_key` dispatches for a key.
-        OBJECT_SUBJECT_KEY_VALIDATORS = %i[length inclusion presence].freeze
-        private_constant :OBJECT_SUBJECT_KEY_VALIDATORS
 
         # `ShapeGraph.type_tokens`, not `Kernel#Array` — `klass` is a caller-declared axis token here, and
         # `Array()` would dispatch `to_ary`/`to_a` on it (see `declared_type_tokens` above).
@@ -2178,277 +2733,6 @@ module Axn
           end
         end
 
-        def apply_size_constraints!(prop, validations, for_output: false, property_names: false, declared_klass: nil)
-          minimum = declared_size_minimum(validations)
-          maximum = declared_size_maximum(validations)
-          return if minimum.nil? && maximum.nil?
-
-          strings = emit_string_size?(validations, for_output:, property_names:, declared_klass:)
-
-          if prop[:anyOf]
-            prop[:anyOf] = apply_member_size_constraints(prop[:anyOf], minimum, maximum, strings:)
-          else
-            prop.merge!(size_bounds_for(prop[:type], minimum, maximum, strings:))
-          end
-        end
-
-        # Whether a STRING size may be emitted at this position — the same question `apply_pattern!` asks, and
-        # for the same reason. ActiveModel measures the value's own `#length`, and on OUTPUT that is not always
-        # the string the wire carries: `Time.utc(2026, 8, 25, 12).to_s` is 23 characters and it serializes as the
-        # 20-character `"2026-08-25T12:00:00Z"`, so `length: { is: 23 }` accepts the value at runtime while the
-        # emitted `minLength: 23` rejects the action's own output.
-        #
-        # A COLLECTION size is exempt by construction: `minItems`/`maxItems`/`minProperties`/`maxProperties`
-        # count the elements the serializer writes, so the runtime's measurement and the document's agree however
-        # the elements themselves render. A `propertyNames` node is exempt too, exactly as it is for a pattern —
-        # a KEY's wire form is the `to_s` the validator measured, and an axis whose key is not its own wire form
-        # has already had `length:` removed by `key_axis_constraints`. Input needs no gate: the subject there is
-        # the value that was sent.
-        def emit_string_size?(validations, for_output:, property_names:, declared_klass:)
-          return true unless for_output
-          return true if property_names
-
-          own_wire_form?(declared_type_tokens(validations, declared_klass))
-        end
-
-        # The size keywords whose subject is a STRING, and so the ones the wire-form gate above governs.
-        STRING_SIZE_KEYS = %i[minLength maxLength].freeze
-        private_constant :STRING_SIZE_KEYS
-
-        # A union emits one branch per member type instead of a single `type:`, and the validators reject an
-        # out-of-bounds value whichever branch it takes — so each bound belongs on every branch that can carry
-        # it. A branch with no size (an `integer` member) and the nullability branch carry none, decided by the
-        # same per-type key lookup the single-type path uses.
-        def apply_member_size_constraints(members, minimum, maximum, strings: true)
-          members.map do |member|
-            bounds = size_bounds_for(member[:type], minimum, maximum, strings:)
-            bounds.empty? ? member : member.merge(bounds)
-          end
-        end
-
-        # The size keywords one emitted type can carry, for the bounds this field declares. Empty for a type
-        # with no size, which is what keeps a bound off an `integer` branch and off `"null"`.
-        def size_bounds_for(type, minimum, maximum, strings: true)
-          bounds = {}
-          if minimum && (floor_key = size_constraint_key_for(type)) && emittable_size_key?(floor_key, strings)
-            bounds[floor_key] = minimum
-          end
-          if maximum && (ceiling_key = size_ceiling_key_for(type)) && emittable_size_key?(ceiling_key, strings)
-            bounds[ceiling_key] = maximum
-          end
-          bounds
-        end
-
-        def emittable_size_key?(key, strings) = strings || !STRING_SIZE_KEYS.include?(key)
-
-        # The JSON Schema floor key for an emitted type, or nil for a type with no empty state. Reads the
-        # single-type String and the `[T, "null"]` nullable pair alike; `"null"` is never size-bearing.
-        def size_constraint_key_for(type)
-          Array(type).filter_map { |t| SIZE_CONSTRAINT_KEYS[t] }.first
-        end
-
-        # The JSON Schema ceiling key for an emitted type, or nil for a type with no size. Reads the single-type
-        # String and the `[T, "null"]` nullable pair alike, exactly as the floor's own key lookup does.
-        def size_ceiling_key_for(type)
-          Array(type).filter_map { |t| SIZE_CEILING_KEYS[t] }.first
-        end
-
-        # The smallest size this field's validators admit, or nil when they admit an empty value. An explicit
-        # `length:` floor wins over the implicit 1 that the emptiness check and the presence check each carry —
-        # a caller needs the tightest of them, and all three forbid empty. The floor is read by
-        # Validation::Base's shared definition, the same one the
-        # emptiness reconciliation judges a declaration by, so what the runtime enforces and what the schema
-        # advertises cannot drift; a per-call (Symbol/Proc) or infinite floor is unemittable and falls through
-        # to the presence check.
-        #
-        # A blank-tolerant `length:` contributes its floor only when an empty value would be rejected ANYWAY.
-        # Blank-tolerance on one entry says an empty value stands THAT entry aside, not that an empty value gets
-        # through: with nothing else rejecting it the contract admits "empty or at least 3", which no floor
-        # expresses, so emitting 3 would reject a value the contract accepts — but where a presence or emptiness
-        # check rejects every empty value, 3 or more is all the contract admits and the floor is exact. Truthiness
-        # decides the tolerance, not key presence: a nil-tolerance injects an explicit `allow_blank: false`.
-        #
-        # A GATED entry may be open on a given call, and is counted as if it were — static-maximal, which can
-        # leave the input schema stricter than a closed-gate runtime but never looser, and is the policy for
-        # every gated constraint here.
-        #
-        # Only `length:` is consulted, never a `size:`: `size` is absent from KNOWN_VALIDATION_KEYS, so a
-        # declaration carrying it raises "Unknown key(s) :size" and can never reach reflection.
-        def declared_size_minimum(validations)
-          # Whether an empty value can get through at all decides BOTH branches below: it is the floor of 1 a
-          # presence/emptiness check imposes on its own, and it is what tells a blank-tolerant `length:` apart
-          # from one whose blank-tolerance is moot.
-          rejects_empty = empty_value_rejected?(validations)
-
-          length = effective_entry_options(validations[:length], shared_validation_options(validations))
-          if rejects_empty || !length[:allow_blank]
-            declared = Axn::Validation::Base.declared_length_floor(length)
-            return declared if Axn::Validation::Base.emittable_length_floor?(declared)
-          end
-
-          rejects_empty ? 1 : nil
-        end
-
-        # The largest size this field's validators admit, or nil when they bound it nowhere. Two spellings name
-        # one, and `absence:` is the tighter of them whenever it names one at all, so it answers first: it
-        # rejects every non-blank value, so where a type's blank values are exactly its EMPTY ones it leaves
-        # size 0 as the only admissible size — the exact statement `length: { maximum: 0 }` makes. Without it a
-        # field carrying `absence:` beside a dropped floor emitted no ceiling at all, a node LOOSER than the
-        # contract it projects.
-        #
-        # Blank-tolerance cannot loosen either one (an empty value measures 0, which every emittable ceiling
-        # admits), and a GATED entry is counted as if its gate were open — the static-maximal policy every
-        # constraint here follows.
-        def declared_size_maximum(validations)
-          return 0 if absence_bounds_size?(validations)
-
-          length = effective_entry_options(validations[:length], shared_validation_options(validations))
-          declared = Axn::Validation::Base.declared_length_ceiling(length)
-
-          declared if Axn::Validation::Base.emittable_length_ceiling?(declared)
-        end
-
-        # JSON Schema's `propertyNames` applies to EVERY key of the object, `properties`-matched ones included.
-        # The runtime does the opposite for a shaped map: a key the `shape:` names is EXEMPT from both axes
-        # (Core::Contract#_derive_shaped_keys!), which is what `additionalProperties` already means and what
-        # makes combining the two options coherent. So a bare keys-axis constraint beside a shape would publish
-        # a document the runtime contradicts — and contradict it in the direction that matters, since a member
-        # is `required` and a `propertyNames` it fails forbids that key, leaving a node NO value satisfies. That
-        # is exactly the corollary PRO-3192 recorded in guards-and-projections.md.
-        #
-        # The union is the runtime rule verbatim — a key is one the shape names, or one the axis admits — so the
-        # node stays satisfiable AND stays exact, rather than being loosened to nothing or dropped.
-        # Reads the exempt set off the node's OWN emitted `properties` rather than taking a member list: the
-        # runtime derives its exempt set from the emitter's key computation in the first place (PRO-3166), so
-        # this is the same answer asked of the same source, and one helper then serves every site where the two
-        # options meet — a field's own map node, and a NESTED bag composing a `shape:` with a map `of:`, which
-        # is also where the distributing block form lands (PRO-3191 folds it into that bag).
-        def exempt_shaped_keys_from_property_names(node)
-          axis = node[:propertyNames]
-          shaped = node[:properties]
-          return node if axis.nil? || axis.empty? || shaped.nil? || shaped.empty?
-
-          node.merge(propertyNames: { anyOf: [axis, { enum: shaped.keys.map(&:to_s) }] })
-        end
-        # The classes whose BLANK values are exactly their EMPTY ones, so "rejects every non-blank value" and
-        # "admits size 0 only" say the same thing about them. `String` is deliberately absent and is the whole
-        # reason this is a list rather than `EMPTY_CONTAINER_CLASSES`: ActiveSupport gives it a `blank?` of its
-        # own (`BLANK_RE`), under which `"  "` is blank while `empty?` and `length` both say otherwise — so an
-        # `absence:` on a String bounds WHITESPACE, which no size key expresses, rather than size.
-        #
-        # `ActionController::Parameters` is not here either: it is identified by rendered name rather than by
-        # constant, and a list this one is read off must be comparable by identity.
-        BLANK_IS_EMPTY_CLASSES = [::Hash, ::Array].freeze
-
-        # Whether a live `absence:` bounds this declaration's SIZE — the question `declared_size_maximum` asks,
-        # and the one a guard may lean on, as opposed to the looser "is an `absence:` present".
-        #
-        # Three conditions, each load-bearing:
-        #
-        #   * the entry is LIVE — a falsy one is the disabled validator ActiveModel skips, so it forbids
-        #     nothing;
-        #   * every declared type is one whose blank values are its empty ones, since only there does the blank
-        #     axis land on the size axis at all;
-        #   * the entry is UNGATED — by a gate of its own OR by one the whole declaration carries, since either
-        #     stops it running. This is the one bound here not counted static-maximally, and the asymmetry is
-        #     between an AUTHORED bound and an INFERRED one. A `length:` ceiling is a size constraint the author
-        #     wrote, so it is emitted as written whatever gates it. A size meaning for `absence:` is one axn
-        #     infers, and it may only infer it from a check that always runs: `presence: { unless: :archived },
-        #     absence: { if: :archived }` is a working contract, and deriving a `maxItems: 0` from its
-        #     conditional half would put a ceiling on the document that the contract does not carry on the
-        #     calls where the gate is closed — most of them.
-        def absence_bounds_size?(validations)
-          return false unless absence_bounds_blankness?(validations)
-
-          blank_values_are_empty?(validations)
-        end
-
-        # The first two of those conditions on their own: a LIVE, UNGATED `absence:`, which rejects every value
-        # that is not blank whatever the declared type. Split out because the blank axis is a real constraint
-        # even where it lands nowhere on the size axis — for a `String`, `absence:` rejects `"ab"` while no size
-        # key expresses it — so the member scan asks this to know whether a non-blank member can be a witness at
-        # all (`_member_survives_the_blank_axis?`), where the ceiling derivation above needs the size question.
-        # One definition, so the two cannot disagree about which `absence:` entries count.
-        def absence_bounds_blankness?(validations)
-          entry = Axn::Validation::Base.validator_entries(validations)[:absence]
-          return false unless entry
-
-          !Axn::Validation::Base.entry_effectively_gated?(entry, Axn::Validation::Base.shared_validation_options(validations))
-        end
-
-        # Whether every value this declaration calls BLANK measures 0 — the question that decides whether the
-        # blank axis can be read as a statement about size at all. Shared with the guard that asks whether a
-        # blank value could slip past a blank-tolerant entry, so the two cannot disagree about one declaration.
-        #
-        # Only the SIZE-BEARING tokens are asked. A union emits one branch per token and `size_bounds_for` puts
-        # no bound on a branch that carries no size keyword, so a `NilClass` (or an `Integer`, or `:boolean`)
-        # can neither make an `absence:` ceiling wrong nor be constrained by one — and must not veto it either.
-        # Judging every token alike is what left `type: [Array, NilClass], presence: false, absence: true`
-        # without a ceiling on its ARRAY branch, so a non-empty array was schema-valid and runtime-invalid: the
-        # looser direction, which the emitter may never take.
-        #
-        # A `String` among them still answers false, and that is the point of asking per token rather than
-        # per branch: a String branch IS size-bearing, and `absence:` bounds whitespace there rather than size,
-        # so no ceiling can be emitted for the union at all while one member reads that way.
-        def blank_values_are_empty?(validations)
-          sized = declared_type_tokens(validations).select { |token| token_carries_a_size?(token) }
-
-          sized.any? && sized.all? { |token| blank_is_empty_class?(token) }
-        end
-
-        # Whether the branch a token emits can carry a size keyword at all, asked through the emitter's own
-        # type mapping and its own key lookup rather than an enumeration beside them — so a token whose emitted
-        # type changes cannot leave this answering the old one.
-        #
-        # A token the map does not know falls through to the permissive `"string"`, which IS size-bearing, so
-        # it vetoes. That is the right answer for an unknown token and the wrong one for `NilClass`, whose only
-        # value is `nil` — blank, and with no size to bound. `NilClass` is absent from `TYPE_MAP`, so a union
-        # naming it emits a spurious string branch (measured: `type: [Array, NilClass], presence: false` emits
-        # `anyOf: [array, string, null]` while the runtime rejects `"x"`), and this inherits that. Not corrected
-        # here: the mapping is a pre-existing looseness with a blast radius of its own — the nullability pass
-        # already contributes a `"null"` branch — and it is tracked in PRO-3233.
-        def token_carries_a_size?(token)
-          !size_ceiling_key_for(single_type_for(token, for_output: false)[:type]).nil?
-        end
-
-        def blank_is_empty_class?(token)
-          BLANK_IS_EMPTY_CLASSES.any? { |klass| klass.equal?(token) } || (defined?(Set) && ::Set.equal?(token))
-        end
-
-        # The non-size tokens whose values an `absence:` check rejects OUTRIGHT: no `true`, no Integer and no
-        # Float is blank, so a declaration bounding the blank axis to size 0 admits nothing of theirs at all —
-        # which is what makes a refusal drawn from that ceiling sound even with one of them in the union.
-        #
-        # `:boolean` and `FalseClass` are the ones deliberately absent, and they are the whole reason this list
-        # exists: `false` IS blank, so the `absence:` accepts it, and `LengthValidator` measures its rendering
-        # (`"false"`, five characters) rather than a length it has none of. A union naming either has a branch
-        # the ceiling does not bound, and the guard cannot conclude anything from it.
-        ABSENCE_REJECTS_EVERY_VALUE = [::TrueClass, ::Integer, ::Float, ::Numeric].freeze
-
-        # Whether an `absence:`-derived ceiling of 0 bounds EVERY branch this declaration names — the size
-        # guard's question, and deliberately not `blank_values_are_empty?`, which filters the union down to its
-        # size-bearing tokens.
-        #
-        # Both questions are right for their caller. The emitter needs to know what bound the ARRAY branch
-        # carries, and `maxItems: 0` is the answer there whatever a sibling admits — dropping it would leave a
-        # non-empty array schema-valid and runtime-invalid. This guard needs to know whether the DECLARATION
-        # admits anything, and a single unbounded branch means it cannot say.
-        #
-        # Three cases per token, and the middle one is why this reads as a list rather than a measurement: a
-        # token whose blank values are its empty ones is bounded (`blank_is_empty_class?`); a token no blank
-        # value of which exists is bounded vacuously, since the `absence:` rejects everything it admits; and
-        # anything else — `:boolean`, a `String`, an unrecognized class — is not bounded, so the ceiling proves
-        # nothing about it. Unknown answers "not bounded", which stands the guard down: over-refusing a working
-        # declaration is the one failure it cannot recover from.
-        def absence_ceiling_bounds_every_token?(validations)
-          declared_type_tokens(validations).all? do |token|
-            next true if blank_is_empty_class?(token)
-            next false if token_carries_a_size?(token)
-
-            ABSENCE_REJECTS_EVERY_VALUE.any? { |known| Axn::Internal::Identity.same?(known, token) }
-          end
-        end
-
         # Emit what a container holds: the `of:` baseline — an Array's `items:`, a Hash map's
         # `additionalProperties:` — and a `shape:`'s typed member contracts as `properties:`.
         # Precedence: shape: enriches/overrides the of: baseline. On an ARRAY the two describe one node from two
@@ -2688,996 +2972,6 @@ module Axn
 
           Axn::Internal::NativeMethods.includes_module?(klass, ::Hash) ||
             strict_descendant?(klass, ::Data) || strict_descendant?(klass, ::Struct)
-        end
-
-        # The schema for what is INSIDE a container, from the classes an `of:` axis names — an Array's elements
-        # (`klass:`) and a Hash's values (`values:`) alike. One builder for both, because the two describe the
-        # same thing at different nodes: a union reflects as `anyOf` branches either way, and each branch
-        # carries its own type's members. An axis naming NO class cannot reach here at all: a bag has to
-        # constrain something, and `_of_axis_constrains?` asks that of `klass:` with the same emptiness test
-        # `OfValidator#matches_axis?` uses, so `of: []` and `of: { values: { klass: [] } }` are refused at
-        # declaration rather than arriving as a position that matches everything and emits `anyOf: []`.
-        def contents_schema_for(klasses, for_output: false)
-          # `ShapeGraph.type_tokens`, not `Kernel#Array`: a caller may hand this the raw `of:`/`values:` klass
-          # directly (`contents_node_schema` below), not only an already-tokenized list.
-          klasses = Axn::Internal::ShapeGraph.type_tokens(klasses)
-          if klasses.size == 1
-            single_contents_schema(klasses.first, for_output:)
-          else
-            { anyOf: klasses.map { |k| single_contents_schema(k, for_output:) } }
-          end
-        end
-
-        # The schema for ONE unnamed position — an array element, a map value. The node an `of:` bag describes,
-        # built from the same ingredients a FIELD's node is: the class the bag names (`contents_schema_for`), the
-        # members named off it (the bag's own `shape:`), and what that class holds in turn (the bag's own `of:`).
-        # A container sitting directly inside a container has no member name to hang the next level on, so this
-        # is the only way down to it.
-        #
-        # Shared with `apply_structured_schema!` through `shape_property_plan`'s `type_schema`, which is the whole
-        # reason the collision rules and the projection size cap follow a recursive `of:` down: both read what the
-        # emitter emits (`each_emitted_node` walks `items`/`additionalProperties`/`anyOf` generically), so neither
-        # needs a rung-by-rung rule of its own and neither can drift from what is emitted.
-        #
-        # Bounded on the same terms, with the same sentences, as the runtime walk of this very edge
-        # (`OfValidator#guard_contents_descent`): the declaration walk refuses a cyclic or over-deep `of:` graph, so
-        # a DECLARED contract can be neither — but a field config assigned onto a class (`internal_field_configs=`)
-        # passed no declaration walk and carries whatever its author built, and descending one without a bound ends
-        # in `SystemStackError`, outside `StandardError`, escaping every rescue meant to settle it.
-        #
-        # The bound is spent on ONE counter across BOTH edges of the graph — the `of:` rung below a bag, and the
-        # shape-MEMBER rung `contents_member_schema` takes through `member_properties` — threaded as the
-        # `CycleGuard::Ancestry` every other walk of a held graph threads. A per-chain counter is not a bound at
-        # all here, because the two edges alternate: a member's own `of:` re-enters this builder through
-        # `build_property` → `shape_property_plan`, which starts a chain of its own, so a graph looping
-        # `of:` → shape member → `of:` spends no rung on any single counter and reaches the stack rather than the
-        # cap. (Measured: a bag whose `shape:` member points its `of:` back at that bag raised `SystemStackError`
-        # out of `input_schema`.) Sharing one counter across both edges is what the declaration walk, the runtime
-        # pair and the ambient walk each do over this same graph, and the reason is the same in all four: a graph
-        # 64 `of:` deep by 64 `shape:` deep is 128 levels of live recursion, which two counters would admit.
-        #
-        # The comparison is `>`, so a graph whose deepest rung sits exactly AT the cap still emits — and the
-        # charge stays one rung LOOSER than the declaration walk's (which spends a rung entering a field's own
-        # first bag, where this one does not). Looser is the only safe direction: reflection refusing what
-        # `expects` accepted would leave a legal contract with no schema at all.
-        #
-        # A union `klass:` keeps the merge order `apply_structured_schema!` has always used — the structural keys
-        # land beside the `anyOf` at this node rather than inside each branch. Existing behavior, preserved
-        # deliberately rather than corrected here.
-        def contents_node_schema(bag, for_output:, ancestry: nil)
-          constraints = bag_value_constraints(bag, for_output:)
-          # A declared `klass:` decides the type, exactly as `type:` does at a field. With none, the type is
-          # INFERRED from the bag's own validators — through `json_type_for`, the function the field path
-          # already uses for that, rather than a second inference beside it. Without this a validator-only bag
-          # seeded an empty node, every keyword that keys off a type declined to emit, and the parent dropped
-          # `items` altogether: `of: { numericality: { greater_than: 0 } }` rejected `-1` at runtime and
-          # advertised nothing. (`format:`/`length:` alone still infer nothing, here and at a field alike —
-          # neither a pattern nor a size names one JSON type.)
-          node = if bag[:klass]
-                   # `contents_schema_for` reads the class alone, so the `numericality:` narrowing that
-                   # `json_type_for` applies on the other branch has to be applied here too — same helper, not a
-                   # second reading of it.
-                   narrow_node_under_numericality(contents_schema_for(bag[:klass], for_output:), constraints,
-                                                  Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), for_output:)
-                 else
-                   json_type_for(constraints, for_output:)
-                 end
-          # Whether the POSITION admits nil is the same question `nil_allowed?` answers for a field, asked of
-          # the bag — a `klass:` naming NilClass admits it until another validator on the same bag rejects it.
-          # Hard-coding it left `of: { klass: [String, NilClass], presence: true }` advertising a `null` branch
-          # the runtime rejects, and stripped nil from an enum at a position that accepts it.
-          nullable = bag_nullable?(bag, for_output:)
-          node = reconcile_contents_nullability(node, nullable:, for_output:)
-          # The bag's value validators (PRO-3193), through the same projector a named position uses. Applied
-          # before the member/contents merges below so a `type:` those steps install cannot be read as the type
-          # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
-          # validators constrain.
-          apply_value_constraints!(node, constraints, nullable:, for_output:, declared_klass: bag[:klass])
-          node = contents_member_schema(node, bag, for_output:, ancestry:)
-          inner = emitted_contents_edge(bag, :of, for_output:)
-          return node if nil.equal?(inner)
-
-          guard_contents_descent(inner, ancestry, edge: INNER_CONTRACT_EDGE) do |child|
-            # Which grammar the inner bag was canonicalized under, asked through the one predicate every seam asks
-            # it with: a map's bag names its axes and lands under `additionalProperties`, an array's names one
-            # element type and lands under `items`.
-            if Axn::Internal::ShapeGraph.map_bag?(inner)
-              # The object type is the bag's OWN `klass:` (a map bag is only ever reached from `klass: Hash`), exactly
-              # as a field's map node takes its type from `type:` and its `additionalProperties` from the axis.
-              # The exemption runs here too, and has to: this is where a bag's `shape:` properties (merged above by
-              # `contents_member_schema`) meet the axis's `propertyNames`, so without it a shaped nested map with a
-              # constrained `keys:` axis emits a node its own required members cannot satisfy.
-              exempt_shaped_keys_from_property_names(node.merge(map_values_schema(inner, for_output:, ancestry: child)))
-            else
-              contents = contents_node_schema(inner, for_output:, ancestry: child)
-              contents.empty? ? node : node.merge(items: contents)
-            end
-          end
-        end
-
-        # Which edge a descent is taking, which decides only the SENTENCE a refusal carries: the fix for a cyclic
-        # `of:` is to give the nested bag contents of its own, and for a cyclic `shape:` to give the nested shape
-        # its own members, so a message naming the construct the author did not write prescribes a change their
-        # declaration has nowhere to make. Same split, same reason, as the declaration walk's `SHAPE_EDGE` /
-        # `INNER_CONTRACT_EDGE`.
-        INNER_CONTRACT_EDGE = :of
-        SHAPE_EDGE = :shape
-        private_constant :INNER_CONTRACT_EDGE, :SHAPE_EDGE
-
-        # A private object of this module's own, and always the RECEIVER of `equal?`, so nothing a declaration can
-        # produce is mistaken for it.
-        CYCLIC_CONTRACT = ::Object.new.freeze
-        private_constant :CYCLIC_CONTRACT
-
-        # ONE rung of the graph a class merely HOLDS, descended under the two bounds every such walk needs, and
-        # the one seam both of this builder's edges take — so the counter cannot restart at a hop.
-        #
-        # `child` is what the descent is ABOUT to walk (the nested bag, or the members list a shape names), which
-        # is the identity a cyclic graph brings back around; keying on the parent instead would let one turn of a
-        # two-node cycle pass unseen. Ancestry-scoped, so a bag or a members list reused by SIBLING positions
-        # still emits in full and only genuine self-containment is a cycle. `depth` catches the other half a
-        # cycle guard cannot see: a GENERATIVE graph, minting a fresh bag or shape on every read, repeats no
-        # object and is endless rather than cyclic.
-        def guard_contents_descent(child, ancestry, edge:)
-          depth = ancestry ? ancestry.depth : 0
-          raise ArgumentError, contents_too_deep_message(edge) if depth > Axn::Internal::ShapeGraph::MAX_NESTING
-
-          outcome = Axn::Internal::CycleGuard.guard(child, ancestry&.seen, on_cycle: CYCLIC_CONTRACT) do |seen|
-            yield Axn::Internal::CycleGuard::Ancestry.new(seen:, depth: depth + 1)
-          end
-          raise ArgumentError, contents_self_containing_message(edge) if CYCLIC_CONTRACT.equal?(outcome)
-
-          outcome
-        end
-
-        # Both texts come from `ShapeGraph`, which owns one sentence per defect per edge — the same four the
-        # declaration walk, the runtime validators and the ambient walk report, so no two layers describe one
-        # defect two ways. The shape pair names no member: a bag's `shape:` hangs off an UNNAMED position, and
-        # what this walk holds at the point of refusing is the bag rather than anything that declared it.
-        def contents_too_deep_message(edge)
-          return Axn::Internal::ShapeGraph.inner_contract_too_deep_message if edge == INNER_CONTRACT_EDGE
-
-          Axn::Internal::ShapeGraph.too_deep_message(nil)
-        end
-
-        def contents_self_containing_message(edge)
-          return Axn::Internal::ShapeGraph.inner_contract_self_containing_message if edge == INNER_CONTRACT_EDGE
-
-          Axn::Internal::ShapeGraph.self_containing_message(nil)
-        end
-
-        # The `shape:` an `of:` bag carries, overlaid onto the node built from that bag's `klass:`. A bag's shape
-        # names the members of the value AT THAT POSITION, so its members are that node's `properties` — the same
-        # merge `apply_structured_schema!` makes at a field's items node, written once here so a shape one rung
-        # down emits exactly what a shape at the top emits. Its members are what the projection size cap and
-        # collision attribution then charge, since both read `plan.type_schema` and this Hash IS that schema.
-        #
-        # Gated on the same rule the field-level overlay is gated on (`shape_overlay_applies?`), asked of the bag
-        # itself because the bag's `klass:` is what its members are read off: a scalar element keeps its scalar
-        # type and validates members against it without ever emitting them, and on OUTPUT a class that is not
-        # provably member-keyed is left untyped rather than promising an object the serializer will not produce.
-        def contents_member_schema(node, bag, for_output:, ancestry: nil)
-          shape = emitted_contents_edge(bag, :shape, for_output:)
-          return node if nil.equal?(shape)
-          return node unless shape_overlay_applies?(bag, for_output:)
-
-          member_props, required = member_properties(shape[:members], for_output:, ancestry:)
-          # The object type is written back with the position's nullability rather than a bare "object" that would
-          # discard it, and the question is asked in TWO parts because neither alone is the answer.
-          #
-          # The node's own `null` branch is what `reconcile_contents_nullability` recorded a few lines up, and
-          # preserving it is the whole point. But it is not sufficient: a bag naming no class at all
-          # (`of: { shape: … }` — "these members, class unconstrained") starts from an untyped `{}` node, so a
-          # declared tolerance had nowhere to be recorded and the overlay wrote a bare "object" over a position
-          # the runtime stands down for. So an explicitly DECLARED tolerance counts on its own.
-          #
-          # `bag_nullable?` is deliberately NOT the question, though it looks like the tidier one. It reads the
-          # bag's VALUE constraints and a classless bag has none, so it calls every classless shaped position
-          # nullable — while the shape's own required members still reject a nil there. Measured: `expects :items,
-          # type: Array do field :status, type: String end` rejects `[nil]` at runtime, and answering from
-          # `bag_nullable?` emitted a document LOOSER than the contract, which is the one direction this layer
-          # must never err in.
-          # A nil reaches this position's members only if BOTH gates let it, so nullability is their CONJUNCTION.
-          # Either alone advertises a null the runtime refuses:
-          #
-          #   * `bag_nullable?` is the POSITION's gate — the bag's own `klass:` and tolerance, i.e. whether
-          #     `validate_position` stands its type check down. A tolerant shape entry cannot widen it:
-          #     `of: { klass: Hash, shape: { …, allow_nil: true } }` still reports the `klass:` mismatch for a nil
-          #     element, however willingly the shape skips itself. Asked of the BAG rather than read back off
-          #     `node[:type]`, because a bag naming no class starts from an untyped node that has no branch to
-          #     read — the reconciler had nowhere to record one.
-          #   * the SHAPE entry's own gate is the second, because the shape is an entry like any other and
-          #     ActiveModel lets it override the position per key: `of: { allow_nil: true, shape: { …,
-          #     allow_nil: false } }` runs `ShapeValidator` on the nil and rejects it as unreadable.
-          shape_tolerance = Axn::Validation::Base.effective_entry_options(shape, Axn::Validation::Base.tolerance_options(bag))
-          nullable = bag_nullable?(bag, for_output:) &&
-                     !!(shape_tolerance[:allow_nil] || shape_tolerance[:allow_blank])
-          merged = node.merge(type: type_with_nullability("object", nullable:),
-                              properties: (node[:properties] || {}).merge(member_props))
-          merged[:required] = required unless required.empty?
-          merged
-        end
-
-        # One edge of a bag, reduced on OUTPUT exactly as a field's entries are (`effective_validations`): an
-        # entry carrying a per-validator gate of its own can be skipped on any given call, so what it
-        # constrains cannot be promised outbound and the schema must not describe it. A bag's `of:`/`shape:`
-        # ARE the next level's ActiveModel entries — `OfValidator#inner_contract_validations` hands them over
-        # verbatim — so a gate written on one gates it exactly as the same gate at a field does. Asked here
-        # rather than only at the top level because a distributing `shape:` is canonicalized INTO a bag
-        # (PRO-3166), so the gated node the field-level reduction used to drop now arrives one rung down.
-        #
-        # INPUT is untouched, for the reason `effective_validations` leaves it untouched: static-maximal is the
-        # safe direction there, since a gate can only relax enforcement at runtime.
-        def emitted_contents_edge(bag, key, for_output:)
-          edge = Axn::Internal::ShapeGraph.hash_or_nil(bag[key])
-          return nil if !nil.equal?(edge) && for_output && entry_self_gated?(edge)
-
-          edge
-        end
-
-        # What a map's `values:` axis contributes to the node holding it, under the key it lands at — or `{}` where
-        # the axis has nothing to state. ONE derivation, so a map at a FIELD (`shape_property_plan`) and a map
-        # nested inside another container (`contents_node_schema`) cannot describe the same axis two ways.
-        #
-        # A values axis naming no class constrains nothing at runtime — `matches_axis?` waves every value through
-        # — and emits nothing here, so the document and the runtime agree that the axis is unconstrained. An
-        # array's element position cannot reach this state at all: a bag naming an empty class union is refused
-        # at declaration (`_reject_unconstraining_of_bag!`), which is what keeps the emitted `items` from
-        # claiming a constraint the runtime does not enforce. So the two containers settle emptiness themselves
-        # rather than in the shared builder. A class whose schema is untyped (an unknown type
-        # on output) has nothing to state either, and both cases emit no node at all rather than an empty
-        # `additionalProperties` that would read as a constraint.
-        #
-        # An axis holding a BAG is one unnamed position exactly as an array's element is, so it is built by the
-        # node builder rather than from a class list: everything a bag can declare — its own `klass:`, the members
-        # named off it, and the container inside it — reflects at a map's value the way it reflects at an array's
-        # element. Classified through `hash_or_nil`, the same read the declaration layer classifies the axis with,
-        # so the emitter cannot read an axis under the other grammar from the one it was canonicalized under.
-        #
-        # `ancestry` is where the walk already is, threaded so a chain alternating map and array rungs is bounded
-        # on the one counter `contents_node_schema` spends rather than restarting it at every map. The axis
-        # itself spends no further rung: reaching the map bag was the rung, and the axis is where that rung lands.
-        def map_values_schema(bag, for_output:, ancestry: nil)
-          axis = Axn::Internal::ShapeGraph.hash_or_nil(bag[:values])
-          values =
-            if nil.equal?(axis)
-              klasses = Axn::Internal::ShapeGraph.type_tokens(bag[:values])
-              klasses.empty? ? {} : contents_schema_for(klasses, for_output:)
-            else
-              contents_node_schema(axis, for_output:, ancestry:)
-            end
-          node = values.empty? ? {} : { additionalProperties: values }
-          keys = map_keys_schema(bag, for_output:)
-          keys.empty? ? node : node.merge(propertyNames: keys)
-        end
-
-        # The `keys:` axis, as `propertyNames`. PRO-3165 emitted nothing here on the grounds that every JSON
-        # object key is already a string, so `keys: String` says nothing a client can act on and `keys: Symbol`
-        # would misdescribe the wire — and that reasoning still holds for an axis that only names a TYPE.
-        # It stops holding once the axis carries a constraint, which is what `propertyNames` is for.
-        #
-        # Only the constraints that survive the string form of a JSON key are emitted, which the projector
-        # decides for itself: it keys every keyword off the node's own emitted `type:`, and a key node's type is
-        # `"string"` whatever Ruby class the axis names. So a `format:`/`length:`/`presence:` reflects and a
-        # numeric bound does not — a Ruby Hash key may legitimately be an Integer, but no `propertyNames`
-        # subschema says "parses to an integer greater than zero", so that stays enforced-in-Ruby-only, exactly
-        # as a bare `keys: Symbol` already is.
-        # `for_output:` is threaded rather than defaulted: a self-gated validator on this axis promises nothing
-        # on output for the same reason it promises nothing at an element position, and forgetting it here is
-        # how the element-position fix stayed half-applied — one call site swept, one missed.
-        def map_keys_schema(bag, for_output:)
-          axis = Axn::Internal::ShapeGraph.hash_or_nil(bag[:keys])
-          return {} if nil.equal?(axis)
-          # A JSON object key is a String, so an axis whose declared class EXCLUDES String cannot be satisfied
-          # from JSON at all — and then every inbound keyword here is a lie, not just the set: a
-          # `keys: { klass: Symbol, format: … }` told a client to send `{"a" => 1}`, which the axis rejects on
-          # the class check before the pattern is ever consulted. Gated on the CLASS rather than per keyword,
-          # which is what round 11 got wrong by fixing only the enum. On output the key has already been
-          # serialized to a String, so the whole projection stands.
-          return {} unless for_output || axis_admits_string_key?(axis[:klass])
-
-          # The node is built with the type a JSON object key always has, so the projector keys each keyword off
-          # `"string"` — which is what decides, on its own, that a `format:`/`length:` reflects here and a
-          # numeric bound does not. The type is then dropped: `propertyNames` needs no `type: "string"` of its
-          # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
-          node = { type: "string" }
-          apply_value_constraints!(node, key_axis_constraints(axis, for_output:), nullable: false, for_output:, property_names: true)
-          admit_empty_wire_key!(node) if for_output && bag_nullable?(axis, for_output:)
-          node.except(:type)
-        end
-
-        # A tolerated nil KEY has no null branch to travel in. Every other position expresses "and also nil" by
-        # widening its `type:`, but a JSON object's property name is always a string, so a nil key that the axis
-        # admits reaches the wire as `""` (`Values` renders it, measured: `{ nil => 1 }` serializes to
-        # `{"": 1}`). Outbound the document must therefore admit the empty name, or it rejects a result the
-        # action produced.
-        #
-        # OUTPUT only, and that asymmetry is the point: inbound, a JSON caller cannot send a nil key at all, and
-        # the `""` it CAN send is a genuine blank string the axis's own `format:`/`length:` really do reject —
-        # so widening there would advertise a key the runtime refuses.
-        #
-        # `pattern` and `minLength` are dropped rather than widened because JSON Schema cannot say "empty or
-        # matching" in one keyword — only as an `anyOf` composition, which is the shape change PRO-3240 carries
-        # for the whole blank-tolerance class. `maxLength` needs nothing: an empty name satisfies every emittable
-        # ceiling. An `enum` is WIDENED instead of dropped, since naming one more member says exactly what is
-        # true and loses nothing.
-        EMPTY_WIRE_KEY_INCOMPATIBLE = %i[pattern minLength].freeze
-        private_constant :EMPTY_WIRE_KEY_INCOMPATIBLE
-
-        def admit_empty_wire_key!(node)
-          EMPTY_WIRE_KEY_INCOMPATIBLE.each { |keyword| node.delete(keyword) }
-          node[:enum] |= [""] if node[:enum].is_a?(Array)
-          node
-        end
-
-        # The axis's validators, less any whose subject does not survive serialization. Only the OUTPUT side can
-        # reach that mismatch: an inbound key is the wire string itself, and the reachability gate above has
-        # already turned the whole projection away for an axis that could not be satisfied from JSON at all.
-        def key_axis_constraints(axis, for_output:)
-          constraints = bag_value_constraints(axis, for_output:)
-          return constraints unless for_output
-          return constraints if own_wire_form?(axis[:klass])
-
-          constraints.except(*OBJECT_SUBJECT_KEY_VALIDATORS)
-        end
-
-        # Whether the value at a bag's position may be nil — `Base.nil_accepted?`, the same seam a field's
-        # `nil_allowed?` reads, asked of the bag's own `klass:` and validators. A bag that constrains nothing at
-        # all admits nil, exactly as an empty validator set does at a field.
-        def bag_nullable?(bag, for_output:)
-          validations = bag_value_constraints(bag, for_output:)
-          klass = bag[:klass]
-          # Synthesized in the CANONICAL `type:` shape a field's stored validations carry. A bare token would be
-          # normalized as a validator scalar and read under the wrong key entirely, so `type_admits_nil?` would
-          # see no `klass:` and call a nil-admitting union nil-rejecting.
-          validations = validations.merge(type: { klass: }) unless Axn::Internal::ShapeGraph.type_tokens(klass).empty?
-
-          Axn::Validation::Base.nil_accepted?(validations)
-        end
-
-        # Bring the type a bag's `klass:` produced into line with the nullability derived above. A `NilClass`
-        # token contributes a `null` branch like any other token, and so can a position's own tolerance
-        # (PRO-3225) with no `NilClass` token in sight — `of: { klass: String, allow_nil: true }` admits nil at
-        # runtime though nothing in `klass:` said so. So this ADDS the branch a nullable position is missing,
-        # through the same two helpers `apply_type_info!` unions a field's type with (`type_with_nullability`,
-        # `union_with_nullability`) — not a second reading of "what nullable adds to a type", the same one.
-        def reconcile_contents_nullability(node, nullable:, for_output: false)
-          if node[:anyOf].is_a?(Array)
-            return node.merge(anyOf: union_with_nullability(node[:anyOf], nullable: true)) if nullable
-
-            without_null = node[:anyOf].reject { |member| member[:type] == "null" }
-            return { enum: EMPTY_ENUM } if without_null.empty?
-
-            return without_null.size == 1 ? node.except(:anyOf).merge(without_null.first) : node.merge(anyOf: without_null)
-          end
-
-          return node.merge(type: type_with_nullability(node[:type], nullable: true)) if nullable && node.key?(:type)
-          return node if nullable
-
-          # The position's mirror of a field's lone required `NilClass`: nothing but nil is a NilClass, and the
-          # validator that makes the position non-nullable rejects nil, so it admits nothing — and `{ type:
-          # "null" }` advertised the one value it rejects, letting `[null]` through a schema whose runtime
-          # refuses it. `enum: []` is the faithful node, the same spelling `unsatisfiable_type?` reaches at a
-          # field. A union that reduces to no branch at all is the same contract and now says so too, where
-          # returning the node restored the very `null` branches this just rejected.
-          return { enum: EMPTY_ENUM } if unsatisfiable_type?(node[:type], nullable:)
-
-          # A position that names no TYPE still rejects nil, and had no way of saying so: a classless bag is
-          # newly legal (PRO-3193), so `of: { presence: true }` builds an empty node, the parent then omits
-          # `items` altogether, and the document accepted `[null]` that the positional validator rejects on
-          # every call. `not: { type: "null" }` is the spelling a named field's `reject_null!` already uses for
-          # exactly this shape — an untyped node that excludes nil.
-          #
-          # Only nil. The other blanks `presence:` rejects (`""`, `[]`, `{}`, `false`) need to know that
-          # presence is WHY the position is non-nullable — a `klass:` that simply excludes NilClass says nothing
-          # about them — and that plumbing is PRO-3240's, alongside the rest of the blank axis.
-          #
-          # INBOUND only, and the asymmetry is the doctrine rather than an omission: outbound the schema may say
-          # LESS than the contract and never more, and an untyped output position is untyped precisely because
-          # the emitter could not prove what it serializes to — `of:` a Data with a custom `as_json` among them.
-          # Writing a claim there would be inventing one in the direction reflection may not err.
-          return node.merge(not: { type: "null" }) if !for_output && !node.key?(:type) && !node.key?(:anyOf) && !node.key?(:enum)
-
-          node
-        end
-
-        # A bag's VALUE constraints as a validations hash the field-level emitters can read: its validator
-        # entries, minus what describes the position rather than constrains it.
-        #
-        # The position's TOLERANCE is kept, and it is the reason this is a merge rather than a slice: it rides
-        # in as the declaration tier every emitter already resolves against (`shared_validation_options`), so
-        # nullability, the emptiness floor and the value keywords all read it here exactly as they read a
-        # field's. That is what keeps `of: { klass: String, length: { minimum: 2 }, allow_blank: true }`
-        # emitting the same shape as the field it mirrors — no floor, plus a null branch — without a second
-        # implementation of the rule.
-        #
-        # The other shared options do NOT come through. A gate is reduced away by `effective_validations` on
-        # output and means nothing to the document on input, and the context/strict options are refused at
-        # declaration.
-        def bag_value_constraints(bag, for_output:)
-          constraints = Axn::Validation::Base.validator_entries(bag)
-                                             .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
-                                                     *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)
-          # On OUTPUT a self-gated entry promises nothing — the action may successfully expose a value the entry
-          # would have rejected — so it is reduced away exactly as `effective_validations` reduces a named
-          # field's, and for the same reason: an output schema that rejects what the action can serialize is
-          # worse than one that says less. `emitted_contents_edge` already does this for the bag's `of:`/`shape:`
-          # edges; this is the same reduction for its validators.
-          #
-          # The merge is applied AFTER `effective_validations` so the reduction cannot drop the tolerance tier
-          # it needs to see.
-          #
-          # Only a TRUE tolerance rides in — `_canonicalize_bag_tolerance!` states `false` explicitly on every
-          # bag, but that explicit `false` is a declaration-time fact about the POSITION (kept elsewhere so a
-          # field's own tolerance can never leak into it), not a runtime fact about the VALIDATORS this hash
-          # feeds. A field's `allow_blank: false` is real here because ActiveModel merges it into every entry
-          # it builds (`declaration_defaults.merge(entry)`) and `LengthValidator#initialize` reacts to it by
-          # adding an implicit `minimum: 1` — a bag's tolerance never reaches that merge at all
-          # (`OfValidator#inner_contract_validations` excludes it from what it hands `validates`), so a bag
-          # position with a bare `length: { maximum: 4 }` never rejects `""` the way a field declaring the same
-          # `allow_blank: false` would. Forwarding the bag's `false` here fed that FIELD-only reading a fact
-          # the bag's own runtime never acts on and put `minLength: 1` on a position that accepts `""`. Nothing
-          # downstream distinguishes "false" from "absent" — every reader here asks a truthy question — so
-          # dropping it costs no other case its answer.
-          effective_validations(constraints, for_output:)
-            .merge(Axn::Validation::Base.true_tolerance_options(bag))
-        end
-
-        def single_contents_schema(klass, for_output: false)
-          # A Data value serializes member-keyed via to_h, so it reflects as an object — except on OUTPUT when
-          # it isn't provably member-keyed (a custom as_json/to_h serialize_value would follow); leave those
-          # untyped rather than promise an object.
-          if strict_descendant?(klass, ::Data) && (!for_output || member_keyed_object_type?(klass))
-            { type: "object", properties: klass.members.to_h { |m| [m, {}] } }
-          else
-            json_type_for({ type: klass }, for_output:)
-          end
-        end
-
-        # A DECLARED member's `field` is already the Symbol the declaration walk judged it under (`ShapeConfig`
-        # normalizes, and the walk canonicalizes a duck-typed member's name once, beside the duplicate check).
-        # It is still symbolized here because `build_input` is public: a config a downstream caller built itself
-        # may carry a raw name, and every other schema property key is a Symbol (top-level `config.field`,
-        # symbolized wire keys) — so this keeps a string-named member colliding with a dotted/explicit subfield
-        # (`bar.baz`) resolving to the one `:bar` property that every downstream lookup (apply_implicit_node!'s
-        # `existing`, explicit-child overwrite) already keys by symbol, not a String duplicate alongside it.
-        #
-        # `required` renders the SAME Symbol rather than converting the name a second time: two conversions of
-        # one caller object are two answers it can give, and a name that gave them differently would list a
-        # required property this method never emitted.
-        #
-        # THE shape-member hop, and so the one place a shape rung is charged against the shared counter (see
-        # `guard_contents_descent`). Every route into a shape's members runs through here — the field's own
-        # `shape:`, a nested member's, and the `shape:` an `of:` bag carries — so a graph alternating the two
-        # edges spends a rung on each turn wherever it entered. Guarded on the MEMBERS list rather than on the
-        # shape node, because that is the object this hop descends and the identity a self-containing shape
-        # brings back around.
-        def member_properties(members, for_output:, ancestry: nil)
-          guard_contents_descent(members, ancestry, edge: SHAPE_EDGE) do |child|
-            build_member_properties(members, for_output:, ancestry: child)
-          end
-        end
-
-        def build_member_properties(members, for_output:, ancestry:)
-          props = {}
-          required = []
-          named_members(members).each do |m, name|
-            key = name.to_sym
-            props[key] = build_property(m, for_output:, ancestry:).compact
-            # On OUTPUT, a member whose presence obligation can be gated off — either wholesale by a
-            # declaration-level gate, or because every nil-rejecting entry is nil-tolerant or covered by a
-            # per-validator (nested) gate — can legitimately be skipped or emitted without a value by a
-            # closed gate (the serializer emits no key, or a nil/blank one, for it). requiredness_conditionally_relaxable?
-            # (superset of conditionally_gated?) subsumes both cases, so requiredness is dropped along with
-            # (already-handled) gated constraints. INPUT stays static-maximal (a client is still expected to
-            # send the member) — stricter, and safe.
-            required << key.to_s unless optional_for_schema?(m) || (for_output && requiredness_conditionally_relaxable?(m))
-          end
-          [props, required]
-        end
-
-        # Returns [id_field_symbol, prop_hash] for a model: config, given the id's ALREADY-RESOLVED type
-        # token (or nil for the untyped fallback) — computed by the caller via
-        # `reconciled_model_id_type_token`, never re-derived here, so a merged node's multiple model
-        # routes are reconciled exactly once regardless of which route's config this happens to build
-        # the description/klass from. Projected through the SAME `single_type_for` this module already
-        # uses for every declared `type:`, so the JSON type table has one owner and `:uuid` gets its
-        # `format: "uuid"` for free.
-        def model_id_property(config, id_type)
-          model_opts = config.validations[:model]
-          klass = model_opts[:klass]
-          # The declared class written into PROSE, which owes both halves of that obligation: the name is read
-          # natively (`ClassName.of_module` binds `Module#to_s`, so a `name`/`to_s` of the class's own cannot
-          # answer it — measured, one that raises took the whole reflection down), and its bytes are RENDERED,
-          # because a constant may hold non-UTF-8 ones that cannot be joined to axn's prose at all. The
-          # declaration guard has already refused a non-Module `model:` token, so the receiver is always a
-          # Module here; `Module#to_s` also names an ANONYMOUS class, where the `name` this replaces answered
-          # nil and left the description reading "ID of the  record".
-          klass_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of_module(klass))
-          id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
-          prop = { description: config.description || "ID of the #{klass_name} record" }
-
-          apply_single_type!(prop, single_type_for(id_type, for_output: false), config, nullable: nil_allowed?(config)) if id_type
-
-          [id_field, prop.compact]
-        end
-
-        # The token behind a model config's OWN emitted type, or nil for today's untyped fallback. A
-        # declared `id_type:` always wins, whatever the finder and whether or not the class is
-        # ActiveRecord at all. Absent that, infer from the class's own primary key — but ONLY when doing
-        # so cannot silently mislead: the finder must resolve BY that primary key
-        # (`by_primary_key_finder?` — a custom finder's token has no reason to share the PK's type), and
-        # the class's ancestry must NATIVELY include ActiveRecord::Base (`includes_module?`, never
-        # `klass < ActiveRecord::Base`, which the class is free to override). Every other combination —
-        # a PORO, a custom finder, no ActiveRecord loaded at all — returns nil, same as before this
-        # method existed.
-        def model_id_type_token(model_opts, klass)
-          return model_opts[:id_type] if model_opts.key?(:id_type)
-          return nil unless defined?(::ActiveRecord::Base)
-          return nil unless Axn::Internal::NativeMethods.includes_module?(klass, ::ActiveRecord::Base)
-          return nil unless Axn::Internal::FieldConfig.by_primary_key_finder?(model_opts)
-
-          infer_ar_primary_key_type_token(klass)
-        end
-
-        # The single id-type TOKEN to emit for a (possibly merged) wire node's model routes, or nil for
-        # the untyped fallback. A DECLARED `id_type:` agreed across every route always wins outright
-        # (Codex review round 5, PR #269) — never merely one candidate among the inferred ones, which
-        # let a route's explicit claim collide with, and be rejected against, another route's UNASKED-FOR
-        # AR inference. Only absent any declared `id_type:` does this fall back to reconciling each
-        # route's OWN inferred type (`model_id_type_token`, evaluated per config against its own `klass`
-        # — a merged node's routes may each point at a different AR class). Distinct non-nil inferred
-        # results are compared by simple `.uniq`, always safe here since every value in play is one of
-        # the CLOSED `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS` (never a caller-supplied class with
-        # hostile equality).
-        #
-        # Two routes' MERELY INFERRED types disagreeing degrades to the untyped fallback rather than
-        # raising (Codex review round 6, PR #269): unlike a declared `id_type:` conflict, NEITHER author
-        # asked for a type check here — two legitimate model routes at one node simply happen to point
-        # at AR classes with different primary-key column types, which is an entirely legal runtime
-        # contract (each route resolves through its own class's own `.find`). Reflection's inference is
-        # opportunistic everywhere else in this feature (a composite PK, an unreachable connection, a
-        # custom finder all fall back silently rather than erroring), and `Axn::Tools.validate_contracts!`
-        # runs this at APP BOOT — raising here would let an add-on schema *nicety* take an otherwise
-        # working application down. A DECLARED disagreement stays a hard error (an author's own explicit,
-        # conflicting words about the SAME property, caught above by `reconciled_declared_id_type`); an
-        # INFERRED one is just inference failing to reach a confident answer, same as every other
-        # inference gap this method already treats that way.
-        def reconciled_model_id_type_token(model_configs, id_field)
-          declared = reconciled_declared_id_type(model_configs, id_field)
-          return declared if declared
-
-          tokens = model_configs.filter_map { |c| model_id_type_token(c.validations[:model], c.validations[:model][:klass]) }.uniq
-          tokens.size == 1 ? tokens.first : nil
-        end
-
-        # THE single DECLARED `id_type:` agreed across a (possibly merged) node's model routes, or nil
-        # when none declares one — never touches inference, so this is always cheap and non-dispatching
-        # and safe to compute regardless of whether an explicit sibling is about to make the result
-        # moot. Raises when two-plus routes declare DISAGREEING values, checked here rather than left
-        # for a later inference-vs-declared mismatch to surface confusingly (Codex review round 5, PR
-        # #269): a declared claim must be resolved, and found consistent, entirely on its own terms
-        # before it is ever weighed against either an explicit sibling
-        # (`reject_model_id_type_conflict!`) or another route's mere AR inference
-        # (`reconciled_model_id_type_token`) — both call this first and trust its answer outranks
-        # whatever they'd otherwise derive.
-        def reconciled_declared_id_type(model_configs, id_field)
-          declared = declared_model_id_types(model_configs)
-          return declared.first if declared.size <= 1
-
-          raise ArgumentError,
-                "multiple model: routes declare disagreeing id_type: values for the same generated " \
-                "#{renderable_id_field(id_field)} (#{declared.map(&:inspect).join(' vs ')}) — declare " \
-                "it consistently across every route, or only on one."
-        end
-
-        # THE distinct DECLARED `id_type:` tokens across a (possibly merged) node's model routes —
-        # `reconciled_declared_id_type` (above) is the single-value form every caller actually wants;
-        # this is the raw set it (and its own emptiness check) reads.
-        def declared_model_id_types(model_configs)
-          model_configs.filter_map { |c| c.validations[:model][:id_type] if c.validations[:model].key?(:id_type) }.uniq
-        end
-
-        # Reads the class's OWN primary key type — a genuine dispatch into ActiveRecord (and, through
-        # it, any custom `ActiveRecord::Type` the class itself registered), the one deliberate exception
-        # to this module's no-dispatch doctrine (see the header comment on
-        # reflection_does_not_dispatch_spec.rb, which states it). Rescued broadly rather than narrowly:
-        # no database connection (`ActiveRecord::NoDatabaseError`), no such table
-        # (`ActiveRecord::StatementInvalid`), and any other misconfiguration are all ordinary, expected
-        # outcomes here — reflection must never fail a schema build over a class it cannot fully
-        # introspect — so every one of them falls back to the SAME untyped property a PORO model or a
-        # custom finder already gets, never surfaces as an exception, and never touches boot at all
-        # beyond the one probe `Axn::Tools.validate_contracts!` triggers per tool class.
-        #
-        # A composite primary key (an Array) and a tableless/keyless model (nil) are both declared
-        # non-goals of the `<field>_id` reader convention itself
-        # (internal-docs/specs/2026-06-17-model-id-reader-design.md:38-40), so both fall back here too,
-        # deliberately, rather than being treated as an error.
-        def infer_ar_primary_key_type_token(klass)
-          pk = klass.primary_key
-          return nil unless pk.is_a?(::String)
-
-          AR_PRIMARY_KEY_TYPE_TOKENS[klass.type_for_attribute(pk).type]
-        rescue StandardError
-          nil
-        end
-
-        # A model lookup needs a non-nil token. Single source of truth for the generated `<field>_id`'s
-        # requiredness AND nullability, considering the model field plus any explicit `<field>_id` sibling
-        # (order-independent — runs after all properties are built).
-        #
-        # The id is OMITTABLE only when the model field itself is omittable (a nil-tolerant model, or one
-        # with its own usable default) AND no descendant requires presence per its own annotation (a
-        # defaulted descendant is self-rescuing at read time). A subfield default now applies at read time
-        # at any depth under a model — value-level defaults, PRO-2889, no synthesis involved — so a
-        # defaulted descendant resolves to its own value and never forces the id; only a descendant with no
-        # rescuing signal (no usable default, not nil-tolerant) strands an omitted record and keeps the id
-        # required. OR an explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply
-        # the token before the lookup). A merely nullable/optional explicit id with no default doesn't help.
-        # When the id IS required it also can't be null, so any `null` branch is stripped.
-        #
-        # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
-        # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
-        # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
-        # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
-        def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
-          # The key alone, not `model_id_property(config)` — this pass runs for EVERY model config
-          # regardless of whether an explicit sibling exists, so re-deriving the whole property here
-          # would re-run the same (possibly AR-dispatching, PRO-3384) inference `build_input` already
-          # skipped or already discarded, for a value this method never reads.
-          id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
-          # Excludes a model config sharing this name (Codex review round 2/3 fallout, PR #269): such a
-          # config never writes to THIS key (it emits its own generated id one level deeper) and never
-          # rescues it with a default of its own, so matching one here would misattribute both the
-          # type-conflict check below and the `usable_default?` rescue just past it.
-          explicit_id = field_configs.find { |c| c.field == id_field && !c.validations[:model] }
-          reject_model_id_type_conflict!([config], explicit_id, id_field)
-          merge_model_id_type_into_sibling!(properties[id_field], [config], explicit_id, id_field) if properties[id_field]
-          # A default at ANY depth under the model applies at read time (value-level defaults,
-          # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
-          # annotation-derived rule, same as every other parent.
-          model_omittable = optional_for_schema?(config) && !children_require_presence?(children, ann)
-          return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
-
-          key = id_field.to_s
-          required << key unless required.include?(key)
-          reject_null!(properties[id_field]) if properties[id_field]
-        end
-
-        # A declared `id_type:` and an explicit `<field>_id` sibling's OWN `type:` are two claims about
-        # the SAME wire property, and the sibling always wins the emitted one (its branch writes
-        # unconditionally; the model's only `||=`s) regardless of which is declared first, at either
-        # depth — so a disagreement between the two would otherwise be swallowed with no sign the model
-        # ever said something else. Reject it outright rather than let the overwrite silently pick a
-        # winner, matching the family PRO-2901 already rejects (two conflicting claims about one merged
-        # wire node). Shared by both call sites (top-level `apply_model_id_requiredness!`, which passes a
-        # one-element `[config]`; nested `apply_children!`, which passes every route's config at that
-        # merged node), each passing its own `id_field` since a nested one derives it from the wire KEY
-        # rather than from a config's `field` (an `as:`-aliased subfield can differ).
-        #
-        # First reconciles the DECLARED side across every route (`declared_model_id_types` — cheap,
-        # non-dispatching, and correct even when an explicit sibling makes `model_id_property` itself
-        # unreachable): two routes each declaring a disagreeing `id_type:` is rejected here before either
-        # is ever compared to a sibling. Only once that resolves to at most one candidate is it compared
-        # against the sibling — derived from CONFIGS via `single_type_for`/`json_type_for`, not from an
-        # already-built property, so it needs neither side to have been emitted yet (the nested call
-        # site cannot guarantee its sibling node was visited first in the same pass).
-        #
-        # Compared on the FULL projected constraint — base `:type` AND `:format` (Codex review round 3,
-        # PR #269: comparing `:type` alone let `id_type: :uuid` beside an explicit `type: String`
-        # sibling through silently, since both project to the same base `"string"`, quietly dropping the
-        # uuid-shape requirement the declaration asked for) — but the direction is deliberately
-        # asymmetric, not a strict equality: a sibling only needs to be AT LEAST as constrained as
-        # `id_type:` demands, never exactly as loose. `id_type: String` (no format) is satisfied by an
-        # explicit `type: :uuid` sibling (a valid REFINEMENT — nothing the declaration claimed is
-        # contradicted), while `id_type: :uuid` is NOT satisfied by a plain `type: String` sibling (a
-        # WIDENING — the declared format constraint would silently vanish). `type_pair_satisfies?` below
-        # encodes exactly that: the base type must match, and only when `id_type:` itself asserts a
-        # `format` must the sibling assert the SAME one.
-        #
-        # EVERY branch of an explicit UNION sibling must satisfy it, not merely one (Codex review round
-        # 4, PR #269): `id_type: Integer` beside an explicit `type: [Integer, String]` sibling has an
-        # integer branch that trivially satisfies the check, but the WINNING property is the WHOLE union
-        # — admitting the string branch too — so accepting on any one satisfied branch let the sibling
-        # silently widen past what `id_type:` promised.
-        #
-        # A sibling whose type resolves to NOTHING BUT `null` needs its own rule (Codex review round 5,
-        # PR #269): `json_type_pairs` strips the `null` branch (requiredness is reconciled elsewhere), so
-        # a null-ONLY sibling — `type: NilClass` — reduces to an EMPTY set, and a bare `.all?` on that
-        # empty set is vacuously true — which would let a null-only sibling silently satisfy ANY declared
-        # `id_type:`, whether or not the model can ever actually go without a real id. An EMPTY
-        # (post-strip) set here can only mean every branch the sibling admits was null (`explicit_id.validations`
-        # is already known to carry a `:type` key by the time this runs, and `json_type_for` never
-        # returns `{}` for one on input), so `sibling_satisfies_declared_id_type?` (below) treats it as a
-        # question about the MODEL's own nullability rather than deciding it outright — see there for why
-        # (Codex review round 16, PR #269).
-        def reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
-          declared = reconciled_declared_id_type(model_configs, id_field)
-          return if declared.nil?
-          return unless explicit_id
-
-          declared_shape = single_type_for(declared, for_output: false)
-          # `build_property`, not `json_type_for(explicit_id.validations, ...)` (Codex review round 7, PR
-          # #269): `json_type_for` alone doesn't know about the tolerance-driven relaxations `build_property`
-          # applies afterward — a blank-tolerant `type: :uuid` sibling still projects `format: "uuid"`
-          # through `json_type_for` alone, so comparing against IT said "satisfies", while the ACTUAL
-          # winning property (built the same way `build_input` builds every other property) drops that
-          # format for exactly the reason `apply_single_type!`'s own comment gives: a blank value would
-          # fail a strict `format: "uuid"` the runtime doesn't enforce. Comparing the raw pre-relaxation
-          # shape let the format vanish with no error; comparing the real emitted one catches it.
-          sibling_prop = build_property(explicit_id)
-          # Gated on the BUILT property carrying a type- or enum-bearing key, not on
-          # `explicit_id.validations` having a `:type` entry (Codex review rounds 8-9, PR #269):
-          # `inclusion:`/`numericality:` alone — no `type:` at all — can still make `json_type_for` (and
-          # so `build_property`) infer a type (an `inclusion: { in: ["abc"] }` sibling emits `{type:
-          # "string", ...}`), and a HETEROGENEOUS `inclusion:` set (`in: [1, "abc"]`) can't reduce to one
-          # type at all, so `json_type_for` emits `enum:` alone with NEITHER `:type` nor `:anyOf` —
-          # `build_property` still applies it as the value constraint (see `apply_type_info!`'s own
-          # enum-only branch). Gating on the raw validations, or on `:type`/`:anyOf` alone, skipped the
-          # comparison entirely for exactly these siblings, letting a declared `id_type: Integer` silently
-          # lose to an inferred (or enum-admitted) type with no error. A sibling with NONE of these three
-          # keys is the one genuine "nothing to compare" case (a bare `default:`, say) — everything else
-          # must be checked, the null-only sibling (round 5) included.
-          return unless sibling_prop.key?(:type) || sibling_prop.key?(:anyOf) || sibling_prop.key?(:enum)
-
-          typed, satisfied = sibling_satisfies_declared_id_type?(sibling_prop, declared_shape, model_configs)
-          return if satisfied
-
-          # Same `typed` branch the check above used, so the message names whichever half of the
-          # property actually decided the verdict — a homogeneous single-value `inclusion:` sibling
-          # carries BOTH a `:type` (what the comparison above used) and an `:enum` (its value
-          # constraint), and describing it by the wrong one would misname what actually disagreed.
-          explicit_desc = if typed
-                            json_type_pairs(sibling_prop).map { |pair| pair[:format] ? "#{pair[:type]}/#{pair[:format]}" : pair[:type] }
-                          else
-                            # `Identity.describe`, not a raw `.inspect` (Codex review round 10, PR #269):
-                            # an `inclusion:` set's members are the AUTHOR'S OWN literals, and one whose
-                            # `inspect` raises (or answers something not a String) would replace this
-                            # ArgumentError with its own exception while the message is being built —
-                            # `describe` reads it the same non-dispatching way every other foreign value
-                            # in this codebase's messages is named.
-                            ["enum: [#{Array(sibling_prop[:enum]).map { |v| Internal::Identity.describe(v) }.join(', ')}]"]
-                          end
-          explicit_desc = ["null-only"] if explicit_desc.empty?
-          raise ArgumentError,
-                "model: id_type: #{declared.inspect} disagrees with the explicitly declared " \
-                "#{renderable_id_field(id_field)}'s own type: (#{explicit_desc.join(', ')}) — declare " \
-                "one or the other."
-        end
-
-        # Whether a sibling's projected type/enum satisfies a declared `id_type:`, and whether the check
-        # ran the typed or the enum-only branch (the caller needs `typed` again to describe a mismatch).
-        # Extracted from `reject_model_id_type_conflict!` (which the accumulated Codex findings against
-        # this one check pushed over this file's complexity budget) rather than folding another branch
-        # into that method's body.
-        #
-        # The enum-only branch checks each LITERAL's own base JSON type (`enum_scalar_type`, the same
-        # classifier `json_type_for`'s own inclusion branch already uses) against `declared_shape` —
-        # reading each literal's real class, never a method it defines, the same non-dispatching
-        # discipline as everywhere else reflection classifies a caller-supplied value. KNOWN LIMITATION,
-        # stated rather than hidden: this checks base TYPE only, not `id_type: :uuid`'s FORMAT — a
-        # homogeneous String `inclusion:` set of non-uuid-shaped literals still passes, since the uuid
-        # pattern is TypeValidator's own regex, a runtime-layer concern this reflection module has no
-        # dependency on and should not duplicate.
-        #
-        # A null-only sibling (every branch strips to empty) is satisfied — not a conflict — exactly when
-        # EVERY model route at this node also tolerates nil (Codex review round 16, PR #269): `model:
-        # ..., allow_nil: true` beside `company_id, type: NilClass, optional: true` is a genuinely
-        # working, callable pairing (verified: `.call` succeeds with the id omitted OR explicitly nil),
-        # and the declared `id_type:` is never actually contradicted since the sibling never carries a
-        # non-null value for it to disagree with. It's a real conflict only when some route does NOT
-        # tolerate nil — there, the id is REQUIRED to resolve a record at least sometimes, but the
-        # sibling can never supply one, and THAT combination fails at every call (also verified). `.all?`,
-        # not `.any?`: a single non-nilable route among several merged ones still needs a real id
-        # sometimes.
-        def sibling_satisfies_declared_id_type?(sibling_prop, declared_shape, model_configs)
-          null_only_ok = model_configs.all? { |c| nil_allowed?(c) }
-          typed = sibling_prop.key?(:type) || sibling_prop.key?(:anyOf)
-          type_ok = if typed
-                      explicit_pairs = json_type_pairs(sibling_prop)
-                      explicit_pairs.empty? ? null_only_ok : explicit_pairs.all? { |pair| type_pair_satisfies?(declared_shape, pair) }
-                    end
-          # An `inclusion:` sibling's own literals satisfy on base type ALONE, matching this method's
-          # KNOWN LIMITATION for the enum-only case (a homogeneous String `inclusion:` set of
-          # non-uuid-shaped literals already passes there, deliberately, rather than duplicating
-          # TypeValidator's own uuid regex) — checked here too whenever the sibling carries an `:enum`,
-          # not gated behind `typed` being false (Codex review round 18, PR #269): `type: String,
-          # inclusion: { in: [uuid_string] }` builds BOTH `:type` and `:enum`, so `typed` is true and the
-          # bare type-pair check alone fails a required `id_type: :uuid` (the sibling's plain `type:
-          # String` carries no `format: "uuid"` of its own) — a real value-level match rejected only
-          # because an explicit `type:` happened to sit beside the `inclusion:` that already narrows it,
-          # which is backwards: adding a type shouldn't make an otherwise-tolerated enum stricter.
-          enum_ok = if sibling_prop.key?(:enum)
-                      literals = Array(sibling_prop[:enum]).compact
-                      literals.empty? ? null_only_ok : literals.all? { |literal| enum_scalar_type(literal) == declared_shape[:type] }
-                    end
-          satisfied = typed ? (type_ok || enum_ok) : enum_ok
-          [typed, satisfied]
-        end
-
-        # A declared `id_type:` beside an explicit sibling that emits no type of its OWN at all (a bare
-        # `default:`, `length:`, or other metadata-only declaration — the one case
-        # `reject_model_id_type_conflict!` above deliberately has nothing to compare, so it returns
-        # without raising) is not a conflict, but it isn't free either: nothing else was ever going to
-        # write a `:type` there, since the sibling always wins the emitted property outright (Codex
-        # review round 15, PR #269) — so the declared `id_type:` has to be merged in explicitly, or it
-        # is simply lost with no error and no trace. Mutates `target_property` (the sibling's OWN
-        # already-built emission) in place; a no-op whenever there is nothing to merge (no declared
-        # type, no sibling, or the sibling already carries type/anyOf/enum of its own — which
-        # `reject_model_id_type_conflict!` has already either accepted as compatible or raised on,
-        # so this method never overwrites a type the sibling itself asserted).
-        def merge_model_id_type_into_sibling!(target_property, model_configs, explicit_id, id_field)
-          return unless explicit_id
-          return if target_property.key?(:type) || target_property.key?(:anyOf) || target_property.key?(:enum)
-
-          declared = reconciled_declared_id_type(model_configs, id_field)
-          return if declared.nil?
-
-          # The SIBLING's own nullability/blank-tolerance, not the model config's — `target_property` is
-          # the sibling's emission, so its own `allow_nil:`/`allow_blank:` govern whether `"null"` joins
-          # the merged type and whether a blank-tolerant `:uuid`'s `format:` stands down (the same rule
-          # `apply_single_type!` already applies for every other property).
-          apply_single_type!(target_property, single_type_for(declared, for_output: false), explicit_id, nullable: nil_allowed?(explicit_id))
-          # `reject_null!` already ran on this (untyped) property earlier in the same build and, finding
-          # no `:type` to narrow, fell back to its `not: { type: "null" }` marker — now redundant (a real
-          # `:type` excludes null on its own, and `apply_single_type!` just decided that question fresh)
-          # and, left in place, a confusing double-marker beside the type that just replaced its reason
-          # for existing.
-          target_property.delete(:not) if target_property[:not] == { type: "null" }
-        end
-
-        # `id_field` rendered safely into an error message — `Values.canonical_wire_key` (already a
-        # dependency of this file) renders its actual UTF-8 characters when the bytes convert, falling
-        # back to `Symbol#inspect` — which a genuine Symbol (never a caller-subclassable object; every
-        # `id_field` here comes from `FieldConfig.model_id_key`, which always returns one) answers
-        # without running anything overridable, and always in valid UTF-8 even for exotic bytes. Bare
-        # interpolation would risk `Encoding::CompatibilityError` from THIS message's own UTF-8 text
-        # (Codex review round 7, PR #269): `model_id_key` always returns a Symbol, but nothing stops
-        # that Symbol from holding a legal, ASCII-compatible, non-UTF-8 encoding (a Latin-1 field name).
-        def renderable_id_field(id_field)
-          Values.canonical_wire_key(id_field) || id_field.inspect
-        end
-
-        # Whether a sibling's projected (type, format) PAIR satisfies what a declared `id_type:` demands
-        # — see `reject_model_id_type_conflict!` for why this is a one-way "at least as strict" test
-        # rather than equality.
-        def type_pair_satisfies?(declared, sibling_pair)
-          return false unless declared[:type] == sibling_pair[:type]
-          return true unless declared[:format]
-
-          declared[:format] == sibling_pair[:format]
-        end
-
-        # The base JSON `:type`/`:format` pairs a built property NAMES — one entry per branch for
-        # `{anyOf: [...]}`, one for a plain `{type: "string", format: "uuid"}` node, and one PER element
-        # when nullability has turned `:type` itself into an Array (`{type: ["string", "null"]}` —
-        # `build_property`'s own post-tolerance shape for a nullable SINGLE type, distinct from `anyOf`,
-        # which is reserved for a genuinely DECLARED union); empty when the node names no type at all (an
-        # `inclusion:`/`numericality:`-only bag that couldn't prove one). Every `"null"` entry is excluded
-        # either way: `nil` is never a candidate satisfying a lookup token's type, and requiredness is
-        # reconciled separately (`apply_model_id_requiredness!`/the nested `reject_null!` pass). Also
-        # accepts a `json_type_for`-shaped (pre-nullability) argument — that never puts an Array at a
-        # single member's `:type`, so `Array(m[:type])` is a one-element wrap there and reads identically.
-        def json_type_pairs(type_info)
-          members = type_info[:anyOf] || (type_info[:type] ? [type_info] : [])
-          members.flat_map { |m| Array(m[:type]).reject { |t| t == "null" }.map { |t| { type: t, format: m[:format] } } }
-        end
-
-        # Forbid `null` on a property (a required model-id token can't be null). Strips the null branch from
-        # an explicit type/anyOf; for the generated id property (untyped — a model PK has no fixed JSON type)
-        # there's no branch to strip, so add an explicit `not: { type: "null" }` constraint.
-        def reject_null!(prop)
-          if prop[:type].is_a?(Array)
-            non_null = prop[:type] - ["null"]
-            prop[:type] = non_null.size == 1 ? non_null.first : non_null
-          elsif prop[:anyOf].is_a?(Array)
-            prop[:anyOf] = prop[:anyOf].reject { |member| member[:type] == "null" }
-          elsif !prop.key?(:type)
-            prop[:not] = { type: "null" }
-          end
-        end
-
-        # Every question here is put to the token WITHOUT dispatching, and the reason is not only reflection's
-        # own rule that a walk may run none of a caller's code: a declaration GUARD reads this — the blank axis
-        # asks whether a declared type's branch can carry a size at all (`token_carries_a_size?`) — so a token
-        # answering for itself would decide whether a contract is refused, and one whose method raises would
-        # replace that verdict with its own exception, at class-definition time. Measured on an `Array` subclass
-        # with a singleton `hash`: `TYPE_MAP.key?(token)` ran it.
-        #
-        # So the four spellings a token could otherwise answer are each replaced by a native one. Identity
-        # (`Identity.same?`, a bound `equal?`) stands in for `==` against a known token; `Identity.kind?`
-        # (`Module#===`, C-level) for `is_a?`; `NativeMethods.includes_module?` — which reads the ancestry out
-        # of the method table — for `<`/`<=`/`>=`; and `map_type_for`/`map_format_for` scan the emitter's own
-        # maps by identity rather than looking a token up by its `hash`/`eql?`. The answers are identical for
-        # every token that does not define one of those methods, which is every token a declaration means.
-        def single_type_for(klass, for_output:)
-          return { type: "boolean" } if Axn::Internal::Identity.same?(klass, :boolean)
-          # TypeValidator accepts only the singleton value for TrueClass/FalseClass, so constrain the schema
-          # to it (a bare `type: "boolean"` would let a client send the other value and pass validation).
-          return { type: "boolean", enum: [true] } if Axn::Internal::Identity.same?(klass, ::TrueClass)
-          return { type: "boolean", enum: [false] } if Axn::Internal::Identity.same?(klass, ::FalseClass)
-          return { type: "string", format: "uuid" } if Axn::Internal::Identity.same?(klass, :uuid)
-          return { type: "object" } if Axn::Internal::Identity.same?(klass, :params)
-
-          # A declared type that ADMITS a Complex value (`type: Numeric` or `type: Complex`, i.e. Complex is
-          # the class or one of its ancestors) can serialize to a JSON number (real Numerics) OR a String
-          # (Complex — Float() rejects it, so Values.serialize_value falls back to to_s). Its output wire
-          # form isn't knowable from the declaration, so leave it UNTYPED on output rather than assert
-          # "number" the serialized value could contradict. Input still resolves below: `Numeric` maps to
-          # "number" (a JSON number is a real Numeric and validates), `Complex` to the permissive "string".
-          return {} if for_output && class_token?(klass) && Axn::Internal::NativeMethods.includes_module?(::Complex, klass)
-
-          mapped = map_type_for(klass)
-          unless nil.equal?(mapped)
-            result = { type: mapped }
-            format = map_format_for(klass)
-            result[:format] = format unless nil.equal?(format)
-            return result
-          end
-
-          # A Numeric subclass not in TYPE_MAP (BigDecimal, Rational, …) serializes to a JSON number
-          # (Values.serialize_value coerces it via Float()), so reflect it as "number" rather than the
-          # object/string fallback. Complex is the exception: Float() rejects it, so on input it drops to
-          # the permissive "string" below (a JSON client can't send a Complex anyway; output is handled
-          # above).
-          return { type: "number" } if numeric_but_not_complex?(klass)
-
-          # Unknown class: the serialized shape is only knowable at runtime (Values.serialize_value emits
-          # an object for an as_json/to_h value but a string for a to_s-only one), so on output leave it
-          # UNTYPED rather than assert `object` the serialized value might contradict. On input, keep a
-          # permissive `string` hint (a JSON client can't send a Ruby object anyway — see the reflection
-          # docs on coercing Ruby-object input types).
-          return {} if for_output
-
-          { type: "string" }
-        end
-
-        # Whether the token is a Class at all, asked through `Module#===` rather than the token's own `is_a?`.
-        # The Complex and Numeric branches both need it: `Complex`'s ancestry holds `Comparable`, a MODULE, and
-        # the old `klass.is_a?(Class)` guard is what kept a declared `Comparable` out of the output-untyped
-        # branch.
-        def class_token?(klass) = Axn::Internal::Identity.kind?(klass, ::Class)
-
-        # `klass < mod` — STRICT descent — read out of the token's ancestry rather than through its own `<`.
-        # Strict matters at every call site: `Data` and `Struct` are not themselves member-keyed, only their
-        # subclasses are, and `Hash` is tested by identity separately where it counts.
-        #
-        # Establishes Class-ness FIRST, which is the precondition every `NativeMethods` module reader states:
-        # binding `ancestors` to a non-Module is a TypeError, and that would replace the verdict being decided
-        # with an error from the reader meant to protect it. The `<` this replaces raised NoMethodError on a
-        # non-Module for the same reason, so each caller guarded separately; holding the precondition here
-        # keeps the three of them from having to remember it (measured — one forgot, and a nil `type:` bag's
-        # `klass:` took the reflection down).
-        def strict_descendant?(klass, mod)
-          return false unless class_token?(klass)
-          return false if Axn::Internal::Identity.same?(klass, mod)
-
-          Axn::Internal::NativeMethods.includes_module?(klass, mod)
-        end
-
-        # A Numeric subclass other than Complex — `klass < Numeric && !(klass <= Complex)`, read out of the
-        # token's ancestry rather than through its own `<`/`<=`. STRICT descent, so `Numeric` itself falls
-        # through to `TYPE_MAP` (where it is "number" already) exactly as it did.
-        def numeric_but_not_complex?(klass)
-          return false unless class_token?(klass)
-          return false if Axn::Internal::Identity.same?(klass, ::Numeric)
-          return false unless Axn::Internal::NativeMethods.includes_module?(klass, ::Numeric)
-
-          !Axn::Internal::NativeMethods.includes_module?(klass, ::Complex)
-        end
-
-        def map_type_for(klass) = identity_lookup(TYPE_MAP, klass)
-
-        def map_format_for(klass) = identity_lookup(FORMAT_MAP, klass)
-
-        # One of the emitter's own maps, looked up by IDENTITY: `Hash#[]`/`#key?` would hash the TOKEN and
-        # compare it with `eql?`, both of which a caller's Class can define. The maps are axn's own frozen
-        # Hashes keyed by ten core classes, so the scan is bounded and its receiver is never the token. `nil`
-        # means "not in this map" — no value in either map is nil.
-        def identity_lookup(map, klass)
-          map.each { |key, value| return value if Axn::Internal::Identity.same?(key, klass) }
-
-          nil
         end
 
         def json_type_for(validations, for_output: false)
@@ -3979,118 +3273,6 @@ module Axn
           return "number" if value.is_a?(Float)
 
           nil
-        end
-
-        # Whether the field's validators, taken together, permit a nil/omitted value — the one question
-        # requiredness and nullability turn on, owned by Validation::Base so a field config's own
-        # `optional?` answers it identically.
-        def nil_accepted?(config) = Axn::Validation::Base.nil_accepted?(config.validations)
-
-        # Whether the config's declaration carries a declaration-level if:/unless: gate — the signal
-        # that its enforcement (NOT its shape) is conditional at runtime. Asked of a config here and of
-        # already-read validations in `shape_property_plan` (which holds nothing but the reduced Hash); one
-        # predicate, so the two cannot answer differently. The reduction never removes a declaration-level gate
-        # key, so both spellings see the same keys.
-        def conditionally_gated?(config) = gated_validations?(config.validations)
-
-        def gated_validations?(validations)
-          Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |k| validations.key?(k) }
-        end
-
-        # Whether a single validator ENTRY carries a real per-validator (nested) if:/unless: gate — one that can
-        # skip that entry alone (e.g. `presence: { if: -> { ... } }`, `type: { klass: Integer, if: :flag }`).
-        # Owned by Validation::Base so the emptiness axis's deferral test and this reasoning judge one entry the
-        # same way.
-        def entry_self_gated?(opt) = Axn::Validation::Base.entry_self_gated?(opt)
-
-        # Whether a single validator ENTRY's options MENTION a per-validator gate key at all — blank or
-        # not (contrast entry_self_gated?, which requires a NON-blank value). A blank nested gate is not inert
-        # for the declaration-level requiredness clause: per AM's measured per-key merge
-        # (fields.rb#validator_gate_open?), a blank nested same-key value OVERRIDES and drops the shared
-        # (declaration) gate for that key before AM ignores it — un-gating the entry. So an entry that
-        # mentions ANY gate key no longer inherits the declaration gate verbatim. Owned by Validation::Base
-        # so this reasoning and the declaration-time nil-skip push-down (contract.rb `_type_rejects_nil?`)
-        # judge one entry the same way.
-        def entry_mentions_gate_key?(opt) = Axn::Validation::Base.entry_mentions_gate_key?(opt)
-
-        # Which gate keys EFFECTIVELY gate a single validator entry, given the declaration-level gates
-        # (`decl_gates` = the sliced :if/:unless off the whole declaration, already blank-canonicalized).
-        # Owned by Validation::Base so the declaration-time nil-skip push-down judges runtime skippability
-        # identically; structural (never evaluates a condition), which is what keeps reflection
-        # side-effect-free.
-        def entry_effective_gate_keys(entry_opts, decl_gates) = Axn::Validation::Base.entry_effective_gate_keys(entry_opts, decl_gates)
-
-        # Whether a config's requiredness can be RELAXED at runtime by a conditional GATE — the signal
-        # that a required-looking route can't oblige an omitted/nil ancestor to be present, because a
-        # closed gate skips the check that would otherwise reject the nil ancestor. Reasoned on EFFECTIVE
-        # gates (entry_effective_gate_keys), which model AM's measured per-key merge of the declaration
-        # gate with each entry's nested gate — so the two tiers combine exactly as at runtime without ever
-        # evaluating a condition. Relaxable iff BOTH:
-        #   * some gate exists anywhere — a declaration-level one (already blank-canonicalized) or a real
-        #     (non-blank) nested one; AND
-        #   * every NIL-REJECTING entry is effectively gated — the gate a closed runtime pass would skip is
-        #     precisely the check that rejects the nil/absent ancestor, so nothing forces it. A nil-tolerant
-        #     entry never rejects nil, so it imposes no ancestor obligation to relax.
-        # The measured merge is what makes the corner cases correct: a declaration gate with a BLANK
-        # same-key nested override on the lone presence check leaves it effectively UN-gated (the override
-        # drops the shared gate, then AM ignores the blank), so an ungated nil-rejecting check still forces
-        # the ancestor — NOT relaxable. A DISTINCT-key declaration gate (`unless:`) surviving alongside a
-        # blank nested `if:` still gates the entry — relaxable.
-        #
-        # The "some gate exists" conjunct is load-bearing: a STATICALLY nil-tolerant config (`optional:`/
-        # `allow_nil:`, no gate) must NOT be relaxed. Static tolerance does not skip a required child's
-        # validators (a nil optional parent still strands a required descendant — PRO-2857), so such a
-        # config stays in the subset for node_optional?'s subtree-stranding test to apply; dropping it would
-        # vacuously (`[].all?`) mark the node omittable and lose that test. Only a GATE — which skips the
-        # gated check entirely when closed — genuinely relaxes requiredness. Own-level emission is
-        # unaffected (this governs ancestor propagation only; see annotate_node!).
-        def requiredness_conditionally_relaxable?(config)
-          gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
-          decl_gates = config.validations.slice(*gate_keys)
-          # `entries` are the real VALIDATORS — shared options (strict:, on:, …) aren't validators and
-          # must not be mistaken for a nil-rejecting one (see nil_accepted?/validator_entries).
-          entries = Axn::Validation::Base.validator_entries(config.validations)
-
-          some_gate = decl_gates.any? || entries.any? { |_key, opt| entry_self_gated?(opt) }
-          return false unless some_gate
-
-          shared = shared_validation_options(config.validations)
-          entries.all? do |key, opt|
-            nil_tolerant_validation?(key, opt, shared) || entry_effective_gate_keys(opt, decl_gates).any?
-          end
-        end
-
-        # The declaration-wide options every entry of a config rides alongside — the tier the per-entry
-        # judgments resolve against. The slice itself is Validation::Base's one definition, so a judgment made
-        # from a bare validations bag (the declaration guards, before any config exists) reads the same tier.
-        def shared_validation_options(validations)
-          Axn::Validation::Base.shared_validation_options(validations)
-        end
-
-        def nil_tolerant_validation?(key, opt, declaration_options) = Axn::Validation::Base.nil_tolerant_validation?(key, opt, declaration_options)
-        def set_includes_nil?(opt) = Axn::Validation::Base.set_includes_nil?(opt)
-        def validator_entry_options(entry) = Axn::Validation::Base.validator_entry_options(entry)
-
-        # An entry's options as `validates` will hand them over — the declaration-wide shared options with the
-        # entry's own merged on top, so a shared tolerance is judged here exactly as at runtime.
-        def effective_entry_options(entry, declaration_options) = Axn::Validation::Base.effective_entry_options(entry, declaration_options)
-
-        def nil_allowed?(config)
-          nil_tolerance_rescues_absence?(config)
-        end
-
-        # Whether the TYPE validator itself tolerates a blank value (`type: :uuid, allow_blank: true`
-        # folds `allow_blank` into the type validator's options). Only the type validator's own option
-        # matters for dropping `format: "uuid"` — a blank-tolerant `length:`/other validator doesn't make
-        # `TypeValidator` accept `""`, so the format must stay.
-        def type_allows_blank?(config)
-          effective_entry_options(config.validations[:type], shared_validation_options(config.validations))[:allow_blank] == true
-        end
-
-        # Strip `format: "uuid"` from anyOf members: a blank-tolerant uuid accepts "" at runtime, which a
-        # strict `format: uuid` validator would reject (mirrors the scalar-type relaxation above).
-        def drop_uuid_format(members)
-          members.map { |m| m[:format] == "uuid" ? m.except(:format) : m }
         end
       end
     end

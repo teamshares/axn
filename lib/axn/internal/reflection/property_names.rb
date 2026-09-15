@@ -96,9 +96,14 @@ module Axn
         # (`Schema.build_input_for`) — and validates it. The schema is discarded: setup wants the verdict.
         # Deliberately NOT memoized, unlike the outbound verdict: nothing reads an inbound verdict later, and a
         # memo would only make a second setup pass skip a check that costs one build.
+        # Returns the residues the build produced — what the contract enforces and the projection could not
+        # state. The schema itself is still discarded, but that list is not: for these classes the reader
+        # that would otherwise report it is not axn's, so a caller that drops it drops the only notice
+        # anyone gets. Returned rather than taken as an out-param so the signature stays one argument.
         def validate_inbound!(klass)
-          validated_input(klass) { Schema.build_input_for(klass) }
-          nil
+          residues = []
+          validated_input(klass) { Schema.build_input_for(klass, residues:) }
+          residues
         end
 
         # For `render`, which needs the outbound verdict but has no schema of its own to hand over, so it would
@@ -120,7 +125,8 @@ module Axn
           return nil if configs.equal?(klass.instance_variable_get(:@_axn_validated_outbound))
 
           validate_and_build(configs, direction: :output) { Schema.build_output(configs) }
-          klass.instance_variable_set(:@_axn_validated_outbound, configs)
+          # A frozen action must still be validated, even when the verdict cannot be cached.
+          klass.instance_variable_set(:@_axn_validated_outbound, configs) unless Axn::Internal::NativeMethods.frozen?(klass)
           nil
         end
 

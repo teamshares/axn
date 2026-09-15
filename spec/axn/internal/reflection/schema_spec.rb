@@ -1,8 +1,21 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "json_schemer"
 
 RSpec.describe Axn::Internal::Reflection::Schema do
+  # What a property CONSTRAINS, without the prose a residue appends to its `description`. A test about the
+  # emitted keywords should not have to carry that sentence verbatim; the residue examples assert it
+  # directly, and `build_input`'s `residues:` array is where its structured form is checked.
+  def constraints(prop) = prop.except(:description)
+
+  # The residues a class's input schema reports, as their summary text.
+  def residue_summaries(klass)
+    residues = []
+    described_class.build_input(klass.internal_field_configs, klass.subfield_configs, residues:)
+    residues.map { |_path, residue| residue.summary }
+  end
+
   it "builds an input schema with required/optional and descriptions" do
     klass = Class.new do
       include Axn
@@ -1372,16 +1385,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
 
     it "keeps the declared and inferable vocabularies from drifting apart" do
-      inferable = Axn::Internal::Reflection::Schema::AR_PRIMARY_KEY_TYPE_TOKENS.values
+      inferable = Axn::Internal::Reflection::Schema::ModelId::AR_PRIMARY_KEY_TYPE_TOKENS.values
       declarable = Axn::Internal::FieldConfig::MODEL_ID_TYPE_TOKENS
 
       expect(inferable.uniq).to match_array(declarable)
     end
 
-    # Codex review round 1 (PR #269): an explicit `<field>_id` sibling ALWAYS wins the emitted property
-    # over the model-generated one (declaration-order independent — tested above), so a declared
-    # `id_type:` that disagrees with the sibling's own `type:` was being silently discarded rather than
-    # flagged as the authored contradiction it is.
+    # an explicit `<field>_id` sibling ALWAYS wins the emitted property over the model-generated one
+    # (declaration-order independent — tested above), so a declared `id_type:` that disagrees with the
+    # sibling's own `type:` was being silently discarded rather than flagged as the authored
+    # contradiction it is.
     describe "conflicting with an explicit <field>_id sibling's own type:" do
       it "rejects id_type: Integer beside an explicit type: String sibling" do
         klass = Class.new do
@@ -1489,10 +1502,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(company_id[:type]).to eq("integer")
       end
 
-      # Codex review round 3 (PR #269): comparing base :type alone missed the REVERSE asymmetry —
-      # id_type: :uuid asserts a format the plain explicit type: String sibling does not carry, so the
-      # uuid-shape requirement silently vanished with no error, the same swallowed-contradiction class
-      # the round-1 fix existed to close.
+      # comparing base :type alone missed the REVERSE asymmetry — id_type: :uuid asserts a format the
+      # plain explicit type: String sibling does not carry, so the uuid-shape requirement silently
+      # vanished with no error, the same swallowed-contradiction class the round-1 fix existed to
+      # close.
       it "rejects id_type: :uuid beside an explicit type: String sibling (the sibling admits any " \
          "string, silently dropping the uuid-format requirement)" do
         klass = Class.new do
@@ -1504,13 +1517,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
       end
 
-      # Codex review round 18 (PR #269): the round-3 rule above is right for a BARE type: String
-      # sibling — but a sibling narrowed by its OWN inclusion: to uuid-shaped literals is not the same
-      # "admits any string" case, and the plain type-pair comparison alone can't see that (it reads only
-      # :type/:anyOf, never :enum). An explicit type: String sitting beside the SAME inclusion: made the
-      # check treat the pairing as STRICTER than a bare inclusion: sibling with no type: at all — which
-      # already tolerates this (see the enum-only branch's documented known limitation, just above) — so
-      # this raised for a value-level-compatible declaration purely because a type: was also present.
+      # the rule above is right for a BARE type: String sibling — but a sibling narrowed by its OWN
+      # inclusion: to uuid-shaped literals is not the same "admits any string" case, and the plain
+      # type-pair comparison alone can't see that (it reads only :type/:anyOf, never :enum). An explicit
+      # type: String sitting beside the SAME inclusion: made the check treat the pairing as STRICTER
+      # than a bare inclusion: sibling with no type: at all — which already tolerates this (see the
+      # enum-only branch's documented known limitation, just above) — so this raised for a
+      # value-level-compatible declaration purely because a type: was also present.
       it "does not reject id_type: :uuid beside an explicit type: String, inclusion: [uuid-shaped " \
          "literal] sibling — an inclusion: set is checked on its own terms, the same tolerance the " \
          "enum-only case already gets, whether or not an explicit type: also sits beside it" do
@@ -1523,9 +1536,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect { klass.input_schema }.not_to raise_error
       end
 
-      # Codex review round 4 (PR #269): the "any branch satisfies" check let a widening UNION sibling
-      # through, since the branch that happened to match id_type: was enough to accept the whole thing
-      # — but the WINNING property is the entire union, including the branch that doesn't satisfy it.
+      # the "any branch satisfies" check let a widening UNION sibling through, since the branch that
+      # happened to match id_type: was enough to accept the whole thing — but the WINNING property
+      # is the entire union, including the branch that doesn't satisfy it.
       it "rejects id_type: Integer beside an explicit union type: [Integer, String] sibling (one " \
          "branch matches, but the whole union — including the string branch — is what wins, silently " \
          "widening past what id_type: promised)" do
@@ -1553,12 +1566,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
-    # Codex review round 3 (PR #269): a merged wire node reached by TWO `model:` routes (a dotted
-    # `on:` path and a nested subfield resolving to the same wire path — `as:` disambiguates their
-    # shared reader name so they still merge, the same construction schema_spec's own "merged node"
-    # examples use elsewhere in this file) each carry their own `id_type:`, but only `model_configs.first`
-    # was ever consulted — silently dropping whichever route was declared second, and changing the
-    # answer with declaration order.
+    # a merged wire node reached by TWO `model:` routes (a dotted `on:` path and a nested subfield
+    # resolving to the same wire path — `as:` disambiguates their shared reader name so they still
+    # merge, the same construction schema_spec's own "merged node" examples use elsewhere in this file)
+    # each carry their own `id_type:`, but only `model_configs.first` was ever consulted — silently
+    # dropping whichever route was declared second, and changing the answer with declaration order.
     describe "reconciling id_type: across multiple model: routes at one merged node" do
       it "rejects two model: routes at the same node declaring disagreeing id_type: values" do
         klass = Class.new do
@@ -1599,12 +1611,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
-    # Codex review round 10 (PR #269): a `shape:` member on the PARENT — declared via a `do...end`
-    # block, not a subfield — can ALSO claim the generated `<field>_id` key by name. It's merged into
-    # `prop[:properties]` by `apply_structured_schema!`, entirely BEFORE `apply_children!` (and so this
-    # conflict check) ever runs, and outside the subfield tree `children` searches at all — so the
-    # explicit-sibling lookup found nothing, the check never ran, and the shape member's `||=`-preserved
-    # property silently discarded a declared `id_type:`.
+    # a `shape:` member on the PARENT — declared via a `do...end` block, not a subfield — can ALSO claim
+    # the generated `<field>_id` key by name. It's merged into `prop[:properties]` by
+    # `apply_structured_schema!`, entirely BEFORE `apply_children!` (and so this conflict check) ever
+    # runs, and outside the subfield tree `children` searches at all — so the explicit-sibling lookup
+    # found nothing, the check never ran, and the shape member's `||=`-preserved property silently
+    # discarded a declared `id_type:`.
     it "rejects a PARENT shape: member sharing the generated id's name, which the subfield-tree " \
        "lookup alone would miss entirely" do
       klass = Class.new do
@@ -1631,15 +1643,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(payload[:properties][:company_id]).to include(type: "integer")
     end
 
-    # Codex review round 11 (PR #269): at a MERGED parent node (two routes reaching the same wire path —
-    # `as:` disambiguates their shared reader, the same construction this file's own "merged node"
-    # examples use elsewhere), `apply_structured_schema!` merges a shape member into the emitted
-    # property ONLY from the representative (first non-model) route — a member on a LATER, non-
-    # representative route never reaches `prop[:properties]` at all. Searching every route
-    # (`shape_members_at` alone) found a member that was never actually emitted, so the check believed
-    # something had already claimed the key while nothing had: the model's own property was skipped in
-    # favor of it, but nothing replaced it — `company_id` ended up `required` with no matching entry in
-    # `properties`, JSON Schema admitting any value there.
+    # at a MERGED parent node (two routes reaching the same wire path — `as:` disambiguates their shared
+    # reader, the same construction this file's own "merged node" examples use elsewhere),
+    # `apply_structured_schema!` merges a shape member into the emitted property ONLY from the
+    # representative (first non-model) route — a member on a LATER, non- representative route never
+    # reaches `prop[:properties]` at all. Searching every route (`shape_members_at` alone) found a
+    # member that was never actually emitted, so the check believed something had already claimed the
+    # key while nothing had: the model's own property was skipped in favor of it, but nothing replaced
+    # it — `company_id` ended up `required` with no matching entry in `properties`, JSON Schema
+    # admitting any value there.
     it "ignores a shape: member on a NON-representative route at a merged parent node — it never " \
        "reaches the emitted property, so it must not suppress the model's own generated id" do
       klass = Class.new do
@@ -1658,9 +1670,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(payload[:required]).to include("company_id")
     end
 
-    # Codex review round 10 (PR #269): an `inclusion:` set's members are the AUTHOR'S OWN literals, and
-    # one whose `inspect` raises would replace this ArgumentError with its own exception while the
-    # message describing the conflict was still being built.
+    # an `inclusion:` set's members are the AUTHOR'S OWN literals, and one whose `inspect` raises would
+    # replace this ArgumentError with its own exception while the message describing the conflict was
+    # still being built.
     it "renders a hostile enum literal (raising #inspect) safely rather than crashing the message itself" do
       hostile = Object.new
       def hostile.inspect = raise "hostile inspect ran"
@@ -1674,7 +1686,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end.to raise_error(ArgumentError, /disagrees.*enum/)
     end
 
-    # Codex review round 5 (PR #269): `json_type_pairs` strips the `null` branch before comparing (see
+    # `json_type_pairs` strips the `null` branch before comparing (see
     # `reject_model_id_type_conflict!`), so a sibling whose type is NilClass-only reduced to an empty
     # set — and a bare `.all?` on that empty set is vacuously true, letting a null-only sibling silently
     # win over a declared `id_type:` with no error at all.
@@ -1689,11 +1701,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
     end
 
-    # Codex review round 16 (PR #269): the round-5 rule above is right when the model itself REQUIRES a
-    # real id (verified: `.call` with no args raises there, so the id genuinely can never be supplied) —
-    # but the same null-only sibling is not a conflict at all when the model ALSO tolerates nil
-    # throughout (`allow_nil: true`): verified `.call` succeeds both with the id omitted and with it
-    # explicitly nil, so nothing the declared `id_type:` asserts is ever actually contradicted.
+    # the rule above is right when the model itself REQUIRES a real id (verified: `.call` with no args
+    # raises there, so the id genuinely can never be supplied) — but the same null-only sibling is not a
+    # conflict at all when the model ALSO tolerates nil throughout (`allow_nil: true`): verified `.call`
+    # succeeds both with the id omitted and with it explicitly nil, so nothing the declared `id_type:`
+    # asserts is ever actually contradicted.
     it "does not raise a null-only explicit sibling beside a declared id_type: when the model ALSO " \
        "tolerates nil throughout — a genuinely callable pairing, not a swallowed contradiction" do
       klass = Class.new do
@@ -1706,13 +1718,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(klass.input_schema[:properties][:company_id]).to eq(type: "null")
     end
 
-    # Codex review round 17 (PR #269): the merged type must not resurrect a null branch the
-    # required-id null pass already stripped. An untyped `allow_nil:` sibling beside a REQUIRED
-    # (non-nilable) model merges as `type: ["integer", "null"]` on the SIBLING's own nullability, but
-    # the id is required by the MODEL, and a required nested model id can never actually resolve from
-    # nil at runtime (verified: `.call(payload: { company_id: nil })` fails). The merge has to run
-    # BEFORE the required-null pass so that pass gets the last, correct word — not after, where it
-    # would silently widen a required property past what runtime accepts.
+    # the merged type must not resurrect a null branch the required-id null pass already stripped.
+    # An untyped `allow_nil:` sibling beside a REQUIRED (non-nilable) model merges as `type:
+    # ["integer", "null"]` on the SIBLING's own nullability, but the id is required by the MODEL,
+    # and a required nested model id can never actually resolve from nil at runtime (verified:
+    # `.call(payload: { company_id: nil })` fails). The merge has to run BEFORE the required-null
+    # pass so that pass gets the last, correct word — not after, where it would silently widen a
+    # required property past what runtime accepts.
     it "does not let a nested untyped allow_nil: sibling reintroduce a null branch the required-id " \
        "null pass already removed (the model itself is required, not the sibling)" do
       klass = Class.new do
@@ -1727,13 +1739,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:required]).to include("company_id")
     end
 
-    # Codex review round 7 (PR #269): comparing against `json_type_for` alone missed a RUNTIME
-    # relaxation `build_property` applies afterward — a blank-tolerant explicit `type: :uuid` sibling
-    # still projects `format: "uuid"` through `json_type_for` alone, so the check saw "satisfies" and
-    # passed, but the ACTUAL winning property (built through `apply_single_type!`, which drops the uuid
-    # format for a blank-tolerant field per its own documented reasoning) silently lost the format —
-    # exactly the class of swallowed contradiction every earlier round's fix here already closed for
-    # other shapes.
+    # comparing against `json_type_for` alone missed a RUNTIME relaxation `build_property` applies
+    # afterward — a blank-tolerant explicit `type: :uuid` sibling still projects `format: "uuid"`
+    # through `json_type_for` alone, so the check saw "satisfies" and passed, but the ACTUAL winning
+    # property (built through `apply_single_type!`, which drops the uuid format for a blank-tolerant
+    # field per its own documented reasoning) silently lost the format — exactly the class of swallowed
+    # contradiction every earlier round's fix here already closed for other shapes.
     it "rejects a blank-tolerant explicit type: :uuid sibling beside a required id_type: :uuid (the " \
        "sibling's OWN blank-tolerance drops its uuid format at emission, so the winning property " \
        "silently admits \"\" though the required model resolution never would)" do
@@ -1759,9 +1770,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:properties][:company_id]).not_to have_key(:format)
     end
 
-    # Codex review round 7 (PR #269): the generated `<field>_id` Symbol was interpolated raw into this
-    # message's own UTF-8 text — a legal, ASCII-compatible but non-UTF-8 field name (a Latin-1 Symbol)
-    # raised Encoding::CompatibilityError from the MESSAGE ITSELF, replacing the intended, actionable
+    # the generated `<field>_id` Symbol was interpolated raw into this message's own UTF-8 text — a
+    # legal, ASCII-compatible but non-UTF-8 field name (a Latin-1 Symbol) raised
+    # Encoding::CompatibilityError from the MESSAGE ITSELF, replacing the intended, actionable
     # ArgumentError with an unrelated crash.
     it "renders a non-UTF-8 (but ASCII-compatible) field name safely rather than crashing the message itself" do
       name = "caf\xE9".dup.force_encoding("ISO-8859-1").to_sym
@@ -1775,11 +1786,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end.to raise_error(ArgumentError, /disagrees/)
     end
 
-    # Codex review round 8 (PR #269): gating the comparison on `explicit_id.validations.key?(:type)`
-    # skipped a sibling that carries no `type:` at all but still gets one INFERRED by `inclusion:`/
-    # `numericality:` (the same `json_type_for` branches `build_property` itself reads) — so the winning
-    # property (a plain string, `inclusion:`-derived) silently discarded a declared `id_type: Integer`
-    # with no error, the very thing the round-1 fix exists to catch.
+    # gating the comparison on `explicit_id.validations.key?(:type)` skipped a sibling that carries no
+    # `type:` at all but still gets one INFERRED by `inclusion:`/ `numericality:` (the same
+    # `json_type_for` branches `build_property` itself reads) — so the winning property (a plain string,
+    # `inclusion:`-derived) silently discarded a declared `id_type: Integer` with no error, the very
+    # thing the round-1 fix exists to catch.
     it "rejects an explicit sibling with no type: of its own whose OTHER validator (inclusion:) still " \
        "makes build_property infer a conflicting type" do
       klass = Class.new do
@@ -1791,10 +1802,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
     end
 
-    # Codex review round 9 (PR #269): a HETEROGENEOUS `inclusion:` set (mixed value types) can't reduce
-    # to one base type at all, so `json_type_for` emits `enum:` alone — neither `:type` nor `:anyOf` —
-    # which the round-8 fix's gate didn't check, letting a declared `id_type: Integer` silently lose to
-    # a sibling whose enum admits a String literal too.
+    # a HETEROGENEOUS `inclusion:` set (mixed value types) can't reduce to one base type at all, so
+    # `json_type_for` emits `enum:` alone — neither `:type` nor `:anyOf` — which the round-8 fix's
+    # gate didn't check, letting a declared `id_type: Integer` silently lose to a sibling whose enum
+    # admits a String literal too.
     it "rejects an explicit sibling whose HETEROGENEOUS inclusion: set emits only enum: (no derivable " \
        "type at all), when a literal violates the declared id_type:" do
       klass = Class.new do
@@ -1832,9 +1843,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # covered above by "does not raise when the explicit sibling has no type: of its own to disagree
     # with"; re-verified passing unchanged by this round's fix, not duplicated here.)
 
-    # Codex review round 8 (PR #269): `id_type:` types the generated `<field>_id` `expects` builds on
-    # the INPUT schema; `exposes` never generates one at all (output reflects the exposed value itself),
-    # so `id_type:` there was accepted at declaration and then silently did nothing.
+    # `id_type:` types the generated `<field>_id` `expects` builds on the INPUT schema; `exposes`
+    # never generates one at all (output reflects the exposed value itself), so `id_type:` there was
+    # accepted at declaration and then silently did nothing.
     it "rejects id_type: on an exposes model: declaration — there is no generated <field>_id on output " \
        "for it to type" do
       expect do
@@ -1854,10 +1865,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end.not_to raise_error
     end
 
-    # Codex review round 1 (PR #269): an explicit sibling always wins, so building the model's OWN
-    # property (and, for an ActiveRecord class, dispatching into it to infer the id's type) is wasted
-    # work whenever one exists — verified here with a token whose inference methods raise if reached;
-    # the AR-specific case (a real primary_key/type_for_attribute call that must never run) lives in
+    # an explicit sibling always wins, so building the model's OWN property (and, for an
+    # ActiveRecord class, dispatching into it to infer the id's type) is wasted work whenever one
+    # exists — verified here with a token whose inference methods raise if reached; the AR-specific
+    # case (a real primary_key/type_for_attribute call that must never run) lives in
     # spec_rails/dummy_app/spec/axn/internal/reflection/model_id_type_spec.rb.
     describe "skips id_type inference entirely when an explicit sibling will win" do
       it "never calls model_id_type_token for the discarded property, top-level" do
@@ -1894,12 +1905,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
-    # Codex review round 2 (PR #269): the "an explicit sibling will win" skip above matched ANY field
-    # config named `<field>_id`, including one that is ITSELF a `model:` field — but such a config never
-    # writes to that wire key at all (it emits its OWN generated id one level deeper,
-    # `<field>_id_id`), so treating it as "something will provide this property" left the FIRST
-    # model's id in `required` with no matching property at all — an invalid, previously-untyped-but-at-
-    # least-PRESENT schema regressed to entirely absent.
+    # the "an explicit sibling will win" skip above matched ANY field config named `<field>_id`,
+    # including one that is ITSELF a `model:` field — but such a config never writes to that wire key at
+    # all (it emits its OWN generated id one level deeper, `<field>_id_id`), so treating it as
+    # "something will provide this property" left the FIRST model's id in `required` with no matching
+    # property at all — an invalid, previously-untyped-but-at- least-PRESENT schema regressed to
+    # entirely absent.
     describe "a model field's generated id sharing a name with ANOTHER model field (not an explicit sibling)" do
       it "still emits company_id's own generated property when company_id is itself a model: field" do
         klass = Class.new do
@@ -4291,6 +4302,102 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
       expect { klass.input_schema }.not_to raise_error
     end
+
+    # The same rule one layer on: a residue summary QUOTES the constraints it could not state, and those are
+    # the author's own literals too. A String/Array/Hash SUBCLASS can override the very `to_s`/`map`/`to_h` a
+    # reduction reaches for, so reducing is a defence only while the reduction itself dispatches nothing —
+    # each of these raised out of `input_schema` while the message describing the gap was being built.
+    {
+      "a String subclass" => Class.new(String) { def to_s = raise(NotImplementedError, "to_s ran") },
+      "an Array subclass" => Class.new(Array) { def map(*) = raise(NotImplementedError, "map ran") },
+      "a Hash subclass" => Class.new(Hash) { def to_h(*) = raise(NotImplementedError, "to_h ran") },
+    }.each do |label, hostile|
+      it "renders a residue summary quoting #{label} literal without running its own code" do
+        klass = Class.new do
+          include Axn
+          expects(:payload, type: Hash) { field :inner, type: String }
+          expects :inner, on: :payload, type: String, optional: true,
+                          default: hostile.new, preprocess: ->(v) { v }
+          def call; end
+        end
+
+        expect { klass.input_schema }.not_to raise_error
+      end
+    end
+
+    # The same rule again at the two OTHER reads the reporting path makes of a caller's own object: the
+    # `true`/`false` test the reduction opens with, and the author's `description:`, which is joined and
+    # compared while the residue prose is appended to it.
+    it "tests a literal against true/false without dispatching its own ==" do
+      hostile = Class.new { def ==(_other) = raise(NotImplementedError, "== ran") }
+      literal = hostile.new
+      klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true,
+                        default: literal, preprocess: ->(v) { v }
+        def call; end
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
+
+    it "appends residue prose to a String-subclass description: without running its to_s" do
+      hostile = Class.new(String) { def to_s = raise(NotImplementedError, "description to_s ran") }
+      prose = hostile.new("authored")
+      klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true,
+                        description: prose, preprocess: ->(v) { v }
+        def call; end
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+      expect(klass.input_schema.dig(:properties, :payload, :properties, :inner, :description)).to include("authored")
+    end
+
+    it "carries a description: onto a gated projection without dispatching its nil?" do
+      hostile = Class.new(String) { def nil? = raise(NotImplementedError, "carry nil? ran") }
+      prose = hostile.new("authored")
+      klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true, description: prose,
+                        length: { minimum: 5, if: -> { false } }
+        def call; end
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
+
+    it "stands a transforming side down beside a description: without dispatching its nil?" do
+      hostile = Class.new(String) { def nil? = raise(NotImplementedError, "stand-down nil? ran") }
+      prose = hostile.new("authored")
+      klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: String, optional: true,
+                        description: prose, preprocess: ->(v) { v }
+        def call; end
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
+
+    it "collapses an identical description pair without dispatching the description's ==" do
+      hostile = Class.new(String) { def ==(_other) = raise(NotImplementedError, "description == ran") }
+      prose = hostile.new("shared prose")
+      klass = Class.new do
+        include Axn
+        expects(:payload, type: Hash) { field :inner, type: String, description: prose }
+        expects :inner, on: :payload, type: String, optional: true,
+                        description: prose, preprocess: ->(v) { v }
+        def call; end
+      end
+
+      expect { klass.input_schema }.not_to raise_error
+    end
   end
 
   # Deep subfields (PRO-2872): a dotted `on:` path, a subfield-of-a-subfield, and a dotted field
@@ -4973,15 +5080,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(klass.call(payload: { inner: nil })).not_to be_ok
         end
 
-        # Precedence, not conjunction — and deliberately the SAME precedence every other spelling already
-        # uses: `apply_structured_schema!` has always resolved a name declared twice at one node with
-        # `base_properties.merge(member_props)`, so the child wins here, through a dotted `on:`, and through
-        # the node's own `shape:` alike, on `main` and after this change alike (measured). That is a real
-        # divergence — the runtime enforces both declarations and rejects what the document accepts — but it
-        # is one level down from this ticket and spelling-independent, so it is tracked with the rest of the
-        # conjunction work in PRO-3405. Pinning it here keeps the two spellings provably equal, which is what
-        # a fix must preserve: correcting only the explicit path would reopen the divergence this closes.
-        it "lets the node's own child win a name the ancestor member also declares (same as every spelling)" do
+        # PRO-3405. A name declared twice at one node — once by the ancestor's nested shape, once by the
+        # node's own child — used to resolve by precedence (`base_properties.merge(member_props)`, the
+        # child winning outright), discarding the ancestor's constraint though the runtime enforces both.
+        # Conjoined via `allOf` instead, same as any other collision this ticket closes: `String` and
+        # `Array` are disjoint (and neither is coercible, so the stand-down below never applies), so the
+        # honest conjunction is empty, matching a contract nothing satisfies (both spellings, measured).
+        # Every spelling agrees, which is what a fix must preserve — correcting only the explicit path
+        # would reopen the divergence PRO-3399 closed.
+        it "conjoins a colliding child name via allOf rather than letting one side win" do
           klass = Class.new do
             include Axn
             expects :payload, type: Hash do
@@ -4990,11 +5097,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               end
             end
             expects :inner, on: :payload, type: Hash
-            expects :a, on: :inner, type: Integer
+            expects :a, on: :inner, type: Array
+            def call = nil
           end
           schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-          expect(schema[:properties][:payload][:properties][:inner][:properties][:a]).to include(type: "integer")
+          a_prop = schema[:properties][:payload][:properties][:inner][:properties][:a]
+          expect(a_prop[:type]).to eq("array")
+          expect(a_prop[:allOf]).to eq([{ type: "string", minLength: 1 }])
+          expect(klass.call(payload: { inner: { a: "x" } })).not_to be_ok # ancestor wants String…
+          expect(klass.call(payload: { inner: { a: [1] } })).not_to be_ok # …node wants Array: nothing satisfies both
 
           implicit = Class.new do
             include Axn
@@ -5003,10 +5115,89 @@ RSpec.describe Axn::Internal::Reflection::Schema do
                 field :a, type: String
               end
             end
-            expects :a, on: "payload.inner", type: Integer
+            expects :a, on: "payload.inner", type: Array
           end
           expect(described_class.build_input(implicit.internal_field_configs, implicit.subfield_configs))
             .to eq(schema)
+        end
+
+        # A coercible child's emitted type ("integer") names its TARGET, not the wire form the ancestor's
+        # own check reads — the ancestor's check is UNCONDITIONAL (measured: it also rejects an
+        # already-Integer wire value here, independent of coercion), so conjoining the ancestor's REAL
+        # String constraint is what matches the runtime, not standing the whole child down. This is the
+        # child-level twin of the node-level case below — a coercible type is approximate exactly the way
+        # an unknown class's fallback is, so `conjoin_shape_member_property` drops it and adopts the
+        # ancestor's own emission wholesale.
+        it "conjoins the ancestor's real constraint over a colliding child's coercible-target type" do
+          klass = Class.new do
+            include Axn
+            configure { |c| c.coerce_input_types = true }
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String
+              end
+            end
+            expects :inner, on: :payload, type: Hash
+            expects :a, on: :inner, type: Integer
+            def call = nil
+          end
+          schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+          a_prop = schema[:properties][:payload][:properties][:inner][:properties][:a]
+          expect(constraints(a_prop)).to eq(type: "string", minLength: 1)
+          expect(klass.call(payload: { inner: { a: "5" } })).to be_ok # the coercible wire form still works
+          expect(klass.call(payload: { inner: { a: 5 } })).not_to be_ok # a raw wire integer never satisfies the ancestor
+        end
+
+        # The conjunction actually being ENFORCED, not just an empty one: two compatible String
+        # constraints, one on each side, both alive in the final document — and pinned across all three
+        # spellings, which must agree (the property PRO-3399 established).
+        it "enforces both sides of a satisfiable colliding-child conjunction, identically in every spelling" do
+          explicit_child = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String, length: { minimum: 3 }
+              end
+            end
+            expects :inner, on: :payload, type: Hash
+            expects :a, on: :inner, type: String, format: { with: /\Aabc/ }
+            def call = nil
+          end
+          own_shape = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String, length: { minimum: 3 }
+              end
+            end
+            expects(:inner, on: :payload, type: Hash) { field :a, type: String, format: { with: /\Aabc/ } }
+            def call = nil
+          end
+          dotted = Class.new do
+            include Axn
+            expects :payload, type: Hash do
+              field :inner, type: Hash do
+                field :a, type: String, length: { minimum: 3 }
+              end
+            end
+            expects :a, on: "payload.inner", type: String, format: { with: /\Aabc/ }
+            def call = nil
+          end
+
+          schema = described_class.build_input(explicit_child.internal_field_configs, explicit_child.subfield_configs)
+          expect(described_class.build_input(own_shape.internal_field_configs, own_shape.subfield_configs)).to eq(schema)
+          expect(described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)).to eq(schema)
+
+          a_prop = schema[:properties][:payload][:properties][:inner][:properties][:a]
+          expect(a_prop[:pattern]).to eq("^abc") # the node's own format survives at the top
+          expect(a_prop[:allOf]).to eq([{ type: "string", minLength: 3 }]) # the ancestor's length floor, conjoined
+
+          [explicit_child, own_shape, dotted].each do |klass|
+            expect(klass.call(payload: { inner: { a: "abcdef" } })).to be_ok       # satisfies length AND format
+            expect(klass.call(payload: { inner: { a: "ab" } })).not_to be_ok       # fails the ancestor's length floor
+            expect(klass.call(payload: { inner: { a: "xyzxyz" } })).not_to be_ok   # fails the node's own format
+          end
         end
 
         # A non-nestable member BELOW the explicit hop blocks at the deeper implicit node, exactly as it does
@@ -5094,10 +5285,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           end
         end
 
-        context "negative controls — a member the emitter does not merge" do
+        # PRO-3405. Every case below used to discard the ancestor member's contents outright — no shared
+        # `properties`/`required` keyword surface with the node's own emission, so there was nowhere to
+        # put them structurally. They still don't get keyword-merged (that stays the object-vs-object
+        # path above), but they are no longer DROPPED: the member is conjoined as a sibling `allOf`
+        # branch, so the document keeps every constraint the runtime enforces.
+        context "a member the emitter cannot structurally merge conjoins via allOf instead of dropping" do
           # The node's OWN type governs nesting: a `type: Hash` node under a `[Hash, Array]` member still
           # nests its subfields, because runtime narrows to the Hash branch there and such a contract
-          # resolves for real. Only the member's own contents stay out. If this ever starts dropping `c`,
+          # resolves for real. Only the member's own contents stay OUT OF `properties` — they still reach
+          # the document, via the allOf branch below. If this ever starts dropping `c` from `properties`,
           # the drop pass has been widened to block at explicit hops, which it must not be.
           it "still nests an explicit node's children under a mixed-union member, and drops nothing" do
             klass = Class.new do
@@ -5114,11 +5311,72 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner[:type]).to eq("object")
             expect(inner[:properties]).to have_key(:c)
+            expect(inner[:allOf]).to eq([{ anyOf: [{ type: "object", minProperties: 1 }, { type: "array", minItems: 1 }] }])
             expect(described_class.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs)).to eq([])
             expect(klass.call(payload: { inner: { c: "x" } })).to be_ok # and it really resolves
           end
 
-          it "merges nothing into a node whose own type cannot hold object properties" do
+          # The measured divergence this closes: the ancestor member requires an object with AT LEAST one
+          # property (or a non-empty array) — a bare `{}` satisfies neither branch, and the runtime has
+          # always rejected it. Before this fix the document accepted it (the member was dropped whole).
+          it "conjoins a mixed-union member's own presence floor onto a nil-tolerant node" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Hash, Array]
+              end
+              expects :inner, on: :payload, type: Hash, allow_nil: true
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner[:type]).to eq("object") # allow_nil stripped: the ancestor member forbids nil
+            expect(inner[:allOf]).to eq([{ anyOf: [{ type: "object", minProperties: 1 }, { type: "array", minItems: 1 }] }])
+            expect(klass.call(payload: { inner: {} })).not_to be_ok # the divergence: the document used to accept this
+          end
+
+          # A direct unit test of the conjoin helper itself, at the one combination no declaration reaches
+          # through `.input_schema` in one build (the node's OWN emitted property is always overwritten
+          # before anything else could read the stale reference) but that a future caller easily could: an
+          # EXPLICIT node with no type or shape of its own emits `{}`, which routes through
+          # merge_shape_member_property rather than a bare `member_prop.dup` specifically so that a caller
+          # adding the node's own children afterward (as apply_nested_subfields! does) writes into a properties
+          # Hash of its own, never into the ancestor's.
+          it "conjoins an empty node property without aliasing the member's own properties Hash" do
+            member_prop = { type: "object", properties: { a: { type: "string" } }, required: ["a"], minProperties: 1 }
+
+            conjoined = described_class.conjoin_shape_member_property(member_prop, {})
+            conjoined[:properties][:b] = { type: "integer" } # simulate a node's own child being added afterward
+
+            expect(member_prop[:properties]).not_to have_key(:b)
+          end
+
+          it "conjoins via allOf when the ancestor member's own type has no object branch at all" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: Hash
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner[:type]).to eq("object")
+            expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
+            # honest emptiness: String and Hash are disjoint, so nothing satisfies the conjunction —
+            # matching the contract, which nothing satisfies either.
+            expect(klass.call(payload: { inner: {} })).not_to be_ok
+            expect(klass.call(payload: { inner: "x" })).not_to be_ok
+          end
+
+          # A non-object NODE type (not a union — plain `Array`) beside an object-shaped ancestor member:
+          # `properties` stays absent (there is nowhere at the top level to put an object's properties
+          # under an array-typed node), but the member's whole Hash-shaped constraint now reaches the
+          # document via allOf, rather than vanishing.
+          it "conjoins via allOf into a node whose own type cannot hold object properties" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -5127,28 +5385,779 @@ RSpec.describe Axn::Internal::Reflection::Schema do
                 end
               end
               expects :inner, on: :payload, type: Array
+              def call = nil
             end
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner[:type]).to eq("array")
             expect(inner).not_to have_key(:properties)
+            expect(inner[:allOf]).to eq(
+              [{ type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1 }],
+            )
             expect(schema[:properties][:payload][:required]).to include("inner") # obligation kept
+            # honest emptiness: Array and the member's required Hash shape are disjoint.
+            expect(klass.call(payload: { inner: [] })).not_to be_ok
+            expect(klass.call(payload: { inner: { a: "x" } })).not_to be_ok
           end
 
-          it "merges nothing from an Array member, whose shape describes ELEMENTS rather than the node" do
+          # The deep twin of the top-level case above: a nested key, not the node itself, collision-free at
+          # depth 0 but conjoined at depth 1 via merge_emitted_maps rather than apply_explicit_child! — the
+          # OTHER site this fix touches. Object (node's own shape) vs scalar (ancestor's), not two scalars.
+          it "conjoins a nested key's ancestor-declared shape with the node's OWN differently-shaped child" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :deep, type: String
+                end
+              end
+              expects(:inner, on: :payload, type: Hash) do
+                field :deep, type: Hash do
+                  field :z, type: String
+                end
+              end
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:inner][:properties][:deep]
+            expect(deep[:type]).to eq("object")
+            expect(deep[:properties]).to have_key(:z)
+            expect(deep[:allOf]).to eq([{ type: "string", minLength: 1 }])
+            # the divergence this closes: an object satisfying the node's own shape used to pass, though
+            # the ancestor member requires deep to be a String.
+            expect(klass.call(payload: { inner: { deep: { z: "x" } } })).not_to be_ok
+          end
+
+          # A shape member (or the node's own shape) whose declared type is APPROXIMATE — an unknown class
+          # like `Object`/`Enumerable`, which `single_type_for` reflects on input as a permissive `{type:
+          # "string"}` HINT rather than a real constraint — must not be conjoined as if that hint were
+          # exact: doing so emits a string-vs-object intersection nothing satisfies, though the runtime
+          # accepts any Hash for both sides. Only the fake TYPE (`type`/`anyOf`) is dropped from the
+          # approximate side; everything else — here, the presence floor `single_type_for` attached under
+          # its "string" assumption — survives as a harmless residue, RETARGETED to the surviving object
+          # type's own keyword (`minProperties`, not `minLength` — `retarget_unknown_class_length`
+          # translates it once the collision reveals the real type, since JSON Schema would otherwise
+          # silently ignore a `minLength` on an object instance and the presence floor would enforce nothing
+          # at all).
+          it "does not conjoin an ancestor member's approximate type hint against the node's real object shape" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object
+              end
+              expects :inner, on: :payload, type: Hash
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(constraints(inner)).to include(type: "object", minProperties: 1)
+            expect(klass.call(payload: { inner: { a: 1 } })).to be_ok # the working contract this protects
+          end
+
+          # The mirror: the NODE's own type is the approximate one, and the ancestor member's real Hash
+          # shape survives — its `properties`/`required` reach the document, rather than the node's fake
+          # "string" hint discarding them. The node's own presence floor came from that same fabricated
+          # "string", so it is reported rather than restated under a keyword chosen for a type only the
+          # collision revealed.
+          it "does not conjoin the node's own approximate type hint against a real ancestor shape, and keeps the ancestor's" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :a, type: String
+                end
+              end
+              expects :inner, on: :payload, type: Object
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?({ "a" => "x" })).to be(true)
+            expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?({ "b" => "x" })).to be(false)
+            expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
+            expect(klass.call(payload: { inner: {} })).not_to be_ok # the ancestor's required `a` still enforced
+          end
+
+          # Two approximate hints beside each other never contradict — nothing is lost by conjoining them
+          # normally, so this is the one combination where the plain conjoin still runs.
+          it "conjoins normally when BOTH sides are approximate, since two string hints cannot contradict" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object
+              end
+              expects :inner, on: :payload, type: Enumerable
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner[:type]).to eq("string")
+            expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
+          end
+
+          # A mixed union with ONE exact branch is still approximate as a WHOLE: `Object` alone already
+          # admits everything the union could narrow to, so the exact `String` branch beside it adds
+          # nothing the runtime doesn't already accept via `Object`. an earlier `.all?` reading let this
+          # union through as "exact" because String isn't approximate, conjoining the union's collapsed
+          # `"string"` emission as though it meant only strings.
+          it "treats a mixed union with an approximate branch as approximate as a whole" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: [Object, String]
+              end
+              expects :inner, on: :payload, type: Hash
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(constraints(inner)).to include(type: "object", minProperties: 1)
+            expect(klass.call(payload: { inner: { a: 1 } })).to be_ok
+          end
+
+          # The same approximate-type judgment, one level deeper: the collision is between the ancestor's
+          # NESTED field and the node's OWN shape block (spelling B, reached through merge_emitted_maps
+          # rather than apply_explicit_child!). `merge_emitted_maps` re-resolves each side's config PER
+          # COLLIDING KEY via `shape_members_at` rather than trusting the property Hash, so it can tell a
+          # real `type: String` from the `Object` fallback apart at THIS depth too.
+          it "does not conjoin an approximate type hint one level deeper either, through merge_emitted_maps" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :deep, type: Object
+                end
+              end
+              expects(:inner, on: :payload, type: Hash) do
+                field :deep, type: Hash do
+                  field :z, type: String
+                end
+              end
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:inner][:properties][:deep]
+            expect(constraints(deep)).to include(
+              type: "object", properties: { z: { type: "string", minLength: 1 } }, required: ["z"], minProperties: 1,
+            )
+            expect(klass.call(payload: { inner: { deep: { z: "x" } } })).to be_ok
+            expect(klass.call(payload: { inner: { deep: {} } })).not_to be_ok # the node's own required `z` still enforced
+          end
+
+          # coerce:/preprocess: transform the wire value before validation runs, so a node declaring either
+          # judges a DIFFERENT value than the ancestor member's declaration does — but the ancestor's own
+          # check is UNCONDITIONAL (measured: it rejects an already-Integer wire value here too, regardless
+          # of the node's coercion), so the coercible node's emitted "integer" names its TARGET, not the
+          # wire form the ancestor actually reads. That makes it approximate exactly the way an unknown
+          # class's `single_type_for` fallback is: `conjoin_shape_member_property` drops it and adopts the
+          # ancestor's real String constraint wholesale, which is what actually matches the runtime for
+          # BOTH the coercible wire string ("5") and the raw wire integer (5) it never satisfies.
+          it "conjoins the ancestor's real constraint over a node whose own declaration coerces" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(constraints(inner)).to eq(type: "string", minLength: 1)
+            expect(klass.call(payload: { inner: "5" })).to be_ok # the coercible wire form still works
+            expect(klass.call(payload: { inner: 5 })).not_to be_ok # a raw wire integer never satisfies the ancestor
+          end
+
+          # An ABSENT coerce: is not evidence of no transform: the class/global coerce_input_types setting
+          # (and Axn::Tools::Invoker, always on) coerces every coercible field whose own coerce: is silent,
+          # and reflection cannot resolve that ambient, per-call/per-class flag — the same conservatism
+          # `boolean_coercion_can_flip_truthiness?` already applies elsewhere in this file. So a plain `type:
+          # Integer` node with no coerce: at all is approximate too, exactly as an explicit coerce: true is.
+          it "conjoins the ancestor's real constraint over a plain coercible type with no explicit coerce:" do
+            klass = Class.new do
+              include Axn
+              configure { |c| c.coerce_input_types = true }
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: Integer
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(constraints(inner)).to eq(type: "string", minLength: 1)
+            expect(klass.call(payload: { inner: "5" })).to be_ok
+            expect(klass.call(payload: { inner: 5 })).not_to be_ok
+          end
+
+          # The mirror: an explicit coerce: false opts back out even on a coercible type, so a genuinely
+          # non-transforming node conjoins normally — the stand-down is not "any coercible type", it is
+          # "unless coercion is provably off".
+          it "does not stand down when coerce: false explicitly rules the ambient flag out" do
+            klass = Class.new do
+              include Axn
+              configure { |c| c.coerce_input_types = true }
+              expects :payload, type: Hash do
+                field :inner, type: String
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: false }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
+            expect(klass.call(payload: { inner: "5" })).not_to be_ok # never coerced: a String fails the ancestor's own type too
+          end
+
+          # Approximateness is judged on the route that actually PRODUCED member_prop, not on every route
+          # matching the key: at a merged ancestor node, `apply_structured_schema!` builds `member_prop`
+          # from the REPRESENTATIVE route alone, so a LATER, non-representative route's exact type never
+          # reaches the document at all — judging the whole `members` list let that unreached route mask
+          # the representative's own approximate one. Two routes to `outer.mid.payload`, the FIRST
+          # (representative) declaring `inner` as the approximate `Object`, the SECOND (never emitted)
+          # declaring it as the real `Hash`.
+          it "judges approximateness on the route that actually produced member_prop, not every merged route" do
+            klass = Class.new do
+              include Axn
+              expects :outer, type: Hash
+              expects :mid, on: :outer, type: Hash
+              expects :payload, on: "outer.mid", type: Hash, as: :p1 do
+                field :inner, type: Object
+              end
+              expects :payload, on: :mid, type: Hash do
+                field :inner, type: Hash
+              end
+              expects :inner, on: :p1, type: Hash
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema.dig(:properties, :outer, :properties, :mid, :properties, :payload, :properties, :inner)
+            expect(constraints(inner)).to include(type: "object", minProperties: 1)
+            expect(klass.call(outer: { mid: { payload: { inner: { a: 1 } } } })).to be_ok
+          end
+
+          # A mixed union node beside a real ancestor constraint: the ancestor's check is UNCONDITIONAL
+          # (it runs regardless of which union branch the node's own type nominally admits), so an
+          # `Integer` branch that's ALSO approximate (coercible) does not shield the union from the
+          # ancestor — the whole node collapses to the ancestor's real Hash-shape requirement, because
+          # nothing satisfies the ancestor without also being the Hash the union's other branch names
+          # (even a wire value the Integer branch would coerce successfully, or one that's already a
+          # valid Integer, fails the ancestor's Hash check either way, so there is nothing for the
+          # Integer branch to protect).
+          it "conjoins the ancestor's real constraint over a union node with one coercible branch" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :a, type: String
+                end
+              end
+              expects :inner, on: :payload, type: [Hash, Integer]
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(constraints(inner)).to eq(type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1)
+            expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
+            expect(klass.call(payload: { inner: { other: 1 } })).not_to be_ok # non-empty Hash, but missing the ancestor's required `a`
+            expect(klass.call(payload: { inner: 5 })).not_to be_ok # a wire integer never satisfies the ancestor's Hash requirement
+          end
+
+          # preprocess: is judged the same way as coercion — the node's own emitted type is approximate,
+          # even with NO declared type token to weigh at all, since a Proc can rewrite the wire value into
+          # anything. The ancestor's constraint is still independently enforced against the RAW value, so
+          # it must not be discarded just because the node also transforms its own reading.
+          it "conjoins the ancestor's real constraint over a node whose own declaration preprocesses" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :a, type: String
+                end
+              end
+              expects :inner, on: :payload, type: Hash, preprocess: ->(v) { v }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            # The preprocessing node stands down whole — its own presence floor included, since that too
+            # judges the Proc's output — and the ancestor's real shape is emitted directly.
+            expect(constraints(inner)).to eq(
+              type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1,
+            )
+            expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
+            expect(klass.call(payload: { inner: { b: 1 } })).not_to be_ok # missing the ancestor's required `a`
+          end
+
+          # When both colliding sides are OBJECT-shaped, `merge_shape_member_property`'s shallow keyword
+          # union lets the SECOND side's `:type` silently overwrite the first's — safe for `properties`/
+          # `required`/the size bounds (those are explicitly unioned/intersected), but NOT for nullability:
+          # a nullable `["object", "null"]` on one side must not overwrite the OTHER side's non-nullable
+          # `"object"`: an ancestor `deep` Hash member that REQUIRES `a` (non-nullable) beside a colliding
+          # node's OWN `deep` declared `allow_nil: true` (nullable) let the node's nullable type win
+          # outright, so the merged schema admitted `deep: null` even though the ancestor's own
+          # (unconditional, raw-value) check rejects null there. Both routes are enforced, so null survives
+          # only when BOTH tolerate it — `merge_emitted_type` reconciles this explicitly rather than
+          # leaving it to the shallow merge's "second side wins" default.
+          it "keeps a nested object collision non-nullable when either colliding side forbids null" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :deep, type: Hash do
+                    field :a, type: String
+                  end
+                end
+              end
+              expects(:inner, on: :payload, type: Hash) do
+                field :deep, type: Hash, allow_nil: true
+              end
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:inner][:properties][:deep]
+            expect(deep).to eq(type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1)
+            expect(klass.call(payload: { inner: { deep: nil } })).not_to be_ok # the ancestor's required `a` forbids null here
+            expect(klass.call(payload: { inner: { deep: { a: "x" } } })).to be_ok
+          end
+
+          # A map's `values:`/`keys:` axes (`additionalProperties`/`propertyNames`) are their own nested
+          # schema, both enforced when both colliding sides declare one — the object-vs-object merge above
+          # reconciles `properties`/`required`/the size bounds but, before this fix, still let the shallow
+          # `merge` at its TOP overwrite one side's `additionalProperties` with the other's outright: an
+          # ancestor `deep` Hash member whose values axis requires `> 0` beside a colliding node's own
+          # `deep` values axis requiring `< 10` emitted only the `< 10` constraint, so `deep: { x: -1 }`
+          # passed the schema though the ancestor's own validator (which runs unconditionally, regardless
+          # of what the node's own map declares) rejects it. Fixed by conjoining the two nested axis
+          # schemas the same way any other single-position collision is.
+          it "conjoins colliding values-axis constraints on a nested map rather than letting one win" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :deep, type: Hash, of: { values: { klass: Integer, comparison: { greater_than: 0 } } }
+              end
+              expects(:deep, on: :payload, type: Hash, of: { values: { klass: Integer, comparison: { less_than: 10 } } })
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:deep]
+            expect(deep).to eq(
+              type: "object",
+              additionalProperties: { type: "integer", exclusiveMaximum: 10, allOf: [{ type: "integer", exclusiveMinimum: 0 }] },
+              minProperties: 1,
+            )
+            expect(klass.call(payload: { deep: { x: 5 } })).to be_ok
+            expect(klass.call(payload: { deep: { x: -1 } })).not_to be_ok # fails the ancestor's own values-axis floor
+            expect(klass.call(payload: { deep: { x: 20 } })).not_to be_ok # fails the node's own values-axis ceiling
+          end
+
+          # The conjunction above threads NO axis-level configs through, so `unknown_class_approximate?`
+          # never fires for either axis — harmless when both axes are exactly typed (Integer), but wrong
+          # once one axis is an UNKNOWN-CLASS hint: an ancestor `deep` Hash member with `values: Object` (a
+          # permissive `single_type_for` HINT, `{type: "string"}`, not a real constraint) beside a colliding
+          # node's own `values: Hash` axis (a REAL `{type: "object"}`) conjoined the fake String hint as
+          # though it were exact, producing `additionalProperties: { type: "object", allOf: [{ type:
+          # "string" }] }` — a node nothing satisfies, though `{ x: {} }` passes both runtime axis
+          # validators. Fixed by threading each axis's OWN declared klass token into the recursive
+          # conjunction via `axis_configs_for`, so the approximate axis gets the same
+          # `unknown_class_approximate?` stripping an approximate FIELD already gets.
+          it "strips an approximate axis's fake type hint rather than conjoining it as exact" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :deep, type: Hash, of: { values: Object }
+              end
+              expects(:deep, on: :payload, type: Hash, of: { values: Hash })
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:deep]
+            expect(deep).to eq(type: "object", additionalProperties: { type: "object" }, minProperties: 1)
+            expect(klass.call(payload: { deep: { x: {} } })).to be_ok
+          end
+
+          # `axis_configs_for` only carried each axis's own `:klass` into its view, dropping the REST of
+          # the axis bag — harmless one level deep, but wrong once the axis itself is ANOTHER map bag with
+          # its own nested `values:`/`keys:` axis: outer `klass: Hash` axes whose nested values are
+          # respectively `Object` and `Hash` lost that inner structure here, so when the merge recursed one
+          # level deeper for the INNER axis, `axis_configs_for` found no `:of` to read on the view at all,
+          # and the inner `Object` axis's approximate `{type: "string"}` hint was conjoined as exact all
+          # over again — the runtime accepts a value containing the nested Hash, but the emitted
+          # `additionalProperties` node was unsatisfiable. Fixed by carrying the axis's own `:of` forward
+          # into the view alongside its synthesized `:type`, so `axis_configs_for` can keep recursing
+          # exactly as deep as the collision itself goes.
+          it "preserves nested axis provenance through a doubly-nested map collision" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :deep, type: Hash, of: { values: { klass: Hash, of: { values: Object } } }
+              end
+              expects(:deep, on: :payload, type: Hash, of: { values: { klass: Hash, of: { values: Hash } } })
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:deep]
+            expect(deep).to eq(
+              type: "object",
+              additionalProperties: { type: "object", additionalProperties: { type: "object" } },
+              minProperties: 1,
+            )
+            expect(klass.call(payload: { deep: { x: { y: {} } } })).to be_ok
+          end
+
+          # An axis's OWN `shape:` names members the same way a field's `shape:` does — `shape_members_at`
+          # reads `config.validations.dig(:shape, :members)` off whatever config it's handed — but the
+          # view built above only carried `:type`/`:of` forward, not `:shape`: two `values: { klass: Hash,
+          # shape: { … } }` axes colliding, one naming a child `a` as `Object` and the other as `Hash`,
+          # needs the SAME per-child lookup an ordinary object's `properties` collision already gets —
+          # without `:shape` on the view, `shape_members_at` found nothing, so the `Object` child's
+          # approximate hint was conjoined as exact against the `Hash` child's real one, producing a node
+          # nothing satisfies though a nonempty Hash passes both runtime axis validators. Fixed by
+          # carrying the axis's own `:shape` forward too.
+          it "preserves an axis's own shape members through a collision" do
+            object_member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Object })
+            hash_member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Hash })
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :deep, type: Hash, of: { values: { klass: Hash, shape: { members: [object_member] } } }
+              end
+              expects(:deep, on: :payload, type: Hash, of: { values: { klass: Hash, shape: { members: [hash_member] } } })
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:deep]
+            expect(deep).to eq(
+              type: "object",
+              additionalProperties: { type: "object", properties: { a: { type: "object" } }, required: ["a"] },
+              minProperties: 1,
+            )
+            expect(klass.call(payload: { deep: { x: { a: { b: 1 } } } })).to be_ok
+          end
+
+          # A CLASSLESS axis (legally `klass:`-free — constraining only via its named `shape:` members)
+          # still has structure worth keeping even though it names no token at all. Skipping the whole
+          # view whenever no `:klass` is found would discard a classless axis's `:shape` along with it: two
+          # `values: { shape: { members: [...] } }` axes colliding, one naming child `a` as `Object` and the
+          # other as `Hash`, needs the same per-child config lookup an
+          # ordinary object's `properties` collision already gets — without a view at all for either axis,
+          # `shape_members_at` found nothing for either side, and the `Object` child's approximate hint was
+          # conjoined as exact against the `Hash` child's real one. Fixed by only skipping an axis that is
+          # TRULY empty (no token, no `:of`, no `:shape`).
+          it "preserves a classless axis's own shape members through a collision" do
+            object_member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Object })
+            hash_member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Hash })
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :deep, type: Hash, of: { values: { shape: { members: [object_member] } } }
+              end
+              expects(:deep, on: :payload, type: Hash, of: { values: { shape: { members: [hash_member] } } })
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:deep]
+            expect(deep).to eq(
+              type: "object",
+              additionalProperties: { type: "object", properties: { a: { type: "object" } }, required: ["a"] },
+              minProperties: 1,
+            )
+            expect(klass.call(payload: { deep: { x: { a: { b: 1 } } } })).to be_ok
+          end
+
+          # An approximate side's TYPE is untrustworthy, but a literal-value `enum` (from `inclusion:`) is
+          # not premised on the type at all — JSON Schema applies it to the instance regardless of any
+          # `type` keyword, and the runtime keeps enforcing it too. Dropping the whole member — type hint
+          # AND exact enum together — let the document accept a value the runtime's inclusion check
+          # rejects.
+          it "keeps an approximate member's exact inclusion enum even though its type hint is dropped" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, inclusion: { in: [{ allowed: true }] }
+              end
+              expects :inner, on: :payload, type: Hash
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to include(type: "object", minProperties: 1)
+            validator = JSONSchemer.schema(JSON.parse(JSON.generate(inner)))
+            expect(validator.valid?({ "allowed" => true })).to be(true)
+            expect(validator.valid?({ "other" => true })).to be(false)
+            expect(klass.call(payload: { inner: { allowed: true } })).to be_ok
+            expect(klass.call(payload: { inner: { other: true } })).not_to be_ok # not in the ancestor's inclusion list
+          end
+
+          # Two sides that are BOTH unknown-class hints never contradict each other (they both fall back to
+          # the SAME permissive shape), so this stays unstripped — but an unknown-class member beside a
+          # TRANSFORMING node is a different pairing: the node's own emission is forced to `{}` first (it
+          # names a post-transform value nothing else reads), and the ancestor's hint, having nothing real
+          # to contradict, keeps its FULL property rather than being stripped to just its (here, absent)
+          # enum. That is what lets the coercible wire string the runtime accepts still validate (treating
+          # both emitted type hints as exact here produced an integer node with an incompatible string
+          # allOf branch, admitting nothing).
+          it "keeps an unknown-class ancestor's full hint beside a node that transforms, rather than stripping both" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(constraints(inner)).to eq(type: "string", minLength: 1)
+            expect(klass.call(payload: { inner: "5" })).to be_ok
+          end
+
+          # `coerce: false` rules out the TRANSFORM reason, but an `Object` token is still one
+          # `single_type_for` has no real JSON type for — the two reasons are independent, and ruling out one
+          # does not make the side exact.
+          it "keeps an unknown class approximate even when coerce: false rules out the coercion reason" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :a, type: String
+                end
+              end
+              expects :inner, on: :payload, type: { klass: Object, coerce: false }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?({ "a" => "x" })).to be(true)
+            expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?({ "b" => "x" })).to be(false)
+            expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
+          end
+
+          # A shape member can never coerce at all — `coerce:`/`coerce: true` is refused on one at
+          # declaration ("it has no reader for a coerced value to resolve onto"), and the ambient
+          # `coerce_input_types` flag is a FIELD/reader mechanism a member never routes through either. So
+          # an `Integer`-typed member's declared type being merely "coercible in principle" is not a reason
+          # to distrust it — its own exact `inclusion:` enum must survive a collision with a node that
+          # cannot coerce it either (treating the member as approximate here dropped its `enum` for no
+          # reason, since neither side could ever coerce this value).
+          it "never treats a shape member as coercible, even when its declared type is one of Coercion::SUPPORTED" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Integer, inclusion: { in: [5] }
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: false }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(type: "integer", allOf: [{ type: "integer", enum: [5] }])
+            expect(klass.call(payload: { inner: 5 })).to be_ok
+            expect(klass.call(payload: { inner: 6 })).not_to be_ok # not in the member's inclusion list
+          end
+
+          # A transforming node cannot say anything about the wire form, so the ancestor is emitted alone. Its
+          # `inclusion: { in: [nil] }` admits only nil while the node's requiredness strips the null branch,
+          # leaving a node nothing satisfies. That is a known, deliberately unfixed residual: telling a
+          # CONSTANT `preprocess: ->(_) { "x" }` (which does rescue a wire nil) apart from an identity
+          # `->(v) { v }` (which does not) needs the Proc executed, and reflection may never run user code.
+          # The residue reports the stand-down, so the gap is at least stated rather than silent.
+          it "still rejects null for a required, preprocessing node even beside a nil-tolerant ancestor" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, optional: true, inclusion: { in: [nil] }
+              end
+              expects :inner, on: :payload, type: String, preprocess: ->(_) { "x" }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(constraints(inner)).to eq(type: "string", enum: [nil])
+            # Deliberately NOT asserting be_ok here: this specific contract does runtime-accept wire nil (the
+            # ancestor's own validators skip for nil; the node's constant preprocess always produces "x"),
+            # but the schema above cannot honestly express that without the round-21 regression — see the
+            # comment above for why this residual is accepted rather than solved.
+          end
+
+          # The ordinary shape of the same collision: a nil-tolerant ancestor (not the exotic "constrained
+          # to only nil" case above) beside a required node whose preprocess is IDENTITY. Exempting a
+          # preprocessing route from `reject_null!` would get this backwards — the schema would accept wire
+          # `nil` though the identity preprocess never rescues it and the required check rejects it.
+          it "rejects null for a required, identity-preprocessing node beside an ordinary nil-tolerant ancestor" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: String, optional: true
+              end
+              expects :inner, on: :payload, type: String, preprocess: ->(v) { v }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            # The ancestor's own `null` branch is stripped rather than fenced off with a `not:` — it has a
+            # real `type:` to strip from, where the old conjoined node (which had none of its own) did not.
+            expect(Array(inner[:type])).not_to include("null")
+            expect(klass.call(payload: { inner: nil })).not_to be_ok # identity preprocess never rescues nil; required check rejects it
+            expect(klass.call(payload: { inner: "abc" })).to be_ok
+          end
+
+          # A runtime length validator measures the value, independently of whether its declared
+          # type has a JSON spelling. Its constraints survive on every size-bearing JSON type.
+          it "keeps an unknown-class member's real length: validator, not just its enum" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, type: String
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to include(type: "string")
+            expect(inner[:allOf]).to include(include(minLength: 3))
+            expect(klass.call(payload: { inner: "abc" })).to be_ok
+            expect(klass.call(payload: { inner: "a" })).not_to be_ok # fails the member's own real length: { minimum: 3 }
+          end
+
+          # Neither colliding side declares children, so neither contributes `properties`/`required`. They are
+          # omitted rather than written in as `nil` — a `properties: null` is not a schema, and `.compact`
+          # on the outer property alone never reaches a nested one.
+          it "omits properties:/required: entirely rather than writing them in as null when neither colliding side has children" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Hash do
+                  field :deep, type: Hash
+                end
+              end
+              expects(:inner, on: :payload, type: Hash) do
+                field :deep, type: Hash
+              end
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            deep = schema[:properties][:payload][:properties][:inner][:properties][:deep]
+            expect(deep).to eq(type: "object", minProperties: 1)
+            expect(deep).not_to have_key(:properties)
+            expect(deep).not_to have_key(:required)
+            expect(klass.call(payload: { inner: { deep: { a: 1 } } })).to be_ok
+          end
+
+          # A transforming node stands down whole, so the shape member beside it is emitted on its own —
+          # its `format:` included. The merge path handles an emptied side, and an unconditional
+          # `delete(:format)` there would discard a SCALAR member's real format: this contract is satisfiable
+          # only for a valid UUID string, and dropping `format: "uuid"` would accept any non-empty one.
+          it "keeps a shape member's own format when merged against an emptied, transforming node" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: :uuid
+              end
+              expects :inner, on: :payload, type: { klass: Integer, coerce: false }, preprocess: ->(_) { 1 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(constraints(inner)).to eq(type: "string", format: "uuid", minLength: 1)
+            expect(klass.call(payload: { inner: "550e8400-e29b-41d4-a716-446655440000" })).to be_ok
+            expect(klass.call(payload: { inner: "not-a-uuid" })).not_to be_ok
+          end
+
+          # `:description` is the one emitted key that is purely descriptive metadata, never a type or
+          # value constraint: a node declaring ONLY `description:` (no `type:` at all) is exactly as
+          # untyped as a genuinely empty property, so treating its non-empty HASH as a real competing
+          # claim retargeted the ancestor's length bound against no surviving type, emptying the enum and
+          # rejecting `"abc"` — valid under both the ancestor's own length check and the runtime.
+          it "does not treat a node with only descriptive metadata as a competing type claim" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Object, length: { minimum: 3 }
+              end
+              expects :inner, on: :payload, description: "some description"
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(inner).to eq(description: "some description", type: "string", minLength: 3)
+            expect(klass.call(payload: { inner: "abc" })).to be_ok
+            expect(klass.call(payload: { inner: "a" })).not_to be_ok
+          end
+
+          # The node's own `exclusiveMinimum: 6` judges the coercion's OUTPUT, so it stands down and the
+          # member's exact literals survive untouched. `5` and `5.0` are the same number and different Ruby
+          # objects, which is why the emitted `const`/`enum` keep the member's own spellings rather than
+          # being intersected by object identity.
+          it "intersects declared_literals by value, not raw token equality, when checking a sibling bound" do
+            klass = Class.new do
+              include Axn
+              expects :payload, type: Hash do
+                field :inner, type: Numeric, comparison: { equal_to: 5 }, inclusion: { in: [5.0] }
+              end
+              expects :inner, on: :payload, type: Integer, preprocess: ->(v) { v + 5 }, comparison: { greater_than: 6 }
+              def call = nil
+            end
+            schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+            inner = schema[:properties][:payload][:properties][:inner]
+            expect(constraints(inner)).to eq(type: "number", const: 5, enum: [5.0])
+            expect(klass.call(payload: { inner: 5 })).to be_ok
+            expect(klass.call(payload: { inner: 6 })).not_to be_ok # fails the ancestor's own equal_to: 5
+          end
+
+          # An Array member's `of:` describes its ELEMENTS, so its `items` can never merge into a node
+          # describing the position itself — it rides alongside as an `allOf` branch instead. Nothing
+          # satisfies the result, which is honest: Hash and Array are disjoint and the runtime rejects both
+          # spellings too.
+          it "conjoins via allOf an Array member, whose shape describes ELEMENTS rather than the node" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
                 field :inner, type: Array, of: Hash
               end
               expects :inner, on: :payload, type: Hash
+              def call = nil
             end
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner).not_to have_key(:items)
             expect(inner).not_to have_key(:properties)
+            expect(inner[:allOf]).to eq([{ type: "array", items: { type: "object" }, minItems: 1 }])
+            # honest emptiness: Hash and Array are disjoint.
+            expect(klass.call(payload: { inner: {} })).not_to be_ok
+            expect(klass.call(payload: { inner: [{}] })).not_to be_ok
           end
 
           it "leaves a sibling member with no explicit node of its own untouched" do
@@ -5166,31 +6175,549 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
             expect(schema[:properties][:payload][:properties][:other]).to include(type: "string")
           end
-        end
 
-        # Reflection is static-maximal on input, so a gate changes nothing about what is merged.
-        it "merges a gated member exactly as an ungated one" do
-          gated = Class.new do
-            include Axn
-            expects :payload, type: Hash do
-              field :inner, type: Hash, if: -> { false } do
-                field :a, type: String
+          # What the emitter stands down FROM, it reports. These pin the reporting itself: without it the
+          # stand-down is a silent narrowing of the document, which is the defect PRO-3405 set out to fix.
+          describe "reporting what it cannot state" do
+            let(:coercing_collision) do
+              Class.new do
+                include Axn
+                expects :payload, type: Hash do
+                  field :inner, type: String
+                end
+                expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { equal_to: 5 }
+                def call = nil
               end
             end
+
+            it "renders the dropped side's own fragment into the property's description, verbatim" do
+              inner = coercing_collision.input_schema[:properties][:payload][:properties][:inner]
+
+              # The fragment IS the constraint, so it is emitted as JSON rather than described in prose —
+              # a reader choosing an argument can act on `{"type":"integer","const":5}`.
+              expect(inner[:description]).to include('{"type":"integer","const":5}')
+              expect(constraints(inner)).to eq(type: "string", minLength: 1)
+            end
+
+            it "reports it structurally too, with the path it belongs to" do
+              residues = []
+              described_class.build_input(coercing_collision.internal_field_configs,
+                                          coercing_collision.subfield_configs, residues:)
+
+              expect(residues.size).to eq(1)
+              path, residue = residues.first
+              expect(path).to eq(%i[payload inner])
+              expect(residue.kind).to eq(:inherent)
+              expect(residue.summary).to include('{"type":"integer","const":5}')
+            end
+
+            it "appends to an author's own description rather than replacing it" do
+              klass = Class.new do
+                include Axn
+                expects :payload, type: Hash do
+                  field :inner, type: String, description: "the caller's own words"
+                end
+                expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:description]).to start_with("the caller's own words ")
+              expect(inner[:description]).to include('{"type":"integer"}')
+            end
+
+            it "projects an unknown-class side's length for the actual wire type" do
+              klass = Class.new do
+                include Axn
+                expects :payload, type: Hash do
+                  field :inner, type: Object, length: { minimum: 3 }
+                end
+                expects :inner, on: :payload, type: Hash
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:allOf]).to include(include(minProperties: 3))
+              expect(inner[:description]).to be_nil
+            end
+
+            # Reflection is static-maximal, so a gated bound is normally emitted as though its gate were
+            # open — stricter than the runtime, which is licensed. It stops being licensed when the
+            # conjunction admits NOTHING, because the contract still does: every call the gate closes
+            # accepts a Hash here. So the gated side stands down on the type axis and is reported.
+            it "keeps the node satisfiable when a gated member's type cannot hold beside the node's" do
+              klass = Class.new do
+                include Axn
+                expects :payload, type: Hash do
+                  field :inner, type: String, if: -> { false }
+                end
+                expects :inner, on: :payload, type: Hash
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(constraints(inner)).to eq(type: "object", minProperties: 1)
+              expect(inner[:description]).to include('{"type":"string"}', '{"minLength":1}')
+              expect(klass.call(payload: { inner: { a: 1 } })).to be_ok # the working contract this protects
+            end
+
+            # A conditional declaration is reflected by what it enforces on EVERY call, so none of these
+            # contradictions can reach the document at all — whatever the gated half would have asserted is
+            # reported instead. Each row is a shape that previously produced a node nothing satisfies for a
+            # contract the closed condition keeps satisfiable, and each is now satisfiable by construction
+            # rather than because some emptiness prover recognised it. That is the point: there is no prover
+            # left to be incomplete.
+            {
+              "literal sets that share no member" => [
+                { type: String, inclusion: { in: ["member"] } }, { type: String, inclusion: { in: ["node"] } }, "node"
+              ],
+              # `coerce: false` on the node is load-bearing in these two: a coercible declared type makes the
+              # node TRANSFORMING, which stands down one branch earlier and would leave the gate path
+              # untested here (it did, until these examples said so).
+              "a literal of a type the other side rejects" => [
+                { type: String, inclusion: { in: ["x"] } }, { type: { klass: Integer, coerce: false } }, 5
+              ],
+              "a numeric floor above the other's ceiling" => [
+                { type: { klass: Integer, coerce: false }, comparison: { greater_than: 10 } },
+                { type: { klass: Integer, coerce: false }, comparison: { less_than: 3 } }, 1
+              ],
+              "a size floor above the other's ceiling" => [
+                { type: String, length: { minimum: 10 } }, { type: String, length: { maximum: 3 } }, "ab"
+              ],
+              # A finite value set against the two sides' BOUNDS — the axis neither the literal comparison
+              # nor the interval comparison sees, since there is only one literal set and only one
+              # floor/ceiling pair between them.
+              "a literal no surviving numeric bound admits" => [
+                { type: { klass: Integer, coerce: false }, inclusion: { in: [1] } },
+                { type: { klass: Integer, coerce: false }, comparison: { greater_than: 5 } }, 6
+              ],
+              "a literal no surviving size bound admits" => [
+                { type: String, inclusion: { in: ["ab"] } }, { type: String, length: { minimum: 5 } }, "abcde"
+              ],
+              # A finite value set against an emitted `format`. `format` was silently ignored by the witness
+              # check and so counted as satisfied — the keyword class the `witness_judgeable?` guard now
+              # closes by construction.
+              "a literal the surviving format rejects" => [
+                { type: :uuid }, { type: String, inclusion: { in: ["not-a-uuid"] } }, "not-a-uuid"
+              ],
+              # A finite value set against the only side naming a `pattern`. There is no pattern PAIR here,
+              # so the literals settle it: a value set either holds something the pattern admits or it does
+              # not.
+              "a literal no lone pattern admits" => [
+                { type: String, inclusion: { in: ["a"] } }, { type: String, format: { with: /\Ab\z/ } }, "b"
+              ],
+              # The UNDECIDABLE axis, where the burden inverts: two different patterns cannot be shown to
+              # share a match at this cost, so they are not conjoined rather than conjoined on faith.
+              "two patterns that cannot be shown to overlap" => [
+                { type: String, format: { with: /\Aa+\z/ } }, { type: String, format: { with: /\Ab+\z/ } }, "b"
+              ],
+            }.each do |axis, (member_decl, node_decl, accepted)|
+              it "keeps the node satisfiable when a gated member contradicts it by #{axis}" do
+                klass = Class.new do
+                  include Axn
+                  expects(:payload, type: Hash) { field(:inner, **member_decl, if: -> { false }) }
+                  expects :inner, on: :payload, **node_decl
+                  def call = nil
+                end
+                inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+                expect(inner).not_to have_key(:allOf)
+                expect(inner[:description]).to include("applies only on the calls its condition opens")
+                expect(klass.call(payload: { inner: accepted })).to be_ok
+              end
+            end
+
+            # The gate need not be the DECLARATION's. A gate on a single validator entry skips that entry
+            # alone, and the keyword a collision contradicts is not always the type — here `inclusion:`
+            # carries the gate and contributes the contradictory `enum`, while the type is asserted on
+            # every call. A check reading only the type entry conjoined that enum as though it always
+            # applied.
+            # The half that always runs is NOT given up. This is the pair the projection exists to keep
+            # apart: an unconditional `type: String` beside a conditional `inclusion:` — the type reaches
+            # the document (and here contradicts the node, correctly, since the runtime accepts nothing
+            # either way), while only the conditional enum is reported.
+            it "keeps the unconditional half of a partly conditional declaration" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String, inclusion: { in: %w[x], if: -> { false } } }
+                expects :inner, on: :payload, type: Hash
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
+              # ONLY what gating removed — the unconditional `type`/`minLength` are asserted above, so naming
+              # them as conditional would be contradictory guidance.
+              expect(inner[:description]).to include('{"enum":["x"]}')
+              expect(inner[:description]).not_to include("minLength")
+              # Nothing satisfies the runtime under either condition state, so a node nothing satisfies is
+              # the faithful projection rather than the forbidden one.
+              expect(klass.call(payload: { inner: { a: 1 } })).not_to be_ok
+              expect(klass.call(payload: { inner: "x" })).not_to be_ok
+            end
+
+            # The only thing a projection can lose that is not conditional. `minLength`/`minProperties` are
+            # derived from the TYPE, so stripping a conditional `type:` also strips the JSON spelling of an
+            # UNCONDITIONAL `presence:`. Restated as a value-level floor, the one spelling left when no type
+            # survives — without it the node comes back admitting blanks the runtime rejects on every call.
+            it "restates the blank floor when the conditional half was the type" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: { klass: String, if: -> { false } } }
+                expects :inner, on: :payload, type: { klass: Hash, if: -> { false } }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              floors = [inner[:not], *Array(inner[:allOf]).map { |b| b[:not] }].compact
+              # `nil` belongs to the set for the same reason `false` does — an ungated `presence:` rejects it.
+              expect(floors).to include(enum: ["", [], {}, false, nil])
+              ["", {}, []].each { |blank| expect(klass.call(payload: { inner: blank })).not_to be_ok }
+            end
+
+            # Both sides are ENFORCED, so a value-level set from each applies. A SCALAR pair gets that from
+            # the `allOf` branch, which conjoins by construction. Two OBJECT-shaped sides merge instead of
+            # branching, and a shallow merge left "second side wins" — the node advertised the later
+            # `inclusion:` verbatim and accepted a value the runtime rejects, the one direction inbound
+            # reflection may never take.
+            it "keeps both inclusion sets of two colliding object positions rather than taking the later one" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ a: 1 }, { b: 2 }] }
+                expects :inner, on: :payload, type: Hash, inclusion: [{ b: 2 }, { c: 3 }]
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:enum]).to be_nil
+              expect(inner[:allOf]).to include({ enum: [{ a: 1 }, { b: 2 }] }, { enum: [{ b: 2 }, { c: 3 }] })
+              # The runtime is the reference: each side's own set is enforced, so only the shared member runs.
+              expect(klass.call(payload: { inner: { b: 2 } })).to be_ok
+              [{ a: 1 }, { c: 3 }].each { |v| expect(klass.call(payload: { inner: v })).not_to be_ok }
+            end
+
+            # Why the two sets are BRANCHED and not intersected. Intersecting means deciding which members
+            # they share, and the emitter may not run an author's `==`/`eql?`/`hash` to find out — nor would
+            # Ruby's answer be the right one: `Array#&` compares by `eql?`, under which `{a: 1}` and
+            # `{a: 1.0}` are distinct, while the runtime accepts `{a: 1}` against BOTH sets. Intersecting
+            # emitted `enum: []` — a node nothing satisfies — for a contract that is satisfiable, which is
+            # the inbound direction reflection may never take, just from the other side.
+            it "does not narrow to nothing when the two sets spell a shared member differently" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ a: 1 }] }
+                expects :inner, on: :payload, type: Hash, inclusion: [{ a: 1.0 }]
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:enum]).to be_nil
+              expect(inner[:allOf]).to include({ enum: [{ a: 1 }] }, { enum: [{ a: 1.0 }] })
+              # No branch may be the empty set: `enum: []` is satisfied by nothing, and a consumer reading it
+              # is told the position is unusable.
+              expect(Array(inner[:allOf]).map { |b| b[:enum] }).to all(be_present)
+              # The runtime accepts both spellings, so the document must not refuse them.
+              [{ a: 1 }, { a: 1.0 }].each { |v| expect(klass.call(payload: { inner: v })).to be_ok }
+            end
+
+            it "honors a gate nested on the validator that carries the contradicting keyword" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String, inclusion: { in: ["member"], if: -> { false } } }
+                expects :inner, on: :payload, type: String, inclusion: { in: ["node"] }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              # The gated `enum` is reported, never asserted; the member's unconditional type rides alongside.
+              expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
+              expect(constraints(inner)).to include(enum: ["node"])
+              expect(inner[:description]).to include('"enum":["member"]')
+              expect(klass.call(payload: { inner: "node" })).to be_ok
+            end
+
+            # A stood-down declaration loses its CONSTRAINTS, not its prose: a `description:` describes the
+            # position for a reader rather than the value for a validator, so nothing about it is
+            # untrustworthy across a transform. A shape member cannot transform, so the explicit node is
+            # nearly always the side that stands down — dropping its description silently lost the one
+            # piece of it that was still true.
+            it "keeps an authored description from the side it stands down" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String }
+                expects :inner, on: :payload, type: { klass: Integer, coerce: true }, description: "numeric identifier"
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:description]).to start_with("numeric identifier ")
+              expect(inner[:description]).to include("cannot express")
+            end
+
+            # The carrier key rides on emitted NODES, so the walk that strips it descends only into the
+            # keywords that hold one. Walking every Hash reached a declaration's own literals, where a
+            # value of this shape was deleted and then read as residues — `NoMethodError` on a String,
+            # raised from inside reflection, over a legal declaration.
+            it "leaves a literal that happens to use the carrier key alone" do
+              klass = Class.new do
+                include Axn
+                expects :cfg, type: Hash, default: { Axn::Internal::Reflection::Schema::RESIDUE_KEY => ["value"] }, optional: true
+                def call = nil
+              end
+
+              expect { klass.input_schema }.not_to raise_error
+              expect(klass.input_schema[:properties][:cfg][:default]).to eq(Axn::Internal::Reflection::Schema::RESIDUE_KEY => ["value"])
+            end
+
+            # An axis view is synthesized rather than declared, so it only carries what it is built with.
+            # Carrying the klass alone hid the axis's OWN validators and the gates nested on them, and a
+            # conditional axis constraint was conjoined as though it always applied.
+            it "reflects a conditional axis constraint by what it always enforces" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) do
+                  field :inner, type: Hash, of: { values: { klass: String, inclusion: { in: %w[member], if: -> { false } } } }
+                end
+                expects :inner, on: :payload, type: Hash, of: { values: { klass: String, inclusion: { in: %w[node] } } }
+                def call = nil
+              end
+              values = klass.input_schema[:properties][:payload][:properties][:inner][:additionalProperties]
+
+              expect(values[:enum]).to eq(%w[node])
+              expect(values[:allOf]).to eq([{ type: "string" }])
+              expect(values[:description]).to include('"enum":["member"]')
+              expect(klass.call(payload: { inner: { k: "node" } })).to be_ok
+            end
+
+            # A residue only MENTIONS the fragment it declined to conjoin, so it must not impose a
+            # requirement ordinary reflection does not: `normalize_scalar_literal` deliberately keeps a
+            # `Float::INFINITY` default, and JSON cannot encode one.
+            it "mentions a literal JSON cannot encode without failing" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String }
+                expects :inner, on: :payload, type: Float, default: Float::INFINITY, optional: true, preprocess: ->(v) { v }
+                def call = nil
+              end
+
+              expect { klass.input_schema }.not_to raise_error
+              expect(klass.input_schema[:properties][:payload][:properties][:inner][:description]).to include("cannot express")
+            end
+
+            # An author's `description:` is caller-supplied text and may be valid in an encoding this
+            # generated prose cannot be concatenated with. Joining first and rendering after raises from
+            # inside the composition, which is the same class as the warning path's own encoding fix.
+            it "composes a description whose encoding cannot be joined to generated prose" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String, description: "hi".encode("UTF-16") }
+                expects :inner, on: :payload, type: { klass: Integer, coerce: true }
+                def call = nil
+              end
+
+              expect { klass.input_schema }.not_to raise_error
+              expect(klass.input_schema[:properties][:payload][:properties][:inner][:description]).to include("cannot express")
+            end
+
+            # A property at a merged position is composed from more than one source, so a projection
+            # rebuilt from a single config discards the others — and what it discarded here runs on every
+            # call, which is looseness rather than a smaller document.
+            it "keeps every contributing source when projecting a merged position" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) do
+                  field(:deep, type: Hash) { field :inner, type: String, inclusion: { in: %w[allowed] } }
+                end
+                expects(:deep, on: :payload, type: Hash) do
+                  field :inner, type: String, inclusion: { in: %w[gated], if: -> { false } }
+                end
+                expects :inner, on: "payload.deep", type: String
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:deep][:properties][:inner]
+
+              # The OUTER member's unconditional enum survives, wherever the composition puts it.
+              expect(JSON.generate(inner)).to include('"enum":["allowed"]')
+              expect(klass.call(payload: { deep: { inner: "allowed" } })).to be_ok
+              expect(klass.call(payload: { deep: { inner: "other" } })).not_to be_ok
+            end
+
+            # An unknown-class route's type is `single_type_for`'s fabricated stand-in, and the projections
+            # are separate properties — so the reconciliation the conjunction does pairwise has to be
+            # repeated when they are intersected, or the fake `"string"` meets a real `"object"` and the
+            # position admits nothing the runtime accepts.
+            it "reconciles a fabricated type before intersecting projections" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field(:deep, type: Hash) { field :inner, type: Object } }
+                expects(:deep, on: :payload, type: Hash) do
+                  field :inner, type: Hash, inclusion: { in: [{ a: 1 }], if: -> { false } }
+                end
+                expects :inner, on: "payload.deep", type: Hash
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:deep][:properties][:inner]
+
+              # The complete wire domain may contain a string alternative, but it must not
+              # require a string alongside the real object constraint.
+              expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?({ "k" => 1 })).to be(true)
+              expect(inner).to include(type: "object")
+              expect(klass.call(payload: { deep: { inner: { k: 1 } } })).to be_ok
+            end
+
+            # Asserted on the helper directly: two routes gating the SAME keyword is the shape that broke
+            # it, and building a declaration whose two ancestor routes both reach one position with
+            # independently gated inclusions is considerably harder than the bug. Merging their fragments
+            # by key kept only the last, so the report enumerated one conditional constraint and omitted the
+            # other — worse than reporting neither, since a caller rejected by the omitted one was told the
+            # list was complete.
+            it "keeps every gated fragment when two routes gate the same keyword" do
+              configs = %w[first second].map do |word|
+                build_axn { expects :value, type: String, inclusion: { in: [word], if: -> { false } } }.internal_field_configs.first
+              end
+              summaries = described_class.send(:gating_residues, configs).map(&:summary)
+
+              expect(summaries.size).to eq(2)
+              expect(summaries.join(" ")).to include('{"enum":["first"]}').and include('{"enum":["second"]}')
+            end
+
+            # `default:` is not a validator entry, so no condition can remove it — and comparing it by VALUE
+            # misreported it anyway, since `Float::NAN == Float::NAN` is false and a NaN default therefore
+            # read as removed on every call, putting an always-applied default into prose that says it
+            # applies only when a condition opens.
+            it "never reports an unconditional default as removed, NaN included" do
+              config = build_axn do
+                expects :value, type: Float, default: Float::NAN, inclusion: { in: [1.0], if: -> { false } }
+              end.internal_field_configs.first
+              summaries = described_class.send(:gating_residues, [config]).map(&:summary)
+
+              expect(summaries.size).to eq(1)
+              expect(summaries.first).to include('{"enum":[1.0]}')
+              expect(summaries.first).not_to include("default")
+            end
+
+            # A type is not only a claim — it is what gives every OTHER validator a JSON spelling. Stripping
+            # a conditional `type:` therefore took an UNCONDITIONAL `length:`'s `minItems` with it, and the
+            # position came back admitting a one-element array the runtime rejects on every call. Same class
+            # as the blank floor below, one keyword wider.
+            it "keeps a type-derived bound from an unconditional validator when the type is conditional" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) do
+                  field :inner, type: { klass: Array, if: -> { false } }, length: { minimum: 2 }
+                end
+                expects :inner, on: :payload, type: Array
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(JSON.generate(inner)).to include('"minItems":2')
+              # and the unconditional bound is not reported AS conditional
+              expect(inner[:description]).not_to include("minItems")
+              expect(klass.call(payload: { inner: [1] })).not_to be_ok
+              expect(klass.call(payload: { inner: [1, 2] })).to be_ok
+            end
+
+            # The other half: what the gated type asserts FOR ITSELF must not survive it. Keeping the type
+            # in the bag for emission would otherwise assert a `TrueClass`'s `enum: [true]` or a `:uuid`'s
+            # `format` on every call, which is the gated claim wearing a different keyword.
+            it "does not keep what the conditional type asserts for itself" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: { klass: TrueClass, if: -> { false } } }
+                expects :inner, on: :payload, type: String
+                def call = nil
+              end
+
+              expect(JSON.generate(klass.input_schema)).not_to include('"enum":[true]')
+            end
+
+            # Two sources can write ONE keyword: a gated `TrueClass` emits `enum: [true]` and so does an
+            # unconditional `inclusion:`. Subtracting the type's contribution BY KEY removed the
+            # inclusion's with it, and the position went back to accepting what that always-running
+            # validator rejects.
+            it "keeps an unconditional constraint that shares a keyword with the conditional type" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) do
+                  field :inner, type: { klass: TrueClass, if: -> { false } }, inclusion: { in: [true] }
+                end
+                expects :inner, on: :payload, inclusion: { in: [true, "x"] }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(JSON.generate(inner[:allOf])).to include('"enum":[true]')
+              expect(klass.call(payload: { inner: true })).to be_ok
+              expect(klass.call(payload: { inner: "x" })).not_to be_ok
+            end
+
+            # Reflection may never run a caller's code, and `JSON.generate` dispatches `to_json` — so the
+            # report is composed from values reduced to primitives FIRST, not encoded and rescued. A
+            # `to_json` raising outside StandardError escaped the rescue and took `input_schema` down while
+            # it was only naming a default it had declined to conjoin.
+            it "composes a report without dispatching a literal's own serializer" do
+              opaque = Class.new do
+                def to_json(*) = raise(NotImplementedError, "nope")
+                def to_s = "opaque"
+              end
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String }
+                expects :inner, on: :payload, type: String, default: opaque.new, optional: true,
+                                preprocess: ->(v) { v }
+                def call = nil
+              end
+
+              expect { klass.input_schema }.not_to raise_error
+            end
+
+            it "reports nothing when both sides describe the same wire value" do
+              klass = Class.new do
+                include Axn
+                expects :payload, type: Hash do
+                  field :inner, type: String
+                end
+                expects :inner, on: :payload, type: Hash
+                def call = nil
+              end
+
+              expect(residue_summaries(klass)).to be_empty
+            end
+          end
+        end
+
+        # DELIBERATELY the inverse of what this asserted before: reflection is static-maximal everywhere
+        # else, but at a COLLISION a conditional declaration is reflected by what it enforces on every call.
+        # Pretending the condition holds states something false about a position two declarations bind — it
+        # can describe a value nothing satisfies while the runtime accepts values on every call the
+        # condition closes — so the conditional half is reported rather than asserted.
+        #
+        # The cost is visible here and is the trade: the gated member's nested shape (`properties`/`required`
+        # for `a`) no longer reaches the document, so a client is told less about that position than before.
+        # It is told nothing FALSE, which is the direction that matters, and the `description` carries what
+        # was withheld.
+        it "reflects a gated member by what it enforces on every call, not as an ungated one" do
+          gated = Class.new do
+            include Axn
+            expects(:payload, type: Hash) { field(:inner, type: Hash, if: -> { false }) { field :a, type: String } }
             expects :inner, on: :payload, type: Hash
+            def call = nil
           end
           ungated = Class.new do
             include Axn
-            expects :payload, type: Hash do
-              field :inner, type: Hash do
-                field :a, type: String
-              end
-            end
+            expects(:payload, type: Hash) { field(:inner, type: Hash) { field :a, type: String } }
             expects :inner, on: :payload, type: Hash
+            def call = nil
           end
 
-          expect(described_class.build_input(gated.internal_field_configs, gated.subfield_configs))
-            .to eq(described_class.build_input(ungated.internal_field_configs, ungated.subfield_configs))
+          gated_inner = gated.input_schema[:properties][:payload][:properties][:inner]
+          ungated_inner = ungated.input_schema[:properties][:payload][:properties][:inner]
+
+          expect(ungated_inner).to include(properties: { a: { type: "string", minLength: 1 } }, required: ["a"])
+          expect(gated_inner).not_to have_key(:properties)
+          expect(gated_inner[:description]).to include('"required":["a"]')
+          expect(constraints(gated_inner)).to eq(type: "object", minProperties: 1)
         end
       end
 
@@ -5876,7 +7403,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(prop[:properties][:note][:type]).to eq("string")
     end
 
-    it "drops output requiredness for a gated shape member when the outbound gate is closed (Codex round 2)" do
+    it "drops output requiredness for a gated shape member when the outbound gate is closed" do
       action = build_axn do
         expects :flag, type: :boolean
         exposes :payload, type: Hash, allow_blank: true do
@@ -5905,7 +7432,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(input_action.input_schema[:properties][:payload][:required]).to include("note")
     end
 
-    it "drops output requiredness for a shape member whose presence is only NESTED-gated (Codex round 13)" do
+    it "drops output requiredness for a shape member whose presence is only NESTED-gated" do
       action = build_axn do
         expects :flag, type: :boolean
         exposes :payload, type: Hash, allow_blank: true do
@@ -6007,7 +7534,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema).not_to have_key(:allOf)
     end
 
-    describe "per-validator (nested) gates reach reflection (Codex round 12)" do
+    describe "per-validator (nested) gates reach reflection" do
       it "does not force ancestors for a subfield gated by a nested presence condition (own-level required kept)" do
         action = build_axn do
           expects :data, optional: true
@@ -6355,7 +7882,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(action.input_schema[:allOf]).not_to be_nil
       end
 
-      it "falls back when a blank same-key nested override un-gates a nil-rejecting entry (Codex round 14)" do
+      it "falls back when a blank same-key nested override un-gates a nil-rejecting entry" do
         # `presence: { if: nil }` OVERRIDES and drops the declaration `if: :flag` for the presence check
         # (AM's measured per-key merge), so presence runs UNCONDITIONALLY — name is required for every
         # call. An allOf conditioning name on `flag` would be looser than runtime (it would accept
@@ -7269,7 +8796,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
 
       # The string branch is the one this may not touch: bare `numericality:` really does accept a numeric
-      # string, so the branch is reachable. That it carries no PATTERN saying which strings is PRO-3240 item 3,
+      # string, so the branch is reachable. That it carries no PATTERN saying which strings is PRO-3245,
       # excluded by name in the wire audit; what this pins is that the branch stays.
       it "keeps the string branch, whose numeric strings the validator accepts" do
         action = build_axn { expects :n, type: [String, Integer], numericality: true }
@@ -8777,13 +10304,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
-  # Codex round 1 found six emission defects, all confirmed with a real JSON Schema validator. They are three
-  # root causes, not six instances, and each is fixed at the root:
+  # found six emission defects, all confirmed with a real JSON Schema validator. They are three root causes, not
+  # six instances, and each is fixed at the root:
   #
-  #   * a keyword ASSIGNED where it should be RECONCILED with what is already there (enum vs a singleton type
-  #     enum; a bound from one validator vs the same bound from another; a range-derived bound vs an explicit one)
-  #   * a position's nullability HARD-CODED false, where a field's is derived
-  #   * an escape passed through whose character set differs between the two dialects
+  # * a keyword ASSIGNED where it should be RECONCILED with what is already there (enum vs a singleton type
+  # enum; a bound from one validator vs the same bound from another; a range-derived bound vs an explicit one)
+  # * a position's nullability HARD-CODED false, where a field's is derived
+  # * an escape passed through whose character set differs between the two dialects
   describe "reconciling a keyword with what is already on the node" do
     def prop_for(field = :f, &declaration)
       build_axn(&declaration).input_schema[:properties][field]
@@ -9007,7 +10534,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.output_schema.dig(:properties, :m, :propertyNames)).to eq(enum: %w[a b])
     end
 
-    # Round 11 gated the ENUM on this, which was the keyword rather than the class: a JSON key is a String, so
+    # Gating the ENUM on this reads the keyword rather than the class: a JSON key is a String, so
     # a `keys:` axis whose declared class excludes String can never be satisfied from JSON AT ALL, and every
     # inbound `propertyNames` keyword is equally a lie there — not just the set.
     it "stands down entirely on input when the axis excludes String keys" do

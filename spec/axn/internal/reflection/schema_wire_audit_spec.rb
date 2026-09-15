@@ -85,7 +85,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # `""`, `[]`, `{}` and `false` at runtime and its document refuses them.
   #
   # This is PRO-3016's axis conflation surfacing in reflection, it predates the work this file was written for,
-  # and closing it is a contract decision rather than a bug fix (PRO-3240: stand the keyword down, which is looser, or
+  # and closing it is a contract decision rather than a bug fix (PRO-3244: stand the keyword down, which is looser, or
   # widen the emitted set with the blank). Excluded by NAME so the residue below stays meaningful, and so that
   # deleting these two lines is all it takes to hold the emitter to it once that call is made.
   def known_blank_tolerance_divergence?(tolerance_name, value)
@@ -97,7 +97,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # accepts every shorter value as well (`type: String, length: { is: 3 }, optional: true` emits `maxLength: 3`
   # with no `minLength`, so `"a"` passes the document and fails the runtime). One root, two symptoms: outbound
   # the document refuses the blank it accepts, inbound it accepts the non-blanks the constraint refuses. The
-  # honest spelling is an `anyOf` of the blank and the constrained form, which is the decision PRO-3240 carries.
+  # honest spelling is an `anyOf` of the blank and the constrained form, which is the decision PRO-3244 carries.
   def floor_bearing_validators = ["length is:3"]
 
   def known_blank_tolerance_floor_drop?(tolerance_name, validator_name)
@@ -127,7 +127,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
   def numeric_token?(token) = token.is_a?(Module) && token <= Numeric
 
-  # PRO-3240 item 3. A bare `numericality:` on a String position accepts a numeric string and rejects the rest,
+  # PRO-3245. A bare `numericality:` on a String position accepts a numeric string and rejects the rest,
   # and the document says nothing — so it accepts every string. The seam exists (`only_integer:` emits the exact
   # test via `merge_integer_literal_pattern`), but an EXACT pattern for bare numericality is hard: ActiveModel
   # funnels through `Kernel.Float`, which takes underscores (`Float("1_000")`) and surrounding whitespace, while
@@ -137,7 +137,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     validator_name == "numericality:true" && tokens.any? { |t| t == String }
   end
 
-  # PRO-3240 item 4. `single_type_for` renders an UNKNOWN class as the permissive `"string"` — right for a
+  # PRO-3246. `single_type_for` renders an UNKNOWN class as the permissive `"string"` — right for a
   # narrow custom value class, which serializes through `to_s`, and wrong for a token like `Object` or
   # `Comparable` that admits numbers and everything else besides. Two consequences, both pre-existing and both
   # rooted in that one fallback rather than in any validator:
@@ -305,25 +305,50 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # document that accepts what the runtime rejects is the failure. The nesting is spelled both ways in the
   # matrix — an explicit `on:` node and the dotted `on:` that reaches the same wire path — because the two
   # are the same contract and the defect was the disagreement between them.
-  # A member the emitter declines to MERGE (see merged_explicit_members) is the one cell this walk cannot
-  # judge, and the exclusion is stated as a fact about the declaration rather than as a list of rows.
-  #
-  # Such a member is still enforced, but its constraints describe branches the node's own type does not
-  # admit, so there is nowhere in an object property to put them: a `[Hash, Array]` member's presence floor
-  # lands on two branches the node narrowed to one, and a `String` member conjoined with a `type: Hash` node
-  # admits nothing at all. Writing the conjunction honestly needs `allOf: [member, node]`, a schema shape the
-  # emitter does not produce anywhere today — so these stay looser than the runtime, exactly as they were
-  # before PRO-3399 (measured: this walk reported 58 divergences across 19 rows against the emitter that
-  # dropped merged members outright, and 22 across these rows after). Tracked as PRO-3405.
+  # PRO-3405 closed the conjunction gap: a member the node's own type "cannot nest" is no longer dropped
+  # outright — it rides alongside as a sibling `allOf` branch instead (conjoin_shape_member_property), so
+  # every row this walk exercises now agrees with the runtime. What remains excluded is a DIFFERENT, older
+  # gap (`apply_implicit_node!`'s early return, unrelated to PRO-3405): a deep subfield reached only through
+  # an IMPLICIT intermediate under a non-nestable member has no explicit node to hang an `allOf` branch off
+  # of at all — the member's own type IS the whole story at that key, and it cannot host a deeper object
+  # structure. That is the divergence `docs/recipes/authoring-tool-adapters.md` already documents (a deep
+  # subfield with no JSON representation, omitted with a `logger.warn`) and it is asked of the EMITTER's own
+  # `dropped_deep_subfields`, not re-derived, so the exclusion can never drift from what is actually dropped
+  # (measured: this walk reported 58 divergences across 19 rows before PRO-3399, 22 across 6 rows after it,
+  # and 0 after PRO-3405 conjoined every row but this one).
   #
   # NOT excluded, deliberately: the nullability cap PRO-3399 added applies to these members too (it is
   # charged on every colliding member, merged or not), and `schema_spec.rb` asserts that directly — so the
   # one thing this walk stops watching here is watched there.
-  def unmergeable_member?(klass)
-    payload = klass.internal_field_configs.find { |c| c.field == :payload }
-    members = Axn::Internal::Reflection::Schema.send(:shape_members_at, [payload], :inner)
-    members.any? { |m| !Axn::Internal::Reflection::Schema.send(:nestable_as_object?, m) }
+  def unrepresentable_deep_drop?(klass)
+    !Axn::Internal::Reflection::Schema.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs).empty?
   end
+
+  # The other excluded shape, asked of the emitter for the same reason: a declaration this document cannot
+  # state in full REPORTS that, as a residue rendered into the relevant `description`. A transforming node
+  # colliding with a member is the case — its keywords judge the coercion's target, and translating them
+  # back to the wire form means inverting the transform, which reflection cannot do. So the emitter stands
+  # down to the side that does describe the wire, and the position is knowingly looser than the runtime.
+  #
+  # Asking for the residue rather than re-deriving the condition is what keeps this from drifting: a row
+  # excluded here is exactly a row the document admits it cannot describe, and one that stops reporting a
+  # residue stops being excluded on the same commit.
+  def residues_for(klass)
+    residues = []
+    Axn::Internal::Reflection::Schema.build_input_for(klass, residues:)
+    residues
+  end
+
+  # Narrowed to the TRANSFORM kind, and the narrowing matters more than the exclusion. Written as "any
+  # residue at all", this laundered every conditional stand-down out of the walk below — and since a
+  # conditional stand-down is the one thing here that RELAXES a document, that hid the entire class of
+  # inbound looseness it can cause. Six review rounds then had to find those cases by reading, in a file
+  # whose whole purpose is to find them by measuring.
+  #
+  # A transform residue is different in kind: nothing about it relaxes what the document says relative to
+  # the wire form it can describe — it names a constraint on a value the wire never carries, which no
+  # keyword could have expressed. That one stays excluded; a conditional residue does not.
+  def reported_inexpressible?(klass) = residues_for(klass).any? { |_path, residue| residue.kind == :inherent }
 
   def nested_members
     {
@@ -334,6 +359,24 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       "map member" => proc { field :inner, type: Hash, of: { keys: { klass: Symbol }, values: { klass: String } } },
       "mixed-union member" => proc { field :inner, type: [Hash, Array] },
       "scalar member" => proc { field :inner, type: String },
+      # A GATED member, whose checks are skipped on the calls its condition closes. Conjoining one
+      # unconditionally can project a satisfiable contract onto a node nothing satisfies — the failure
+      # example 2 below exists for — and no member in this axis was gated, so that whole interaction went
+      # unwatched. Gated SCALAR specifically: a gated Hash member's type can still hold beside the node's,
+      # so it never reaches the contradiction.
+      "gated scalar member" => proc { field :inner, type: String, if: -> { false } },
+      # An UNCONDITIONAL type beside an unrelated CONDITIONAL entry — the shape of every inbound breach the
+      # narrowed exclusion above now lets this walk see. Standing the whole side down here drops a check
+      # that runs on every call, which is the one direction reflection may never take; the axis had no such
+      # row, so nothing measured it.
+      "partly gated scalar member" => proc { field :inner, type: String, inclusion: { in: %w[s], if: -> { false } } },
+      # No gated LITERAL member here, deliberately. This example reads "no probe payload satisfies the
+      # document" as its proxy for unsatisfiable, and that proxy cannot police a literal collision: with a
+      # payload-reachable literal on the member the runtime accepts nothing either and the row is skipped,
+      # and with one on the node the surviving document is satisfiable by a value outside the payload set,
+      # which is licensed strictness rather than emptiness. Both arrangements were measured by mutation and
+      # neither moved. The literal, numeric-bound, size-bound and pattern axes are covered directly in
+      # `schema_spec.rb`, each verified by mutation there.
     }
   end
 
@@ -349,6 +392,20 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         expects(:inner, on: :payload, type: Hash) { field :b, type: String }
       },
       "dotted on: (no explicit node)" => proc { expects :c, on: "payload.inner", type: String },
+      # PRO-3405: the node ITSELF is non-nestable (a mixed union, not a plain Hash) — every other node in
+      # this axis is `type: Hash`, so this is the one row that reaches conjoin_shape_member_property's
+      # "neither side is object-shaped" branch at the TOP level rather than at a nested key. Without it,
+      # the fix's least-tested branch is unguarded.
+      "explicit non-nesting node" => proc { expects :inner, on: :payload, type: [Hash, Array] },
+      # A node that TRANSFORMS the value it judges. Its keywords describe the coercion's target, not the
+      # wire form the member's own check reads, so the emitter stands down rather than conjoining them —
+      # and these are the only rows in this walk that produce a residue. Without them the stand-down is
+      # unexercised and this walk's clean run says nothing about it.
+      "coercing node" => proc { expects :inner, on: :payload, type: { klass: Integer, coerce: true } },
+      "coercing node with a bound" => proc {
+        expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { equal_to: 5 }
+      },
+      "preprocessing node" => proc { expects :inner, on: :payload, type: String, preprocess: ->(v) { v } },
     }
   end
 
@@ -373,13 +430,19 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
   it "never accepts inbound a nested value the runtime rejects" do
     checked = 0
+    reported = 0
     wrong = []
 
     nested_members.each do |mname, member|
       nested_nodes.each do |nname, node|
         klass = declare_nested(member, node)
         next if klass.nil?
-        next if unmergeable_member?(klass)
+        next if unrepresentable_deep_drop?(klass)
+
+        if reported_inexpressible?(klass)
+          reported += 1
+          next
+        end
 
         document = schemer(klass.input_schema)
         nested_payloads.each do |payload|
@@ -398,6 +461,48 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     end
 
     expect(checked).to be > 150
+    # The transforming rows must actually REACH the stand-down: an exclusion that never fires would make
+    # the rows above decorative, and a change that silently stopped emitting residues would pass this walk
+    # by simply not having anything to exclude.
+    expect(reported).to be > 5
     expect(wrong).to be_empty, "these nested schemas accept what the runtime rejects:\n  #{wrong.join("\n  ")}"
+  end
+
+  # The satisfiability corollary over the NESTED walk. The flat example above asked it of one field, and
+  # nothing asked it of a collision — which is exactly where it fails, because conjoining two declarations
+  # is the operation that can empty a node. A gated member is the case: its checks are skipped on the calls
+  # its condition closes, so the contract keeps accepting values that an unconditional `allOf` of both types
+  # admits none of. That went unwatched through this whole PR; the flat product cannot reach it, since it
+  # declares a single field and so has nothing to conjoin.
+  it "never emits a nested node nothing satisfies for a contract something satisfies" do
+    live = 0
+    wrong = []
+
+    nested_members.each do |mname, member|
+      nested_nodes.each do |nname, node|
+        klass = declare_nested(member, node)
+        next if klass.nil?
+        next if unrepresentable_deep_drop?(klass)
+
+        accepted = nested_payloads.select do |payload|
+          klass.call(payload:).ok?
+        rescue StandardError
+          false
+        end
+        next if accepted.empty? # nothing satisfies the contract either, so an empty node is faithful
+
+        live += 1
+        document = schemer(klass.input_schema)
+        next if nested_payloads.any? { |payload| document.valid?(JSON.parse(JSON.generate("payload" => payload))) }
+
+        wrong << "#{mname} / #{nname}: runtime accepts #{accepted.first.inspect}, document accepts nothing " \
+                 "at all — #{klass.input_schema[:properties][:payload].inspect}"
+      end
+    end
+
+    # Per ROW here, not per cell: the product is {member} x {node}, and a row counts once if any payload
+    # satisfies its contract. Measured at 40.
+    expect(live).to be > 30
+    expect(wrong).to be_empty, "these nested contracts are satisfiable and their schemas are not:\n  #{wrong.join("\n  ")}"
   end
 end
