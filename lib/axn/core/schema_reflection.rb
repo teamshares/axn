@@ -83,11 +83,11 @@ module Axn
         # overridable methods, and an action that redefines one would otherwise decide what this memo reads
         # back as — or, on the write side, keep it from being stored at all and turn one warning into one per
         # reflection. A raising override took `input_schema` down before the `best_effort` below was reached.
-        warned = Axn::Internal::NativeMethods.ivar_get(klass, :@_axn_residue_warnings) || []
+        warned = Axn::Internal::NativeMethods.ivar_get(klass, :@__axn_residue_warnings) || []
         gaps = all_gaps - warned
         return if gaps.empty?
 
-        Axn::Internal::NativeMethods.ivar_set(klass, :@_axn_residue_warnings, warned + gaps)
+        Axn::Internal::NativeMethods.ivar_set(klass, :@__axn_residue_warnings, warned + gaps)
         # A diagnostic may not decide whether reflection SUCCEEDS. A configured logger that raises — a closed
         # stream, a backend that is gone — otherwise propagates out of `input_schema` and out of
         # `Axn::Tools.validate_contracts!`, failing a projection that was built correctly, over the reporting
@@ -128,12 +128,12 @@ module Axn
         # representation, so it validates at runtime but is absent from the input schema. Surface that
         # once per class so an adapter author building tooling on the schema isn't misled by a silent gap.
         def _warn_dropped_deep_subfields
-          return if @_axn_deep_subfield_warning_emitted
+          return if @__axn_deep_subfield_warning_emitted
 
           dropped = _resolved_subfields.dropped
           return if dropped.empty?
 
-          @_axn_deep_subfield_warning_emitted = true
+          @__axn_deep_subfield_warning_emitted = true
           # Names are rendered as the JSON property they canonicalize to, never interpolated raw: a declared
           # name may hold bytes that are not UTF-8 (a valid ISO-8859-1 Symbol), and joining those into this
           # UTF-8 message raised Encoding::CompatibilityError from the warning itself — so reflecting a schema

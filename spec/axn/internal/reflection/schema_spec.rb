@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "json_schemer"
 
 RSpec.describe Axn::Internal::Reflection::Schema do
   # What a property CONSTRAINS, without the prose a residue appends to its `description`. A test about the
@@ -5452,7 +5453,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(constraints(inner)).to eq(type: "object", minProperties: 1)
+            expect(constraints(inner)).to include(type: "object", minProperties: 1)
             expect(klass.call(payload: { inner: { a: 1 } })).to be_ok # the working contract this protects
           end
 
@@ -5475,9 +5476,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(constraints(inner)).to eq(
-              type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1,
-            )
+            expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?({ "a" => "x" })).to be(true)
+            expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?({ "b" => "x" })).to be(false)
             expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
             expect(klass.call(payload: { inner: {} })).not_to be_ok # the ancestor's required `a` still enforced
           end
@@ -5517,7 +5517,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(constraints(inner)).to eq(type: "object", minProperties: 1)
+            expect(constraints(inner)).to include(type: "object", minProperties: 1)
             expect(klass.call(payload: { inner: { a: 1 } })).to be_ok
           end
 
@@ -5544,7 +5544,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             deep = schema[:properties][:payload][:properties][:inner][:properties][:deep]
-            expect(constraints(deep)).to eq(
+            expect(constraints(deep)).to include(
               type: "object", properties: { z: { type: "string", minLength: 1 } }, required: ["z"], minProperties: 1,
             )
             expect(klass.call(payload: { inner: { deep: { z: "x" } } })).to be_ok
@@ -5643,7 +5643,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema.dig(:properties, :outer, :properties, :mid, :properties, :payload, :properties, :inner)
-            expect(constraints(inner)).to eq(type: "object", minProperties: 1)
+            expect(constraints(inner)).to include(type: "object", minProperties: 1)
             expect(klass.call(outer: { mid: { payload: { inner: { a: 1 } } } })).to be_ok
           end
 
@@ -5901,7 +5901,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(constraints(inner)).to eq(type: "object", minProperties: 1, allOf: [{ enum: [{ allowed: true }] }])
+            expect(inner).to include(type: "object", minProperties: 1)
+            expect(inner[:allOf]).to include(include(enum: [{ allowed: true }]))
             expect(klass.call(payload: { inner: { allowed: true } })).to be_ok
             expect(klass.call(payload: { inner: { other: true } })).not_to be_ok # not in the ancestor's inclusion list
           end
@@ -5947,9 +5948,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(constraints(inner)).to eq(
-              type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], minProperties: 1,
-            )
+            expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?({ "a" => "x" })).to be(true)
+            expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?({ "b" => "x" })).to be(false)
             expect(klass.call(payload: { inner: { a: "x" } })).to be_ok
           end
 
@@ -6025,11 +6025,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: "abc" })).to be_ok
           end
 
-          # The member's `inclusion:` names literals, which carry their own type and mean the same thing
-          # whatever this side's type was guessed to be — so the enum survives. Its `length:` does not: a
-          # `minLength` is a string-only keyword that came from the fabricated type, and JSON Schema ignores
-          # it beside the object this position turns out to be. It is reported instead of left looking like a
-          # constraint that enforces nothing.
+          # A runtime length validator measures the value, independently of whether its declared
+          # type has a JSON spelling. Its constraints survive on every size-bearing JSON type.
           it "keeps an unknown-class member's real length: validator, not just its enum" do
             klass = Class.new do
               include Axn
@@ -6042,7 +6039,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(constraints(inner)).to eq(type: "string", minLength: 1)
+            expect(inner).to include(type: "string")
+            expect(inner[:allOf]).to include(include(minLength: 3))
             expect(klass.call(payload: { inner: "abc" })).to be_ok
             expect(klass.call(payload: { inner: "a" })).not_to be_ok # fails the member's own real length: { minimum: 3 }
           end
@@ -6226,7 +6224,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(inner[:description]).to include('{"type":"integer"}')
             end
 
-            it "reports an unknown-class side's string-only keywords instead of leaving them inert" do
+            it "projects an unknown-class side's length for the actual wire type" do
               klass = Class.new do
                 include Axn
                 expects :payload, type: Hash do
@@ -6237,10 +6235,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
-              # `minLength` beside an object is ignored by JSON Schema, so stating it would look like a
-              # constraint and enforce nothing. The real validator measures `Hash#length` at runtime.
-              expect(constraints(inner)).not_to have_key(:minLength)
-              expect(inner[:description]).to include('{"minLength":3}')
+              expect(inner[:allOf]).to include(include(minProperties: 3))
+              expect(inner[:description]).to be_nil
             end
 
             # Reflection is static-maximal, so a gated bound is normally emitted as though its gate were
@@ -6259,7 +6255,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
               expect(constraints(inner)).to eq(type: "object", minProperties: 1)
-              expect(inner[:description]).to include('{"type":"string","minLength":1}')
+              expect(inner[:description]).to include('{"type":"string"}', '{"minLength":1}')
               expect(klass.call(payload: { inner: { a: 1 } })).to be_ok # the working contract this protects
             end
 
@@ -6573,12 +6569,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             # other — worse than reporting neither, since a caller rejected by the omitted one was told the
             # list was complete.
             it "keeps every gated fragment when two routes gate the same keyword" do
-              projections = [
-                [nil, { type: "string" }, { type: "string", enum: %w[first] }],
-                [nil, { type: "string" }, { type: "string", enum: %w[second] }],
-              ]
-
-              summaries = described_class.send(:gating_residues, projections).map(&:summary)
+              configs = %w[first second].map do |word|
+                build_axn { expects :value, type: String, inclusion: { in: [word], if: -> { false } } }.internal_field_configs.first
+              end
+              summaries = described_class.send(:gating_residues, configs).map(&:summary)
 
               expect(summaries.size).to eq(2)
               expect(summaries.join(" ")).to include('{"enum":["first"]}').and include('{"enum":["second"]}')
@@ -6589,24 +6583,14 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             # read as removed on every call, putting an always-applied default into prose that says it
             # applies only when a condition opens.
             it "never reports an unconditional default as removed, NaN included" do
-              full = { type: "number", default: Float::NAN, enum: [1.0] }
-              projected = { type: "number", default: Float::NAN }
-
-              summaries = described_class.send(:gating_residues, [[nil, projected, full]]).map(&:summary)
+              config = build_axn do
+                expects :value, type: Float, default: Float::NAN, inclusion: { in: [1.0], if: -> { false } }
+              end.internal_field_configs.first
+              summaries = described_class.send(:gating_residues, [config]).map(&:summary)
 
               expect(summaries.size).to eq(1)
               expect(summaries.first).to include('{"enum":[1.0]}')
               expect(summaries.first).not_to include("default")
-            end
-
-            # The last residue path that rendered its fragment with a bare `JSON.generate`. Asserted on the
-            # helper: the declaration spellings I tried never put a non-encodable value in an inert keyword,
-            # so this pins the seam rather than a reachable contract — the same class as the transform
-            # path's own fix, closed rather than left as the one remaining instance.
-            it "renders an inert fabricated keyword JSON cannot encode without failing" do
-              prop = { type: "string", minLength: Float::INFINITY, enum: %w[a] }
-
-              expect { described_class.send(:drop_fabricated_type, prop) }.not_to raise_error
             end
 
             # A type is not only a claim — it is what gives every OTHER validator a JSON spelling. Stripping

@@ -143,13 +143,11 @@ module Axn
         # FrozenError instead of silently corrupting every later schema.
         BLANK_WIRE_VALUES = ["", [].freeze, {}.freeze, false, nil].freeze
 
-        # Keys a gate can never remove, so a diff between the full and always-run properties must not read
-        # them as removed. `default:` is not a validator entry — it is applied whatever any condition says —
-        # and comparing it by VALUE misreported it anyway, since `Float::NAN == Float::NAN` is false and a
-        # NaN default therefore looked removed on every call.
+        # Metadata is not a validator contribution. In particular, a default applies independently
+        # of validator gates and must never be included in a conditional fragment.
         RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY].freeze
 
-        GATED_RESIDUE = "a conditional declaration at this position contradicts this one, so it applies only on the calls " \
+        GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
                         "its condition opens"
 
         # Where a subschema can live in what this emitter emits — a map of name => subschema, a single
@@ -1151,7 +1149,7 @@ module Axn
         # anything else (a sibling `allOf` branch), so a member the node "cannot nest" rides alongside as its
         # own `allOf` branch rather than being dropped.
         #
-        # The merge runs BEFORE the descent, not after: the nested pass reads `child_prop[:properties]` to
+        # For an untransformed node the merge precedes descent: the nested pass reads `child_prop[:properties]` to
         # decide whether a generated `<leaf>_id` still needs writing, and `apply_implicit_node!` reads it again
         # to place a blocked merge's obligation on the member's own property. Merging afterwards left both of
         # them looking at a property the member's contribution had not reached yet.
@@ -1178,8 +1176,16 @@ module Axn
           merged_members = merged_explicit_members(node, members)
           child_prop = build_property(representative, subfield: true)
           member_prop = prop[:properties][key]
-          child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
-          apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
+          # Descendants of a transformed value belong to its post-transform contract. Finish that
+          # subtree before the collision can stand it down; otherwise descent rewrites the retained
+          # wire type and attaches post-transform children to it.
+          if member_prop && transforms_wire_value?([representative])
+            apply_nested_subfields!(child_prop, node, ann)
+            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative])
+          else
+            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
+            apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
+          end
           # A route carrying `preprocess:` is NOT exempted from its own `nil_allowed?` here, though the Proc
           # does run before presence is judged and so might turn a wire `nil` into something non-nil
           # (`preprocess: ->(_) { "x" }` on an otherwise-required node does exactly that). The exemption
@@ -1610,7 +1616,8 @@ module Axn
         # `single_type_for` emits a permissive `{type: "string"}` hint rather than a claim). Nothing here
         # transforms anything, so every OTHER keyword still describes the same raw value — only the
         # fabricated type is untrustworthy, and only against a side making a real competing claim. So this
-        # drops `type`/`anyOf` and conjoins the rest, rather than discarding constraints that are exact.
+        # re-emits the value constraints without the fabricated type, rather than deleting a union
+        # that may also carry real bounds.
         # Two sides that are both unknown-class hints fall back to the same permissive shape and cannot
         # contradict each other, so neither is stripped.
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
@@ -1630,11 +1637,13 @@ module Axn
         def gate_resolved_sides(sides)
           residues = []
           expanded = sides.flat_map do |prop, configs|
-            next [[prop, configs]] if configs.none? { |config| conditional_checks?(config) }
+            # A transform's complete subtree must reach stand-down intact; rebuilding it from a
+            # field config here would discard the descendants already attached to that side.
+            next [[prop, configs]] if transforms_wire_value?(configs) || configs.none? { |config| conditional_checks?(config) }
 
             projections = configs.map { |config| [config, build_property(config, subfield: true)] }
                                  .map { |config, full| [config, projected_property(config, full), full] }
-            residues.concat(gating_residues(projections))
+            residues.concat(gating_residues(configs))
             projections.map { |config, projected, _full| [carry_metadata(projected, prop), [config]] }
           end
           [expanded, residues]
@@ -1648,13 +1657,14 @@ module Axn
 
           if left_transforms ^ right_transforms
             kept, dropped = left_transforms ? [right_prop, left_prop] : [left_prop, right_prop]
-            return [stand_down_from(kept, dropped, TRANSFORM_RESIDUE), left_configs + right_configs]
+            # Only retained origins may classify the next collision in this fold.
+            return [stand_down_from(kept, dropped, TRANSFORM_RESIDUE), left_transforms ? right_configs : left_configs]
           end
 
           left_unknown = unknown_class_approximate?(left_configs)
           right_unknown = unknown_class_approximate?(right_configs)
-          left_prop = drop_fabricated_type(left_prop) if left_unknown && !right_unknown && !asserts_nothing?(right_prop)
-          right_prop = drop_fabricated_type(right_prop) if right_unknown && !left_unknown && !asserts_nothing?(left_prop)
+          left_prop = drop_fabricated_type(left_prop, left_configs) if left_unknown && !right_unknown && !asserts_nothing?(right_prop)
+          right_prop = drop_fabricated_type(right_prop, right_configs) if right_unknown && !left_unknown && !asserts_nothing?(left_prop)
 
           # Residues belong to the POSITION, not to whichever branch happened to raise them: a reader looks
           # at the property, and a sentence buried in one `allOf` entry reads as a note about that entry.
@@ -1681,34 +1691,40 @@ module Axn
           [prop.except(RESIDUE_KEY), residues_on(prop)]
         end
 
-        # One config's property as emitted from the checks that run on every call.
-        #
-        # A gated `type:` is the awkward case, because a type is not only a claim — it is also what gives
-        # every OTHER validator a JSON spelling. Strip it from the bag and an UNCONDITIONAL `length:` loses
-        # its `minItems`, an unconditional `presence:` loses its floor, and the position comes back
-        # admitting values the runtime rejects on every call.
-        #
-        # So the type stays in the bag for EMISSION and is then subtracted from the result — and subtracted
-        # by rebuilding from the type alone (`type_only`) rather than by naming keywords, because which
-        # keywords a type asserts for itself is exactly the enumeration that would go stale. A `TrueClass`
-        # asserts `enum: [true]`, a `:uuid` asserts `format`; those are the gated claim and must not
-        # survive. What `length:`/`presence:` contributed THROUGH the type is not in that set and does.
+        # Remove conditional entries before emission. A type supplies both a claim and the context
+        # in which other validators acquire their JSON keywords; when its claim disappears, those
+        # validators must still describe every applicable wire type.
         def projected_property(config, full)
           ungated = ungated_validations(config)
-          type = config.validations[:type]
-          return restore_blank_floor(build_property(config.with(validations: ungated), subfield: true), ungated, full) if
-            type.nil? || ungated.key?(:type)
+          projected = if config.validations[:type] && !ungated.key?(:type)
+                        type_agnostic_property(config, ungated)
+                      else
+                        build_property(config.with(validations: ungated), subfield: true)
+                      end
+          restore_blank_floor(projected, ungated, full)
+        end
 
-          typeless = build_property(config.with(validations: ungated), subfield: true)
-          emitted = build_property(config.with(validations: ungated.merge(type:)), subfield: true)
-          type_only = build_property(config.with(validations: { type: }), subfield: true)
+        # JSON's size and pattern keywords are conditional on the instance type themselves. Emit
+        # their contributions directly on an untyped position instead of subtracting a type-only
+        # schema from a composed union. This also covers types absent from a gated type declaration.
+        WIRE_TYPE_CONTEXTS = [String, Array, Hash, Integer, Float, TrueClass, FalseClass, NilClass].freeze
 
-          # Three builds, because two sources can write ONE keyword and subtracting by key loses both: a
-          # gated `TrueClass` and an unconditional `inclusion:` each emit `enum`, and removing the type's
-          # `enum` removed the inclusion's with it. So the always-run property is what the other validators
-          # say WITHOUT the type (`typeless`), plus the keywords they could only spell THROUGH it — which is
-          # every key the type does not claim for itself.
-          restore_blank_floor(typeless.merge(emitted.reject { |key, _| type_only.key?(key) }), ungated, full)
+        def type_agnostic_property(config, validations)
+          validations = validations.except(:type)
+          # Without an authored type, numericality's ordinary inference chooses a numeric type.
+          # A collision may independently require a numeric STRING, so narrow the complete JSON
+          # domain through the existing numericality emitter instead of making that assumption.
+          emitted = validations[:numericality] ? validations.merge(type: WIRE_TYPE_CONTEXTS) : validations
+          prop = build_property(config.with(validations: emitted), subfield: true)
+          Sizing::SIZE_CONSTRAINT_KEYS.each_key do |type|
+            context = { type: }
+            token = TypeTokens::TYPE_MAP.find { |_token, json_type| json_type == type }.first
+            apply_size_constraints!(context, validations.merge(type: token))
+            apply_pattern!(context, validations, for_output: false)
+            context.delete(:type)
+            prop.merge!(context)
+          end
+          presence_rejects_blank?(validations) ? prop.merge(not: { enum: BLANK_WIRE_VALUES }) : prop
         end
 
         def ungated_validations(config)
@@ -1720,21 +1736,25 @@ module Axn
           end
         end
 
-        # What GATING removed, and nothing else. Rendering the whole pre-projection property instead named
-        # a position's unconditional constraints inside prose saying they apply only when a condition opens
-        # — contradictory guidance, and the residue exists to give a reader something it can act on. So the
-        # summary is the difference between what each config emits and what its always-run subset emits.
-        #
-        # One residue PER config rather than one merged hash across them: two routes at a position can gate
-        # the SAME keyword, and merging their fragments by key silently kept only the last — the report then
-        # enumerated one conditional constraint and omitted the other, which is worse than reporting neither
-        # since a caller rejected by the omitted one has been told the list was complete.
-        def gating_residues(projections)
-          projections.filter_map do |_config, projected, full|
-            removed = full.except(*RESIDUE_UNGATEABLE_KEYS).reject { |key, value| projected[key] == value }
-            next nil if removed.empty?
+        # Project each gated validator in isolation. Comparing full and ungated schemas confuses
+        # composition with ownership: two patterns become allOf, while one remains a plain pattern.
+        # No unconditional validator participates in the fragment reported here.
+        def gating_residues(configs)
+          configs.flat_map do |config|
+            gates = declaration_gates(config)
+            shared = shared_validation_options(config.validations)
+            Axn::Validation::Base.validator_entries(config.validations).filter_map do |key, opt|
+              next unless Axn::Validation::Base.entry_effectively_gated?(opt, gates)
 
-            Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(removed)})", kind: :conditional)
+              context = shared.merge(config.validations.slice(:type))
+              context = context.except(:type) if key == :type
+              baseline = build_property(config.with(validations: context), subfield: true)
+              fragment = build_property(config.with(validations: context.merge(key => opt)), subfield: true)
+              fragment = fragment.except(*RESIDUE_UNGATEABLE_KEYS).reject { |name, value| baseline[name] == value }
+              next if fragment.empty?
+
+              Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(fragment)})", kind: :conditional)
+            end
           end
         end
 
@@ -1777,27 +1797,13 @@ module Axn
         # node carries without narrowing it (`description`, and the residues waiting to be rendered into it).
         def asserts_nothing?(prop) = prop.except(:description, RESIDUE_KEY).empty?
 
-        # Drop an unknown-class side's fabricated type, and with it the keywords that only had a meaning
-        # BECAUSE of it. `minLength`/`maxLength`/`pattern`/`format` exist in JSON Schema only for a string
-        # instance, and `single_type_for` chose "string" as a permissive stand-in rather than because the
-        # declaration says so — so once the collision reveals the position is really an object or an array,
-        # those keywords are not merely wrong, they are INERT: JSON Schema ignores a `minLength` beside an
-        # object, and the real size validator behind it (which measures whatever the value actually is)
-        # would go unstated while the document looked constrained. Restating it would mean choosing the
-        # keyword for a type only the collision revealed; it is reported as a residue instead.
-        #
-        # `enum` and the other value-level keywords stay: they name literals, which carry their own type
-        # and mean the same thing whatever this side's type was guessed to be.
-        FABRICATED_STRING_KEYS = %i[minLength maxLength pattern format].freeze
-
-        def drop_fabricated_type(prop)
-          stripped = prop.except(:type, :anyOf)
-          inert = stripped.slice(*FABRICATED_STRING_KEYS)
-          return stripped if inert.empty?
-
-          record_residue(stripped.except(*FABRICATED_STRING_KEYS),
-                         "the declared type is not one JSON can carry, so this position's own " \
-                         "#{render_constraint(inert)} cannot be stated against it")
+        # Re-emit from the declarations while their origins are still available. A fabricated and a
+        # genuine branch may both say "string", so the emitted shape cannot identify either one.
+        # Keep this separate from transforms: these validators still judge the same wire value.
+        def drop_fabricated_type(prop, configs)
+          projected = configs.map { |config| type_agnostic_property(config, ungated_validations(config)) }
+                             .reduce { |left, right| combine_two([left, []], [right, []]).first }
+          carry_metadata(projected, prop)
         end
 
         # Emit the trustworthy side alone, carrying over anything the dropped side already had to report and
@@ -1958,24 +1964,9 @@ module Axn
           end
         end
 
-        # Whether `single_type_for`'s INPUT branch for this token falls through to its permissive `{type:
-        # "string"}` fallback ("a JSON client can't send a Ruby object anyway") rather than asserting a real
-        # JSON type — the OTHER reason (beside a transform) an emitted property is untrustworthy, and
-        # deliberately UNRELATED to coercibility: `unknown_class_approximate?` (below) is asked only once
-        # `transforms_wire_value?` has already had first say, so a coercible token is never re-litigated
-        # here. Derived from the SAME branches `single_type_for` checks, in the same order, so the two
-        # cannot disagree about which classes are "known": boolean/uuid/params, a `TYPE_MAP` entry, or a
-        # Numeric excluding Complex (which falls through to the fallback on input too, exactly as
-        # `single_type_for` itself does).
-        def unknown_class_token?(token)
-          return false if Axn::Internal::Identity.same?(token, ::TrueClass)
-          return false if Axn::Internal::Identity.same?(token, ::FalseClass)
-          return false if Axn::Internal::Identity.same?(token, :uuid)
-          return false if Axn::Internal::Identity.same?(token, :params)
-          return false unless nil.equal?(map_type_for(token))
-
-          !numeric_but_not_complex?(token)
-        end
+        # Ask the emitter whether this token reached its fallback; a parallel classifier missed
+        # :boolean and mistook a real boolean constraint for another unknown-class hint.
+        def unknown_class_token?(token) = known_type_for(token, for_output: false).nil?
 
         # Whether ANY branch of a config's declared type is an unknown-class hint. `.any?`, not `.all?`: a
         # mixed union like `type: [Object, String]` has one exact branch, but `Object` alone already admits

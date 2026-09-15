@@ -54,6 +54,9 @@ module Axn
             elsif prop[:anyOf].is_a?(Array)
               prop[:anyOf] = prop[:anyOf].reject { |member| member[:type] == "null" }
             elsif !prop.key?(:type)
+              # Null rejection is an additional constraint, not a replacement for an existing
+              # prohibition (for example, the presence floor on a type-agnostic projection).
+              prop[:allOf] = Array(prop[:allOf]) + [{ not: prop[:not] }] if prop.key?(:not)
               prop[:not] = { type: "null" }
             end
           end
@@ -71,7 +74,15 @@ module Axn
           # of the method table — for `<`/`<=`/`>=`; and `map_type_for`/`map_format_for` scan the emitter's own
           # maps by identity rather than looking a token up by its `hash`/`eql?`. The answers are identical for
           # every token that does not define one of those methods, which is every token a declaration means.
+          # Unknown Ruby classes retain the existing input string hint; output stays unconstrained
+          # because their serializer may produce any JSON type.
           def single_type_for(klass, for_output:)
+            known_type_for(klass, for_output:) || (for_output ? {} : { type: "string" })
+          end
+
+          # nil identifies the fallback at its source. Collision projection consumes this verdict
+          # rather than maintaining another list of the tokens the emitter recognizes.
+          def known_type_for(klass, for_output:)
             return { type: "boolean" } if Axn::Internal::Identity.same?(klass, :boolean)
             # TypeValidator accepts only the singleton value for TrueClass/FalseClass, so constrain the schema
             # to it (a bare `type: "boolean"` would let a client send the other value and pass validation).
@@ -103,14 +114,7 @@ module Axn
             # above).
             return { type: "number" } if numeric_but_not_complex?(klass)
 
-            # Unknown class: the serialized shape is only knowable at runtime (Values.serialize_value emits
-            # an object for an as_json/to_h value but a string for a to_s-only one), so on output leave it
-            # UNTYPED rather than assert `object` the serialized value might contradict. On input, keep a
-            # permissive `string` hint (a JSON client can't send a Ruby object anyway — see the reflection
-            # docs on coercing Ruby-object input types).
-            return {} if for_output
-
-            { type: "string" }
+            nil
           end
 
           # Whether the token is a Class at all, asked through `Module#===` rather than the token's own `is_a?`.

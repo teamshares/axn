@@ -2,6 +2,9 @@
 
 ## 0.1.0-alpha.6.1
 
+* [BUGFIX] Colliding shape members and subfields retain unconditional constraints when a conditional or unknown type supplies their JSON shape. Length bounds and absence ceilings now project onto each applicable JSON type instead of disappearing with an `anyOf`; presence continues to exclude blank booleans and null, and numeric-string validation remains satisfiable. Conditional descriptions are derived from each gated validator, so they no longer label an unconditional pattern as conditional merely because two patterns were composed with `allOf`. A transforming subfield's descendants stay with its post-transform contract and are reported with that contract rather than attached to the retained wire schema. The collision classifier now reads the type emitter's fallback decision directly (including `:boolean`), and null rejection preserves any existing `not` constraint. Both schema-warning memos use reserved, double-underscored state so caller-owned class state cannot suppress warnings or crash reflection.
+
+
 ### Added
 
 * [FEAT] `Axn::Failure` exposes `originating_axn_class` and `originating_result`, giving failure handlers the failing axn's class and its result (including exposures made before `fail!`) without reaching through the action instance. The readers are defined on `Axn::Failure` only and are nil when the failure was not raised by an axn.
