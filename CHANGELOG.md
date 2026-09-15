@@ -1,13 +1,10 @@
 # Changelog
 
+## Unreleased
+
+* [BUGFIX] Schema collisions conjoin overlapping declarations without losing their constraints. Conditional checks are reported separately from unconditional checks; transformed subtrees retain their own descendants and readable nested reports. Unknown or conditional types retain numeric, size, pattern, and blankness constraints. Unconditional `absence:` preserves every non-string JSON blank (`false`, `null`, empty arrays and objects); string blankness keeps Ruby's whitespace semantics and is reported as a runtime-only check. Other unexpressible checks are reported with their gate and transformation context. Schema-warning state uses reserved framework ivars.
+
 ## 0.1.0-alpha.6.1
-
-* [BUGFIX] Colliding declarations report `length:` and `format:` checks on surviving positions where their emitters cannot express the check, including numeric/boolean values checked through Ruby string conversion, conditional checks, and mixed type unions. Expressible bounds remain enforced; the report identifies the runtime-only check instead of silently advertising a complete contract. Constraint fragments finalize their nested reports before becoming text, preserving readable descendant constraints without leaking internal residue objects or mutating shared schema nodes and caller literals.
-
-* [BUGFIX] Collision projections now emit every validator over the complete JSON type domain when a conditional or unknown type cannot constrain the wire value, preserving `comparison:` bounds as well as `numericality:` bounds. Gating is resolved before completing a transformed subtree: unconditional descendants remain in its post-transform report, while gated checks are reported separately as conditional after transformation.
-
-* [BUGFIX] Colliding shape members and subfields retain unconditional constraints when a conditional or unknown type supplies their JSON shape. Length bounds and absence ceilings now project onto each applicable JSON type instead of disappearing with an `anyOf`; presence continues to exclude blank booleans and null, and numeric-string validation remains satisfiable. Conditional descriptions are derived from each gated validator, so they no longer label an unconditional pattern as conditional merely because two patterns were composed with `allOf`. A transforming subfield's descendants stay with its post-transform contract and are reported with that contract rather than attached to the retained wire schema. The collision classifier now reads the type emitter's fallback decision directly (including `:boolean`), and null rejection preserves any existing `not` constraint. Both schema-warning memos use reserved, double-underscored state so caller-owned class state cannot suppress warnings or crash reflection.
-
 
 ### Added
 

@@ -133,6 +133,13 @@ their gates and value phase. It does not invent a numeric interval from a string
 walk is deliberately an over-approximation: ignoring enums and value bounds may leave a redundant,
 type-scoped warning, but must never loosen the schema or reject a declaration.
 
+Blankness must remain a value-level constraint when type projection changes its domain.
+`absence:` is not equivalent to size zero: it admits `false` and `nil`, rejects every number,
+and judges strings by Ruby's whitespace rules. Collision projection conjoins the complete
+non-string blank set plus a string branch, then reports the string-only remainder. This keeps
+size keywords from becoming the sole representation of an unconditional absence check, and
+keeps conditional absence in the reporting path instead of enforcing it on every call.
+
 Turning a subtree into report text is a finalization boundary. Its descendant residue carriers
 must become readable descriptions first, while the schema vocabulary still distinguishes nodes
 from caller literals. The finalizer's copy mode detaches those nodes so mentioning a subtree

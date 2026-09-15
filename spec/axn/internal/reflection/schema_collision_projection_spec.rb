@@ -149,6 +149,14 @@ RSpec.describe "collision projection ownership" do
     expect(action.call(**input('{"a":"x"}'))).to be_ok
   end
 
+  it "preserves absence when an approximate type reveals a boolean" do
+    action = collision({ type: Object, presence: false, absence: true }, { type: { klass: :boolean, coerce: false }, presence: false })
+    schema = checker(action)
+    [true, false].each do |value|
+      expect(schema.valid?(input(value))).to eq(action.call(**input(value)).ok?)
+    end
+  end
+
   it "reports a length check that the surviving integer cannot express" do
     action = collision({ type: Object, length: { minimum: 2 } }, { type: { klass: Integer, coerce: false } })
     prop = action.input_schema.dig(:properties, :payload, :properties, :inner)
@@ -255,6 +263,46 @@ RSpec.describe "collision projection ownership" do
     expect(child[emitter::RESIDUE_KEY]).to eq([residue])
     expect(child).not_to have_key(:description)
     expect(child[:default]).to equal(literal)
+  end
+
+  context "absence across JSON value kinds", :slow do
+    [:boolean, Numeric, [Integer, :boolean], [Array, :boolean], [Hash, :boolean], [String, :boolean]].each do |type|
+      %i[unknown gated_type exact].each do |origin|
+        %i[live disabled conditional].each do |mode|
+          it "preserves blankness for #{type}, #{origin}, #{mode}" do
+            enabled = false
+            absence = mode == :conditional ? { if: -> { enabled } } : mode == :live
+            source = case origin
+                     when :unknown then Object
+                     when :gated_type then { klass: String, if: -> { false } }
+                     else type
+                     end
+            member = { type: source, absence:, presence: false, allow_nil: true }
+            each_collision_route(member, { type:, presence: false, allow_nil: true }) do |action, depth|
+              emitted = checker(action)
+              residues = []
+              Axn::Internal::Reflection::Schema.build_input_for(action, residues:)
+              reports = residues.map(&:last).select { |r| r.summary.include?("absence") }
+              [false, true].each do |gate|
+                enabled = gate
+                [nil, false, true, 0, 1.5, [], [1], {}, { "x" => 1 }, "", " ", "\u00a0", "x"].each do |value|
+                  data = nested_input(value, depth)
+                  accepted = emitted.valid?(data)
+                  passed = action.call(**data).ok?
+                  expect(accepted).to be(true) if passed
+                  if accepted && !passed
+                    expect(reports).not_to be_empty
+                    expect(reports.map(&:kind)).to include(mode == :conditional ? :conditional : :inherent)
+                  end
+                  # The whole non-string blank domain is expressible; a report is no substitute.
+                  expect(accepted).to eq(passed) if mode != :conditional && !value.is_a?(String)
+                end
+              end
+            end
+          end
+        end
+      end
+    end
   end
 
   context "lengths without a JSON size", :slow do

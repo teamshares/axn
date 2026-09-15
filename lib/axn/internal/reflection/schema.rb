@@ -1630,7 +1630,7 @@ module Axn
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [], &complete_own)
           sides, residues = gate_resolved_sides([[member_prop, member_configs], [own_prop, own_configs, complete_own]])
           combined, origins = sides.reduce { |left, right| combine_two(left, right) }
-          combined = report_unexpressed_string_checks(combined, origins)
+          combined = project_collision_checks(combined, origins)
           prop, carried = left_of([combined, origins])
           (carried + residues).reduce(prop) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
         end
@@ -1670,8 +1670,8 @@ module Axn
           right_transforms = transforms_wire_value?(right_configs)
 
           if left_transforms ^ right_transforms
-            left_prop = report_unexpressed_string_checks(left_prop, left_configs) if left_transforms
-            right_prop = report_unexpressed_string_checks(right_prop, right_configs) if right_transforms
+            left_prop = project_collision_checks(left_prop, left_configs) if left_transforms
+            right_prop = project_collision_checks(right_prop, right_configs) if right_transforms
             kept, dropped = left_transforms ? [right_prop, left_prop] : [left_prop, right_prop]
             # Only retained origins may classify the next collision in this fold.
             return [stand_down_from(kept, dropped, TRANSFORM_RESIDUE), left_transforms ? right_configs : left_configs]
@@ -1754,25 +1754,41 @@ module Axn
           types
         end
 
+        # Blankness is a value constraint, not just a container size. On the JSON domain every
+        # non-string blank is in BLANK_WIRE_VALUES; strings retain Ruby's whitespace semantics,
+        # which we report rather than replace with a different regular-expression dialect.
+        def project_collision_checks(prop, configs)
+          if configs.any? { |config| absence_bounds_blankness?(config.validations) }
+            blank = { anyOf: [{ type: "string" }, { enum: BLANK_WIRE_VALUES }] }
+            prop = prop.merge(allOf: Array(prop[:allOf]) + [blank])
+          end
+          report_unexpressed_checks(prop, configs)
+        end
+
         # Length and format can validate a non-string's Ruby string form. Their JSON keywords
         # cannot: ask their actual emitters per surviving type rather than assume a keyword
         # somewhere in an anyOf covers every branch. Numeric producers instead narrow through
         # restrict_union_to_bounded_branches!; enum/const constraints apply to all JSON types.
-        def report_unexpressed_string_checks(prop, configs)
-          sources = configs.select { |config| config.validations[:length] || config.validations[:format] }
+        # Absence is exact on non-strings through project_collision_checks; strings and gated
+        # absence still need a report rather than a different interpretation of blankness.
+        def report_unexpressed_checks(prop, configs)
+          sources = configs.select { |config| config.validations[:length] || config.validations[:format] || config.validations[:absence] }
           return prop if sources.empty?
 
           types = projected_types(prop)
           sources.reduce(prop) do |projected, config|
             applicable_types = nil_allowed?(config) ? types - ["null"] : types
-            config.validations.slice(:length, :format).reduce(projected) do |reported, (key, options)|
-              missing = applicable_types.reject { |type| string_check_emitted?(type, key, options) }
+            Axn::Validation::Base.validator_entries(config.validations).slice(:length, :format, :absence).reduce(projected) do |reported, (key, options)|
+              conditional = Axn::Validation::Base.entry_effectively_gated?(options, declaration_gates(config))
+              missing = applicable_types.reject do |type|
+                key == :absence ? !conditional && type != "string" : string_check_emitted?(type, key, options)
+              end
               next reported if missing.empty?
 
-              conditional = Axn::Validation::Base.entry_effectively_gated?(options, declaration_gates(config))
               prefix = conditional ? "#{GATED_RESIDUE}; " : ""
               prefix += "after transformation, " if transforms_wire_value?([config])
-              record_residue(reported, "#{prefix}#{key} checks the runtime value or its string form for #{missing.join(', ')} values; " \
+              subject = key == :absence ? "blankness" : "the runtime value or its string form"
+              record_residue(reported, "#{prefix}#{key} checks #{subject} for #{missing.join(', ')} values; " \
                                        "JSON Schema cannot fully express this check (#{render_constraint({ key => options })})",
                              kind: conditional ? :conditional : :inherent)
             end
