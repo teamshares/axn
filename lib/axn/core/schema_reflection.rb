@@ -126,8 +126,8 @@ module Axn
 
         private
 
-        # A constraint the runtime enforces that this document cannot state — a position whose value is
-        # transformed before its own checks run, or one whose declared type JSON has no form for. The schema
+        # A collision constraint the document cannot state: a conditional check, a check on a transformed
+        # value or its descendants, or a check with no keyword for the surviving JSON types. The schema
         # itself says so in the relevant `description` (which is what an adapter passes on to its caller);
         # this is the same gap said once, to the author, for the same reason the deep-subfield warning
         # above exists: a silent narrowing of the document is what PRO-3405 set out to stop.

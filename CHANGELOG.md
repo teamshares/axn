@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* [INTERNAL] Adapter guidance covers conditional collision reports, post-transform checks, and checks without an equivalent JSON Schema keyword. Preserve descriptions inside schema branches; the report may include validator options as well as schema fragments.
+
 * [BUGFIX] Reflection and tool-contract validation work on frozen action classes without requiring cache warmup. Lazy resolution and validation still run when their results cannot be cached. Both schema-warning paths guard diagnostic preparation and bookkeeping as well as logging; frozen classes use weak-key warning memos so diagnostics remain deduplicated without retaining unloaded classes.
 
 * [BUGFIX] Collision projections emit type branches independently, preserving numeric strings when a numeric bound meets a String declaration through a gated type, an unknown type, or an explicit union. Numeric bounds remain enforced on numeric branches; checks with no JSON Schema spelling on other surviving branches are reported. Nullable equality bounds no longer constrain unrelated branches through a shared enum.
