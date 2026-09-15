@@ -75,8 +75,9 @@ eager-load), `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb
   (breaks other adapters on the shared class).
 - `on: :ambient_context` fields are **auto-excluded** from `input_schema` — you get a clean model-facing
   schema; don't re-add them.
-- Reflection is best-effort, biased **stricter** than runtime (a schema-following call won't be rejected),
-  with one documented **looser** case (an invalid literal `default:`). Surface the caveat; don't fight it.
+- Reflection is best-effort, biased **stricter** than runtime (a schema-following call is normally not
+  rejected) — a bias, not a guarantee. Documented **looser** cases: an invalid literal `default:`, and any
+  property whose `description` opens `Additional constraints apply…`. Surface the caveat; don't fight it.
   A deep subfield under a `model:`/non-object parent is omitted with a `logger.warn` — pass it through.
 
 Source: `lib/axn/core/schema_reflection.rb`, `lib/axn/internal/reflection/schema.rb`.
