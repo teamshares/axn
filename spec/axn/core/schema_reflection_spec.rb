@@ -513,6 +513,37 @@ RSpec.describe "Axn class-level schema reflection" do
       3.times { deep_klass.input_schema }
     end
 
+    it "warns once without writing to a frozen action class" do
+      deep_klass.freeze
+      expect(Axn.config.logger).to receive(:warn).with(/input_schema omits deep subfield/).once
+      3.times { expect(deep_klass.input_schema).to include(:properties) }
+    end
+
+    it "keeps residue diagnostics harmless and deduplicated for a frozen action class" do
+      klass = build_axn do
+        expects(:payload, type: Hash) { field :inner, type: String }
+        expects :inner, on: :payload, type: Integer, preprocess: :to_i.to_proc
+      end
+      # Prime the legitimate schema cache without emitting diagnostics, isolating the memo failure.
+      Axn::Internal::Reflection::Schema.build_input_for(klass)
+      klass.freeze
+      expect(Axn.config.logger).to receive(:warn).with(/cannot state every constraint/).once
+      3.times { expect(klass.input_schema).to include(:properties) }
+    end
+
+    it "keeps frozen warning deduplication through garbage collection", :slow do
+      deep_klass.freeze
+      expect(Axn.config.logger).to receive(:warn).with(/input_schema omits deep subfield/).once
+      deep_klass.input_schema
+      GC.start
+      deep_klass.input_schema
+    end
+
+    it "still returns a schema if preparing a diagnostic fails" do
+      deep_klass.define_singleton_method(:resolved_axn_name) { raise "name backend unavailable" }
+      expect(deep_klass.input_schema).to include(:properties)
+    end
+
     # A diagnostic may not decide whether reflection SUCCEEDS. A configured logger that raises — a closed
     # stream, a backend that has gone away — otherwise propagates out of `input_schema` and out of
     # `Axn::Tools.validate_contracts!`, failing a projection that was built correctly over the REPORTING of a

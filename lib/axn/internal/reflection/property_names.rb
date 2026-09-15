@@ -125,7 +125,8 @@ module Axn
           return nil if configs.equal?(klass.instance_variable_get(:@_axn_validated_outbound))
 
           validate_and_build(configs, direction: :output) { Schema.build_output(configs) }
-          klass.instance_variable_set(:@_axn_validated_outbound, configs)
+          # A frozen action must still be validated, even when the verdict cannot be cached.
+          klass.instance_variable_set(:@_axn_validated_outbound, configs) unless Axn::Internal::NativeMethods.frozen?(klass)
           nil
         end
 

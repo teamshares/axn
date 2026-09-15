@@ -42,6 +42,12 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render as the JSON property "café"/)
   end
 
+  it "still rejects an invalid frozen contract" do
+    Axn::Tools.register_adapter(:mcp)
+    colliding_tool.freeze
+    expect { Axn::Tools.validate_contracts! }.to raise_error(Axn::ContractViolation::DuplicateFieldError, /both render/)
+  end
+
   # THE case that matters most, and the one the guarantee used to miss: a tool subclassing its adapter's base
   # class, which is the ordinary shape of one (`Axn::MCP::Tool < ::MCP::Tool`). That base already defines
   # `input_schema`/`output_schema`, so axn deliberately does not install its own (see Core::SchemaReflection) —
@@ -690,6 +696,23 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
       tool.input_schema
 
       expect(warnings).to eq(1)
+    end
+
+    it "validates frozen tools and shares their warning memo with reflection" do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool.freeze
+      expect(Axn.config.logger).to receive(:warn).with(/cannot state every constraint/).once
+      2.times { expect { Axn::Tools.validate_contracts! }.not_to raise_error }
+      expect(tool.input_schema).to include(:properties)
+    end
+
+    it "keeps frozen residue warning deduplication through garbage collection", :slow do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool.freeze
+      expect(Axn.config.logger).to receive(:warn).with(/cannot state every constraint/).once
+      Axn::Tools.validate_contracts!
+      GC.start
+      tool.input_schema
     end
 
     # A name is caller-supplied text and may be valid non-UTF-8 (an ISO-8859-1 String holding `é`).

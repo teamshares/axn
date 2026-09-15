@@ -57,6 +57,15 @@ rule handed back) BEFORE applying `@invert`, short-circuiting to `false` regardl
 Invoker still decides what to catch and when; a caller that needs to know it happened just gets to
 ask, which is a different thing from adding a second guard on top.
 
+## Guard the whole diagnostic, including its memo
+
+A logger call is only the last step of a diagnostic. Preparing its label or saving an
+already-warned flag can fail too: a frozen action class rejected the memo write after its
+schema had been built successfully. Both schema-warning paths now guard preparation,
+bookkeeping, and logging together. Frozen classes use weak-key, immediate-value fallback
+memos; lazy schema caches simply decline to store results on them. The actual schema build
+and contract validation stay outside the diagnostic guard, so malformed contracts still fail.
+
 ## Don't dispatch to caller methods while reporting a failure
 
 Separate the caller code a walk **requires** from caller code invoked while **reporting** a

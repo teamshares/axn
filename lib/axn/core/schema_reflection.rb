@@ -34,6 +34,12 @@ module Axn
       end
       private_class_method :_extend_reflection
 
+      # Frozen classes cannot accept memo ivars. Weak keys avoid retaining reloaded actions,
+      # and immediate true values survive GC even on Ruby versions with weak WeakMap values.
+      FROZEN_RESIDUE_WARNINGS = ObjectSpace::WeakMap.new
+      FROZEN_DEEP_WARNINGS = ObjectSpace::WeakMap.new
+      private_constant :FROZEN_RESIDUE_WARNINGS, :FROZEN_DEEP_WARNINGS
+
       # An action's name rendered for a message axn is building: its BYTES through the same encoding seam the
       # path segments take, with nothing of the name's own dispatched. Both halves matter and each was a
       # separate failure. A valid non-UTF-8 `axn_name` (an ISO-8859-1 String holding é) interpolated into
@@ -64,7 +70,8 @@ module Axn
       # Deduplicated ONCE PER CLASS here rather than at either call site: `validate_contracts!` runs from an
       # engine's `after_initialize` AND every `to_prepare`, and an adapter may later reach the reader too,
       # so a guard held by one caller lets the other repeat the same warning on every boot and reload. The
-      # memo lives on the class, which is what both callers share.
+      # memo lives on a mutable class, with a weak-key fallback for a frozen class; both callers
+      # reach the same state.
       #
       # Keyed on WHAT was warned, not a boolean. A boolean silenced the class permanently, so an action
       # reopened to add another collision — the ordinary shape of a reload, and of a concern included after
@@ -73,27 +80,17 @@ module Axn
       def self.warn_inexpressible_constraints(klass, residues)
         return if residues.empty?
 
-        label = axn_name_label(klass)
-        all_gaps = residues.map do |path, residue|
-          rendered = path.map { |segment| Axn::Internal::Reflection::PropertyNames.renderable_label(segment) }.join(".")
-          "#{rendered}: #{residue.summary}"
-        end
-        # The memo is axn's own framework state living on a CALLER-SUPPLIED class, so it is read and written
-        # through the bound `Kernel` pair rather than dispatched: `instance_variable_get`/`_set` are ordinary
-        # overridable methods, and an action that redefines one would otherwise decide what this memo reads
-        # back as — or, on the write side, keep it from being stored at all and turn one warning into one per
-        # reflection. A raising override took `input_schema` down before the `best_effort` below was reached.
-        warned = Axn::Internal::NativeMethods.ivar_get(klass, :@__axn_residue_warnings) || []
-        gaps = all_gaps - warned
-        return if gaps.empty?
+        # Preparation and bookkeeping are part of the side channel too. Neither a frozen class,
+        # a failing name renderer nor a logger failure may replace an already-built schema.
+        Axn::Extensions.best_effort("warning about inexpressible input_schema constraints", action: klass) do
+          all_gaps = residues.map do |path, residue|
+            rendered = path.map { |segment| Axn::Internal::Reflection::PropertyNames.renderable_label(segment) }.join(".")
+            "#{rendered}: #{residue.summary}"
+          end
+          gaps = _unwarned_gaps(klass, all_gaps)
+          next if gaps.empty?
 
-        Axn::Internal::NativeMethods.ivar_set(klass, :@__axn_residue_warnings, warned + gaps)
-        # A diagnostic may not decide whether reflection SUCCEEDS. A configured logger that raises — a closed
-        # stream, a backend that is gone — otherwise propagates out of `input_schema` and out of
-        # `Axn::Tools.validate_contracts!`, failing a projection that was built correctly, over the reporting
-        # of a gap rather than the gap itself. The memo above is deliberately set BEFORE this: the attempt is
-        # what it records, so a broken logger cannot turn one warning into one per reflection.
-        Axn::Extensions.best_effort("warning that #{label} input_schema cannot state every constraint", action: klass) do
+          label = axn_name_label(klass)
           Axn.config.logger.warn(
             "[Axn] #{label} input_schema cannot state every constraint the contract enforces — " \
             "#{gaps.join('; ')}. Each is reported in that property's `description`; a caller obeying the " \
@@ -101,6 +98,20 @@ module Axn
           )
         end
       end
+
+      def self._unwarned_gaps(klass, all_gaps)
+        if Axn::Internal::NativeMethods.frozen?(klass)
+          return [] if FROZEN_RESIDUE_WARNINGS.key?(klass)
+
+          FROZEN_RESIDUE_WARNINGS[klass] = true
+        end
+        warned = Axn::Internal::NativeMethods.ivar_get(klass, :@__axn_residue_warnings) || []
+        gaps = all_gaps - warned
+        # Record the attempt before logging so a broken logger is not retried on every read.
+        Axn::Internal::NativeMethods.ivar_set(klass, :@__axn_residue_warnings, warned + gaps) unless Axn::Internal::NativeMethods.frozen?(klass)
+        gaps
+      end
+      private_class_method :_unwarned_gaps
 
       module InputSchemaMethod
         # The property-name rules run here rather than at declaration: a projection is the only thing a
@@ -128,20 +139,19 @@ module Axn
         # representation, so it validates at runtime but is absent from the input schema. Surface that
         # once per class so an adapter author building tooling on the schema isn't misled by a silent gap.
         def _warn_dropped_deep_subfields
-          return if @__axn_deep_subfield_warning_emitted
-
-          dropped = _resolved_subfields.dropped
-          return if dropped.empty?
-
-          @__axn_deep_subfield_warning_emitted = true
-          # Names are rendered as the JSON property they canonicalize to, never interpolated raw: a declared
-          # name may hold bytes that are not UTF-8 (a valid ISO-8859-1 Symbol), and joining those into this
-          # UTF-8 message raised Encoding::CompatibilityError from the warning itself — so reflecting a schema
-          # blew up over a subfield the warning exists to mention in passing.
-          paths = dropped.map { |c| "#{_schema_name_label(c.field)} (on: #{_schema_name_label(c.on)})" }.join(", ")
-          # Guarded for the same reason its sibling above is, and at the same time: these two are the only
-          # log lines `input_schema` emits, so a raising logger reaching either one is the same failure.
           Axn::Extensions.best_effort("warning that input_schema omits deep subfield(s)", action: self) do
+            frozen = Axn::Internal::NativeMethods.frozen?(self)
+            next if @__axn_deep_subfield_warning_emitted || (frozen && FROZEN_DEEP_WARNINGS.key?(self))
+
+            dropped = _resolved_subfields.dropped
+            next if dropped.empty?
+
+            if frozen
+              FROZEN_DEEP_WARNINGS[self] = true
+            else
+              @__axn_deep_subfield_warning_emitted = true
+            end
+            paths = dropped.map { |c| "#{_schema_name_label(c.field)} (on: #{_schema_name_label(c.on)})" }.join(", ")
             Axn.config.logger.warn(
               "[Axn] #{SchemaReflection.axn_name_label(self)} input_schema omits deep subfield(s) with no JSON representation — " \
               "nested under a model: or non-object parent: #{paths}. They validate at runtime but are absent " \
