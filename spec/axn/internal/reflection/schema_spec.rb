@@ -6377,12 +6377,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               ["", {}, []].each { |blank| expect(klass.call(payload: { inner: blank })).not_to be_ok }
             end
 
-            # Both sides are ENFORCED, so a value-level set from each conjoins: the node admits only what
-            # satisfies both. A SCALAR pair gets that from the `allOf` branch, which conjoins by
-            # construction. Two OBJECT-shaped sides merge instead of branching, and a shallow merge left
-            # "second side wins" — the node advertised the later `inclusion:` verbatim and accepted a value
-            # the runtime rejects, the one direction inbound reflection may never take.
-            it "intersects the inclusion sets of two colliding object positions rather than taking the later one" do
+            # Both sides are ENFORCED, so a value-level set from each applies. A SCALAR pair gets that from
+            # the `allOf` branch, which conjoins by construction. Two OBJECT-shaped sides merge instead of
+            # branching, and a shallow merge left "second side wins" — the node advertised the later
+            # `inclusion:` verbatim and accepted a value the runtime rejects, the one direction inbound
+            # reflection may never take.
+            it "keeps both inclusion sets of two colliding object positions rather than taking the later one" do
               klass = Class.new do
                 include Axn
                 expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ a: 1 }, { b: 2 }] }
@@ -6391,10 +6391,35 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
-              expect(inner[:enum]).to eq([{ b: 2 }])
+              expect(inner[:enum]).to be_nil
+              expect(inner[:allOf]).to include({ enum: [{ a: 1 }, { b: 2 }] }, { enum: [{ b: 2 }, { c: 3 }] })
               # The runtime is the reference: each side's own set is enforced, so only the shared member runs.
               expect(klass.call(payload: { inner: { b: 2 } })).to be_ok
               [{ a: 1 }, { c: 3 }].each { |v| expect(klass.call(payload: { inner: v })).not_to be_ok }
+            end
+
+            # Why the two sets are BRANCHED and not intersected. Intersecting means deciding which members
+            # they share, and the emitter may not run an author's `==`/`eql?`/`hash` to find out — nor would
+            # Ruby's answer be the right one: `Array#&` compares by `eql?`, under which `{a: 1}` and
+            # `{a: 1.0}` are distinct, while the runtime accepts `{a: 1}` against BOTH sets. Intersecting
+            # emitted `enum: []` — a node nothing satisfies — for a contract that is satisfiable, which is
+            # the inbound direction reflection may never take, just from the other side.
+            it "does not narrow to nothing when the two sets spell a shared member differently" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ a: 1 }] }
+                expects :inner, on: :payload, type: Hash, inclusion: [{ a: 1.0 }]
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:enum]).to be_nil
+              expect(inner[:allOf]).to include({ enum: [{ a: 1 }] }, { enum: [{ a: 1.0 }] })
+              # No branch may be the empty set: `enum: []` is satisfied by nothing, and a consumer reading it
+              # is told the position is unusable.
+              expect(Array(inner[:allOf]).map { |b| b[:enum] }).to all(be_present)
+              # The runtime accepts both spellings, so the document must not refuse them.
+              [{ a: 1 }, { a: 1.0 }].each { |v| expect(klass.call(payload: { inner: v })).to be_ok }
             end
 
             it "honors a gate nested on the validator that carries the contradicting keyword" do

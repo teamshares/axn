@@ -1378,6 +1378,26 @@ module Axn
         # from THAT declaration's `shape:` (Core::Contract#_derive_shaped_keys!), so a member carried from an
         # ancestor exempts no key at this node's map validator either. Re-running it would admit a key the
         # runtime rejects — measured, both spellings reject one.
+        # Both sides' `enum`, kept as separate branches on a merged node. `:enum` is a VALUE constraint and
+        # both sides are enforced, so both apply — the shallow merge leaves "second side wins", which
+        # advertised the later `inclusion:` set alone and ACCEPTED a value the runtime rejects.
+        #
+        # BRANCHED rather than intersected, because the emitter may not decide which members the two sets
+        # share: comparing an author's literals means running their `==`/`eql?`/`hash`, and reflection runs
+        # none of a caller's code (`enum_for_inclusion` takes an identity check for this same reason).
+        # `Array#&` does exactly that, and its `eql?` semantics are not even the runtime's — `[{a: 1}] &
+        # [{a: 1.0}]` is empty while the runtime accepts `{a: 1}` against both sets, so the node came back
+        # `enum: []`, satisfied by nothing, for a contract that IS satisfiable. Branching hands the question
+        # to the consumer's own JSON Schema equality, which is value-based and numeric-aware (measured: an
+        # `allOf` of those two sets accepts both spellings), and is what a scalar collision already does —
+        # the object path merges rather than branches, which is the only reason it ever differed.
+        def branch_both_enums!(merged, member_prop, own_prop)
+          return unless member_prop[:enum] && own_prop[:enum]
+
+          merged.delete(:enum)
+          merged[:allOf] = Array(merged[:allOf]) + [{ enum: member_prop[:enum] }, { enum: own_prop[:enum] }]
+        end
+
         def merge_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
           merged = member_prop.merge(own_prop)
           # `:type` is RECONCILED, not left to the shallow merge's "second side wins" default — a nullable
@@ -1414,15 +1434,7 @@ module Axn
             merged[:properties] = merge_emitted_maps(member_prop[:properties], own_prop[:properties], member_configs:, own_configs:)
           end
           merged[:required] = merge_emitted_required(member_prop[:required], own_prop[:required]) if member_prop[:required] || own_prop[:required]
-          # `:enum` is a VALUE constraint, and both sides are enforced, so the merged node admits only what
-          # satisfies both — the same intersection `merge_enum!` composes a single property's enum by. The
-          # shallow merge above leaves "second side wins", which advertised the later `inclusion:` set alone:
-          # measured through json_schemer, two colliding object positions declaring `[{a: 1}, {b: 2}]` and
-          # `[{b: 2}, {c: 3}]` emitted the second verbatim and ACCEPTED `{c: 3}`, which the runtime rejects.
-          # A scalar pair never reached this — it takes the `allOf` branch, which conjoins by construction —
-          # so only the object-shaped path, which merges rather than branches, needed saying. An empty
-          # intersection is `enum: []`, already this emitter's spelling for a position nothing satisfies.
-          merged[:enum] = member_prop[:enum] & own_prop[:enum] if member_prop[:enum] && own_prop[:enum]
+          branch_both_enums!(merged, member_prop, own_prop)
           merged[:minProperties] = [member_prop[:minProperties], own_prop[:minProperties]].compact.max if merged[:minProperties]
           merged[:maxProperties] = [member_prop[:maxProperties], own_prop[:maxProperties]].compact.min if merged[:maxProperties]
           # A map's `values:`/`keys:` axes (`additionalProperties`/`propertyNames`) are their OWN nested
