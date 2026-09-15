@@ -105,6 +105,26 @@ Six review rounds tried to keep static-maximal there and stand the gated side do
 
 The audit lesson is sharper than any of them: the exclusion added in the round that introduced the stand-down skipped EVERY residue-bearing row from the inbound walk, and a conditional stand-down is the one thing there that relaxes a document. The whole class was laundered out of the differential test by the same commit that created it, which is why six rounds found these by reading. An exclusion must name the kind it excludes, never "anything that reported something".
 
+## Preserve validator context and value phase independently
+
+Removing a type claim does not remove the context other validators need to emit. A typeless
+rebuild silently loses numeric `comparison:` bounds; special-casing `numericality:` only fixes
+one producer. `type_agnostic_property` instead runs the normal builder over the complete JSON
+domain. Sized positions additionally use the existing sizing emitter per type, because an
+`absence:` ceiling has different meanings for strings and containers. Keep validator selection
+out of this projection: new producers must enter through the normal builder.
+
+Whether a check runs (its gate) and which value it judges (before or after transformation) are
+independent. Resolve the position's gates, complete its descendant subtree, then decide whether
+that projection constrains the wire value or belongs in a post-transform report. Skipping gate
+resolution to preserve descendants reports conditional checks as unconditional; rebuilding after
+attaching descendants loses those descendants. The completion callback establishes that order.
+
+Test both products: numeric producers/operators derived from the emitter, and reported
+post-transform constraints evaluated with gates open and closed. Compare with real runtime
+acceptance, and include accepting controls: removing a bound and rejecting every value are both
+projection failures, in opposite directions.
+
 ## A biased-stricter projection is not evidence about the contract
 
 `absence:` rejects every non-blank value. On an `Array` that means size 0 exactly, so a `maxItems: 0` is its faithful projection. On a `String` it does not: ActiveSupport gives String its own `blank?`, under which `"  "` is blank and two characters long. Emitting `maxLength: 0` there is still *permissible* — it is biased stricter, the documented direction for reflection to err in — and PRO-3220 first shipped it that way.

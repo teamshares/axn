@@ -6556,8 +6556,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               end
               inner = klass.input_schema[:properties][:payload][:properties][:deep][:properties][:inner]
 
-              # No branch may assert the fabricated `"string"` against the real `"object"`.
-              expect(JSON.generate(inner)).not_to include('"type":"string"')
+              # The complete wire domain may contain a string alternative, but it must not
+              # require a string alongside the real object constraint.
+              expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?({ "k" => 1 })).to be(true)
               expect(inner).to include(type: "object")
               expect(klass.call(payload: { deep: { inner: { k: 1 } } })).to be_ok
             end

@@ -1180,8 +1180,9 @@ module Axn
           # subtree before the collision can stand it down; otherwise descent rewrites the retained
           # wire type and attaches post-transform children to it.
           if member_prop && transforms_wire_value?([representative])
-            apply_nested_subfields!(child_prop, node, ann)
-            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative])
+            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) do |projected|
+              apply_nested_subfields!(projected, node, ann)
+            end
           else
             child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
             apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
@@ -1620,8 +1621,8 @@ module Axn
         # that may also carry real bounds.
         # Two sides that are both unknown-class hints fall back to the same permissive shape and cannot
         # contradict each other, so neither is stripped.
-        def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [])
-          sides, residues = gate_resolved_sides([[member_prop, member_configs], [own_prop, own_configs]])
+        def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [], &complete_own)
+          sides, residues = gate_resolved_sides([[member_prop, member_configs], [own_prop, own_configs, complete_own]])
           prop, carried = left_of(sides.reduce { |left, right| combine_two(left, right) })
           (carried + residues).reduce(prop) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
         end
@@ -1636,15 +1637,20 @@ module Axn
         # the real conjunction is what diverged from it three times.
         def gate_resolved_sides(sides)
           residues = []
-          expanded = sides.flat_map do |prop, configs|
-            # A transform's complete subtree must reach stand-down intact; rebuilding it from a
-            # field config here would discard the descendants already attached to that side.
-            next [[prop, configs]] if transforms_wire_value?(configs) || configs.none? { |config| conditional_checks?(config) }
-
-            projections = configs.map { |config| [config, build_property(config, subfield: true)] }
-                                 .map { |config, full| [config, projected_property(config, full), full] }
-            residues.concat(gating_residues(configs))
-            projections.map { |config, projected, _full| [carry_metadata(projected, prop), [config]] }
+          expanded = sides.flat_map do |prop, configs, complete|
+            projections = if configs.none? { |config| conditional_checks?(config) }
+                            [[prop, configs]]
+                          else
+                            residues.concat(gating_residues(configs))
+                            configs.map do |config|
+                              full = build_property(config, subfield: true)
+                              [carry_metadata(projected_property(config, full), prop), [config]]
+                            end
+                          end
+            # Gating and transformation are independent axes. Complete a post-transform subtree
+            # after projecting its own gates, but before deciding which value a collision describes.
+            projections.each { |side| complete.call(side.first) } if complete
+            projections
           end
           [expanded, residues]
         end
@@ -1704,23 +1710,22 @@ module Axn
           restore_blank_floor(projected, ungated, full)
         end
 
-        # JSON's size and pattern keywords are conditional on the instance type themselves. Emit
-        # their contributions directly on an untyped position instead of subtracting a type-only
-        # schema from a composed union. This also covers types absent from a gated type declaration.
-        WIRE_TYPE_CONTEXTS = [String, Array, Hash, Integer, Float, TrueClass, FalseClass, NilClass].freeze
+        # Re-emit against the complete JSON domain when the authored type supplies no unconditional
+        # wire constraint. Keep type-dependent validator semantics in the normal property builder.
+        WIRE_TYPE_CONTEXTS = [String, Array, Hash, Integer, Float, :boolean, NilClass].freeze
 
         def type_agnostic_property(config, validations)
           validations = validations.except(:type)
-          # Without an authored type, numericality's ordinary inference chooses a numeric type.
-          # A collision may independently require a numeric STRING, so narrow the complete JSON
-          # domain through the existing numericality emitter instead of making that assumption.
-          emitted = validations[:numericality] ? validations.merge(type: WIRE_TYPE_CONTEXTS) : validations
-          prop = build_property(config.with(validations: emitted), subfield: true)
+          return build_property(config.with(validations:), subfield: true) if Axn::Validation::Base.validator_entries(validations).empty?
+
+          # Every validator goes through the normal property builder over the complete wire domain.
+          # Selecting individual validator families here created a second emitter: numericality
+          # received its numeric context while comparison silently lost the same numeric bounds.
+          prop = build_property(config.with(validations: validations.merge(type: WIRE_TYPE_CONTEXTS)), subfield: true)
           Sizing::SIZE_CONSTRAINT_KEYS.each_key do |type|
             context = { type: }
             token = TypeTokens::TYPE_MAP.find { |_token, json_type| json_type == type }.first
             apply_size_constraints!(context, validations.merge(type: token))
-            apply_pattern!(context, validations, for_output: false)
             context.delete(:type)
             prop.merge!(context)
           end
@@ -1753,7 +1758,8 @@ module Axn
               fragment = fragment.except(*RESIDUE_UNGATEABLE_KEYS).reject { |name, value| baseline[name] == value }
               next if fragment.empty?
 
-              Residue.new(summary: "#{GATED_RESIDUE} (#{render_constraint(fragment)})", kind: :conditional)
+              phase = transforms_wire_value?([config]) ? "after transformation, " : ""
+              Residue.new(summary: "#{phase}#{GATED_RESIDUE} (#{render_constraint(fragment)})", kind: :conditional)
             end
           end
         end
