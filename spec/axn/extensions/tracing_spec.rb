@@ -74,6 +74,45 @@ RSpec.describe "Axn::Extensions::Tracing" do
       expect(Axn::Extensions::Tracing.caller_axn_name).to be_nil
       expect(Axn::Extensions::Tracing.root_axn_name).to be_nil
     end
+
+    # The executor's own call site passes `@action` — a reference it holds independently of the
+    # stack, so `Identity.same?(stack[-1], action)` genuinely proves that action is on top right now.
+    # This facade instead DERIVES `action` from the stack itself (`NestingTracking.current_axn`,
+    # i.e. `stack.last`), which makes that same check trivially true regardless of which fiber is
+    # actually asking — it only proves the two reads agree, not that either one is genuinely this
+    # fiber's own frame. A foreign fiber's frame sitting on top of the calling fiber's own (still
+    # live, still on the stack) frame passes it exactly as easily as a genuine self-reference would.
+    it "does not misattribute when a foreign fiber's frame sits on top of the calling fiber's own action" do
+      expect(Fiber.scheduler).to be_nil
+
+      seen = { caller: :unset, root: :unset }
+      klass_r = build_axn do
+        define_method(:call) do
+          Fiber.yield # let F get pushed on top and suspend before resuming here
+          seen[:caller] = Axn::Extensions::Tracing.caller_axn_name
+          seen[:root] = Axn::Extensions::Tracing.root_axn_name
+        end
+      end
+      klass_f = build_axn { define_method(:call) { Fiber.yield } }
+      stub_const("FacadeSelfR", klass_r)
+      stub_const("FacadeForeignF", klass_f)
+
+      span_class = fake_span.class
+      Axn.config.tracer = Class.new { define_method(:in_span) { |*, **, &block| block.call(span_class.new) } }.new
+
+      fiber_r = Fiber.new { FacadeSelfR.call }
+      fiber_r.resume # push R, suspend inside R's own body before F exists
+
+      fiber_f = Fiber.new { FacadeForeignF.call }
+      fiber_f.resume # push F on top of R, suspend before F's own pop — stack is [R, F]
+
+      fiber_r.resume # R resumes (Fiber.current is fiber_r again); stack still reads [R, F]
+
+      expect(seen[:caller]).to be_nil
+      expect(seen[:root]).to be_nil
+
+      fiber_f.resume # drain F (R's own mispopping ensure already removed F's frame, not its own)
+    end
   end
 
   describe ".annotate_span" do

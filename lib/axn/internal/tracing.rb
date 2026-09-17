@@ -151,8 +151,8 @@ module Axn
         # Returns a two-element array of resolved axn names (Strings), either slot independently nil.
         #
         # `action` must be the frame the caller believes is CURRENTLY on top of `_current_axn_stack` —
-        # passed explicitly (the executor's own `@action`) rather than re-derived, because the check
-        # below only means anything when compared against the actual current frame.
+        # passed explicitly (the executor's own `@action`) rather than re-derived, because the checks
+        # below only mean anything when compared against the actual current frame.
         #
         # `_current_axn_stack` is a THREAD-shared Array (PRO-3278), and `NestingTracking.tracking`'s
         # `ensure` pops whatever is on TOP of it rather than its own frame — so under a same-thread
@@ -161,14 +161,26 @@ module Axn
         # pushes and suspends, fiber B pushes and suspends, A resumes and finishes — `finalize_span` for
         # A's span runs while the shared array still reads `[A, B]`). Indexing `stack[-2]`/`stack[0]`
         # without first confirming `stack[-1]` IS `action` would read A's own frame back as "A's
-        # caller" in that shape. So the very first check below is not an optimization: it is what makes
+        # caller" in that shape. So the first check below is not an optimization: it is what makes
         # every index after it meaningful.
         #
-        # Once that holds, `stack[-2]` (the caller) and `stack[0]` (the root) are each verified
-        # independently against the SAME thread+fiber tag `with_current_span` already publishes for
-        # `current_span` above — a concurrent fiber sitting lower on the shared stack (parked there
-        # before this action's own root ran) carries a foreign tag and is refused exactly like
-        # `current_span` refuses a foreign span.
+        # That check alone is not enough for a caller that DERIVES `action` from the stack itself
+        # (`Extensions::Tracing.caller_axn_name`, via `NestingTracking.current_axn` — i.e. `stack.last`)
+        # rather than holding an independent reference the way the executor's `@action` does: comparing
+        # `stack[-1]` against a value that WAS `stack[-1]` a moment ago is trivially true regardless of
+        # which fiber is actually asking. A foreign fiber's frame sitting on top of the calling fiber's
+        # own (still live, still on the stack) frame passes that comparison exactly as easily as a
+        # genuine self-reference would, and the calling fiber's own frame at `stack[-2]` would then
+        # verify as a legitimate ancestor — because it genuinely IS this fiber's own tag, just not of
+        # the thing actually asking. So `action` itself is verified the same way an ancestor candidate
+        # is, against the SAME thread+fiber tag `with_current_span` already publishes for `current_span`
+        # above: `_own_tag(action)` must find `action`'s OWN span tagged for the CURRENT thread+fiber,
+        # not merely agree with what the stack's top happened to read.
+        #
+        # Once both hold, `stack[-2]` (the caller) and `stack[0]` (the root) are each verified
+        # independently against that same tag — a concurrent fiber sitting lower on the shared stack
+        # (parked there before this action's own root ran) carries a foreign tag and is refused exactly
+        # like `current_span` refuses a foreign span.
         #
         # What this does NOT close: the same blind `pop` can, in a rarer interleaving, remove a live
         # frame belonging to neither party (a fiber resumed from inside a deeper call, popping a frame
@@ -180,7 +192,7 @@ module Axn
           return [nil, nil] if Axn::Core::NestingTracking.isolation_unsafe?
 
           stack = Axn::Core::NestingTracking._current_axn_stack
-          return [nil, nil] unless Identity.same?(stack[-1], action)
+          return [nil, nil] unless Identity.same?(stack[-1], action) && _own_tag(action)
           return [nil, nil] if stack.length < 2
 
           [_verified_axn_name(stack[-2]), _verified_axn_name(stack[0])]
@@ -210,10 +222,17 @@ module Axn
           tagged
         end
 
+        # `Identity.class_of`, not a bare `frame.class`: `frame` is a caller-supplied action instance,
+        # a plain Ruby object whose class body can define its own `#class` like any other instance
+        # method — dispatching it here would let an ancestor's OWN class substitute a different class
+        # (or raise) during a DESCENDANT's span finalization, which is exactly the class of shadowable
+        # dispatch `@action.call` is the one documented exception to (AGENTS.md). `resolved_axn_name`
+        # itself is still reached by ordinary dispatch — a class NAME is the documented exception to
+        # the no-dispatch rule, since axn renames its own classes.
         def _verified_axn_name(frame)
           return nil unless _own_tag(frame)
 
-          frame.class.resolved_axn_name
+          Identity.class_of(frame).resolved_axn_name
         end
       end
     end

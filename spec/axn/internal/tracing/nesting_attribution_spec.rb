@@ -161,6 +161,31 @@ RSpec.describe "axn.caller_resource / axn.root_resource span attribution" do
     expect(child_span.attributes["axn.root_resource"]).to eq("ToolCaller")
   end
 
+  it "reads a caller's class through the bound reader, not a dispatched #class the action could override" do
+    # `AGENTS.md`: internals never dispatch a name a user can take. An axn action instance is a plain
+    # Ruby object a user's class body can define arbitrary instance methods on, `#class` included —
+    # this proves the name comes from `Internal::Identity.class_of`, which cannot be redirected that
+    # way, rather than from `frame.class`, which can.
+    Axn.config.tracer = recording_tracer
+    should_hijack = false
+    stub_const("DecoyName", build_axn { def call; end })
+    child = build_axn { def call; end }
+    parent_klass = build_axn do
+      define_method(:call) do
+        should_hijack = true
+        child.call
+      end
+      define_method(:class) { should_hijack ? DecoyName : super() }
+    end
+    stub_const("RealParentName", parent_klass)
+
+    RealParentName.call
+
+    _, child_span = spans
+    expect(child_span.attributes["axn.caller_resource"]).to eq("RealParentName")
+    expect(child_span.attributes["axn.root_resource"]).to eq("RealParentName")
+  end
+
   it "still lands axn.tag.* when the span raises setting caller/root, and the call still succeeds" do
     raising_span = Class.new do
       attr_reader :attributes
