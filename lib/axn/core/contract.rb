@@ -785,12 +785,112 @@ module Axn
           value
         end
 
+        FacadeFieldsCacheEntry = Data.define(:internal_field_configs, :external_field_configs,
+                                             :facade_class, :declared_fields, :reader_fields)
+
+        # Everything `_build_context_facade` needs to construct one direction's facade, decided ONCE per
+        # contract instead of on every construction (two facades per action call).
+        #
+        # `reader_fields` is the list the facade's definition loop iterates: `declared_fields` (this
+        # direction's own fields) plus, for `:inbound` only, every OUTBOUND field too — the
+        # implicitly-allowed fields that let an action body read back what it exposed — minus any name
+        # the facade class itself owns. That ownership question, `NameOwnership.owner_within(facade_class,
+        # field)`, is a pure function of (facade class, field name), both fixed at declaration, and it was
+        # being re-asked per field on every construction. This does NOT weaken the definition-site
+        # backstop it replaces: it reads the live `internal_field_configs`/`external_field_configs`, so a
+        # config assigned straight onto the class (`internal_field_configs=`, a documented bypass of the
+        # DSL — see the `FieldConfig` comment above) is filtered exactly as before. The OUTBOUND filter is
+        # in fact a no-op for anything the DSL produces: `_reject_shadowed_exposure_name!` asks
+        # `owner_of(Axn::Result, name)` — the FULL ancestry, a strict superset of `owner_within` — and
+        # refuses such a declaration outright, so this only ever fires for a directly-assigned config.
+        #
+        # The facade class, the declared fields and the reader fields come from ONE entry rather than
+        # three separately-derived values on purpose: the inbound reader list has to be
+        # (inbound + outbound), and deriving that composition in one place while `declared_fields:` is
+        # derived elsewhere is exactly how an action body could silently lose the ability to read back
+        # what it exposed.
+        #
+        # Staleness, stated rather than discovered: a monkeypatch that adds a method to `Axn::Result` or
+        # `Axn::Core::InternalContext` AFTER this is built no longer changes the verdict until the
+        # contract is redeclared. That is the SAME posture the declaration-time guard already has (it
+        # froze its answer at `expects`/`exposes` time and never re-runs it) — the two halves now agree
+        # instead of drifting, where today a late monkeypatch could silently take a working field's reader
+        # away on the next call after the declaration guard, asked earlier, had said the name was free.
+        # This is a different question from `MethodShadowing`'s deliberately uncached per-name verdict
+        # (see AGENTS.md): that one asks about the USER's class hierarchy, which stays mutable for as long
+        # as the process runs; this one asks about two classes axn itself owns.
+        def _facade_fields(direction)
+          raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
+
+          internals = internal_field_configs
+          externals = external_field_configs
+          cache = (@_axn_facade_fields_cache ||= {})
+          cached = cache[direction]
+          return cached if cached && cached.internal_field_configs.equal?(internals) && cached.external_field_configs.equal?(externals)
+
+          facade_class = direction == :inbound ? Axn::Core::InternalContext : Axn::Result
+          declared = _declared_fields(direction)
+          candidates = direction == :inbound ? declared + _declared_fields(:outbound) : declared
+          readers = candidates.reject { |field| Axn::Internal::NameOwnership.owner_within(facade_class, field) }.freeze
+
+          cache[direction] = FacadeFieldsCacheEntry.new(internal_field_configs: internals, external_field_configs: externals,
+                                                        facade_class:, declared_fields: declared, reader_fields: readers)
+        end
+
+        BooleanPredicateCacheEntry = Data.define(:external_field_configs, :value)
+
+        # The `<field>?` aliases a Result lands, decided once per contract rather than recomputed on
+        # every Result: a scan of `external_field_configs`, a `config.boolean?` (which walks the declared
+        # `klass:` through `ShapeGraph.type_tokens`), and a `"#{field}?"` String, per config, per action
+        # call. Pairs are `[predicate_name, field]`, both Symbols, frozen individually and as a whole.
+        #
+        # Whether a name a pair proposes is ALREADY taken stays a per-INSTANCE question — it depends on
+        # the live singleton, which a redeclaration doesn't move — and is still asked in
+        # `Result#_define_boolean_predicate_reader` against `@__singleton` itself, never cached here.
+        def _boolean_predicate_fields
+          configs = external_field_configs
+          cached = @_axn_boolean_predicate_fields
+          return cached.value if cached && cached.external_field_configs.equal?(configs)
+
+          value = configs.filter_map do |config|
+            next unless config.boolean?
+
+            name = config.field.to_s
+            next if name.end_with?("?")
+
+            [:"#{name}?", config.field].freeze
+          end.freeze
+          @_axn_boolean_predicate_fields = BooleanPredicateCacheEntry.new(external_field_configs: configs, value:)
+          value
+        end
+
+        InternalFieldIndexCacheEntry = Data.define(:internal_field_configs, :value)
+
+        # field => its internal FieldConfig, cached per class. Replaces
+        # `internal_field_configs.find { |c| c.field == field }`, which ran per field on every facade
+        # construction (O(fields × contract size) per action call) and again on every `<field>_id` read.
+        #
+        # `||=`, not `=`: `find` returns the FIRST match, and while `_reject_duplicate_fields!` keeps the
+        # DSL from ever producing two configs for one field, `internal_field_configs=` does not —
+        # last-wins here would silently change which config a duplicated field resolves through.
+        def _internal_field_index
+          configs = internal_field_configs
+          cached = @_axn_internal_field_index
+          return cached.value if cached && cached.internal_field_configs.equal?(configs)
+
+          value = configs.each_with_object({}) { |config, hash| hash[config.field] ||= config }.freeze
+          @_axn_internal_field_index = InternalFieldIndexCacheEntry.new(internal_field_configs: configs, value:)
+          value
+        end
+
         # Everything below is reached only with an implicit receiver, from here and from the other declaration
         # modules extended onto the same class. It is private because an `_`-prefixed name in a module extended
         # onto every action class otherwise lands there as a PUBLIC singleton method, so the convention and the
         # surface disagree. `_declared_fields` stays public above: the context facade, the redaction slice and
         # `Mountable`'s step passthrough call it on the action class from other files. `_model_fields` stays
-        # public for the same reason: the context facade reads it from `facade.rb`.
+        # public for the same reason: the context facade reads it from `facade.rb`. `_facade_fields`,
+        # `_boolean_predicate_fields` and `_internal_field_index` stay public for the same reason again:
+        # `facade.rb`, `result.rb` and `internal.rb` call them on the action class from other files.
         private
 
         # Reject `user_facing:` on any member of an `exposes` shape, at any depth. The block form
@@ -2272,7 +2372,7 @@ module Axn
             # model-consistency check, and a stateful preprocess runs at most once per call. An undeclared
             # id is the caller's raw token. A caller-OMITTED id resolves nil here (present-record
             # authority) and falls through to the resolved record's own id.
-            id_config = self.class.internal_field_configs.find { |c| c.field == id_key }
+            id_config = self.class._internal_field_index[id_key]
             next @__context.provided_data[id_key] unless id_config
 
             @__context.provided_data[id_key].nil? ? nil : Axn::Core::ContractForSubfields.resolve_value(self, id_config)
@@ -6291,12 +6391,9 @@ module Axn
         end
 
         def _build_context_facade(direction)
-          raise ArgumentError, "Invalid direction: #{direction}" unless %i[inbound outbound].include?(direction)
-
-          klass = direction == :inbound ? Axn::Core::InternalContext : Axn::Result
-          implicitly_allowed_fields = direction == :inbound ? self.class._declared_fields(:outbound) : []
-
-          klass.new(action: self, context: @__context, declared_fields: self.class._declared_fields(direction), implicitly_allowed_fields:)
+          entry = self.class._facade_fields(direction)
+          entry.facade_class.new(action: self, context: @__context,
+                                 declared_fields: entry.declared_fields, reader_fields: entry.reader_fields)
         end
       end
     end
