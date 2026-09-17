@@ -24,6 +24,13 @@ module Axn
       module ClassMethods
         def log_level = Axn.config.log_level
 
+        # Deliberately unguarded, on both sides of the "diagnostic vs emitter" line: called from an
+        # author's own `call` body, its raise is the author's own statement and settles into a
+        # reported result through the executor like any other — swallowing it would hide a broken
+        # logger from the one person who can fix it. And it is also the bottom of axn's own internal
+        # emit stack (`best_effort -> Extensions._emit_warning -> Internal::ActionState.log -> here`
+        # for an action instance), so a guard here would put `best_effort` underneath itself.
+        #
         # @param message [String] The message to log
         # @param level [Symbol] The log level (default: log_level)
         # @param before [String, nil] Text to prepend to the message

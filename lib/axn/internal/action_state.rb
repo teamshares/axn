@@ -77,6 +77,13 @@ module Axn
       # The kwargs are forwarded rather than re-declared, so the level/before/after/prefix defaults stay
       # owned by `Logging::ClassMethods#log` and cannot drift out of step with it. Only the last resort
       # names a level itself, because there is no `log` left to apply the default.
+      #
+      # This whole method is an EMITTER, not a diagnostic, and deliberately unguarded: it is the funnel
+      # every internal `Axn::Extensions.best_effort` diagnostic emits THROUGH, so a guard here would put
+      # `best_effort` underneath itself — `_emit_warning`'s own narrow rescue and one independent
+      # fallback attempt is the guard for this seam instead. Every caller that reaches it with a real
+      # diagnostic is itself already inside a `best_effort` block; see
+      # `spec/axn/no_unguarded_diagnostic_spec.rb`'s pinned inventory.
       def log(target, message, **kwargs)
         return LOG.bind_call(target, message, **kwargs) if instance?(target)
         return target.log(message, **kwargs) if report_proxy?(target)

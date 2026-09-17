@@ -330,6 +330,23 @@ RSpec.describe Axn::Tools::Registry do
       expect(dirs).to include(agent_tools_dir)
       expect(warnings).to include(a_string_matching(/"actions"/))
     end
+
+    # A diagnostic may not decide a MEMBERSHIP verdict. `_under_adapter_root?`'s own
+    # `rescue StandardError => false` would otherwise let a raising warn here silently answer "not a
+    # tool member" for the surviving root too, instead of "too broad" for the skipped one.
+    it "still skips the broad entry and resolves the other root when the warning's logger raises" do
+      source = register_adapter_with_roots(:mcp, roots: %w[agent_tools])
+      source.config.tool_roots << "actions"
+      allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
+
+      dirs = nil
+      expect { dirs = described_class.send(:_adapter_dirs, :mcp) }.not_to raise_error
+
+      actions_dir = described_class.send(:_resolve_tool_dir, "actions")
+      agent_tools_dir = described_class.send(:_resolve_tool_dir, "agent_tools")
+      expect(dirs).not_to include(actions_dir)
+      expect(dirs).to include(agent_tools_dir)
+    end
   end
 
   describe ".ensure_loaded! (non-Rails require fallback)", :aggregate_failures do
@@ -452,6 +469,17 @@ RSpec.describe Axn::Tools::Registry do
     ensure
       Axn.config.logger = previous
     end
+
+    # A diagnostic may not decide whether enumeration succeeds. This is the OUTERMOST handler: a raise
+    # here escapes ensure_loaded! -> tool_classes/members -> Axn::Tools.validate_contracts!, which runs
+    # from an engine's after_initialize and every to_prepare — a Rails boot failure over a degraded
+    # tool-discovery warning.
+    it "still returns without raising when the warning's own logger raises" do
+      allow(described_class).to receive(:_all_adapter_dirs).and_raise("boom enumerating dirs")
+      allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
+
+      expect { described_class.ensure_loaded! }.not_to raise_error
+    end
   end
 
   describe ".ensure_loaded! (non-Rails, isolates a SyntaxError in one tool file from valid siblings)", :aggregate_failures do
@@ -523,6 +551,49 @@ RSpec.describe Axn::Tools::Registry do
       expect(described_class.send(:_classes)).not_to include(FailedFixture::PartialTool)
 
       expect(warnings).to include(a_string_matching(/partial_failed_fixture\.rb.*boom after class body/))
+    end
+
+    # A diagnostic may not decide whether the GOOD file in the same directory enumerates. Before this
+    # guard, a raising logger here escaped the per-file rescue into ensure_loaded!'s outer rescue,
+    # abandoning every remaining file — including the good one right beside the failing file. A fresh
+    # tmpdir, not the shared fixture above: `require` is a one-time process side effect, so reusing a
+    # path this file already `require`d would silently skip re-executing it.
+    it "still exposes the good tool and rolls back the failing one when the warning's logger raises" do
+      dir = Dir.mktmpdir("axn_registry_raising_logger")
+      begin
+        File.write(File.join(dir, "aaa_good.rb"), <<~RUBY)
+          module RaisingLoggerGoodFixture
+            class Ok
+              include Axn
+              tool
+              def call = nil
+            end
+          end
+        RUBY
+        File.write(File.join(dir, "zzz_bad.rb"), <<~RUBY)
+          module RaisingLoggerBadFixture
+            class Partial
+              include Axn
+              tool
+              def call = nil
+            end
+          end
+          raise "boom after class body"
+        RUBY
+        register_adapter_with_roots(:mcp, roots: [dir])
+        allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
+
+        tools = nil
+        expect { tools = Axn::Tools.for(:mcp) }.not_to raise_error
+
+        expect(tools).to include(RaisingLoggerGoodFixture::Ok)
+        expect(tools).not_to include(RaisingLoggerBadFixture::Partial)
+        expect(described_class.send(:_classes)).not_to include(RaisingLoggerBadFixture::Partial)
+      ensure
+        FileUtils.remove_entry(dir)
+        Object.send(:remove_const, :RaisingLoggerGoodFixture) if Object.const_defined?(:RaisingLoggerGoodFixture, false)
+        Object.send(:remove_const, :RaisingLoggerBadFixture) if Object.const_defined?(:RaisingLoggerBadFixture, false)
+      end
     end
   end
 
@@ -608,6 +679,36 @@ RSpec.describe Axn::Tools::Registry do
       described_class.send(:_classes).delete(under_dir)
       described_class.send(:_classes).delete(outside)
     end
+
+    # A diagnostic may not decide whether the rollback (and every remaining dir) completes. The
+    # rollback itself must still run BEFORE the guarded warn, so it is unaffected by the logger.
+    it "still rolls back and returns without raising when the warning's own logger raises" do
+      register_adapter_with_roots(:mcp, roots: [dir])
+      allow(described_class).to receive(:_rails_app?).and_return(true)
+
+      loader = double("zeitwerk loader")
+      stub_const("Rails", double(
+                            application: double(config: double(eager_load: false)),
+                            autoloaders: double(main: loader),
+                          ))
+
+      under_dir = Class.new { include Axn }
+      described_class.send(:_classes).delete(under_dir)
+
+      allow(loader).to receive(:eager_load_dir) do
+        described_class.register_class(under_dir)
+        raise "boom during eager load"
+      end
+      allow(described_class).to receive(:_class_source_file).and_call_original
+      allow(described_class).to receive(:_class_source_file).with(under_dir)
+                                                            .and_return(File.join(dir, "nested_tool.rb"))
+      allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
+
+      expect { described_class.ensure_loaded! }.not_to raise_error
+      expect(described_class.send(:_classes)).not_to include(under_dir)
+    ensure
+      described_class.send(:_classes).delete(under_dir)
+    end
   end
 
   describe ".ensure_loaded! (Rails eager_load_dir branch reads its own caught exception's #message)", :aggregate_failures do
@@ -679,6 +780,23 @@ RSpec.describe Axn::Tools::Registry do
       expect(warnings).to include(a_string_matching(/not yet managed/))
     end
 
+    # A diagnostic may not decide whether the engine's after_initialize/to_prepare boot hook succeeds.
+    # Before this guard, a raising logger here also tripped a second, structurally separate bug: the
+    # method-level rescue's `_rollback_registrations(before)` read `before` before it was ever assigned
+    # (TypeError on `_classes - nil`), so this regression pins BOTH the swallow and that fix together.
+    it "still returns without raising when the warning's own logger raises" do
+      loader = double("zeitwerk loader")
+      stub_const("Rails", double(
+                            application: double(config: double(eager_load: false)),
+                            autoloaders: double(main: loader),
+                          ))
+      allow(loader).to receive(:dirs).and_return(["/some/other/managed/root"])
+      expect(loader).not_to receive(:eager_load_dir)
+      allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
+
+      expect { described_class.ensure_loaded! }.not_to raise_error
+    end
+
     it "eager-loads when the dir is under a managed root" do
       loader = double("zeitwerk loader")
       stub_const("Rails", double(
@@ -689,6 +807,44 @@ RSpec.describe Axn::Tools::Registry do
       expect(loader).to receive(:eager_load_dir).with(dir)
 
       described_class.ensure_loaded!
+    end
+
+    # `before` used to be assigned lexically AFTER the not-yet-managed check, so a raise from THAT
+    # check (rather than from the warn it guards) reached the method-level rescue with `before`
+    # unset — `_classes - nil` is a TypeError. That TypeError, raised INSIDE the rescue clause, does
+    # not get caught by that same rescue: it escapes `_eager_load_rails_dir` entirely and is only
+    # caught by `ensure_loaded!`'s own outermost rescue — which aborts the `dirs.each` loop, so every
+    # remaining directory is abandoned, not just the one whose check happened to raise. A non-String
+    # entry in `loader.dirs` is a realistic trigger: `dir.start_with?(root + File::SEPARATOR)` raises
+    # for a non-String `root`, identically for every directory checked against it.
+    it "isolates the managed-root check's own raise to the failing dir, so a second dir still gets its own attempt" do
+      dir1 = Dir.mktmpdir("axn_registry_typeerror_1")
+      dir2 = Dir.mktmpdir("axn_registry_typeerror_2")
+      begin
+        register_adapter_with_roots(:mcp, roots: [dir1, dir2])
+        allow(described_class).to receive(:_rails_app?).and_return(true)
+
+        loader = double("zeitwerk loader")
+        stub_const("Rails", double(
+                              application: double(config: double(eager_load: false)),
+                              autoloaders: double(main: loader),
+                            ))
+        allow(loader).to receive(:dirs).and_return([Object.new]) # not a String: start_with? raises
+        expect(loader).not_to receive(:eager_load_dir)
+
+        warnings = []
+        allow(Axn.config.logger).to receive(:warn) { |*args, &block| warnings << (block ? block.call : args.first) }
+
+        expect { described_class.ensure_loaded! }.not_to raise_error
+
+        # Each directory gets its OWN "tool dir skipped" warning when the bug is fixed; before the
+        # fix, only the first raised at all (via the outer "tool eager-load skipped" fallback) and
+        # the second was never reached.
+        expect(warnings.count { |w| w.include?("tool dir skipped") }).to eq(2)
+      ensure
+        FileUtils.remove_entry(dir1)
+        FileUtils.remove_entry(dir2)
+      end
     end
   end
 

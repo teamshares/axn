@@ -107,6 +107,20 @@ RSpec.describe "tool contract validation at app setup" do
       expect(Rails.application.initialized?).to be(true)
       expect { Axn::Tools.validate_contracts! }.not_to raise_error
     end
+
+    # A diagnostic may not decide whether BOOT succeeds (PRO-3440). `validate_contracts!` is what this
+    # hook calls, and it runs every registered tool's `input_schema`/`output_schema` — which is exactly
+    # where the now-guarded `include Axn` deferral breadcrumbs, the tool-registry eager-load warnings,
+    # and the schema-warning paths could all fire. A raising logger here must cost a lost log line, not
+    # a failed boot or reload.
+    it "leaves a valid app booted even when the configured logger raises" do
+      previous = Axn.config.logger
+      Axn.config.logger = Logger.new(StringIO.new).tap { |l| l.define_singleton_method(:warn) { |*| raise(IOError, "closed stream") } }
+
+      expect { Axn::Tools.validate_contracts! }.not_to raise_error
+    ensure
+      Axn.config.logger = previous
+    end
   end
 
   describe "a reload with an invalid tool contract" do

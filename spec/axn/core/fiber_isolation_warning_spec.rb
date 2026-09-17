@@ -57,4 +57,28 @@ RSpec.describe "Fiber isolation mismatch warning" do
       expect(logger).not_to have_received(:warn)
     end
   end
+
+  # This runs on EVERY fresh call tree, outside any executor guard — a diagnostic may not decide
+  # whether .call succeeds. And the claim is committed BEFORE the line is written, so a logger that
+  # raises must not leave the process un-warned and re-announce the mismatch on the next call tree.
+  context "when the warning's own logger raises" do
+    before do
+      allow(Fiber).to receive(:scheduler).and_return(Object.new)
+      allow(logger).to receive(:warn).and_raise(IOError, "closed stream")
+    end
+
+    it "still lets .call succeed" do
+      expect(run_noop_axn).to be_ok
+    end
+
+    it "does not retry the warning on a later call tree" do
+      run_noop_axn # the memo is committed here despite the raise (and best_effort's own reporting
+      # path independently reaches the same broken logger while describing THAT escape)
+
+      later_calls = 0
+      allow(logger).to receive(:warn) { later_calls += 1 }
+      run_noop_axn
+      expect(later_calls).to eq(0)
+    end
+  end
 end

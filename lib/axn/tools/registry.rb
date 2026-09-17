@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_support/core_ext/string/inflections"
+require "axn/extensions"
 require "axn/internal/rendering"
 
 module Axn
@@ -159,7 +160,7 @@ module Axn
             rescue StandardError, ScriptError => e
               expanded = File.expand_path(file)
               _rollback_registrations(before) { |src| src == expanded }
-              Axn.config.logger.warn do
+              _warn("warning about a skipped tool file") do
                 "[Axn] tool file skipped (#{_rendered_path(file)}): #{Axn::Internal::Rendering.class_name(e)}: " \
                   "#{Axn::Internal::Rendering.exception_message(e)}"
               end
@@ -167,7 +168,10 @@ module Axn
           end
         end
       rescue StandardError => e
-        Axn.config.logger.warn do
+        # The OUTERMOST handler: this method runs from an engine's `after_initialize` and every
+        # `to_prepare` (via `Axn::Tools.validate_contracts!`), so an unguarded raise here would fail
+        # Rails boot or a reload over a diagnostic about degraded tool discovery.
+        _warn("warning about a skipped tool eager-load") do
           "[Axn] tool eager-load skipped: #{Axn::Internal::Rendering.class_name(e)}: #{Axn::Internal::Rendering.exception_message(e)}"
         end
       end
@@ -188,6 +192,16 @@ module Axn
       end
 
       private
+
+      # Every diagnostic here is a side channel over tool DISCOVERY, and each sits in — or beside — a
+      # rescue whose whole job is keeping enumeration going. A logger that raises must not be what
+      # aborts it, and the outermost one least of all: `ensure_loaded!` runs from an engine's
+      # `after_initialize` and every `to_prepare`, where an escape is a boot failure. One emitter, so
+      # none of the five call sites can drift back to a bare `Axn.config.logger.warn`. The block is
+      # FORWARDED rather than called, so each line stays as lazy as it is today.
+      def _warn(desc, &message)
+        Axn::Extensions.best_effort(desc) { Axn.config.logger.warn(&message) }
+      end
 
       # One VersionGroup per (adapter, tool_name). Group construction rejects a duplicate
       # (tool_name, tool_version), so both enumeration paths share one set of rules.
@@ -234,10 +248,17 @@ module Axn
       # loader predates `#dirs` (older Zeitwerk), in which case the manage-check is skipped
       # entirely and behavior is unchanged from before this check existed.
       def _eager_load_rails_dir(loader, dir, managed_roots)
+        # Snapshotted FIRST, before any of the checks below: `managed_roots&.none? { ... }` can itself
+        # raise (a non-String Zeitwerk root, say), and the method-level rescue's own
+        # `_rollback_registrations(before)` must never read `before` unassigned — that was a second,
+        # structurally separate bug (`_classes - nil` raising `TypeError`) that a raise anywhere above
+        # the old assignment point used to trigger.
+        before = _classes.dup
+
         return unless loader.respond_to?(:eager_load_dir)
 
         if managed_roots&.none? { |root| dir == root || dir.start_with?(root + File::SEPARATOR) }
-          Axn.config.logger.warn do
+          _warn("warning about an unmanaged tool dir") do
             "[Axn] tool dir #{dir} is not yet managed by the Rails autoloader — Axn::Tools.for was likely called " \
               "before Rails finished initializing (e.g. from a config/initializers file). Tool discovery may " \
               "be incomplete; enumerate tools from `config.after_initialize` or a `to_prepare` block for " \
@@ -246,18 +267,12 @@ module Axn
           return
         end
 
-        # Snapshot _classes before eager-loading the directory so a file that raises partway
-        # through can't leak the classes it already registered into `members`. Zeitwerk loads a
-        # directory as a unit, so rollback granularity is per-DIRECTORY: drop only added classes
-        # whose source file lives under this dir. A class a file `require`d from OUTSIDE the dir
-        # is preserved (it isn't this directory's tool).
-        before = _classes.dup
         loader.eager_load_dir(dir)
       rescue StandardError, ScriptError => e
         _rollback_registrations(before) do |src|
           src == dir || src.start_with?(dir + File::SEPARATOR)
         end
-        Axn.config.logger.warn do
+        _warn("warning about a skipped tool dir") do
           "[Axn] tool dir skipped (#{_rendered_path(dir)}): #{Axn::Internal::Rendering.class_name(e)}: " \
             "#{Axn::Internal::Rendering.exception_message(e)}"
         end
@@ -330,7 +345,10 @@ module Axn
       def _adapter_dirs(adapter)
         _adapter_roots(adapter).filter_map do |path|
           if Axn::Configuration.broad_tool_root?(path)
-            Axn.config.logger.warn do
+            # The `next` (skip the broad root) stays outside the guard: `_under_adapter_root?`'s own
+            # `rescue StandardError => false` would otherwise let a raising warn silently answer "not a
+            # tool member" instead of "too broad", changing a membership verdict over a diagnostic.
+            _warn("warning about a too-broad tool_root") do
               "[Axn] tool_roots entry #{path.inspect} for adapter #{adapter.inspect} is too broad; " \
                 "skipping (see Axn::Configuration::BROAD_TOOL_ROOT_LEAVES)"
             end

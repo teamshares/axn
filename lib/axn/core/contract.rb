@@ -6,6 +6,7 @@ require "active_support/core_ext/enumerable"
 require "active_support/core_ext/module/delegation"
 require "active_support/core_ext/object/blank"
 
+require "axn/extensions"
 require "axn/core/contract/redaction"
 require "axn/core/contract/validator_class_cache"
 require "axn/core/contract/shape_declaration"
@@ -2165,7 +2166,13 @@ module Axn
           # decide on, and one answering "free" is how a declaration slips past into a taken name.
           return true unless Internal::NativeMethods.declared_instance_method(self, name)
 
-          Axn.config.logger.debug { "[Axn] #{self.name || 'Action'}: skipping auto-generated #{kind} reader `#{name}` (already defined)" }
+          # The breadcrumb is a side channel; the VERDICT is this method's. `best_effort` returns nil
+          # on failure, so `false` is stated on its own line rather than left as the guard's value — a
+          # logger that cannot write must not turn "the name is taken" into "the name is free" and let
+          # an inferred reader clobber a method the author wrote.
+          Axn::Extensions.best_effort("logging a skipped auto-generated reader", action: self) do
+            Axn.config.logger.debug { "[Axn] #{self.name || 'Action'}: skipping auto-generated #{kind} reader `#{name}` (already defined)" }
+          end
           false
         end
 

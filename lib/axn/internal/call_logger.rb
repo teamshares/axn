@@ -99,9 +99,17 @@ module Axn
       # True only when the logger that will actually emit is a SemanticLogger — merely having the
       # gem loaded isn't enough, since its thread-local tagged context is read only by SemanticLogger
       # instances (see design: gating on the configured logger avoids facets vanishing from a line
-      # emitted by a plain Logger). Public so the Executor can gate the in-flight body context on it.
+      # emitted by a plain Logger). Public so the Executor can gate the in-flight body context on it,
+      # from `with_facet_log_context`, which wraps the action BODY — so answering this by raising
+      # would abort `.call` before the body runs over a question about how to format a log line. A
+      # seam that cannot answer means NOT SemanticLogger, the same asymmetry `Extensions.raises_in_dev?`
+      # takes: a wrong `false` costs structured tags on a log line, a raise costs the whole call. Reads
+      # `Axn.config.logger` through `Identity.kind?` rather than dispatching `is_a?` on it, on the same
+      # terms as the ActiveRecord::Relation check below.
       def semantic_logger?
-        defined?(SemanticLogger::Logger) && Axn.config.logger.is_a?(SemanticLogger::Logger)
+        defined?(SemanticLogger::Logger) && Axn::Internal::Identity.kind?(Axn.config.logger, SemanticLogger::Logger)
+      rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
+        false
       end
 
       # Whether the configured logger would actually emit at `level`, read via the logger's OWN

@@ -241,6 +241,18 @@ The rules it backs:
   flag at exactly one layer per callable — the layer that invokes it — and never let behavior depend
   on which error class was raised. Widen `SWALLOWABLE_BEYOND_STANDARD_ERROR` only for a class that's
   unambiguously a fault in the code being run.
+- **A diagnostic never decides whether the operation it describes succeeds.** Every line axn's own
+  machinery emits about itself sits inside one `Axn::Extensions.best_effort`, together with everything
+  it needs to build, render, lock and dedupe. Two things are not diagnostics and are deliberately
+  unguarded: an **emitter** (`Core::Logging::ClassMethods#log`, `Internal::ActionState.log`,
+  `Extensions._emit_warning`, `Async::ExceptionReporting::DiscardedJobAction#log`) — `best_effort`'s
+  own failure path emits *through* those, so a guard there would sit under the guard — and a **user's
+  own `log`/`debug`/`warn`** from a `call` body, whose raise settles into a reported result like any
+  other. A **predicate deciding *how* to log** (`CallLogger.semantic_logger?`) answers the safe default
+  rather than raising, on the `raises_in_dev?` precedent: failing to *decide* must never become the
+  failure. The set is derived — every call site of those four emitters in `lib/`, minus the emitters
+  themselves — and pinned by `spec/axn/no_unguarded_diagnostic_spec.rb`, which also carries the
+  behavioural regression for each guarded site.
 - In an error-reporting or serialization path, derive message content without dispatching to the
   caller's own methods — bound methods (`Object.instance_method(:class).bind_call`) instead of
   `.class`/`.inspect`, `case`/`when` instead of `is_a?`. Dispatch on caller *data* is a different
