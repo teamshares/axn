@@ -47,16 +47,28 @@ RSpec.describe "diagnostic emission policy" do
 
   def self.lib_files = Dir[File.join(__dir__, "../../lib/**/*.rb")]
 
-  # `best_effort(...)` inside the module that defines it (a bare FCALL, no receiver) and
-  # `Axn::Extensions.best_effort(...)` (a CALL with an explicit receiver) are both legal spellings —
-  # every current call site uses the qualified form, but the predicate covers both so a future
-  # unqualified call inside `Axn::Extensions` itself is still recognized.
-  def self.best_effort_call?(node)
+  # A CALL's receiver is `Axn::Extensions` exactly — not merely a method NAMED `best_effort`
+  # (Codex, PR #283: an unrelated `other.best_effort { ... }` must not be treated as a guard).
+  def self.axn_extensions_receiver?(node)
+    return false unless node.is_a?(RubyVM::AbstractSyntaxTree::Node) && node.type == :COLON2
+    return false unless node.children[1] == :Extensions
+
+    base = node.children[0]
+    base.is_a?(RubyVM::AbstractSyntaxTree::Node) && base.type == :CONST && base.children[0] == :Axn
+  end
+
+  # `Axn::Extensions.best_effort(...)` (a CALL with the qualified receiver) is the only spelling any
+  # real call site uses. A bare `best_effort(...)` (FCALL, no receiver) resolves to the real method
+  # only from INSIDE `Axn::Extensions` itself — Ruby's own method lookup, not a convention this spec
+  # invents — so it is recognized only when `file` names that one file; passed as `nil` (the default)
+  # it is never accepted, since a synthetic snippet or a call elsewhere in `lib/` has no such module
+  # to resolve the bare name against.
+  def self.best_effort_call?(node, file: nil)
     return false unless node.is_a?(RubyVM::AbstractSyntaxTree::Node)
 
     case node.type
-    when :FCALL then node.children[0] == :best_effort
-    when :CALL then node.children[1] == :best_effort
+    when :FCALL then node.children[0] == :best_effort && file == "lib/axn/extensions.rb"
+    when :CALL then node.children[1] == :best_effort && axn_extensions_receiver?(node.children[0])
     else false
     end
   end
@@ -70,13 +82,13 @@ RSpec.describe "diagnostic emission policy" do
   # invariant holds (the lesson `no_unbound_module_reflection_spec` records). Fabricated sources,
   # parsed directly, are the positive/negative controls for the AST predicate below.
   describe "the underlying predicate" do
-    def bare_logger_calls(source)
+    def bare_logger_calls(source, file: nil)
       root = RubyVM::AbstractSyntaxTree.parse(source)
       found = []
       walk = lambda do |node, ancestors|
         next unless node.is_a?(RubyVM::AbstractSyntaxTree::Node)
 
-        found << node if node.type == :CALL && logger_call?(node) && !guarded?(ancestors)
+        found << node if node.type == :CALL && logger_call?(node) && !guarded?(ancestors, file:)
         node.children.each { |c| walk.call(c, ancestors + [node]) }
       end
       walk.call(root, [])
@@ -90,8 +102,8 @@ RSpec.describe "diagnostic emission policy" do
         node.children[0].children[1] == :logger
     end
 
-    def guarded?(ancestors)
-      ancestors.any? { |a| a.type == :ITER && self.class.best_effort_call?(a.children[0]) }
+    def guarded?(ancestors, file: nil)
+      ancestors.any? { |a| a.type == :ITER && self.class.best_effort_call?(a.children[0], file:) }
     end
 
     it "flags a bare Axn.config.logger.warn" do
@@ -106,12 +118,24 @@ RSpec.describe "diagnostic emission policy" do
       expect(bare_logger_calls("Axn.config.logger.send(level, msg)").size).to eq(1)
     end
 
-    it "does not flag a call inside a best_effort block" do
-      expect(bare_logger_calls("best_effort('x') { Axn.config.logger.warn('x') }")).to be_empty
+    # Codex, PR #283: a receiver-blind check would treat ANY method named `best_effort` as a guard,
+    # including one that has nothing to do with `Axn::Extensions` — letting the exact unguarded
+    # diagnostic this spec exists to catch slip through under someone else's method of that name.
+    it "does NOT treat an unrelated object's best_effort as a guard" do
+      expect(bare_logger_calls("other.best_effort('x') { Axn.config.logger.warn('x') }").size).to eq(1)
     end
 
     it "does not flag a call inside Axn::Extensions.best_effort (fully qualified)" do
       expect(bare_logger_calls("Axn::Extensions.best_effort('x') { Axn.config.logger.warn('x') }")).to be_empty
+    end
+
+    # The bare (unqualified) spelling only resolves to the real method from INSIDE the module that
+    # defines it -- so it is recognized only when the walk is told it is looking at that one file.
+    it "recognizes the bare best_effort form only when told the file is Axn::Extensions itself" do
+      source = "best_effort('x') { Axn.config.logger.warn('x') }"
+      expect(bare_logger_calls(source, file: "lib/axn/extensions.rb")).to be_empty
+      expect(bare_logger_calls(source, file: "lib/axn/tools/registry.rb").size).to eq(1)
+      expect(bare_logger_calls(source).size).to eq(1) # file: nil (default) -- never accepted
     end
 
     it "does not flag an unrelated logger.warn (not Axn.config.logger)" do
@@ -145,7 +169,7 @@ RSpec.describe "diagnostic emission policy" do
           logger_recv = node.children[0].is_a?(RubyVM::AbstractSyntaxTree::Node) &&
                         node.children[0].type == :CALL && node.children[0].children[1] == :logger
           if logger_recv && LEVELS.include?(node.children[1])
-            guarded = ancestors.any? { |a| a.type == :ITER && best_effort_call?(a.children[0]) }
+            guarded = ancestors.any? { |a| a.type == :ITER && best_effort_call?(a.children[0], file: relative) }
             sites << "#{relative}##{enclosing_method_name(ancestors)}" unless guarded
           end
         end
@@ -198,7 +222,7 @@ RSpec.describe "diagnostic emission policy" do
         walk = lambda do |node|
           return unless node.is_a?(RubyVM::AbstractSyntaxTree::Node)
 
-          wraps_best_effort ||= self.class.best_effort_call?(node)
+          wraps_best_effort ||= self.class.best_effort_call?(node, file: path)
           node.children.each { |c| walk.call(c) }
         end
         walk.call(defn)
@@ -301,7 +325,7 @@ RSpec.describe "diagnostic emission policy" do
         walk = lambda do |node|
           return unless node.is_a?(RubyVM::AbstractSyntaxTree::Node)
 
-          wraps ||= self.class.best_effort_call?(node)
+          wraps ||= self.class.best_effort_call?(node, file: path)
           node.children.each { |c| walk.call(c) }
         end
         walk.call(defn)
