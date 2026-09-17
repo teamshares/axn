@@ -288,6 +288,24 @@ module Axn
 
         def flat_axis_schema?(schema) = !schema.keys.intersect?(NESTED_AXIS_SCHEMA_KEYS)
 
+        # A complete, independent copy of a FLAT axis schema — never called on a nested one, which never
+        # reaches this file's own `Hash`/`Array`/`String` at all (`flat_axis_schema?` gates that above),
+        # so recursing is safe precisely because it is bounded: what is left once every SCHEMA-shaped
+        # nesting is excluded is DATA an author wrote out by hand (an `enum` list, a nullable `type`
+        # union, a `pattern`/`format`/`description` string) — literal, author-sized, never the arbitrarily
+        # large member tree a `shape:` or `items` could hold. PRO-3441 round 3 (PR #285): a bare top-level
+        # `.dup` only detaches the outer Hash, so `enum: [1, 2, 3]` (an `inclusion:` axis) or `type:
+        # ["integer", "null"]` (a nullable one) stayed the SAME Array across every colliding property and
+        # `additionalProperties` — mutating one's `enum` in place mutated every sibling's too.
+        def detach_flat_axis_schema(schema)
+          case schema
+          when ::Hash then schema.transform_values { |v| detach_flat_axis_schema(v) }
+          when ::Array then schema.map { |v| detach_flat_axis_schema(v) }
+          when ::String then schema.dup
+          else schema
+          end
+        end
+
         NESTED_AXIS_RESIDUE = "a nested (object- or array-shaped) values: axis also governs this key, " \
                               "enforced by the runtime, but is not repeated in the document here to avoid " \
                               "duplicating a whole subtree once per colliding property"
@@ -308,23 +326,23 @@ module Axn
         # `flat_axis_schema?` gates the conjunction itself, not merely how it dups: a NESTED axis (an
         # object- or array-shaped `values:`, or a union that might branch into one) embedded whole into
         # EVERY colliding property is what the round-2 review named twice over — every embedded copy's own
-        # descendant containers still alias each other AND `additionalProperties` (a shallow `.dup` only
-        # ever detaches the outer Hash), and `PropertyNames.reject_oversized_schema!`'s declaration-time
-        # budget counts that axis's member tree ONCE (beneath `additionalProperties`, from the config that
-        # declared it) with no way to see it multiplied by however many OTHER declarations collide with it
-        # — N colliding properties beside an M-member nested axis is N×M nodes this walk would both
-        # traverse and serialize, unbounded by the one count actually charged at declaration. Standing the
-        # nested case down and reporting it as a residue (the same "cannot state this here, name what's
-        # missing" trade every other inexpressible case in this file already takes) closes both: a FLAT
-        # schema has no nested container to alias, so `.dup` is a complete detach for the only shape this
-        # still embeds, and nothing is ever duplicated per property, so nothing is ever uncounted.
+        # descendant containers still alias each other AND `additionalProperties`, and
+        # `PropertyNames.reject_oversized_schema!`'s declaration-time budget counts that axis's member
+        # tree ONCE (beneath `additionalProperties`, from the config that declared it) with no way to see
+        # it multiplied by however many OTHER declarations collide with it — N colliding properties beside
+        # an M-member nested axis is N×M nodes this walk would both traverse and serialize, unbounded by
+        # the one count actually charged at declaration. Standing the nested case down and reporting it as
+        # a residue (the same "cannot state this here, name what's missing" trade every other
+        # inexpressible case in this file already takes) closes both: nothing is ever duplicated per
+        # property, so nothing is ever uncounted — and what a FLAT schema still embeds is fully detached
+        # by `detach_flat_axis_schema`, not merely the outer Hash a bare `.dup` reached.
         def conjoin_map_value_axes(properties, axes)
           properties.to_h do |name, child|
             conjoined = axes.reduce(child) do |acc, axis|
               next acc if axis[:exempt].include?(name)
               next record_residue(acc, NESTED_AXIS_RESIDUE, kind: :unfixed) unless flat_axis_schema?(axis[:schema])
 
-              acc.merge(allOf: Array(acc[:allOf]) + [axis[:schema].dup])
+              acc.merge(allOf: Array(acc[:allOf]) + [detach_flat_axis_schema(axis[:schema])])
             end
             [name, conjoined]
           end

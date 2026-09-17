@@ -145,6 +145,8 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     # => { type: "integer", exclusiveMinimum: 0, allOf: [{ type: "integer" }] }
     ```
     A subfield whose own declared type genuinely contradicts the axis's builds too, and is honestly unsatisfiable in both the document and the runtime rather than merely undescribed in one of them — this is not a contradiction *detector*, only an honest projection of one.
+
+    **Only when the axis's own values are FLAT** — a scalar type, with no `properties`/`items`/`anyOf` of its own (`values: Integer`, `values: { klass: String, format: … }`, and their nullable/union forms, but not `values: SomeDataClass` or `values: { klass: Hash, shape: {…} }`). A colliding property beside a nested (object- or array-shaped) `values:` axis does **not** get the axis conjoined — duplicating a whole nested subtree once per colliding property has no bound the declaration-time property-count guard can see, so the axis stands down there instead and reports a residue (`finalize_residues!`'s `description` footnote), the same trade this file's other inexpressible cases already take. The runtime still enforces the axis on that key; the document, for that one collision, does not — a caller relying on the schema alone sees a looser contract than the one it actually has to satisfy.
 * `validate: [callable or Symbol]` - Support custom validations (fails if any string is returned OR if it raises an exception)
   * Example:
     ```ruby
