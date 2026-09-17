@@ -135,6 +135,17 @@ module Axn
 
         # Tolerates the kwargs the funnel forwards (`level:` and friends); the level is this proxy's
         # own call, since a discarded job is a warning whatever the caller's default is.
+        #
+        # This is `ActionState.log`'s `report_proxy?` branch — one of the four EMITTERS under the "a
+        # diagnostic is guarded; an emitter is not" policy — and deliberately unguarded on the same
+        # terms as the other three. Every in-gem route into it already terminates inside a guard:
+        # `Configuration#on_exception` (which calls `ActionState.log(proxy, msg)`) runs inside
+        # `best_effort("dispatching the global exception report", report_ignored: false)`, and
+        # `Extensions._emit_warning`'s own narrow rescue plus independent attempt covers any other
+        # caller that hands this proxy to `_emit_warning` directly. Wrapping it here would be either
+        # self-re-entry (`best_effort(action: self)` bouncing back through this same `#log`) or a
+        # `report_ignored: false` guard duplicating the one that already wraps the dispatch one frame
+        # up — an emitter reports its failure upward; the diagnostic's guard decides what to do about it.
         def log(message, **)
           Axn.config.logger.warn("[Axn::DiscardedJob] #{message}")
         end

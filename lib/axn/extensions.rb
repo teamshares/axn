@@ -338,6 +338,12 @@ module Axn
       #
       # `action` is an action instance or class, or nil; anything else warns through the configured
       # logger, which is what `ActionState.log` does with a target it cannot identify.
+      #
+      # This is one of the four EMITTERS under the "a diagnostic is guarded; an emitter is not" policy
+      # (with `Core::Logging::ClassMethods#log`, `Internal::ActionState.log`, and
+      # `Async::ExceptionReporting::DiscardedJobAction#log`) — it carries its own narrow rescue plus one
+      # independent attempt INSTEAD of a `best_effort` wrapper, because it is the bottom of the stack
+      # `best_effort` itself emits through and has nothing left to report a failure to.
       def _emit_warning(action, message)
         Internal::ActionState.log(action, message, level: :warn)
       rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR
