@@ -347,16 +347,26 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     residues
   end
 
-  # Narrowed to the TRANSFORM kind, and the narrowing matters more than the exclusion. Written as "any
+  # Narrowed to `:inherent`/`:unfixed`, and the narrowing matters more than the exclusion. Written as "any
   # residue at all", this laundered every conditional stand-down out of the walk below — and since a
   # conditional stand-down is the one thing here that RELAXES a document, that hid the entire class of
   # inbound looseness it can cause. Six review rounds then had to find those cases by reading, in a file
   # whose whole purpose is to find them by measuring.
   #
-  # A transform residue is different in kind: nothing about it relaxes what the document says relative to
-  # the wire form it can describe — it names a constraint on a value the wire never carries, which no
-  # keyword could have expressed. That one stays excluded; a conditional residue does not.
-  def reported_inexpressible?(klass) = residues_for(klass).any? { |_path, residue| residue.kind == :inherent }
+  # A `:inherent` residue is different in kind from a `:conditional` one: nothing about it relaxes what
+  # the document says relative to the wire form it can describe — it names a constraint on a value the
+  # wire never carries, which no keyword could have expressed. `:unfixed` (PRO-3441 round 2, PR #285:
+  # `NESTED_AXIS_RESIDUE`) DOES relax the document relative to the runtime — the emitter chose not to
+  # duplicate a whole nested `values:` axis into every colliding property, to keep the document's size
+  # bounded — but it is the SAME kind of thing this file's own exclusion doctrine already treats as
+  # reported rather than hidden: a NAMED, ARGUED, declaration-time-visible trade, not a runtime-dependent
+  # gate silently narrowing coverage. Its own residue message says explicitly what it declined to state,
+  # which is exactly what lets `:unfixed` residues "shrink as they're closed" (the Residue kind's own
+  # doc) rather than accumulate as blind spots — a `:conditional` residue offers no such argument and
+  # stays excluded from THIS exclusion.
+  def reported_residue_kinds = %i[inherent unfixed]
+
+  def reported_inexpressible?(klass) = residues_for(klass).any? { |_path, residue| reported_residue_kinds.include?(residue.kind) }
 
   def nested_members
     {
@@ -397,6 +407,15 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       "ceiling object member" => proc { field :inner, type: Hash, length: { maximum: 4 } },
       "map values member" => proc { field :inner, type: Hash, of: { values: { klass: Integer } } },
       "map keys member" => proc { field :inner, type: Hash, of: { keys: { klass: String, length: { minimum: 2 } } } },
+      # PRO-3441 round 2 (PR #285, Codex): a NESTED (object-shaped) values axis is a different case from
+      # every other map-axis row above, which are all flat/scalar — this exercises the stand-down
+      # `conjoin_map_value_axes` takes instead of duplicating a whole subtree per colliding property (see
+      # `flat_axis_schema?`), which is meant to be excluded from the acceptance tripwire by its own
+      # reported residue, not silently unsound.
+      "nested map values member" => proc {
+        member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: String } })
+        field :inner, type: Hash, of: { values: { klass: Hash, shape: { members: [member] } } }
+      },
     }
   end
 

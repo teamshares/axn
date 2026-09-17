@@ -278,6 +278,20 @@ module Axn
           [schema, collected]
         end
 
+        # A `values:` axis schema carrying none of these is FLAT — a plain scalar leaf (`{type:
+        # "integer"}`, `{type: "string", pattern: …}`), with no nested Hash or Array of its own to alias
+        # and no member count of its own to multiply. Any of these means the axis is itself object- or
+        # array-shaped (`values: SomeDataClass`, `values: { klass: Hash, shape: {…} }`) or a union that
+        # might branch into one (`anyOf`/`oneOf`) — the two conditions PRO-3441's round 2 review (PR #285)
+        # found `conjoin_map_value_axes` handling unsafely, addressed below by never duplicating one.
+        NESTED_AXIS_SCHEMA_KEYS = %i[properties items additionalProperties propertyNames anyOf allOf oneOf not].freeze
+
+        def flat_axis_schema?(schema) = !schema.keys.intersect?(NESTED_AXIS_SCHEMA_KEYS)
+
+        NESTED_AXIS_RESIDUE = "a nested (object- or array-shaped) values: axis also governs this key, " \
+                              "enforced by the runtime, but is not repeated in the document here to avoid " \
+                              "duplicating a whole subtree once per colliding property"
+
         # PRO-3441. `properties`, with each of `axes`' schema conjoined into every entry its own `exempt`
         # set does not name — the fix `MAP_VALUE_EXEMPT_KEY` documents. Returns a FRESH Hash regardless of
         # `finalize_residues!`'s own `copy:` (a caller asking not to copy still may not mutate `properties`
@@ -287,22 +301,28 @@ module Axn
         #
         # `allOf`, not a keyword-by-keyword reconciliation: the axis schema and the named property's own
         # schema describe the same value two ways (this run through `conjoin_shape_member_property`'s own
-        # collision logic would apply here too, but a value axis's schema is never itself object-shaped —
-        # it is what EVERY entry must satisfy — so the two are never both `object_property?` and the
-        # keyword-agnostic sibling branch is the correct one regardless), matching `combine_two`'s own
-        # fallback for exactly this shape of "both of these apply."
+        # collision logic would apply here too, but the keyword-agnostic sibling branch is the correct
+        # spelling regardless of whether the two ever share `object_property?`), matching `combine_two`'s
+        # own fallback for exactly this shape of "both of these apply."
         #
-        # `axis[:schema].dup`, one per destination: `axis[:schema]` is the SAME object `map_values_schema`
-        # also put under `additionalProperties`, and a map with more than one non-exempt named property
-        # conjoins it into every one of them. Undup'd, every destination — the `additionalProperties`
-        # branch included — is the literal same Hash: a later pass mutating one property's `allOf` entry
-        # (an adapter annotating a branch, `finalize_residues!` itself deleting `RESIDUE_KEY` off the FIRST
-        # one it visits) silently changes every sibling too, and `finalize_residues!` would then process a
-        # residue at only the first property it happens to reach rather than at each one independently.
+        # `flat_axis_schema?` gates the conjunction itself, not merely how it dups: a NESTED axis (an
+        # object- or array-shaped `values:`, or a union that might branch into one) embedded whole into
+        # EVERY colliding property is what the round-2 review named twice over — every embedded copy's own
+        # descendant containers still alias each other AND `additionalProperties` (a shallow `.dup` only
+        # ever detaches the outer Hash), and `PropertyNames.reject_oversized_schema!`'s declaration-time
+        # budget counts that axis's member tree ONCE (beneath `additionalProperties`, from the config that
+        # declared it) with no way to see it multiplied by however many OTHER declarations collide with it
+        # — N colliding properties beside an M-member nested axis is N×M nodes this walk would both
+        # traverse and serialize, unbounded by the one count actually charged at declaration. Standing the
+        # nested case down and reporting it as a residue (the same "cannot state this here, name what's
+        # missing" trade every other inexpressible case in this file already takes) closes both: a FLAT
+        # schema has no nested container to alias, so `.dup` is a complete detach for the only shape this
+        # still embeds, and nothing is ever duplicated per property, so nothing is ever uncounted.
         def conjoin_map_value_axes(properties, axes)
           properties.to_h do |name, child|
             conjoined = axes.reduce(child) do |acc, axis|
               next acc if axis[:exempt].include?(name)
+              next record_residue(acc, NESTED_AXIS_RESIDUE, kind: :unfixed) unless flat_axis_schema?(axis[:schema])
 
               acc.merge(allOf: Array(acc[:allOf]) + [axis[:schema].dup])
             end
