@@ -144,17 +144,17 @@ module Axn
         # named key beside a node's own `of:` — since a shape member is invisible to the subfield tree
         # that guard walked. This emits the honest document instead of refusing the declaration.
         #
-        # `map_values_schema` cannot conjoin the axis into `properties` itself: at a merged node, the keys
-        # a colliding declaration or a later `apply_nested_subfields!` pass adds are not there yet — nesting
-        # is layered on AFTER a shape member's own map axis is built. So this rides on the property, under
-        # this key, as a LIST of `{schema:, exempt:}` pairs (a merged node can carry more than one `of:`
-        # axis — `merge_shape_member_property`'s existing `additionalProperties` conjunction), until
-        # `finalize_residues!`'s own whole-tree descent — the one pass every property, at any depth,
-        # newly-added or original, is guaranteed to still be present for — conjoins each pair into every
-        # `properties` entry its own `exempt` set does not name, and strips the key. The same "ride until
-        # the one pass that sees everything, then strip" shape `RESIDUE_KEY` already uses, for the same
-        # reason: nothing earlier in the build can promise it has seen the FINAL `properties` map.
-        MAP_VALUE_EXEMPT_KEY = :__axn_map_value_exempt
+        # `map_values_schema` (`Vocabulary::MAP_VALUE_EXEMPT_KEY`) cannot conjoin the axis into `properties`
+        # itself: at a merged node, the keys a colliding declaration or a later `apply_nested_subfields!`
+        # pass adds are not there yet — nesting is layered on AFTER a shape member's own map axis is built.
+        # So this rides on the property, under that key, as a LIST of `{schema:, exempt:}` pairs (a merged
+        # node can carry more than one `of:` axis — `merge_shape_member_property`'s existing
+        # `additionalProperties` conjunction), until `finalize_residues!`'s own whole-tree descent — the one
+        # pass every property, at any depth, newly-added or original, is guaranteed to still be present for
+        # — conjoins each pair into every `properties` entry its own `exempt` set does not name, and strips
+        # the key. The same "ride until the one pass that sees everything, then strip" shape `RESIDUE_KEY`
+        # already uses, for the same reason: nothing earlier in the build can promise it has seen the FINAL
+        # `properties` map.
 
         # Every blank a JSON document can carry. `false` is among them: ActiveSupport counts it blank, which
         # is what an ungated `presence:` rejects — and so is `nil`, which is why it is listed here even
@@ -173,7 +173,7 @@ module Axn
 
         # Metadata is not a validator contribution. In particular, a default applies independently
         # of validator gates and must never be included in a conditional fragment.
-        RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY, MAP_VALUE_EXEMPT_KEY].freeze
+        RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY, Vocabulary::MAP_VALUE_EXEMPT_KEY].freeze
 
         GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
                         "its condition opens"
