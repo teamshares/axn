@@ -291,12 +291,20 @@ module Axn
         # it is what EVERY entry must satisfy — so the two are never both `object_property?` and the
         # keyword-agnostic sibling branch is the correct one regardless), matching `combine_two`'s own
         # fallback for exactly this shape of "both of these apply."
+        #
+        # `axis[:schema].dup`, one per destination: `axis[:schema]` is the SAME object `map_values_schema`
+        # also put under `additionalProperties`, and a map with more than one non-exempt named property
+        # conjoins it into every one of them. Undup'd, every destination — the `additionalProperties`
+        # branch included — is the literal same Hash: a later pass mutating one property's `allOf` entry
+        # (an adapter annotating a branch, `finalize_residues!` itself deleting `RESIDUE_KEY` off the FIRST
+        # one it visits) silently changes every sibling too, and `finalize_residues!` would then process a
+        # residue at only the first property it happens to reach rather than at each one independently.
         def conjoin_map_value_axes(properties, axes)
           properties.to_h do |name, child|
             conjoined = axes.reduce(child) do |acc, axis|
               next acc if axis[:exempt].include?(name)
 
-              acc.merge(allOf: Array(acc[:allOf]) + [axis[:schema]])
+              acc.merge(allOf: Array(acc[:allOf]) + [axis[:schema].dup])
             end
             [name, conjoined]
           end
