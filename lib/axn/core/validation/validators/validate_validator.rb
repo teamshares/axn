@@ -35,6 +35,20 @@ module Axn
         { with: value }
       end
 
+      # Whether `value` IS a Symbol, decided undispatched: `Module#===` is C-level and runs none of the
+      # object's code, unlike `is_a?`/`kind_of?`, which a value can override to lie about its own class.
+      # `validate_each` asks the SAME question the same way to decide how to invoke the value, so a value
+      # this predicate calls a Symbol is exactly one `validate_each` will treat as one — an object
+      # answering `is_a?(Symbol) { true }` without answering `#call` cannot pass the guard here and then
+      # take the Symbol branch there, which would turn the promised declaration-time refusal into a
+      # per-call failure (`action.send(<not-a-real-Symbol>, value)` raising `TypeError`).
+      def self.symbol?(value)
+        case value
+        when ::Symbol then true
+        else false
+        end
+      end
+
       # Whether `value` is a legal `validate:`/`with:` value: a Symbol (PRO-3380 — resolved against the
       # action, mirroring `if:`/`sensitive:`/`inclusion: { in: :method }`) or anything answering `#call`
       # (a Proc, a Method, or a plain object). This is the SAME question `validate_each` asks to decide
@@ -45,7 +59,7 @@ module Axn
       # must not let the value being judged raise IN PLACE OF the verdict, so an unestablishable value is
       # refused rather than escaping the check (mirrors `Handlers::Invoker.safely_callable?`).
       def self.legal_with_value?(value)
-        value.is_a?(::Symbol) || value.respond_to?(:call)
+        symbol?(value) || value.respond_to?(:call)
       rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR
         false
       end
@@ -115,7 +129,7 @@ module Axn
           callable = options[:with]
           action = record.send(:_action_for_validation)
 
-          if callable.is_a?(::Symbol)
+          if self.class.symbol?(callable)
             action.send(callable, value)
           elsif action && callable.respond_to?(:to_proc)
             action.instance_exec(value, &callable)

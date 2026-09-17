@@ -352,6 +352,16 @@ RSpec.describe Axn::Validators::ValidateValidator do
         end
       end.not_to raise_error
     end
+
+    it "is not fooled by a value lying about is_a?(Symbol) (Codex, PR #284)" do
+      hostile = Object.new
+      def hostile.is_a?(klass) = klass == Symbol
+      def hostile.kind_of?(klass) = klass == Symbol
+
+      expect do
+        build_axn { expects :n, validate: hostile }
+      end.to raise_error(ArgumentError, /validate:/)
+    end
   end
 
   describe "Axn::Extensions.best_effort integration" do
