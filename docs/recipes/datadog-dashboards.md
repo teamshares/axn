@@ -54,3 +54,9 @@ The most valuable single monitor is often the simplest: alert when `sum:axn.call
 :::
 
 Once you've settled on dashboards worth keeping, store their definitions in version control rather than hand-editing in the UI — most providers expose a dashboards API you can drive from a rake task to create or update them reproducibly.
+
+## Grouping a nested call by what triggered it
+
+Everything above is metrics-side, built on `emit_metrics`. There's one span-side gap the same schema can't close: a metric or span built on a nested axn (a tool call, an LLM `Ask`) carries only its own `axn.resource`, so every one of those spans looks identical no matter which feature triggered it — "which feature is spending the LLM budget" is unanswerable from `@axn.resource:Axn::RubyLLM::Ask` alone.
+
+A nested `axn.call` span also carries `axn.root_resource` (the outermost axn in the call tree) and `axn.caller_resource` (the immediate one) — see [OpenTelemetry Tracing](/reference/configuration#opentelemetry-tracing). A `spans` query grouped `by {axn.root_resource}` on top of a filter like `@gen_ai.usage.cost:*` turns an undifferentiated pile of identical child spans into cost-by-feature. Both attributes are absent on a top-level call (nothing to group by) and wherever the ancestor can't be verified, so an empty bucket means "could not attribute," not "not nested."

@@ -36,6 +36,17 @@ module Axn
       # already ended (do not call `finish` on it, do not cache it for later).
       def current_span = Axn::Internal::Tracing.current_span
 
+      # The immediately-enclosing axn's resolved name (`axn.caller_resource` on the `axn.call` span
+      # reads from this same seam — PRO-3359), or nil at the top of a call tree, under the fiber-
+      # isolation-mismatch guard `current_span` above already documents, or wherever the nesting stack
+      # cannot verify who is asking. Precise attribution — the immediate trigger, one level up.
+      def caller_axn_name = Axn::Internal::Tracing.caller_and_root_names(Axn::Core::NestingTracking.current_axn).first
+
+      # The outermost axn's resolved name for the currently-running call tree — usually the better
+      # grouping for a cost/feature dashboard when there are intermediate layers between it and the
+      # current action. Same nil cases as `caller_axn_name`.
+      def root_axn_name = Axn::Internal::Tracing.caller_and_root_names(Axn::Core::NestingTracking.current_axn).last
+
       # Sets each attribute on `current_span`, or does nothing (no raise) when there is none. The
       # documented default over the raw accessor: it absorbs the nil-span check, the `best_effort`
       # guard, skipping a nil value (not a valid OTel attribute — the SDK would log-and-drop it anyway),

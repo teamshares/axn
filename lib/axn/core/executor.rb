@@ -725,6 +725,7 @@ module Axn
           result = Internal::ActionState.result(@action)
           outcome = result.outcome.to_s
           span.set_attribute("axn.outcome", outcome)
+          stamp_nesting_attribution(span)
 
           if %w[failure exception].include?(outcome) && result.exception
             # Recording error details is OpenTelemetry-shaped: `set_attribute` is all a configured
@@ -770,6 +771,22 @@ module Axn
 
           resolved_tags.each { |name, value| span.set_attribute("axn.tag.#{name}", value) }
           resolved_dimensions.each { |name, value| span.set_attribute("axn.dimension.#{name}", value) }
+        end
+      end
+
+      # `axn.caller_resource` (the immediately-enclosing axn) and `axn.root_resource` (the outermost
+      # axn) — PRO-3359, so a dashboard built on a nested axn (e.g. a tool's `Ask` call) can group by
+      # what triggered it, which `axn.resource` alone can never answer for a child span. Isolated in
+      # its own best_effort, like the exception-detail pair above: a span that raises setting either
+      # key must not cost the `axn.tag.*`/`axn.dimension.*` writes that follow — those are
+      # author-declared facets, this is framework-derived context, and one failing must not silence
+      # the other. See `Internal::Tracing.caller_and_root_names` for the trust rule (and its documented
+      # residual) that decides when either name can be trusted at all.
+      def stamp_nesting_attribution(span)
+        Axn::Extensions.best_effort("stamping nesting attribution on the axn.call span", action: @action) do
+          caller_name, root_name = Internal::Tracing.caller_and_root_names(@action)
+          span.set_attribute("axn.caller_resource", caller_name) if caller_name
+          span.set_attribute("axn.root_resource", root_name) if root_name
         end
       end
 
