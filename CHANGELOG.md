@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* [FEAT] A nested `axn.call` span now also carries `axn.caller_resource` (the immediately-enclosing axn) and `axn.root_resource` (the outermost axn in the call tree), so a dashboard built on a nested axn — a tool call, an LLM `Ask` — can finally group by what triggered it instead of every such span looking identical under its own `axn.resource`. Both are stamped together at nesting depth > 1 (even when caller and root are the same class, the common depth-2 case), sourced from the same nesting stack `Axn::Internal::ExceptionContext`'s `axn_stack` already reads, and gated the same way `Axn::Extensions::Tracing.current_span` is: nothing under a fiber-isolation mismatch, and either name independently absent whenever the corresponding ancestor's own span can't be verified as genuinely on top of the shared stack right now. An anonymous or factory-built ancestor resolves to `"Anonymous Axn"`. `Axn::Extensions::Tracing.caller_axn_name` / `.root_axn_name` publish the same lookup for a gem writing its own vendor-namespaced attributes.
+
 * [INTERNAL] Adapter guidance covers conditional collision reports, post-transform checks, and checks without an equivalent JSON Schema keyword. Preserve descriptions inside schema branches; the report may include validator options as well as schema fragments.
 
 * [BUGFIX] Reflection and tool-contract validation work on frozen action classes without requiring cache warmup. Lazy resolution and validation still run when their results cannot be cached. Both schema-warning paths guard diagnostic preparation and bookkeeping as well as logging; frozen classes use weak-key warning memos so diagnostics remain deduplicated without retaining unloaded classes.

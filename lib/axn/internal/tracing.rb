@@ -143,13 +143,47 @@ module Axn
           action = Axn::Core::NestingTracking.current_axn
           return nil unless action
 
-          tagged = Internal::NativeMethods.ivar_get(action, SPAN_IVAR)
-          return nil unless tagged
+          _own_tag(action)&.first
+        end
 
-          span, thread, fiber = tagged
-          return nil unless Identity.same?(thread, Thread.current) && Identity.same?(fiber, Fiber.current)
+        # `axn.caller_resource` (the immediately-enclosing axn) and `axn.root_resource` (the outermost
+        # axn) for the `axn.call` span PRO-3359 asks the executor to stamp at nesting depth > 1.
+        # Returns a two-element array of resolved axn names (Strings), either slot independently nil.
+        #
+        # `action` must be the frame the caller believes is CURRENTLY on top of `_current_axn_stack` —
+        # passed explicitly (the executor's own `@action`) rather than re-derived, because the check
+        # below only means anything when compared against the actual current frame.
+        #
+        # `_current_axn_stack` is a THREAD-shared Array (PRO-3278), and `NestingTracking.tracking`'s
+        # `ensure` pops whatever is on TOP of it rather than its own frame — so under a same-thread
+        # Fiber interleave with no scheduler installed, the array can already hold a DIFFERENT fiber's
+        # frame on top by the time this action's own `finalize_span` runs (reproduced in spec: fiber A
+        # pushes and suspends, fiber B pushes and suspends, A resumes and finishes — `finalize_span` for
+        # A's span runs while the shared array still reads `[A, B]`). Indexing `stack[-2]`/`stack[0]`
+        # without first confirming `stack[-1]` IS `action` would read A's own frame back as "A's
+        # caller" in that shape. So the very first check below is not an optimization: it is what makes
+        # every index after it meaningful.
+        #
+        # Once that holds, `stack[-2]` (the caller) and `stack[0]` (the root) are each verified
+        # independently against the SAME thread+fiber tag `with_current_span` already publishes for
+        # `current_span` above — a concurrent fiber sitting lower on the shared stack (parked there
+        # before this action's own root ran) carries a foreign tag and is refused exactly like
+        # `current_span` refuses a foreign span.
+        #
+        # What this does NOT close: the same blind `pop` can, in a rarer interleaving, remove a live
+        # frame belonging to neither party (a fiber resumed from inside a deeper call, popping a frame
+        # it doesn't own), which could surface a genuine but non-immediate ancestor as "the caller".
+        # Closing that means `tracking`'s `ensure` popping its own frame rather than the array's top — a
+        # change shared by every other `_current_axn_stack` reader, out of scope for a telemetry
+        # attribute.
+        def caller_and_root_names(action)
+          return [nil, nil] if Axn::Core::NestingTracking.isolation_unsafe?
 
-          span
+          stack = Axn::Core::NestingTracking._current_axn_stack
+          return [nil, nil] unless Identity.same?(stack[-1], action)
+          return [nil, nil] if stack.length < 2
+
+          [_verified_axn_name(stack[-2]), _verified_axn_name(stack[0])]
         end
 
         # Drops the auto-detection and capability memos, for specs that swap the OpenTelemetry
@@ -158,6 +192,28 @@ module Axn
           %i[@tracer_entry @probe_entry].each do |ivar|
             remove_instance_variable(ivar) if instance_variable_defined?(ivar)
           end
+        end
+
+        private
+
+        # The tag `with_current_span` published for `frame`, or nil when absent or when it belongs to
+        # a different thread/fiber than the one asking now. Shared by `current_span` (which wants the
+        # span) and `caller_and_root_names` (which wants only the identity check, never the span
+        # itself — an ancestor's tracer yielding `nil` as its own span still publishes a usable tag).
+        def _own_tag(frame)
+          tagged = Internal::NativeMethods.ivar_get(frame, SPAN_IVAR)
+          return nil unless tagged
+
+          _span, thread, fiber = tagged
+          return nil unless Identity.same?(thread, Thread.current) && Identity.same?(fiber, Fiber.current)
+
+          tagged
+        end
+
+        def _verified_axn_name(frame)
+          return nil unless _own_tag(frame)
+
+          frame.class.resolved_axn_name
         end
       end
     end

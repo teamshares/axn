@@ -36,6 +36,46 @@ RSpec.describe "Axn::Extensions::Tracing" do
     end
   end
 
+  # PRO-3359: the public facade over `Internal::Tracing.caller_and_root_names`, exhaustively covered
+  # in spec/axn/internal/tracing/nesting_attribution_spec.rb — this only proves the delegation.
+  describe ".caller_axn_name / .root_axn_name" do
+    it "delegates to Internal::Tracing.caller_and_root_names for the currently-running action" do
+      Axn.config.tracer = fake_tracer
+      seen = {}
+      child = build_axn do
+        define_method(:call) do
+          seen[:caller] = Axn::Extensions::Tracing.caller_axn_name
+          seen[:root] = Axn::Extensions::Tracing.root_axn_name
+        end
+      end
+      stub_const("FacadeParent", build_axn { define_method(:call) { child.call } })
+
+      FacadeParent.call
+
+      expect(seen[:caller]).to eq("FacadeParent")
+      expect(seen[:root]).to eq("FacadeParent")
+    end
+
+    it "is nil for a top-level call" do
+      Axn.config.tracer = fake_tracer
+      seen = {}
+      build_axn do
+        define_method(:call) do
+          seen[:caller] = Axn::Extensions::Tracing.caller_axn_name
+          seen[:root] = Axn::Extensions::Tracing.root_axn_name
+        end
+      end.call
+
+      expect(seen[:caller]).to be_nil
+      expect(seen[:root]).to be_nil
+    end
+
+    it "is nil outside any action" do
+      expect(Axn::Extensions::Tracing.caller_axn_name).to be_nil
+      expect(Axn::Extensions::Tracing.root_axn_name).to be_nil
+    end
+  end
+
   describe ".annotate_span" do
     it "sets each attribute on the same span finalize_span later writes axn.outcome onto" do
       Axn.config.tracer = fake_tracer

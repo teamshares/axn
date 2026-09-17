@@ -328,6 +328,13 @@ Axn automatically creates spans for all action executions when a tracer is avail
 
 When an action fails or raises an exception, the span is marked as an error with the exception details recorded.
 
+**Nested calls** additionally carry:
+
+- `axn.caller_resource`: The immediately-enclosing axn's class name — precise attribution for debugging one call site.
+- `axn.root_resource`: The outermost axn's class name for the whole call tree — usually the better grouping for a cost/feature dashboard, since a query can `group by` it regardless of how many layers sit in between.
+
+Both are present only at nesting depth > 1 — a top-level call has no enclosing axn and stamps neither, so a dashboard built on a nested axn (a tool call, an LLM `Ask`) can finally group its spans by what triggered them, instead of every span looking identical under its own `axn.resource`. They're stamped together, even when the caller and the root are the same class (the common depth-2 case) — a `group by axn.root_resource` query should not have a hole at the most common nesting depth. Either can be independently absent when the corresponding ancestor can't be verified — an anonymous or factory-built axn resolves to `"Anonymous Axn"` rather than anything unbounded; see [Annotating the span from your own code](#annotating-the-span-from-your-own-code) below for when an ancestor is untrusted rather than merely unnamed.
+
 ### Supplying or disabling the tracer
 
 `Axn.config.tracer` decides which tracer receives axn's spans, and has three states.
@@ -358,7 +365,7 @@ Axn.configure { |c| c.tracer = nil }
 
 Called with no arguments, `Axn.config.reset!` resets every setting declared through the `setting` DSL — `tracer` among them — back to its declared default. It does not touch the hand-written accessors (`logger`, `env`, `on_exception`, `rails`, and the async defaults), which aren't declared through `setting` and so are outside its scope.
 
-A tracer that is not OpenTelemetry's receives the span, its `axn.resource` / `axn.outcome` attributes, every `axn.tag.*` and `axn.dimension.*` facet, and `record_exception` for a failure — but not an error `Status`, which can only be constructed through OpenTelemetry's own class.
+A tracer that is not OpenTelemetry's receives the span, its `axn.resource` / `axn.outcome` attributes, `axn.caller_resource` / `axn.root_resource` where the call is nested, every `axn.tag.*` and `axn.dimension.*` facet, and `record_exception` for a failure — but not an error `Status`, which can only be constructed through OpenTelemetry's own class.
 
 An object that is neither `nil` nor responds to `#in_span` is rejected at assignment, naming the `#in_span` contract in the raised `ArgumentError`. The one exception is a value that cannot be asked: a `BasicObject`-based proxy has no `respond_to?`, and no reflection method reaches it, so axn accepts it rather than rejecting a legitimate wrapper over a real tracer. If such a proxy turns out to lack `in_span`, that surfaces on the first traced call — logged, with the action running untraced — instead of at assignment.
 
@@ -384,6 +391,8 @@ That resolves through `OpenTelemetry::Context.current` — ambient, mutable, pro
 :::
 
 Under the [fiber-scheduler/`isolation_level` mismatch](/advanced/concurrency) axn already warns about once, both methods return `nil` rather than risk handing back a different, concurrently-running action's live span — the per-execution state that mismatch already corrupts is exactly what a correct answer here would depend on. Handing back the wrong span (a consumer silently annotating a trace it doesn't own) would be worse than the pre-existing failure mode (no attributes written at all), so it degrades to that instead.
+
+`Axn::Extensions::Tracing.caller_axn_name` and `.root_axn_name` answer the same question the `axn.caller_resource` / `axn.root_resource` span attributes above carry — the immediately-enclosing axn's resolved name, and the outermost axn's, for the currently-running call tree. They exist for a gem that wants caller identity for its own vendor-namespaced attributes without reaching into `Core::NestingTracking` directly. Both are `nil` under the same conditions as a top-level call, the isolation-mismatch guard, or an ancestor whose own span can't be verified as genuinely on top of the call stack right now — an absent name here is never a guess, only ever a declined one.
 
 ### Basic Setup
 
