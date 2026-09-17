@@ -477,6 +477,22 @@ RSpec.describe "reserved names for exposures" do
 
       expect(klass.call(format: "csv").out).to eq("csv")
     end
+
+    # The boolean twin of the case above: a config that skipped the DSL still gets a `<field>?`
+    # predicate pass (Result#_define_boolean_predicate_readers reads the raw `external_field_configs`,
+    # not the filtered reader list), even though the facade never materialized a singleton for it —
+    # `_facade_fields` filtered the bare field name out of `reader_fields` for the same reason as the
+    # non-boolean case above. `_define_boolean_predicate_reader`'s lazy `@__singleton ||= singleton_class`
+    # is what keeps this from raising `NoMethodError` on a nil ivar.
+    it "still defines a boolean predicate for a config that skipped the DSL and shadows a facade method" do
+      klass = build_axn { def call = nil }
+      config = Axn::Core::Contract::FieldConfig.new(field: :exception, validations: { type: { klass: :boolean } },
+                                                    reader_as: :exception)
+      klass.external_field_configs = (klass.external_field_configs + [config]).freeze
+
+      expect(klass._facade_fields(:outbound).reader_fields).to be_empty
+      expect { klass.call.exception? }.not_to raise_error
+    end
   end
 
   # `exposes` takes neither `as:` nor `prefix:`, so an exposed field's name IS its reader: there is no

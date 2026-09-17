@@ -5,7 +5,7 @@ require "active_support/parameter_filter"
 module Axn
   module Core
     class ContextFacade
-      def initialize(action:, context:, declared_fields:, implicitly_allowed_fields: nil)
+      def initialize(action:, context:, declared_fields:, reader_fields:)
         if self.class.name == "Axn::Core::ContextFacade" # rubocop:disable Style/ClassEqualityComparison
           raise "Axn::Core::ContextFacade is an abstract class and should not be instantiated directly"
         end
@@ -14,28 +14,24 @@ module Axn
         @action = action
         @declared_fields = declared_fields
 
-        # Read once, before the first reader is defined: a legal wire key may be `class` or
-        # `singleton_class` (both judged on the action class, where nothing of axn's overrides Object),
-        # and the reader this loop defines for one would answer every later dispatch with the caller's
-        # value. The singleton lands in an ivar because the reader-defining methods below are also
-        # overridden in InternalContext and called again from Result's predicate pass, and an ivar read
-        # cannot be intercepted at all.
-        facade_class = self.class
+        # `reader_fields` already excludes any name the facade class itself owns — that ownership
+        # verdict (Contract::ClassMethods#_facade_fields) is a pure function of (facade class, field
+        # name), both fixed at declaration, so it is asked once per contract rather than once per
+        # construction here. An empty list is therefore an EXACT answer to "will anything be defined on
+        # this singleton?", which is what makes skipping the read below sound rather than merely likely.
+        return if reader_fields.empty?
+
+        # Read once, before the first reader is defined, and never after: a legal wire key may be
+        # `class` or `singleton_class` (both judged on the action class, where nothing of axn's
+        # overrides Object), and the reader this loop defines for one would answer every later dispatch
+        # with the caller's value. The singleton lands in an ivar because the reader-defining methods
+        # below are also overridden in InternalContext and called again from Result's predicate pass,
+        # and an ivar read cannot be intercepted at all. Anything added below that defines a method on
+        # the singleton must go through `reader_fields` (or otherwise prove it cannot run when
+        # `reader_fields` is empty) — that's the guarantee the early return above stands on.
         @__singleton = singleton_class
 
-        (@declared_fields + Array(implicitly_allowed_fields)).each do |field|
-          # Never define over a name the facade ITSELF answers to — its own ancestry up to Object,
-          # private methods included, since those are the ones it dispatches on itself
-          # (`_default_error`, `_msg_resolver`). Declarations that would land such a name are refused up
-          # front (Contract::ClassMethods#_reject_shadowed_exposure_name! and its inbound twin); this is
-          # the definition-site half of that rule, so a config reaching a facade without passing through
-          # the DSL cannot silently take a method away. Object/Kernel are deliberately NOT asked: an
-          # inbound field named `warn` or `format` is legal by design (judged on the action class, where
-          # its reader lands), and the facade must answer for its wire key.
-          next if Axn::Internal::NameOwnership.owner_within(facade_class, field)
-
-          _define_reader_for(field)
-        end
+        reader_fields.each { |field| _define_reader_for(field) }
       end
 
       # Namespaced like `Axn::Result`'s `__action__`/`__exposed_keys__` rather than left as
