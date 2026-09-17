@@ -166,19 +166,22 @@ module Axn
     def _context_data_source = @context.exposed_data
 
     def _define_boolean_predicate_readers
-      _action.class.external_field_configs.each do |config|
-        next unless __declared_fields__.include?(config.field)
-        next unless config.boolean?
-
-        _define_boolean_predicate_reader(config.field)
+      _action.class._boolean_predicate_fields.each do |predicate_name, field|
+        _define_boolean_predicate_reader(predicate_name, field)
       end
     end
 
-    def _define_boolean_predicate_reader(field)
-      field_name = field.to_s
-      return if field_name.end_with?("?")
+    def _define_boolean_predicate_reader(predicate_name, field)
+      # `||=`, not the unconditional read `ContextFacade#initialize` does: that one is skipped when
+      # `reader_fields` is empty (nothing on the singleton yet), and a boolean predicate can still need
+      # to land on it — reachable only for a boolean config assigned directly onto the class whose
+      # field the facade itself owns, since the DSL's own guard (`_reject_shadowed_predicate_name!`)
+      # refuses that pairing outright. Sound in both directions: nil here means the reader loop above
+      # defined nothing, so no field can have shadowed `singleton_class`, and this bare call reaches
+      # Kernel's; non-nil short-circuits, so a field legitimately NAMED `singleton_class` is never
+      # dispatched.
+      @__singleton ||= singleton_class
 
-      predicate_name = "#{field_name}?"
       # Private methods count, as they do at the inbound definition site (`_reader_name_available?`):
       # a name Result answers to privately (`_fail_standalone?`) is exactly the kind an alias must not
       # take, since Result dispatches it on itself. Declaration refuses such a pair outright
