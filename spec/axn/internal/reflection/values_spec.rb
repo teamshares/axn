@@ -29,12 +29,16 @@ RSpec.describe Axn::Internal::Reflection::Values do
   # than for an adapter — serialize_value for Reflection::Schema, which renders a literal `default:`
   # through it so the schema's wire form and the serializer's cannot disagree; canonical_wire_key because
   # the same canonicalization is core's answer to what a JSON property name is, kept public so a
-  # declaration-time check can share this one definition rather than re-deriving it. Anything else
+  # declaration-time check can share this one definition rather than re-deriving it; borrowed_wire_key
+  # (PRO-3335) for the identical reason one layer up in prose — `PropertyNames.renderable_label` renders
+  # a Hash key into a message it composes and drops, on every logged line, and needs the same
+  # canonicalization WITHOUT `canonical_wire_key`'s owned-copy guarantee, which it never uses and which
+  # `renderable_label` re-deriving the canonicalization itself would risk disagreeing with. Anything else
   # appearing here is a new public promise about the renderer's own decisions, which is what constrains
   # core's routing later.
   describe "public surface" do
-    it "exposes only the two methods reserved for core's own callers" do
-      expect(described_class.singleton_class.public_instance_methods(false).sort).to eq(%i[canonical_wire_key serialize_value])
+    it "exposes only the three methods reserved for core's own callers" do
+      expect(described_class.singleton_class.public_instance_methods(false).sort).to eq(%i[borrowed_wire_key canonical_wire_key serialize_value])
     end
 
     it "no longer answers the as_json-routing question that projection_for owns" do
@@ -1215,6 +1219,50 @@ RSpec.describe Axn::Internal::Reflection::Values do
         expect(parsed.size).to eq(rendered.size), "an entry was dropped: #{rendered.size} properties rendered, #{parsed.size} survived"
         expect(parsed).to eq(rendered)
       end
+    end
+  end
+
+  describe ".borrowed_wire_key" do
+    it "renders the same bytes as canonical_wire_key for a Symbol" do
+      expect(described_class.borrowed_wire_key(:status)).to eq(described_class.canonical_wire_key(:status))
+    end
+
+    it "canonicalizes a non-UTF-8 Symbol name the same way canonical_wire_key does" do
+      latin1_name = "caf\xE9".dup.force_encoding("ISO-8859-1").to_sym
+
+      expect(described_class.borrowed_wire_key(latin1_name)).to eq("café")
+      expect(described_class.borrowed_wire_key(latin1_name)).to eq(described_class.canonical_wire_key(latin1_name))
+    end
+
+    it "answers nil for a Symbol with no UTF-8 rendering, same as canonical_wire_key" do
+      unrenderable = "bad\xFF".dup.force_encoding("ASCII-8BIT").to_sym
+
+      expect(described_class.borrowed_wire_key(unrenderable)).to be_nil
+      expect(described_class.canonical_wire_key(unrenderable)).to be_nil
+    end
+
+    it "does not copy a plain ASCII Symbol's already-plain rendering — no ownership guarantee" do
+      # Symbol#name is itself the frozen interned String Ruby hands out for that symbol, so returning
+      # it by identity carries no aliasing risk regardless of who else holds it.
+      expect(described_class.borrowed_wire_key(:status)).to be(:status.name)
+    end
+
+    # The safety invariant this design turns on, pinned so a future "optimization" can't remove it
+    # without re-deriving the argument: a caller-supplied String key IS still copied, because nothing
+    # rules out another live reference to that exact object being mutated while a Hash/Array walk is
+    # composing it (PRO-3335 review — see the method's own comment for the reproduced failure).
+    it "still copies a String key rather than returning it by identity" do
+      key = +"status"
+
+      expect(described_class.borrowed_wire_key(key)).to eq("status")
+      expect(described_class.borrowed_wire_key(key)).not_to be(key)
+    end
+
+    it "delegates to canonical_wire_key (owned copy) for a key with neither Symbol nor String" do
+      key = Object.new.tap { |o| def o.to_s = "custom" }
+
+      expect(described_class.borrowed_wire_key(key)).to eq("custom")
+      expect(described_class.borrowed_wire_key(key)).to eq(described_class.canonical_wire_key(key))
     end
   end
 end

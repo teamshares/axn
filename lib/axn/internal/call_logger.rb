@@ -9,6 +9,7 @@ require "axn/internal/reflection/property_names"
 require "axn/internal/rendering"
 require "axn/internal/text"
 require "axn/extensions"
+require "axn/core/logging"
 require "axn/core/tagging"
 
 module Axn
@@ -20,6 +21,13 @@ module Axn
 
       MAX_CONTEXT_LENGTH = 150
       TRUNCATION_SUFFIX = "…<truncated>…"
+
+      # `would_log?`'s predicate for each of `Core::Logging::LEVELS`, precomputed so the common case
+      # never builds `:"#{level}?"` — a fresh String allocation (PRO-3335: `would_log?` is now called
+      # from both the Executor's before/after hooks and from inside `log_at_level` itself, so a naive
+      # per-call interpolation would cost 2 allocations per emitted line, a net regression on the
+      # benchmark this ticket is trying to improve, whose configured logger's level is always on).
+      LEVEL_PREDICATES = Core::Logging::LEVELS.to_h { |level| [level, :"#{level}?"] }.freeze
 
       # Logs a message at the specified level with error handling
       # @param action_class [Class] The action class to log from
@@ -119,11 +127,14 @@ module Axn
       # implementing only the plain level methods loses nothing. This is deliberately NOT a switch to
       # block-form logging (`logger.info { msg }`): that would silently drop the message for a custom
       # logger whose level methods take a positional argument only and ignore an unused block. Public:
-      # `log_at_level` is the only caller, from this same module, but kept alongside `semantic_logger?`
-      # for the same reason that one is public.
+      # both `log_at_level` and the Executor's before/after hooks call this (PRO-3335), so it is called
+      # up to twice per emitted line — `LEVEL_PREDICATES` is precomputed rather than interpolating
+      # `:"#{level}?"` fresh each time for exactly that reason (see its own comment). An undeclared
+      # level (never happens today; `Core::Logging::LEVELS` is the only source of one) falls back to
+      # the dynamic form rather than raising, so a future level addition here fails open, not loud.
       def would_log?(level)
         logger = Axn.config.logger
-        predicate = :"#{level}?"
+        predicate = LEVEL_PREDICATES[level] || :"#{level}?"
         !logger.respond_to?(predicate) || logger.public_send(predicate)
       end
 
@@ -164,7 +175,21 @@ module Axn
             # two different non-ASCII encodings, and joining those raised Encoding::CompatibilityError from the
             # log line itself — which the side channel then swallowed, losing the line entirely. Values carry
             # the same risk and are guarded the same way, at their source below — see the `else` branch.
-            "{#{data.map { |k, v| "#{Axn::Internal::Reflection::PropertyNames.renderable_label(k)}: #{format_object(v, nested)}" }.join(', ')}}"
+            #
+            # Built with `<<`, not `.map { ... }.join(', ')`: `<<` copies its argument's bytes into `buf`
+            # IMMEDIATELY, at the point of the call — before the NEXT fragment is even computed — whereas
+            # `.map` collects every fragment first and `.join` copies them only at the very end. That
+            # distinction is what makes it safe for a fragment to be a BORROWED rendering (see
+            # `Text.borrowed`, `PropertyNames.renderable_label`'s Symbol fast path): a later sibling's
+            # `#inspect` mutating an earlier one's returned String in place (verified: it silently swaps
+            # in the mutated bytes, or raises `Encoding::CompatibilityError` composing next to a
+            # genuinely non-ASCII sibling — PRO-3335 review) can't reach bytes `<<` already copied.
+            buf = +"{"
+            data.each_with_index do |(k, v), i|
+              buf << ", " if i.positive?
+              buf << Axn::Internal::Reflection::PropertyNames.renderable_label(k) << ": " << format_object(v, nested)
+            end
+            buf << "}"
           end
         when Array
           CycleGuard.guard(data, seen, on_cycle: CycleGuard::ARRAY_PLACEHOLDER) do |nested|
@@ -173,7 +198,14 @@ module Axn
             # which re-inspects each already-formatted child String, escaping its quotes/backslashes
             # again. Left uncomposed, that re-escaping compounds once per nesting level, making both
             # the render cost and the emitted line's length exponential in nesting depth (PRO-3203).
-            "[#{data.map { |v| format_object(v, nested) }.join(', ')}]"
+            #
+            # `<<` per element, not `.map { ... }.join(', ')` — same reason as the Hash branch above.
+            buf = +"["
+            data.each_with_index do |v, i|
+              buf << ", " if i.positive?
+              buf << format_object(v, nested)
+            end
+            buf << "]"
           end
         else
           # The conversion walks and rebuilds the structure itself, so a cycle nested inside raises
@@ -186,7 +218,7 @@ module Axn
           return CycleGuard.converted_or_placeholder { data.to_unsafe_h } if is_params
 
           if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
-            id = Axn::Internal::Text.renderable(data.to_param.presence || "unpersisted")
+            id = Axn::Internal::Text.borrowed(data.to_param.presence || "unpersisted")
             return "<#{Axn::Internal::Rendering.class_name(data)}##{id}>"
           end
 
@@ -210,7 +242,11 @@ module Axn
           # log line itself (or losing it entirely, swallowed by the best_effort boundary around this whole
           # call). Renders byte-identical for ASCII/valid-UTF-8 (the overwhelming case), transcodes a
           # legible foreign encoding, and escapes only bytes with no UTF-8 rendering at all.
-          Axn::Internal::Text.renderable(data.inspect)
+          #
+          # `borrowed`, not `renderable`: composed into the buffer above IMMEDIATELY (see the Hash/Array
+          # branches' own comments — the ordering is what makes this safe) and dropped once the line is
+          # emitted, so it never needs its own owned copy (PRO-3335).
+          Axn::Internal::Text.borrowed(data.inspect)
         end
       end
     end

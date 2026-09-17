@@ -378,4 +378,72 @@ RSpec.describe Axn::Core::AutomaticLogging do
   # NOTE: enqueue-time async invocation logging (log once, success-level gating, disabled,
   # sensitive-field filtering) is covered against the real generic-worker Sidekiq adapter in the
   # Rails dummy app: spec_rails/dummy_app/spec/axn/core/automatic_logging_spec.rb
+
+  # PRO-3335 (Change 3): before this, `Executor#log_before`/`#log_after` built the WHOLE payload —
+  # the completion message (interpolating `Timing.human_duration`), the separator, and the resolved
+  # tag/dimension facets (`log_facets`, which `dup_facets`-copies two Hashes) — before ever asking
+  # `CallLogger.would_log?` whether the configured logger's own level would keep any of it. At a
+  # severity the logger discards, all of that work was still done and thrown away.
+  describe "when the configured logger's severity level is off" do
+    let(:logger) { instance_double(Logger, debug?: false, info?: false, warn?: true, error?: true, fatal?: true) }
+
+    before { allow(Axn.config).to receive(:logger).and_return(logger) }
+
+    it "never builds the completion message (Timing.human_duration) for a suppressed level" do
+      action = build_axn { auto_log :info }
+
+      expect(Axn::Internal::Timing).not_to receive(:human_duration)
+      expect(logger).not_to receive(:info)
+
+      action.call
+    end
+
+    it "never calls log_facets (the dup_facets copy for the log sink) for a suppressed level" do
+      # NOT "never resolves the result-phase facets at all" — `with_tracing`'s notification payload
+      # resolves and copies them independently of logging (`update_payload`, executor.rb:~413), so
+      # `resolved_result_tags` is forced either way. What Change 3 actually removes is `log_facets`'s
+      # OWN `dup_facets` copy, made specifically for the log sink so a suffix/tagged annotation can
+      # never mutate what the other sinks share (see `log_facets`'s own comment).
+      action = build_axn do
+        auto_log :info
+        tag :slow, from: :result, &-> { true }
+      end
+
+      calls = 0
+      tp = TracePoint.new(:call) { |t| calls += 1 if t.method_id == :log_facets }
+
+      tp.enable { action.call }
+
+      expect(calls).to eq(0)
+    ensure
+      tp&.disable
+    end
+
+    it "never builds the before-line's separator for a suppressed level" do
+      action = build_axn { auto_log :info }
+
+      # TracePoint, not a mock/prepend on Executor's method table — this file's own doctrine
+      # (see feedback_probe_must_not_modify_guarded_method_table): observing without touching the
+      # method table can't manufacture the very call it's trying to detect.
+      calls = 0
+      tp = TracePoint.new(:call) { |t| calls += 1 if t.method_id == :top_level_separator }
+
+      tp.enable { action.call }
+
+      expect(calls).to eq(0)
+    ensure
+      tp&.disable
+    end
+
+    it "still logs at a level the logger has NOT suppressed" do
+      # The before-line tracks the success level ("before-line tracks the success level" above), so
+      # this logs at :warn twice (before and after) — the count isn't the point, only that it isn't
+      # suppressed the way :info/:debug are above.
+      action = build_axn { auto_log :error, success: :warn }
+
+      expect(logger).to receive(:warn).at_least(:once)
+
+      action.call
+    end
+  end
 end

@@ -103,6 +103,24 @@ RSpec.describe "non-UTF-8 declared names in messages" do
     ensure
       Axn.config.logger = previous
     end
+
+    # An Integer/Symbol value renders through `#inspect`, which comes back tagged US-ASCII rather
+    # than UTF-8 — the shape the composable rendering's identity fast path introduces (it no longer
+    # forces every operand's encoding tag to UTF-8 the way the old copy-through-`String.new` did).
+    # This pins that an ASCII-tagged sibling still joins cleanly beside a genuinely non-ASCII one.
+    it "renders an ASCII-tagged value beside a non-ASCII one without an encoding failure" do
+      io = StringIO.new
+      previous = Axn.config.logger
+      Axn.config.logger = Logger.new(io, level: :info)
+      klass = build_axn { expects :payload, type: Hash }
+
+      klass.call(payload: { count: 42, naïve: "café" })
+
+      expect(io.string).to include("About to execute")
+      expect(io.string).to include("count: 42").and include("café")
+    ensure
+      Axn.config.logger = previous
+    end
   end
 
   describe "the shared renderer" do

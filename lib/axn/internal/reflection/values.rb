@@ -509,6 +509,29 @@ module Axn
           ::String.new(utf8).force_encoding(::Encoding::UTF_8).freeze if utf8
         end
 
+        # The same canonicalization, for `PropertyNames.renderable_label` — every Hash key in every
+        # logged line — which composes the result into a bigger message and drops it, never retaining
+        # it the way a serialized property name or the collision table does.
+        #
+        # Skips the ownership copy ONLY for a Symbol: `SYMBOL_RENDERING.bind_call(key)` (`Symbol#name`)
+        # is a frozen String Ruby itself allocates, so it is immutable and cannot be a subclass — nothing
+        # else can hold a mutable alias to it, which is exactly the hazard this has to rule out. A caller-
+        # supplied String key is NOT safe to hand back by identity: a hostile sibling value's `#inspect`,
+        # evaluated while a Hash/Array is being walked, can hold another live reference to that exact
+        # String and mutate it (`force_encoding`/`replace`) before the walker composes it — verified to
+        # produce a wrong rendering or an `Encoding::CompatibilityError`, the exact failure `Text`'s
+        # ownership-copy contract exists to close (PRO-3335 review). So a String key — and the `to_s`
+        # fallback, equally a value the caller or a `to_s` override could still hold — keeps the owned
+        # copy via `canonical_wire_key`. `utf8_rendering` alone (no `escaped` fallback) preserves the
+        # nil-for-unrenderable contract `canonical_wire_key` has: `renderable_label` falls back to
+        # `inspect_field_name` on nil either way.
+        def borrowed_wire_key(key)
+          case key
+          when ::Symbol then utf8_rendering(SYMBOL_RENDERING.bind_call(key))
+          else canonical_wire_key(key)
+          end
+        end
+
         # An Array's elements, captured before the first one is projected — same guarantee, and the same refusal
         # to dispatch anything the walk does not require. `each` is that one method; `each_with_object`, `map`,
         # `to_a` and `dup` are each separately overridable, so a subclass defining one of them (and an ordinary
@@ -618,9 +641,11 @@ module Axn
         # Every rendering decision `serialize_value` routes through is core's own. Kept private so a
         # downstream gem cannot pin one of them: an adapter renders a whole result through
         # Axn::Extensions::Serialization.render, which is the only caller of serialize_exposed.
-        # canonical_wire_key is deliberately not in this list: the same canonicalization is core's answer
-        # to what a JSON property name is, so a declaration-time check in Core::Contract can share this one
-        # definition rather than re-deriving it; re-privatizing later would force a send into that module.
+        # canonical_wire_key and borrowed_wire_key are deliberately not in this list: the same
+        # canonicalization is core's answer to what a JSON property name is, so a declaration-time check
+        # in Core::Contract, and every `PropertyNames.renderable_label` call in prose, can share these two
+        # definitions rather than re-deriving them; re-privatizing later would force a send into those
+        # callers' modules.
         private_class_method :serialize_exposed, :encodable_string!, :utf8_rendering,
                              :finite_number!, :coerce_to_float, :within_container, :capture_hash_entries,
                              :own_wire_key, :no_entries_lost!, :raise_colliding_fields!, :owner_of,

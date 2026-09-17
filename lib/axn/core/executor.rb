@@ -860,9 +860,18 @@ module Axn
       end
 
       def log_before
+        # PRO-3335: gated here, not only inside `log_at_level` (which still gates it too, for its
+        # OTHER callers — `Async#_log_async_invocation`, `EnqueueAllOrchestrator`), so that
+        # `top_level_separator` below is never built at a severity the logger discards. Safe to check
+        # before evaluating anything: this whole method already runs inside `with_logging`'s
+        # `best_effort("logging before hook")`, so a raising custom severity predicate is absorbed
+        # exactly as it was before this existed.
+        level = @action_class._auto_log_before_level
+        return unless Internal::CallLogger.would_log?(level)
+
         Internal::CallLogger.log_at_level(
           @action_class,
-          level: @action_class._auto_log_before_level,
+          level:,
           message_parts: ["About to execute"],
           join_string: " with: ",
           before: top_level_separator,
@@ -885,6 +894,17 @@ module Axn
 
         level = @action_class._auto_log_level_for(result.outcome)
         return unless level
+
+        # PRO-3335: same gate as `log_before`, for the same reason — `log_after_at_level` below builds
+        # the completion message (interpolating `Timing.human_duration`), the separator, and
+        # `log_facets` (which resolves and `dup_facets`-copies the tag/dimension maps) BEFORE
+        # `log_at_level`'s own check would otherwise discard all of it. Checking `resolved_result_tags`/
+        # `resolved_result_dimensions` here rather than from inside `log_facets` can move WHICH of
+        # several equally-guarded `best_effort` calls first forces a raising `tag:`/`dimension:`
+        # resolver's memo — verified it can't: `Core::Tagging.resolve` wraps each facet's OWN
+        # resolution in its own `best_effort`, one layer below the memo, so a raising resolver is
+        # always caught there first, with a stable `error_context`, regardless of caller order.
+        return unless Internal::CallLogger.would_log?(level)
 
         log_after_at_level(level, result)
       end

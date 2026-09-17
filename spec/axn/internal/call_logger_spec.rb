@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "timeout"
+require "memory_profiler"
 
 RSpec.describe Axn::Internal::CallLogger do
   describe "#format_object" do
@@ -59,6 +60,68 @@ RSpec.describe Axn::Internal::CallLogger do
       expect(formatted).to be_readable_utf8
       expect(formatted.scan("café").length).to eq(2)
     end
+
+    # PRO-3335 review: `Text.borrowed` may hand a leaf's rendering back BY IDENTITY — the caller's own
+    # mutable String — instead of a copy axn owns, whenever the bytes are already ASCII-only or valid
+    # UTF-8. If `format_object` composed several leaves via a DEFERRED join (`.map { ... }.join(', ')`,
+    # or a string-interpolation template — both evaluate EVERY operand before concatenating any of
+    # them), a LATER sibling's `#inspect` could mutate an EARLIER leaf's already-computed-but-not-yet-
+    # copied bytes out from under it before the final compose runs — verified to silently swap in the
+    # mutated bytes, or raise `Encoding::CompatibilityError` composing next to a genuinely non-ASCII
+    # sibling. `format_object` must instead copy each fragment into the result buffer IMMEDIATELY
+    # (`buf << fragment`, which copies bytes at the point of the call, before any further caller code
+    # runs) so nothing produced later can reach back and change what was already composed.
+    it "is not corrupted by a later sibling's #inspect mutating an earlier VALUE's String in place" do
+      shared = +"café" # UTF-8, non-ASCII, mutable, and returned (not copied) by `leaf`'s #inspect below
+      leaf = Object.new
+      leaf.define_singleton_method(:inspect) { shared }
+
+      mutator = Object.new
+      mutator.define_singleton_method(:inspect) do
+        shared.force_encoding("ISO-8859-1") # mutates the ALREADY-COMPOSED sibling value's bytes
+        "naïve"
+      end
+
+      formatted = described_class.send(:format_object, { a: leaf, b: mutator })
+
+      expect(formatted).to be_readable_utf8
+      expect(formatted).to include("café").and include("naïve")
+    end
+
+    it "is not corrupted by a later sibling ARRAY element mutating an earlier element's String in place" do
+      shared = +"café"
+      leaf = Object.new
+      leaf.define_singleton_method(:inspect) { shared }
+
+      mutator = Object.new
+      mutator.define_singleton_method(:inspect) do
+        shared.force_encoding("ISO-8859-1")
+        "naïve"
+      end
+
+      formatted = described_class.send(:format_object, [leaf, mutator])
+
+      expect(formatted).to be_readable_utf8
+      expect(formatted).to include("café").and include("naïve")
+    end
+
+    # PRO-3335: `format_object` composes each leaf into `full_message_parts` and drops it once the line
+    # is emitted — it never needs the owned-String guarantee `Text.renderable` exists to provide, so it
+    # must route through the composition-only twin instead. Observed with `TracePoint`, filtered on
+    # `defined_class` — never by prepending onto `Text`'s method table, which would trip axn's own
+    # ownership guards and manufacture the calls it is trying to observe.
+    it "never calls Text.renderable — only the borrowed rendering, Text.borrowed" do
+      renderable_calls = 0
+      tp = TracePoint.new(:call) do |t|
+        renderable_calls += 1 if t.method_id == :renderable && t.defined_class == Axn::Internal::Text.singleton_class
+      end
+
+      tp.enable { described_class.send(:format_object, { name: "Kali", count: 3, nested: [1, "two"] }) }
+
+      expect(renderable_calls).to eq(0)
+    ensure
+      tp&.disable
+    end
   end
 
   describe "#would_log?" do
@@ -74,6 +137,34 @@ RSpec.describe Axn::Internal::CallLogger do
       allow(Axn.config).to receive(:logger).and_return(logger)
 
       expect(described_class.would_log?(:info)).to be(true)
+    end
+
+    it "still answers correctly for every declared level" do
+      Axn::Core::Logging::LEVELS.each do |level|
+        logger = instance_double(Logger, "#{level}?": true)
+        allow(Axn.config).to receive(:logger).and_return(logger)
+
+        expect(described_class.would_log?(level)).to be(true)
+      end
+    end
+
+    # PRO-3335 (Change 3) calls this from BOTH the Executor's before/after hooks AND from inside
+    # `log_at_level` itself — twice per emitted line in the common (level-on) case, which is exactly
+    # the benchmark's case (its logger sits at DEBUG). `:"#{level}?"` allocates a fresh String on every
+    # call; on a per-call log path that is a net allocation REGRESSION for the very benchmark this
+    # ticket is trying to improve, so the predicate lookup must not allocate for a declared level.
+    # Neither an RSpec double nor `allow(...).to receive` is used here — both have per-call mock
+    # overhead of their own that would swamp the few objects this is actually trying to isolate.
+    it "does not allocate building the severity predicate for a declared level" do
+      previous = Axn.config.logger
+      Axn.config.logger = Object.new.tap { |o| def o.info? = true }
+      described_class.would_log?(:info) # warm any one-time setup (e.g. a LEVEL_PREDICATES Hash)
+
+      report = MemoryProfiler.report { 50.times { described_class.would_log?(:info) } }
+
+      expect(report.total_allocated).to eq(0)
+    ensure
+      Axn.config.logger = previous
     end
   end
 
