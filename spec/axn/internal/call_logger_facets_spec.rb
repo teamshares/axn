@@ -142,4 +142,35 @@ RSpec.describe "auto-log facet annotation" do
       expect(tagged_calls).to be_empty
     end
   end
+
+  # `semantic_logger?` is consulted from `Executor#with_facet_log_context`, which wraps the action
+  # BODY — so a raising configured-logger `is_a?` would abort `.call` before the body ever runs, over
+  # a question about how to FORMAT a log line rather than anything about the call itself.
+  #
+  # `SemanticLogger::Logger` must actually be DEFINED for this to matter: `semantic_logger?` reads
+  # `defined?(SemanticLogger::Logger) && ...is_a?(...)`, so with the gem absent the `is_a?` dispatch
+  # is short-circuited away entirely and this scenario would pass vacuously either way.
+  describe "when SemanticLogger is present but the configured logger's own #is_a? raises" do
+    before do
+      semantic_logger = Module.new
+      semantic_logger.const_set(:Logger, Class.new(Logger))
+      stub_const("SemanticLogger", semantic_logger)
+
+      hostile_logger = Class.new(Logger) do
+        def is_a?(*) = raise(NoMethodError, "is_a? overridden to explode")
+      end.new(File::NULL)
+      allow(Axn.config).to receive(:logger).and_return(hostile_logger)
+    end
+
+    it "still succeeds, treating the logger as not a SemanticLogger" do
+      result = nil
+      expect do
+        result = build_axn do
+          dimension(:plan) { "trial" }
+          def call; end
+        end.call
+      end.not_to raise_error
+      expect(result).to be_ok
+    end
+  end
 end
