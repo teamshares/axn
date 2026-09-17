@@ -208,6 +208,26 @@ RSpec.describe "join: Proc raise-safety" do
     expect(action.call.error).to eq("Outer: inner")
   end
 
+  # A diagnostic may not decide whether settlement succeeds. Before this guard, a raising configured
+  # logger propagated out of `result.error` itself — failing a contract that had been enforced
+  # correctly over the REPORTING of a `join:` misuse rather than the misuse itself.
+  it "still falls back to the default join, and keeps settlement intact, when the diagnostic's own logger raises" do
+    events = []
+    action = build_axn do
+      error "Outer", join: ->(_base, _reason) { raise "kaboom in join" }
+      on_error { events << :on_error }
+      on_failure { events << :on_failure }
+      def call = fail!("inner")
+    end
+    allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
+
+    result = nil
+    expect { result = action.call }.not_to raise_error
+
+    expect(result.error).to eq("Outer: inner")
+    expect(events).to eq(%i[on_error on_failure])
+  end
+
   it "falls back to the default join when the Proc raises (success/done! path)" do
     action = build_axn do
       success "All good", join: ->(_base, _reason) { raise "kaboom in join" }

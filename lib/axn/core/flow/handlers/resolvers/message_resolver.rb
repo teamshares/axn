@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/core/flow/handlers/invoker"
+require "axn/extensions"
 require "axn/internal/identity"
 require "axn/internal/native_methods"
 require "axn/internal/rendering"
@@ -209,7 +210,17 @@ module Axn
 
             # The three `join:` diagnostics share one emitter, so none of them can drift back onto a
             # dispatched `action.warn` — which the action's author is free to have taken for a field.
-            def _warn(message) = Axn::Internal::ActionState.log(action, message, level: :warn)
+            #
+            # Guarded because this runs from `result.error` DURING settlement: an escaping diagnostic
+            # would abort `_settle_exception!` after the exception was recorded but before
+            # on_error/on_failure/on_exception and the global report — and raise again on every later
+            # `result.error` read. The DEFAULT_JOIN fallback the caller applies is not a diagnostic and
+            # stays outside this guard.
+            def _warn(message)
+              Axn::Extensions.best_effort("warning about a `join:` declaration", action:) do
+                Axn::Internal::ActionState.log(action, message, level: :warn)
+              end
+            end
 
             # A joiner accepts (base, reason) iff it takes exactly 2 positional args, or is variadic
             # with <= 2 required args. Matches how a lambda would accept the call (non-lambda Procs

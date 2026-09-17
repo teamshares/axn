@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "English"
+require "axn/extensions"
 module Axn
   module Core
     module Flow
@@ -80,9 +81,14 @@ module Axn
 
           def call_symbol_handler(action:, symbol:, exception: nil)
             unless action.respond_to?(symbol, true)
-              Axn::Internal::ActionState.log(action,
-                                             "Ignoring apparently-invalid symbol #{symbol.inspect} -- action does not respond to method",
-                                             level: :warn)
+              # Guarded so the diagnostic cannot decide the VERDICT: unguarded, this raise was caught by
+              # `.call`'s own `rescue StandardError` below, reporting the LOGGER's exception as though
+              # the handler had raised and returning `on_swallow` where the caller should simply see nil.
+              Axn::Extensions.best_effort("warning about an invalid symbol handler", action:) do
+                Axn::Internal::ActionState.log(action,
+                                               "Ignoring apparently-invalid symbol #{symbol.inspect} -- action does not respond to method",
+                                               level: :warn)
+              end
               return nil
             end
 
