@@ -209,13 +209,16 @@ module Axn
           end
         else
           # The conversion walks and rebuilds the structure itself, so a cycle nested inside raises
-          # before the guard above could see the repeated container — attempt it and fall back. Returned
-          # RAW (a Hash, not a String): every other branch below ends in a String that a Hash/Array
-          # ancestor's `.join` above may compose with a sibling, so each of THOSE is rendered through the
-          # shared UTF-8-safe renderer; this one embeds by the caller's `#{}`/`to_s`, and `Hash#inspect`
-          # already escapes non-ASCII bytes in each of its own values, same as `String#inspect` does.
+          # before the guard above could see the repeated container — attempt it and fall back.
+          # `.to_s` (== `Hash#inspect`) here, not left RAW: every other branch below ends in a String
+          # that a Hash/Array ancestor's `<<` above copies into its buffer immediately, and `<<` — unlike
+          # the string interpolation this used to be composed with — does not dispatch a non-String
+          # argument's own `to_s` for you (PRO-3335: `buf << <a raw Hash>` raised `TypeError: no implicit
+          # conversion of Hash into String`, silently losing the containing line to `best_effort`).
+          # `Hash#inspect` already escapes non-ASCII bytes in each of its own values, same as
+          # `String#inspect` does, so nothing here needs the shared UTF-8-safe renderer on top.
           is_params = defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
-          return CycleGuard.converted_or_placeholder { data.to_unsafe_h } if is_params
+          return CycleGuard.converted_or_placeholder { data.to_unsafe_h }.to_s if is_params
 
           if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
             id = Axn::Internal::Text.borrowed(data.to_param.presence || "unpersisted")
