@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-# Both warnings below go through Extensions.best_effort, so this component needs it whether or not the
-# umbrella entrypoint loaded it.
+# Every warning below goes through Extensions.best_effort, so this component needs it whether or not
+# the umbrella entrypoint loaded it.
 require "axn/extensions"
 require "axn/internal/native_methods"
 require "axn/internal/reflection"
@@ -25,8 +25,13 @@ module Axn
 
       def self._extend_reflection(base, name, mod)
         if Axn::Core::MethodShadowing.externally_defined?(base, name)
-          Axn.config.logger.debug do
-            "[Axn] #{base.name || 'Action'}: skipping axn's reflected `#{name}` (already defined by a non-Axn ancestor)"
+          # The breadcrumb is a side channel; whether axn extends `mod` is not. This runs from
+          # `included`, so a raising logger would otherwise break `include Axn` at class-definition
+          # time over a courtesy notice.
+          Axn::Extensions.best_effort("logging a deferred schema reflection reader", action: base) do
+            Axn.config.logger.debug do
+              "[Axn] #{base.name || 'Action'}: skipping axn's reflected `#{name}` (already defined by a non-Axn ancestor)"
+            end
           end
         else
           base.extend(mod)

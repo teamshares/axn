@@ -96,4 +96,16 @@ RSpec.describe "Axn class-level description" do
     config = klass.internal_field_configs.find { |c| c.field == :foo }
     expect(config.description).to eq("field desc")
   end
+
+  # A diagnostic may not decide whether `include Axn` succeeds. The deferral breadcrumb below is
+  # logged from `included`, so an unguarded raise would break class definition itself over a
+  # courtesy notice about a shadowed DSL.
+  it "still includes Axn when the deferral breadcrumb's logger raises" do
+    allow(Axn.config.logger).to receive(:debug).and_raise(IOError, "closed stream")
+    parent = Class.new { def self.description = "PARENT" }
+
+    klass = nil
+    expect { klass = Class.new(parent) { include Axn } }.not_to raise_error
+    expect(klass.description).to eq("PARENT")
+  end
 end

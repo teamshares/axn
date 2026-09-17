@@ -572,6 +572,22 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(hostile.input_schema).to include(:properties)
     end
 
+    # A diagnostic may not decide whether `include Axn` succeeds. This breadcrumb is logged from
+    # `included`, so an unguarded raise would break class definition itself over a courtesy notice
+    # about a shadowed `input_schema`/`output_schema`.
+    it "still includes Axn when the shadowed-reflection breadcrumb's logger raises" do
+      allow(Axn.config.logger).to receive(:debug).and_raise(IOError, "closed stream")
+      parent = Class.new do
+        def self.input_schema = { shadowed: true }
+        def self.output_schema = { shadowed: true }
+      end
+
+      klass = nil
+      expect { klass = Class.new(parent) { include Axn } }.not_to raise_error
+      expect(klass.input_schema).to eq(shadowed: true)
+      expect(klass.output_schema).to eq(shadowed: true)
+    end
+
     it "still returns the schema when the logger raises on the inexpressible-constraint warning" do
       allow(Axn.config.logger).to receive(:warn).and_raise(IOError, "closed stream")
       residue_klass = Class.new do

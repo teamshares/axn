@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+# The deferral breadcrumb below goes through Extensions.best_effort, so this component needs it
+# whether or not the umbrella entrypoint loaded it.
+require "axn/extensions"
+
 module Axn
   module Core
     module Naming
@@ -16,8 +20,15 @@ module Axn
         # already define its own, differently-scoped one. Only layer axn's on when the name is free —
         # otherwise `extend` would sit above that base class and silently shadow it (PRO-2875).
         if Axn::Core::MethodShadowing.externally_defined?(base, :description)
-          Axn.config.logger.debug do
-            "[Axn] #{base.name || 'Action'}: skipping axn's class-level `description` DSL (already defined by a non-Axn ancestor)"
+          # The breadcrumb is a side channel; whether axn extends `DescriptionMethod` is not. This runs
+          # from `included`, so a raising logger would otherwise break `include Axn` at class-definition
+          # time over a courtesy notice. (`Naming` is included before `Core::Logging`, so on this guard's
+          # own failure path `ActionState.log(base, ...)` reaches for a `base.log` that doesn't exist yet
+          # -- contained by `_emit_warning`'s own rescue and independent fallback attempt.)
+          Axn::Extensions.best_effort("logging a deferred `description` DSL", action: base) do
+            Axn.config.logger.debug do
+              "[Axn] #{base.name || 'Action'}: skipping axn's class-level `description` DSL (already defined by a non-Axn ancestor)"
+            end
           end
         else
           base.extend(DescriptionMethod)
