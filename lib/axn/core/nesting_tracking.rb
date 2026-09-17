@@ -7,6 +7,10 @@
 # run, so it is declared explicitly here rather than left implicit.
 require "active_support"
 
+# The fiber-isolation mismatch warning below goes through Extensions.best_effort, so this component
+# needs it whether or not the umbrella entrypoint loaded it.
+require "axn/extensions"
+
 module Axn
   module Core
     module NestingTracking
@@ -61,21 +65,29 @@ module Axn
       # isolation_level= at runtime calls IsolatedExecutionState.clear, nuking AR/CurrentAttributes), so
       # we warn once and point at the fix. A scheduler being installed is the intent-to-run-fibers signal.
       def self._warn_if_fiber_isolation_mismatch
-        return if @_isolation_mismatch_warned
-        return unless Fiber.respond_to?(:scheduler) && Fiber.scheduler
-        return unless ActiveSupport::IsolatedExecutionState.isolation_level == :thread
+        return if @_isolation_mismatch_warned # a plain ivar read; cannot raise, and this is the hot path
 
-        claimed = ISOLATION_MISMATCH_LOCK.synchronize do
-          @_isolation_mismatch_warned ? false : (@_isolation_mismatch_warned = true)
+        # The whole diagnostic is inside, probes/lock/claim/emit alike: this runs on EVERY fresh call
+        # tree, outside any executor guard, so anything raising here would take `.call` down over a
+        # courtesy. Same shape and same reason as InstanceDeferral._warn_once. The claim is still
+        # committed before the line is written, so a logger that raises cannot leave the process
+        # un-warned and re-announce the mismatch on the next call tree.
+        Axn::Extensions.best_effort("warning about a fiber-isolation mismatch") do
+          next unless Fiber.respond_to?(:scheduler) && Fiber.scheduler
+          next unless ActiveSupport::IsolatedExecutionState.isolation_level == :thread
+
+          claimed = ISOLATION_MISMATCH_LOCK.synchronize do
+            @_isolation_mismatch_warned ? false : (@_isolation_mismatch_warned = true)
+          end
+          next unless claimed
+
+          Axn.config.logger.warn(
+            "[Axn] A Fiber scheduler is active but ActiveSupport::IsolatedExecutionState.isolation_level " \
+            "is :thread. axn's per-execution state will leak across concurrent fibers. Set " \
+            "`config.active_support.isolation_level = :fiber` (Rails) or " \
+            "`ActiveSupport::IsolatedExecutionState.isolation_level = :fiber` to isolate it correctly.",
+          )
         end
-        return unless claimed
-
-        Axn.config.logger.warn(
-          "[Axn] A Fiber scheduler is active but ActiveSupport::IsolatedExecutionState.isolation_level " \
-          "is :thread. axn's per-execution state will leak across concurrent fibers. Set " \
-          "`config.active_support.isolation_level = :fiber` (Rails) or " \
-          "`ActiveSupport::IsolatedExecutionState.isolation_level = :fiber` to isolate it correctly.",
-        )
       end
 
       # Re-arms the once-per-process warning above, for a spec suite that asserts on it. Named for
