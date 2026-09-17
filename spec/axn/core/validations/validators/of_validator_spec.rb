@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "json_schemer"
+require "json"
+
 RSpec.describe Axn::Validators::OfValidator do
   # ─── Scalar class ────────────────────────────────────────────────────────────
 
@@ -684,82 +687,117 @@ RSpec.describe Axn::Validators::OfValidator do
       expect(action.call(counts: { label: "q3", hits: "two" })).not_to be_ok
     end
 
-    # The same rule in its second spelling. A subfield declared `on:` a map names one of that hash's members
-    # exactly as a `shape:` member does, so refusing one spelling and permitting the other would leave the
-    # combination half-closed — and the schema it emitted said `{"n": "abc"}` was acceptable where the runtime
-    # rejects it, since `additionalProperties` applies only to keys `properties` does not match.
+    # PRO-3441. The same rule in its second spelling — a subfield declared `on:` a map names one of that
+    # hash's members exactly as a `shape:` member does — used to be REFUSED at declaration
+    # (`check_subfields_under_map!`, since removed): `additionalProperties` applies only to keys
+    # `properties` does not match, and the emitter had no way to state that the axis still governs a
+    # subfield-named key. It now does (`MAP_VALUE_EXEMPT_KEY`, `Schema#conjoin_map_value_axes`, both in
+    # `lib/axn/internal/reflection/schema.rb`): the axis's schema is conjoined (`allOf`) into the
+    # subfield's own property, so the document enforces exactly what the runtime does — both validators
+    # genuinely run against the same wire value, so a subfield whose own type CONTRADICTS the axis's
+    # (String beside `values: Integer`) is honestly unsatisfiable in both places, not merely undescribed.
     describe "of: beside a subfield on a Hash" do
-      it "rejects a subfield declared directly on a map" do
-        expect do
-          build_axn do
-            expects :counts, type: Hash, of: { values: Integer }
-            expects :n, on: :counts, type: String
-          end
-        end.to raise_error(ArgumentError, /not supported yet/)
+      it "conjoins the axis into a subfield declared directly on a map" do
+        klass = build_axn do
+          expects :counts, type: Hash, of: { values: Integer }
+          expects :n, on: :counts, type: Integer, comparison: { greater_than: 0 }
+        end
+
+        prop = klass.input_schema.dig(:properties, :counts, :properties, :n)
+        expect(prop[:allOf]).to include(type: "integer")
+        expect(klass.call(counts: { n: 5 })).to be_ok
+        expect(klass.call(counts: { n: -1 })).not_to be_ok
+        expect(klass.call(counts: { n: "5" })).not_to be_ok
       end
 
-      # The other declaration order: the subfield is declared against a node that only BECOMES a map when the
-      # later declaration lands, so the guard cannot depend on which arrived first.
-      it "rejects the map declared after the subfield it would swallow" do
-        expect do
-          build_axn do
-            expects :payload, type: Hash
-            expects :n, on: "payload.counts", type: String
-            expects :counts, on: :payload, type: Hash, of: { values: Integer }
-          end
-        end.to raise_error(ArgumentError, /not supported yet/)
+      # The other declaration order: the subfield is declared against a node that only BECOMES a map when
+      # the later declaration lands, so the axis has to reach a property built before it existed.
+      it "conjoins the axis when the map is declared after the subfield" do
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :n, on: "payload.counts", type: Integer
+          expects :counts, on: :payload, type: Hash, of: { values: Integer }
+        end
+
+        prop = klass.input_schema.dig(:properties, :payload, :properties, :counts, :properties, :n)
+        expect(prop[:allOf]).to include(type: "integer")
       end
 
-      # The map arriving as a TOP-LEVEL declaration, which is a different seam from the one every case above
-      # goes through: `expects` without `on:` commits its configs on its own path, so the check has to be asked
-      # there too or a map written last escapes it entirely — and emits `additionalProperties` beside a
-      # `properties` entry the runtime then refuses.
-      it "rejects a top-level map declared after a subfield it would swallow" do
-        expect do
-          build_axn do
-            expects :payload, type: Hash
-            expects :counts, on: :payload, type: Hash
-            expects :n, on: :counts, type: String
-            expects :counts, type: Hash, of: { values: Integer }
-          end
-        end.to raise_error(ArgumentError, /subfield :n \(on :counts\) names the key :n of :counts/)
+      # The map arriving as a TOP-LEVEL declaration, which is a different seam from the one every case
+      # above goes through: `expects` without `on:` commits its configs on its own path, and a merged
+      # node's `additionalProperties` must reach a `properties` entry a DIFFERENT route already emitted.
+      it "conjoins the axis when a top-level map is declared after a subfield it collides with" do
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :counts, on: :payload, type: Hash
+          expects :n, on: :counts, type: Integer
+          expects :counts, type: Hash, of: { values: Integer }
+        end
+
+        prop = klass.input_schema.dig(:properties, :counts, :properties, :n)
+        expect(prop[:allOf]).to include(type: "integer")
       end
 
-      # The negative control for that seam: the ONLY thing it refuses is a map. The same declarations minus the
-      # `of:` are an ordinary Hash parent with a subfield, legal in either order, and both keys still emit.
+      # The negative control for that seam: the same declarations minus the `of:` are an ordinary Hash
+      # parent with a subfield, and neither gains an `allOf` it never asked for.
       it "leaves a top-level Hash parent redeclared after its subfields alone" do
-        klass = nil
-        expect do
-          klass = build_axn do
-            expects :payload, type: Hash
-            expects :counts, on: :payload, type: Hash
-            expects :n, on: :counts, type: String
-            expects :counts, type: Hash
-          end
-        end.not_to raise_error
-        expect(klass.input_schema.dig(:properties, :counts, :properties, :n)).to include(type: "string")
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :counts, on: :payload, type: Hash
+          expects :n, on: :counts, type: String
+          expects :counts, type: Hash
+        end
+
+        prop = klass.input_schema.dig(:properties, :counts, :properties, :n)
+        expect(prop).to include(type: "string")
+        expect(prop).not_to have_key(:allOf)
       end
 
-      it "rejects a subfield any depth below the map, through a dotted on:" do
-        expect do
-          build_axn do
-            expects :counts, type: Hash, of: { values: Hash }
-            expects :n, on: "counts.inner", type: String
-          end
-        end.to raise_error(ArgumentError, /not supported yet/)
+      it "conjoins the axis into a subfield any depth below the map, through a dotted on:" do
+        klass = build_axn do
+          expects :counts, type: Hash, of: { values: Hash }
+          expects :n, on: "counts.inner", type: String
+        end
+
+        inner = klass.input_schema.dig(:properties, :counts, :properties, :inner)
+        expect(inner[:allOf]).to include(type: "object")
+        expect(klass.call(counts: { inner: { n: "z" } })).to be_ok
+        expect(klass.call(counts: { inner: "not-a-hash" })).not_to be_ok
       end
 
-      it "names both declarations, so the author knows which two to reconcile" do
-        expect do
-          build_axn do
-            expects :counts, type: Hash, of: { values: Integer }
-            expects :n, on: :counts, type: String
-          end
-        end.to raise_error(ArgumentError, /subfield :n \(on :counts\) names the key :n of :counts/)
+      # The DECISION recorded by PRO-3441: this position no longer raises, and it is not merely "not
+      # unsound" — the document and the runtime agree on every probe, including the case a naive fix
+      # could get backwards (a subfield's own type genuinely contradicting the axis's).
+      it "agrees with the runtime on every probe once the axis and a colliding subfield's type conflict" do
+        klass = build_axn do
+          expects :counts, type: Hash, of: { values: Integer }
+          expects :n, on: :counts, type: String
+        end
+
+        schema = JSONSchemer.schema(JSON.parse(JSON.generate(klass.input_schema)))
+        [{ n: "z" }, { n: 1 }].each do |payload|
+          runtime_ok = klass.call(counts: payload).ok?
+          schema_ok = schema.valid?(JSON.parse(JSON.generate(counts: payload)))
+          expect(schema_ok).to eq(runtime_ok), "#{payload.inspect}: schema=#{schema_ok} runtime=#{runtime_ok}"
+        end
       end
 
-      # The path that must NOT regress: an ordinary Hash parent has no `of:` and takes subfields as it always
-      # has — the refusal is about the two ways of naming a map's members, not about Hash parents.
+      # PRO-3166's permitted pairing — `of:` beside the SAME declaration's own `shape:` — must not gain an
+      # `allOf` it never had: its shaped key is exempt from the axis by construction, and conjoining it
+      # anyway would be a needless (if sound) regression in what the document promises.
+      it "leaves PRO-3166's own-shape exemption unconjoined" do
+        klass = build_axn do
+          expects(:counts, type: Hash, of: { values: Integer }) { field :label, type: String }
+        end
+
+        prop = klass.input_schema.dig(:properties, :counts, :properties, :label)
+        expect(prop).to include(type: "string")
+        expect(prop).not_to have_key(:allOf)
+      end
+
+      # The path that must NOT regress: an ordinary Hash parent has no `of:` and takes subfields as it
+      # always has — the conjunction is about the two ways of naming a map's members, not about Hash
+      # parents in general.
       it "leaves an ordinary Hash parent's subfields alone" do
         klass = nil
         expect do
@@ -768,11 +806,13 @@ RSpec.describe Axn::Validators::OfValidator do
             expects :n, on: :counts, type: String
           end
         end.not_to raise_error
-        expect(klass.input_schema.dig(:properties, :counts, :properties, :n)).to include(type: "string")
+        prop = klass.input_schema.dig(:properties, :counts, :properties, :n)
+        expect(prop).to include(type: "string")
+        expect(prop).not_to have_key(:allOf)
       end
 
       # An ARRAY `of:` names element positions rather than members, so a subfield beside one is a different
-      # question and stays legal.
+      # question and stays legal, and untouched by the map-only conjunction.
       it "leaves an Array of: alone" do
         expect do
           build_axn do

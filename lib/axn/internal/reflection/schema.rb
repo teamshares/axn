@@ -128,6 +128,34 @@ module Axn
 
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
 
+        # PRO-3441. A map's `of: { values: }` axis governs every key `properties` does NOT itself name
+        # (`additionalProperties`'s own JSON Schema meaning) — except the keys the axis's OWN `shape:`
+        # names, which `_derive_shaped_keys!` exempts because the runtime does (`of_validator.rb`'s
+        # `shaped_keys:` skip). A key `properties` names for a DIFFERENT reason — a colliding shape member,
+        # a node's own explicit child, a dotted `on:` reaching through it — is not in that exempt set, so
+        # the axis still enforces it at runtime, but nothing conjoined its schema there: `additionalProperties`
+        # only ever governs KEYS IT DOESN'T MATCH, so a value the axis would refuse sailed through the
+        # `properties` entry unchecked.
+        #
+        # A declaration-time guard used to refuse this outright (`check_subfields_under_map!`, since
+        # removed) — but only within ONE declaration (a subfield reading through a config that also
+        # declares `of:`); it could never see a NAME arriving from a DIFFERENT declaration at the same
+        # wire position — a colliding shape member's `of:` beside a node's own child, or a shape member's
+        # named key beside a node's own `of:` — since a shape member is invisible to the subfield tree
+        # that guard walked. This emits the honest document instead of refusing the declaration.
+        #
+        # `map_values_schema` cannot conjoin the axis into `properties` itself: at a merged node, the keys
+        # a colliding declaration or a later `apply_nested_subfields!` pass adds are not there yet — nesting
+        # is layered on AFTER a shape member's own map axis is built. So this rides on the property, under
+        # this key, as a LIST of `{schema:, exempt:}` pairs (a merged node can carry more than one `of:`
+        # axis — `merge_shape_member_property`'s existing `additionalProperties` conjunction), until
+        # `finalize_residues!`'s own whole-tree descent — the one pass every property, at any depth,
+        # newly-added or original, is guaranteed to still be present for — conjoins each pair into every
+        # `properties` entry its own `exempt` set does not name, and strips the key. The same "ride until
+        # the one pass that sees everything, then strip" shape `RESIDUE_KEY` already uses, for the same
+        # reason: nothing earlier in the build can promise it has seen the FINAL `properties` map.
+        MAP_VALUE_EXEMPT_KEY = :__axn_map_value_exempt
+
         # Every blank a JSON document can carry. `false` is among them: ActiveSupport counts it blank, which
         # is what an ungated `presence:` rejects — and so is `nil`, which is why it is listed here even
         # though `reject_null!` independently strips a null branch on the nested-child path. The floor is
@@ -145,7 +173,7 @@ module Axn
 
         # Metadata is not a validator contribution. In particular, a default applies independently
         # of validator gates and must never be included in a conditional fragment.
-        RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY].freeze
+        RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY, MAP_VALUE_EXEMPT_KEY].freeze
 
         GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
                         "its condition opens"
@@ -210,6 +238,12 @@ module Axn
             schema[:description] = join_prose(schema[:description], clause)
           end
 
+          # PRO-3441. This node's own `properties` is now FINAL — every subfield, colliding member and
+          # dotted `on:` child this position will ever hold has already been added by every earlier pass —
+          # so this is the one place a map's `of: { values: }` axis can be conjoined into a NAMED key that
+          # arrived from somewhere other than the axis's own `shape:` (see `MAP_VALUE_EXEMPT_KEY`).
+          map_value_axes = schema.delete(MAP_VALUE_EXEMPT_KEY)
+
           # Only the keywords that HOLD a subschema are descended into. Walking every Hash and Array
           # instead reaches a declaration's own literals — a `default:`/`enum:`/`const:` value is the
           # author's data, not a node — and a literal `{ __axn_residues: [...] }` there was deleted and
@@ -220,11 +254,12 @@ module Axn
             node = schema[key]
             next unless node.is_a?(::Hash)
 
+            node = conjoin_map_value_axes(node, map_value_axes) if map_value_axes
             # The segment is carried RAW, never rendered here: a declared name is caller-supplied and
             # reflection may not dispatch on one (a `to_s` that raises took the whole reflection down
             # once already, and one that counts its calls sees this walk as a second ask). Whoever
             # reports a residue renders the path through PropertyNames' own escaping labeler.
-            node = node.dup if copy
+            node = node.dup if copy && !map_value_axes
             node.each { |name, sub| node[name] = finalize_residues!(sub, path: path + [name], collected:, copy:).first }
             schema[key] = node
           end
@@ -241,6 +276,30 @@ module Axn
           end
 
           [schema, collected]
+        end
+
+        # PRO-3441. `properties`, with each of `axes`' schema conjoined into every entry its own `exempt`
+        # set does not name — the fix `MAP_VALUE_EXEMPT_KEY` documents. Returns a FRESH Hash regardless of
+        # `finalize_residues!`'s own `copy:` (a caller asking not to copy still may not mutate `properties`
+        # in place here: the untouched entries alias the ORIGINAL schema's Hash, which is exactly what
+        # `copy: false` promises stays untouched elsewhere), so every entry `finalize_residues!` goes on to
+        # recurse into is safe to keep mutating regardless.
+        #
+        # `allOf`, not a keyword-by-keyword reconciliation: the axis schema and the named property's own
+        # schema describe the same value two ways (this run through `conjoin_shape_member_property`'s own
+        # collision logic would apply here too, but a value axis's schema is never itself object-shaped —
+        # it is what EVERY entry must satisfy — so the two are never both `object_property?` and the
+        # keyword-agnostic sibling branch is the correct one regardless), matching `combine_two`'s own
+        # fallback for exactly this shape of "both of these apply."
+        def conjoin_map_value_axes(properties, axes)
+          properties.to_h do |name, child|
+            conjoined = axes.reduce(child) do |acc, axis|
+              next acc if axis[:exempt].include?(name)
+
+              acc.merge(allOf: Array(acc[:allOf]) + [axis[:schema]])
+            end
+            [name, conjoined]
+          end
         end
 
         # An attribute a config may or may not carry, read tolerantly: `#description` and `#default`, enumerated at
@@ -1474,6 +1533,7 @@ module Axn
               axis_configs_for(member_configs, :values), axis_configs_for(own_configs, :values)
             )
           end
+          merge_map_value_exempt!(merged, member_prop, own_prop)
           if member_prop[:propertyNames] || own_prop[:propertyNames]
             merged[:propertyNames] = merge_emitted_nested_schema(
               member_prop[:propertyNames], own_prop[:propertyNames],
@@ -1481,6 +1541,19 @@ module Axn
             )
           end
           merged
+        end
+
+        # `MAP_VALUE_EXEMPT_KEY` (PRO-3441): CONCATENATED into `merged`, not left to the shallow merge
+        # `merge_shape_member_property` opens with — the "second side wins" default every OTHER keyword
+        # there needed reconciling away from. A merged node can carry an axis from BOTH sides (the
+        # `additionalProperties` merge just above it), and each keeps its own exempt set rather than one
+        # replacing the other. Its actual conjunction into `properties` is deferred to `finalize_residues!`,
+        # the one pass guaranteed to see every property this node will ever hold — including a subfield
+        # `apply_nested_subfields!` has not added yet when this runs.
+        def merge_map_value_exempt!(merged, member_prop, own_prop)
+          return unless member_prop[MAP_VALUE_EXEMPT_KEY] || own_prop[MAP_VALUE_EXEMPT_KEY]
+
+          merged[MAP_VALUE_EXEMPT_KEY] = Array(member_prop[MAP_VALUE_EXEMPT_KEY]) + Array(own_prop[MAP_VALUE_EXEMPT_KEY])
         end
 
         # A nested map axis schema present on only one side is carried through as-is; present on both, it

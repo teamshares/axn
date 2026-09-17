@@ -277,6 +277,15 @@ module Axn
                 contents_node_schema(axis, for_output:, ancestry:)
               end
             node = values.empty? ? {} : { additionalProperties: values }
+            # PRO-3441. Recorded alongside `additionalProperties`, not folded into it: this bag's OWN
+            # `shaped_keys` (`_derive_shaped_keys!`, read from THIS declaration's `shape:` — never a
+            # colliding declaration's) is the exempt set the runtime actually applies, and it can only be
+            # known here, where the bag that produced it is still in hand. `finalize_residues!` conjoins
+            # this into every OTHER named property once the tree is final — see `MAP_VALUE_EXEMPT_KEY`.
+            unless node.empty?
+              exempt = Set.new(Array(bag[:shaped_keys]))
+              node = node.merge(MAP_VALUE_EXEMPT_KEY => [{ schema: values, exempt: }])
+            end
             keys = map_keys_schema(bag, for_output:)
             keys.empty? ? node : node.merge(propertyNames: keys)
           end

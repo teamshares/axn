@@ -745,19 +745,21 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
       end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
     end
 
-    # `_check_ambient_shape_placement!` keys on a top-level `shape:` ALONE, on the stated premise that an
-    # `of:` bag describes what is INSIDE the value and the ambient filter therefore copies or rebuilds that
-    # value as one thing rather than member by member. That premise holds only because a node declaring `of:`
-    # can never also have subfield children — refused by the map rule for a Hash and by unanswerability for an
-    # Array. Both are pinned here, because relaxing either silently turns the placement rule into a hole: the
-    # filter would rebuild such a node from its subfield children and drop the contents the `of:` describes.
+    # PRO-3441. Off ambient, this exact combination is now PERMITTED — the emitted schema conjoins the
+    # `of:` axis into the colliding subfield's own property, so the document still describes what the
+    # runtime enforces. Ambient is different in kind, not merely unrelaxed: `_filter_ambient_node`
+    # rebuilds a node WITH subfield children from those children ALONE (PRO-2909), so the map's other
+    # keys are never even copied into the value a caller receives — there is no VALUE for a smarter
+    # schema to describe more honestly. So this stays refused here, now by the sibling check
+    # `_check_ambient_shape_placement!` added for `of:` (same rule, same wording, as its `shape:` twin
+    # right above).
     it "still refuses a subfield rooted at an ambient map" do
       expect do
         build_axn do
           expects :m, on: :ambient_context, type: Hash, of: { values: Integer }
           expects :foo, on: :m
         end
-      end.to raise_error(ArgumentError, /\Asubfield :foo \(on :m\) names the key :foo of :m, which declares `of:` on a Hash/)
+      end.to raise_error(ArgumentError, /`of:` on the ambient subfield `m` is only supported when it has no nested subfields/)
     end
 
     it "still refuses a subfield rooted at an ambient Array, which cannot answer one" do
