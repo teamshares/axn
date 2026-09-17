@@ -66,6 +66,78 @@ bookkeeping, and logging together. Frozen classes use weak-key, immediate-value 
 memos; lazy schema caches simply decline to store results on them. The actual schema build
 and contract validation stay outside the diagnostic guard, so malformed contracts still fail.
 
+### What is a diagnostic, and what is an emitter (PRO-3440)
+
+`best_effort` itself warns about the exception it swallows, and it does so by calling
+`_emit_warning`, which calls `Internal::ActionState.log`, which — for an action instance —
+calls `Core::Logging::ClassMethods#log`, which calls `Axn.config.logger.send(level, msg)`.
+Wrapping any one of those four in `best_effort` puts the guard underneath itself: the failure
+path's own emission would need the very guard it is trying to install. So the rule is not
+"every `Axn.config.logger` call is guarded" but "every DIAGNOSTIC is guarded" — and a
+diagnostic is precisely a call that is *not* one of those four emitters, and *not* the
+author's own `log`/`debug`/`warn` from inside their `call` body (that raise is the author's
+statement, and settles into a reported result at the executor boundary like any other).
+
+Eleven sites fit that description and needed a guard for the first time: the `included`-hook
+deferral breadcrumbs (`schema_reflection.rb`, `naming.rb` — both run at `include Axn`, so an
+unguarded raise breaks class definition itself), the auto-generated-reader skip
+(`contract.rb#_reader_name_available?` — here the guard's return value must NOT become the
+method's own return value, or a broken logger turns "the name is taken" into "the name is
+free" and lets an inferred reader clobber a method the author wrote), the once-per-process
+fiber-isolation warning (`nesting_tracking.rb` — runs on every fresh call tree, modelled on
+`InstanceDeferral._warn_once`'s lock-then-emit shape), the five tool-discovery warnings in
+`Tools::Registry` (behind one private `_warn(desc, &message)` emitter, since they're one
+concern in one file — the outermost of the five runs from an engine's `after_initialize` and
+every `to_prepare`, so unguarded it failed Rails boot), the `join:` diagnostics
+(`MessageResolver#_warn` — reached from `result.error` DURING settlement, so an escape aborted
+`_settle_exception!` after the exception was recorded but before `on_error`/`on_failure`/
+`on_exception` and the global report), and the invalid-symbol-handler notice
+(`Invoker#call_symbol_handler` — unguarded, its raise was transitively caught by `Invoker.call`'s
+own `rescue StandardError`, which reported the LOGGER's exception as though the handler had
+raised and substituted the swallow sentinel for what should have simply been `nil`).
+
+One more site is a predicate, not a diagnostic: `CallLogger.semantic_logger?` dispatched `is_a?`
+on the caller-supplied `Axn.config.logger` (itself a violation of "don't dispatch to caller
+methods" below) and is read UNGUARDED from `Executor#with_facet_log_context`, which wraps the
+action BODY — so answering it by raising aborted `.call` over a question about how to format a
+log line. Fixed at the predicate (`Identity.kind?` plus a narrow
+`rescue StandardError, *SWALLOWABLE_BEYOND_STANDARD_ERROR` returning `false`), not with
+`best_effort` at the call site: `best_effort` there would fire `on_ignored_exception` on EVERY
+`.call` for a persistently degraded logger, a report storm from a log-formatting question. A
+seam that cannot answer means the safe default, the same asymmetry `raises_in_dev?` takes — a
+wrong `false` costs structured tags on a line; a raise costs the operation.
+
+`Async::ExceptionReporting::DiscardedJobAction#log` was *considered* for a guard and
+deliberately left bare: it is `ActionState.log`'s `report_proxy?` branch, i.e. an emitter by
+construction, and every in-gem route into it already terminates inside one —
+`Configuration#on_exception` (which calls it) runs inside
+`best_effort(..., report_ignored: false)` one frame up, and `_emit_warning`'s own narrow rescue
+plus independent attempt covers any other caller. Wrapping it anyway would have been either
+literal self-re-entry (`best_effort(action: self)` bouncing `proxy.log`'s raise back through
+`_emit_warning(proxy)` → `ActionState.log(proxy)` → `proxy.log` again) or a `report_ignored:
+false` duplicating the guard that already wraps the dispatch one frame up. Keep the property
+uniform: an emitter reports its failure upward; the diagnostic's guard decides what to do
+about it.
+
+Not a `best_effort`-alike helper for the guard itself: the doctrine that "a fix depending on
+six call sites remembering to do something is six chances to be wrong" is about a
+per-operand TRANSFORMATION applied to data flowing through (rendering); it does not call for a
+second funnel here, because what belongs *inside* each guard is site-specific (a lock and a
+memo write here, a rollback that must run *before* the warn there) and no bare emitter helper
+could hold that. `best_effort` already is the one funnel; what closed the class was a
+mechanical CHECK that every site is inside it —
+`spec/axn/no_unguarded_diagnostic_spec.rb` walks `lib/` with `RubyVM::AbstractSyntaxTree` and
+asks, for every `Axn.config.logger.<level>` call, whether an ancestor node is a block passed to
+`best_effort`; it pins the four emitters and two predicates as the only sites allowed to answer
+"no", and separately pins `Internal::ActionState.log`'s eight call sites by name (its guard
+usually lives at the CALLER, which the AST walk can't see through) so a ninth fails until it is
+classified too. A behavioural regression test at each guarded site's own topical spec file (e.g.
+`schema_reflection_spec.rb`, `fiber_isolation_warning_spec.rb`, `registry_spec.rb`,
+`message_resolver_spec.rb`, `invoker_spec.rb`, `call_logger_facets_spec.rb`) is the other half:
+the structural spec proves nothing NEW appeared bare; the behavioural ones prove the guards
+that exist still catch a real raising logger (`allow(Axn.config.logger).to
+receive(:warn).and_raise(IOError, "closed stream")`, the existing idiom).
+
 ## Don't dispatch to caller methods while reporting a failure
 
 Separate the caller code a walk **requires** from caller code invoked while **reporting** a
