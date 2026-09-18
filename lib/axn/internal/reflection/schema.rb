@@ -306,31 +306,59 @@ module Axn
           end
         end
 
-        # The exact cost of duplicating a schema: its own SERIALIZED byte size, the same rendering
-        # `JSON.generate` produces for the finished document. PRO-3441 round 4 (PR #285) counted `Array`
-        # LENGTH instead (an `inclusion:` list's element count) and round 5 found the gap that leaves: a
-        # single enum entry can itself be an arbitrarily long String or a Hash literal with its own many
-        # keys — `inclusion: { in: ["x" * 1_000_000] }` is ONE array element, charged `1`, while it
-        # duplicates a megabyte. Counting by TYPE (arrays here, strings there, whatever comes next) is the
-        # wrong shape of answer, the same lesson `MAX_EMITTED_PROPERTIES`'s own history already argues —
-        # this measures the thing actually being duplicated (bytes) rather than enumerating the shapes
-        # that could hold them, so no future literal shape can reopen this the way a hand-rolled counter
-        # already has twice.
-        def axis_leaf_payload_size(schema) = ::JSON.generate(schema).bytesize
+        # `String#bytesize`, UNDISPATCHED — a String subclass may override it (this codebase already
+        # distrusts one elsewhere: "a String subclass whose `valid_encoding?` lies"), and reflection may
+        # not run a caller's code (`docs/reference/class.md`'s own reflection contract, `AGENTS.md:L261-
+        # L263`). Bound the same way `property_names.rb`'s `STRING_TO_SYM`/`wire_key_segment` already bind
+        # `String`'s own methods for the identical reason.
+        AXIS_STRING_BYTESIZE = ::String.instance_method(:bytesize)
+        private_constant :AXIS_STRING_BYTESIZE
 
-        # Duplicating a flat axis into N colliding properties costs N times its own serialized size — the
-        # `~1MB` string PRO-3441 round 5 named, duplicated across 100 colliding properties, is ~100MB none
-        # of it counted by `PropertyNames.reject_oversized_schema!`'s declaration-time budget, which
-        # charges property NAMES, not payload bytes. `colliding_count` is `properties.size` at the call
-        # site — every property at this node, exempt ones included, which over-counts rather than risks
-        # under-charging a genuinely expensive axis. A flat MEMBER-LEVEL bound distinct from
-        # `MAX_EMITTED_PROPERTIES` (a document-wide, name-counting budget in a different unit — bytes here,
-        # names there — so borrowing its number would compare two different things) but the same order of
-        # magnitude reasoning: a schema this file would otherwise happily emit whole should not become
-        # unreasonable once duplicated a handful of times.
+        # The cost of duplicating a schema, estimated WITHOUT serializing it. PRO-3441 round 6 (PR #285):
+        # `JSON.generate` is not safe here — it can RAISE on a legal Ruby literal JSON cannot encode
+        # (`Float::INFINITY` in an `inclusion:` set, which `normalize_schema_literal` elsewhere in this
+        # file deliberately PRESERVES rather than rejects, precisely so reflection doesn't fail on caller
+        # data), and on an opaque literal with its own `#to_json` it EXECUTES caller code — the one thing
+        # reflection may never do. `Integer`/`Float`/`Symbol`/`true`/`false`/`nil` cannot be subclassed at
+        # all (Ruby raises TypeError attempting it) — so `#to_s` there always resolves to the CLASS's own,
+        # never a caller override — and `Hash`/`Array` are walked structurally rather than serialized.
+        # Anything else (an opaque custom literal — the reflection contract's own hard limit) is charged
+        # `Float::INFINITY`: unmeasurable is not zero-cost, so it forces the SAME oversized stand-down a
+        # genuinely huge literal would, rather than silently duplicating something reflection cannot even
+        # look inside of.
+        def axis_leaf_payload_size(value)
+          case value
+          when ::Hash then value.sum { |k, v| axis_leaf_payload_size(k) + axis_leaf_payload_size(v) }
+          when ::Array then value.sum { |v| axis_leaf_payload_size(v) }
+          when ::String then AXIS_STRING_BYTESIZE.bind_call(value)
+          when ::Symbol, ::Integer, ::Float, ::TrueClass, ::FalseClass, ::NilClass then value.to_s.bytesize
+          else Float::INFINITY
+          end
+        end
+
+        # Duplicating every FLAT axis at this node into N colliding properties costs N times their
+        # COMBINED serialized size — not each axis's own size compared to the cap independently. PRO-3441
+        # round 6 (PR #285): a merged node can carry more than one `values:` axis (`merge_shape_member_
+        # property`'s own `additionalProperties` conjunction already handles two colliding `of:`s), and
+        # each staying just under the cap on its own does not bound what happens as MORE declarations
+        # collide at the same position — the aggregate is what actually gets duplicated into every
+        # property. Computed ONCE per node, not once per property: the earlier round-6 draft called this
+        # (transitively, `JSON.generate`) inside the property loop, so an oversized axis paid its own
+        # full serialization cost once for EVERY property it was about to refuse to duplicate into —
+        # exactly the unbounded work the guard exists to prevent, ahead of the guard itself running.
+        #
+        # `colliding_count` is `properties.size` at the call site — every property at this node, exempt
+        # ones included, which over-counts rather than risks under-charging a genuinely expensive axis. A
+        # flat MEMBER-LEVEL bound distinct from `MAX_EMITTED_PROPERTIES` (a document-wide, name-counting
+        # budget in a different unit — bytes here, names there — so borrowing its number would compare two
+        # different things) but the same order-of-magnitude reasoning: a schema this file would otherwise
+        # happily emit whole should not become unreasonable once duplicated a handful of times.
         MAX_AXIS_CONJUNCTION_BYTES = 1_000_000
 
-        def axis_conjunction_cost(schema, colliding_count) = colliding_count * axis_leaf_payload_size(schema)
+        def oversized_axis_conjunction?(axes, colliding_count)
+          flat_payload = axes.sum { |axis| flat_axis_schema?(axis[:schema]) ? axis_leaf_payload_size(axis[:schema]) : 0 }
+          (colliding_count * flat_payload) > MAX_AXIS_CONJUNCTION_BYTES
+        end
 
         NESTED_AXIS_RESIDUE = "a nested (object- or array-shaped) values: axis also governs this key, " \
                               "enforced by the runtime, but is not repeated in the document here to avoid " \
@@ -354,27 +382,27 @@ module Axn
         # own fallback for exactly this shape of "both of these apply."
         #
         # Two gates ahead of the conjunction, not one: `flat_axis_schema?` (SHAPE — no nested container to
-        # duplicate) and `axis_conjunction_cost` (SIZE — no unbounded literal payload to duplicate either).
-        # Embedding a nested axis whole into EVERY colliding property, or a flat one whose own payload is
-        # large, is what rounds 2 and 4 of this review each named — every embedded copy's own descendant
+        # duplicate) and `oversized_axis_conjunction?` (SIZE — no unbounded literal payload to duplicate
+        # either, computed once for every axis at this node combined, never per property). Embedding a
+        # nested axis whole into EVERY colliding property, or a flat one whose own (or combined) payload is
+        # large, is what rounds 2, 4 and 6 of this review each named — every embedded copy's own descendant
         # containers alias each other and `additionalProperties`, or its literal arrays do, and
-        # `PropertyNames.reject_oversized_schema!`'s declaration-time budget counts the axis's contribution
-        # ONCE (beneath `additionalProperties`, from the config that declared it) with no way to see it
+        # `PropertyNames.reject_oversized_schema!`'s declaration-time budget counts the axes' contribution
+        # ONCE (beneath `additionalProperties`, from the configs that declared them) with no way to see it
         # multiplied by however many OTHER declarations collide with it. Standing either case down and
         # reporting a residue (the same "cannot state this here, name what's missing" trade every other
         # inexpressible case in this file already takes) closes both: nothing is ever duplicated past what
-        # `MAX_AXIS_CONJUNCTION_BYTES` bounds, so nothing is ever uncounted — and what still gets
-        # embedded is fully detached by `detach_flat_axis_schema`, not merely the outer Hash a bare `.dup`
-        # would reach.
+        # `MAX_AXIS_CONJUNCTION_BYTES` bounds, so nothing is ever uncounted — and what still gets embedded
+        # is fully detached by `detach_flat_axis_schema`, not merely the outer Hash a bare `.dup` would
+        # reach.
         def conjoin_map_value_axes(properties, axes)
           colliding_count = properties.size
+          oversized = oversized_axis_conjunction?(axes, colliding_count)
           properties.to_h do |name, child|
             conjoined = axes.reduce(child) do |acc, axis|
               next acc if axis[:exempt].include?(name)
               next record_residue(acc, NESTED_AXIS_RESIDUE, kind: :unfixed) unless flat_axis_schema?(axis[:schema])
-              if axis_conjunction_cost(axis[:schema], colliding_count) > MAX_AXIS_CONJUNCTION_BYTES
-                next record_residue(acc, OVERSIZED_AXIS_RESIDUE, kind: :unfixed)
-              end
+              next record_residue(acc, OVERSIZED_AXIS_RESIDUE, kind: :unfixed) if oversized
 
               acc.merge(allOf: Array(acc[:allOf]) + [detach_flat_axis_schema(axis[:schema])])
             end
