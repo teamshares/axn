@@ -297,12 +297,26 @@ module Axn
         # `.dup` only detaches the outer Hash, so `enum: [1, 2, 3]` (an `inclusion:` axis) or `type:
         # ["integer", "null"]` (a nullable one) stayed the SAME Array across every colliding property and
         # `additionalProperties` — mutating one's `enum` in place mutated every sibling's too.
+        #
+        # `instance_of?`, not `case`/`when` — round 7 (PR #285): `case value; when ::Hash` dispatches on
+        # `Module#===`, which is `is_a?`-based and matches a SUBCLASS too, so a Hash/Array/String subclass
+        # here reached its own overridden `#transform_values`/`#map`/`#initialize_copy` — reflection
+        # executing caller code, confirmed directly (a `Hash` subclass's overridden `#transform_values`
+        # ran). Mirrors `normalize_schema_literal`'s own EXACT-class check just below in this file, for the
+        # identical reason it already states: "an Array/Hash/String SUBCLASS could override map/each_with_
+        # object/dup with user code, and reflection must stay side-effect-free." A subclass instance in an
+        # otherwise-flat schema never actually reaches here: `axis_leaf_payload_size` (below) charges it
+        # `Float::INFINITY` first, which `conjoin_map_value_axes` checks BEFORE calling this — but this
+        # stays exact-class too, on its own terms, rather than depending on staying downstream of that.
         def detach_flat_axis_schema(schema)
-          case schema
-          when ::Hash then schema.transform_values { |v| detach_flat_axis_schema(v) }
-          when ::Array then schema.map { |v| detach_flat_axis_schema(v) }
-          when ::String then schema.dup
-          else schema
+          if schema.instance_of?(::Hash)
+            schema.transform_values { |v| detach_flat_axis_schema(v) }
+          elsif schema.instance_of?(::Array)
+            schema.map { |v| detach_flat_axis_schema(v) }
+          elsif schema.instance_of?(::String)
+            schema.dup
+          else
+            schema
           end
         end
 
@@ -314,6 +328,17 @@ module Axn
         AXIS_STRING_BYTESIZE = ::String.instance_method(:bytesize)
         private_constant :AXIS_STRING_BYTESIZE
 
+        # A fixed charge per `Hash`/`Array` NODE, in addition to what its own entries cost — round 7 (PR
+        # #285): a huge COUNT of near-empty containers (`inclusion: { in: Array.new(500_000) { [] } } }`)
+        # measured near zero bytes under the entry-only sum, since an empty Array sums to nothing, while
+        # `detach_flat_axis_schema` still allocates one fresh Array PER CONTAINER, per colliding property —
+        # measured directly: 100 colliding properties beside a 500,000-empty-Array `inclusion:` set took
+        # ~7s to build ONE schema, entirely under the byte cap. What is actually being duplicated is
+        # OBJECTS, not merely bytes, and a container is an object whether or not it holds any of its own —
+        # this charges that unconditionally, so a large container COUNT is bounded the same way a large
+        # byte count already is.
+        AXIS_CONTAINER_OVERHEAD = 8
+
         # The cost of duplicating a schema, estimated WITHOUT serializing it. PRO-3441 round 6 (PR #285):
         # `JSON.generate` is not safe here — it can RAISE on a legal Ruby literal JSON cannot encode
         # (`Float::INFINITY` in an `inclusion:` set, which `normalize_schema_literal` elsewhere in this
@@ -321,18 +346,25 @@ module Axn
         # data), and on an opaque literal with its own `#to_json` it EXECUTES caller code — the one thing
         # reflection may never do. `Integer`/`Float`/`Symbol`/`true`/`false`/`nil` cannot be subclassed at
         # all (Ruby raises TypeError attempting it) — so `#to_s` there always resolves to the CLASS's own,
-        # never a caller override — and `Hash`/`Array` are walked structurally rather than serialized.
-        # Anything else (an opaque custom literal — the reflection contract's own hard limit) is charged
-        # `Float::INFINITY`: unmeasurable is not zero-cost, so it forces the SAME oversized stand-down a
-        # genuinely huge literal would, rather than silently duplicating something reflection cannot even
-        # look inside of.
+        # never a caller override. `Hash`/`Array` are walked structurally rather than serialized, gated
+        # `instance_of?` for the same reason `detach_flat_axis_schema` just above is: a subclass's own
+        # overridden `#sum`/`#each` must not run either. Anything else — an opaque custom literal (the
+        # reflection contract's own hard limit) OR a Hash/Array/String subclass, which `normalize_schema_
+        # literal` already treats as opaque on the same grounds — is charged `Float::INFINITY`:
+        # unmeasurable is not zero-cost, so it forces the SAME oversized stand-down a genuinely huge
+        # literal would, rather than silently duplicating something reflection cannot safely look inside.
         def axis_leaf_payload_size(value)
-          case value
-          when ::Hash then value.sum { |k, v| axis_leaf_payload_size(k) + axis_leaf_payload_size(v) }
-          when ::Array then value.sum { |v| axis_leaf_payload_size(v) }
-          when ::String then AXIS_STRING_BYTESIZE.bind_call(value)
-          when ::Symbol, ::Integer, ::Float, ::TrueClass, ::FalseClass, ::NilClass then value.to_s.bytesize
-          else Float::INFINITY
+          if value.instance_of?(::Hash)
+            AXIS_CONTAINER_OVERHEAD + value.sum { |k, v| axis_leaf_payload_size(k) + axis_leaf_payload_size(v) }
+          elsif value.instance_of?(::Array)
+            AXIS_CONTAINER_OVERHEAD + value.sum { |v| axis_leaf_payload_size(v) }
+          elsif value.instance_of?(::String)
+            AXIS_STRING_BYTESIZE.bind_call(value)
+          elsif value.instance_of?(::Symbol) || value.instance_of?(::Integer) || value.instance_of?(::Float) ||
+                value.instance_of?(::TrueClass) || value.instance_of?(::FalseClass) || value.instance_of?(::NilClass)
+            value.to_s.bytesize
+          else
+            Float::INFINITY
           end
         end
 
