@@ -306,9 +306,42 @@ module Axn
           end
         end
 
+        # The literal payload a schema carries, summed recursively — every `Array`'s own length, plus
+        # whatever its members hold (an `inclusion:` set on a Hash-typed axis can itself carry Hash
+        # literals: `{ in: [{ a: 1 }] }` emits no `properties`/`items` of its own, so `flat_axis_schema?`
+        # never sees it, yet its `enum` is still data an author wrote by hand). This is the SIZE half of
+        # what makes a flat schema safe to duplicate — `flat_axis_schema?` is the SHAPE half — and both
+        # answer the same question `axis_conjunction_cost` below asks in full: not "is this nested" but
+        # "how much would duplicating this actually cost."
+        def axis_leaf_payload_size(value)
+          case value
+          when ::Hash then value.values.sum { |v| axis_leaf_payload_size(v) }
+          when ::Array then value.size + value.sum { |v| axis_leaf_payload_size(v) }
+          else 0
+          end
+        end
+
+        # Duplicating a flat axis into N colliding properties costs N times its own payload — a `{
+        # values: { klass: Integer, inclusion: { in: [1..1_000] } } }` axis beside 1,000 colliding
+        # properties is ~1,000,000 `enum` entries, none of it counted by
+        # `PropertyNames.reject_oversized_schema!`'s declaration-time budget, which charges property
+        # NAMES, not array lengths (PRO-3441 round 4, PR #285). `colliding_count` is `properties.size`
+        # at the call site — every property at this node, exempt ones included, which over-counts rather
+        # than risks under-charging a genuinely expensive axis. Reusing this file's own bound
+        # (`MAX_EMITTED_PROPERTIES`'s value, restated here rather than reached into `PropertyNames`'s
+        # PRIVATE constant) rather than inventing a second one: both ask "how large can the emitted
+        # document get."
+        MAX_AXIS_CONJUNCTION_PAYLOAD = 25_000
+
+        def axis_conjunction_cost(schema, colliding_count) = colliding_count * axis_leaf_payload_size(schema)
+
         NESTED_AXIS_RESIDUE = "a nested (object- or array-shaped) values: axis also governs this key, " \
                               "enforced by the runtime, but is not repeated in the document here to avoid " \
                               "duplicating a whole subtree once per colliding property"
+
+        OVERSIZED_AXIS_RESIDUE = "a values: axis with a large literal constraint also governs this key, " \
+                                 "enforced by the runtime, but is not repeated in the document here to avoid " \
+                                 "duplicating it once per colliding property"
 
         # PRO-3441. `properties`, with each of `axes`' schema conjoined into every entry its own `exempt`
         # set does not name — the fix `MAP_VALUE_EXEMPT_KEY` documents. Returns a FRESH Hash regardless of
@@ -323,24 +356,28 @@ module Axn
         # spelling regardless of whether the two ever share `object_property?`), matching `combine_two`'s
         # own fallback for exactly this shape of "both of these apply."
         #
-        # `flat_axis_schema?` gates the conjunction itself, not merely how it dups: a NESTED axis (an
-        # object- or array-shaped `values:`, or a union that might branch into one) embedded whole into
-        # EVERY colliding property is what the round-2 review named twice over — every embedded copy's own
-        # descendant containers still alias each other AND `additionalProperties`, and
-        # `PropertyNames.reject_oversized_schema!`'s declaration-time budget counts that axis's member
-        # tree ONCE (beneath `additionalProperties`, from the config that declared it) with no way to see
-        # it multiplied by however many OTHER declarations collide with it — N colliding properties beside
-        # an M-member nested axis is N×M nodes this walk would both traverse and serialize, unbounded by
-        # the one count actually charged at declaration. Standing the nested case down and reporting it as
-        # a residue (the same "cannot state this here, name what's missing" trade every other
-        # inexpressible case in this file already takes) closes both: nothing is ever duplicated per
-        # property, so nothing is ever uncounted — and what a FLAT schema still embeds is fully detached
-        # by `detach_flat_axis_schema`, not merely the outer Hash a bare `.dup` reached.
+        # Two gates ahead of the conjunction, not one: `flat_axis_schema?` (SHAPE — no nested container to
+        # duplicate) and `axis_conjunction_cost` (SIZE — no unbounded literal payload to duplicate either).
+        # Embedding a nested axis whole into EVERY colliding property, or a flat one whose own payload is
+        # large, is what rounds 2 and 4 of this review each named — every embedded copy's own descendant
+        # containers alias each other and `additionalProperties`, or its literal arrays do, and
+        # `PropertyNames.reject_oversized_schema!`'s declaration-time budget counts the axis's contribution
+        # ONCE (beneath `additionalProperties`, from the config that declared it) with no way to see it
+        # multiplied by however many OTHER declarations collide with it. Standing either case down and
+        # reporting a residue (the same "cannot state this here, name what's missing" trade every other
+        # inexpressible case in this file already takes) closes both: nothing is ever duplicated past what
+        # `MAX_AXIS_CONJUNCTION_PAYLOAD` bounds, so nothing is ever uncounted — and what still gets
+        # embedded is fully detached by `detach_flat_axis_schema`, not merely the outer Hash a bare `.dup`
+        # would reach.
         def conjoin_map_value_axes(properties, axes)
+          colliding_count = properties.size
           properties.to_h do |name, child|
             conjoined = axes.reduce(child) do |acc, axis|
               next acc if axis[:exempt].include?(name)
               next record_residue(acc, NESTED_AXIS_RESIDUE, kind: :unfixed) unless flat_axis_schema?(axis[:schema])
+              if axis_conjunction_cost(axis[:schema], colliding_count) > MAX_AXIS_CONJUNCTION_PAYLOAD
+                next record_residue(acc, OVERSIZED_AXIS_RESIDUE, kind: :unfixed)
+              end
 
               acc.merge(allOf: Array(acc[:allOf]) + [detach_flat_axis_schema(axis[:schema])])
             end
