@@ -306,32 +306,29 @@ module Axn
           end
         end
 
-        # The literal payload a schema carries, summed recursively — every `Array`'s own length, plus
-        # whatever its members hold (an `inclusion:` set on a Hash-typed axis can itself carry Hash
-        # literals: `{ in: [{ a: 1 }] }` emits no `properties`/`items` of its own, so `flat_axis_schema?`
-        # never sees it, yet its `enum` is still data an author wrote by hand). This is the SIZE half of
-        # what makes a flat schema safe to duplicate — `flat_axis_schema?` is the SHAPE half — and both
-        # answer the same question `axis_conjunction_cost` below asks in full: not "is this nested" but
-        # "how much would duplicating this actually cost."
-        def axis_leaf_payload_size(value)
-          case value
-          when ::Hash then value.values.sum { |v| axis_leaf_payload_size(v) }
-          when ::Array then value.size + value.sum { |v| axis_leaf_payload_size(v) }
-          else 0
-          end
-        end
+        # The exact cost of duplicating a schema: its own SERIALIZED byte size, the same rendering
+        # `JSON.generate` produces for the finished document. PRO-3441 round 4 (PR #285) counted `Array`
+        # LENGTH instead (an `inclusion:` list's element count) and round 5 found the gap that leaves: a
+        # single enum entry can itself be an arbitrarily long String or a Hash literal with its own many
+        # keys — `inclusion: { in: ["x" * 1_000_000] }` is ONE array element, charged `1`, while it
+        # duplicates a megabyte. Counting by TYPE (arrays here, strings there, whatever comes next) is the
+        # wrong shape of answer, the same lesson `MAX_EMITTED_PROPERTIES`'s own history already argues —
+        # this measures the thing actually being duplicated (bytes) rather than enumerating the shapes
+        # that could hold them, so no future literal shape can reopen this the way a hand-rolled counter
+        # already has twice.
+        def axis_leaf_payload_size(schema) = ::JSON.generate(schema).bytesize
 
-        # Duplicating a flat axis into N colliding properties costs N times its own payload — a `{
-        # values: { klass: Integer, inclusion: { in: [1..1_000] } } }` axis beside 1,000 colliding
-        # properties is ~1,000,000 `enum` entries, none of it counted by
-        # `PropertyNames.reject_oversized_schema!`'s declaration-time budget, which charges property
-        # NAMES, not array lengths (PRO-3441 round 4, PR #285). `colliding_count` is `properties.size`
-        # at the call site — every property at this node, exempt ones included, which over-counts rather
-        # than risks under-charging a genuinely expensive axis. Reusing this file's own bound
-        # (`MAX_EMITTED_PROPERTIES`'s value, restated here rather than reached into `PropertyNames`'s
-        # PRIVATE constant) rather than inventing a second one: both ask "how large can the emitted
-        # document get."
-        MAX_AXIS_CONJUNCTION_PAYLOAD = 25_000
+        # Duplicating a flat axis into N colliding properties costs N times its own serialized size — the
+        # `~1MB` string PRO-3441 round 5 named, duplicated across 100 colliding properties, is ~100MB none
+        # of it counted by `PropertyNames.reject_oversized_schema!`'s declaration-time budget, which
+        # charges property NAMES, not payload bytes. `colliding_count` is `properties.size` at the call
+        # site — every property at this node, exempt ones included, which over-counts rather than risks
+        # under-charging a genuinely expensive axis. A flat MEMBER-LEVEL bound distinct from
+        # `MAX_EMITTED_PROPERTIES` (a document-wide, name-counting budget in a different unit — bytes here,
+        # names there — so borrowing its number would compare two different things) but the same order of
+        # magnitude reasoning: a schema this file would otherwise happily emit whole should not become
+        # unreasonable once duplicated a handful of times.
+        MAX_AXIS_CONJUNCTION_BYTES = 1_000_000
 
         def axis_conjunction_cost(schema, colliding_count) = colliding_count * axis_leaf_payload_size(schema)
 
@@ -366,7 +363,7 @@ module Axn
         # multiplied by however many OTHER declarations collide with it. Standing either case down and
         # reporting a residue (the same "cannot state this here, name what's missing" trade every other
         # inexpressible case in this file already takes) closes both: nothing is ever duplicated past what
-        # `MAX_AXIS_CONJUNCTION_PAYLOAD` bounds, so nothing is ever uncounted — and what still gets
+        # `MAX_AXIS_CONJUNCTION_BYTES` bounds, so nothing is ever uncounted — and what still gets
         # embedded is fully detached by `detach_flat_axis_schema`, not merely the outer Hash a bare `.dup`
         # would reach.
         def conjoin_map_value_axes(properties, axes)
@@ -375,7 +372,7 @@ module Axn
             conjoined = axes.reduce(child) do |acc, axis|
               next acc if axis[:exempt].include?(name)
               next record_residue(acc, NESTED_AXIS_RESIDUE, kind: :unfixed) unless flat_axis_schema?(axis[:schema])
-              if axis_conjunction_cost(axis[:schema], colliding_count) > MAX_AXIS_CONJUNCTION_PAYLOAD
+              if axis_conjunction_cost(axis[:schema], colliding_count) > MAX_AXIS_CONJUNCTION_BYTES
                 next record_residue(acc, OVERSIZED_AXIS_RESIDUE, kind: :unfixed)
               end
 
