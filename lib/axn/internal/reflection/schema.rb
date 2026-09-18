@@ -128,6 +128,34 @@ module Axn
 
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
 
+        # PRO-3441. A map's `of: { values: }` axis governs every key `properties` does NOT itself name
+        # (`additionalProperties`'s own JSON Schema meaning) — except the keys the axis's OWN `shape:`
+        # names, which `_derive_shaped_keys!` exempts because the runtime does (`of_validator.rb`'s
+        # `shaped_keys:` skip). A key `properties` names for a DIFFERENT reason — a colliding shape member,
+        # a node's own explicit child, a dotted `on:` reaching through it — is not in that exempt set, so
+        # the axis still enforces it at runtime, but nothing conjoined its schema there: `additionalProperties`
+        # only ever governs KEYS IT DOESN'T MATCH, so a value the axis would refuse sailed through the
+        # `properties` entry unchecked.
+        #
+        # A declaration-time guard used to refuse this outright (`check_subfields_under_map!`, since
+        # removed) — but only within ONE declaration (a subfield reading through a config that also
+        # declares `of:`); it could never see a NAME arriving from a DIFFERENT declaration at the same
+        # wire position — a colliding shape member's `of:` beside a node's own child, or a shape member's
+        # named key beside a node's own `of:` — since a shape member is invisible to the subfield tree
+        # that guard walked. This emits the honest document instead of refusing the declaration.
+        #
+        # `map_values_schema` (`Vocabulary::MAP_VALUE_EXEMPT_KEY`) cannot conjoin the axis into `properties`
+        # itself: at a merged node, the keys a colliding declaration or a later `apply_nested_subfields!`
+        # pass adds are not there yet — nesting is layered on AFTER a shape member's own map axis is built.
+        # So this rides on the property, under that key, as a LIST of `{schema:, exempt:}` pairs (a merged
+        # node can carry more than one `of:` axis — `merge_shape_member_property`'s existing
+        # `additionalProperties` conjunction), until `finalize_residues!`'s own whole-tree descent — the one
+        # pass every property, at any depth, newly-added or original, is guaranteed to still be present for
+        # — conjoins each pair into every `properties` entry its own `exempt` set does not name, and strips
+        # the key. The same "ride until the one pass that sees everything, then strip" shape `RESIDUE_KEY`
+        # already uses, for the same reason: nothing earlier in the build can promise it has seen the FINAL
+        # `properties` map.
+
         # Every blank a JSON document can carry. `false` is among them: ActiveSupport counts it blank, which
         # is what an ungated `presence:` rejects — and so is `nil`, which is why it is listed here even
         # though `reject_null!` independently strips a null branch on the nested-child path. The floor is
@@ -145,7 +173,7 @@ module Axn
 
         # Metadata is not a validator contribution. In particular, a default applies independently
         # of validator gates and must never be included in a conditional fragment.
-        RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY].freeze
+        RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY, Vocabulary::MAP_VALUE_EXEMPT_KEY].freeze
 
         GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
                         "its condition opens"
@@ -210,6 +238,12 @@ module Axn
             schema[:description] = join_prose(schema[:description], clause)
           end
 
+          # PRO-3441. This node's own `properties` is now FINAL — every subfield, colliding member and
+          # dotted `on:` child this position will ever hold has already been added by every earlier pass —
+          # so this is the one place a map's `of: { values: }` axis can be conjoined into a NAMED key that
+          # arrived from somewhere other than the axis's own `shape:` (see `MAP_VALUE_EXEMPT_KEY`).
+          map_value_axes = schema.delete(MAP_VALUE_EXEMPT_KEY)
+
           # Only the keywords that HOLD a subschema are descended into. Walking every Hash and Array
           # instead reaches a declaration's own literals — a `default:`/`enum:`/`const:` value is the
           # author's data, not a node — and a literal `{ __axn_residues: [...] }` there was deleted and
@@ -220,11 +254,12 @@ module Axn
             node = schema[key]
             next unless node.is_a?(::Hash)
 
+            node = conjoin_map_value_axes(node, map_value_axes) if map_value_axes
             # The segment is carried RAW, never rendered here: a declared name is caller-supplied and
             # reflection may not dispatch on one (a `to_s` that raises took the whole reflection down
             # once already, and one that counts its calls sees this walk as a second ask). Whoever
             # reports a residue renders the path through PropertyNames' own escaping labeler.
-            node = node.dup if copy
+            node = node.dup if copy && !map_value_axes
             node.each { |name, sub| node[name] = finalize_residues!(sub, path: path + [name], collected:, copy:).first }
             schema[key] = node
           end
@@ -241,6 +276,180 @@ module Axn
           end
 
           [schema, collected]
+        end
+
+        # A `values:` axis schema carrying none of these is FLAT — a plain scalar leaf (`{type:
+        # "integer"}`, `{type: "string", pattern: …}`), with no nested Hash or Array of its own to alias
+        # and no member count of its own to multiply. Any of these means the axis is itself object- or
+        # array-shaped (`values: SomeDataClass`, `values: { klass: Hash, shape: {…} }`) or a union that
+        # might branch into one (`anyOf`/`oneOf`) — the two conditions PRO-3441's round 2 review (PR #285)
+        # found `conjoin_map_value_axes` handling unsafely, addressed below by never duplicating one.
+        NESTED_AXIS_SCHEMA_KEYS = %i[properties items additionalProperties propertyNames anyOf allOf oneOf not].freeze
+
+        def flat_axis_schema?(schema) = !schema.keys.intersect?(NESTED_AXIS_SCHEMA_KEYS)
+
+        # A complete, independent copy of a FLAT axis schema — never called on a nested one, which never
+        # reaches this file's own `Hash`/`Array`/`String` at all (`flat_axis_schema?` gates that above),
+        # so recursing is safe precisely because it is bounded: what is left once every SCHEMA-shaped
+        # nesting is excluded is DATA an author wrote out by hand (an `enum` list, a nullable `type`
+        # union, a `pattern`/`format`/`description` string) — literal, author-sized, never the arbitrarily
+        # large member tree a `shape:` or `items` could hold. PRO-3441 round 3 (PR #285): a bare top-level
+        # `.dup` only detaches the outer Hash, so `enum: [1, 2, 3]` (an `inclusion:` axis) or `type:
+        # ["integer", "null"]` (a nullable one) stayed the SAME Array across every colliding property and
+        # `additionalProperties` — mutating one's `enum` in place mutated every sibling's too.
+        #
+        # `instance_of?`, not `case`/`when` — round 7 (PR #285): `case value; when ::Hash` dispatches on
+        # `Module#===`, which is `is_a?`-based and matches a SUBCLASS too, so a Hash/Array/String subclass
+        # here reached its own overridden `#transform_values`/`#map`/`#initialize_copy` — reflection
+        # executing caller code, confirmed directly (a `Hash` subclass's overridden `#transform_values`
+        # ran). Mirrors `normalize_schema_literal`'s own EXACT-class check just below in this file, for the
+        # identical reason it already states: "an Array/Hash/String SUBCLASS could override map/each_with_
+        # object/dup with user code, and reflection must stay side-effect-free." A subclass instance in an
+        # otherwise-flat schema never actually reaches here: `axis_leaf_payload_size` (below) charges it
+        # `Float::INFINITY` first, which `conjoin_map_value_axes` checks BEFORE calling this — but this
+        # stays exact-class too, on its own terms, rather than depending on staying downstream of that.
+        def detach_flat_axis_schema(schema)
+          if schema.instance_of?(::Hash)
+            schema.transform_values { |v| detach_flat_axis_schema(v) }
+          elsif schema.instance_of?(::Array)
+            schema.map { |v| detach_flat_axis_schema(v) }
+          elsif schema.instance_of?(::String)
+            schema.dup
+          else
+            schema
+          end
+        end
+
+        # `String#bytesize`, UNDISPATCHED — a String subclass may override it (this codebase already
+        # distrusts one elsewhere: "a String subclass whose `valid_encoding?` lies"), and reflection may
+        # not run a caller's code (`docs/reference/class.md`'s own reflection contract, `AGENTS.md:L261-
+        # L263`). Bound the same way `property_names.rb`'s `STRING_TO_SYM`/`wire_key_segment` already bind
+        # `String`'s own methods for the identical reason.
+        AXIS_STRING_BYTESIZE = ::String.instance_method(:bytesize)
+        private_constant :AXIS_STRING_BYTESIZE
+
+        # A fixed charge per `Hash`/`Array` NODE, in addition to what its own entries cost — round 7 (PR
+        # #285): a huge COUNT of near-empty containers (`inclusion: { in: Array.new(500_000) { [] } } }`)
+        # measured near zero bytes under the entry-only sum, since an empty Array sums to nothing, while
+        # `detach_flat_axis_schema` still allocates one fresh Array PER CONTAINER, per colliding property —
+        # measured directly: 100 colliding properties beside a 500,000-empty-Array `inclusion:` set took
+        # ~7s to build ONE schema, entirely under the byte cap. What is actually being duplicated is
+        # OBJECTS, not merely bytes, and a container is an object whether or not it holds any of its own.
+        AXIS_CONTAINER_OVERHEAD = 8
+
+        # The SAME idea one level down: a fixed MINIMUM charge per Array SLOT / Hash ENTRY, not only per
+        # container — round 8 (PR #285) found the container charge closes a container COUNT but not a
+        # SLOT count: `Array.new(500_000) { "" }` is still ONE container (charged once) holding 500,000
+        # zero-byte Strings (charged nothing each), so the round-7 fix left this at ~8 bytes total while
+        # `detach_flat_axis_schema` still `.dup`s 500,000 Strings and allocates a 500,000-slot Array PER
+        # colliding property — measured directly: 100 colliding properties beside a 500,000-empty-string
+        # `inclusion:` set took ~7.4s, the identical shape of gap the container charge closed one level up.
+        # `[actual, AXIS_SLOT_OVERHEAD].max`, not a flat add, so a slot whose own content is already
+        # correctly charged more than this floor (a real string, a nested container) is not double-counted
+        # — only a slot cheaper than the floor is raised to it, which is exactly the case this closes.
+        AXIS_SLOT_OVERHEAD = 8
+
+        # The cost of duplicating a schema, estimated WITHOUT serializing it. PRO-3441 round 6 (PR #285):
+        # `JSON.generate` is not safe here — it can RAISE on a legal Ruby literal JSON cannot encode
+        # (`Float::INFINITY` in an `inclusion:` set, which `normalize_schema_literal` elsewhere in this
+        # file deliberately PRESERVES rather than rejects, precisely so reflection doesn't fail on caller
+        # data), and on an opaque literal with its own `#to_json` it EXECUTES caller code — the one thing
+        # reflection may never do. `Integer`/`Float`/`Symbol`/`true`/`false`/`nil` cannot be subclassed at
+        # all (Ruby raises TypeError attempting it) — so `#to_s` there always resolves to the CLASS's own,
+        # never a caller override. `Hash`/`Array` are walked structurally rather than serialized, gated
+        # `instance_of?` for the same reason `detach_flat_axis_schema` just above is: a subclass's own
+        # overridden `#sum`/`#each` must not run either. Anything else — an opaque custom literal (the
+        # reflection contract's own hard limit) OR a Hash/Array/String subclass, which `normalize_schema_
+        # literal` already treats as opaque on the same grounds — is charged `Float::INFINITY`:
+        # unmeasurable is not zero-cost, so it forces the SAME oversized stand-down a genuinely huge
+        # literal would, rather than silently duplicating something reflection cannot safely look inside.
+        def axis_leaf_payload_size(value)
+          if value.instance_of?(::Hash)
+            AXIS_CONTAINER_OVERHEAD + value.sum { |k, v| [axis_leaf_payload_size(k) + axis_leaf_payload_size(v), AXIS_SLOT_OVERHEAD].max }
+          elsif value.instance_of?(::Array)
+            AXIS_CONTAINER_OVERHEAD + value.sum { |v| [axis_leaf_payload_size(v), AXIS_SLOT_OVERHEAD].max }
+          elsif value.instance_of?(::String)
+            AXIS_STRING_BYTESIZE.bind_call(value)
+          elsif value.instance_of?(::Symbol) || value.instance_of?(::Integer) || value.instance_of?(::Float) ||
+                value.instance_of?(::TrueClass) || value.instance_of?(::FalseClass) || value.instance_of?(::NilClass)
+            value.to_s.bytesize
+          else
+            Float::INFINITY
+          end
+        end
+
+        # Duplicating every FLAT axis at this node into N colliding properties costs N times their
+        # COMBINED serialized size — not each axis's own size compared to the cap independently. PRO-3441
+        # round 6 (PR #285): a merged node can carry more than one `values:` axis (`merge_shape_member_
+        # property`'s own `additionalProperties` conjunction already handles two colliding `of:`s), and
+        # each staying just under the cap on its own does not bound what happens as MORE declarations
+        # collide at the same position — the aggregate is what actually gets duplicated into every
+        # property. Computed ONCE per node, not once per property: the earlier round-6 draft called this
+        # (transitively, `JSON.generate`) inside the property loop, so an oversized axis paid its own
+        # full serialization cost once for EVERY property it was about to refuse to duplicate into —
+        # exactly the unbounded work the guard exists to prevent, ahead of the guard itself running.
+        #
+        # `colliding_count` is `properties.size` at the call site — every property at this node, exempt
+        # ones included, which over-counts rather than risks under-charging a genuinely expensive axis. A
+        # flat MEMBER-LEVEL bound distinct from `MAX_EMITTED_PROPERTIES` (a document-wide, name-counting
+        # budget in a different unit — bytes here, names there — so borrowing its number would compare two
+        # different things) but the same order-of-magnitude reasoning: a schema this file would otherwise
+        # happily emit whole should not become unreasonable once duplicated a handful of times.
+        MAX_AXIS_CONJUNCTION_BYTES = 1_000_000
+
+        def oversized_axis_conjunction?(axes, colliding_count)
+          flat_payload = axes.sum { |axis| flat_axis_schema?(axis[:schema]) ? axis_leaf_payload_size(axis[:schema]) : 0 }
+          (colliding_count * flat_payload) > MAX_AXIS_CONJUNCTION_BYTES
+        end
+
+        NESTED_AXIS_RESIDUE = "a nested (object- or array-shaped) values: axis also governs this key, " \
+                              "enforced by the runtime, but is not repeated in the document here to avoid " \
+                              "duplicating a whole subtree once per colliding property"
+
+        OVERSIZED_AXIS_RESIDUE = "a values: axis with a large literal constraint also governs this key, " \
+                                 "enforced by the runtime, but is not repeated in the document here to avoid " \
+                                 "duplicating it once per colliding property"
+
+        # PRO-3441. `properties`, with each of `axes`' schema conjoined into every entry its own `exempt`
+        # set does not name — the fix `MAP_VALUE_EXEMPT_KEY` documents. Returns a FRESH Hash regardless of
+        # `finalize_residues!`'s own `copy:` (a caller asking not to copy still may not mutate `properties`
+        # in place here: the untouched entries alias the ORIGINAL schema's Hash, which is exactly what
+        # `copy: false` promises stays untouched elsewhere), so every entry `finalize_residues!` goes on to
+        # recurse into is safe to keep mutating regardless.
+        #
+        # `allOf`, not a keyword-by-keyword reconciliation: the axis schema and the named property's own
+        # schema describe the same value two ways (this run through `conjoin_shape_member_property`'s own
+        # collision logic would apply here too, but the keyword-agnostic sibling branch is the correct
+        # spelling regardless of whether the two ever share `object_property?`), matching `combine_two`'s
+        # own fallback for exactly this shape of "both of these apply."
+        #
+        # Two gates ahead of the conjunction, not one: `flat_axis_schema?` (SHAPE — no nested container to
+        # duplicate) and `oversized_axis_conjunction?` (SIZE — no unbounded literal payload to duplicate
+        # either, computed once for every axis at this node combined, never per property). Embedding a
+        # nested axis whole into EVERY colliding property, or a flat one whose own (or combined) payload is
+        # large, is what rounds 2, 4 and 6 of this review each named — every embedded copy's own descendant
+        # containers alias each other and `additionalProperties`, or its literal arrays do, and
+        # `PropertyNames.reject_oversized_schema!`'s declaration-time budget counts the axes' contribution
+        # ONCE (beneath `additionalProperties`, from the configs that declared them) with no way to see it
+        # multiplied by however many OTHER declarations collide with it. Standing either case down and
+        # reporting a residue (the same "cannot state this here, name what's missing" trade every other
+        # inexpressible case in this file already takes) closes both: nothing is ever duplicated past what
+        # `MAX_AXIS_CONJUNCTION_BYTES` bounds, so nothing is ever uncounted — and what still gets embedded
+        # is fully detached by `detach_flat_axis_schema`, not merely the outer Hash a bare `.dup` would
+        # reach.
+        def conjoin_map_value_axes(properties, axes)
+          colliding_count = properties.size
+          oversized = oversized_axis_conjunction?(axes, colliding_count)
+          properties.to_h do |name, child|
+            conjoined = axes.reduce(child) do |acc, axis|
+              next acc if axis[:exempt].include?(name)
+              next record_residue(acc, NESTED_AXIS_RESIDUE, kind: :unfixed) unless flat_axis_schema?(axis[:schema])
+              next record_residue(acc, OVERSIZED_AXIS_RESIDUE, kind: :unfixed) if oversized
+
+              acc.merge(allOf: Array(acc[:allOf]) + [detach_flat_axis_schema(axis[:schema])])
+            end
+            [name, conjoined]
+          end
         end
 
         # An attribute a config may or may not carry, read tolerantly: `#description` and `#default`, enumerated at
@@ -1474,6 +1683,7 @@ module Axn
               axis_configs_for(member_configs, :values), axis_configs_for(own_configs, :values)
             )
           end
+          merge_map_value_exempt!(merged, member_prop, own_prop)
           if member_prop[:propertyNames] || own_prop[:propertyNames]
             merged[:propertyNames] = merge_emitted_nested_schema(
               member_prop[:propertyNames], own_prop[:propertyNames],
@@ -1481,6 +1691,19 @@ module Axn
             )
           end
           merged
+        end
+
+        # `MAP_VALUE_EXEMPT_KEY` (PRO-3441): CONCATENATED into `merged`, not left to the shallow merge
+        # `merge_shape_member_property` opens with — the "second side wins" default every OTHER keyword
+        # there needed reconciling away from. A merged node can carry an axis from BOTH sides (the
+        # `additionalProperties` merge just above it), and each keeps its own exempt set rather than one
+        # replacing the other. Its actual conjunction into `properties` is deferred to `finalize_residues!`,
+        # the one pass guaranteed to see every property this node will ever hold — including a subfield
+        # `apply_nested_subfields!` has not added yet when this runs.
+        def merge_map_value_exempt!(merged, member_prop, own_prop)
+          return unless member_prop[MAP_VALUE_EXEMPT_KEY] || own_prop[MAP_VALUE_EXEMPT_KEY]
+
+          merged[MAP_VALUE_EXEMPT_KEY] = Array(member_prop[MAP_VALUE_EXEMPT_KEY]) + Array(own_prop[MAP_VALUE_EXEMPT_KEY])
         end
 
         # A nested map axis schema present on only one side is carried through as-is; present on both, it

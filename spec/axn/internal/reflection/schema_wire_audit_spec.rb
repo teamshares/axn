@@ -27,10 +27,14 @@ require "json"
 # `comparison: { equal_to: }` emitted as a `const`, which cannot say "this number OR null". Both are fixed, and
 # both are cells below.
 #
-# `json_schemer` has one blind spot worth naming, since it makes this file weaker than it looks in exactly one
-# place: it compiles `pattern` with RUBY's regex engine, where a real consumer uses ECMA-262. So the pattern
-# TRANSLATION cannot be audited here and is covered by its own unit specs; what is audited is whether a pattern
-# is emitted at a position whose values cannot satisfy it.
+# `json_schemer` compiles `pattern` against `regexp_resolver: "ecma"` (PRO-3441), not its Ruby-regex default:
+# `pattern` is DEFINED as ECMA-262, and the two disagree on more than `^`/`$` line-vs-string anchoring — a
+# multi-line probe below exists because that is exactly the case the default (Ruby) resolver got backwards:
+# `format: { with: /\A[a-z]+\z/ }` emits `pattern: "^[a-z]+$"`, and against `"abc\ndef"` the RUBY-resolved
+# document wrongly ACCEPTS it (Ruby's `^`/`$` are line anchors) while the runtime and the ECMA-resolved
+# document both correctly refuse it. The emitted pattern was right all along; the ORACLE was reading it
+# under the wrong grammar. This file's own hard direction (inbound must never accept what the runtime
+# refuses) is exactly what that mismatch would have violated had this file gone looking with the right tool.
 RSpec.describe "the emitted schema against runtime truth", :slow do
   # Deliberately not `build_axn`: this needs the class object itself for its schemas, and a fresh one per cell.
   def declare(direction, decl, value)
@@ -78,7 +82,11 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   def tolerances = { "required" => {}, "optional" => { optional: true } }
 
   # Only values a JSON document can carry, since that is what both directions are about.
-  def probe_values = [nil, true, false, 0, 1, 2, 1.5, 123, "", "a", "abc", "1", "123", [], [1], {}, { "a" => 1 }]
+  # `"a\nb"` is here specifically for `format a-z` (PRO-3441): `^`/`$` are LINE anchors under Ruby's regex
+  # engine and STRING anchors under ECMA-262, so a probe with no embedded newline could never have told the
+  # two grammars apart — every other value here is a single line, and the pattern axis would have kept
+  # passing by accident whichever engine `schemer` used.
+  def probe_values = [nil, true, false, 0, 1, 2, 1.5, 123, "", "a", "abc", "1", "123", "a\nb", [], [1], {}, { "a" => 1 }]
 
   # A tolerated BLANK passes every validator — ActiveModel skips it before any of them runs — while the emitted
   # `enum`/`pattern`/narrowing still describes only the non-blank values. So a blank-tolerant position accepts
@@ -175,7 +183,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   end
 
   def schemer(schema)
-    JSONSchemer.schema(JSON.parse(JSON.generate(schema)))
+    JSONSchemer.schema(JSON.parse(JSON.generate(schema)), regexp_resolver: "ecma")
   end
 
   # The OUTBOUND direction, and the sharp one: the action settled ok and axn serialized the value, so a document
@@ -339,16 +347,26 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     residues
   end
 
-  # Narrowed to the TRANSFORM kind, and the narrowing matters more than the exclusion. Written as "any
+  # Narrowed to `:inherent`/`:unfixed`, and the narrowing matters more than the exclusion. Written as "any
   # residue at all", this laundered every conditional stand-down out of the walk below — and since a
   # conditional stand-down is the one thing here that RELAXES a document, that hid the entire class of
   # inbound looseness it can cause. Six review rounds then had to find those cases by reading, in a file
   # whose whole purpose is to find them by measuring.
   #
-  # A transform residue is different in kind: nothing about it relaxes what the document says relative to
-  # the wire form it can describe — it names a constraint on a value the wire never carries, which no
-  # keyword could have expressed. That one stays excluded; a conditional residue does not.
-  def reported_inexpressible?(klass) = residues_for(klass).any? { |_path, residue| residue.kind == :inherent }
+  # A `:inherent` residue is different in kind from a `:conditional` one: nothing about it relaxes what
+  # the document says relative to the wire form it can describe — it names a constraint on a value the
+  # wire never carries, which no keyword could have expressed. `:unfixed` (PRO-3441 round 2, PR #285:
+  # `NESTED_AXIS_RESIDUE`) DOES relax the document relative to the runtime — the emitter chose not to
+  # duplicate a whole nested `values:` axis into every colliding property, to keep the document's size
+  # bounded — but it is the SAME kind of thing this file's own exclusion doctrine already treats as
+  # reported rather than hidden: a NAMED, ARGUED, declaration-time-visible trade, not a runtime-dependent
+  # gate silently narrowing coverage. Its own residue message says explicitly what it declined to state,
+  # which is exactly what lets `:unfixed` residues "shrink as they're closed" (the Residue kind's own
+  # doc) rather than accumulate as blind spots — a `:conditional` residue offers no such argument and
+  # stays excluded from THIS exclusion.
+  def reported_residue_kinds = %i[inherent unfixed]
+
+  def reported_inexpressible?(klass) = residues_for(klass).any? { |_path, residue| reported_residue_kinds.include?(residue.kind) }
 
   def nested_members
     {
@@ -377,6 +395,27 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       # which is licensed strictness rather than emptiness. Both arrangements were measured by mutation and
       # neither moved. The literal, numeric-bound, size-bound and pattern axes are covered directly in
       # `schema_spec.rb`, each verified by mutation there.
+      #
+      # PRO-3441. Everything above is a STRUCTURAL collision (a type, a child, a shape) — none carries a
+      # VALUE-level keyword the other side also carries, so `merge_shape_member_property`'s keyword-by-keyword
+      # reconciliation (`:enum`, the size bounds, the map axes) never actually runs in this walk; it only
+      # ever takes the trivial "one side is empty" path. These four rows put a real value constraint on the
+      # member side of an otherwise object-shaped position, paired below with the mirror on the node side,
+      # so the reconciliation is exercised rather than merely present.
+      "literal object member" => proc { field :inner, type: Hash, inclusion: { in: [{ b: 2 }] } },
+      "floor object member" => proc { field :inner, type: Hash, length: { minimum: 2 } },
+      "ceiling object member" => proc { field :inner, type: Hash, length: { maximum: 4 } },
+      "map values member" => proc { field :inner, type: Hash, of: { values: { klass: Integer } } },
+      "map keys member" => proc { field :inner, type: Hash, of: { keys: { klass: String, length: { minimum: 2 } } } },
+      # PRO-3441 round 2 (PR #285, Codex): a NESTED (object-shaped) values axis is a different case from
+      # every other map-axis row above, which are all flat/scalar — this exercises the stand-down
+      # `conjoin_map_value_axes` takes instead of duplicating a whole subtree per colliding property (see
+      # `flat_axis_schema?`), which is meant to be excluded from the acceptance tripwire by its own
+      # reported residue, not silently unsound.
+      "nested map values member" => proc {
+        member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: String } })
+        field :inner, type: Hash, of: { values: { klass: Hash, shape: { members: [member] } } }
+      },
     }
   end
 
@@ -406,6 +445,25 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { equal_to: 5 }
       },
       "preprocessing node" => proc { expects :inner, on: :payload, type: String, preprocess: ->(v) { v } },
+      # PRO-3441. The mirror of the four member-side rows above, so a value-level collision actually
+      # arises: two `inclusion:` sets (the exact PRO-3405 shape), two SAME-keyword size bounds (so
+      # `minProperties`/`maxProperties` COLLIDE rather than merely appear on one side), and two `of:` axes
+      # naming DIFFERENT value/key types.
+      "literal node" => proc { expects :inner, on: :payload, type: Hash, inclusion: { in: [{ c: 3 }] } },
+      "floor node" => proc { expects :inner, on: :payload, type: Hash, length: { minimum: 3 } },
+      "ceiling node" => proc { expects :inner, on: :payload, type: Hash, length: { maximum: 2 } },
+      "map values node" => proc { expects :inner, on: :payload, type: Hash, of: { values: { klass: String } } },
+      "map keys node" => proc { expects :inner, on: :payload, type: Hash, of: { keys: { klass: String, length: { minimum: 4 } } } },
+      # PRO-3441. A nil-tolerant node WITH a child, paired below against a non-nilable MEMBER with none —
+      # `apply_nested_subfields!` (having a child to nest) sets this node's OWN type nullable from its own
+      # representative alone, and `apply_explicit_child!`'s null_ok cap is the only thing that then reads
+      # the COLLIDING member's nilability and downgrades it back. Every other nil-tolerant node row here is
+      # childless, so `apply_nested_subfields!` returns before ever touching `:type` and this cap has
+      # nothing to correct — this row is the one place it is exercised at all.
+      "explicit nil-tolerant node with a child" => proc {
+        expects :inner, on: :payload, type: Hash, allow_nil: true
+        expects :c, on: :inner, type: String, optional: true
+      },
     }
   end
 
@@ -413,19 +471,52 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     [
       {}, { inner: nil }, { inner: {} }, { inner: { a: "x" } }, { inner: { a: 1 } },
       { inner: { a: "x", b: "y" } }, { inner: { a: "x", c: "z" } }, { inner: { c: "z" } },
-      { inner: { a: "x", extra: "z" } }, { inner: [] }, { inner: [1] }, { inner: "s" }, { inner: 0 }
+      { inner: { a: "x", extra: "z" } }, { inner: [] }, { inner: [1] }, { inner: "s" }, { inner: 0 },
+      # PRO-3441, discriminating the value-level collision rows above: one payload each side's OWN literal
+      # set admits and the other's refuses, and a 5-key/2-key pair that only a wrong `minProperties`/
+      # `maxProperties` reconciliation (`.max`/`.min` swapped) would tell apart.
+      { inner: { b: 2 } }, { inner: { c: 3 } }, { inner: { a: "x", b: "y", c: "z", d: "w", e: "v" } }
     ]
   end
 
+  # `member`/`node` are each optional (PRO-3441): the collision walk below also needs the SIDE-ALONE
+  # classes — the same node config or the same shape member, declared with nothing to collide against — so
+  # a merged document can be compared to what either declaration means on its own.
   def declare_nested(member, node)
     Class.new do
       include Axn
-      expects :payload, type: Hash, &member
-      class_eval(&node)
+      if member
+        expects :payload, type: Hash, &member
+      else
+        expects :payload, type: Hash
+      end
+      class_eval(&node) if node
       def call = nil
     end
   rescue StandardError
     nil
+  end
+
+  # The three classes one collision row needs: both declarations together, and each alone. `nil` (not a
+  # missing entry) when any of the three fails to build at all — a declaration only one side of the
+  # collision can make (the guard rejects it standing alone too) has nothing here to compare.
+  def declare_collision_trio(member, node)
+    both = declare_nested(member, node)
+    member_alone = declare_nested(member, nil)
+    node_alone = declare_nested(nil, node)
+    return nil if [both, member_alone, node_alone].any?(&:nil?)
+
+    [both, member_alone, node_alone]
+  end
+
+  # Whether `prop`'s RECONCILED type is "object" — the same question `object_property?` asks of the
+  # emitter's own merge, asked here from the outside (a spec may not reach into the emitter's private
+  # methods) since it decides which rows the keyword inventory below can meaningfully compare: a
+  # non-object collision takes the wholesale `allOf` branch, and everything that keyword-by-keyword
+  # reconciliation could conflate simply doesn't run for it.
+  def object_shaped_property?(prop)
+    type = prop.is_a?(Hash) ? prop[:type] : nil
+    type == "object" || (type.is_a?(Array) && type.include?("object"))
   end
 
   it "never accepts inbound a nested value the runtime rejects" do
@@ -504,5 +595,122 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     # satisfies its contract. Measured at 40.
     expect(live).to be > 30
     expect(wrong).to be_empty, "these nested contracts are satisfiable and their schemas are not:\n  #{wrong.join("\n  ")}"
+  end
+
+  # PRO-3441. Every example above asks whether the MERGED document agrees with the MERGED runtime — which
+  # needs a validator collision someone thought to write, because that is what the runtime side of the
+  # comparison is built from. This one needs nobody to have thought of anything.
+  #
+  # Each side of a collision is enforced UNCONDITIONALLY (PRO-3405: the runtime never lets one side simply
+  # win), and each side's own document, declared ALONE, already agrees with that side's own runtime — that
+  # is exactly what the flat and nested walks above spend their whole budget establishing. So a value the
+  # runtime accepts through a collision is a value BOTH sides' own runtimes accept, which is a value BOTH
+  # sides' own documents accept (declared alone). The contrapositive is the tripwire: whatever the MERGED
+  # document accepts that a side declared ALONE refuses cannot be a value the collision's own runtime
+  # accepts either — so if the merged document accepts it anyway, the merge is unsound, full stop, with no
+  # dependency on which keyword or which validator did it. This is what would have named `:enum` (PRO-3405)
+  # without anyone thinking of the case, and it is the corollary of the class of gap the map/subfield fix
+  # elsewhere in this PR closes.
+  #
+  # Excluded, both taken from the emitter rather than re-derived (`unrepresentable_deep_drop?` above):
+  # a residue means the emitted document ITSELF already admits it cannot state the full contract, and here
+  # that includes every `:conditional` stand-down too, not only `reported_inexpressible?`'s `:inherent`
+  # ones — a GATED side declared alone emits its full, unconditional property (nothing here closes its
+  # gate), so the merged document is legitimately LOOSER than that side's own alone document by design, not
+  # by defect. Verified: narrowing this exclusion to `:inherent` alone manufactures 8+ findings, every one a
+  # gated row whose own residue already names the gap.
+  def collision_reports_a_residue?(klass) = residues_for(klass).any?
+
+  it "never accepts merged what either colliding declaration would refuse alone" do
+    audited = 0
+    excluded = Hash.new(0)
+    wrong = []
+
+    nested_members.each do |mname, member|
+      nested_nodes.each do |nname, node|
+        trio = declare_collision_trio(member, node)
+        next if trio.nil?
+
+        both, member_alone, node_alone = trio
+        next if unrepresentable_deep_drop?(both)
+
+        if collision_reports_a_residue?(both)
+          residues_for(both).each { |path_and_residue| excluded[path_and_residue.last.kind] += 1 }
+          next
+        end
+
+        audited += 1
+        merged_doc = schemer(both.input_schema)
+        member_doc = schemer(member_alone.input_schema)
+        node_doc = schemer(node_alone.input_schema)
+
+        nested_payloads.each do |payload|
+          doc_payload = JSON.parse(JSON.generate("payload" => payload))
+          next unless merged_doc.valid?(doc_payload)
+          next if member_doc.valid?(doc_payload) && node_doc.valid?(doc_payload)
+
+          refuser = member_doc.valid?(doc_payload) ? "node" : "member"
+          wrong << "#{mname} / #{nname}: merged document accepts #{payload.inspect}, #{refuser}-alone " \
+                   "refuses it — merged #{both.input_schema.dig(:properties, :payload, :properties, :inner).inspect}"
+        end
+      end
+    end
+
+    # Both stand-down kinds must actually be reachable, or the exclusion above is decorative in one
+    # direction: `:conditional` from the gated member/node rows, `:inherent` from the transforming ones.
+    expect(excluded[:conditional]).to be > 0
+    expect(excluded[:inherent]).to be > 0
+    expect(audited).to be > 60
+    expect(wrong).to be_empty, "these merges accept what a side declared alone refuses:\n  #{wrong.join("\n  ")}"
+  end
+
+  # PRO-3441. The keyword-agnostic check above proves SOUNDNESS; this one proves the corpus actually
+  # EXERCISES the reconciliation it is meant to guard, so a keyword `merge_shape_member_property` stops
+  # reconciling cannot silently drop out of the audit's reach — and that a keyword starting to collide is a
+  # decision someone makes, not a diff nobody notices.
+  #
+  # Scoped to OBJECT-SHAPED collisions only (`object_shaped_property?` on both alone-sides): a non-object
+  # collision (two scalars, a union) takes `combine_two`'s wholesale `allOf` branch instead, where nothing
+  # is reconciled keyword-by-keyword at all — every value-level keyword differing there is EXPECTED and
+  # already covered by the acceptance tripwire above (an `allOf` conjoins by construction, never drops).
+  def reconciled_merge_keywords
+    %i[type format properties required minProperties maxProperties additionalProperties propertyNames enum]
+  end
+
+  it "collides only on keywords merge_shape_member_property actually reconciles" do
+    reconciled_seen = Hash.new(0)
+    unexpected = []
+
+    nested_members.each do |mname, member|
+      nested_nodes.each do |nname, node|
+        trio = declare_collision_trio(member, node)
+        next if trio.nil?
+
+        _both, member_alone, node_alone = trio
+        member_prop = member_alone.input_schema.dig(:properties, :payload, :properties, :inner) || {}
+        node_prop = node_alone.input_schema.dig(:properties, :payload, :properties, :inner) || {}
+        next unless object_shaped_property?(member_prop) && object_shaped_property?(node_prop)
+
+        (member_prop.keys & node_prop.keys).each do |key|
+          next if member_prop[key] == node_prop[key]
+
+          if reconciled_merge_keywords.include?(key)
+            reconciled_seen[key] += 1
+          else
+            unexpected << "#{mname} / #{nname}: #{key.inspect} collides (#{member_prop[key].inspect} vs " \
+                          "#{node_prop[key].inspect}) and is not in reconciled_merge_keywords"
+          end
+        end
+      end
+    end
+
+    # Every keyword the merge claims to reconcile must actually be EXERCISED by a real collision, or its
+    # branch is dead code the corpus never reaches — `:format` is asserted only by absence (the merge
+    # deletes it, so two colliding formats never both survive to compare) and is excluded from this floor
+    # for that reason, not because it goes unreconciled.
+    (reconciled_merge_keywords - [:format]).each do |key|
+      expect(reconciled_seen[key]).to be > 0, "#{key.inspect} never actually collided in this corpus"
+    end
+    expect(unexpected).to be_empty, "these keywords collide without a reconciliation rule:\n  #{unexpected.join("\n  ")}"
   end
 end

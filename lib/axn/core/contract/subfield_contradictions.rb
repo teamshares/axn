@@ -31,7 +31,6 @@ module Axn
         def check!(field_configs, subfield_configs, crossings: true)
           tree = Axn::Internal::SubfieldTree.build(field_configs, subfield_configs)
           check_unanswerable_segments!(tree) # first: an unreachable path moots any ambiguity on it
-          check_subfields_under_map!(tree)
           check_ambiguous_crossings!(tree) if crossings
           check_model_id_object_claim!(tree, field_configs)
           check_dead_nil_tolerance!(tree, field_configs)
@@ -243,52 +242,6 @@ module Axn
                 "lookup token and a nested object parent — the reflected schema can emit only one of the " \
                 "two, and which one survives follows declaration order. Rename the nested key, or drop the " \
                 "`model:` on :#{label.call(config.field)}."
-        end
-
-        # The MAP-PARENT check: a subfield read out of a Hash that declares `of:`. `of:` names what every key of
-        # that hash maps to, and a subfield names one of those keys — so the two describe the same keys two ways,
-        # and no reflected schema can state both. JSON Schema's `additionalProperties` applies only to keys
-        # `properties` does not match, so emitting the pair says a key named by a subfield is exempt from the
-        # `of:` the runtime enforces on it: a document the schema calls valid and the contract rejects.
-        #
-        # The `shape:` spelling of the same pairing IS permitted (PRO-3166's Hash exemption: a key the shape
-        # names is emitted as a `properties` entry, which `additionalProperties` does not govern, so the
-        # document and the runtime agree that the key is exempt). What separates the two is not the spelling
-        # but whether the exempt set is KNOWABLE where it is derived. A shape's is: its member keys are final
-        # at the node that carries it. A subfield's is not — the emitter puts more than subfield leaves in that
-        # node's `properties` (the nested keys a dotted `on:` introduces, `model:`'s generated `<field>_id`),
-        # and none of that is visible from the shape at declaration, where `_derive_shaped_keys!` runs. So the
-        # refusal stays, and stays worded "not supported yet": relaxing it later — once the exempt set can be
-        # derived from what the emitter actually emits at that node — must contradict nothing shipped.
-        #
-        # Judged over the whole candidate tree, like every check here, so neither declaration order gets through:
-        # the map may be declared before the subfield or after it, and every ancestor of the subfield is asked,
-        # so a dotted `on:` reading THROUGH a map is refused at any depth.
-        def check_subfields_under_map!(tree)
-          tree.index.each do |config, path|
-            next unless config.subfield? # a top-level config is read from no parent
-
-            path.ancestors.each do |(node, segment)|
-              blocker = node.configs.find { |c| map_valued?(c) }
-              raise_subfield_under_map!(config, blocker, segment) if blocker
-            end
-          end
-        end
-
-        # Whether a config declares a MAP, read through reflection's one derivation of an `of:` bag's container —
-        # the same answer the emitter acts on, so what this refuses and what would have been emitted cannot drift.
-        def map_valued?(config) = ::Hash.equal?(Axn::Internal::Reflection::Schema.of_container(config.validations))
-
-        # `segment` is the key read out of the MAP itself, which at depth is an intermediate rather than the
-        # subfield's own name — so the message names the key that actually collides with the `of:` as well as
-        # the two declarations that produced it.
-        def raise_subfield_under_map!(config, blocker, segment)
-          raise ArgumentError,
-                "subfield #{config.field.inspect} (on #{config.on.inspect}) names the key #{segment.inspect} of " \
-                "#{blocker.field.inspect}, which declares `of:` on a Hash — of: beside a subfield on a Hash is " \
-                "not supported yet: of: names what EVERY key of that hash maps to, while the subfield names one " \
-                "key of its own, so the reflected schema would exempt #{segment.inspect} from the of: the " \
-                "runtime enforces on it. Drop the `of:` on #{blocker.field.inspect}, or drop the subfield."
         end
 
         # The AMBIGUOUS-CROSSING check (PRO-3068): a config whose dotted `on:` tail resolves its parent

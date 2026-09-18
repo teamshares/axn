@@ -2,6 +2,7 @@
 
 require "axn/internal/subfield_tree"
 require "axn/internal/shape_graph"
+require "axn/internal/reflection/schema"
 
 module Axn
   module Core
@@ -108,18 +109,35 @@ module Axn
               validations = Internal::ShapeGraph.hash_or_nil(c.validations)
               validations && Internal::ShapeGraph.carries_key?(validations, :shape)
             end
-            next if shape_configs.empty?
 
             # Only a filter-leaf shape validates against the copied value; a non-`model:` node WITH subfield
             # children is rebuilt from those children alone, dropping shape-only members.
-            next if node.children.empty? || _ambient_model_node?(node)
+            if shape_configs.any? && !(node.children.empty? || _ambient_model_node?(node))
+              raise ArgumentError,
+                    "a `shape:` block on the ambient subfield `#{shape_configs.first.field}` is only supported when it " \
+                    "has no nested subfields — this node also has subfield children, so the ambient filter " \
+                    "rebuilds it from those children alone and the shape's members can't be validated. Declare " \
+                    "the nested structure ONE way: keep the `shape:` (validation only), or use subfields " \
+                    "(`expects :<member>, on: :#{shape_configs.first.field}`), which also give readers and `sensitive:`."
+            end
+
+            # PRO-3441. Off ambient, a Hash's `of:` bag colliding with a subfield is now permitted — the
+            # emitted SCHEMA conjoins the axis into the subfield's own property (`MAP_VALUE_EXEMPT_KEY`,
+            # `lib/axn/internal/reflection/schema.rb`), so the DOCUMENT still describes what the runtime
+            # enforces. That fix cannot reach here: this is not a document under-describing a VALUE the
+            # runtime still sees — `_filter_ambient_node` rebuilds a node WITH subfield children from
+            # those children ALONE, so the map's other keys are never even copied into the value a caller
+            # (a log line, a tag) receives, whatever the schema says. No conjunction closes a gap in data
+            # that was never there. Same placement rule as `shape:` above, same filter-leaf exemption.
+            map_configs = node.configs.select { |c| ::Hash.equal?(Axn::Internal::Reflection::Schema.of_container(c.validations)) }
+            next if map_configs.empty? || node.children.empty? || _ambient_model_node?(node)
 
             raise ArgumentError,
-                  "a `shape:` block on the ambient subfield `#{shape_configs.first.field}` is only supported when it " \
-                  "has no nested subfields — this node also has subfield children, so the ambient filter " \
-                  "rebuilds it from those children alone and the shape's members can't be validated. Declare " \
-                  "the nested structure ONE way: keep the `shape:` (validation only), or use subfields " \
-                  "(`expects :<member>, on: :#{shape_configs.first.field}`), which also give readers and `sensitive:`."
+                  "`of:` on the ambient subfield `#{map_configs.first.field}` is only supported when it has no " \
+                  "nested subfields — this node also has subfield children, so the ambient filter rebuilds it " \
+                  "from those children alone and the map's other keys are never copied. Declare the nested " \
+                  "structure ONE way: keep the `of:` (the value is copied whole, no subfield needed to reach a " \
+                  "key of it), or use subfields (`expects :<member>, on: :#{map_configs.first.field}`)."
           end
         end
 

@@ -13,6 +13,16 @@ module Axn
           EMPTY_ENUM = [].freeze
 
           NULL_BRANCH = { type: "null" }.freeze
+
+          # PRO-3441. Where a map's `of: { values: }` axis schema and its own exempt key set ride on a
+          # property until `Schema#finalize_residues!`'s final tree sweep conjoins them into every
+          # colliding key the axis's own `shape:` doesn't name — see that method and
+          # `Schema#conjoin_map_value_axes`. Lives here, not directly on `Schema`, because `Contents`
+          # (`map_values_schema`) writes it and only ever `require`s this file, not `schema.rb` itself —
+          # the same reason `EMPTY_ENUM`/`NULL_BRANCH` live here rather than on `Schema` directly
+          # (`standalone_require_spec.rb` catches a reference the referencing file's own requires can't
+          # satisfy).
+          MAP_VALUE_EXEMPT_KEY = :__axn_map_value_exempt
         end
       end
     end
