@@ -27,7 +27,8 @@ module Axn
       ASCII_ONLY = ::String.instance_method(:ascii_only?)
       ENCODE = ::String.instance_method(:encode)
       INSPECT = ::String.instance_method(:inspect)
-      private_constant :ENCODING, :VALID_ENCODING, :ASCII_ONLY, :ENCODE, :INSPECT
+      CLASS = ::Kernel.instance_method(:class)
+      private_constant :ENCODING, :VALID_ENCODING, :ASCII_ONLY, :ENCODE, :INSPECT, :CLASS
 
       class << self
         # A UTF-8 rendering of `string`'s bytes, or nil when they have none.
@@ -59,16 +60,41 @@ module Axn
         # escape, so the result is ASCII and joins to anything.
         def escaped(string) = INSPECT.bind_call(string)
 
-        # `string` as a frozen plain UTF-8 String axn owns, for writing into a message: byte-identical for
-        # ASCII, its text for another encoding, and the escaped spelling when the bytes have no UTF-8
-        # rendering at all. Escaping rather than scrubbing, because a message that names an offender must
-        # not quietly alter what it names; `Identity.utf8_string` takes the other fallback for text that has
-        # to render at any cost.
-        def renderable(string)
-          utf8 = utf8_rendering(string) || escaped(string)
+        # `string`'s bytes, joinable into a UTF-8 message: byte-identical for ASCII, its text for another
+        # encoding, and the escaped spelling when the bytes have no UTF-8 rendering at all. Escaping
+        # rather than scrubbing, because a message that names an offender must not quietly alter what it
+        # names; `Identity.utf8_string` takes the other fallback for text that has to render at any cost.
+        #
+        # BORROWED: may return the operand ITSELF (subclass and all) rather than a copy axn owns — the
+        # ASCII-only fast path in `utf8_rendering` does exactly that. Safe to COMPOSE (append into a
+        # buffer, interpolate as the last/only operand) and then drop, never to retain past that single
+        # use: the caller may still hold — or another object reachable from the SAME walk may still hold
+        # — a live, mutable reference to the exact bytes returned. A String is mutable in place
+        # (`force_encoding`, `replace`, `<<`), so if the caller evaluates MORE arbitrary code (a sibling's
+        # `#inspect`, another `format_object` call) before actually consuming this result, that code can
+        # mutate it out from under you — verified: it silently changes what gets composed, or raises
+        # `Encoding::CompatibilityError` composing it next to a genuinely non-ASCII sibling (PRO-3335
+        # review). `String#<<`/`#concat` copies bytes at the point of the call, so `buf << borrowed(x)`
+        # immediately after producing `x` is safe; collecting several `borrowed` results into an Array
+        # or a deferred string-interpolation template (which evaluates every operand before joining any
+        # of them) is NOT. When in doubt, or when the result is stored rather than immediately composed,
+        # use `renderable`, which always hands back a String axn owns and nothing else can reach.
+        #
+        # A plain `.class` is not enough to catch a subclass either way — a subclass can override `class`
+        # itself — which is why the check below is bound.
+        def borrowed(string)
+          rendered = utf8_rendering(string) || escaped(string)
+          return rendered if CLASS.bind_call(rendered).equal?(::String)
 
-          ::String.new(utf8).force_encoding(::Encoding::UTF_8).freeze
+          ::String.new(rendered).force_encoding(::Encoding::UTF_8).freeze
         end
+
+        # `string` as a frozen plain UTF-8 String axn owns and nothing else can reach — for writing into
+        # a message and RETAINING it: stored in an exception, returned to a caller, used as a Hash key,
+        # or composed alongside other operands with no immediate, ordered append to protect it.
+        # `borrowed` is the same rendering without the ownership copy, for a caller that composes the
+        # result into a buffer immediately (see its own comment) and never holds onto it past that.
+        def renderable(string) = ::String.new(borrowed(string)).force_encoding(::Encoding::UTF_8).freeze
       end
     end
   end
