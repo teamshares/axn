@@ -242,13 +242,106 @@ module Axn
               "it afterwards)."
       end
 
+      # The three methods ActiveModel's own `Clusivity#check_validity!` accepts a delimiter through —
+      # `include?` (a collection), `call` (a Proc/lambda or any other callable), `to_sym` (a Symbol, sent to
+      # the record as a method name). THE single definition, so the refusal below can never name a delimiter
+      # ActiveModel would in fact accept.
+      CLUSIVITY_DELIMITER_METHODS = %i[include? call to_sym].freeze
+
+      # Whether `name` is in `collection`'s method table as a PUBLIC method — the ownership mirror of
+      # `respond_to?(name)` (public-only, which is what `check_validity!` itself asks), read the way
+      # `certainly_resolved_per_call?` already reads it for `:call` alone: through the OWNER the method table
+      # names, never by dispatching `respond_to?` on the caller's object.
+      def public_method_owner?(collection, name)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, name)
+        !owner.nil? && Axn::Internal::NativeMethods.public_instance_method?(owner, name)
+      end
+
+      # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter — mirrored by
+      # OWNERSHIP rather than by dispatching `respond_to?` on the caller's object, for the reason
+      # `certainly_resolved_per_call?` gives. A collection carrying its own dispatch hooks (`method_missing`/
+      # `respond_to_missing?`) is undecidable without running it, and DOUBT MUST ANSWER "usable": refusing it
+      # would refuse a declaration ActiveModel — and the runtime — accepts, which is the one error a
+      # declaration-time guard may not make.
+      def usable_clusivity_delimiter?(collection)
+        return true if own_dispatch_hooks?(collection)
+
+        CLUSIVITY_DELIMITER_METHODS.any? { |name| public_method_owner?(collection, name) }
+      rescue StandardError
+        true
+      end
+
+      # Whether the `include?` ActiveModel would actually CALL is String's own. A String answers `include?`
+      # (so `usable_clusivity_delimiter?` above is true for it, and `check_validity!` declares it clean), but
+      # it is the one common delimiter whose membership test is not membership at all: `String#include?` is a
+      # SUBSTRING test, and raises `TypeError` for any value that is not itself a String. So `type: Integer,
+      # inclusion: { in: "12" }` declares cleanly and raises on every call — the same shape this guard exists
+      # to close, just past the one check that lets everything else through.
+      #
+      # Asked by OWNERSHIP, not by class: a String SUBCLASS that has not overridden `include?` inherits the
+      # same substring behaviour and is refused on the same terms, while one that overrides it decides its own
+      # membership and is exempt — the same rule `certainly_resolved_per_call?` applies to `call`.
+      def string_keyed_delimiter?(collection)
+        Axn::Internal::NativeMethods.method_owner(collection, :include?).equal?(::String)
+      rescue StandardError
+        false
+      end
+
+      # No delimiter at all: a long-form entry naming neither `in:` nor `within:` a TRUTHY value (an empty
+      # Hash, one carrying only `message:`/`if:`/…, or one whose only size key is falsy) reaches
+      # `check_validity!` with `delimiter` resolved to `nil`, which answers none of `include?`/`call`/`to_sym`
+      # and raises ActiveModel's own `ArgumentError` on EVERY call — the declares-cleanly-then-always-raises
+      # shape this guard exists to close, reported separately from the case below because there is no
+      # offending VALUE to describe.
+      def reject_missing_clusivity_delimiter!(key, where)
+        raise ArgumentError,
+              "#{key}: on #{where} names no set at all — neither `in:` nor `within:` carries a value. " \
+              "Declared, the class defines cleanly and every call raises ActiveModel's own `ArgumentError: An " \
+              "object with the method #include? or a proc, lambda or symbol is required, and must be supplied " \
+              "as the :in (or :within) option of the configuration hash` from Clusivity#check_validity! " \
+              "instead. Name the set: an Array or Range of members, a Symbol naming an action method that " \
+              "returns one, or a Proc/lambda called with the record."
+      end
+
+      # A delimiter ActiveModel's own `Clusivity#check_validity!` cannot use at all. Described BY CLASS,
+      # never by `inspect`: this is an error-reporting path over the caller's own value, and dispatching its
+      # `inspect` here would let it replace this ArgumentError with whatever IT raises instead — the same
+      # reason `reject_unreadable_mutable_container!` above and `_reject_invalid_length_bounds!` (contract.rb)
+      # read a caller value the same way.
+      def reject_unusable_clusivity_delimiter!(collection, key, where)
+        raise ArgumentError,
+              "#{key}: on #{where} names a set of class " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(collection)}, which " \
+              "ActiveModel cannot use — declared, the class defines cleanly and every call raises ActiveModel's " \
+              "own `ArgumentError: An object with the method #include? or a proc, lambda or symbol is " \
+              "required, and must be supplied as the :in (or :within) option of the configuration hash` from " \
+              "Clusivity#check_validity! instead. Name an Array or Range of members, a Set or Hash (whose keys " \
+              "are read as members), a Symbol naming an action method that returns a collection, or a " \
+              "Proc/lambda called with the record."
+      end
+
+      # A String delimiter — declares cleanly (a String answers `include?`) and raises on every call anyway;
+      # see `string_keyed_delimiter?` for why.
+      def reject_string_clusivity_delimiter!(collection, key, where)
+        raise ArgumentError,
+              "#{key}: on #{where} names a String as its set (of class " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(collection)}). A String " \
+              "answers membership by SUBSTRING, and raises `TypeError` for any value that is not itself a " \
+              "String — so declared, the class defines cleanly and every call raises unless the field's own " \
+              "value is a String. Name the members instead (`%w[a b c]`), or use `format:` for a " \
+              "substring/pattern check."
+      end
+
       # ONE clusivity entry, canonicalized. The bare shorthand becomes the long form its members belong in:
       # ActiveModel's `_parse_validates_options` maps only a Range or an Array to `{ in: }` and everything else
-      # to `{ with: }`, which reaches `check_validity!` with no delimiter and raises on every call.
+      # to `{ with: }`, which reaches `check_validity!` with no delimiter and raises on every call — so every
+      # bare delimiter ActiveModel could otherwise use (a Proc, a Symbol, a plain `include?`-answering object,
+      # a Set subclass) is wrapped into the long form here, exactly as the Set/Hash case already was
+      # (PRO-3319). One that ActiveModel could never use, in either spelling, is refused instead (PRO-3326).
       #
       # The entry is returned unchanged — by identity, which is how the caller knows not to write — whenever
-      # there is nothing to rewrite: an Array or Range set, a collection axn may not read, or a long form
-      # naming no set at all.
+      # there is nothing to rewrite: a collection axn may not read (frozen, so stored as declared), or a long
+      # form already naming a usable set.
       def canonical_clusivity_entry(entry, key: :inclusion, where: nil)
         graph = Axn::Internal::ShapeGraph
         options = graph.hash_or_nil(entry)
@@ -257,24 +350,37 @@ module Axn
           members = hash_keyed_set_members(entry)
           return { in: members } if members
 
-          reject_unreadable_mutable_container!(entry, key, where) if hash_keyed_container?(entry) && !certainly_resolved_per_call?(entry)
-          # A container whose members must not be read still needs the long form, and does not need reading to
-          # get it: the shorthand is a SPELLING that ActiveModel maps only for a Range or an Array, so leaving a
-          # bare Set as written sent it to `with:` and raised `ArgumentError` on every call. Wrapping the
-          # collection itself keeps its own `include?` answering membership while making the spelling valid.
-          return { in: entry } if hash_keyed_container?(entry)
+          if hash_keyed_container?(entry)
+            # A container whose members must not be read still needs the long form, and does not need reading
+            # to get it: the shorthand is a SPELLING that ActiveModel maps only for a Range or an Array, so
+            # leaving a bare Set as written sent it to `with:` and raised `ArgumentError` on every call.
+            # Wrapping the collection itself keeps its own `include?` answering membership while making the
+            # spelling valid.
+            reject_unreadable_mutable_container!(entry, key, where) unless certainly_resolved_per_call?(entry)
+            return { in: entry }
+          end
 
-          return entry
+          reject_unusable_clusivity_delimiter!(entry, key, where) unless usable_clusivity_delimiter?(entry)
+          reject_string_clusivity_delimiter!(entry, key, where) if string_keyed_delimiter?(entry)
+
+          return { in: entry }
         end
 
         set_key = declared_set_key(options, keys: CLUSIVITY_SET_KEYS)
-        return entry if set_key.nil?
+        reject_missing_clusivity_delimiter!(key, where) if set_key.nil?
 
         collection = options[set_key]
         members = hash_keyed_set_members(collection)
         return options.merge(set_key => members) if members
 
-        reject_unreadable_mutable_container!(collection, key, where) if hash_keyed_container?(collection) && !certainly_resolved_per_call?(collection)
+        if hash_keyed_container?(collection)
+          reject_unreadable_mutable_container!(collection, key, where) unless certainly_resolved_per_call?(collection)
+          return entry
+        end
+
+        reject_unusable_clusivity_delimiter!(collection, key, where) unless usable_clusivity_delimiter?(collection)
+        reject_string_clusivity_delimiter!(collection, key, where) if string_keyed_delimiter?(collection)
+
         entry
       end
 
