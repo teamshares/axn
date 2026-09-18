@@ -282,7 +282,17 @@ module Axn
             # colliding declaration's) is the exempt set the runtime actually applies, and it can only be
             # known here, where the bag that produced it is still in hand. `finalize_residues!` conjoins
             # this into every OTHER named property once the tree is final — see `MAP_VALUE_EXEMPT_KEY`.
-            unless node.empty?
+            #
+            # `for_output:` gated (round 9, PR #285): `Schema.build_output` never calls
+            # `finalize_residues!` at all — `exposes` has no subfield/`on:` mechanism to collide a second
+            # declaration onto this key with (`_reject_duplicate_fields!` already refuses two `exposes`
+            # naming the same field, the only other way a wire key could see two routes), so nothing on
+            # the output side is ever left to conjoin this INTO. Attaching it unconditionally leaked a
+            # private `__axn_map_value_exempt` key (a Hash carrying a Ruby `Set`) straight into
+            # `output_schema` for ANY exposed map with a `values:` axis, collision or not — reproduced
+            # directly: `exposes :counts, type: Hash, of: { values: Integer }` alone, no collision at all,
+            # returned it in `output_schema` and corrupted `JSON.generate`'s rendering of the Set.
+            unless node.empty? || for_output
               exempt = Set.new(Array(bag[:shaped_keys]))
               node = node.merge(MAP_VALUE_EXEMPT_KEY => [{ schema: values, exempt: }])
             end
