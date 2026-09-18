@@ -42,6 +42,12 @@ module Axn
       # @param context_instance [Object, nil] Action instance for instance-level context_for_logging
       # @param context_data [Hash, nil] Raw data for class-level context_for_logging
       # @param facets [Hash, nil] Resolved observability facets ({ tags:, dimensions: }) to annotate the line with
+      # @param level_checked [Boolean] Set by a caller that already confirmed `would_log?(level)` itself
+      #   (the Executor's before/after hooks — PRO-3335) so this doesn't ask the logger's severity
+      #   predicate a SECOND time. Skipping a second call isn't just about cost: a custom predicate that
+      #   isn't idempotent (a sampling logger whose `info?` alternates or answers probabilistically) could
+      #   otherwise pass the caller's precheck and then fail this one, dropping a line the precheck said
+      #   would be kept — after the caller had already paid to build it.
       def log_at_level( # rubocop:disable Metrics/ParameterLists
         action_class,
         level:,
@@ -54,7 +60,8 @@ module Axn
         context_direction: nil,
         context_instance: nil,
         context_data: nil,
-        facets: nil
+        facets: nil,
+        level_checked: false
       )
         return unless level
 
@@ -64,7 +71,8 @@ module Axn
           # other formatting failure here — some callers (call_async's invocation log, the
           # enqueue-all completion log) invoke log_at_level with no other best_effort wrapping it, so
           # checking the predicate outside this boundary could abort the call it only meant to log.
-          next unless would_log?(level)
+          # `level_checked` skips this for a caller that already ran it (see the kwarg's own doc above).
+          next unless level_checked || would_log?(level)
 
           # Prepare and format context if needed
           context_str = if context_instance && context_direction
@@ -181,9 +189,9 @@ module Axn
             # `.map` collects every fragment first and `.join` copies them only at the very end. That
             # distinction is what makes it safe for a fragment to be a BORROWED rendering (see
             # `Text.borrowed`, `PropertyNames.renderable_label`'s Symbol fast path): a later sibling's
-            # `#inspect` mutating an earlier one's returned String in place (verified: it silently swaps
-            # in the mutated bytes, or raises `Encoding::CompatibilityError` composing next to a
-            # genuinely non-ASCII sibling — PRO-3335 review) can't reach bytes `<<` already copied.
+            # `#inspect` mutating an earlier one's returned String in place — which silently swaps in
+            # the mutated bytes, or raises `Encoding::CompatibilityError` composing next to a genuinely
+            # non-ASCII sibling — can't reach bytes `<<` already copied.
             buf = +"{"
             data.each_with_index do |(k, v), i|
               buf << ", " if i.positive?

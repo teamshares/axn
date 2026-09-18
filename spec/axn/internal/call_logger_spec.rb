@@ -61,9 +61,9 @@ RSpec.describe Axn::Internal::CallLogger do
       expect(formatted.scan("café").length).to eq(2)
     end
 
-    # PRO-3335 review: `Text.borrowed` may hand a leaf's rendering back BY IDENTITY — the caller's own
-    # mutable String — instead of a copy axn owns, whenever the bytes are already ASCII-only or valid
-    # UTF-8. If `format_object` composed several leaves via a DEFERRED join (`.map { ... }.join(', ')`,
+    # `Text.borrowed` may hand a leaf's rendering back BY IDENTITY — the caller's own mutable String —
+    # instead of a copy axn owns, whenever the bytes are already ASCII-only or valid UTF-8. If
+    # `format_object` composed several leaves via a DEFERRED join (`.map { ... }.join(', ')`,
     # or a string-interpolation template — both evaluate EVERY operand before concatenating any of
     # them), a LATER sibling's `#inspect` could mutate an EARLIER leaf's already-computed-but-not-yet-
     # copied bytes out from under it before the final compose runs — verified to silently swap in the

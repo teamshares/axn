@@ -518,10 +518,10 @@ module Axn
         # else can hold a mutable alias to it, which is exactly the hazard this has to rule out. A caller-
         # supplied String key is NOT safe to hand back by identity: a hostile sibling value's `#inspect`,
         # evaluated while a Hash/Array is being walked, can hold another live reference to that exact
-        # String and mutate it (`force_encoding`/`replace`) before the walker composes it — verified to
-        # produce a wrong rendering or an `Encoding::CompatibilityError`, the exact failure `Text`'s
-        # ownership-copy contract exists to close (PRO-3335 review). So a String key — and the `to_s`
-        # fallback, equally a value the caller or a `to_s` override could still hold — keeps the owned
+        # String and mutate it (`force_encoding`/`replace`) before the walker composes it, producing a
+        # wrong rendering or an `Encoding::CompatibilityError` — the exact failure `Text`'s ownership-
+        # copy contract exists to close. So a String key — and the `to_s` fallback, equally a value the
+        # caller or a `to_s` override could still hold — keeps the owned
         # copy via `canonical_wire_key`. `utf8_rendering` alone (no `escaped` fallback) preserves the
         # nil-for-unrenderable contract `canonical_wire_key` has: `renderable_label` falls back to
         # `inspect_field_name` on nil either way.

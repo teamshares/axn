@@ -878,6 +878,7 @@ module Axn
           error_context: "logging before hook",
           context_direction: :inbound,
           context_instance: @action,
+          level_checked: true, # already confirmed above — see log_at_level's own doc on the kwarg
         )
       end
 

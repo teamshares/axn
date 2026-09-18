@@ -446,4 +446,34 @@ RSpec.describe Axn::Core::AutomaticLogging do
       action.call
     end
   end
+
+  # The Executor's before/after hooks precheck `would_log?` and thread the result through to
+  # `CallLogger.log_at_level` (`level_checked:`) rather than letting it check again. A STATEFUL custom
+  # predicate — a sampling logger whose `info?`/etc. alternates or is otherwise non-idempotent — could
+  # otherwise answer differently between two calls: pass the precheck (building the message/separator/
+  # facets for nothing) and then fail the second, silently dropping a line the precheck said would be
+  # kept.
+  describe "the severity predicate is queried exactly once per emitted line" do
+    # `_auto_log_before_level` IS `_auto_log_levels[:success]` (the before-line tracks the success
+    # level), so `auto_log :info` emits exactly two lines for a successful call — before and after —
+    # and each must query the predicate exactly once: 2 calls total, not 4.
+    it "does not re-query a custom logger's predicate per line, only once per line" do
+      alternating_logger = Class.new do
+        def initialize = @calls = 0
+        # Alternates true/false — an unfixed double-check would flip between the precheck and
+        # `log_at_level`'s own check, dropping a line the precheck said would be kept.
+        def info? = (@calls += 1).odd?
+        def info(*) = nil
+        attr_reader :calls
+      end.new
+      # Overrides the file's top-level `before { allow(Axn.config).to receive(:logger)... }`, which
+      # otherwise intercepts every `Axn.config.logger` READ regardless of what a direct assignment sets.
+      allow(Axn.config).to receive(:logger).and_return(alternating_logger)
+      action = build_axn { auto_log :info }
+
+      action.call
+
+      expect(alternating_logger.calls).to eq(2)
+    end
+  end
 end

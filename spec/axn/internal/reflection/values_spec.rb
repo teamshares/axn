@@ -1250,7 +1250,7 @@ RSpec.describe Axn::Internal::Reflection::Values do
     # The safety invariant this design turns on, pinned so a future "optimization" can't remove it
     # without re-deriving the argument: a caller-supplied String key IS still copied, because nothing
     # rules out another live reference to that exact object being mutated while a Hash/Array walk is
-    # composing it (PRO-3335 review — see the method's own comment for the reproduced failure).
+    # composing it — see the method's own comment for the reproduced failure.
     it "still copies a String key rather than returning it by identity" do
       key = +"status"
 
