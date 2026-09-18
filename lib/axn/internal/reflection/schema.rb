@@ -334,10 +334,20 @@ module Axn
         # `detach_flat_axis_schema` still allocates one fresh Array PER CONTAINER, per colliding property —
         # measured directly: 100 colliding properties beside a 500,000-empty-Array `inclusion:` set took
         # ~7s to build ONE schema, entirely under the byte cap. What is actually being duplicated is
-        # OBJECTS, not merely bytes, and a container is an object whether or not it holds any of its own —
-        # this charges that unconditionally, so a large container COUNT is bounded the same way a large
-        # byte count already is.
+        # OBJECTS, not merely bytes, and a container is an object whether or not it holds any of its own.
         AXIS_CONTAINER_OVERHEAD = 8
+
+        # The SAME idea one level down: a fixed MINIMUM charge per Array SLOT / Hash ENTRY, not only per
+        # container — round 8 (PR #285) found the container charge closes a container COUNT but not a
+        # SLOT count: `Array.new(500_000) { "" }` is still ONE container (charged once) holding 500,000
+        # zero-byte Strings (charged nothing each), so the round-7 fix left this at ~8 bytes total while
+        # `detach_flat_axis_schema` still `.dup`s 500,000 Strings and allocates a 500,000-slot Array PER
+        # colliding property — measured directly: 100 colliding properties beside a 500,000-empty-string
+        # `inclusion:` set took ~7.4s, the identical shape of gap the container charge closed one level up.
+        # `[actual, AXIS_SLOT_OVERHEAD].max`, not a flat add, so a slot whose own content is already
+        # correctly charged more than this floor (a real string, a nested container) is not double-counted
+        # — only a slot cheaper than the floor is raised to it, which is exactly the case this closes.
+        AXIS_SLOT_OVERHEAD = 8
 
         # The cost of duplicating a schema, estimated WITHOUT serializing it. PRO-3441 round 6 (PR #285):
         # `JSON.generate` is not safe here — it can RAISE on a legal Ruby literal JSON cannot encode
@@ -355,9 +365,9 @@ module Axn
         # literal would, rather than silently duplicating something reflection cannot safely look inside.
         def axis_leaf_payload_size(value)
           if value.instance_of?(::Hash)
-            AXIS_CONTAINER_OVERHEAD + value.sum { |k, v| axis_leaf_payload_size(k) + axis_leaf_payload_size(v) }
+            AXIS_CONTAINER_OVERHEAD + value.sum { |k, v| [axis_leaf_payload_size(k) + axis_leaf_payload_size(v), AXIS_SLOT_OVERHEAD].max }
           elsif value.instance_of?(::Array)
-            AXIS_CONTAINER_OVERHEAD + value.sum { |v| axis_leaf_payload_size(v) }
+            AXIS_CONTAINER_OVERHEAD + value.sum { |v| [axis_leaf_payload_size(v), AXIS_SLOT_OVERHEAD].max }
           elsif value.instance_of?(::String)
             AXIS_STRING_BYTESIZE.bind_call(value)
           elsif value.instance_of?(::Symbol) || value.instance_of?(::Integer) || value.instance_of?(::Float) ||
