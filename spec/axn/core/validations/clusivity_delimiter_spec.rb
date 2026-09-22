@@ -26,6 +26,16 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
   member_struct = Struct.new(:field, :validations)
   my_set = Class.new(Set)
 
+  # `outcome` distinguishes a genuine rejection from a declaration-time raise, so a test cannot pass by trading
+  # one failure mode for the other (mirrors `clusivity_set_canonicalization_spec.rb`'s own classifier). Shared
+  # across every describe block below that enforces a delimiter end to end.
+  def outcome(result)
+    return :pass if result.ok?
+
+    exception = result.exception
+    exception.nil? || exception.is_a?(Axn::InboundValidationError) ? :reject : :raise
+  end
+
   # Every position a clusivity entry can be declared at — the field path's seven from
   # `clusivity_set_canonicalization_spec.rb`, plus the two more `invalid_length_bounds_spec.rb` covers for the
   # identical declares-cleanly-then-raises shape (`exposes`, `Axn::Factory.build`).
@@ -186,13 +196,6 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
     # String subclass carrying a public `call` (returning the real collection) is resolved through that `call`
     # and its inherited substring `include?` is never invoked at all — refusing it would refuse a declaration
     # ActiveModel and the runtime both accept (Codex, PR #288).
-    def outcome(result)
-      return :pass if result.ok?
-
-      exception = result.exception
-      exception.nil? || exception.is_a?(Axn::InboundValidationError) ? :reject : :raise
-    end
-
     it "does not refuse a String SUBCLASS resolved per call, and enforces the resolved collection" do
       callable = Class.new(String) { def call(_record) = %w[a b] }
 
@@ -227,13 +230,6 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
   # `outcome` distinguishes a genuine rejection from the raise this fix removes, so a test cannot pass by
   # trading one failure mode for the other (mirrors `clusivity_set_canonicalization_spec.rb`'s own classifier).
   describe "bare delimiters that now WORK instead of raising on every call" do
-    def outcome(result)
-      return :pass if result.ok?
-
-      exception = result.exception
-      exception.nil? || exception.is_a?(Axn::InboundValidationError) ? :reject : :raise
-    end
-
     {
       "a bare Proc" => ->(_record) { [1] },
       "a bare Symbol naming an action method" => :allowed_values,
@@ -258,6 +254,42 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         expect(outcome(action.call(par: [1]))).to eq(:pass)
         expect(outcome(action.call(par: [2]))).to eq(:reject)
       end
+    end
+  end
+
+  # Two ways ActiveModel's OWN `check_validity!`/`resolve_value` pair can accept and correctly enforce a
+  # delimiter through the caller's own dynamic dispatch, which axn's guard used to refuse (Codex, PR #288):
+  describe "delimiters resolved through the caller's own dynamic dispatch, which now WORK" do
+    # `check_validity!` calls `delimiter.respond_to?(...)` directly — Ruby dispatches whichever the caller's
+    # class defines, so overriding `respond_to?` ITSELF (not just the conventional `respond_to_missing?` hook)
+    # governs the answer just as completely. The actual membership dispatch (`include?`) then reaches
+    # `method_missing` via `public_send`, which never consults `respond_to?` at all.
+    it "declares and enforces a delimiter whose respond_to? is overridden directly, with include? reached through method_missing" do
+      proxy = Object.new
+      def proxy.respond_to?(name, *a) = name == :include? || super
+      def proxy.method_missing(name, *args) = name == :include? ? args.first == 1 : super # rubocop:disable Style/MissingRespondToMissing
+
+      action = build_axn { expects :v, inclusion: { in: proxy } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 2))).to eq(:reject)
+    end
+
+    # A genuinely public `to_sym` clears `check_validity!` on its own (no doubtful hook needed at all), but
+    # `resolve_value` never actually calls `to_sym` — a non-Symbol falls through to `members = value` and then
+    # `value.include?(record_value)` via `public_send`. When that `include?` is reached only through
+    # `method_missing`, the object is still usable end to end, even with no `respond_to_missing?`/`respond_to?`
+    # override at all: `public_send` doesn't consult either.
+    it "declares and enforces a to_sym-only delimiter whose include? is reached through method_missing" do
+      stub_const("ToSymPlusMethodMissing", Class.new do
+        def to_sym = :whatever
+        def method_missing(name, *args) = name == :include? ? args.first == 1 : super # rubocop:disable Style/MissingRespondToMissing
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: ToSymPlusMethodMissing.new } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 2))).to eq(:reject)
     end
   end
 
@@ -308,13 +340,9 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         .to raise_error(ArgumentError, /names a set of class Object, which ActiveModel cannot use/)
     end
 
-    it "never calls the caller's own respond_to?/is_a?/inspect while judging or reporting an unusable delimiter" do
+    it "never calls the caller's own is_a?/inspect while judging or reporting an unusable delimiter" do
       dispatched = []
       hostile = Object.new
-      hostile.define_singleton_method(:respond_to?) do |*a|
-        dispatched << :respond_to?
-        super(*a)
-      end
       hostile.define_singleton_method(:is_a?) do |*a|
         dispatched << :is_a?
         super(*a)
@@ -328,6 +356,30 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         expect(e.message).not_to include("HOSTILE")
       end
       expect(dispatched).to eq([])
+    end
+
+    # A caller who overrides `respond_to?` ITSELF (rather than the conventional `respond_to_missing?` hook)
+    # governs `check_validity!`'s answer just as completely, and just as undecidably without running it —
+    # DOUBT MUST ANSWER "usable" here too (Codex, PR #288). Still never DISPATCHED by axn's own declaration-time
+    # judgment: `dispatched` only ever grows once the action actually calls, from ActiveModel's real runtime
+    # probe, never from `build_axn` itself.
+    it "declares a delimiter reachable only through the caller's own overridden respond_to? (doubt permits), never dispatching it at declaration" do
+      dispatched = []
+      proxy = Object.new
+      proxy.define_singleton_method(:respond_to?) do |name, *a|
+        dispatched << :respond_to? if @tracking
+        name == :include? || super(name, *a)
+      end
+      proxy.define_singleton_method(:method_missing) { |name, *args| name == :include? ? args.first == 1 : super(name, *args) }
+
+      action = nil
+      expect { action = build_axn { expects :v, inclusion: { in: proxy } } }.not_to raise_error
+      expect(dispatched).to eq([])
+
+      proxy.instance_variable_set(:@tracking, true)
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 2))).to eq(:reject)
+      expect(dispatched).not_to be_empty
     end
   end
 end
