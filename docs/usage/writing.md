@@ -695,7 +695,7 @@ The ordering is forced, not incidental: a `before` hook that reads `user` needs 
 
 Two things decide what runs: **where** a call halts decides which hooks run, and **what kind** of halt it is decides the outcome and which callbacks fire. A "halt" here is any of a raise, `fail!`, or `done!` — they unwind the hooks identically, so the first table holds for all three (✓ runs, — does not):
 
-| Where the call halts | `before` | `around`, up to `chain.call` | `around`, after `chain.call` | `around` `ensure` | `around` `rescue` sees it | `after` |
+| Where the call halts | `before`⁴ | `around`, up to `chain.call` | `around`, after `chain.call` | `around` `ensure` | `around` `rescue` sees it | `after`⁴ |
 | --- | --- | --- | --- | --- | --- | --- |
 | Inbound validation fails | — | — | — | — | — | — |
 | An inbound `preprocess:` or `default:` halts during inbound validation¹ | — | — | — | — | — | — |
@@ -710,6 +710,8 @@ Two things decide what runs: **where** a call halts decides which hooks run, and
 ¹ Inbound validation resolves a field's `preprocess:`/`default:` when it checks that field, which it does for any field carrying a validation — including the implicit presence check on a required field. A field with none resolves on first read instead, so a halt from it lands wherever that read happens (usually `call`) and follows that row.
 
 ³ For these rows the `around` columns describe the hooks *enclosing* the one that halted (declared before it, or in a parent class). The halting hook itself behaves like any Ruby method: its statements after the halt don't run, and its own `rescue`/`ensure` do.
+
+⁴ ✓ means the phase was entered. Its hooks run one after another with no rescue between them, so a halt ends the phase: a `before` hook that halts skips the `before` hooks after it, and likewise for `after`.
 
 | Kind of halt | Outcome | Callbacks |
 | --- | --- | --- |

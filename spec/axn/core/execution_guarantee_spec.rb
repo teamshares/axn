@@ -227,6 +227,42 @@ RSpec.describe "Hook and callback execution guarantee" do
     it_behaves_like "the execution guarantee", hooks: observed_halt.call(:call), outcome: :exception
   end
 
+  # A ✓ in the before/after columns means the phase was entered: hooks within a phase run one after
+  # another, so a halt ends the phase and later hooks in it never run.
+  describe "a halt within a phase of several hooks" do
+    def run_phases(halting)
+      trace = []
+      action = build_axn do
+        %i[before_1 before_2].each do |name|
+          before do
+            trace << name
+            raise "#{name} raised" if name == halting
+          end
+        end
+        %i[after_1 after_2].each do |name|
+          after do
+            trace << name
+            raise "#{name} raised" if name == halting
+          end
+        end
+        define_method(:call) { trace << :call }
+      end
+      [action.call, trace]
+    end
+
+    it "skips the before hooks after a halting before hook, and everything after it" do
+      result, trace = run_phases(:before_1)
+      expect(result.outcome).to be_exception
+      expect(trace).to eq(%i[before_1])
+    end
+
+    it "skips the after hooks after a halting after hook" do
+      result, trace = run_phases(:after_1)
+      expect(result.outcome).to be_exception
+      expect(trace).to eq(%i[before_1 before_2 call after_1])
+    end
+  end
+
   # call! runs the same hooks and fires the same callbacks; it only raises afterwards.
   describe "call!" do
     def run_bang(declare: nil, body: nil, **inputs)
