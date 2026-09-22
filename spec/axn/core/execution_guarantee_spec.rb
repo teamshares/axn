@@ -162,6 +162,22 @@ RSpec.describe "Hook and callback execution guarantee" do
     it_behaves_like "the execution guarantee", hooks: ran_to_completion, outcome: :exception
   end
 
+  # The documented limit on "callbacks observe every settled call": in an async retry, the default
+  # `:first_and_exhausted` reporting mode gates `on_exception` per attempt, while `on_error` still fires.
+  context "when a call raises on an intermediate async retry" do
+    subject(:traced) do
+      retry_context = Axn::Async::RetryContext.new(adapter: :sidekiq, attempt: 2, max_retries: 5)
+      Axn::Async::CurrentRetryContext.with(retry_context) { run_traced(body: proc { raise ArgumentError, "raised" }) }
+    end
+
+    it "settles as an exception but fires only on_error" do
+      result, trace = traced
+      expect(result.outcome).to be_exception
+      hooks = observed_halt.call(:call)
+      expect(trace).to eq(hooks + %i[on_error])
+    end
+  end
+
   # Framework observability sits OUTSIDE the contract, so a call that never reaches the hooks is still
   # traced, timed and logged.
   describe "framework observability on a call settled before the hooks" do
