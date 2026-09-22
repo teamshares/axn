@@ -124,6 +124,10 @@ module Axn
         # for Array's and Hash's own.
         MENTIONABLE_MAP = ::Array.instance_method(:map)
         MENTIONABLE_EACH_PAIR = ::Hash.instance_method(:each_pair)
+        SAME_STRING = ::String.instance_method(:==)
+        ARRAY_SIZE = ::Array.instance_method(:size)
+        ARRAY_AT = ::Array.instance_method(:[])
+        HASH_TO_A = ::Hash.instance_method(:to_a)
         private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
 
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
@@ -2091,7 +2095,7 @@ module Axn
               baseline = build_property(config.with(validations: context), subfield: true)
               fragment = build_property(config.with(validations: context.merge(key => opt)), subfield: true)
               fragment = fragment.except(*RESIDUE_UNGATEABLE_KEYS).reject do |name, value|
-                baseline[name] == value || unconditionally_enforced?(stated, name, value)
+                same_schema_value?(baseline[name], value) || unconditionally_enforced?(stated, name, value)
               end
               next if fragment.empty?
 
@@ -2102,13 +2106,41 @@ module Axn
         end
 
         # Whether `node` asserts `name: value` on every call: at its top level, or in any `allOf` conjunct.
-        # An `anyOf` branch asserts nothing on its own. Compared by rendering, so a NaN matches itself and
-        # no caller literal's `==` runs.
+        # An `anyOf` branch asserts nothing on its own.
         def unconditionally_enforced?(node, name, value)
           return false unless node.is_a?(::Hash)
-          return true if node.key?(name) && render_constraint({ name => node[name] }) == render_constraint({ name => value })
+          return true if node.key?(name) && same_schema_value?(node[name], value)
 
           Array(node[:allOf]).any? { |conjunct| unconditionally_enforced?(conjunct, name, value) }
+        end
+
+        # Equality of two schema values that neither loses information nor asks a caller's literal anything.
+        # Rendering would do the first (`Float::INFINITY` and `"Infinity"` render alike) and `==` the second.
+        # Primitives compare by exact class and value, a NaN matching itself; exact containers compare
+        # positionally through their own unbound methods; anything else is equal only to itself. A false
+        # "different" costs a redundant report; a false "same" would hide a real one.
+        def same_schema_value?(one, other)
+          return true if Axn::Internal::Identity.same?(one, other)
+
+          klass = Axn::Internal::Identity.class_of(one)
+          Axn::Internal::Identity.same?(klass, Axn::Internal::Identity.class_of(other)) && same_instance_value?(klass, one, other)
+        end
+
+        def same_instance_value?(klass, one, other)
+          if Axn::Internal::Identity.same?(klass, ::Integer) then one == other
+          elsif Axn::Internal::Identity.same?(klass, ::Float) then one == other || (one.nan? && other.nan?)
+          elsif Axn::Internal::Identity.same?(klass, ::String) then SAME_STRING.bind_call(one, other)
+          elsif Axn::Internal::Identity.same?(klass, ::Array) then same_elements?(one, other)
+          elsif Axn::Internal::Identity.same?(klass, ::Hash) then same_elements?(HASH_TO_A.bind_call(one), HASH_TO_A.bind_call(other))
+          else
+            false
+          end
+        end
+
+        def same_elements?(one, other)
+          size = ARRAY_SIZE.bind_call(one)
+          size == ARRAY_SIZE.bind_call(other) &&
+            (0...size).all? { |i| same_schema_value?(ARRAY_AT.bind_call(one, i), ARRAY_AT.bind_call(other, i)) }
         end
 
         def conditional_checks?(config)

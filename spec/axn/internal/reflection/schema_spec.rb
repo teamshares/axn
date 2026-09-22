@@ -6618,6 +6618,30 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(inner[:description]).not_to include('"minLength":1')
             end
 
+            # Rendering is lossy — `Float::INFINITY` and `"Infinity"` render alike, as do two opaque values
+            # with one `to_s` — so "already enforced" is decided on the values themselves, never on prose,
+            # and without asking a caller's literal anything.
+            it "does not treat a constraint that merely renders alike as already enforced" do
+              config = build_axn do
+                expects :value, type: String, inclusion: { in: ["Infinity"], if: -> { false } }
+              end.internal_field_configs.first
+              summaries = described_class.send(:gating_residues, [config], enforced: { enum: [Float::INFINITY] }).map(&:summary)
+
+              expect(summaries.join).to include('{"enum":["Infinity"]}')
+            end
+
+            it "never asks an enforced opaque literal to render itself" do
+              rendered = 0
+              opaque = Class.new { define_method(:to_s) { (rendered += 1) && "x" } }.new
+              config = build_axn do
+                expects :value, type: String, inclusion: { in: ["x"], if: -> { false } }
+              end.internal_field_configs.first
+              summaries = described_class.send(:gating_residues, [config], enforced: { enum: [opaque] }).map(&:summary)
+
+              expect(summaries.join).to include('{"enum":["x"]}')
+              expect(rendered).to eq(0)
+            end
+
             it "reports nothing when a conditional type restates one enforced through an allOf conjunct" do
               klass = Class.new do
                 include Axn
