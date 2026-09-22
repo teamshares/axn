@@ -124,6 +124,10 @@ module Axn
         # for Array's and Hash's own.
         MENTIONABLE_MAP = ::Array.instance_method(:map)
         MENTIONABLE_EACH_PAIR = ::Hash.instance_method(:each_pair)
+        SAME_STRING = ::String.instance_method(:==)
+        ARRAY_SIZE = ::Array.instance_method(:size)
+        ARRAY_AT = ::Array.instance_method(:[])
+        HASH_TO_A = ::Hash.instance_method(:to_a)
         private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
 
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
@@ -173,6 +177,7 @@ module Axn
 
         # Metadata is not a validator contribution. In particular, a default applies independently
         # of validator gates and must never be included in a conditional fragment.
+        SIBLING_DEPENDENT_KEYWORDS = %i[additionalProperties].freeze
         RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY, Vocabulary::MAP_VALUE_EXEMPT_KEY].freeze
 
         GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
@@ -1851,15 +1856,16 @@ module Axn
         # Two sides that are both unknown-class hints fall back to the same permissive shape and cannot
         # contradict each other, so neither is stripped.
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [], &complete_own)
-          sides, residues = gate_resolved_sides([[member_prop, member_configs], [own_prop, own_configs, complete_own]])
+          sides, gated = gate_resolved_sides([[member_prop, member_configs], [own_prop, own_configs, complete_own]])
           combined, origins = sides.reduce { |left, right| combine_two(left, right) }
           combined = project_collision_checks(combined, origins)
           prop, carried = left_of([combined, origins])
-          (carried + residues).reduce(prop) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
+          (carried + gating_residues(gated, enforced: prop)).reduce(prop) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
         end
 
         # Every side to be combined, with each CONDITIONAL one replaced by the always-run property of each
-        # config that contributed to it — and the residues naming what those conditions still enforce.
+        # config that contributed to it — and those configs, whose residues are named once the combined
+        # node shows what it already enforces.
         #
         # A conditional side expands to one side PER config rather than being collapsed here, which is the
         # whole point of the shape: the combination then runs through `combine_two` exactly as any other
@@ -1867,12 +1873,12 @@ module Axn
         # transform stands down — none of it reimplemented. Combining projections with bespoke logic beside
         # the real conjunction is what diverged from it three times.
         def gate_resolved_sides(sides)
-          residues = []
+          gated = []
           expanded = sides.flat_map do |prop, configs, complete|
             projections = if configs.none? { |config| conditional_checks?(config) || branch_projection_required?(config) }
                             [[prop, configs]]
                           else
-                            residues.concat(gating_residues(configs))
+                            gated.concat(configs)
                             configs.map do |config|
                               full = build_property(config, subfield: true)
                               [carry_metadata(projected_property(config, full), prop), [config]]
@@ -1883,7 +1889,7 @@ module Axn
             projections.each { |side| complete.call(side.first) } if complete
             projections
           end
-          [expanded, residues]
+          [expanded, gated]
         end
 
         # Two sides combined: the one place that decides what "both of these apply" emits, whatever the
@@ -2033,10 +2039,19 @@ module Axn
               prefix += "after transformation, " if transforms_wire_value?([config])
               subject = key == :absence ? "blankness" : "the runtime value or its string form"
               record_residue(reported, "#{prefix}#{key} checks #{subject} for #{missing.join(', ')} values; " \
-                                       "JSON Schema cannot fully express this check (#{render_constraint({ key => options })})",
+                                       "JSON Schema cannot fully express this check " \
+                                       "(#{render_constraint({ key => ungated_options(options) })})",
                              kind: conditional ? :conditional : :inherent)
             end
           end
+        end
+
+        # A gate is a Proc or method name, not a constraint: rendering one puts an object address into the
+        # document. The residue's prefix already says the check is conditional.
+        def ungated_options(options)
+          return options unless Axn::Internal::Identity.kind?(options, ::Hash)
+
+          options.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
         end
 
         def value_check_emitted?(type, key, options)
@@ -2062,8 +2077,15 @@ module Axn
         # Project each gated validator in isolation. Comparing full and ungated schemas confuses
         # composition with ownership: two patterns become allOf, while one remains a plain pattern.
         # No unconditional validator participates in the fragment reported here.
-        def gating_residues(configs)
+        #
+        # A pair the `enforced` node already states on every call is not a gap, whatever else also
+        # contributed it conditionally, so it is left out — and a fragment left empty reports nothing.
+        # Only for a config that judges the wire value: after a transform, the fragment describes a
+        # different value from the one the node constrains.
+        def gating_residues(configs, enforced: {})
           configs.flat_map do |config|
+            transforms = transforms_wire_value?([config])
+            stated = transforms ? {} : enforced
             gates = declaration_gates(config)
             shared = shared_validation_options(config.validations)
             Axn::Validation::Base.validator_entries(config.validations).filter_map do |key, opt|
@@ -2073,13 +2095,56 @@ module Axn
               context = context.except(:type) if key == :type
               baseline = build_property(config.with(validations: context), subfield: true)
               fragment = build_property(config.with(validations: context.merge(key => opt)), subfield: true)
-              fragment = fragment.except(*RESIDUE_UNGATEABLE_KEYS).reject { |name, value| baseline[name] == value }
+              fragment = fragment.except(*RESIDUE_UNGATEABLE_KEYS).reject do |name, value|
+                same_schema_value?(baseline[name], value) || unconditionally_enforced?(stated, name, value)
+              end
               next if fragment.empty?
 
-              phase = transforms_wire_value?([config]) ? "after transformation, " : ""
+              phase = transforms ? "after transformation, " : ""
               Residue.new(summary: "#{phase}#{GATED_RESIDUE} (#{render_constraint(fragment)})", kind: :conditional)
             end
           end
+        end
+
+        # Whether `node` asserts `name: value` on every call: at its top level, or in any `allOf` conjunct.
+        # An `anyOf` branch asserts nothing on its own. A keyword whose reach depends on its siblings is
+        # never matched: `additionalProperties` constrains the keys nothing else names, and a values axis
+        # also reaches named keys outside its own `shape:`, so equal spellings can govern different keys.
+        def unconditionally_enforced?(node, name, value)
+          return false unless node.is_a?(::Hash)
+          return false if SIBLING_DEPENDENT_KEYWORDS.include?(name)
+          return true if node.key?(name) && same_schema_value?(node[name], value)
+
+          Array(node[:allOf]).any? { |conjunct| unconditionally_enforced?(conjunct, name, value) }
+        end
+
+        # Equality of two schema values that neither loses information nor asks a caller's literal anything.
+        # Rendering would do the first (`Float::INFINITY` and `"Infinity"` render alike) and `==` the second.
+        # Primitives compare by exact class and value, a NaN matching itself; exact containers compare
+        # positionally through their own unbound methods; anything else is equal only to itself. A false
+        # "different" costs a redundant report; a false "same" would hide a real one.
+        def same_schema_value?(one, other)
+          return true if Axn::Internal::Identity.same?(one, other)
+
+          klass = Axn::Internal::Identity.class_of(one)
+          Axn::Internal::Identity.same?(klass, Axn::Internal::Identity.class_of(other)) && same_instance_value?(klass, one, other)
+        end
+
+        def same_instance_value?(klass, one, other)
+          if Axn::Internal::Identity.same?(klass, ::Integer) then one == other
+          elsif Axn::Internal::Identity.same?(klass, ::Float) then one == other || (one.nan? && other.nan?)
+          elsif Axn::Internal::Identity.same?(klass, ::String) then SAME_STRING.bind_call(one, other)
+          elsif Axn::Internal::Identity.same?(klass, ::Array) then same_elements?(one, other)
+          elsif Axn::Internal::Identity.same?(klass, ::Hash) then same_elements?(HASH_TO_A.bind_call(one), HASH_TO_A.bind_call(other))
+          else
+            false
+          end
+        end
+
+        def same_elements?(one, other)
+          size = ARRAY_SIZE.bind_call(one)
+          size == ARRAY_SIZE.bind_call(other) &&
+            (0...size).all? { |i| same_schema_value?(ARRAY_AT.bind_call(one, i), ARRAY_AT.bind_call(other, i)) }
         end
 
         def conditional_checks?(config)
