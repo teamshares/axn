@@ -718,7 +718,9 @@ Two things decide what runs: **where** a call halts decides which hooks run, and
 | A raise axn captures — including a validation failure | exception | `on_exception`, `on_error` |
 | An exception axn does not capture (`Interrupt`, `SystemExit`, …) | none: `.call` re-raises it | none |
 
-² Outbound resolution still runs after a call that returns, and after a `done!` from `call` or a hook, so an unset required exposure turns either into an `exception` (`OutboundValidationError`). A `done!` during inbound validation is the exception: it settles as success immediately, and outbound defaults and validation do not run.
+² Outbound resolution still runs after a call that returns, and after a `done!` from `call` or a hook, so an unset required exposure turns either into an `exception` (`OutboundValidationError`). A `done!` raised by contract resolution itself is the exception — from an inbound `preprocess:`/`default:` during inbound validation, or from an `exposes` `default:`: it settles as success immediately, so outbound validation does not run (and neither do any outbound defaults not yet applied), even with a required exposure unset.
+
+Both tables hold for [`call!`](/usage/using#call) too: the same hooks and callbacks run, and `call!` then raises for a failure or exception outcome instead of returning the result.
 
 A captured raise settles as a failure instead when it is reclassified — by [`fails_on`](#suppressing-reports-for-expected-failures-in-composed-actions), or, for a validation failure, by [`user_facing:`](/reference/class#user-facing). Which exceptions axn captures, and why the rest pass through, is covered under [What `call` can still raise](/usage/using).
 

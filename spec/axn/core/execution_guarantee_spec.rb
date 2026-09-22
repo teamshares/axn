@@ -11,8 +11,8 @@
 #   halt during outbound resolution happens after the hook body has returned.
 # - WHAT KIND of halt it is (a raise, `fail!`, `done!`, or an exception axn does not capture) decides
 #   the outcome and which callbacks fire — identically from every origin, with one coupling pinned
-#   separately below: outbound resolution runs after a `done!` from the hook chain but not after one
-#   raised during inbound validation.
+#   separately below: outbound validation runs after a `done!` from the hook chain but not after one
+#   raised by contract resolution itself.
 #
 # The grid is the full cross product, so a new origin or halt kind cannot hold for one axis and
 # silently not the other. Each case asserts the ordered hook trace, not just which blocks ran: the
@@ -184,7 +184,8 @@ RSpec.describe "Hook and callback execution guarantee" do
   end
 
   # Outbound resolution runs after a `done!` from `call` or a hook, so an unset required exposure turns
-  # it into an exception; a `done!` during inbound validation settles before outbound resolution runs.
+  # it into an exception; a `done!` raised by contract resolution itself (an inbound preprocess:/default:,
+  # or an exposes default:) settles immediately and skips outbound validation (PRO-3490).
   describe "done! with a required exposure left unset" do
     {
       "an inbound preprocess:" => [:success, ->(done) { { declare: proc { expects :n, preprocess: ->(_v) { instance_exec(&done) } }, n: 1 } }],
@@ -194,6 +195,7 @@ RSpec.describe "Hook and callback execution guarantee" do
       "an after hook" => [:exception, ->(done) { { after_body: done } }],
       "an around hook, before its chain.call," => [:exception, ->(done) { { inner_around_pre: done } }],
       "an around hook, after its chain.call," => [:exception, ->(done) { { inner_around_post: done } }],
+      "an outbound (exposes) default:" => [:success, ->(done) { { declare: proc { exposes :other, default: -> { instance_exec(&done) } } } }],
     }.each do |origin, (outcome, args)|
       context "when #{origin} calls done!" do
         subject(:result) do
@@ -223,6 +225,46 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
 
     it_behaves_like "the execution guarantee", hooks: observed_halt.call(:call), outcome: :exception
+  end
+
+  # call! runs the same hooks and fires the same callbacks; it only raises afterwards.
+  describe "call!" do
+    def run_bang(declare: nil, body: nil, **inputs)
+      trace = []
+      action = build_axn do
+        class_eval(&declare) if declare
+        around do |chain|
+          trace << :around_entry
+          chain.call
+        end
+        on_success { trace << :on_success }
+        on_failure { trace << :on_failure }
+        on_exception { trace << :on_exception }
+        on_error { trace << :on_error }
+        define_method(:call) { instance_exec(&body) if body }
+      end
+      [action.call!(**inputs), trace]
+    rescue StandardError => e
+      [e, trace]
+    end
+
+    it "fires the failure callbacks, then raises the failure" do
+      raised, trace = run_bang(body: proc { fail!("failed") })
+      expect(raised).to be_a(Axn::Failure)
+      expect(trace).to contain_exactly(:around_entry, :on_failure, :on_error)
+    end
+
+    it "fires the exception callbacks on an inbound validation failure, then raises it" do
+      raised, trace = run_bang(declare: proc { expects :n, type: Integer }, n: "not an integer")
+      expect(raised).to be_a(Axn::InboundValidationError)
+      expect(trace).to contain_exactly(:on_exception, :on_error)
+    end
+
+    it "fires on_success on done! and returns the result" do
+      result, trace = run_bang(body: proc { done!("finished early") })
+      expect(result).to be_ok
+      expect(trace).to contain_exactly(:around_entry, :on_success)
+    end
   end
 
   # The documented limit on "callbacks observe every settled call": in an async retry, the default
