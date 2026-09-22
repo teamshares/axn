@@ -681,11 +681,46 @@ ensure
 end
 ```
 
-Note the limit of that guarantee: `ensure` covers every halt raised **after the hook chain is entered**, which is what the four outcomes above have in common. An outcome settled *earlier* — a failed inbound `expects` validation, or an **inbound** `preprocess:`/`default:` callable that raises — never reaches the hooks at all, so neither the `around` body nor its `ensure` runs. The `exposes` side is bounded too, in the other direction: outbound resolution (an `exposes` `default:`, outbound validation) runs *after* the hook body has already returned, so the hooks complete **normally** and never observe a raise from it — `chain.call` returned cleanly, and any `ensure` fired on the success path. An `around` hook that rescues in order to record failures will therefore miss every outbound-resolution error; use `on_exception` to catch those. Don't rely on an `around` hook to observe every call; for that, use `on_success`/`on_failure`/`on_exception` callbacks, which fire on the settled result.
+That `ensure` covers every halt raised **after the hook chain is entered** — not every call. See [What runs when](#what-runs-when) for exactly where the boundary sits.
+
+#### What runs when
+
+Hooks run *inside* the contract; callbacks and the framework's own tracing, logging and timing run *outside* it:
+
+```text
+tracing → logging → timing → exception handling → contract → hooks → call
+```
+
+The ordering is forced, not incidental: a `before` hook that reads `user` needs `user` already resolved and validated, so hooks cannot run before inbound resolution without exposing your code to unresolved readers. The consequence is that an outcome settled during inbound resolution never reaches the hooks, while callbacks — which fire on the settled result — see every call.
+
+This is the full contract (✓ runs, — does not):
+
+| The call settles via | Outcome | `before` | `around`, up to `chain.call` | `around`, after `chain.call` | `around` `ensure` | `around` `rescue` sees it | `after` | Callbacks |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Inbound validation failure | exception | — | — | — | — | — | — | ✓ |
+| Inbound `preprocess:` or `default:` raises | exception | — | — | — | — | — | — | ✓ |
+| `call` returns | success | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+| `done!` in `call` | success | ✓ | ✓ | — | ✓ | ✓ | — | ✓ |
+| `fail!` in `call` | failure | ✓ | ✓ | — | ✓ | ✓ | — | ✓ |
+| `call` raises | exception | ✓ | ✓ | — | ✓ | ✓ | — | ✓ |
+| `before` hook raises | exception | ✓ | ✓ | — | ✓ | ✓ | — | ✓ |
+| `after` hook raises | exception | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ |
+| Outbound validation failure | exception | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+| `exposes` `default:` raises | exception | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+
+"Callbacks" means the ones matching the outcome: `on_success` for success, `on_failure` and `on_error` for failure, `on_exception` and `on_error` for exception.
+
+What the table promises:
+
+1. **Callbacks observe every call.** `on_success`/`on_failure`/`on_exception`/`on_error` fire on every settlement, including one settled during inbound resolution. They are the seam for "must not miss a call".
+2. **Hooks observe every call that passed inbound resolution.** An inbound `expects` failure, or an inbound `preprocess:`/`default:` callable that raises, settles before the hook chain is reached, so no hook runs — not even an `around`'s `ensure`.
+3. **Within the hook chain,** `before` and the start of each `around` run on entry. The rest of the `around` (statements after `chain.call`) and `after` run only when the chain completes cleanly. An `ensure` inside `around` runs on every halt raised after entry.
+4. **Running is not observing.** Outbound resolution — an `exposes` `default:`, outbound validation — happens *after* the hook body has returned. The hooks run to completion **normally** and the action still settles as an exception, but no hook ever sees the raise: an `around` that rescues in order to record failures silently misses every outbound-resolution error. Note that "a failing `default:`" is two different rows depending on direction. Use `on_exception` to catch these.
+5. **Framework observability wraps everything.** The `axn.call` span/notification, the automatic log lines and `result.elapsed_time` sit outside the contract, so a validation failure is still traced, logged and timed. You don't need an `around` hook to time or trace every call.
 
 #### Around hooks
 
-Around hooks wrap the entire action execution, including before and after hooks. They receive a block that represents the next step in the chain:
+Around hooks wrap `call` together with the `before` and `after` hooks — everything inside the contract, not inbound resolution (see [What runs when](#what-runs-when)). They receive a block that represents the next step in the chain:
 
 ```ruby
 class Foo
