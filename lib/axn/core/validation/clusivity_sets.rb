@@ -152,6 +152,34 @@ module Axn
         owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
       end
 
+      # Whether `method_missing` alone is the caller's own — the ONE hook that can actually catch a message
+      # Ruby's normal dispatch (`public_send`, an ordinary `.call`) fails to find in the method table. Neither
+      # `respond_to?` nor `respond_to_missing?` participates in dispatch at all — they only decide what
+      # `respond_to?` REPORTS, which a caller-owned override of either makes undecidable (see
+      # `own_respond_to_missing_hook?`/`own_respond_to_hook?`), but that doubt is worthless on its own: an
+      # object claiming to answer `:include?` through an overridden `respond_to?`/`respond_to_missing?`, with
+      # NEITHER hook actually catching the call, still raises `NoMethodError` from the real dispatch — for
+      # CERTAIN, not doubtfully, since `method_missing` absent (native) means nothing stands between the miss
+      # and the raise. So a doubtful `respond_to?` answer may only stand in for a real `include?`/`call` when
+      # `method_missing` is ALSO the caller's own (Codex, PR #288).
+      def own_method_missing_hook?(collection)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, :method_missing)
+        owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+      end
+
+      # Whether ActiveModel might dispatch `.call` on this collection AT ALL — certainly, through a real public
+      # `call`, or DOUBTFULLY, through an overridden `respond_to?`/`respond_to_missing?` that might answer true
+      # for `:call` — PROVIDED `method_missing` is there to catch the dispatch if it happens; a doubtful
+      # `respond_to?(:call)` answer with no `method_missing` to back it still raises `NoMethodError` for
+      # certain, per `own_method_missing_hook?` above. THE single question `string_keyed_delimiter?` needs:
+      # would `resolve_value`'s `respond_to?(:call)` check route this collection to `.call` before its own
+      # `include?` (substring or otherwise) is ever reached.
+      def dynamically_resolved_per_call?(collection)
+        certainly_resolved_per_call?(collection) ||
+          ((own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)) &&
+            own_method_missing_hook?(collection))
+      end
+
       # The two validators that name a set of values the field's own value is compared AGAINST. THE single
       # definition, so the canonicalization below and the declaration guards (contract.rb `CLUSIVITY_KEYS`)
       # cannot come to name different validators. `acceptance:` is deliberately not one of them: it names its
@@ -266,13 +294,6 @@ module Axn
               "it afterwards)."
       end
 
-      # The three methods ActiveModel's own `Clusivity#check_validity!` accepts a delimiter through —
-      # `include?` (a collection), `call` (a Proc/lambda or any other callable), `to_sym` (accepted by
-      # `respond_to?(:to_sym)` alone, though `resolve_value` never calls it — see `usable_clusivity_delimiter?`
-      # below for why that gap matters). THE single definition, so the refusal below can never name a
-      # delimiter ActiveModel's OWN check_validity! would in fact accept.
-      CLUSIVITY_DELIMITER_METHODS = %i[include? call to_sym].freeze
-
       # Whether `name` is in `collection`'s method table as a PUBLIC method — the ownership mirror of
       # `respond_to?(name)` (public-only, which is what `check_validity!` itself asks), read the way
       # `certainly_resolved_per_call?` already reads it for `:call` alone: through the OWNER the method table
@@ -297,43 +318,52 @@ module Axn
         public_method_owner?(collection, :respond_to?)
       end
 
-      # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter — mirrored by
-      # OWNERSHIP rather than by dispatching `respond_to?` on the caller's object, for the reason
-      # `certainly_resolved_per_call?` gives. A collection carrying its own `respond_to_missing?` OR its own
-      # `respond_to?` is undecidable without running it, and DOUBT MUST ANSWER "usable": refusing it would
-      # refuse a declaration ActiveModel — and the runtime — accepts, which is the one error a declaration-time
-      # guard may not make. BOTH hooks are checked (never `method_missing` alone) because `check_validity!` is
-      # built entirely out of `respond_to?` calls, and `respond_to?` is answered by whichever of the two the
-      # caller's class overrides — `respond_to_missing?` when it relies on the conventional hook, `respond_to?`
-      # itself when it overrides the method directly, and neither is reached through `method_missing`: a
-      # collection overriding ONLY `method_missing`, with neither `respond_to?` hook overridden, still answers
-      # every `respond_to?` probe false through the INHERITED (always-false) `respond_to_missing?` —
-      # deterministically, not doubtfully — so `check_validity!` raises regardless of what `method_missing`
-      # would have done if actually reached. Standing down for `method_missing` alone would let exactly that
-      # object declare cleanly and then raise ActiveModel's own `ArgumentError` on every call, the shape this
-      # guard exists to close (measured).
+      # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter AND the runtime
+      # would actually dispatch it without raising — TWO questions, because they can disagree, and both must
+      # clear for a declaration to be genuinely usable:
       #
-      # `to_sym` is judged differently from the other two, because `check_validity!` and the runtime it guards
-      # disagree about what it means: `check_validity!` accepts anything answering `respond_to?(:to_sym)`, but
-      # `resolve_value` never calls that method — it dispatches on `case value when Symbol` (`is_a?(Symbol)`),
-      # and a value that fails that falls through to `members = value` and then `value.include?(record_value)`
-      # via `public_send` instead. `public_send` does not consult `respond_to?` at all, so a genuinely public
-      # `to_sym` (clearing `check_validity!` on its own, needing no doubtful hook) still leaves the ACTUAL
-      # membership dispatch to succeed or fail on its own terms: certain if `include?`/`call` is really public,
-      # doubtful (and DOUBT MUST ANSWER "usable", same rule) if the object carries `method_missing` or
-      # `respond_to_missing?` that might answer for it, and refused only when NEITHER is true — an object with
-      # a public `to_sym` and nothing else at all clears `check_validity!` on that gap and then raises
-      # `NoMethodError` from `include?` on every call, the exact declares-cleanly-then-raises shape this guard
-      # exists to close, reached through a seam in ActiveModel's own two checks rather than around them. Judged
-      # by IDENTITY (`Identity.class_of`, never `is_a?`, for the reason every predicate here is): `Symbol` takes
-      # no subclass (`Symbol.allocate` raises `TypeError`), so there is no override this could miss.
+      #   1. Would `check_validity!`'s `respond_to?(:include?) || respond_to?(:call) || respond_to?(:to_sym)`
+      #      answer true? Mirrored by OWNERSHIP rather than by dispatching `respond_to?` on the caller's
+      #      object. A collection carrying its own `respond_to_missing?` OR its own `respond_to?` is
+      #      undecidable without running it — `respond_to?` is answered by whichever of the two the caller's
+      #      class overrides, `respond_to_missing?` for the conventional hook, `respond_to?` itself when
+      #      overridden directly — and DOUBT MUST ANSWER "usable" for THIS question alone: refusing it would
+      #      refuse a declaration `check_validity!` might in fact accept.
+      #   2. Would the ACTUAL member dispatch (`members.include?`/`.cover?` via `public_send`, or `.call` if
+      #      `resolve_value` routes there first) reach something rather than raise `NoMethodError`? THIS is
+      #      governed entirely by `method_missing` (or a real method) — `respond_to?`/`respond_to_missing?`
+      #      participate in NEITHER `public_send`'s dispatch nor an ordinary `.call`, so a doubtful "yes" from
+      #      question 1 is worthless here on its own: an object whose `respond_to_missing?` claims `:include?`
+      #      with no `method_missing` to catch the actual call still raises `NoMethodError` on EVERY call, for
+      #      CERTAIN — declares cleanly, breaks on every call, the shape this guard exists to close (Codex, PR
+      #      #288). So a doubtful hook from question 1 only stands in for question 2 when `method_missing` is
+      #      ALSO the caller's own.
+      #
+      # `method_missing` alone answers NEITHER question: it grants no doubt about question 1 (checked
+      # explicitly, matches `own_respond_to_missing_hook?`'s own reasoning), so a collection overriding only
+      # `method_missing`, with neither `respond_to?` hook overridden and nothing else real, is refused by the
+      # final `return false` — `check_validity!` raises regardless of what `method_missing` would have done if
+      # actually reached (measured).
+      #
+      # A real public `include?`/`call` answers BOTH questions on its own (certain, no hook needed either
+      # way), which is why they short-circuit ahead of the hook checks. `to_sym` is different from both: a
+      # genuinely public `to_sym` answers question 1 on its own (`respond_to?(:to_sym)` needs no doubtful hook
+      # — it is really there), but says NOTHING about question 2, since `resolve_value` never calls `to_sym` at
+      # all — it dispatches on `case value when Symbol` (`is_a?(Symbol)`, judged by IDENTITY via
+      # `Identity.class_of`, never `is_a?`, since `Symbol` takes no subclass and so cannot be missed this way),
+      # and a value that fails that falls through to `members = value` then `value.include?(record_value)`.
+      # So a public `to_sym` alone still needs question 2 answered separately: certain via a real
+      # `include?`/`call` (already covered above), or doubtful via `method_missing` (which is why it is
+      # checked again at the very end, alongside the two `respond_to?` hooks it can stand in for once
+      # `method_missing` backs it).
       def usable_clusivity_delimiter?(collection)
         return false unless respond_to_reachable?(collection)
-        return true if own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)
         return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
-        return true if public_method_owner?(collection, :to_sym) && own_dispatch_hooks?(collection)
+        return true if public_method_owner?(collection, :include?)
+        return true if certainly_resolved_per_call?(collection)
+        return false unless own_method_missing_hook?(collection)
 
-        (CLUSIVITY_DELIMITER_METHODS - %i[to_sym]).any? { |name| public_method_owner?(collection, name) }
+        public_method_owner?(collection, :to_sym) || own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)
       rescue StandardError
         true
       end
@@ -349,14 +379,15 @@ module Axn
       # same substring behaviour and is refused on the same terms, while one that overrides it decides its own
       # membership and is exempt — the same rule `certainly_resolved_per_call?` applies to `call`.
       #
-      # EXEMPT when `certainly_resolved_per_call?` is true: `resolve_value`'s `else` branch checks
-      # `respond_to?(:call)` BEFORE anything ever reaches `include?`, so a String subclass that also carries a
-      # public `call` (returning the collection to compare against) is resolved through that `call`, never
-      # through its own inherited substring `include?` at all — refusing it here would refuse a declaration
+      # EXEMPT when `dynamically_resolved_per_call?` is true: `resolve_value`'s `else` branch checks
+      # `respond_to?(:call)` BEFORE anything ever reaches `include?`, so a String subclass ActiveModel would
+      # route to `.call` — certainly, through a real public `call`, or doubtfully, through a cooperating
+      # `respond_to?`/`respond_to_missing?` + `method_missing` pair — is resolved through that `call`, never
+      # through its own inherited substring `include?` at all. Refusing it here would refuse a declaration
       # ActiveModel and the runtime both accept, which is the one error this guard may not make (Codex, PR
-      # #288).
+      # #288, twice: a real `call` first, then a dynamically dispatched one).
       def string_keyed_delimiter?(collection)
-        return false if certainly_resolved_per_call?(collection)
+        return false if dynamically_resolved_per_call?(collection)
 
         Axn::Internal::NativeMethods.method_owner(collection, :include?).equal?(::String)
       rescue StandardError

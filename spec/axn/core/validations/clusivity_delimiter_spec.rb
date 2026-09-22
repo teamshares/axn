@@ -291,6 +291,22 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 2))).to eq(:reject)
     end
+
+    # `resolve_value`'s `else` branch checks `respond_to?(:call)` before anything reaches `include?`. A String
+    # subclass that answers that DYNAMICALLY — through a cooperating `respond_to_missing?` + `method_missing`
+    # pair, not a real `call` method — is resolved through `.call` all the same, never through its inherited
+    # substring `include?` (Codex, PR #288).
+    it "does not refuse a String SUBCLASS whose call is reached only through a cooperating respond_to_missing?/method_missing pair" do
+      stub_const("DynamicCallString", Class.new(String) do
+        def respond_to_missing?(name, *) = name == :call || super
+        def method_missing(name, *args) = name == :call ? %w[a b] : super
+      end)
+
+      action = build_axn { expects :v, inclusion: DynamicCallString.new("irrelevant") }
+
+      expect(outcome(action.call(v: "a"))).to eq(:pass)
+      expect(outcome(action.call(v: "z"))).to eq(:reject)
+    end
   end
 
   describe "accepted delimiters (controls — must still declare cleanly)" do
@@ -380,6 +396,27 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 2))).to eq(:reject)
       expect(dispatched).not_to be_empty
+    end
+
+    # `respond_to?`/`respond_to_missing?` participate in NEITHER `public_send`'s dispatch nor an ordinary
+    # `.call` — only `method_missing` can catch a message absent from the method table. An object whose
+    # `respond_to_missing?` (or `respond_to?`) CLAIMS `:include?` with no `method_missing` to back it still
+    # raises `NoMethodError` from the real dispatch, for certain — the doubt a lone `respond_to?` hook grants
+    # is worthless without a dispatch hook alongside it (Codex, PR #288).
+    it "refuses a delimiter whose respond_to_missing? claims include? with no method_missing to back it" do
+      liar = Object.new
+      def liar.respond_to_missing?(name, *) = name == :include? || super
+
+      expect { build_axn { expects :v, inclusion: { in: liar } } }
+        .to raise_error(ArgumentError, /names a set of class Object, which ActiveModel cannot use/)
+    end
+
+    it "refuses a delimiter whose overridden respond_to? claims include? with no method_missing to back it" do
+      liar = Object.new
+      def liar.respond_to?(name, *a) = name == :include? || super
+
+      expect { build_axn { expects :v, inclusion: { in: liar } } }
+        .to raise_error(ArgumentError, /names a set of class Object, which ActiveModel cannot use/)
     end
   end
 end
