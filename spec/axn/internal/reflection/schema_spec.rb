@@ -6581,6 +6581,111 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(summaries.join(" ")).to include('{"enum":["first"]}').and include('{"enum":["second"]}')
             end
 
+            # The full property writes two patterns as an `allOf` and the always-run one as a plain `pattern`,
+            # so diffing the two read the unconditional integer pattern as something the condition removed —
+            # and the residue called a constraint emitted at top level in the same node conditional.
+            it "names only the gated pattern when an unconditional one shares the position" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String, numericality: { only_integer: true } }
+                expects :inner, on: :payload, type: String, numericality: { only_integer: true },
+                                format: { with: /\A[0-9]+\z/, if: -> { false } }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:pattern]).to eq("^[+-]?\\d+$")
+              expect(inner[:description]).to include('({"pattern":"^[0-9]+$"})')
+              expect(inner[:description]).not_to include("[+-]")
+            end
+
+            # A residue says what the document CANNOT state. A pair the emitted node already enforces on
+            # every call — at top level or in an `allOf` conjunct — is stated, however conditional the
+            # declaration that also contributed it; reporting it overstates the gap to the very reader the
+            # prose is for.
+            it "does not report as conditional what the node already enforces unconditionally" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String }
+                expects :inner, on: :payload, type: String, length: { minimum: 3 }, if: -> { false }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner).to include(type: "string", minLength: 1)
+              expect(inner[:description]).to include('({"minLength":3})')
+              expect(inner[:description]).not_to include('"type"')
+              expect(inner[:description]).not_to include('"minLength":1')
+            end
+
+            # Rendering is lossy — `Float::INFINITY` and `"Infinity"` render alike, as do two opaque values
+            # with one `to_s` — so "already enforced" is decided on the values themselves, never on prose,
+            # and without asking a caller's literal anything.
+            it "does not treat a constraint that merely renders alike as already enforced" do
+              config = build_axn do
+                expects :value, type: String, inclusion: { in: ["Infinity"], if: -> { false } }
+              end.internal_field_configs.first
+              summaries = described_class.send(:gating_residues, [config], enforced: { enum: [Float::INFINITY] }).map(&:summary)
+
+              expect(summaries.join).to include('{"enum":["Infinity"]}')
+            end
+
+            it "never asks an enforced opaque literal to render itself" do
+              rendered = 0
+              opaque = Class.new { define_method(:to_s) { (rendered += 1) && "x" } }.new
+              config = build_axn do
+                expects :value, type: String, inclusion: { in: ["x"], if: -> { false } }
+              end.internal_field_configs.first
+              summaries = described_class.send(:gating_residues, [config], enforced: { enum: [opaque] }).map(&:summary)
+
+              expect(summaries.join).to include('{"enum":["x"]}')
+              expect(rendered).to eq(0)
+            end
+
+            # `additionalProperties` means "the keys nothing else names", and a values axis also reaches the
+            # named keys outside its own declaration's `shape:`. Equal spellings on two declarations with
+            # different shapes therefore constrain different keys: the member exempts `b`, the gated axis
+            # does not.
+            it "keeps a gated keyword whose meaning depends on its siblings" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field(:inner, type: Hash, of: { values: String }) { field :b, type: Integer } }
+                expects :inner, on: :payload, type: Hash, of: { values: String }, if: -> { false }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:description]).to include('{"additionalProperties":{"type":"string"}}')
+            end
+
+            it "reports nothing when a conditional type restates one enforced through an allOf conjunct" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String }
+                expects :inner, on: :payload, type: { klass: String, if: -> { false } }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:allOf]).to include(include(type: "string"))
+              expect(inner[:description].to_s).not_to include("conditional")
+            end
+
+            # A gate is a Proc; rendering one puts an object address into the schema, so the document
+            # changes on every boot. The prose already says the check is conditional.
+            it "renders an unexpressed conditional check without its gate" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field :inner, type: String }
+                expects :inner, on: :payload, type: String, numericality: { greater_than: 5, if: -> { false } }
+                def call = nil
+              end
+              description = klass.input_schema[:properties][:payload][:properties][:inner][:description]
+
+              expect(description).to include('"greater_than":5')
+              expect(description).not_to include("Proc")
+            end
+
             # `default:` is not a validator entry, so no condition can remove it — and comparing it by VALUE
             # misreported it anyway, since `Float::NAN == Float::NAN` is false and a NaN default therefore
             # read as removed on every call, putting an always-applied default into prose that says it
@@ -6613,7 +6718,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
               expect(JSON.generate(inner)).to include('"minItems":2')
               # and the unconditional bound is not reported AS conditional
-              expect(inner[:description]).not_to include("minItems")
+              expect(inner[:description].to_s).not_to include("minItems")
               expect(klass.call(payload: { inner: [1] })).not_to be_ok
               expect(klass.call(payload: { inner: [1, 2] })).to be_ok
             end
