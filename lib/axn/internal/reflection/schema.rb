@@ -177,6 +177,7 @@ module Axn
 
         # Metadata is not a validator contribution. In particular, a default applies independently
         # of validator gates and must never be included in a conditional fragment.
+        SIBLING_DEPENDENT_KEYWORDS = %i[additionalProperties].freeze
         RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY, Vocabulary::MAP_VALUE_EXEMPT_KEY].freeze
 
         GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
@@ -2106,9 +2107,12 @@ module Axn
         end
 
         # Whether `node` asserts `name: value` on every call: at its top level, or in any `allOf` conjunct.
-        # An `anyOf` branch asserts nothing on its own.
+        # An `anyOf` branch asserts nothing on its own. A keyword whose reach depends on its siblings is
+        # never matched: `additionalProperties` constrains the keys nothing else names, and a values axis
+        # also reaches named keys outside its own `shape:`, so equal spellings can govern different keys.
         def unconditionally_enforced?(node, name, value)
           return false unless node.is_a?(::Hash)
+          return false if SIBLING_DEPENDENT_KEYWORDS.include?(name)
           return true if node.key?(name) && same_schema_value?(node[name], value)
 
           Array(node[:allOf]).any? { |conjunct| unconditionally_enforced?(conjunct, name, value) }

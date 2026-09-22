@@ -6642,6 +6642,22 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(rendered).to eq(0)
             end
 
+            # `additionalProperties` means "the keys nothing else names", and a values axis also reaches the
+            # named keys outside its own declaration's `shape:`. Equal spellings on two declarations with
+            # different shapes therefore constrain different keys: the member exempts `b`, the gated axis
+            # does not.
+            it "keeps a gated keyword whose meaning depends on its siblings" do
+              klass = Class.new do
+                include Axn
+                expects(:payload, type: Hash) { field(:inner, type: Hash, of: { values: String }) { field :b, type: Integer } }
+                expects :inner, on: :payload, type: Hash, of: { values: String }, if: -> { false }
+                def call = nil
+              end
+              inner = klass.input_schema[:properties][:payload][:properties][:inner]
+
+              expect(inner[:description]).to include('{"additionalProperties":{"type":"string"}}')
+            end
+
             it "reports nothing when a conditional type restates one enforced through an allOf conjunct" do
               klass = Class.new do
                 include Axn
