@@ -9,6 +9,7 @@ require "axn/internal/reflection/property_names"
 require "axn/internal/rendering"
 require "axn/internal/text"
 require "axn/extensions"
+require "axn/core/logging"
 require "axn/core/tagging"
 
 module Axn
@@ -20,6 +21,13 @@ module Axn
 
       MAX_CONTEXT_LENGTH = 150
       TRUNCATION_SUFFIX = "…<truncated>…"
+
+      # `would_log?`'s predicate for each of `Core::Logging::LEVELS`, precomputed so the common case
+      # never builds `:"#{level}?"` — a fresh String allocation (PRO-3335: `would_log?` is now called
+      # from both the Executor's before/after hooks and from inside `log_at_level` itself, so a naive
+      # per-call interpolation would cost 2 allocations per emitted line, a net regression on the
+      # benchmark this ticket is trying to improve, whose configured logger's level is always on).
+      LEVEL_PREDICATES = Core::Logging::LEVELS.to_h { |level| [level, :"#{level}?"] }.freeze
 
       # Logs a message at the specified level with error handling
       # @param action_class [Class] The action class to log from
@@ -34,6 +42,12 @@ module Axn
       # @param context_instance [Object, nil] Action instance for instance-level context_for_logging
       # @param context_data [Hash, nil] Raw data for class-level context_for_logging
       # @param facets [Hash, nil] Resolved observability facets ({ tags:, dimensions: }) to annotate the line with
+      # @param level_checked [Boolean] Set by a caller that already confirmed `would_log?(level)` itself
+      #   (the Executor's before/after hooks — PRO-3335) so this doesn't ask the logger's severity
+      #   predicate a SECOND time. Skipping a second call isn't just about cost: a custom predicate that
+      #   isn't idempotent (a sampling logger whose `info?` alternates or answers probabilistically) could
+      #   otherwise pass the caller's precheck and then fail this one, dropping a line the precheck said
+      #   would be kept — after the caller had already paid to build it.
       def log_at_level( # rubocop:disable Metrics/ParameterLists
         action_class,
         level:,
@@ -46,7 +60,8 @@ module Axn
         context_direction: nil,
         context_instance: nil,
         context_data: nil,
-        facets: nil
+        facets: nil,
+        level_checked: false
       )
         return unless level
 
@@ -56,7 +71,8 @@ module Axn
           # other formatting failure here — some callers (call_async's invocation log, the
           # enqueue-all completion log) invoke log_at_level with no other best_effort wrapping it, so
           # checking the predicate outside this boundary could abort the call it only meant to log.
-          next unless would_log?(level)
+          # `level_checked` skips this for a caller that already ran it (see the kwarg's own doc above).
+          next unless level_checked || would_log?(level)
 
           # Prepare and format context if needed
           context_str = if context_instance && context_direction
@@ -119,11 +135,14 @@ module Axn
       # implementing only the plain level methods loses nothing. This is deliberately NOT a switch to
       # block-form logging (`logger.info { msg }`): that would silently drop the message for a custom
       # logger whose level methods take a positional argument only and ignore an unused block. Public:
-      # `log_at_level` is the only caller, from this same module, but kept alongside `semantic_logger?`
-      # for the same reason that one is public.
+      # both `log_at_level` and the Executor's before/after hooks call this (PRO-3335), so it is called
+      # up to twice per emitted line — `LEVEL_PREDICATES` is precomputed rather than interpolating
+      # `:"#{level}?"` fresh each time for exactly that reason (see its own comment). An undeclared
+      # level (never happens today; `Core::Logging::LEVELS` is the only source of one) falls back to
+      # the dynamic form rather than raising, so a future level addition here fails open, not loud.
       def would_log?(level)
         logger = Axn.config.logger
-        predicate = :"#{level}?"
+        predicate = LEVEL_PREDICATES[level] || :"#{level}?"
         !logger.respond_to?(predicate) || logger.public_send(predicate)
       end
 
@@ -164,7 +183,21 @@ module Axn
             # two different non-ASCII encodings, and joining those raised Encoding::CompatibilityError from the
             # log line itself — which the side channel then swallowed, losing the line entirely. Values carry
             # the same risk and are guarded the same way, at their source below — see the `else` branch.
-            "{#{data.map { |k, v| "#{Axn::Internal::Reflection::PropertyNames.renderable_label(k)}: #{format_object(v, nested)}" }.join(', ')}}"
+            #
+            # Built with `<<`, not `.map { ... }.join(', ')`: `<<` copies its argument's bytes into `buf`
+            # IMMEDIATELY, at the point of the call — before the NEXT fragment is even computed — whereas
+            # `.map` collects every fragment first and `.join` copies them only at the very end. That
+            # distinction is what makes it safe for a fragment to be a BORROWED rendering (see
+            # `Text.borrowed`, `PropertyNames.renderable_label`'s Symbol fast path): a later sibling's
+            # `#inspect` mutating an earlier one's returned String in place — which silently swaps in
+            # the mutated bytes, or raises `Encoding::CompatibilityError` composing next to a genuinely
+            # non-ASCII sibling — can't reach bytes `<<` already copied.
+            buf = +"{"
+            data.each_with_index do |(k, v), i|
+              buf << ", " if i.positive?
+              buf << Axn::Internal::Reflection::PropertyNames.renderable_label(k) << ": " << format_object(v, nested)
+            end
+            buf << "}"
           end
         when Array
           CycleGuard.guard(data, seen, on_cycle: CycleGuard::ARRAY_PLACEHOLDER) do |nested|
@@ -173,20 +206,30 @@ module Axn
             # which re-inspects each already-formatted child String, escaping its quotes/backslashes
             # again. Left uncomposed, that re-escaping compounds once per nesting level, making both
             # the render cost and the emitted line's length exponential in nesting depth (PRO-3203).
-            "[#{data.map { |v| format_object(v, nested) }.join(', ')}]"
+            #
+            # `<<` per element, not `.map { ... }.join(', ')` — same reason as the Hash branch above.
+            buf = +"["
+            data.each_with_index do |v, i|
+              buf << ", " if i.positive?
+              buf << format_object(v, nested)
+            end
+            buf << "]"
           end
         else
           # The conversion walks and rebuilds the structure itself, so a cycle nested inside raises
-          # before the guard above could see the repeated container — attempt it and fall back. Returned
-          # RAW (a Hash, not a String): every other branch below ends in a String that a Hash/Array
-          # ancestor's `.join` above may compose with a sibling, so each of THOSE is rendered through the
-          # shared UTF-8-safe renderer; this one embeds by the caller's `#{}`/`to_s`, and `Hash#inspect`
-          # already escapes non-ASCII bytes in each of its own values, same as `String#inspect` does.
+          # before the guard above could see the repeated container — attempt it and fall back.
+          # `.to_s` (== `Hash#inspect`) here, not left RAW: every other branch below ends in a String
+          # that a Hash/Array ancestor's `<<` above copies into its buffer immediately, and `<<` — unlike
+          # the string interpolation this used to be composed with — does not dispatch a non-String
+          # argument's own `to_s` for you (PRO-3335: `buf << <a raw Hash>` raised `TypeError: no implicit
+          # conversion of Hash into String`, silently losing the containing line to `best_effort`).
+          # `Hash#inspect` already escapes non-ASCII bytes in each of its own values, same as
+          # `String#inspect` does, so nothing here needs the shared UTF-8-safe renderer on top.
           is_params = defined?(ActionController::Parameters) && data.is_a?(ActionController::Parameters)
-          return CycleGuard.converted_or_placeholder { data.to_unsafe_h } if is_params
+          return CycleGuard.converted_or_placeholder { data.to_unsafe_h }.to_s if is_params
 
           if defined?(ActiveRecord::Base) && data.is_a?(ActiveRecord::Base)
-            id = Axn::Internal::Text.renderable(data.to_param.presence || "unpersisted")
+            id = Axn::Internal::Text.borrowed(data.to_param.presence || "unpersisted")
             return "<#{Axn::Internal::Rendering.class_name(data)}##{id}>"
           end
 
@@ -210,7 +253,11 @@ module Axn
           # log line itself (or losing it entirely, swallowed by the best_effort boundary around this whole
           # call). Renders byte-identical for ASCII/valid-UTF-8 (the overwhelming case), transcodes a
           # legible foreign encoding, and escapes only bytes with no UTF-8 rendering at all.
-          Axn::Internal::Text.renderable(data.inspect)
+          #
+          # `borrowed`, not `renderable`: composed into the buffer above IMMEDIATELY (see the Hash/Array
+          # branches' own comments — the ordering is what makes this safe) and dropped once the line is
+          # emitted, so it never needs its own owned copy (PRO-3335).
+          Axn::Internal::Text.borrowed(data.inspect)
         end
       end
     end

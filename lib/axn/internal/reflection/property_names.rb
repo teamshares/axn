@@ -247,7 +247,11 @@ module Axn
         # error, a stranded subfield path, a Hash key in a log line, a declared name in a declaration error —
         # because each deriving its own is how three copies of it appeared, and because the fallback has to be the
         # SAFE escape: an exotic name's own `inspect` is caller code that can raise while the message is built.
-        def renderable_label(name) = Values.canonical_wire_key(name) || inspect_field_name(name)
+        #
+        # `borrowed_wire_key`, not `canonical_wire_key`: every caller here composes the result into a
+        # message and drops it, never retains it — see that method's own comment for why it only skips
+        # the ownership copy for a Symbol (PRO-3335).
+        def renderable_label(name) = Values.borrowed_wire_key(name) || inspect_field_name(name)
 
         # A declared name becomes a JSON property name — in the reflected schema for an inbound field, in
         # serialized output for an outbound one — so it carries the same UTF-8 promise the serializer
