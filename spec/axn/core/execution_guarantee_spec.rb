@@ -280,6 +280,141 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
   end
 
+  # Only some of the callables axn runs can halt a call. The rest contain a raise, `fail!` or `done!`
+  # themselves: a validator turns it into a validation failure, and an observer (message, tag,
+  # callback) is swallowed without changing the outcome. An exception axn does not capture still
+  # passes through all of them — for a message callable, when the message is read, since messages
+  # resolve lazily.
+  describe "which callables can halt a call" do
+    halt_kinds = {
+      "raises" => proc { raise ArgumentError, "raised" },
+      "calls fail!" => proc { fail!("failed") },
+      "calls done!" => proc { done!("finished early") },
+    }
+
+    # [builder, inputs, expected outcome, expected exception class]
+    containing_sites = {
+      "an expects validate: callable" => [
+        ->(h) { build_axn { expects :n, validate: ->(_v) { instance_exec(&h) } } }, { n: 1 },
+        :exception, Axn::InboundValidationError
+      ],
+      "an exposes validate: callable" => [
+        lambda { |h|
+          build_axn do
+            exposes :o, validate: ->(_v) { instance_exec(&h) }
+            define_method(:call) { expose o: 1 }
+          end
+        }, {},
+        :exception, Axn::OutboundValidationError
+      ],
+      "a success message callable" => [->(h) { build_axn { success -> { instance_exec(&h) } } }, {}, :success, NilClass],
+      "a tag callable" => [->(h) { build_axn { tag :t, -> { instance_exec(&h) } } }, {}, :success, NilClass],
+      "an on_success callback" => [->(h) { build_axn { on_success { instance_exec(&h) } } }, {}, :success, NilClass],
+      "an error message callable" => [
+        lambda { |h|
+          build_axn do
+            error -> { instance_exec(&h) }
+            define_method(:call) { fail!("original") }
+          end
+        }, {},
+        :failure, Axn::Failure
+      ],
+      "an on_error callback" => [
+        lambda { |h|
+          build_axn do
+            on_error { instance_exec(&h) }
+            define_method(:call) { raise NameError, "original" }
+          end
+        }, {},
+        :exception, NameError
+      ],
+    }
+
+    containing_sites.each do |site, (build, inputs, outcome, exception_class)|
+      halt_kinds.each do |halt_name, halt|
+        it "contains it when #{site} #{halt_name}: the call settles as #{outcome}" do
+          result = instance_exec(halt, &build).call(**inputs)
+          # Messages resolve lazily; read them so a message callable actually runs.
+          result.success
+          result.error
+          expect(result.outcome.to_s).to eq(outcome.to_s)
+          expect(result.exception.class).to eq(exception_class)
+        end
+      end
+
+      it "still passes through an Interrupt raised by #{site}" do
+        expect do
+          result = instance_exec(proc { raise Interrupt }, &build).call(**inputs)
+          result.success
+          result.error
+        end.to raise_error(Interrupt)
+      end
+    end
+
+    # A model: finder runs on the model class, not the action, so fail!/done! do not exist there: a
+    # fault it raises resolves the field to nil (reported as ignored), which the field's validation
+    # then classifies.
+    describe "a model: finder" do
+      def build_with_finder(&finder_body)
+        model = Class.new { define_singleton_method(:find_it, &finder_body) }
+        build_axn { expects :thing, model: { klass: model, finder: :find_it } }
+      end
+
+      it "contains a raise: the field resolves to nil and fails validation" do
+        result = build_with_finder { |_id| raise ArgumentError, "finder raised" }.call(thing_id: 1)
+        expect(result.exception).to be_a(Axn::InboundValidationError)
+      end
+
+      it "still passes through an Interrupt" do
+        expect { build_with_finder { |_id| raise Interrupt }.call(thing_id: 1) }.to raise_error(Interrupt)
+      end
+    end
+
+    # An `if:`/`unless:` validation condition is not contained: it halts the call like a preprocess:
+    # would, before any hook runs.
+    {
+      "raises" => [halt_kinds["raises"], :exception],
+      "calls fail!" => [halt_kinds["calls fail!"], :failure],
+      "calls done!" => [halt_kinds["calls done!"], :success],
+    }.each do |halt_name, (halt, outcome)|
+      context "when an if: validation condition #{halt_name}" do
+        subject(:traced) { run_traced(declare: proc { expects :n, type: Integer, if: -> { instance_exec(&halt) } }, n: 1) }
+
+        it_behaves_like "the execution guarantee", hooks: [], outcome:
+      end
+    end
+  end
+
+  # An `around` that returns without calling `chain.call` is not a halt: nothing inside it runs, and
+  # the call then completes normally — including outbound validation.
+  describe "an around hook that never calls chain.call" do
+    def run_skipping(declare: nil)
+      trace = []
+      action = build_axn do
+        class_eval(&declare) if declare
+        around { |_chain| trace << :around }
+        before { trace << :before }
+        after { trace << :after }
+        on_success { trace << :on_success }
+        on_exception { trace << :on_exception }
+        define_method(:call) { trace << :call }
+      end
+      [action.call, trace]
+    end
+
+    it "skips before, call and after, and settles as success" do
+      result, trace = run_skipping
+      expect(result).to be_ok
+      expect(trace).to eq(%i[around on_success])
+    end
+
+    it "still runs outbound validation" do
+      result, trace = run_skipping(declare: proc { exposes :o, type: Integer })
+      expect(result.exception).to be_a(Axn::OutboundValidationError)
+      expect(trace).to eq(%i[around on_exception])
+    end
+  end
+
   # call! runs the same hooks and fires the same callbacks; it only raises afterwards.
   describe "call!" do
     def run_bang(declare: nil, body: nil, **inputs)

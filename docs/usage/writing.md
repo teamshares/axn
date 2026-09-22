@@ -706,6 +706,7 @@ Two things decide what runs: **where** a call halts decides which hooks run, and
 | An `around` hook halts after its own `chain.call`³ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
 | Outbound resolution halts: outbound validation fails, an `exposes` `default:` halts, or a field both expected and exposed resolves its `default:`/`preprocess:` for the first time and halts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | *No halt: `call` returns* | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| *No halt: an `around` hook returns without calling `chain.call`* | — | ✓ | ✓ | ✓ | — | — |
 
 ¹ Inbound validation resolves a field's `preprocess:`/`default:` when it checks that field, which it does for any field carrying a validation — including the implicit presence check on a required field. A field with none resolves on first read instead, so a halt from it lands wherever that read happens (usually `call`) and follows that row.
 
@@ -725,6 +726,18 @@ Two things decide what runs: **where** a call halts decides which hooks run, and
 Both tables hold for [`call!`](/usage/using#call) too: the same hooks and callbacks run, and `call!` then raises for a failure or exception outcome instead of returning the result.
 
 A captured raise settles as a failure instead when it is reclassified — by [`fails_on`](#suppressing-reports-for-expected-failures-in-composed-actions), or, for a validation failure, by [`user_facing:`](/reference/class#user-facing). Which exceptions axn captures, and why the rest pass through, is covered under [What `call` can still raise](/usage/using).
+
+A halt only counts where it reaches the pipeline. These callables can halt a call: `before`/`around`/`after` hooks, `call`, a field's `preprocess:` or `default:`, and a validation's `if:`/`unless:` condition, which resolves during inbound validation and so halts before any hook runs. Every other callable axn runs contains a raise, `fail!` or `done!` itself:
+
+| Callable | What a raise, `fail!` or `done!` inside it does |
+| --- | --- |
+| A `validate:` callable | Becomes a validation failure of that field |
+| A `model:` finder | Resolves the field to `nil`, which the field's validation then judges (see [`model:`](/reference/class)) |
+| A `success`/`error` message callable | Falls back to the next message, then the default; the outcome is unchanged |
+| A `tag`/`dimension` callable | Is swallowed; the outcome is unchanged |
+| A callback (`on_success`, `on_error`, …) | Is swallowed; the outcome is unchanged |
+
+An exception axn does not capture still passes through all of them; for a message callable that happens when the message is read, since messages resolve lazily. (With [`best_effort_raises_in_dev`](/reference/configuration#best-effort-raises-in-dev) on in development, the swallowed ones raise instead.)
 
 What the tables promise:
 
