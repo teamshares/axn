@@ -699,13 +699,17 @@ Two things decide what runs: **where** a call halts decides which hooks run, and
 | --- | --- | --- | --- | --- | --- | --- |
 | Inbound validation fails | — | — | — | — | — | — |
 | An inbound `preprocess:` or `default:` halts during inbound validation¹ | — | — | — | — | — | — |
+| An `around` hook halts before its own `chain.call`³ | — | ✓ | — | ✓ | ✓ | — |
 | A `before` hook halts | ✓ | ✓ | — | ✓ | ✓ | — |
 | `call` halts | ✓ | ✓ | — | ✓ | ✓ | — |
 | An `after` hook halts | ✓ | ✓ | — | ✓ | ✓ | ✓ |
+| An `around` hook halts after its own `chain.call`³ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
 | Outbound validation fails, or an `exposes` `default:` halts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | *No halt: `call` returns* | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 
 ¹ Inbound validation resolves a field's `preprocess:`/`default:` when it checks that field, which it does for any field carrying a validation — including the implicit presence check on a required field. A field with none resolves on first read instead, so a halt from it lands wherever that read happens (usually `call`) and follows that row.
+
+³ For these rows the `around` columns describe the hooks *enclosing* the one that halted (declared before it, or in a parent class). The halting hook itself behaves like any Ruby method: its statements after the halt don't run, and its own `rescue`/`ensure` do.
 
 | Kind of halt | Outcome | Callbacks |
 | --- | --- | --- |

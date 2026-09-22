@@ -21,7 +21,7 @@
 # the documented reason a rescuing `around` cannot stand in for `on_exception`. Callbacks are asserted
 # as a set: which ones fire is the guarantee, their relative order is not.
 RSpec.describe "Hook and callback execution guarantee" do
-  def run_traced(declare: nil, body: nil, before_body: nil, after_body: nil, **inputs)
+  def run_traced(declare: nil, body: nil, before_body: nil, after_body: nil, inner_around_pre: nil, inner_around_post: nil, **inputs)
     trace = []
     action = build_axn do
       class_eval(&declare) if declare
@@ -45,6 +45,15 @@ RSpec.describe "Hook and callback execution guarantee" do
         raise
       ensure
         trace << :around_ensure
+      end
+
+      # Declared after the traced hook, so it runs INSIDE it: a halt here is observed by the traced one.
+      if inner_around_pre || inner_around_post
+        around do |chain|
+          instance_exec(&inner_around_pre) if inner_around_pre
+          chain.call
+          instance_exec(&inner_around_post) if inner_around_post
+        end
       end
 
       on_success { trace << :on_success }
@@ -82,6 +91,11 @@ RSpec.describe "Hook and callback execution guarantee" do
       hooks: observed_halt.call,
       args: ->(halt) { { before_body: halt } },
     },
+    # An inner `around` halting before its `chain.call`: nothing inside it (before/call/after) runs.
+    "an inner around hook, before its chain.call," => {
+      hooks: %i[around_entry around_rescued around_ensure],
+      args: ->(halt) { { inner_around_pre: halt } },
+    },
     "call" => {
       hooks: observed_halt.call(:call),
       args: ->(halt) { { body: halt } },
@@ -89,6 +103,11 @@ RSpec.describe "Hook and callback execution guarantee" do
     "an after hook" => {
       hooks: observed_halt.call(:call, :after),
       args: ->(halt) { { after_body: halt } },
+    },
+    # An inner `around` halting after its `chain.call`: everything inside it has already run.
+    "an inner around hook, after its chain.call," => {
+      hooks: observed_halt.call(:call, :after),
+      args: ->(halt) { { inner_around_post: halt } },
     },
     # Outbound resolution runs after the hook body has returned: every hook runs to completion and the
     # `around` never sees the halt.
@@ -173,6 +192,8 @@ RSpec.describe "Hook and callback execution guarantee" do
       "a before hook" => [:exception, ->(done) { { before_body: done } }],
       "call" => [:exception, ->(done) { { body: done } }],
       "an after hook" => [:exception, ->(done) { { after_body: done } }],
+      "an around hook, before its chain.call," => [:exception, ->(done) { { inner_around_pre: done } }],
+      "an around hook, after its chain.call," => [:exception, ->(done) { { inner_around_post: done } }],
     }.each do |origin, (outcome, args)|
       context "when #{origin} calls done!" do
         subject(:result) do
