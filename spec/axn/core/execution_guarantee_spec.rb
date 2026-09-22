@@ -1,33 +1,37 @@
 # frozen_string_literal: true
 
-# Pins the execution guarantee published in docs/usage/writing.md ("What runs when"): which user
-# hooks and callbacks run for each way a call can settle. The layering in Executor#run —
+# Pins the execution guarantee published in docs/usage/writing.md ("What runs when"). Two independent
+# axes decide what runs:
 #
-#   tracking → tracing → logging → timing → exception_handling → contract → hooks → @action.call
+# - WHERE a halt originates decides which user hooks run. The layering in Executor#run —
 #
-# — puts user hooks INSIDE the contract, so an outcome settled during inbound resolution never
-# reaches them, while callbacks fire on every settlement.
+#     tracking → tracing → logging → timing → exception_handling → contract → hooks → @action.call
 #
-# Each row asserts the ordered hook trace, not just which blocks ran: the `around` hook rescues (and
-# re-raises) every exception, so a halt the hook OBSERVED traces `:around_rescued`, while a raise from
-# outbound resolution — which happens after the hook body has returned — traces `:around_post`. That
-# distinction is the documented reason a rescuing `around` cannot stand in for `on_exception`. The
-# callbacks that follow are asserted as a set: which ones fire is the guarantee, their relative order
-# is not.
+#   — puts hooks INSIDE the contract, so a halt during inbound resolution never reaches them, and a
+#   halt during outbound resolution happens after the hook body has returned.
+# - WHAT KIND of halt it is (a raise, `fail!`, `done!`, or an exception axn does not capture) decides
+#   the outcome and which callbacks fire — identically from every origin.
+#
+# The grid is the full cross product, so a new origin or halt kind cannot hold for one axis and
+# silently not the other. Each case asserts the ordered hook trace, not just which blocks ran: the
+# `around` hook rescues (and re-raises) everything, so a halt the hook OBSERVED traces
+# `:around_rescued`, while a halt from outbound resolution traces `:around_post`. That distinction is
+# the documented reason a rescuing `around` cannot stand in for `on_exception`. Callbacks are asserted
+# as a set: which ones fire is the guarantee, their relative order is not.
 RSpec.describe "Hook and callback execution guarantee" do
-  def run_traced(declare: nil, body: nil, before_raises: false, after_raises: false, **inputs)
+  def run_traced(declare: nil, body: nil, before_body: nil, after_body: nil, **inputs)
     trace = []
     action = build_axn do
       class_eval(&declare) if declare
 
       before do
         trace << :before
-        raise "before hook raised" if before_raises
+        instance_exec(&before_body) if before_body
       end
 
       after do
         trace << :after
-        raise "after hook raised" if after_raises
+        instance_exec(&after_body) if after_body
       end
 
       around do |chain|
@@ -52,98 +56,110 @@ RSpec.describe "Hook and callback execution guarantee" do
       end
     end
 
-    [action.call(**inputs), trace]
+    begin
+      [action.call(**inputs), trace]
+    rescue Interrupt => e
+      [e, trace]
+    end
   end
 
-  in_call_halt = %i[around_entry before call around_rescued around_ensure].freeze
+  observed_halt = ->(*reached) { %i[around_entry before] + reached + %i[around_rescued around_ensure] }
   ran_to_completion = %i[around_entry before call after around_post around_ensure].freeze
 
-  rows = {
-    "an inbound validation failure" => {
-      args: { declare: proc { expects :n, type: Integer }, n: "not an integer" },
-      outcome: :exception, exception: Axn::InboundValidationError,
-      hooks: []
+  # Each origin injects the halt (a proc run against the action instance) at one point in the pipeline.
+  origins = {
+    "an inbound preprocess:" => {
+      hooks: [],
+      args: ->(halt) { { declare: proc { expects :n, preprocess: ->(_v) { instance_exec(&halt) } }, n: 1 } },
     },
-    "an inbound preprocess: that raises" => {
-      args: { declare: proc { expects :n, preprocess: ->(_v) { raise "preprocess raised" } }, n: 1 },
-      outcome: :exception, exception: Axn::ContractViolation::PreprocessingError,
-      hooks: []
+    "an inbound default:" => {
+      hooks: [],
+      args: ->(halt) { { declare: proc { expects :n, default: -> { instance_exec(&halt) } } } },
     },
-    "an inbound default: that raises" => {
-      args: { declare: proc { expects :n, default: -> { raise "default raised" } } },
-      outcome: :exception, exception: Axn::ContractViolation::DefaultAssignmentError,
-      hooks: []
+    "a before hook" => {
+      hooks: observed_halt.call,
+      args: ->(halt) { { before_body: halt } },
     },
-    "a call that succeeds" => {
-      args: {},
-      outcome: :success,
+    "call" => {
+      hooks: observed_halt.call(:call),
+      args: ->(halt) { { body: halt } },
+    },
+    "an after hook" => {
+      hooks: observed_halt.call(:call, :after),
+      args: ->(halt) { { after_body: halt } },
+    },
+    # Outbound resolution runs after the hook body has returned: every hook runs to completion and the
+    # `around` never sees the halt.
+    "an outbound (exposes) default:" => {
       hooks: ran_to_completion,
+      args: ->(halt) { { declare: proc { exposes :out, default: -> { instance_exec(&halt) } } } },
     },
-    "done! in call" => {
-      args: { body: proc { done!("finished early") } },
-      outcome: :success,
-      hooks: in_call_halt,
-    },
-    "fail! in call" => {
-      args: { body: proc { fail!("nope") } },
-      outcome: :failure, exception: Axn::Failure,
-      hooks: in_call_halt
-    },
-    "a call that raises" => {
-      args: { body: proc { raise ArgumentError, "call raised" } },
-      outcome: :exception, exception: ArgumentError,
-      hooks: in_call_halt
-    },
-    "a before hook that raises" => {
-      args: { before_raises: true },
-      outcome: :exception, exception: RuntimeError,
-      hooks: %i[around_entry before around_rescued around_ensure]
-    },
-    "an after hook that raises" => {
-      args: { after_raises: true },
-      outcome: :exception, exception: RuntimeError,
-      hooks: %i[around_entry before call after around_rescued around_ensure]
-    },
-    # Outbound resolution runs after the hook body has returned: every hook runs to completion and
-    # the `around` never sees the raise.
-    "an outbound validation failure" => {
-      args: { declare: proc { exposes :out, type: Integer } },
-      outcome: :exception, exception: Axn::OutboundValidationError,
-      hooks: ran_to_completion
-    },
-    "an outbound (exposes) default: that raises" => {
-      args: { declare: proc { exposes :out, default: -> { raise "default raised" } } },
-      outcome: :exception, exception: Axn::ContractViolation::DefaultAssignmentError,
-      hooks: ran_to_completion
-    },
-  }.freeze
+  }
+
+  halts = {
+    "raises" => { halt: proc { raise ArgumentError, "raised" }, outcome: :exception },
+    "calls fail!" => { halt: proc { fail!("failed") }, outcome: :failure },
+    "calls done!" => { halt: proc { done!("finished early") }, outcome: :success },
+    # Outside what axn captures (docs/usage/using.md): never settled, so no outcome and no callbacks.
+    "raises Interrupt" => { halt: proc { raise Interrupt }, outcome: nil },
+  }
 
   callbacks = {
     success: %i[on_success],
     failure: %i[on_failure on_error],
     exception: %i[on_exception on_error],
+    nil => [],
   }.freeze
 
-  rows.each do |origin, row|
-    context "when the call settles via #{origin}" do
-      subject(:traced) { run_traced(**row[:args]) }
+  shared_examples "the execution guarantee" do |hooks:, outcome:|
+    let(:result) { traced.first }
+    let(:trace) { traced.last }
 
-      let(:result) { traced.first }
-      let(:trace) { traced.last }
-
-      it "settles as #{row[:outcome]}" do
-        expect(result.outcome.to_s).to eq(row[:outcome].to_s)
-        expect(result.exception).to be_a(row[:exception]) if row[:exception]
+    if outcome
+      it "settles as #{outcome}" do
+        expect(result.outcome.to_s).to eq(outcome.to_s)
       end
-
-      it "runs exactly the expected hooks, in order" do
-        expect(trace.take(row[:hooks].length)).to eq(row[:hooks])
-      end
-
-      it "then fires exactly the callbacks matching the outcome" do
-        expect(trace.drop(row[:hooks].length)).to match_array(callbacks.fetch(row[:outcome]))
+    else
+      it "is never settled: .call re-raises" do
+        expect(result).to be_a(Interrupt)
       end
     end
+
+    it "runs exactly the expected hooks, in order" do
+      expect(trace.take(hooks.length)).to eq(hooks)
+    end
+
+    it "then fires exactly the callbacks matching the outcome" do
+      expect(trace.drop(hooks.length)).to match_array(callbacks.fetch(outcome))
+    end
+  end
+
+  origins.each do |origin, where|
+    halts.each do |halt_name, halt|
+      context "when #{origin} #{halt_name}" do
+        subject(:traced) { run_traced(**where[:args].call(halt[:halt])) }
+
+        it_behaves_like "the execution guarantee", hooks: where[:hooks], outcome: halt[:outcome]
+      end
+    end
+  end
+
+  context "when the call completes without a halt" do
+    subject(:traced) { run_traced }
+
+    it_behaves_like "the execution guarantee", hooks: ran_to_completion, outcome: :success
+  end
+
+  context "when inbound validation fails" do
+    subject(:traced) { run_traced(declare: proc { expects :n, type: Integer }, n: "not an integer") }
+
+    it_behaves_like "the execution guarantee", hooks: [], outcome: :exception
+  end
+
+  context "when outbound validation fails" do
+    subject(:traced) { run_traced(declare: proc { exposes :out, type: Integer }) }
+
+    it_behaves_like "the execution guarantee", hooks: ran_to_completion, outcome: :exception
   end
 
   # Framework observability sits OUTSIDE the contract, so a call that never reaches the hooks is still

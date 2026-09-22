@@ -104,15 +104,18 @@ action. `done!` skips `after` hooks — and because it unwinds via an exception,
 way). Put such teardown in an `ensure` inside the `around`, or use `use :transaction`, which rescues
 the signal so the transaction still commits. Note the `around` hook (and its `ensure`) covers only
 halts raised **after the hook chain is entered** — an inbound `expects` failure, or an *inbound*
-`preprocess:`/`default:` callable that raises, settles before the hooks run, so neither fires. That
-boundary is structural: hooks run *inside* the contract (a `before` reading `user` needs `user`
-resolved), while callbacks and axn's own tracing/logging/timing wrap it. The `exposes` side is bounded too: outbound resolution (an `exposes` `default:`, outbound validation)
-runs *after* the hook body returns, so the hooks complete **normally** and never observe a raise from
-it — an `around` that rescues to record failures misses them. Use the callbacks for per-call
-observability that must not miss either end. Callbacks
-(`on_success`, `on_error`, `on_failure`, `on_exception`) fire once the action **settles** — which is
-not the same as "after `call`": they fire even when `call` never ran, as on an inbound validation
-failure. That is what makes them the seam that sees every call. `on_error` is a superset, co-firing
+`preprocess:`/`default:` callable that raises or calls `fail!`/`done!`, settles before the hooks
+run, so neither fires. That boundary is structural: hooks run *inside* the contract (a `before`
+reading `user` needs `user` resolved), while callbacks and axn's own tracing/logging/timing wrap
+it. The `exposes` side is bounded too: outbound resolution (an `exposes` `default:`, outbound
+validation) runs *after* the hook body returns, so the hooks complete **normally** and never
+observe a raise from it — an `around` that rescues to record failures misses them. Use the
+callbacks for per-call observability that must not miss either end. Callbacks (`on_success`,
+`on_error`, `on_failure`, `on_exception`) fire once the action **settles** — which is not the same
+as "after `call`": they fire even when `call` never ran, as on an inbound validation failure. That
+is what makes them the seam that sees every settled call, with two limits: an exception axn does
+not capture (`Interrupt`, `SystemExit`) never settles, so none fire; and `on_success` waits for the
+enclosing DB transaction to commit, so a rollback skips it. `on_error` is a superset, co-firing
 with whichever of `on_failure`/`on_exception` applies. A raise in a callback does **not** flip `ok?` —
 it is swallowed, logged, and reported to `Axn.config.on_ignored_exception` (which defaults to your
 `on_exception` handler) carrying `context[:axn_ignored]`.
