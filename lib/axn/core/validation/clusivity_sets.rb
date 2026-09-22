@@ -363,13 +363,34 @@ module Axn
       def usable_clusivity_delimiter?(collection)
         return false unless respond_to_reachable?(collection)
         return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
-        return true if public_method_owner?(collection, :include?)
+        return true if range_usable?(collection)
         return true if certainly_resolved_per_call?(collection)
         return false unless own_method_missing_hook?(collection)
 
         public_method_owner?(collection, :to_sym) || own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)
       rescue StandardError
         true
+      end
+
+      # Whether `collection` is usable via a real public `include?` — for a Range (by ANCESTRY, never
+      # `is_a?`), `cover?` must ALSO be really public, since `Clusivity#inclusion_method` selects it instead
+      # of `include?` for a Range bounded by `Numeric`/`Time`/`DateTime`/`Date`, and `WholeValueClusivity
+      # #include?` dispatches whichever it selects with `public_send`. A Range SUBCLASS that narrows or
+      # undefines EITHER one, leaving the other public, would otherwise declare cleanly on the surviving
+      # method alone and then raise `NoMethodError` on every call whose bound selects the missing one (Codex,
+      # PR #288, both directions — undefined `cover?` and privatized `include?` are symmetric bugs).
+      #
+      # Requires BOTH real-public for a Range rather than reading its bound (`.begin`/`.end`) to decide which
+      # ONE is actually needed: a Range's bound is itself a caller-suppliable value, and deciding which method
+      # a declaration needs by dispatching `.begin`/`.end` would let that value's own class govern the
+      # verdict, the same encoding the guard elsewhere for `is_a?`/`inspect` exists to keep out. Refusing a
+      # Range whose unused method happens to be broken for its own bound costs a narrower declaration than
+      # strictly necessary; it never lets one through that raises.
+      def range_usable?(collection)
+        klass = Axn::Internal::Identity.class_of(collection)
+        return public_method_owner?(collection, :include?) unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+
+        public_method_owner?(collection, :include?) && public_method_owner?(collection, :cover?)
       end
 
       # Whether the `include?` ActiveModel would actually CALL is String's own. A String answers `include?`

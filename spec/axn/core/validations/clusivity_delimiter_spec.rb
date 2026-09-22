@@ -213,6 +213,36 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
     end
   end
 
+  # `Clusivity#inclusion_method` selects `cover?` instead of `include?` for a Range bounded by
+  # `Numeric`/`Time`/`DateTime`/`Date`, and dispatches whichever it picks with `public_send`. A real public
+  # `include?` is therefore not enough for a Range on its own — `cover?` must be too, and vice versa, since
+  # axn cannot know which one a given bound needs without dispatching `.begin`/`.end` on the caller's object
+  # (Codex, PR #288, both directions).
+  describe "a Range delimiter, which needs BOTH include? and cover? to be real and public" do
+    it "refuses a Range SUBCLASS whose cover? has been undefined" do
+      stub_const("NoCoverRange", Class.new(Range) { undef_method :cover? })
+
+      expect { build_axn { expects :v, inclusion: { in: NoCoverRange.new(1, 10) } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class NoCoverRange, which ActiveModel cannot use/)
+    end
+
+    it "refuses a Range SUBCLASS whose include? has been narrowed to private" do
+      stub_const("PrivateIncludeRange", Class.new(Range) { private :include? })
+
+      expect { build_axn { expects :v, inclusion: { in: PrivateIncludeRange.new(1, 10) } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class PrivateIncludeRange, which ActiveModel cannot use/)
+    end
+
+    it "still declares and enforces an unmodified Range subclass" do
+      stub_const("PlainRangeSubclass", Class.new(Range))
+
+      action = build_axn { expects :v, inclusion: { in: PlainRangeSubclass.new(1, 10) } }
+
+      expect(outcome(action.call(v: 5))).to eq(:pass)
+      expect(outcome(action.call(v: 20))).to eq(:reject)
+    end
+  end
+
   describe "the exclusion mirror" do
     it "refuses an unusable delimiter the same way inclusion does" do
       expect { build_axn { expects :v, exclusion: 5 } }
