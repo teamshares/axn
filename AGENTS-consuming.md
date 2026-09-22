@@ -118,8 +118,9 @@ callbacks for per-call observability that must not miss either end. Callbacks (`
 `on_error`, `on_failure`, `on_exception`) fire once the action **settles** — which is not the same
 as "after `call`": they fire even when `call` never ran, as on an inbound validation failure. That
 is what makes them the seam that sees every settled call, within three limits: an exception axn
-does not capture (`Interrupt`, `SystemExit`) never settles, so none fire; `on_success` waits for the
-enclosing (joinable) DB transaction to commit, so a rollback skips it; and in an async job,
+does not capture (`Interrupt`, `SystemExit`) never settles, so none fire; with ActiveRecord 7.2+,
+`on_success` waits for the enclosing (joinable) DB transaction to commit, so a rollback skips it
+(older AR, or none, dispatches inline); and in an async job,
 `async_exception_reporting` gates `on_exception` per attempt (by default an intermediate retry fires
 only `on_error`). `on_error` is a superset, co-firing
 with whichever of `on_failure`/`on_exception` applies. A raise in a callback does **not** flip `ok?` —

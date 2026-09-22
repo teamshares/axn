@@ -985,7 +985,7 @@ In addition to the [global exception handler](/reference/configuration#on-except
 
 ### `on_success`
 
-This is triggered after the Axn completes successfully, once the enclosing database transaction has committed (immediately if none is open); it is skipped if that transaction rolls back. This tracks *joinable* transactions only — ordinary `ActiveRecord::Base.transaction` blocks and `use :transaction` — so an action run directly inside `transaction(joinable: false)` fires `on_success` immediately, and a later rollback does not undo it. Nested `on_success` callbacks fire child-first (inner before outer). Difference from `after`: if the given block raises an error, this WILL be reported to the global exception handler, but will NOT change `ok?` to false.
+This is triggered after the Axn completes successfully, once the enclosing database transaction has committed (immediately if none is open); it is skipped if that transaction rolls back. The deferral needs ActiveRecord 7.2+; without ActiveRecord, or on an older version, `on_success` [dispatches inline](/recipes/running-without-rails#on-success-timing). It also tracks *joinable* transactions only — ordinary `ActiveRecord::Base.transaction` blocks and `use :transaction` — so an action run directly inside `transaction(joinable: false)` fires `on_success` immediately, and a later rollback does not undo it. Nested `on_success` callbacks fire child-first (inner before outer). Difference from `after`: if the given block raises an error, this WILL be reported to the global exception handler, but will NOT change `ok?` to false.
 
 ### `on_error`
 
