@@ -307,6 +307,31 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: "a"))).to eq(:pass)
       expect(outcome(action.call(v: "z"))).to eq(:reject)
     end
+
+    # Ruby routes a call it cannot dispatch normally — an absent method, or a PRIVATE one reached with an
+    # explicit receiver — through `method_missing` regardless of why the normal dispatch failed. So a
+    # `respond_to?` narrowed to private, alongside a `method_missing` that cooperates by handling the
+    # `:respond_to?` message itself, genuinely answers `check_validity!`'s probe rather than raising
+    # `NoMethodError: private method` — the fresh case beyond a private `respond_to?` with no `method_missing`
+    # to catch it (Codex, PR #288).
+    it "declares and enforces a delimiter whose private respond_to? is caught by a cooperating method_missing" do
+      stub_const("PrivateRespondToWithMethodMissing", Class.new do
+        # rubocop:disable Style/MissingRespondToMissing -- respond_to? itself is the cooperating hook here
+        def method_missing(name, *args)
+          return (args.first == :include?) if name == :respond_to?
+          return args.first == 1 if name == :include?
+
+          super
+        end
+        # rubocop:enable Style/MissingRespondToMissing
+        private :respond_to?
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: PrivateRespondToWithMethodMissing.new } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 2))).to eq(:reject)
+    end
   end
 
   describe "accepted delimiters (controls — must still declare cleanly)" do

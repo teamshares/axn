@@ -306,16 +306,20 @@ module Axn
       # Whether `collection` can even ANSWER `respond_to?` at all — the one prerequisite every branch below
       # assumes and none of them may override. `check_validity!` probes the delimiter with
       # `delimiter.respond_to?(:include?) || delimiter.respond_to?(:call) || delimiter.respond_to?(:to_sym)` —
-      # an EXPLICIT-receiver call, so it needs a PUBLIC `respond_to?`, not merely one present in the table. A
-      # value rooted at `BasicObject` with nothing added has no `respond_to?` at all, and a class that narrows
-      # the inherited one to `private`/`protected` (unusual, but not unreachable) has one the table finds but
-      # `delimiter.respond_to?(...)` still cannot reach — both raise `NoMethodError` from that very first probe
-      # regardless of what `include?`/`call` the object itself defines. That is CERTAIN failure, readable
-      # without dispatch (the same owner-plus-visibility read `public_method_owner?` uses for every other
-      # name), not the doubtful case the rest of this method exists to permit through — so it is checked first
-      # and unconditionally.
+      # an EXPLICIT-receiver call, so a PUBLIC `respond_to?` answers it for CERTAIN. A value rooted at
+      # `BasicObject` with nothing added has no `respond_to?` at all, and a class that narrows the inherited
+      # one to `private`/`protected` (unusual, but not unreachable) has one the table finds but
+      # `delimiter.respond_to?(...)` still cannot reach that way — EXCEPT Ruby routes a call Ruby cannot
+      # dispatch normally (an absent method, or a private one reached with an explicit receiver) through
+      # `method_missing` regardless of why the normal dispatch failed, so a caller-owned `method_missing` that
+      # cooperates with an otherwise-unreachable `respond_to?` genuinely answers the probe (measured: a private
+      # `respond_to?` alongside a `method_missing` that handles the `:respond_to?` message dispatches to
+      # `method_missing`, not `NoMethodError`). DOUBTFUL in that case — axn cannot know whether the
+      # `method_missing` actually cooperates — so DOUBT MUST ANSWER "usable" the same as every other hook here.
+      # Only the absence of BOTH a public `respond_to?` AND a `method_missing` to catch the miss is CERTAIN
+      # failure, readable without dispatch, and refused unconditionally (Codex, PR #288).
       def respond_to_reachable?(collection)
-        public_method_owner?(collection, :respond_to?)
+        public_method_owner?(collection, :respond_to?) || own_method_missing_hook?(collection)
       end
 
       # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter AND the runtime
