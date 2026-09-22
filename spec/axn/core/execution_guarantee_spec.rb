@@ -115,6 +115,17 @@ RSpec.describe "Hook and callback execution guarantee" do
       hooks: ran_to_completion,
       args: ->(halt) { { declare: proc { exposes :out, default: -> { instance_exec(&halt) } } } },
     },
+    # A field both expected and exposed, carrying no validation and never read by the body, first
+    # resolves its default: during the outbound copy-forward.
+    "an inbound default: first resolved by the outbound copy-forward" => {
+      hooks: ran_to_completion,
+      args: lambda { |halt|
+        { declare: proc {
+          expects :v, optional: true, default: -> { instance_exec(&halt) }
+          exposes :v, optional: true
+        } }
+      },
+    },
   }
 
   halts = {
@@ -184,8 +195,8 @@ RSpec.describe "Hook and callback execution guarantee" do
   end
 
   # Outbound resolution runs after a `done!` from `call` or a hook, so an unset required exposure turns
-  # it into an exception; a `done!` raised by contract resolution itself (an inbound preprocess:/default:,
-  # or an exposes default:) settles immediately and skips outbound validation (PRO-3490).
+  # it into an exception; a `done!` raised by contract resolution itself (a preprocess:/default: running
+  # outside the hook chain) settles immediately and skips outbound validation (PRO-3490).
   describe "done! with a required exposure left unset" do
     {
       "an inbound preprocess:" => [:success, ->(done) { { declare: proc { expects :n, preprocess: ->(_v) { instance_exec(&done) } }, n: 1 } }],
@@ -196,6 +207,12 @@ RSpec.describe "Hook and callback execution guarantee" do
       "an around hook, before its chain.call," => [:exception, ->(done) { { inner_around_pre: done } }],
       "an around hook, after its chain.call," => [:exception, ->(done) { { inner_around_post: done } }],
       "an outbound (exposes) default:" => [:success, ->(done) { { declare: proc { exposes :other, default: -> { instance_exec(&done) } } } }],
+      "an inbound default: first resolved by the outbound copy-forward" => [:success, lambda { |done|
+        { declare: proc {
+          expects :v, optional: true, default: -> { instance_exec(&done) }
+          exposes :v, optional: true
+        } }
+      }],
     }.each do |origin, (outcome, args)|
       context "when #{origin} calls done!" do
         subject(:result) do

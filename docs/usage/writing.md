@@ -704,7 +704,7 @@ Two things decide what runs: **where** a call halts decides which hooks run, and
 | `call` halts | ✓ | ✓ | — | ✓ | ✓ | — |
 | An `after` hook halts | ✓ | ✓ | — | ✓ | ✓ | ✓ |
 | An `around` hook halts after its own `chain.call`³ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
-| Outbound validation fails, or an `exposes` `default:` halts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| Outbound resolution halts: outbound validation fails, an `exposes` `default:` halts, or a field both expected and exposed resolves its `default:`/`preprocess:` for the first time and halts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | *No halt: `call` returns* | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 
 ¹ Inbound validation resolves a field's `preprocess:`/`default:` when it checks that field, which it does for any field carrying a validation — including the implicit presence check on a required field. A field with none resolves on first read instead, so a halt from it lands wherever that read happens (usually `call`) and follows that row.
@@ -720,7 +720,7 @@ Two things decide what runs: **where** a call halts decides which hooks run, and
 | A raise axn captures — including a validation failure | exception | `on_exception`, `on_error` |
 | An exception axn does not capture (`Interrupt`, `SystemExit`, …) | none: `.call` re-raises it | none |
 
-² Outbound resolution still runs after a call that returns, and after a `done!` from `call` or a hook, so an unset required exposure turns either into an `exception` (`OutboundValidationError`). A `done!` raised by contract resolution itself is the exception — from an inbound `preprocess:`/`default:` during inbound validation, or from an `exposes` `default:`: it settles as success immediately, so outbound validation does not run (and neither do any outbound defaults not yet applied), even with a required exposure unset.
+² Outbound resolution still runs after a call that returns, and after a `done!` from `call` or a hook, so an unset required exposure turns either into an `exception` (`OutboundValidationError`). A `done!` raised by contract resolution itself is the exception: that is, a `done!` from any `preprocess:` or `default:` that runs outside the hook chain — during inbound validation, in an `exposes` `default:`, or during the outbound copy-forward of a field both expected and exposed that nothing read earlier. It settles as success immediately, so outbound validation does not run (and neither do any outbound defaults not yet applied), even with a required exposure unset.
 
 Both tables hold for [`call!`](/usage/using#call) too: the same hooks and callbacks run, and `call!` then raises for a failure or exception outcome instead of returning the result.
 
