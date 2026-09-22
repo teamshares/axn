@@ -372,25 +372,59 @@ module Axn
         true
       end
 
-      # Whether `collection` is usable via a real public `include?` — for a Range (by ANCESTRY, never
-      # `is_a?`), `cover?` must ALSO be really public, since `Clusivity#inclusion_method` selects it instead
-      # of `include?` for a Range bounded by `Numeric`/`Time`/`DateTime`/`Date`, and `WholeValueClusivity
-      # #include?` dispatches whichever it selects with `public_send`. A Range SUBCLASS that narrows or
-      # undefines EITHER one, leaving the other public, would otherwise declare cleanly on the surviving
-      # method alone and then raise `NoMethodError` on every call whose bound selects the missing one (Codex,
-      # PR #288, both directions — undefined `cover?` and privatized `include?` are symmetric bugs).
-      #
-      # Requires BOTH real-public for a Range rather than reading its bound (`.begin`/`.end`) to decide which
-      # ONE is actually needed: a Range's bound is itself a caller-suppliable value, and deciding which method
-      # a declaration needs by dispatching `.begin`/`.end` would let that value's own class govern the
-      # verdict, the same encoding the guard elsewhere for `is_a?`/`inspect` exists to keep out. Refusing a
-      # Range whose unused method happens to be broken for its own bound costs a narrower declaration than
-      # strictly necessary; it never lets one through that raises.
-      def range_usable?(collection)
-        klass = Axn::Internal::Identity.class_of(collection)
-        return public_method_owner?(collection, :include?) unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+      # The native `Range#begin`/`#end` readers, unbound and bound per call — for reading a Range's OWN
+      # stored bound, never the caller's possibly-overridden version, exactly the "native reader over the
+      # caller's own" pattern `HASH_KEYS_READER` already applies to a Hash's keys. `inclusion_method` itself
+      # would read the SAME value absent such an override, since `begin`/`end` are C-level accessors onto
+      # Range's own internal state, not derived from anything a subclass typically recomputes.
+      RANGE_BEGIN = ::Range.instance_method(:begin)
+      RANGE_END = ::Range.instance_method(:end)
 
-        public_method_owner?(collection, :include?) && public_method_owner?(collection, :cover?)
+      # The bound types `Clusivity#inclusion_method` selects `cover?` for, guarded by `defined?` for the same
+      # reason `Set` is guarded elsewhere in this file — axn works outside Rails, where `Time`/`DateTime`/
+      # `Date` may not be loaded at all.
+      RANGE_COVER_TYPES = [
+        ::Numeric,
+        (::Time if defined?(::Time)),
+        (::DateTime if defined?(::DateTime)),
+        (::Date if defined?(::Date)),
+      ].compact.freeze
+
+      # Mirrors ActiveModel's own `Clusivity#inclusion_method`: a Range selects `cover?` for a bound that is
+      # `Numeric`/`Time`/`DateTime`/`Date`, `include?` for every other bound. The type check is a
+      # `Module#===` walk over TYPE constants — never a question put to the bound value itself, no `is_a?`
+      # dispatched on it, matching every other classification in this file.
+      def range_selects_cover?(collection)
+        bound = RANGE_BEGIN.bind_call(collection) || RANGE_END.bind_call(collection)
+
+        case bound
+        when *RANGE_COVER_TYPES then true
+        else false
+        end
+      end
+
+      # Whether `collection` is usable via a real public `include?` — REQUIRED UNCONDITIONALLY, Range or not:
+      # `check_validity!`'s `respond_to?(:include?) || respond_to?(:call) || respond_to?(:to_sym)` gate never
+      # looks at `cover?` at all, so a private `include?` fails `check_validity!` regardless of what bound the
+      # Range has or whether `cover?` is public — a Range gets NO exemption from the ordinary requirement
+      # every other collection already has here.
+      #
+      # For a Range (by ANCESTRY, never `is_a?`) whose bound is `Numeric`/`Time`/`DateTime`/`Date`, `cover?`
+      # is an ADDITIONAL requirement ON TOP of `include?`, never a substitute for it: `check_validity!` passes
+      # on `include?` alone, but `Clusivity#inclusion_method` then selects `cover?` for that bound, and
+      # `WholeValueClusivity#include?` dispatches it with `public_send` — so a Range SUBCLASS with a real
+      # public `include?` but an undefined/private `cover?` still declares cleanly and raises `NoMethodError`
+      # on every call whose bound is numeric/time-like (Codex, PR #288). A Range whose bound does NOT select
+      # `cover?` needs no such extra requirement at all — refusing it there would refuse a declaration
+      # ActiveModel and the runtime both accept, the same finding's other half.
+      def range_usable?(collection)
+        return false unless public_method_owner?(collection, :include?)
+
+        klass = Axn::Internal::Identity.class_of(collection)
+        return true unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+        return true unless range_selects_cover?(collection)
+
+        public_method_owner?(collection, :cover?)
       end
 
       # Whether the `include?` ActiveModel would actually CALL is String's own. A String answers `include?`

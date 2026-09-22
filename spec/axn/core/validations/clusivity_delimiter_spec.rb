@@ -218,28 +218,48 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
   # `include?` is therefore not enough for a Range on its own — `cover?` must be too, and vice versa, since
   # axn cannot know which one a given bound needs without dispatching `.begin`/`.end` on the caller's object
   # (Codex, PR #288, both directions).
-  describe "a Range delimiter, which needs BOTH include? and cover? to be real and public" do
-    it "refuses a Range SUBCLASS whose cover? has been undefined" do
+  # `include?` is required UNCONDITIONALLY: `check_validity!`'s `respond_to?(:include?) || …` gate never asks
+  # about `cover?` at all, so a private `include?` fails it regardless of the Range's bound. `cover?` is an
+  # ADDITIONAL requirement ON TOP of `include?`, and only for a bound `Clusivity#inclusion_method` actually
+  # selects it for (`Numeric`/`Time`/`DateTime`/`Date`) — never a substitute for `include?`, and never required
+  # at all for a bound that doesn't select it (Codex, PR #288, corrected across two rounds).
+  describe "a Range delimiter — include? is always required, cover? only when the bound selects it" do
+    it "refuses a numeric-bounded Range SUBCLASS whose cover? has been undefined" do
       stub_const("NoCoverRange", Class.new(Range) { undef_method :cover? })
 
       expect { build_axn { expects :v, inclusion: { in: NoCoverRange.new(1, 10) } } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class NoCoverRange, which ActiveModel cannot use/)
     end
 
-    it "refuses a Range SUBCLASS whose include? has been narrowed to private" do
+    it "does not refuse a STRING-bounded Range SUBCLASS whose cover? has been undefined, since cover? is never touched" do
+      stub_const("NoCoverStringRange", Class.new(Range) { undef_method :cover? })
+
+      action = build_axn { expects :v, inclusion: { in: NoCoverStringRange.new("a", "z") } }
+
+      expect(outcome(action.call(v: "m"))).to eq(:pass)
+      expect(outcome(action.call(v: "zz"))).to eq(:reject)
+    end
+
+    it "refuses a Range SUBCLASS whose include? has been narrowed to private, regardless of bound or cover?" do
       stub_const("PrivateIncludeRange", Class.new(Range) { private :include? })
+      stub_const("PrivateIncludeStringRange", Class.new(Range) { private :include? })
 
       expect { build_axn { expects :v, inclusion: { in: PrivateIncludeRange.new(1, 10) } } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class PrivateIncludeRange, which ActiveModel cannot use/)
+      expect { build_axn { expects :v, inclusion: { in: PrivateIncludeStringRange.new("a", "z") } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class PrivateIncludeStringRange, which ActiveModel cannot use/)
     end
 
-    it "still declares and enforces an unmodified Range subclass" do
+    it "still declares and enforces an unmodified Range subclass, numeric or string bounded" do
       stub_const("PlainRangeSubclass", Class.new(Range))
 
-      action = build_axn { expects :v, inclusion: { in: PlainRangeSubclass.new(1, 10) } }
+      numeric_action = build_axn { expects :v, inclusion: { in: PlainRangeSubclass.new(1, 10) } }
+      expect(outcome(numeric_action.call(v: 5))).to eq(:pass)
+      expect(outcome(numeric_action.call(v: 20))).to eq(:reject)
 
-      expect(outcome(action.call(v: 5))).to eq(:pass)
-      expect(outcome(action.call(v: 20))).to eq(:reject)
+      string_action = build_axn { expects :v, inclusion: { in: PlainRangeSubclass.new("a", "z") } }
+      expect(outcome(string_action.call(v: "m"))).to eq(:pass)
+      expect(outcome(string_action.call(v: "zz"))).to eq(:reject)
     end
   end
 
