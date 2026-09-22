@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "stringio"
-require "support/tool_adapter_helpers"
+require_relative "../../support/tool_adapter_helpers"
 
 RSpec.describe Axn::Tools::Registry do
   before { described_class.reset_adapters! }

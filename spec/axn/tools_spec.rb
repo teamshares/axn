@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "support/tool_adapter_helpers"
+require_relative "../support/tool_adapter_helpers"
 
 RSpec.describe Axn::Tools do
   before { Axn::Tools::Registry.reset_adapters! }
