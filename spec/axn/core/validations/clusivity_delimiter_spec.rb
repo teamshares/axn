@@ -113,6 +113,17 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: { in: ToSymOnlyDelimiter.new } } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class ToSymOnlyDelimiter, which ActiveModel cannot use/)
     end
+
+    # `check_validity!` probes the delimiter with `delimiter.respond_to?(:include?) || …`, and `respond_to?`
+    # is an ordinary Kernel method — a value rooted at BasicObject with nothing added has none at all, so that
+    # first probe raises `NoMethodError` regardless of what `include?` the object itself defines (Codex, PR
+    # #288). A public `include?` alone is not enough to call a delimiter usable.
+    it "refuses a BasicObject-rooted delimiter, which cannot even answer respond_to?" do
+      stub_const("BasicObjectDelimiter", Class.new(BasicObject) { def include?(_value) = true })
+
+      expect { build_axn { expects :v, inclusion: BasicObjectDelimiter.new } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class BasicObjectDelimiter, which ActiveModel cannot use/)
+    end
   end
 
   describe "a long form naming no delimiter at all" do

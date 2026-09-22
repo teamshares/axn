@@ -271,6 +271,18 @@ module Axn
         !owner.nil? && Axn::Internal::NativeMethods.public_instance_method?(owner, name)
       end
 
+      # Whether `collection` can even ANSWER `respond_to?` at all — the one prerequisite every branch below
+      # assumes and none of them may override. `check_validity!` probes the delimiter with
+      # `delimiter.respond_to?(:include?) || delimiter.respond_to?(:call) || delimiter.respond_to?(:to_sym)`,
+      # and `respond_to?` is an ordinary `Kernel` method: a value rooted at `BasicObject` with nothing added
+      # has NO SUCH METHOD at all, so that very first probe raises `NoMethodError` regardless of what
+      # `include?`/`call` the object itself defines. That is CERTAIN failure, readable without dispatch (a
+      # bound `method_owner` read, exactly like every other predicate here), not the doubtful case the rest of
+      # this method exists to permit through — so it is checked first and unconditionally.
+      def respond_to_reachable?(collection)
+        !Axn::Internal::NativeMethods.method_owner(collection, :respond_to?).nil?
+      end
+
       # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter — mirrored by
       # OWNERSHIP rather than by dispatching `respond_to?` on the caller's object, for the reason
       # `certainly_resolved_per_call?` gives. A collection carrying its own `respond_to_missing?` is undecidable
@@ -297,6 +309,7 @@ module Axn
       # by IDENTITY (`Identity.class_of`, never `is_a?`, for the reason every predicate here is): `Symbol` takes
       # no subclass (`Symbol.allocate` raises `TypeError`), so there is no override this could miss.
       def usable_clusivity_delimiter?(collection)
+        return false unless respond_to_reachable?(collection)
         return true if own_respond_to_missing_hook?(collection)
         return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
 
