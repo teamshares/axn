@@ -4,7 +4,7 @@ require "logger"
 require "stringio"
 require "tmpdir"
 require "open3"
-require "support/tool_adapter_helpers"
+require_relative "../../support/tool_adapter_helpers"
 
 # NOTHING is required here for the `to_fs(:inspect)` date branch, deliberately: `ContextFacadeInspector`
 # declares those core_exts itself, and requiring them from the spec would make these examples pass whether or
