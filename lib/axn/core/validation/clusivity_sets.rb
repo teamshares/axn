@@ -331,7 +331,16 @@ module Axn
       # Asked by OWNERSHIP, not by class: a String SUBCLASS that has not overridden `include?` inherits the
       # same substring behaviour and is refused on the same terms, while one that overrides it decides its own
       # membership and is exempt — the same rule `certainly_resolved_per_call?` applies to `call`.
+      #
+      # EXEMPT when `certainly_resolved_per_call?` is true: `resolve_value`'s `else` branch checks
+      # `respond_to?(:call)` BEFORE anything ever reaches `include?`, so a String subclass that also carries a
+      # public `call` (returning the collection to compare against) is resolved through that `call`, never
+      # through its own inherited substring `include?` at all — refusing it here would refuse a declaration
+      # ActiveModel and the runtime both accept, which is the one error this guard may not make (Codex, PR
+      # #288).
       def string_keyed_delimiter?(collection)
+        return false if certainly_resolved_per_call?(collection)
+
         Axn::Internal::NativeMethods.method_owner(collection, :include?).equal?(::String)
       rescue StandardError
         false

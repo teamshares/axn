@@ -181,6 +181,33 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
 
       expect { build_axn { expects :v, inclusion: { in: set } } }.not_to raise_error
     end
+
+    # `resolve_value`'s `else` branch checks `respond_to?(:call)` BEFORE anything ever reaches `include?`, so a
+    # String subclass carrying a public `call` (returning the real collection) is resolved through that `call`
+    # and its inherited substring `include?` is never invoked at all — refusing it would refuse a declaration
+    # ActiveModel and the runtime both accept (Codex, PR #288).
+    def outcome(result)
+      return :pass if result.ok?
+
+      exception = result.exception
+      exception.nil? || exception.is_a?(Axn::InboundValidationError) ? :reject : :raise
+    end
+
+    it "does not refuse a String SUBCLASS resolved per call, and enforces the resolved collection" do
+      callable = Class.new(String) { def call(_record) = %w[a b] }
+
+      action = build_axn { expects :v, inclusion: callable.new("irrelevant") }
+
+      expect(outcome(action.call(v: "a"))).to eq(:pass)
+      expect(outcome(action.call(v: "z"))).to eq(:reject)
+    end
+
+    it "still refuses a String SUBCLASS whose call is not public" do
+      private_callable = Class.new(String) { private def call(_record) = %w[a b] }
+
+      expect { build_axn { expects :v, inclusion: private_callable.new("irrelevant") } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a String as its set/)
+    end
   end
 
   describe "the exclusion mirror" do
