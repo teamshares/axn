@@ -704,7 +704,7 @@ Two things decide what runs: **where** a call halts decides which hooks run, and
 | `call` halts | ✓ | ✓ | — | ✓ | ✓ | — |
 | An `after` hook halts | ✓ | ✓ | — | ✓ | ✓ | ✓ |
 | An `around` hook halts after its own `chain.call`³ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
-| Outbound resolution halts: outbound validation fails, an `exposes` `default:` halts, or a field both expected and exposed resolves its `default:`/`preprocess:` for the first time and halts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| Outbound resolution halts: outbound validation fails, an `exposes` `default:` or `if:`/`unless:` condition halts, or a field both expected and exposed resolves its `default:`/`preprocess:` for the first time and halts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | *No halt: `call` returns* | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | *No halt: an `around` hook returns without calling `chain.call`* | — | ✓ | ✓ | ✓ | — | — |
 
@@ -721,13 +721,13 @@ Two things decide what runs: **where** a call halts decides which hooks run, and
 | A raise axn captures — including a validation failure | exception | `on_exception`, `on_error` |
 | An exception axn does not capture (`Interrupt`, `SystemExit`, …) | none: `.call` re-raises it | none |
 
-² Outbound resolution still runs after a call that returns, and after a `done!` from `call` or a hook, so an unset required exposure turns either into an `exception` (`OutboundValidationError`). A `done!` raised by contract resolution itself is the exception: that is, a `done!` from any `preprocess:` or `default:` that runs outside the hook chain — during inbound validation, in an `exposes` `default:`, or during the outbound copy-forward of a field both expected and exposed that nothing read earlier. It settles as success immediately, so outbound validation does not run (and neither do any outbound defaults not yet applied), even with a required exposure unset.
+² Outbound resolution still runs after a call that returns, and after a `done!` from `call` or a hook, so an unset required exposure turns either into an `exception` (`OutboundValidationError`). A `done!` raised by contract resolution itself is the exception: that is, a `done!` from any `preprocess:`, `default:` or validation `if:`/`unless:` condition that runs outside the hook chain — during inbound validation, in an `exposes` `default:` or condition, or during the outbound copy-forward of a field both expected and exposed that nothing read earlier. It settles as success immediately, so outbound validation does not run (and neither do any outbound defaults not yet applied), even with a required exposure unset.
 
 Both tables hold for [`call!`](/usage/using#call) too: the same hooks and callbacks run, and `call!` then raises for a failure or exception outcome instead of returning the result.
 
 A captured raise settles as a failure instead when it is reclassified — by [`fails_on`](#suppressing-reports-for-expected-failures-in-composed-actions), or, for a validation failure, by [`user_facing:`](/reference/class#user-facing). Which exceptions axn captures, and why the rest pass through, is covered under [What `call` can still raise](/usage/using).
 
-A halt only counts where it reaches the pipeline. These callables can halt a call: `before`/`around`/`after` hooks, `call`, a field's `preprocess:` or `default:`, and a validation's `if:`/`unless:` condition, which resolves during inbound validation and so halts before any hook runs. Every other callable axn runs contains a raise, `fail!` or `done!` itself:
+A halt only counts where it reaches the pipeline. These callables can halt a call: `before`/`around`/`after` hooks, `call`, a field's `preprocess:` or `default:`, and a validation's `if:`/`unless:` condition, which runs where its field is validated: for an `expects` field during inbound validation (so it halts before any hook runs), for an `exposes` field during outbound validation (so it follows the outbound-resolution row). Every other callable axn runs contains a raise, `fail!` or `done!` itself:
 
 | Callable | What a raise, `fail!` or `done!` inside it does |
 | --- | --- |

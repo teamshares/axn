@@ -87,6 +87,11 @@ RSpec.describe "Hook and callback execution guarantee" do
       hooks: [],
       args: ->(halt) { { declare: proc { expects :n, default: -> { instance_exec(&halt) } } } },
     },
+    # A validation's if:/unless: condition runs where its field is validated: inbound for expects...
+    "an expects validation's if: condition" => {
+      hooks: [],
+      args: ->(halt) { { declare: proc { expects :n, type: Integer, if: -> { instance_exec(&halt) } }, n: 1 } },
+    },
     "a before hook" => {
       hooks: observed_halt.call,
       args: ->(halt) { { before_body: halt } },
@@ -125,6 +130,11 @@ RSpec.describe "Hook and callback execution guarantee" do
           exposes :v, optional: true
         } }
       },
+    },
+    # ...and outbound, after the hook chain, for exposes.
+    "an exposes validation's if: condition" => {
+      hooks: ran_to_completion,
+      args: ->(halt) { { declare: proc { exposes :o, type: Integer, optional: true, if: -> { instance_exec(&halt) } } } },
     },
   }
 
@@ -195,8 +205,9 @@ RSpec.describe "Hook and callback execution guarantee" do
   end
 
   # Outbound resolution runs after a `done!` from `call` or a hook, so an unset required exposure turns
-  # it into an exception; a `done!` raised by contract resolution itself (a preprocess:/default: running
-  # outside the hook chain) settles immediately and skips outbound validation (PRO-3490).
+  # it into an exception; a `done!` raised by contract resolution itself (a preprocess:/default: or a
+  # validation's if:/unless: running outside the hook chain) settles immediately and skips outbound
+  # validation (PRO-3490).
   describe "done! with a required exposure left unset" do
     {
       "an inbound preprocess:" => [:success, ->(done) { { declare: proc { expects :n, preprocess: ->(_v) { instance_exec(&done) } }, n: 1 } }],
@@ -207,6 +218,9 @@ RSpec.describe "Hook and callback execution guarantee" do
       "an around hook, before its chain.call," => [:exception, ->(done) { { inner_around_pre: done } }],
       "an around hook, after its chain.call," => [:exception, ->(done) { { inner_around_post: done } }],
       "an outbound (exposes) default:" => [:success, ->(done) { { declare: proc { exposes :other, default: -> { instance_exec(&done) } } } }],
+      "an exposes validation's if: condition" => [:success, lambda { |done|
+        { declare: proc { exposes :other, type: Integer, optional: true, if: -> { instance_exec(&done) } } }
+      }],
       "an inbound default: first resolved by the outbound copy-forward" => [:success, lambda { |done|
         { declare: proc {
           expects :v, optional: true, default: -> { instance_exec(&done) }
@@ -352,7 +366,7 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
 
     # A model: finder runs on the model class, not the action, so fail!/done! do not exist there: a
-    # fault it raises resolves the field to nil (reported as ignored), which the field's validation
+    # fault it raises resolves the field to nil, which the field's validation
     # then classifies.
     describe "a model: finder" do
       def build_with_finder(&finder_body)
@@ -367,20 +381,6 @@ RSpec.describe "Hook and callback execution guarantee" do
 
       it "still passes through an Interrupt" do
         expect { build_with_finder { |_id| raise Interrupt }.call(thing_id: 1) }.to raise_error(Interrupt)
-      end
-    end
-
-    # An `if:`/`unless:` validation condition is not contained: it halts the call like a preprocess:
-    # would, before any hook runs.
-    {
-      "raises" => [halt_kinds["raises"], :exception],
-      "calls fail!" => [halt_kinds["calls fail!"], :failure],
-      "calls done!" => [halt_kinds["calls done!"], :success],
-    }.each do |halt_name, (halt, outcome)|
-      context "when an if: validation condition #{halt_name}" do
-        subject(:traced) { run_traced(declare: proc { expects :n, type: Integer, if: -> { instance_exec(&halt) } }, n: 1) }
-
-        it_behaves_like "the execution guarantee", hooks: [], outcome:
       end
     end
   end
