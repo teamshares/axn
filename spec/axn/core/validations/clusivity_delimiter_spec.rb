@@ -135,6 +135,18 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class BasicObjectDelimiter, which ActiveModel cannot use/)
     end
 
+    # A BasicObject subclass that DOES supply its own public `respond_to?` (answering false for everything)
+    # is a different case from the one above: `respond_to_reachable?` passes, and every later ownership read
+    # (`Identity.class_of`, `NativeMethods.method_owner`) still works fine on a BasicObject in current Ruby —
+    # `Object.instance_method(:class).bind_call` does not require the receiver to be a `kind_of?` `Object`.
+    # No crash, no permissive-rescue fallback; the guard reaches its ordinary `false` verdict directly.
+    it "refuses a BasicObject-rooted delimiter with its own respond_to? that answers false for everything" do
+      stub_const("BasicObjectFalseRespondTo", Class.new(BasicObject) { def respond_to?(_name, *) = false })
+
+      expect { build_axn { expects :v, inclusion: BasicObjectFalseRespondTo.new } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class BasicObjectFalseRespondTo, which ActiveModel cannot use/)
+    end
+
     # `check_validity!` calls `delimiter.respond_to?(...)` with an EXPLICIT receiver, so a `respond_to?` the
     # table finds but visibility narrows to private/protected is just as unreachable as one absent entirely —
     # `NoMethodError: private method 'respond_to?' called for ...` on the first call (Codex, PR #288).
