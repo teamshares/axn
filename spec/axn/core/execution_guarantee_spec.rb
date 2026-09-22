@@ -415,6 +415,42 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
   end
 
+  # A halt an enclosing `around` rescues without re-raising never reaches settlement: the chain returns
+  # normally and the call settles by outbound resolution, as if nothing had halted.
+  describe "an around hook that swallows a halt" do
+    def run_swallowing(halt, declare: nil)
+      action = build_axn do
+        class_eval(&declare) if declare
+        around do |chain|
+          chain.call
+        rescue StandardError
+          nil
+        end
+        define_method(:call) { instance_exec(&halt) }
+      end
+      action.call
+    end
+
+    {
+      "raise" => proc { raise ArgumentError, "raised" },
+      "fail!" => proc { fail!("failed") },
+      "done!" => proc { done!("finished early") },
+    }.each do |halt_name, halt|
+      it "settles a swallowed #{halt_name} as success" do
+        expect(run_swallowing(halt)).to be_ok
+      end
+
+      it "still runs outbound validation after a swallowed #{halt_name}" do
+        result = run_swallowing(halt, declare: proc { exposes :o, type: Integer })
+        expect(result.exception).to be_a(Axn::OutboundValidationError)
+      end
+    end
+
+    it "keeps a swallowed done!'s message" do
+      expect(run_swallowing(proc { done!("finished early") }).success).to eq("finished early")
+    end
+  end
+
   # call! runs the same hooks and fires the same callbacks; it only raises afterwards.
   describe "call!" do
     def run_bang(declare: nil, body: nil, **inputs)
