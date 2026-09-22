@@ -1711,16 +1711,20 @@ RSpec.describe "recursive of:" do
       end
     end
 
-    # Deliberately still refused (see the design spec's Scope section): relaxing it would make the exempt set
-    # everything the emitter puts in `properties` at that node — subfield leaves, dotted-`on:` segments,
-    # `model:`'s generated id — none of which is knowable from the shape, where the set is derived.
-    it "still refuses a subfield rooted at a map" do
-      expect do
-        build_axn do
-          expects :m, type: Hash, of: { values: Integer }
-          expects :sku, on: :m
-        end
-      end.to raise_error(ArgumentError, /not supported yet/)
+    # PRO-3441. Used to be refused outright (see the design spec's Scope section, since relaxed): the
+    # exempt set the declaration-time guard could not derive — everything the emitter puts in `properties`
+    # at that node, not only a `shape:`'s own members — is now read from what the emitter actually
+    # emitted, at the one point (`finalize_residues!`) every route to that node is guaranteed to have
+    # landed. A subfield with no declared `type:` at all still gets the axis conjoined.
+    it "conjoins the values axis into a subfield rooted at a map" do
+      action = build_axn do
+        expects :m, type: Hash, of: { values: Integer }
+        expects :sku, on: :m
+      end
+
+      expect(action.input_schema.dig(:properties, :m, :properties, :sku, :allOf)).to include(type: "integer")
+      expect(action.call(m: { sku: 5 })).to be_ok
+      expect(action.call(m: { sku: "abc" })).not_to be_ok
     end
   end
 end

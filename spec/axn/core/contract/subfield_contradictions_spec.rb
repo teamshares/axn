@@ -719,15 +719,24 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       end.to raise_error(ArgumentError, /can never resolve.*declared Array/m)
     end
 
-    it "rejects a re-anchor onto a map, the slice PRO-3165 already closed" do
-      expect do
-        build_axn do
-          expects :payload, type: Hash
-          expects :counts, on: :payload, type: Hash
-          expects :n, on: :counts, type: Integer
-          expects :counts, type: Hash, of: { values: Integer }
-        end
-      end.to raise_error(ArgumentError, /names the key :n of :counts, which declares `of:` on a Hash/)
+    # PRO-3441. Used to be refused here too (the re-anchor lands `:n` on a node that also declares
+    # `of:`) — relaxed alongside the rest of the map/subfield collision, so the re-anchor now succeeds
+    # and the axis is conjoined into the re-anchored subfield's own property, exactly as it is when the
+    # two declarations collide without a re-anchor at all (`of_validator_spec.rb`).
+    it "conjoins the axis into a subfield re-anchored onto a map" do
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :counts, on: :payload, type: Hash
+        expects :n, on: :counts, type: Integer
+        expects :counts, type: Hash, of: { values: Integer }
+      end
+
+      prop = klass.input_schema.dig(:properties, :counts, :properties, :n)
+      expect(prop[:allOf]).to include(type: "integer")
+      # `:counts` re-anchored to top level, so `:payload` is a sibling now, not its parent — still
+      # present and still required, since the re-anchor moves the READER, not the declaration.
+      expect(klass.call(payload: { x: 1 }, counts: { n: 5 })).to be_ok
+      expect(klass.call(payload: { x: 1 }, counts: { n: "5" })).not_to be_ok
     end
 
     it "rejects a re-anchor onto a nil-tolerant parent whose child nothing rescues" do
