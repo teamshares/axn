@@ -273,14 +273,17 @@ module Axn
 
       # Whether `collection` can even ANSWER `respond_to?` at all — the one prerequisite every branch below
       # assumes and none of them may override. `check_validity!` probes the delimiter with
-      # `delimiter.respond_to?(:include?) || delimiter.respond_to?(:call) || delimiter.respond_to?(:to_sym)`,
-      # and `respond_to?` is an ordinary `Kernel` method: a value rooted at `BasicObject` with nothing added
-      # has NO SUCH METHOD at all, so that very first probe raises `NoMethodError` regardless of what
-      # `include?`/`call` the object itself defines. That is CERTAIN failure, readable without dispatch (a
-      # bound `method_owner` read, exactly like every other predicate here), not the doubtful case the rest of
-      # this method exists to permit through — so it is checked first and unconditionally.
+      # `delimiter.respond_to?(:include?) || delimiter.respond_to?(:call) || delimiter.respond_to?(:to_sym)` —
+      # an EXPLICIT-receiver call, so it needs a PUBLIC `respond_to?`, not merely one present in the table. A
+      # value rooted at `BasicObject` with nothing added has no `respond_to?` at all, and a class that narrows
+      # the inherited one to `private`/`protected` (unusual, but not unreachable) has one the table finds but
+      # `delimiter.respond_to?(...)` still cannot reach — both raise `NoMethodError` from that very first probe
+      # regardless of what `include?`/`call` the object itself defines. That is CERTAIN failure, readable
+      # without dispatch (the same owner-plus-visibility read `public_method_owner?` uses for every other
+      # name), not the doubtful case the rest of this method exists to permit through — so it is checked first
+      # and unconditionally.
       def respond_to_reachable?(collection)
-        !Axn::Internal::NativeMethods.method_owner(collection, :respond_to?).nil?
+        public_method_owner?(collection, :respond_to?)
       end
 
       # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter — mirrored by

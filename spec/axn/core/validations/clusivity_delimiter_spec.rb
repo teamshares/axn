@@ -124,6 +124,19 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: BasicObjectDelimiter.new } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class BasicObjectDelimiter, which ActiveModel cannot use/)
     end
+
+    # `check_validity!` calls `delimiter.respond_to?(...)` with an EXPLICIT receiver, so a `respond_to?` the
+    # table finds but visibility narrows to private/protected is just as unreachable as one absent entirely —
+    # `NoMethodError: private method 'respond_to?' called for ...` on the first call (Codex, PR #288).
+    it "refuses a delimiter whose inherited respond_to? has been narrowed to private" do
+      stub_const("PrivateRespondToDelimiter", Class.new do
+        def include?(_value) = true
+        private :respond_to?
+      end)
+
+      expect { build_axn { expects :v, inclusion: PrivateRespondToDelimiter.new } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class PrivateRespondToDelimiter, which ActiveModel cannot use/)
+    end
   end
 
   describe "a long form naming no delimiter at all" do
