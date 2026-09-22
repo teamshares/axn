@@ -10,7 +10,9 @@
 #   — puts hooks INSIDE the contract, so a halt during inbound resolution never reaches them, and a
 #   halt during outbound resolution happens after the hook body has returned.
 # - WHAT KIND of halt it is (a raise, `fail!`, `done!`, or an exception axn does not capture) decides
-#   the outcome and which callbacks fire — identically from every origin.
+#   the outcome and which callbacks fire — identically from every origin, with one coupling pinned
+#   separately below: outbound resolution runs after a `done!` from the hook chain but not after one
+#   raised during inbound validation.
 #
 # The grid is the full cross product, so a new origin or halt kind cannot hold for one axis and
 # silently not the other. Each case asserts the ordered hook trace, not just which blocks ran: the
@@ -160,6 +162,46 @@ RSpec.describe "Hook and callback execution guarantee" do
     subject(:traced) { run_traced(declare: proc { exposes :out, type: Integer }) }
 
     it_behaves_like "the execution guarantee", hooks: ran_to_completion, outcome: :exception
+  end
+
+  # Outbound resolution runs after a `done!` from `call` or a hook, so an unset required exposure turns
+  # it into an exception; a `done!` during inbound validation settles before outbound resolution runs.
+  describe "done! with a required exposure left unset" do
+    {
+      "an inbound preprocess:" => [:success, ->(done) { { declare: proc { expects :n, preprocess: ->(_v) { instance_exec(&done) } }, n: 1 } }],
+      "an inbound default:" => [:success, ->(done) { { declare: proc { expects :n, default: -> { instance_exec(&done) } } } }],
+      "a before hook" => [:exception, ->(done) { { before_body: done } }],
+      "call" => [:exception, ->(done) { { body: done } }],
+      "an after hook" => [:exception, ->(done) { { after_body: done } }],
+    }.each do |origin, (outcome, args)|
+      context "when #{origin} calls done!" do
+        subject(:result) do
+          kwargs = args.call(proc { done!("finished early") })
+          declare = kwargs[:declare]
+          kwargs[:declare] = proc do
+            instance_exec(&declare) if declare
+            exposes :out, type: Integer
+          end
+          run_traced(**kwargs).first
+        end
+
+        it "settles as #{outcome}" do
+          expect(result.outcome.to_s).to eq(outcome.to_s)
+          expect(result.exception).to be_a(Axn::OutboundValidationError) if outcome == :exception
+        end
+      end
+    end
+  end
+
+  # A field carrying no validation is not resolved by inbound validation: its preprocess: runs on first
+  # read, so a halt from it lands inside the hook chain and follows the `call` row.
+  context "when an inbound preprocess: on an unvalidated field raises on first read in call" do
+    subject(:traced) do
+      run_traced(declare: proc { expects :n, optional: true, preprocess: ->(_v) { raise ArgumentError, "raised" } },
+                 body: proc { n }, n: 1)
+    end
+
+    it_behaves_like "the execution guarantee", hooks: observed_halt.call(:call), outcome: :exception
   end
 
   # The documented limit on "callbacks observe every settled call": in an async retry, the default

@@ -96,7 +96,9 @@ See <https://teamshares.github.io/axn/reference/tool-invoker>.
 
 If you declare `exposes :x` you must `expose x: …` on every success path — **unless** `x` is also an
 `expects` field, in which case Axn auto-copies it (see Gotchas). Outbound validation still runs on
-`done!`, so a required exposure that's unset makes the action fail with `OutboundValidationError`.
+a `done!` from `call` or a hook, so a required exposure that's unset makes the action fail with
+`OutboundValidationError`. (A `done!` inside an inbound `default:`/`preprocess:` settles as success
+immediately, before outbound defaults or validation run.)
 
 Hooks: `before`, `after`, `around` (block or symbol method). A `fail!`/raise in a hook fails the
 action. `done!` skips `after` hooks — and because it unwinds via an exception, statements *after*

@@ -693,24 +693,28 @@ tracing → logging → timing → exception handling → contract → hooks →
 
 The ordering is forced, not incidental: a `before` hook that reads `user` needs `user` already resolved and validated, so hooks cannot run before inbound resolution without exposing your code to unresolved readers. The consequence is that an outcome settled during inbound resolution never reaches the hooks, while callbacks — which fire on the settled result — see every call.
 
-Two independent things decide what runs: **where** a call halts decides which hooks run, and **what kind** of halt it is decides the outcome and which callbacks fire. A "halt" here is any of a raise, `fail!`, or `done!` — they unwind the hooks identically, so the first table holds for all three (✓ runs, — does not):
+Two things decide what runs: **where** a call halts decides which hooks run, and **what kind** of halt it is decides the outcome and which callbacks fire. A "halt" here is any of a raise, `fail!`, or `done!` — they unwind the hooks identically, so the first table holds for all three (✓ runs, — does not):
 
 | Where the call halts | `before` | `around`, up to `chain.call` | `around`, after `chain.call` | `around` `ensure` | `around` `rescue` sees it | `after` |
 | --- | --- | --- | --- | --- | --- | --- |
 | Inbound validation fails | — | — | — | — | — | — |
-| An inbound `preprocess:` or `default:` halts | — | — | — | — | — | — |
+| An inbound `preprocess:` or `default:` halts during inbound validation¹ | — | — | — | — | — | — |
 | A `before` hook halts | ✓ | ✓ | — | ✓ | ✓ | — |
 | `call` halts | ✓ | ✓ | — | ✓ | ✓ | — |
 | An `after` hook halts | ✓ | ✓ | — | ✓ | ✓ | ✓ |
 | Outbound validation fails, or an `exposes` `default:` halts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | *No halt: `call` returns* | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 
+¹ Inbound validation resolves a field's `preprocess:`/`default:` when it checks that field, which it does for any field carrying a validation — including the implicit presence check on a required field. A field with none resolves on first read instead, so a halt from it lands wherever that read happens (usually `call`) and follows that row.
+
 | Kind of halt | Outcome | Callbacks |
 | --- | --- | --- |
-| None, or `done!` | success | `on_success` |
+| None, or `done!` | success² | `on_success` |
 | `fail!` | failure | `on_failure`, `on_error` |
 | A raise axn captures — including a validation failure | exception | `on_exception`, `on_error` |
 | An exception axn does not capture (`Interrupt`, `SystemExit`, …) | none: `.call` re-raises it | none |
+
+² Outbound resolution still runs after a call that returns, and after a `done!` from `call` or a hook, so an unset required exposure turns either into an `exception` (`OutboundValidationError`). A `done!` during inbound validation is the exception: it settles as success immediately, and outbound defaults and validation do not run.
 
 A captured raise settles as a failure instead when it is reclassified — by [`fails_on`](#suppressing-reports-for-expected-failures-in-composed-actions), or, for a validation failure, by [`user_facing:`](/reference/class#user-facing). Which exceptions axn captures, and why the rest pass through, is covered under [What `call` can still raise](/usage/using).
 
@@ -720,7 +724,7 @@ What the tables promise:
    - An exception axn does not capture never settles, so no callback fires.
    - `on_success` waits for the enclosing (joinable) database transaction to commit, so it is [skipped if that transaction rolls back](/reference/class#on-success), even though the action itself succeeded. The failure and exception callbacks are not deferred.
    - In an async job, `on_exception` is gated per attempt by [`async_exception_reporting`](/reference/configuration#async-exception-reporting): under the default `:first_and_exhausted`, an intermediate retry still settles as an exception but fires only `on_error`. Register `on_error` if you need every attempt.
-2. **Hooks observe every call that passed inbound resolution.** An inbound `expects` failure, or an inbound `preprocess:`/`default:` callable that halts, settles before the hook chain is reached, so no hook runs — not even an `around`'s `ensure`.
+2. **Hooks observe every call that passed inbound resolution.** An inbound `expects` failure, or an inbound `preprocess:`/`default:` callable that halts while inbound validation resolves it (¹), settles before the hook chain is reached, so no hook runs — not even an `around`'s `ensure`.
 3. **Within the hook chain,** `before` and the start of each `around` run on entry. The rest of the `around` (statements after `chain.call`) and `after` run only when the chain completes cleanly. An `ensure` inside `around` runs on every halt raised after entry.
 4. **Running is not observing.** Outbound resolution — an `exposes` `default:`, outbound validation — happens *after* the hook body has returned. The hooks run to completion **normally** and the call still settles by the kind of halt, but no hook ever sees it: an `around` that rescues in order to record failures silently misses every outbound-resolution error. So "a failing `default:`" is two different rows depending on direction. Use `on_exception` to catch these.
 5. **Framework observability wraps everything.** The `axn.call` span/notification, the automatic log lines and `result.elapsed_time` sit outside the contract, so a validation failure is still traced, logged and timed. You don't need an `around` hook to time or trace every call.
