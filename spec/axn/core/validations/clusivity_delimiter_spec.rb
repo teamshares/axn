@@ -244,6 +244,19 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: { in: liar } } }.not_to raise_error
     end
 
+    # `check_validity!` is built entirely out of `respond_to?` checks, and `respond_to?` consults only
+    # `respond_to_missing?` for a name absent from the method table — never `method_missing`. So a
+    # `method_missing` override with no matching `respond_to_missing?` is NOT doubtful the way the cooperating
+    # pair above is: `respond_to?` deterministically answers false regardless of what `method_missing`
+    # implements, and `check_validity!` raises ActiveModel's own `ArgumentError` on every call (Codex, PR #288).
+    it "refuses a delimiter reachable only through method_missing, with no respond_to_missing? to back it" do
+      liar = Object.new
+      def liar.method_missing(name, *) = name == :include? ? true : super # rubocop:disable Style/MissingRespondToMissing
+
+      expect { build_axn { expects :v, inclusion: { in: liar } } }
+        .to raise_error(ArgumentError, /names a set of class Object, which ActiveModel cannot use/)
+    end
+
     it "never calls the caller's own respond_to?/is_a?/inspect while judging or reporting an unusable delimiter" do
       dispatched = []
       hostile = Object.new

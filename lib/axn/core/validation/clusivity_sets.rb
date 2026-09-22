@@ -128,6 +128,19 @@ module Axn
       DISPATCH_HOOKS = %i[method_missing respond_to_missing?].freeze
       NATIVE_DISPATCH_HOOK_OWNERS = [::BasicObject, ::Kernel, ::Object].freeze
 
+      # Whether `respond_to_missing?` alone is the caller's own — the ONE hook `Kernel#respond_to?` actually
+      # consults. `own_dispatch_hooks?` above checks `method_missing` too, because a `call`/`include?` a caller
+      # only *dispatches* through `method_missing` is real either way that predicate's doubt falls — but
+      # `respond_to?` never asks `method_missing` at all, so a `method_missing` override with no matching
+      # `respond_to_missing?` leaves `respond_to?` answering its INHERITED (always-false) verdict for every
+      # absent name — deterministically, not doubtfully. `usable_clusivity_delimiter?` mirrors
+      # `check_validity!`, which is built entirely out of `respond_to?` checks, so it is this narrower
+      # predicate it needs: doubt may only survive where `respond_to?`'s own answer actually could.
+      def own_respond_to_missing_hook?(collection)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, :respond_to_missing?)
+        owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+      end
+
       # The two validators that name a set of values the field's own value is compared AGAINST. THE single
       # definition, so the canonicalization below and the declaration guards (contract.rb `CLUSIVITY_KEYS`)
       # cannot come to name different validators. `acceptance:` is deliberately not one of them: it names its
@@ -260,10 +273,19 @@ module Axn
 
       # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter — mirrored by
       # OWNERSHIP rather than by dispatching `respond_to?` on the caller's object, for the reason
-      # `certainly_resolved_per_call?` gives. A collection carrying its own dispatch hooks (`method_missing`/
-      # `respond_to_missing?`) is undecidable without running it, and DOUBT MUST ANSWER "usable": refusing it
-      # would refuse a declaration ActiveModel — and the runtime — accepts, which is the one error a
-      # declaration-time guard may not make.
+      # `certainly_resolved_per_call?` gives. A collection carrying its own `respond_to_missing?` is undecidable
+      # without running it, and DOUBT MUST ANSWER "usable": refusing it would refuse a declaration ActiveModel —
+      # and the runtime — accepts, which is the one error a declaration-time guard may not make.
+      #
+      # Checked NARROWER than `own_dispatch_hooks?` above: `respond_to_missing?` alone, never `method_missing`.
+      # `check_validity!` is built entirely out of `respond_to?` checks, and `respond_to?` consults only
+      # `respond_to_missing?` when a name is absent from the table — `method_missing` never enters into it. A
+      # collection overriding `method_missing` for some unrelated dynamic API, with no matching
+      # `respond_to_missing?`, still answers `respond_to?(:include?)`/`:call`/`:to_sym` false through the
+      # INHERITED (always-false) `respond_to_missing?` — deterministically, not doubtfully — so
+      # `check_validity!` raises regardless of what `method_missing` would have done if actually reached.
+      # Standing down for `method_missing` alone would let exactly that object declare cleanly and then raise
+      # ActiveModel's own `ArgumentError` on every call, the shape this guard exists to close (measured).
       #
       # `to_sym` is judged differently from the other two, because `check_validity!` and the runtime it guards
       # disagree about what it means: `check_validity!` accepts anything answering `respond_to?(:to_sym)`, but
@@ -275,7 +297,7 @@ module Axn
       # by IDENTITY (`Identity.class_of`, never `is_a?`, for the reason every predicate here is): `Symbol` takes
       # no subclass (`Symbol.allocate` raises `TypeError`), so there is no override this could miss.
       def usable_clusivity_delimiter?(collection)
-        return true if own_dispatch_hooks?(collection)
+        return true if own_respond_to_missing_hook?(collection)
         return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
 
         (CLUSIVITY_DELIMITER_METHODS - %i[to_sym]).any? { |name| public_method_owner?(collection, name) }
