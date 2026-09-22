@@ -243,9 +243,10 @@ module Axn
       end
 
       # The three methods ActiveModel's own `Clusivity#check_validity!` accepts a delimiter through —
-      # `include?` (a collection), `call` (a Proc/lambda or any other callable), `to_sym` (a Symbol, sent to
-      # the record as a method name). THE single definition, so the refusal below can never name a delimiter
-      # ActiveModel would in fact accept.
+      # `include?` (a collection), `call` (a Proc/lambda or any other callable), `to_sym` (accepted by
+      # `respond_to?(:to_sym)` alone, though `resolve_value` never calls it — see `usable_clusivity_delimiter?`
+      # below for why that gap matters). THE single definition, so the refusal below can never name a
+      # delimiter ActiveModel's OWN check_validity! would in fact accept.
       CLUSIVITY_DELIMITER_METHODS = %i[include? call to_sym].freeze
 
       # Whether `name` is in `collection`'s method table as a PUBLIC method — the ownership mirror of
@@ -263,10 +264,21 @@ module Axn
       # `respond_to_missing?`) is undecidable without running it, and DOUBT MUST ANSWER "usable": refusing it
       # would refuse a declaration ActiveModel — and the runtime — accepts, which is the one error a
       # declaration-time guard may not make.
+      #
+      # `to_sym` is judged differently from the other two, because `check_validity!` and the runtime it guards
+      # disagree about what it means: `check_validity!` accepts anything answering `respond_to?(:to_sym)`, but
+      # `resolve_value` never calls that method — it dispatches on `case value when Symbol` (`is_a?(Symbol)`),
+      # and a value that fails that falls through to `value.include?(record_value)` instead. An object with a
+      # public `to_sym` that is not itself a Symbol clears `check_validity!` on that gap and then raises
+      # `NoMethodError` from `include?` on every call — the exact declares-cleanly-then-raises shape this guard
+      # exists to close, reached through a seam in ActiveModel's own two checks rather than around them. Judged
+      # by IDENTITY (`Identity.class_of`, never `is_a?`, for the reason every predicate here is): `Symbol` takes
+      # no subclass (`Symbol.allocate` raises `TypeError`), so there is no override this could miss.
       def usable_clusivity_delimiter?(collection)
         return true if own_dispatch_hooks?(collection)
+        return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
 
-        CLUSIVITY_DELIMITER_METHODS.any? { |name| public_method_owner?(collection, name) }
+        (CLUSIVITY_DELIMITER_METHODS - %i[to_sym]).any? { |name| public_method_owner?(collection, name) }
       rescue StandardError
         true
       end

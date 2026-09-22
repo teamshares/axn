@@ -99,6 +99,20 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: { 1 => :x } } }
         .to raise_error(ArgumentError, /inclusion: on :v names no set at all/)
     end
+
+    # `check_validity!` accepts anything answering `respond_to?(:to_sym)`, but `resolve_value` only treats an
+    # actual Symbol that way (`case value when Symbol`) — everything else falls through to
+    # `value.include?(record_value)`. An object with a public `to_sym` that is not itself a Symbol clears that
+    # check and then raises `NoMethodError` on every call, so it must be refused the same as any other unusable
+    # delimiter, in both spellings.
+    it "refuses an object answering only to_sym, which is not an actual Symbol" do
+      stub_const("ToSymOnlyDelimiter", Class.new { def to_sym = :whatever })
+
+      expect { build_axn { expects :v, inclusion: ToSymOnlyDelimiter.new } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ToSymOnlyDelimiter, which ActiveModel cannot use/)
+      expect { build_axn { expects :v, inclusion: { in: ToSymOnlyDelimiter.new } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ToSymOnlyDelimiter, which ActiveModel cannot use/)
+    end
   end
 
   describe "a long form naming no delimiter at all" do
