@@ -97,42 +97,24 @@ See <https://teamshares.github.io/axn/reference/tool-invoker>.
 If you declare `exposes :x` you must `expose x: …` on every success path — **unless** `x` is also an
 `expects` field, in which case Axn auto-copies it (see Gotchas). Outbound validation still runs on
 a `done!` from `call` or a hook, so a required exposure that's unset makes the action fail with
-`OutboundValidationError`. (A `done!` from any `default:`/`preprocess:`/validation `if:`/`unless:`
-that runs outside the hook chain — during inbound validation, in an `exposes` `default:` or
-condition, or during the outbound copy-forward — settles as success immediately, and outbound
-validation never runs; unless the call is already settling a raise or `fail!`, where such a `done!`
-is swallowed and the original halt stands.)
+`OutboundValidationError`; a `done!` raised by contract resolution itself skips it (see
+<https://teamshares.github.io/axn/usage/writing#what-runs-when>).
 
 Hooks: `before`, `after`, `around` (block or symbol method). A `fail!`/raise in a hook fails the
-action. `done!` skips `after` hooks — and because it unwinds via an exception, statements *after*
-`chain.call` in an `around` hook are skipped too (`fail!` and an unhandled raise unwind the same
-way). Put such teardown in an `ensure` inside the `around`, or use `use :transaction`, which rescues
-the signal so the transaction still commits. Note the `around` hook (and its `ensure`) covers only
-halts raised **after the hook chain is entered** — an inbound `expects` failure, or an *inbound*
-`preprocess:`/`default:` callable that raises or calls `fail!`/`done!`, settles before the hooks
-run, so neither fires. That boundary is structural: hooks run *inside* the contract (a `before`
-reading `user` needs `user` resolved), while callbacks and axn's own tracing/logging/timing wrap
-it. The `exposes` side is bounded too: outbound resolution (an `exposes` `default:`, outbound
-validation) runs *after* the hook body returns, so the hooks complete **normally** and never
-observe a raise from it — an `around` that rescues to record failures misses them. Use the
-callbacks for per-call observability that must not miss either end. Callbacks (`on_success`,
-`on_error`, `on_failure`, `on_exception`) fire once the action **settles** — which is not the same
-as "after `call`": they fire even when `call` never ran, as on an inbound validation failure. That
-is what makes them the seam that sees every settled call, within four limits: an exception axn
-does not capture (`Interrupt`, `SystemExit`) never settles, so none fire (raised by a callback after
-settlement, it still escapes `.call` and the later callbacks don't fire); with ActiveRecord 7.2+,
-`on_success` waits for the enclosing (joinable) DB transaction to commit, so a rollback skips it
-(older AR, or none, dispatches inline); in an async job, `async_exception_reporting` gates
-`on_exception` per attempt (by default an intermediate retry fires only `on_error`); and in
-development with `best_effort_raises_in_dev`, a raising `on_error`/`on_failure`/`on_exception` or
-`error`/`success` message callable re-raises out of `.call` (the callbacks not yet run never fire),
-while a raising inline `on_success`
-re-settles the call (a raise as an exception, a `fail!` as a failure). `on_error` is a superset,
-co-firing
-with whichever of `on_failure`/`on_exception` applies. A raise in a callback does **not** flip `ok?` —
-it is swallowed, logged, and reported to `Axn.config.on_ignored_exception` (which defaults to your
-`on_exception` handler) carrying `context[:axn_ignored]`.
-<https://teamshares.github.io/axn/usage/writing>.
+action; `done!` skips `after` hooks. All three unwind via an exception, so statements *after*
+`chain.call` in an `around` are skipped — put teardown in an `ensure` inside the `around`, or use
+`use :transaction`, which rescues the signal so the transaction still commits. Hooks run *inside*
+the contract (a `before` reading `user` needs `user` resolved), so a call settled during inbound
+resolution never reaches them, `ensure` included; and outbound resolution runs *after* the hook
+body returns, so an `around` that rescues to record failures never sees an outbound error.
+Callbacks (`on_success`, `on_error`, `on_failure`, `on_exception`) fire once the action
+**settles**, even when `call` never ran, which makes them — not hooks — the seam for per-call
+observability; `on_error` co-fires with whichever of `on_failure`/`on_exception` applies. A raise in
+a callback does **not** flip `ok?` by default — it is swallowed, logged, and reported to
+`Axn.config.on_ignored_exception` (which defaults to your `on_exception` handler) carrying
+`context[:axn_ignored]`. The full contract — which hooks run for every way a call can halt, which
+callables can halt it at all, and the limits on callback coverage — is at
+<https://teamshares.github.io/axn/usage/writing#what-runs-when>.
 
 ## Using a result
 

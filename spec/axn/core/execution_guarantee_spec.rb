@@ -600,6 +600,12 @@ RSpec.describe "Hook and callback execution guarantee" do
       expect(fired).to be_empty
     end
 
+    it "raises a raising success message where it is read, not out of .call" do
+      result = build_axn { success -> { raise ArgumentError, "broken message" } }.call
+      expect(result).to be_ok
+      expect { result.success }.to raise_error(ArgumentError, "broken message")
+    end
+
     it "re-settles the call as an exception when an inline on_success raises" do
       fired = []
       action = build_axn do
