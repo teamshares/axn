@@ -740,7 +740,8 @@ module Axn
 
         return false unless enumerable_is_a_reachable?(collection) && public_send_reachable?(collection)
         return true if range_usable?(collection)
-        return false if public_method_owner?(collection, :include?) && !accepts_single_positional_arg?(collection, :include?)
+        return false if public_method_owner?(collection, :include?) && !accepts_single_positional_arg?(collection, :include?) &&
+                        !own_public_send_hook?(collection)
         return false unless method_missing_accepts?(collection, 2)
 
         public_method_owner?(collection, :to_sym) || own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)
@@ -912,6 +913,20 @@ module Axn
         owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
       end
 
+      # Whether `public_send` ITSELF is the caller's own, the same ownership question `own_is_a_hook?` asks
+      # of `is_a?` — `WholeValueClusivity#include?` performs the actual membership test as
+      # `members.public_send(inclusion_method(members), value)`, so every arity requirement this file places
+      # on the SELECTED method (`include?`/`cover?`) assumes that call forwards `value` unchanged. A caller-
+      # owned `public_send` can transform or drop the arguments before forwarding — Codex, PR #288: an
+      # override `def public_send(name, _value) = send(name)` calls a zero-arg `include?` with no value at
+      # all, so a real, public, zero-arg `include?` declares and enforces fine even though the arity this file
+      # would otherwise require is never actually asked for. Ownership only, never dispatched, for the same
+      # reason every other hook here is.
+      def own_public_send_hook?(collection)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, :public_send)
+        owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+      end
+
       def range_usable?(collection)
         # `check_validity!`'s gate is `respond_to?(:include?) || respond_to?(:call) || respond_to?(:to_sym)`
         # — `:call` being certainly (or doubtfully) routed is already handled by the caller BEFORE this is
@@ -943,6 +958,14 @@ module Axn
           # all).
           return false unless public_method_owner?(collection, :include?)
 
+          # `public_send` performs the actual dispatch here (`members.public_send(:include?, value)`) — a
+          # caller-owned override can transform or drop `value` before forwarding, so a real `include?`'s OWN
+          # arity is only a certain requirement when `public_send` is trustworthy. Codex, PR #288: a frozen
+          # delimiter overriding `public_send` as `def public_send(name, _value) = send(name)` calls a
+          # zero-arg `include?` with no value at all, and declares/enforces fine under real ActiveModel even
+          # though this arity check would otherwise refuse it.
+          return true if own_public_send_hook?(collection)
+
           return accepts_single_positional_arg?(collection, :include?)
         end
 
@@ -957,7 +980,12 @@ module Axn
           # Range with a zero-arg `include?` and a correct `cover?` declares and enforces fine, since the
           # broken `include?` is never reached (Codex, PR #288: "the arity requirement should apply only when
           # include? is the selected membership method").
-          if public_method_owner?(collection, :cover?)
+          #
+          # Same `public_send` doubt as the non-Range branch above applies to `cover?`'s own arity too, since
+          # `public_send` performs this dispatch as well.
+          if own_public_send_hook?(collection)
+            true
+          elsif public_method_owner?(collection, :cover?)
             accepts_single_positional_arg?(collection, :cover?)
           else
             method_missing_accepts?(collection, 2)
@@ -971,6 +999,7 @@ module Axn
           # return above — deferred here rather than left to the caller's own top-level check, which cannot
           # tell `:no_cover` apart from `:cover`).
           return false unless public_method_owner?(collection, :include?)
+          return true if own_public_send_hook?(collection)
 
           accepts_single_positional_arg?(collection, :include?)
         else true # :undecidable — the bound itself is unreadable, so which method gets selected is UNKNOWN;

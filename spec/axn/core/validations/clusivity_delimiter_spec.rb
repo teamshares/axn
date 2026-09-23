@@ -958,6 +958,37 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 5))).to eq(:reject)
     end
+
+    # `WholeValueClusivity#include?` dispatches the actual membership test as
+    # `members.public_send(inclusion_method(members), value)` — a caller-owned `public_send` can transform or
+    # drop the arguments before forwarding, so a real `include?`'s own arity is only a CERTAIN requirement
+    # when `public_send` is trustworthy. An override that drops `value` and calls a zero-arg `include?`
+    # declares and enforces fine, even though that `include?` could never accept the one argument
+    # `usable_clusivity_delimiter?` would otherwise require (Codex, PR #288).
+    it "declares and enforces a non-Range delimiter whose overridden public_send drops the value before a zero-arg include?" do
+      stub_const("DropsValueBeforeInclude", Class.new do
+        def include? = true
+        def public_send(name, _value) = send(name)
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: DropsValueBeforeInclude.new.freeze } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+    end
+
+    # The same doubt applies to `cover?`'s own arity, since `public_send` performs that dispatch too — a
+    # numeric-bounded Range SUBCLASS with a zero-arg `cover?` and an overridden `public_send` dropping the
+    # value declares and enforces fine (Codex, PR #288).
+    it "declares and enforces a numeric-bounded Range SUBCLASS whose overridden public_send drops the value before a zero-arg cover?" do
+      stub_const("DropsValueBeforeCover", Class.new(Range) do
+        def cover? = true
+        def public_send(name, _value) = send(name)
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: DropsValueBeforeCover.new(1, 10).freeze } }
+
+      expect(outcome(action.call(v: 5))).to eq(:pass)
+    end
   end
 
   # A literal Proc is a SPECIAL case within `resolve_value` — its `case value; when Proc` branch takes
