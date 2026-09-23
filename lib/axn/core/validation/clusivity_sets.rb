@@ -611,8 +611,8 @@ module Axn
         return true if (own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)) && method_missing_accepts?(collection, 2)
 
         return false unless enumerable_is_a_reachable?(collection) && public_send_reachable?(collection)
-        return false if public_method_owner?(collection, :include?) && !accepts_single_positional_arg?(collection, :include?)
         return true if range_usable?(collection)
+        return false if public_method_owner?(collection, :include?) && !accepts_single_positional_arg?(collection, :include?)
         return false unless method_missing_accepts?(collection, 2)
 
         public_method_owner?(collection, :to_sym) || own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)
@@ -788,7 +788,10 @@ module Axn
         return false unless public_method_owner?(collection, :include?)
 
         klass = Axn::Internal::Identity.class_of(collection)
-        return true unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+        # `include?` is unconditionally what `inclusion_method` selects for anything outside Range ancestry
+        # — never `cover?` — so its arity must clear here, on THIS path, rather than at the caller's own
+        # top-level check (Codex, PR #288: deferred below for the reason this early return exists at all).
+        return accepts_single_positional_arg?(collection, :include?) unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
         return true if own_is_a_hook?(collection)
 
         case range_cover_resolution(collection)
@@ -797,13 +800,25 @@ module Axn
           # A real, public, OWNED `cover?` is what Ruby dispatches to, unconditionally — `method_missing` is
           # never consulted once a real method answers, so a WRONG arity there is certain failure regardless
           # of whatever `method_missing` might otherwise do (same precedence `usable_clusivity_delimiter?`
-          # applies to `include?`/`call`, Codex, PR #288).
+          # applies to `include?`/`call`, Codex, PR #288). `include?`'s own arity is IRRELEVANT here:
+          # `inclusion_method` selected `cover?`, and `include?` is never dispatched at all — a numeric-bounded
+          # Range with a zero-arg `include?` and a correct `cover?` declares and enforces fine, since the
+          # broken `include?` is never reached (Codex, PR #288: "the arity requirement should apply only when
+          # include? is the selected membership method").
           if public_method_owner?(collection, :cover?)
             accepts_single_positional_arg?(collection, :cover?)
           else
             method_missing_accepts?(collection, 2)
           end
-        else true # :undecidable or :no_cover
+        when :no_cover
+          # `:no_cover` is resolved via a NATIVE (trustworthy) read — `inclusion_method` is CERTAIN to select
+          # `include?` here, never `cover?`, so `include?`'s own arity governs (Codex, PR #288, same
+          # reasoning as the non-Range early return above — deferred here rather than left to the caller's
+          # top-level check, which cannot tell `:no_cover` apart from `:cover`).
+          accepts_single_positional_arg?(collection, :include?)
+        else true # :undecidable — the bound itself is unreadable, so which method gets selected is UNKNOWN;
+          # doubt answers usable here for the same reason `own_is_a_hook?` above does, not the certain
+          # dispatch `:no_cover` earns.
         end
       end
 

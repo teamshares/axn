@@ -518,6 +518,28 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: { in: ReqArgBeginRange.new(1, 10).freeze } } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class ReqArgBeginRange, which ActiveModel cannot use/)
     end
+
+    # `include?`'s own arity only matters when `inclusion_method` actually SELECTS it — never for a
+    # numeric-bounded Range, where `cover?` is selected instead and `include?` is never dispatched at all. A
+    # zero-arg `include?` alongside a correct `cover?` declares and enforces fine (Codex, PR #288: "the arity
+    # requirement should apply only when include? is the selected membership method").
+    it "does not refuse a numeric-bounded Range SUBCLASS whose include? cannot accept an argument, since cover? is selected instead" do
+      stub_const("ZeroArgIncludeRange", Class.new(Range) { def include? = true })
+
+      action = build_axn { expects :v, inclusion: { in: ZeroArgIncludeRange.new(1, 10).freeze } }
+
+      expect(outcome(action.call(v: 5))).to eq(:pass)
+      expect(outcome(action.call(v: 20))).to eq(:reject)
+    end
+
+    # The mirror: a STRING-bounded Range selects `include?`, never `cover?`, so a zero-arg `include?` IS
+    # certainly dispatched here and must be refused (Codex, PR #288).
+    it "refuses a string-bounded Range SUBCLASS whose include? cannot accept an argument, since include? is certainly selected" do
+      stub_const("ZeroArgIncludeStringRange", Class.new(Range) { def include? = true })
+
+      expect { build_axn { expects :v, inclusion: { in: ZeroArgIncludeStringRange.new("a", "z").freeze } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgIncludeStringRange, which ActiveModel cannot use/)
+    end
   end
 
   # `usable_clusivity_delimiter?` accepts a Set SUBCLASS, or any other object answering `include?`, and
