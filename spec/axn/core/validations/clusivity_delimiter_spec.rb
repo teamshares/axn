@@ -291,6 +291,25 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: ZeroArgRespondToMissing.new.freeze } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgRespondToMissing, which ActiveModel cannot use/)
     end
+
+    # `check_validity!`'s gate short-circuits: `respond_to?(:include?)` answers the FIRST term on its own
+    # once a real `include?` exists, and native `respond_to?` never falls through to `respond_to_missing?`
+    # for a name already present in the table. A delimiter with working `include?` AND `call` methods, but a
+    # broken `respond_to_missing?` that is never actually consulted, still declares and enforces fine (Codex,
+    # PR #288: "requiring that hook to accept two arguments over-counts an unreachable path").
+    it "declares and enforces a delimiter whose broken respond_to_missing? is never reached, since a real include? answers the probe first" do
+      stub_const("RealIncludeAndCall", Class.new do
+        def include?(value) = [1, 2, 3].include?(value)
+        def call(_record) = [1, 2, 3]
+
+        def respond_to_missing? = true
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: RealIncludeAndCall.new.freeze } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 5))).to eq(:reject)
+    end
   end
 
   describe "a long form naming no delimiter at all" do
@@ -559,6 +578,23 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
 
       expect { build_axn { expects :v, inclusion: { in: ZeroArgIncludeStringRange.new("a", "z").freeze } } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgIncludeStringRange, which ActiveModel cannot use/)
+    end
+
+    # `check_validity!`'s gate is `respond_to?(:include?) || respond_to?(:call) || respond_to?(:to_sym)` — a
+    # real `to_sym` clears it on its own, with no real `include?` needed for VALIDITY. A numeric-bounded Range
+    # whose `include?` is undefined still enforces fine, since `cover?` (untouched, inherited) is what
+    # `inclusion_method` actually selects — `include?` is never dispatched at all (Codex, PR #288: "include?
+    # is required for validity only when neither call nor to_sym can satisfy the validity gate").
+    it "does not refuse a numeric-bounded Range SUBCLASS whose include? is undefined, since to_sym clears validity and cover? is selected" do
+      stub_const("UndefIncludeToSymRange", Class.new(Range) do
+        undef_method :include?
+        def to_sym = :whatever
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: UndefIncludeToSymRange.new(1, 10).freeze } }
+
+      expect(outcome(action.call(v: 5))).to eq(:pass)
+      expect(outcome(action.call(v: 20))).to eq(:reject)
     end
   end
 

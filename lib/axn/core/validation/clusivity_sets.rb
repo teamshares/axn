@@ -423,10 +423,21 @@ module Axn
       # ITSELF is overridden (a non-`::Kernel` owner) — an override answers the probe on its own terms and
       # need not consult `respond_to_missing?` at all, which is not axn's to police (out of scope, the same
       # as every other caller-code behavior this file declines to simulate).
+      #
+      # But even with `respond_to?` native, `respond_to_missing?` is consulted AT ALL only for a name ABSENT
+      # from the table — `check_validity!`'s `respond_to?(:include?) || respond_to?(:call) ||
+      # respond_to?(:to_sym)` evaluates LEFT TO RIGHT and SHORT-CIRCUITS, so a real, public `:include?`
+      # answers the very first term without ever falling through to `respond_to_missing?` at all, regardless
+      # of `:call`/`:to_sym` or whether `respond_to_missing?` itself is broken. A real `include?` therefore
+      # exempts this check entirely — requiring it anyway refused a delimiter with working `include?` AND
+      # `call` methods over a `respond_to_missing?` that is never actually consulted (Codex, PR #288: "native
+      # respond_to? never invokes respond_to_missing?; requiring that hook to accept two arguments over-counts
+      # an unreachable path").
       def respond_to_reachable?(collection)
         if public_method_owner?(collection, :respond_to?)
           return false unless accepts_single_positional_arg?(collection, :respond_to?)
           return true unless Axn::Internal::NativeMethods.method_owner(collection, :respond_to?).equal?(::Kernel)
+          return true if public_method_owner?(collection, :include?)
           return true unless own_respond_to_missing_hook?(collection)
 
           accepts_positional_args?(collection, :respond_to_missing?, 2)
@@ -814,13 +825,27 @@ module Axn
       end
 
       def range_usable?(collection)
-        return false unless public_method_owner?(collection, :include?)
+        # `check_validity!`'s gate is `respond_to?(:include?) || respond_to?(:call) || respond_to?(:to_sym)`
+        # — `:call` being certainly (or doubtfully) routed is already handled by the caller BEFORE this is
+        # ever reached, so by the time execution gets here the gate can only still be cleared by a real
+        # `include?` OR a real `to_sym`. Requiring `include?` UNCONDITIONALLY, as if it were the only way to
+        # clear the gate, refused a Range whose `include?` is undefined/private but whose `to_sym` clears the
+        # gate on its own — a case where `include?` is never even a candidate for the ACTUAL dispatch either,
+        # since a numeric/date/time bound selects `cover?` instead (Codex, PR #288: "include? is required for
+        # validity only when neither call nor to_sym can satisfy the validity gate").
+        return false unless public_method_owner?(collection, :include?) || public_method_owner?(collection, :to_sym)
 
         klass = Axn::Internal::Identity.class_of(collection)
-        # `include?` is unconditionally what `inclusion_method` selects for anything outside Range ancestry
-        # — never `cover?` — so its arity must clear here, on THIS path, rather than at the caller's own
-        # top-level check (Codex, PR #288: deferred below for the reason this early return exists at all).
-        return accepts_single_positional_arg?(collection, :include?) unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+        unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+          # `include?` is unconditionally what `inclusion_method` selects for anything outside Range ancestry
+          # — never `cover?`, and `to_sym` alone never satisfies the ACTUAL dispatch (`resolve_value` never
+          # calls it) — so a real, correct-arity `include?` is required here regardless of what cleared the
+          # validity gate above (Codex, PR #288: deferred below for the reason this early return exists at
+          # all).
+          return false unless public_method_owner?(collection, :include?)
+
+          return accepts_single_positional_arg?(collection, :include?)
+        end
         return true if own_is_a_hook?(collection)
 
         case range_cover_resolution(collection)
@@ -841,9 +866,14 @@ module Axn
           end
         when :no_cover
           # `:no_cover` is resolved via a NATIVE (trustworthy) read — `inclusion_method` is CERTAIN to select
-          # `include?` here, never `cover?`, so `include?`'s own arity governs (Codex, PR #288, same
-          # reasoning as the non-Range early return above — deferred here rather than left to the caller's
-          # top-level check, which cannot tell `:no_cover` apart from `:cover`).
+          # `include?` here, never `cover?`, so a real `include?` (and its own arity) governs, the same as
+          # the non-Range branch above and for the same reason: `to_sym` alone clears the validity gate but
+          # never the actual dispatch. Absent, this falls to the caller's own generic `method_missing`
+          # fallback rather than duplicating it here (Codex, PR #288, same reasoning as the non-Range early
+          # return above — deferred here rather than left to the caller's own top-level check, which cannot
+          # tell `:no_cover` apart from `:cover`).
+          return false unless public_method_owner?(collection, :include?)
+
           accepts_single_positional_arg?(collection, :include?)
         else true # :undecidable — the bound itself is unreadable, so which method gets selected is UNKNOWN;
           # doubt answers usable here for the same reason `own_is_a_hook?` above does, not the certain
@@ -951,6 +981,22 @@ module Axn
       # whose aliasing is ActiveModel's own pre-existing property, not this guard's to police). A Symbol is
       # always frozen (Ruby gives every Symbol one object per name), so it clears the check below without
       # needing a special case either.
+      #
+      # "Nothing can mutate it afterwards" means the object's OWN state, which is what `frozen?` has ever
+      # meant in Ruby — never a deep freeze of whatever it happens to delegate to. A frozen wrapper whose
+      # `include?` reads an externally-held, still-mutable Array from an ivar is exactly as aliasable as a
+      # frozen `Array` holding a mutable `Hash` element (`[h].freeze` does not freeze `h`) — universal Ruby
+      # semantics, not a gap this guard introduced or could close without either deep-freezing an arbitrary
+      # object graph (undecidable in general: the mutable state a caller's `include?` reads need not even
+      # live in an ivar — a constant, a closure, a global, all equally invisible without dispatch) or running
+      # the caller's own `include?` to find out, which this guard declines to do everywhere else for the same
+      # reason (Codex, PR #288 — the same "no achievable fix without dispatching the caller's own code"
+      # boundary this file draws around every hostile-shaped finding).
+      #
+      # Freezing a THIN wrapper (one whose `include?` closes over nothing mutable, or built from an
+      # already-frozen source) genuinely closes the aliasing this guard exists for; a wrapper that instead
+      # freezes only ITSELF while delegating to something it does not own the mutability of was never the
+      # shape `freeze` could protect against, in axn or in plain Ruby.
       def reject_unfrozen_clusivity_delimiter!(collection, key, where)
         return if Axn::Internal::NativeMethods.frozen?(collection)
 
