@@ -378,7 +378,15 @@ module Axn
         method = Axn::Internal::NativeMethods.declared_method(collection, name)
         return false if method.nil?
 
-        params = method.parameters
+        params_accept_positional_args?(method.parameters, count)
+      end
+
+      # The same arity check `accepts_positional_args?` applies to a DECLARED method's `parameters`, pulled
+      # out for a caller that already has a `parameters` array in hand from somewhere OTHER than
+      # `NativeMethods.declared_method` — namely, a Proc's OWN native `parameters` (`PROC_PARAMETERS`), which
+      # reflects the closure's real signature in a way `Proc#call`'s always-variadic method-table entry never
+      # can (Codex, PR #288).
+      def params_accept_positional_args?(params, count)
         return false if params.any? { |type, _| type == :keyreq }
         return true if params.any? { |type, _| type == :rest }
 
@@ -482,6 +490,14 @@ module Axn
       # pair are only trusted once `method_owner(collection, :begin/:end).equal?(::Range)` confirms the same.
       PROC_ARITY = ::Proc.instance_method(:arity)
 
+      # `Proc#parameters` itself, unbound — for reading a Proc's OWN real parameter list, the same native
+      # reader pattern as `PROC_ARITY`. Needed because `Proc#call`'s OWN method-table signature (what
+      # `accepts_positional_args?(collection, :call, count)` would otherwise read) is ALWAYS `(*args)` —
+      # generic across every Proc instance at the C level — and so can never reflect a SPECIFIC closure's own
+      # strictness (a 2-required-arg lambda's `call` is still declared `(*args)` in the method table; only
+      # `parameters`, asked of the INSTANCE, reveals the real `[[:req, :a], [:req, :b]]`).
+      PROC_PARAMETERS = ::Proc.instance_method(:parameters)
+
       # Whether a literal Proc's dispatch actually succeeds. `resolve_value`'s Proc branch is `value.arity ==
       # 0 ? value.call : value.call(record)` — TWO calls, in order, BOTH with a receiver-explicit, undoubted
       # arity ActiveModel decides for itself rather than adapting to whatever `certainly_resolved_per_call?`
@@ -513,28 +529,60 @@ module Axn
       # `method_missing(:call)`/`method_missing(:call, record)` for #2/#3), the same precedence and the same
       # hook-arity discipline as every other prerequisite in this file: a real method always wins Ruby's
       # dispatch, and a fallback hook must itself accept what it will be invoked with (Codex, PR #288).
+      #
+      # `arity`'s OWNER existing but not PUBLIC (narrowed to private/protected) is a THIRD case, not a
+      # "real, so trust it": Ruby routes a call it cannot dispatch normally — an absent method, or a private
+      # one reached with an explicit receiver, exactly as `respond_to_reachable?`/`range_cover_resolution`
+      # already establish — through `method_missing` regardless of WHY normal dispatch failed. A private
+      # `arity` backed by a cooperating `method_missing` genuinely answers `value.arity`, so it takes the
+      # same doubtful fallback as an absent one, not an unconditional refusal (Codex, PR #288: "Ruby routes
+      # an explicit call to the private method through method_missing, just as the surrounding delimiter
+      # checks already allow for other inaccessible methods").
       def proc_call_usable?(collection)
         arity_owner = Axn::Internal::NativeMethods.method_owner(collection, :arity)
+        arity_reachable_normally = arity_owner && Axn::Internal::NativeMethods.public_instance_method?(arity_owner, :arity)
 
-        if arity_owner.nil?
+        unless arity_reachable_normally
           return false unless method_missing_accepts?(collection, 1)
 
           return call_reachable_with_either_arity?(collection)
         end
 
-        return false unless Axn::Internal::NativeMethods.public_instance_method?(arity_owner, :arity)
         return false unless accepts_positional_args?(collection, :arity, 0)
 
         if arity_owner.equal?(::Proc)
-          call_reachable_with_arg_count?(collection, PROC_ARITY.bind_call(collection).zero? ? 0 : 1)
+          proc_native_call_accepts?(collection, PROC_ARITY.bind_call(collection).zero? ? 0 : 1)
         else
           call_reachable_with_either_arity?(collection)
         end
       end
 
+      # `call` reachable with EXACTLY `count` positional arguments, for a delimiter whose `arity` is
+      # TRUSTED-native (so `count` itself is trustworthy) — real-method-first, but NOT via the generic
+      # `Proc#call` signature: a real, public `call` OWNED BY `::Proc` ITSELF (no singleton override) is the
+      # ORIGINAL closure body, dispatched directly, and its acceptance is governed by the closure's OWN
+      # `parameters` (read via the bound native `PROC_PARAMETERS`, never the caller's own possibly-overridden
+      # `.parameters`) — NOT by `Proc#call`'s method-table entry, which is always `(*args)` regardless of any
+      # specific closure's real strictness, and would otherwise let a 2-required-arg lambda through a check
+      # that only ever asked "does `call` exist," never "does the BODY accept what `resolve_value` supplies"
+      # (Codex, PR #288: "arities greater than one and required keywords must be rejected from the Proc's own
+      # parameters"). A SINGLETON override of `call` shadows the original body entirely, the same as anywhere
+      # else in this file a singleton can shadow a native implementation — its OWN declared parameters govern
+      # instead, read the ordinary way.
+      def proc_native_call_accepts?(collection, count)
+        call_owner = Axn::Internal::NativeMethods.method_owner(collection, :call)
+        return params_accept_positional_args?(PROC_PARAMETERS.bind_call(collection), count) if call_owner.equal?(::Proc)
+        return accepts_positional_args?(collection, :call, count) if call_owner && Axn::Internal::NativeMethods.public_instance_method?(call_owner, :call)
+
+        method_missing_accepts?(collection, count + 1)
+      end
+
       # `call` reachable with EXACTLY `count` positional arguments — real-method-first (any signature
       # accepting `count`), `method_missing`-backed as fallback with the EXACT total arity Ruby would invoke
-      # it with for that call (`count` originals plus the `:call` message name itself).
+      # it with for that call (`count` originals plus the `:call` message name itself). Used only where
+      # `arity` itself is NOT trustworthy-native, so `Proc#call`'s generic signature is the best available
+      # answer regardless (a genuinely mismatched closure body is caught instead by `proc_native_call_accepts?`
+      # whenever `arity` IS trustworthy).
       def call_reachable_with_arg_count?(collection, count)
         if public_method_owner?(collection, :call)
           accepts_positional_args?(collection, :call, count)
@@ -1032,6 +1080,16 @@ module Axn
             # leaving a bare Set as written sent it to `with:` and raised `ArgumentError` on every call.
             # Wrapping the collection itself keeps its own `include?` answering membership while making the
             # spelling valid.
+            #
+            # Reaching here means the container OWNS code of its own (`hash_keyed_set_members` already stood
+            # down otherwise, reading the members out instead) — a Set/Hash with a singleton `include?` is
+            # exactly as usable-or-not as any other custom `include?`-answering object, so it earns the SAME
+            # `usable_clusivity_delimiter?` check the generic path below already runs. Skipping it here left
+            # a frozen Set with a broken singleton `include?` declaring cleanly and raising on every call —
+            # the exact shape this whole guard exists to close, just reached through the ONE path that never
+            # asked (Codex, PR #288: "this early return bypasses usable_clusivity_delimiter? entirely for
+            # hash-keyed containers").
+            reject_unusable_clusivity_delimiter!(entry, key, where) unless usable_clusivity_delimiter?(entry)
             reject_unreadable_mutable_container!(entry, key, where) unless certainly_routed_to_call?(entry)
             return { in: entry }
           end
@@ -1051,6 +1109,9 @@ module Axn
         return options.merge(set_key => members) if members
 
         if hash_keyed_container?(collection)
+          # Same reasoning as the bare-shorthand branch above: this container owns code of its own, so it
+          # needs the SAME usability check as any other custom `include?`-answering object (Codex, PR #288).
+          reject_unusable_clusivity_delimiter!(collection, key, where) unless usable_clusivity_delimiter?(collection)
           reject_unreadable_mutable_container!(collection, key, where) unless certainly_routed_to_call?(collection)
           return entry
         end

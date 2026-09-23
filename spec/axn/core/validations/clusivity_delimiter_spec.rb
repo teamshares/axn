@@ -660,6 +660,21 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 5))).to eq(:reject)
     end
+
+    # A Set/Hash with code of its own (`hash_keyed_set_members` stands down, reading nothing out) is exactly
+    # as usable-or-not as any other custom `include?`-answering object — but the hash-keyed branch used to
+    # check ONLY `frozen?`, never `usable_clusivity_delimiter?`, so a frozen Set with a broken singleton
+    # `include?` declared cleanly and raised on every call (Codex, PR #288: "this early return bypasses
+    # usable_clusivity_delimiter? entirely for hash-keyed containers").
+    it "refuses a frozen Set SUBCLASS whose singleton include? cannot accept the value ActiveModel always supplies" do
+      stub_const("ZeroArgIncludeSet", Class.new(Set))
+      broken = ZeroArgIncludeSet[1, 2, 3]
+      def broken.include? = true
+      broken.freeze
+
+      expect { build_axn { expects :v, inclusion: broken } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgIncludeSet, which ActiveModel cannot use/)
+    end
   end
 
   describe "the exclusion mirror" do
@@ -921,6 +936,45 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
     it "refuses a one-arity Proc whose singleton call accepts no arguments" do
       delimiter = ->(_record) { [1, 2, 3] }
       def delimiter.call = [1, 2, 3]
+
+      expect { build_axn { expects :v, inclusion: delimiter } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class Proc, which ActiveModel cannot use/)
+    end
+
+    # Ruby routes a call it cannot dispatch normally — an absent method, or a PRIVATE one reached with an
+    # explicit receiver — through `method_missing` regardless of why normal dispatch failed, the same fact
+    # `respond_to_reachable?`/`range_cover_resolution` already depend on. A private singleton `arity` backed
+    # by a cooperating `method_missing` genuinely answers `value.arity` (Codex, PR #288: "Ruby routes an
+    # explicit call to the private method through method_missing, just as the surrounding delimiter checks
+    # already allow for other inaccessible methods").
+    it "declares and enforces a Proc whose singleton arity is private, caught by a cooperating method_missing" do
+      delimiter = -> { [1, 2, 3] }
+      # rubocop:disable Style/MissingRespondToMissing -- respond_to_missing? only needs to cover :arity
+      def delimiter.method_missing(name, *args)
+        return 0 if name == :arity
+
+        super
+      end
+      # rubocop:enable Style/MissingRespondToMissing
+      class << delimiter
+        def arity = 0
+        private :arity
+      end
+
+      action = build_axn { expects :v, inclusion: delimiter }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 5))).to eq(:reject)
+    end
+
+    # `Proc#call`'s own method-table signature is ALWAYS `(*args)`, generically, across every Proc instance —
+    # only the SPECIFIC closure's own `parameters` reveal a 2-required-arg lambda's real strictness.
+    # `resolve_value`'s Proc branch calls with AT MOST one argument (zero or one, decided by `arity`), so a
+    # lambda requiring two can never be satisfied and must be refused outright, not accepted on the strength
+    # of `Proc#call`'s generic signature (Codex, PR #288: "arities greater than one and required keywords
+    # must be rejected from the Proc's own parameters").
+    it "refuses a Proc whose own body requires two arguments, which resolve_value never supplies" do
+      delimiter = ->(_record, _second) { [1, 2, 3] }
 
       expect { build_axn { expects :v, inclusion: delimiter } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class Proc, which ActiveModel cannot use/)
