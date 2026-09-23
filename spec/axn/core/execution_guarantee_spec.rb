@@ -645,6 +645,11 @@ RSpec.describe "Hook and callback execution guarantee" do
       expect(fired).to eq(%i[on_error])
     end
 
+    it "re-raises a raising tag callable out of .call" do
+      action = build_axn { tag :t, -> { raise ArgumentError, "broken tag" } }
+      expect { action.call }.to raise_error(ArgumentError, "broken tag")
+    end
+
     it "re-raises a raising error message out of .call before any callback fires" do
       fired = []
       action = build_axn do
