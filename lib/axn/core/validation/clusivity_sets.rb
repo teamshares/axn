@@ -1,5 +1,17 @@
 # frozen_string_literal: true
 
+# Named rather than relied on transitively, for the reason `axn.rb`'s own `require "bigdecimal"` already is:
+# `RANGE_COVER_TYPES` below is a FROZEN list built once, at load time, from `defined?(::Date)`/`defined?
+# (::DateTime)` — so whichever of them is not yet loaded THEN is permanently absent from it, regardless of
+# whether something else loads it moments later. Every current path into this file happens to require "date"
+# first already (`contract.rb`'s own `require "date"` precedes its `require "axn/core/validation/fields"`,
+# the only way here, on every entry point — verified, Codex, PR #288, a false positive on the SPECIFIC claim
+# that the current order is already broken), but that safety is a property of the REQUIRE GRAPH, not of
+# anything this file states — a reordering elsewhere would silently starve `RANGE_COVER_TYPES` with no test
+# able to notice, the exact fragility this whole codebase already treats as worth foreclosing rather than
+# tolerating.
+require "date"
+
 module Axn
   module Validation
     # How axn reads the SET a clusivity validator compares a value against, and the one rewrite it applies to
