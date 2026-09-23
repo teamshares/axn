@@ -535,6 +535,23 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
   end
 
+  # An exception axn does not capture, raised by a callback after the call has settled, still escapes
+  # `.call`, and the callbacks after it never fire.
+  it "lets an Interrupt from a settlement callback escape .call, skipping the later callbacks" do
+    fired = []
+    action = build_axn do
+      on_error do
+        fired << :on_error
+        raise Interrupt
+      end
+      on_failure { fired << :on_failure }
+      define_method(:call) { fail!("failed") }
+    end
+
+    expect { action.call }.to raise_error(Interrupt)
+    expect(fired).to eq(%i[on_error])
+  end
+
   # The fourth limit: in development with best_effort_raises_in_dev, a raising callback is re-raised
   # rather than swallowed. Where it lands depends on the phase: a settlement callback escapes `.call`,
   # while an inline on_success raises inside the call and re-settles it as an exception.
