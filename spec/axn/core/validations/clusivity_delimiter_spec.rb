@@ -268,6 +268,20 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class OneArgPublicSend, which ActiveModel cannot use/)
     end
 
+    # A trailing `*rest` removes the UPPER bound on how many arguments a method accepts, but never excuses
+    # LEADING required params still unsatisfied by the one argument `public_send(:include?, value)` actually
+    # supplies — `def include?(first, second, *rest)` still raises `ArgumentError` on every call, `*rest`
+    # notwithstanding (Codex, PR #288: "first require required <= count, then use :rest only to remove the
+    # upper bound").
+    it "refuses a delimiter whose include? has required params a trailing splat cannot excuse" do
+      stub_const("RestButRequiredInclude", Class.new do
+        def include?(_first, _second, *_rest) = true
+      end)
+
+      expect { build_axn { expects :v, inclusion: RestButRequiredInclude.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class RestButRequiredInclude, which ActiveModel cannot use/)
+    end
+
     # `method_missing` is invoked as `method_missing(missed_name, *original_args)` — when `respond_to?`
     # itself is unreachable, that's `method_missing(:respond_to?, :include?)`, TWO args. A `method_missing`
     # accepting fewer (missing the conventional `*args` splat) raises `ArgumentError` on that very dispatch,
@@ -449,6 +463,25 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class PrivateIncludeRange, which ActiveModel cannot use/)
       expect { build_axn { expects :v, inclusion: { in: PrivateIncludeStringRange.new("a", "z") } } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class PrivateIncludeStringRange, which ActiveModel cannot use/)
+    end
+
+    # The mirror of the refusal above: `check_validity!`'s `respond_to?(:include?)` probe is dispatched to
+    # WHICHEVER `respond_to?` the caller's class defines, so an override advertising `:include?` clears the
+    # validity gate regardless of `include?`'s own visibility — and for a numeric-bounded Range, `include?` is
+    # never the SELECTED membership method anyway (`cover?` is, real and unmodified here), so its being
+    # private is irrelevant to the actual dispatch too. Requiring a PUBLIC `include?`/`to_sym` unconditionally,
+    # with no doubtful-hook exemption, refused a declaration ActiveModel and the runtime both accept (Codex,
+    # PR #288: "treat hook-backed validity separately from hook-backed membership dispatch").
+    it "does not refuse a numeric-bounded Range SUBCLASS whose private include? is advertised by an overridden respond_to?" do
+      stub_const("AdvertisedPrivateIncludeRange", Class.new(Range) do
+        def respond_to?(name, *) = name == :include? ? true : super
+        private :include?
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: AdvertisedPrivateIncludeRange.new(1, 10).freeze } }
+
+      expect(outcome(action.call(v: 5))).to eq(:pass)
+      expect(outcome(action.call(v: 20))).to eq(:reject)
     end
 
     it "still declares and enforces an unmodified Range subclass, numeric or string bounded" do

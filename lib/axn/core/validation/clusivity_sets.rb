@@ -396,11 +396,18 @@ module Axn
       # `NativeMethods.declared_method` — namely, a Proc's OWN native `parameters` (`PROC_PARAMETERS`), which
       # reflects the closure's real signature in a way `Proc#call`'s always-variadic method-table entry never
       # can (Codex, PR #288).
+      #
+      # A `:rest` param removes the UPPER bound alone — it never excuses required (`:req`) params still
+      # unsatisfied by `count`: `def include?(first, second, *rest)` still raises `ArgumentError` when called
+      # with one argument, `*rest` notwithstanding. Checking `:rest` before `required <= count` accepted a
+      # declaration whose leading required params ActiveModel could never actually supply (Codex, PR #288:
+      # "first require required <= count, then use :rest only to remove the upper bound").
       def params_accept_positional_args?(params, count)
         return false if params.any? { |type, _| type == :keyreq }
-        return true if params.any? { |type, _| type == :rest }
 
         required = params.count { |type, _| type == :req }
+        return required <= count if params.any? { |type, _| type == :rest }
+
         optional = params.count { |type, _| type == :opt }
         required <= count && (required + optional) >= count
       end
@@ -963,7 +970,19 @@ module Axn
         # gate on its own — a case where `include?` is never even a candidate for the ACTUAL dispatch either,
         # since a numeric/date/time bound selects `cover?` instead (Codex, PR #288: "include? is required for
         # validity only when neither call nor to_sym can satisfy the validity gate").
-        return false unless public_method_owner?(collection, :include?) || public_method_owner?(collection, :to_sym)
+        #
+        # A doubtful `respond_to?`/`respond_to_missing?` hook can ALSO clear this gate on its own, entirely
+        # independent of whatever `include?`/`to_sym` actually look like — `check_validity!`'s probe is
+        # `delimiter.respond_to?(...)`, dispatched to WHICHEVER `respond_to?` the caller's class defines, so
+        # an override answering `true` for `:include?` satisfies it regardless of `include?`'s own visibility.
+        # A numeric-bounded Range SUBCLASS making `include?` PRIVATE (never dispatched at all, since the bound
+        # selects `cover?`) while advertising it through an overridden `respond_to?` declares and enforces
+        # fine under real ActiveModel — this validity-probe question is distinct from whether the ACTUAL
+        # membership dispatch (`cover?`/`include?`'s own ownership and arity, still enforced unconditionally
+        # below) will succeed, and conflating the two refused a working declaration (Codex, PR #288: "treat
+        # hook-backed validity separately from hook-backed membership dispatch").
+        return false unless public_method_owner?(collection, :include?) || public_method_owner?(collection, :to_sym) ||
+                            own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)
 
         # `inclusion_method`'s `enumerable.is_a? Range` is a REAL, dispatched call — when it is overridden,
         # ActiveModel's actual branch selection (`cover?` vs `include?`) can diverge from static ancestry in
