@@ -104,12 +104,39 @@ module Axn
       end
 
       # Strict: only a PUBLIC `call` in the method table, which is exactly what `respond_to?(:call)` answers
-      # true for without consulting a hook (measured across a public, private and `method_missing`-backed
-      # `call`). A private one is found by the table but never called by ActiveModel, so a collection carrying
-      # one is a static set like any other and must not slip past the aliasing refusal.
+      # true for without consulting a hook — PROVIDED `respond_to?` itself is native and untouched. A private
+      # one is found by the table but never called by ActiveModel, so a collection carrying one is a static
+      # set like any other and must not slip past the aliasing refusal.
+      #
+      # This is OWNERSHIP of `call` alone, not routing certainty: an overridden `respond_to?` can hide a real
+      # public `call` behind a `false` answer for `:call` specifically, routing `resolve_value` to `include?`
+      # instead. A caller asking "is `resolve_value` CERTAIN to route through `.call`" — which is what the
+      # ALIASING exemptions below need, since doubt there must answer "do not exempt" — wants
+      # `certainly_routed_to_call?` instead. This narrower, ownership-only predicate remains correct for its
+      # OTHER two callers precisely because they need the opposite doubt direction: `possibly_resolved_per_
+      # call?` (member-reading, doubt answers "do not read" — a real `call`, however `respond_to?` might
+      # route around it, is reason enough to leave the object unread) and `dynamically_resolved_per_call?`
+      # (the String-refusal exemption, doubt answers "do not refuse" — the same favorable direction
+      # `certainly_routed_to_call?` would only narrow unnecessarily) (Codex, PR #288).
       def certainly_resolved_per_call?(collection)
         owner = Axn::Internal::NativeMethods.method_owner(collection, :call)
         !owner.nil? && Axn::Internal::NativeMethods.public_instance_method?(owner, :call)
+      end
+
+      # Whether `resolve_value` is CERTAIN to route through `.call` — `certainly_resolved_per_call?`'s real
+      # public `call`, PLUS confirmation that `respond_to?` itself is untouched (`!own_respond_to_hook?`), so
+      # nothing can make `resolve_value`'s `value.respond_to?(:call)` answer anything but the truthful `true`
+      # a real `call` earns. This is the predicate the ALIASING exemptions below need — a Proc/lambda's
+      # behavior genuinely cannot be mutated after creation the way a container's elements can, which is why
+      # `certainly_resolved_per_call?` alone used to seem sufficient, but that reasoning only holds when
+      # `resolve_value` is GUARANTEED to reach `.call` at all: an unfrozen object with a real `call` AND a
+      # real `include?`, whose `respond_to?` is overridden to hide `:call` specifically, is certainly NOT
+      # exempt from the freeze requirement — `resolve_value` routes it through the mutable `include?` for
+      # certain, and mutating the still-held object after declaring changes membership retroactively (Codex,
+      # PR #288, fresh evidence after the earlier call-routing fix: "only the usability path accounts for the
+      # overridden probe — the new aliasing exemptions still use the old table-only certainty predicate").
+      def certainly_routed_to_call?(collection)
+        certainly_resolved_per_call?(collection) && !own_respond_to_hook?(collection)
       end
 
       # Whether the collection's method table is the whole truth about it. Ruby owns both hooks for an ordinary
@@ -573,7 +600,7 @@ module Axn
         return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
         return proc_call_usable?(collection) if literal_proc?(collection)
 
-        return accepts_single_positional_arg?(collection, :call) if certainly_resolved_per_call?(collection) && !own_respond_to_hook?(collection)
+        return accepts_single_positional_arg?(collection, :call) if certainly_routed_to_call?(collection)
         return true if certainly_resolved_per_call?(collection)
 
         # A doubtful hook claiming `:call`, backed by `method_missing`, routes to `method_missing(:call,
@@ -873,11 +900,13 @@ module Axn
       # a custom `include?`-answering object that used to raise on every call now declares cleanly and stores
       # itself unguarded).
       #
-      # EXEMPT when `certainly_resolved_per_call?` (a Proc/lambda's behavior cannot be mutated after creation
-      # the way a container's elements can, matching the Hash-keyed branch's own exemption) or
-      # `native_bare_clusivity_delimiter?` (an Array or Range, whose aliasing is ActiveModel's own
-      # pre-existing property, not this guard's to police). A Symbol is always frozen (Ruby gives every Symbol
-      # one object per name), so it clears the check below without needing a special case either.
+      # EXEMPT when `certainly_routed_to_call?` (a Proc/lambda's behavior cannot be mutated after creation the
+      # way a container's elements can, matching the Hash-keyed branch's own exemption — and CERTAINLY, not
+      # merely a real `call` in the table, since an overridden `respond_to?` can route dispatch through a
+      # mutable `include?` instead, Codex, PR #288) or `native_bare_clusivity_delimiter?` (an Array or Range,
+      # whose aliasing is ActiveModel's own pre-existing property, not this guard's to police). A Symbol is
+      # always frozen (Ruby gives every Symbol one object per name), so it clears the check below without
+      # needing a special case either.
       def reject_unfrozen_clusivity_delimiter!(collection, key, where)
         return if Axn::Internal::NativeMethods.frozen?(collection)
 
@@ -913,13 +942,13 @@ module Axn
             # leaving a bare Set as written sent it to `with:` and raised `ArgumentError` on every call.
             # Wrapping the collection itself keeps its own `include?` answering membership while making the
             # spelling valid.
-            reject_unreadable_mutable_container!(entry, key, where) unless certainly_resolved_per_call?(entry)
+            reject_unreadable_mutable_container!(entry, key, where) unless certainly_routed_to_call?(entry)
             return { in: entry }
           end
 
           reject_unusable_clusivity_delimiter!(entry, key, where) unless usable_clusivity_delimiter?(entry)
           reject_string_clusivity_delimiter!(entry, key, where) if string_keyed_delimiter?(entry)
-          reject_unfrozen_clusivity_delimiter!(entry, key, where) unless certainly_resolved_per_call?(entry) || native_bare_clusivity_delimiter?(entry)
+          reject_unfrozen_clusivity_delimiter!(entry, key, where) unless certainly_routed_to_call?(entry) || native_bare_clusivity_delimiter?(entry)
 
           return { in: entry }
         end
@@ -932,13 +961,13 @@ module Axn
         return options.merge(set_key => members) if members
 
         if hash_keyed_container?(collection)
-          reject_unreadable_mutable_container!(collection, key, where) unless certainly_resolved_per_call?(collection)
+          reject_unreadable_mutable_container!(collection, key, where) unless certainly_routed_to_call?(collection)
           return entry
         end
 
         reject_unusable_clusivity_delimiter!(collection, key, where) unless usable_clusivity_delimiter?(collection)
         reject_string_clusivity_delimiter!(collection, key, where) if string_keyed_delimiter?(collection)
-        unless certainly_resolved_per_call?(collection) || native_bare_clusivity_delimiter?(collection)
+        unless certainly_routed_to_call?(collection) || native_bare_clusivity_delimiter?(collection)
           reject_unfrozen_clusivity_delimiter!(collection, key, where)
         end
 

@@ -559,6 +559,29 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       unfrozen_range_subclass = Class.new(Range)
       expect { build_axn { expects :v, inclusion: { in: unfrozen_range_subclass.new(1, 10) } } }.not_to raise_error
     end
+
+    # `certainly_resolved_per_call?` alone (a real, public `call` in the table) is NOT routing certainty: an
+    # overridden `respond_to?` can hide that `call` behind a `false` answer for `:call` specifically, routing
+    # `resolve_value` to the mutable `include?` instead — measured, real ActiveModel enforces via `include?`
+    # here and mutating the still-held object after declaring changes membership retroactively. The freeze
+    # exemption must require `certainly_routed_to_call?`, not merely a real `call`, before standing down
+    # (Codex, PR #288).
+    it "refuses an unfrozen delimiter whose real call is hidden by an overridden respond_to?, routing to the mutable include? instead" do
+      stub_const("HiddenCallMutableMembership", Class.new do
+        def initialize(members) = @members = members
+        def include?(value) = @members.include?(value)
+        def call = [1, 2, 3]
+        def respond_to?(name, *args) = name == :call ? false : super
+      end)
+
+      expect { build_axn { expects :v, inclusion: HiddenCallMutableMembership.new([1, 2, 3]) } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class HiddenCallMutableMembership that is not frozen/)
+
+      frozen = HiddenCallMutableMembership.new([1, 2, 3]).freeze
+      action = build_axn { expects :v, inclusion: frozen }
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 5))).to eq(:reject)
+    end
   end
 
   describe "the exclusion mirror" do
