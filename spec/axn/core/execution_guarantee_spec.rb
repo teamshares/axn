@@ -645,6 +645,21 @@ RSpec.describe "Hook and callback execution guarantee" do
       expect(fired).to eq(%i[on_error])
     end
 
+    it "settles a raising validate: callable as that exception, not a validation failure" do
+      result = build_axn { expects :n, validate: ->(_v) { raise ArgumentError, "broken validator" } }.call(n: 1)
+      expect(result.exception).to be_a(ArgumentError)
+    end
+
+    it "settles a raising model: finder as that exception, not a nil field" do
+      model = Class.new { define_singleton_method(:find_it) { |_id| raise ArgumentError, "broken finder" } }
+      result = build_axn { expects :thing, model: { klass: model, finder: :find_it } }.call(thing_id: 1)
+      expect(result.exception).to be_a(ArgumentError)
+    end
+
+    it "keeps a raising sensitive: predicate contained" do
+      expect(build_axn { expects :n, sensitive: -> { raise ArgumentError, "broken predicate" } }.call(n: 1)).to be_ok
+    end
+
     it "re-raises a raising tag callable out of .call" do
       action = build_axn { tag :t, -> { raise ArgumentError, "broken tag" } }
       expect { action.call }.to raise_error(ArgumentError, "broken tag")

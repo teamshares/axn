@@ -737,7 +737,7 @@ A halt only counts if it escapes your own code. One you rescue and don't re-rais
 | A `tag`/`dimension` callable | Is swallowed; the outcome is unchanged |
 | A callback (`on_success`, `on_error`, …) | Is swallowed; the outcome is unchanged |
 
-An exception axn does not capture still passes through all of them; for a message callable that happens when the message is read, since messages resolve lazily. With [`best_effort_raises_in_dev`](/reference/configuration#best-effort-raises-in-dev) on in development, the ones this table marks as swallowed — message, `tag`/`dimension` and callback callables — raise instead (for callbacks and messages, where that lands is under the callback limits below). A few callables axn contains itself stay contained even then: a dynamic `sensitive:` predicate fails closed, and an error message's `join:` Proc falls back to the default join.
+An exception axn does not capture still passes through all of them; for a message callable that happens when the message is read, since messages resolve lazily. With [`best_effort_raises_in_dev`](/reference/configuration#best-effort-raises-in-dev) on in development, none of this table's containment applies: a `validate:` callable's or a `model:` finder's raise settles the call as that exception rather than as a validation failure, and a message, `tag`/`dimension` or callback callable's raise is re-raised (for callbacks and messages, where that lands is under the callback limits below). A few callables axn contains itself stay contained even then: a dynamic `sensitive:` predicate fails closed, and an error message's `join:` Proc falls back to the default join.
 
 What the tables promise:
 
