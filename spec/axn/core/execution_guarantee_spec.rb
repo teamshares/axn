@@ -563,6 +563,37 @@ RSpec.describe "Hook and callback execution guarantee" do
     expect(fired).to eq(%i[on_error])
   end
 
+  # A `throw` is not an exception, so nothing axn wraps can contain it: it unwinds through `.call`
+  # like an exception axn does not capture, before or after settlement.
+  describe "a throw to a catch outside the call" do
+    it "from call: the call never settles and no callback fires" do
+      fired = []
+      action = build_axn do
+        on_success { fired << :on_success }
+        on_exception { fired << :on_exception }
+        define_method(:call) { throw :outside }
+      end
+
+      expect(catch(:outside) { action.call }).to be_nil
+      expect(fired).to be_empty
+    end
+
+    it "from a callback: it escapes .call and the later callbacks never fire" do
+      fired = []
+      action = build_axn do
+        on_error do
+          fired << :on_error
+          throw :outside
+        end
+        on_failure { fired << :on_failure }
+        define_method(:call) { fail!("failed") }
+      end
+
+      expect(catch(:outside) { action.call }).to be_nil
+      expect(fired).to eq(%i[on_error])
+    end
+  end
+
   # The fourth limit: in development with best_effort_raises_in_dev, a raising callback is re-raised
   # rather than swallowed. Where it lands depends on the phase: a settlement callback escapes `.call`,
   # while an inline on_success raises inside the call and re-settles it as an exception.
