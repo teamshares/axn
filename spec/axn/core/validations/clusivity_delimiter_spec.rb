@@ -159,6 +159,35 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: PrivateRespondToDelimiter.new } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class PrivateRespondToDelimiter, which ActiveModel cannot use/)
     end
+
+    # `Clusivity#inclusion_method` calls `enumerable.is_a? Range` — an ordinary call with an explicit
+    # receiver — for EVERY static delimiter, Range or not, before ever consulting `include?`/`cover?`. A
+    # delimiter with a real public `include?` but an undefined `is_a?` (no `method_missing` to catch the
+    # miss) still raises `NoMethodError` on the very first call (Codex, PR #288).
+    it "refuses a non-Range delimiter whose is_a? has been undefined" do
+      stub_const("NoIsADelimiter", Class.new do
+        def include?(_value) = true
+        undef_method :is_a?
+      end)
+
+      expect { build_axn { expects :v, inclusion: NoIsADelimiter.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class NoIsADelimiter, which ActiveModel cannot use/)
+    end
+
+    # `WholeValueClusivity#include?` performs the actual membership test as
+    # `members.public_send(inclusion_method(members), value)` — an ordinary call with an explicit receiver,
+    # for every static delimiter, Range or not. A delimiter with a real public `include?` but an undefined
+    # `public_send` (no `method_missing` to catch the miss) still raises `NoMethodError` before `include?` is
+    # ever reached (Codex, PR #288).
+    it "refuses a non-Range delimiter whose public_send has been undefined" do
+      stub_const("NoPublicSendDelimiter", Class.new do
+        def include?(_value) = true
+        undef_method :public_send
+      end)
+
+      expect { build_axn { expects :v, inclusion: NoPublicSendDelimiter.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class NoPublicSendDelimiter, which ActiveModel cannot use/)
+    end
   end
 
   describe "a long form naming no delimiter at all" do
@@ -372,6 +401,17 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 5))).to eq(:pass)
       expect(outcome(action.call(v: 20))).to eq(:reject)
     end
+
+    # `inclusion_method`'s `enumerable.is_a? Range` check happens BEFORE `cover?`/`include?` are ever
+    # consulted, Range ancestry or not — so a Range SUBCLASS with `is_a?` undefined outright (not merely
+    # overridden to answer `false`) raises on that very first call, regardless of what `include?`/`cover?`
+    # look like (Codex, PR #288).
+    it "refuses a Range SUBCLASS whose is_a? has been undefined outright" do
+      stub_const("NoIsARange", Class.new(Range) { undef_method :is_a? })
+
+      expect { build_axn { expects :v, inclusion: { in: NoIsARange.new(1, 10).freeze } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class NoIsARange, which ActiveModel cannot use/)
+    end
   end
 
   # `usable_clusivity_delimiter?` accepts a Set SUBCLASS, or any other object answering `include?`, and
@@ -553,6 +593,32 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       end)
 
       action = build_axn { expects :v, inclusion: { in: UndefRespondToWithMethodMissing.new.freeze } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 2))).to eq(:reject)
+    end
+
+    # `enumerable.is_a? Range` and `members.public_send(...)` are ordinary calls with an explicit receiver,
+    # so — same as `respond_to?` above — Ruby routes them through `method_missing` when it cannot dispatch
+    # normally, regardless of why (undefined here). A delimiter with BOTH undefined, caught by a cooperating
+    # `method_missing`, still declares and enforces correctly (Codex, PR #288).
+    it "declares and enforces a delimiter whose is_a? and public_send are both undefined, caught by a cooperating method_missing" do
+      stub_const("UndefIsAAndPublicSend", Class.new do
+        undef_method :is_a?
+        undef_method :public_send
+
+        def method_missing(name, *args)
+          return false if name == :is_a?
+          return send(*args) if name == :public_send
+          return args.first == 1 if name == :include?
+
+          super
+        end
+
+        def respond_to_missing?(name, *) = name == :include?
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: UndefIsAAndPublicSend.new.freeze } }
 
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 2))).to eq(:reject)

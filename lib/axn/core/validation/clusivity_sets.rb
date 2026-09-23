@@ -373,16 +373,51 @@ module Axn
       # `include?`/`call` (already covered above), or doubtful via `method_missing` (which is why it is
       # checked again at the very end, alongside the two `respond_to?` hooks it can stand in for once
       # `method_missing` backs it).
+      #
+      # A THIRD question, distinct from both above, only for a delimiter that reaches `members = value`
+      # UNCHANGED (a Symbol/Proc/real-callable is resolved to something ELSE first, so neither question below
+      # is about the declared object at all — see `enumerable_is_a_reachable?`/`public_send_reachable?`): would
+      # `Clusivity#inclusion_method`'s `enumerable.is_a? Range` and `WholeValueClusivity#include?`'s
+      # `members.public_send(...)` — both ORDINARY calls with an explicit receiver, dispatched on EVERY such
+      # delimiter regardless of what it turns out to be — reach something rather than raise `NoMethodError`
+      # before `include?`/`cover?` are ever consulted? Checked BEFORE `range_usable?` and the fallback branch,
+      # since both calls happen ahead of either (Codex, PR #288, two more findings after the `is_a?`
+      # classification fix: reachability is a different question from whether an override can be trusted).
       def usable_clusivity_delimiter?(collection)
         return false unless respond_to_reachable?(collection)
         return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
-        return true if range_usable?(collection)
         return true if certainly_resolved_per_call?(collection)
+        return false unless enumerable_is_a_reachable?(collection) && public_send_reachable?(collection)
+        return true if range_usable?(collection)
         return false unless own_method_missing_hook?(collection)
 
         public_method_owner?(collection, :to_sym) || own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)
       rescue StandardError
         true
+      end
+
+      # Whether `is_a?` can be DISPATCHED at all — `Clusivity#inclusion_method`'s `enumerable.is_a? Range` is
+      # an ordinary call with an explicit receiver, made for EVERY delimiter that reaches `members = value`
+      # unchanged, Range or not (Codex, PR #288: "before accepting either Range or non-Range delimiters"). A
+      # private/undefined `is_a?` with no `method_missing` to catch the miss raises `NoMethodError` on the
+      # first call, regardless of whether the object answers `include?` perfectly well. Distinct from
+      # `own_is_a_hook?`, which asks whether an is_a? that CAN be dispatched is trustworthy for ancestry
+      # classification — this asks only whether it can be dispatched AT ALL.
+      def enumerable_is_a_reachable?(collection)
+        public_method_owner?(collection, :is_a?) || own_method_missing_hook?(collection)
+      end
+
+      # Whether `public_send` can be DISPATCHED at all — `WholeValueClusivity#include?` performs the actual
+      # membership test as `members.public_send(inclusion_method(members), value)`, an ordinary call with an
+      # explicit receiver, for every delimiter that reaches this point, Range or not. A private/undefined
+      # `public_send` with no `method_missing` to catch the miss raises `NoMethodError` before the verified
+      # `include?`/`cover?`/`to_sym` is ever reached, however public and however real (Codex, PR #288). Backed
+      # by `own_method_missing_hook?` the same way every other unreachable-but-caught case here is: Ruby
+      # routes a call it cannot dispatch normally through `method_missing` regardless of why normal dispatch
+      # failed, so a caller-owned `method_missing` genuinely answers a `public_send` an ordinary lookup could
+      # not reach.
+      def public_send_reachable?(collection)
+        public_method_owner?(collection, :public_send) || own_method_missing_hook?(collection)
       end
 
       # The native `Range#begin`/`#end` readers, unbound and bound per call — for reading a Range's OWN
