@@ -449,14 +449,15 @@ module Axn
       # Range has or whether `cover?` is public — a Range gets NO exemption from the ordinary requirement
       # every other collection already has here.
       #
-      # For a Range (by ANCESTRY, never `is_a?`) whose bound is `Numeric`/`Time`/`DateTime`/`Date`, `cover?`
-      # is an ADDITIONAL requirement ON TOP of `include?`, never a substitute for it: `check_validity!` passes
-      # on `include?` alone, but `Clusivity#inclusion_method` then selects `cover?` for that bound, and
-      # `WholeValueClusivity#include?` dispatches it with `public_send` — so a Range SUBCLASS with a real
-      # public `include?` but an undefined/private `cover?` still declares cleanly and raises `NoMethodError`
-      # on every call whose bound is numeric/time-like (Codex, PR #288). A Range whose bound does NOT select
-      # `cover?` needs no such extra requirement at all — refusing it there would refuse a declaration
-      # ActiveModel and the runtime both accept, the same finding's other half.
+      # For a Range (by ANCESTRY, ordinarily — see the `is_a?` stand-down below) whose bound is
+      # `Numeric`/`Time`/`DateTime`/`Date`, `cover?` is an ADDITIONAL requirement ON TOP of `include?`, never
+      # a substitute for it: `check_validity!` passes on `include?` alone, but `Clusivity#inclusion_method`
+      # then selects `cover?` for that bound, and `WholeValueClusivity#include?` dispatches it with
+      # `public_send` — so a Range SUBCLASS with a real public `include?` but an undefined/private `cover?`
+      # still declares cleanly and raises `NoMethodError` on every call whose bound is numeric/time-like
+      # (Codex, PR #288). A Range whose bound does NOT select `cover?` needs no such extra requirement at
+      # all — refusing it there would refuse a declaration ActiveModel and the runtime both accept, the same
+      # finding's other half.
       #
       # `range_cover_resolution` gates the reachability question BEFORE any of that: `inclusion_method` must
       # read the bound before it can decide anything, so a Range whose `begin` (or `end`, only when `.begin`
@@ -470,11 +471,42 @@ module Axn
       # sufficient here, with no `respond_to?`/`respond_to_missing?` override needed to back it (Codex, PR
       # #288 — a genuine difference from every other doubtful hook in this file, which all gate on
       # `respond_to?` being asked first).
+      #
+      # ANCESTRY classifies "is this a Range" everywhere else in this file — established once through
+      # `Identity.class_of`/`includes_module?` and never by dispatching `is_a?` on the caller's object, same
+      # as every other classification here. But `inclusion_method` does not ask ancestry: `enumerable.is_a?
+      # Range` is a REAL call, and a caller who overrides it governs what the runtime actually branches on,
+      # not what its ancestry says. Measured: a Range subclass overriding `is_a?` to answer `false` for
+      # `Range`, with `cover?` undefined, declares against `include?` alone and validates cleanly under real
+      # ActiveModel — `inclusion_method` never reaches the numeric bound, `cover?`, or the requirement below
+      # at all, because its own `is_a? Range` check is the thing that decided not to. Ancestry alone would
+      # still call this a Range and require `cover?` (Codex, PR #288). `own_is_a_hook?` catches this the same
+      # way every other doubtful hook here is caught: OWNERSHIP, never dispatch. Doubt answers "usable" for
+      # the same reason `range_cover_resolution`'s own `:undecidable` branch does — an overridden `is_a?`
+      # could in principle still answer exactly as ancestry does, in which case standing down costs a
+      # `cover?` requirement that was genuinely earned, but requiring it anyway costs certain, immediate
+      # rejection of a declaration ActiveModel actually accepts, which is the one error this guard exists to
+      # rule out.
+      #
+      # Whether `is_a?` ITSELF is the caller's own, distinct from every other dispatch hook this file checks
+      # ownership of. `Clusivity#inclusion_method` classifies its argument with `enumerable.is_a? Range` — a
+      # REAL call, dispatched on the collection exactly as written, not a question about its ancestry — so an
+      # override answering `false` for a genuine Range subclass (or `true` for something that is not one) is
+      # what the runtime actually consults, and `range_usable?` classifying by ANCESTRY alone (deliberately,
+      # see below) can disagree with it in either direction. Ownership only, never dispatched, for the same
+      # reason every other hook here is: running `is_a?` on the caller's object to find out is the one thing
+      # this predicate exists to avoid needing.
+      def own_is_a_hook?(collection)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, :is_a?)
+        owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+      end
+
       def range_usable?(collection)
         return false unless public_method_owner?(collection, :include?)
 
         klass = Axn::Internal::Identity.class_of(collection)
         return true unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+        return true if own_is_a_hook?(collection)
 
         case range_cover_resolution(collection)
         when :unreachable then false

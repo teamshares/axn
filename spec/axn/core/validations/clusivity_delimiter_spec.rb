@@ -356,6 +356,22 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 5))).to eq(:pass)
       expect(outcome(action.call(v: 20))).to eq(:reject)
     end
+
+    # `inclusion_method` classifies its argument with `enumerable.is_a? Range` — a REAL, dispatched call, not
+    # a question about ancestry. A Range subclass overriding it to answer `false` for `Range` makes
+    # `inclusion_method` select `include?` and never touch `cover?` at all, so an undefined `cover?` is never
+    # reached under real ActiveModel — even though the object's ANCESTRY still says Range (Codex, PR #288).
+    it "does not refuse a numeric-bounded Range SUBCLASS whose is_a? is overridden to deny Range, even with cover? undefined" do
+      stub_const("NotReallyARange", Class.new(Range) do
+        undef_method :cover?
+        def is_a?(klass) = klass.equal?(Range) ? false : super
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: NotReallyARange.new(1, 10).freeze } }
+
+      expect(outcome(action.call(v: 5))).to eq(:pass)
+      expect(outcome(action.call(v: 20))).to eq(:reject)
+    end
   end
 
   # `usable_clusivity_delimiter?` accepts a Set SUBCLASS, or any other object answering `include?`, and
