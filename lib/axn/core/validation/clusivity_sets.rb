@@ -435,11 +435,38 @@ module Axn
       # `method_missing` elsewhere on the object could rescue (it would never be reached). So this is checked
       # before, and independent of, `own_method_missing_hook?` — unlike every doubtful hook above, there is no
       # doubt here to resolve in favor of usable (Codex, PR #288).
+      #
+      # A FIFTH question, prior to and gating the fourth: is it even CERTAIN which of the two routes
+      # `resolve_value` takes at all? Its "else" branch asks `value.respond_to?(:call)` — an ordinary call
+      # Ruby dispatches to WHICHEVER `respond_to?` the caller's class defines, same as `check_validity!`'s own
+      # probe. A real public `call` makes that answer true FOR CERTAIN only when `respond_to?` ITSELF is
+      # untouched (native `Kernel#respond_to?` checks the real method table first, so `respond_to_missing?`
+      # is never even consulted for a name already present) — an overridden `respond_to?` governs the answer
+      # just as completely as it does for `check_validity!`'s probe, and could hide a real `call` behind a
+      # `false`, routing to `include?` instead (measured: a valid `include?`, a real but WRONG-arity `call`,
+      # and a `respond_to?` override answering `false` for `:call` declares and enforces fine via `include?`
+      # — the arity-mismatched `call` is never reached at all). Conversely, a doubtful `respond_to_missing?`/
+      # `respond_to?` override backed by a cooperating `method_missing` (`dynamically_resolved_per_call?`)
+      # can route to `.call` even with NO real `call` method at all, in which case `is_a?`/`public_send`
+      # apply to WHATEVER `.call` returns, not to the original object — so a broken arity on the ORIGINAL
+      # object's own `is_a?` is irrelevant (measured: a zero-arg `is_a?` on the delimiter itself, alongside a
+      # `respond_to_missing?`+`method_missing` pair that supplies a real `.call` returning an Array, declares
+      # and enforces fine — the original's `is_a?` is never dispatched).
+      #
+      # So the fourth question's "certain failure" only holds when routing is ALSO certain — the same
+      # `own_respond_to_hook?` check `check_validity!`'s own probe already needs, reused here for a second
+      # reason. And per the doubt-answers-usable doctrine that governs every other undecidable case in this
+      # file, MERELY possible call routing (`dynamically_resolved_per_call?`, which already covers "real call
+      # behind a lying `respond_to?`" as well as the doubtful-hook case) stands down rather than enforcing
+      # either route's own arity requirements — checking one would refuse a declaration whose OTHER route is
+      # what the runtime actually takes (Codex, PR #288).
       def usable_clusivity_delimiter?(collection)
         return false unless respond_to_reachable?(collection)
         return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
-        return false if certainly_resolved_per_call?(collection) && !accepts_single_positional_arg?(collection, :call)
-        return true if certainly_resolved_per_call?(collection)
+
+        return accepts_single_positional_arg?(collection, :call) if certainly_resolved_per_call?(collection) && !own_respond_to_hook?(collection)
+        return true if dynamically_resolved_per_call?(collection)
+
         return false unless enumerable_is_a_reachable?(collection) && public_send_reachable?(collection)
         return false if public_method_owner?(collection, :include?) && !accepts_single_positional_arg?(collection, :include?)
         return true if range_usable?(collection)

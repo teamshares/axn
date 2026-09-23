@@ -709,6 +709,47 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 2))).to eq(:reject)
     end
+
+    # `resolve_value`'s "else" branch asks `value.respond_to?(:call)` — dispatched to WHICHEVER `respond_to?`
+    # the caller's class defines, same as `check_validity!`'s own probe. An override hiding a REAL `call`
+    # behind a `false` answer routes to `include?` instead, so the `call`'s own (here, wrong) arity is never
+    # reached at all — refusing for it would refuse a declaration that genuinely works (Codex, PR #288).
+    it "declares and enforces a delimiter whose real call is hidden by an overridden respond_to?, routing to include? instead" do
+      stub_const("HiddenCallDelimiter", Class.new do
+        def include?(value) = [1, 2, 3].include?(value)
+        def call = [1, 2, 3]
+        def respond_to?(name, *args) = name == :call ? false : super
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: HiddenCallDelimiter.new.freeze } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 5))).to eq(:reject)
+    end
+
+    # The mirror: a cooperating `respond_to_missing?`/`method_missing` pair can supply a DYNAMIC `call` with
+    # no real `call` method at all, routing `resolve_value` there instead of ever reaching `members = value`
+    # — so `is_a?`/`cover?`/`include?` apply to whatever `.call` returns, never to the original delimiter. A
+    # broken arity on the ORIGINAL object's own `is_a?` is irrelevant, since it is never dispatched (Codex,
+    # PR #288).
+    it "declares and enforces a delimiter whose own is_a? would be broken, since a dynamic call intercepts routing first" do
+      stub_const("DynamicCallOverBrokenIsA", Class.new do
+        def is_a? = false
+
+        def respond_to_missing?(name, *) = name == :call || super
+
+        def method_missing(name, *args)
+          return [1, 2, 3] if name == :call
+
+          super
+        end
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: DynamicCallOverBrokenIsA.new.freeze } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 5))).to eq(:reject)
+    end
   end
 
   describe "accepted delimiters (controls — must still declare cleanly)" do
