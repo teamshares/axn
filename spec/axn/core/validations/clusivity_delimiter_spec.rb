@@ -293,6 +293,44 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 5))).to eq(:pass)
       expect(outcome(action.call(v: 20))).to eq(:reject)
     end
+
+    # `inclusion_method` calls `enumerable.begin` (and `.end` if `.begin` is falsy) with an EXPLICIT receiver,
+    # so a Range SUBCLASS that narrows `begin` to private, with no `method_missing` to catch the miss, makes
+    # that very first read raise `NoMethodError` — regardless of what `include?`/`cover?` look like. Distinct
+    # from the overridden-value case above, where the call itself still succeeds (Codex, PR #288).
+    it "refuses a Range SUBCLASS whose begin has been narrowed to private, with no method_missing to catch it" do
+      stub_const("PrivateBeginRange", Class.new(Range) do
+        undef_method :cover?
+        private :begin
+      end)
+
+      expect { build_axn { expects :v, inclusion: { in: PrivateBeginRange.new(1, 10).freeze } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class PrivateBeginRange, which ActiveModel cannot use/)
+    end
+
+    # Unlike `include?`/`call`/`to_sym`, `check_validity!` never probes `respond_to?(:cover?)` at all —
+    # `cover?` only matters once `inclusion_method` has already selected it, and the actual dispatch
+    # (`public_send`) reaches `method_missing` regardless of any `respond_to?` hook cooperating. So a Range
+    # SUBCLASS that undefines `cover?` but handles it in `method_missing`, with no `respond_to_missing?`/
+    # `respond_to?` override at all, still declares and enforces correctly (Codex, PR #288).
+    it "declares and enforces a numeric-bounded Range SUBCLASS whose cover? is reached through method_missing" do
+      stub_const("DynamicCoverRange", Class.new(Range) do
+        undef_method :cover?
+        # rubocop:disable Style/MissingRespondToMissing -- respond_to_missing? is irrelevant here: cover?'s
+        # dispatch is an ordinary public_send, never gated behind respond_to?
+        def method_missing(name, *args)
+          return args.first >= self.begin && args.first <= self.end if name == :cover?
+
+          super
+        end
+        # rubocop:enable Style/MissingRespondToMissing
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: DynamicCoverRange.new(1, 10).freeze } }
+
+      expect(outcome(action.call(v: 5))).to eq(:pass)
+      expect(outcome(action.call(v: 20))).to eq(:reject)
+    end
   end
 
   # `usable_clusivity_delimiter?` accepts a Set SUBCLASS, or any other object answering `include?`, and
