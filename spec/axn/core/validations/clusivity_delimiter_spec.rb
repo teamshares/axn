@@ -211,6 +211,46 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: ZeroArgCall.new.freeze } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgCall, which ActiveModel cannot use/)
     end
+
+    # `check_validity!` probes with `delimiter.respond_to?(:include?)` — ONE positional argument, always. A
+    # real, public, zero-arg `def respond_to? = true` answers indistinguishably from a correct one by every
+    # ownership check (it IS public, it IS real), and then raises `ArgumentError` on that very first probe —
+    # a real method always wins Ruby's dispatch over `method_missing` (Codex, PR #288).
+    it "refuses a delimiter whose respond_to? cannot accept the one positional argument ActiveModel always supplies" do
+      stub_const("ZeroArgRespondTo", Class.new do
+        def respond_to? = true
+        def include?(_value) = true
+      end)
+
+      expect { build_axn { expects :v, inclusion: ZeroArgRespondTo.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgRespondTo, which ActiveModel cannot use/)
+    end
+
+    # `Clusivity#inclusion_method` calls `enumerable.is_a? Range` — ONE positional argument, always. A real,
+    # public, zero-arg `def is_a? = false` is certain `ArgumentError` on the first call, same precedence as
+    # every other real-method-first case here (Codex, PR #288).
+    it "refuses a delimiter whose is_a? cannot accept the one positional argument ActiveModel always supplies" do
+      stub_const("ZeroArgIsA", Class.new do
+        def is_a? = false
+        def include?(_value) = true
+      end)
+
+      expect { build_axn { expects :v, inclusion: ZeroArgIsA.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgIsA, which ActiveModel cannot use/)
+    end
+
+    # `WholeValueClusivity#include?` calls `members.public_send(name, value)` — TWO positional arguments,
+    # always. A real, public `public_send` accepting only one is certain `ArgumentError` before the verified
+    # `include?` is ever reached (Codex, PR #288).
+    it "refuses a delimiter whose public_send cannot accept the two positional arguments ActiveModel always supplies" do
+      stub_const("OneArgPublicSend", Class.new do
+        def include?(_value) = true
+        def public_send(name) = name
+      end)
+
+      expect { build_axn { expects :v, inclusion: OneArgPublicSend.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class OneArgPublicSend, which ActiveModel cannot use/)
+    end
   end
 
   describe "a long form naming no delimiter at all" do
@@ -446,6 +486,17 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
 
       expect { build_axn { expects :v, inclusion: { in: ZeroArgCoverRange.new(1, 10).freeze } } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgCoverRange, which ActiveModel cannot use/)
+    end
+
+    # `Clusivity#inclusion_method` calls `enumerable.begin` (and `.end`, only if `.begin` is falsy) with ZERO
+    # arguments — a real override (by ANY owner, not necessarily maliciously) requiring one is certain
+    # `ArgumentError` on that very first read, decidable from the method table alone regardless of whether
+    # the override's VALUE would otherwise be trusted (Codex, PR #288).
+    it "refuses a Range SUBCLASS whose begin requires an argument ActiveModel never supplies" do
+      stub_const("ReqArgBeginRange", Class.new(Range) { def begin(val) = val })
+
+      expect { build_axn { expects :v, inclusion: { in: ReqArgBeginRange.new(1, 10).freeze } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ReqArgBeginRange, which ActiveModel cannot use/)
     end
   end
 

@@ -316,24 +316,26 @@ module Axn
         !owner.nil? && Axn::Internal::NativeMethods.public_instance_method?(owner, name)
       end
 
-      # Whether `collection`'s OWN `name` — already established public and owned via `public_method_owner?`
-      # — can be called with the single positional argument every real dispatch here ever supplies:
-      # `members.public_send(:include?/:cover?, value)` and (for the non-Proc "else" branch of
-      # `resolve_value`) `value.call(record)` are ALWAYS made with exactly one positional argument, with no
-      # arity adaptation the way `resolve_value`'s Proc branch gets (`value.arity == 0 ? value.call :
-      # value.call(record)`) — a Proc adapts to ITS OWN arity because `resolve_value` reads it first, but a
-      # plain object's `include?`/`cover?`/`call` gets no such courtesy. A zero-arg `def include? = true` (a
-      # plausible authoring mistake, not a hostile override) is real, public, and answers `respond_to?`
-      # exactly as a correct one would — `check_validity!` and every ownership check pass — and then
-      # `ArgumentError: wrong number of arguments` on the very first real call (Codex, PR #288: "the
-      # analogous early acceptance of a public call should require the record argument as well").
+      # Whether `collection`'s OWN `name` — already established owned via `public_method_owner?` (or, for a
+      # Range's `begin`/`end`, owned by ANYONE at all, native or overridden) — can be called with EXACTLY
+      # `count` positional arguments. Every prerequisite this file dispatches on the caller's object is called
+      # with a FIXED count, and none of them gets the arity adaptation `resolve_value`'s Proc branch gives its
+      # own callable (`value.arity == 0 ? value.call : value.call(record)`) — a real, public method matching
+      # neither the exact count nor a `:rest` still raises `ArgumentError` on the very first genuine dispatch,
+      # however correctly it answers `respond_to?`/ownership otherwise (Codex, PR #288, across two rounds:
+      # `include?`/`cover?`/`call` first, then `respond_to?`/`is_a?`/`public_send`/Range `begin`/`end`, "the
+      # analogous ... failure").
       #
-      # Read from `UnboundMethod#parameters`, never by calling it. A `:keyreq` makes the one positional
-      # argument insufficient on its own (a required keyword still goes unsupplied); a `:rest` accepts any
-      # count including one (this is what lets `Proc#call`'s own `(*args)` — and any object whose `call`
-      # matches that shape — clear this unconditionally, matching `resolve_value`'s actual leniency there);
-      # otherwise one argument must fall within `:req` through `:req + :opt`.
-      def accepts_single_positional_arg?(collection, name)
+      # The fixed counts, so a caller reads them straight off the real call sites rather than re-deriving:
+      # `respond_to?(:include?)` and `enumerable.is_a? Range` are each ONE; `members.public_send(name,
+      # value)` is TWO; `enumerable.begin`/`.end` are ZERO.
+      #
+      # Read from `UnboundMethod#parameters`, never by calling it. A `:keyreq` makes ANY positional count
+      # insufficient on its own (a required keyword still goes unsupplied); a `:rest` accepts any count
+      # (this is what lets `Proc#call`'s own `(*args)` — and any object whose `call` matches that shape —
+      # clear the one-argument check unconditionally, matching `resolve_value`'s actual leniency there);
+      # otherwise `count` must fall within `:req` through `:req + :opt`.
+      def accepts_positional_args?(collection, name, count)
         method = Axn::Internal::NativeMethods.declared_method(collection, name)
         return false if method.nil?
 
@@ -343,8 +345,10 @@ module Axn
 
         required = params.count { |type, _| type == :req }
         optional = params.count { |type, _| type == :opt }
-        required <= 1 && (required + optional) >= 1
+        required <= count && (required + optional) >= count
       end
+
+      def accepts_single_positional_arg?(collection, name) = accepts_positional_args?(collection, name, 1)
 
       # Whether `collection` can even ANSWER `respond_to?` at all — the one prerequisite every branch below
       # assumes and none of them may override. `check_validity!` probes the delimiter with
@@ -361,8 +365,18 @@ module Axn
       # `method_missing` actually cooperates — so DOUBT MUST ANSWER "usable" the same as every other hook here.
       # Only the absence of BOTH a public `respond_to?` AND a `method_missing` to catch the miss is CERTAIN
       # failure, readable without dispatch, and refused unconditionally (Codex, PR #288).
+      #
+      # A real, public, OWNED `respond_to?` is what Ruby dispatches `delimiter.respond_to?(:include?)` to —
+      # `method_missing` is never consulted once a real method answers, so a zero-arg `def respond_to? =
+      # true` (real, public, and — being arity-agnostic about WHAT it answers for — indistinguishable from a
+      # correct one by every check above) is certain `ArgumentError`, regardless of whatever `method_missing`
+      # might otherwise do (same precedence as `include?`/`cover?`/`call`, Codex, PR #288).
       def respond_to_reachable?(collection)
-        public_method_owner?(collection, :respond_to?) || own_method_missing_hook?(collection)
+        if public_method_owner?(collection, :respond_to?)
+          accepts_single_positional_arg?(collection, :respond_to?)
+        else
+          own_method_missing_hook?(collection)
+        end
       end
 
       # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter AND the runtime
@@ -442,9 +456,15 @@ module Axn
       # private/undefined `is_a?` with no `method_missing` to catch the miss raises `NoMethodError` on the
       # first call, regardless of whether the object answers `include?` perfectly well. Distinct from
       # `own_is_a_hook?`, which asks whether an is_a? that CAN be dispatched is trustworthy for ancestry
-      # classification — this asks only whether it can be dispatched AT ALL.
+      # classification — this asks only whether it can be dispatched AT ALL. A real, public, OWNED `is_a?`
+      # always wins Ruby's dispatch over `method_missing`, so a zero-arg `def is_a? = false` is certain
+      # `ArgumentError` regardless of whatever `method_missing` might otherwise do (Codex, PR #288).
       def enumerable_is_a_reachable?(collection)
-        public_method_owner?(collection, :is_a?) || own_method_missing_hook?(collection)
+        if public_method_owner?(collection, :is_a?)
+          accepts_single_positional_arg?(collection, :is_a?)
+        else
+          own_method_missing_hook?(collection)
+        end
       end
 
       # Whether `public_send` can be DISPATCHED at all — `WholeValueClusivity#include?` performs the actual
@@ -455,9 +475,15 @@ module Axn
       # by `own_method_missing_hook?` the same way every other unreachable-but-caught case here is: Ruby
       # routes a call it cannot dispatch normally through `method_missing` regardless of why normal dispatch
       # failed, so a caller-owned `method_missing` genuinely answers a `public_send` an ordinary lookup could
-      # not reach.
+      # not reach. And, same precedence as every other real-method-first case here: a real, public, OWNED
+      # `public_send` accepting fewer than the TWO arguments it is always called with (the method name plus
+      # the value) is certain `ArgumentError`, `method_missing` notwithstanding (Codex, PR #288).
       def public_send_reachable?(collection)
-        public_method_owner?(collection, :public_send) || own_method_missing_hook?(collection)
+        if public_method_owner?(collection, :public_send)
+          accepts_positional_args?(collection, :public_send, 2)
+        else
+          own_method_missing_hook?(collection)
+        end
       end
 
       # The native `Range#begin`/`#end` readers, unbound and bound per call — for reading a Range's OWN
@@ -501,9 +527,21 @@ module Axn
       #   `:no_cover`    — resolved, via a NATIVE read, to any other bound (including both `begin` and `end`
       #                    answering `nil`, which `inclusion_method` itself would then also route to
       #                    `include?`).
+      #
+      # A REAL method, of ANY owner, is checked for arity BEFORE the ownership-equal-`::Range` read below:
+      # `enumerable.begin`/`.end` are called with ZERO arguments, and a real method requiring one — overridden
+      # by anything, not necessarily maliciously — is refused as `:unreachable` REGARDLESS of who owns it,
+      # the same "a real method always wins dispatch over `method_missing`" precedence applied everywhere
+      # else in this file. This is decidable from the method table alone, unlike the VALUE such an override
+      # would return, which is what the ownership-equal-`::Range` check below still exists to gate (Codex, PR
+      # #288).
       def range_cover_resolution(collection)
         %i[begin end].each do |name|
-          return :unreachable unless public_method_owner?(collection, name) || own_method_missing_hook?(collection)
+          if public_method_owner?(collection, name)
+            return :unreachable unless accepts_positional_args?(collection, name, 0)
+          else
+            return :unreachable unless own_method_missing_hook?(collection)
+          end
           return :undecidable unless Axn::Internal::NativeMethods.method_owner(collection, name).equal?(::Range)
 
           value = name.equal?(:begin) ? RANGE_BEGIN.bind_call(collection) : RANGE_END.bind_call(collection)
