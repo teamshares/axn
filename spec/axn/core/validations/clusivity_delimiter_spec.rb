@@ -562,6 +562,24 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 20))).to eq(:reject)
     end
 
+    # The mirror direction: a delimiter whose ANCESTRY is not Range at all, but whose overridden `is_a?`
+    # CLAIMS Range, is routed to `cover?` by `inclusion_method`'s real, dispatched `enumerable.is_a? Range`
+    # call — `include?` is never consulted, so its absence is irrelevant under real ActiveModel (Codex, PR
+    # #288, finding on 0665413).
+    it "does not refuse a non-Range delimiter whose is_a? is overridden to claim Range, even with include? undefined" do
+      stub_const("ClaimsARange", Class.new do
+        def is_a?(klass) = klass.equal?(Range) ? true : super
+        def begin = 5
+        def cover?(value) = value >= 5
+        def to_sym = :whatever
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: ClaimsARange.new.freeze } }
+
+      expect(outcome(action.call(v: 10))).to eq(:pass)
+      expect(outcome(action.call(v: 2))).to eq(:reject)
+    end
+
     # `inclusion_method`'s `enumerable.is_a? Range` check happens BEFORE `cover?`/`include?` are ever
     # consulted, Range ancestry or not — so a Range SUBCLASS with `is_a?` undefined outright (not merely
     # overridden to answer `false`) raises on that very first call, regardless of what `include?`/`cover?`

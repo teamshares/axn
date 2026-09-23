@@ -923,6 +923,17 @@ module Axn
         # validity only when neither call nor to_sym can satisfy the validity gate").
         return false unless public_method_owner?(collection, :include?) || public_method_owner?(collection, :to_sym)
 
+        # `inclusion_method`'s `enumerable.is_a? Range` is a REAL, dispatched call — when it is overridden,
+        # ActiveModel's actual branch selection (`cover?` vs `include?`) can diverge from static ancestry in
+        # EITHER direction: a genuine Range subclass can deny Range (handled below, once ancestry is real), and
+        # — Codex, PR #288, finding on 0665413 — a non-Range object can equally CLAIM Range, supply `begin`/
+        # `cover?`, and be routed straight to `cover?`, skipping `include?` entirely even though it has none.
+        # Deciding by ANCESTRY which branch below even applies, while `is_a?` is overridden, could reject a
+        # declaration `inclusion_method` would actually route to `cover?` — so this doubt is resolved before
+        # ancestry is ever consulted, not after, the same "doubt answers usable" doctrine as everywhere else
+        # here.
+        return true if own_is_a_hook?(collection)
+
         klass = Axn::Internal::Identity.class_of(collection)
         unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
           # `include?` is unconditionally what `inclusion_method` selects for anything outside Range ancestry
@@ -934,7 +945,6 @@ module Axn
 
           return accepts_single_positional_arg?(collection, :include?)
         end
-        return true if own_is_a_hook?(collection)
 
         case range_cover_resolution(collection)
         when :unreachable then false
