@@ -271,6 +271,26 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: ZeroArgMethodMissing.new.freeze } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgMethodMissing, which ActiveModel cannot use/)
     end
+
+    # A real, native (untouched) `respond_to?` internally dispatches `respond_to_missing?(name, false)` — TWO
+    # args — for any name absent from the table. A caller-owned `respond_to_missing?` with the wrong arity
+    # (missing the conventional `(name, include_all = false)` signature) is real, public, and answers every
+    # ownership check, then breaks `check_validity!`'s very first `respond_to?(:include?)` probe with
+    # `ArgumentError` (Codex, PR #288).
+    it "refuses a delimiter whose respond_to_missing? cannot accept the two arguments native respond_to? always supplies" do
+      stub_const("ZeroArgRespondToMissing", Class.new do
+        def respond_to_missing? = true
+
+        def method_missing(name, *args)
+          return [1, 2, 3] if name == :call
+
+          super
+        end
+      end)
+
+      expect { build_axn { expects :v, inclusion: ZeroArgRespondToMissing.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgRespondToMissing, which ActiveModel cannot use/)
+    end
   end
 
   describe "a long form naming no delimiter at all" do

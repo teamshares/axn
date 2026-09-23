@@ -398,9 +398,26 @@ module Axn
       # true` (real, public, and — being arity-agnostic about WHAT it answers for — indistinguishable from a
       # correct one by every check above) is certain `ArgumentError`, regardless of whatever `method_missing`
       # might otherwise do (same precedence as `include?`/`cover?`/`call`, Codex, PR #288).
+      #
+      # A real, public `respond_to?` owned by `::Kernel` ITSELF (native, untouched) is a SPECIAL case within
+      # that: its own C implementation is what runs `delimiter.respond_to?(:include?)`, and for any name
+      # absent from the table it internally dispatches `respond_to_missing?(name, false)` — TWO args — before
+      # answering. A caller-owned `respond_to_missing?` with the wrong arity (`def respond_to_missing? =
+      # true`, missing the conventional `(name, include_all = false)` signature) is real, public, and answers
+      # every ownership check here, and then breaks `check_validity!`'s VERY FIRST probe with `ArgumentError`
+      # — before `usable_clusivity_delimiter?` ever reaches the dynamic-call-route question that reads this
+      # same ownership (Codex, PR #288, fresh evidence after the prior hook-arity fix: "the current code
+      # validates method_missing but never the owned respond_to_missing?"). Irrelevant when `respond_to?`
+      # ITSELF is overridden (a non-`::Kernel` owner) — an override answers the probe on its own terms and
+      # need not consult `respond_to_missing?` at all, which is not axn's to police (out of scope, the same
+      # as every other caller-code behavior this file declines to simulate).
       def respond_to_reachable?(collection)
         if public_method_owner?(collection, :respond_to?)
-          accepts_single_positional_arg?(collection, :respond_to?)
+          return false unless accepts_single_positional_arg?(collection, :respond_to?)
+          return true unless Axn::Internal::NativeMethods.method_owner(collection, :respond_to?).equal?(::Kernel)
+          return true unless own_respond_to_missing_hook?(collection)
+
+          accepts_positional_args?(collection, :respond_to_missing?, 2)
         else
           method_missing_accepts?(collection, 2)
         end
