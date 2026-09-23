@@ -580,6 +580,35 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 2))).to eq(:reject)
     end
 
+    # `own_is_a_hook?` must treat a NIL owner (undef'd, caught only through `method_missing`) exactly as
+    # doubtfully as a real singleton override, not as "native and untouched" — Ruby routes `enumerable.is_a?
+    # Range` through `method_missing` regardless of WHY normal dispatch failed, so a cooperating
+    # `method_missing` that CLAIMS Range governs the actual runtime branch exactly as completely as a real
+    # override does, and a nil owner treated as trustworthy-native would wrongly classify by ancestry instead
+    # (a systematic audit against real ActiveModel, prompted by finding this same nil-owner gap already fixed
+    # once for `respond_to?` but never generalized when `own_is_a_hook?`/`own_public_send_hook?` were added).
+    it "does not refuse a non-Range delimiter whose undefined is_a? is caught by a method_missing that claims Range" do
+      stub_const("ClaimsARangeViaMethodMissing", Class.new do
+        undef_method :is_a?
+        # rubocop:disable Style/MissingRespondToMissing -- is_a? reachability is already covered elsewhere
+        def method_missing(name, *args)
+          return true if name == :is_a?
+
+          super
+        end
+        # rubocop:enable Style/MissingRespondToMissing
+
+        def begin = 5
+        def cover?(value) = value >= 5
+        def to_sym = :whatever
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: ClaimsARangeViaMethodMissing.new.freeze } }
+
+      expect(outcome(action.call(v: 10))).to eq(:pass)
+      expect(outcome(action.call(v: 2))).to eq(:reject)
+    end
+
     # `inclusion_method`'s `enumerable.is_a? Range` check happens BEFORE `cover?`/`include?` are ever
     # consulted, Range ancestry or not — so a Range SUBCLASS with `is_a?` undefined outright (not merely
     # overridden to answer `false`) raises on that very first call, regardless of what `include?`/`cover?`
@@ -972,6 +1001,30 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       end)
 
       action = build_axn { expects :v, inclusion: { in: DropsValueBeforeInclude.new.freeze } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+    end
+
+    # `own_public_send_hook?` must treat a NIL owner (undef'd, caught only through `method_missing`) exactly
+    # as doubtfully as a real override — the same fix `own_is_a_hook?` needed, for the same reason: Ruby
+    # routes `members.public_send(...)` through `method_missing` regardless of WHY normal dispatch failed, and
+    # a cooperating `method_missing` that drops the value forwards to a zero-arg `include?` exactly as
+    # completely as a real singleton `public_send` override does.
+    it "declares and enforces a non-Range delimiter whose undefined public_send is caught by a method_missing that drops the value" do
+      stub_const("DropsValueViaMethodMissing", Class.new do
+        undef_method :public_send
+        # rubocop:disable Style/MissingRespondToMissing -- public_send reachability is already covered elsewhere
+        def method_missing(name, *args)
+          return send(args.first) if name == :public_send
+
+          super
+        end
+        # rubocop:enable Style/MissingRespondToMissing
+
+        def include? = true
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: DropsValueViaMethodMissing.new.freeze } }
 
       expect(outcome(action.call(v: 1))).to eq(:pass)
     end

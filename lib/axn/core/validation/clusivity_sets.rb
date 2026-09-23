@@ -908,9 +908,22 @@ module Axn
       # see below) can disagree with it in either direction. Ownership only, never dispatched, for the same
       # reason every other hook here is: running `is_a?` on the caller's object to find out is the one thing
       # this predicate exists to avoid needing.
+      #
+      # A NIL owner defers to `method_missing`, the same case `own_respond_to_hook?` already carves out for
+      # `respond_to?`: `undef_method :is_a?` removes it from the table entirely, and Ruby routes the call
+      # through `method_missing` regardless — every caller of this predicate has already established
+      # `enumerable_is_a_reachable?` (real OR method_missing-caught) before ever asking whether the ANSWER is
+      # trustworthy, so a nil owner here is never "native and untouched," it is "the caller's own
+      # `method_missing` answers this, and can answer anything" — doubtful, not native, found only by
+      # empirically constructing a `method_missing` that LIES about `is_a?(Range)` and confirming both real
+      # ActiveModel and axn's own (pre-fix) guard disagreed about the result (a systematic audit of every
+      # dispatch hook against real ActiveModel, prompted by finding this same nil-owner gap already fixed once
+      # for `respond_to?` but never generalized to the other hooks this file added afterward).
       def own_is_a_hook?(collection)
         owner = Axn::Internal::NativeMethods.method_owner(collection, :is_a?)
-        owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+        return own_method_missing_hook?(collection) if owner.nil?
+
+        NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
       end
 
       # Whether `public_send` ITSELF is the caller's own, the same ownership question `own_is_a_hook?` asks
@@ -922,9 +935,17 @@ module Axn
       # all, so a real, public, zero-arg `include?` declares and enforces fine even though the arity this file
       # would otherwise require is never actually asked for. Ownership only, never dispatched, for the same
       # reason every other hook here is.
+      #
+      # A NIL owner defers to `method_missing`, the same `own_is_a_hook?` fix applies for the same reason:
+      # `public_send_reachable?` has already established this is real-OR-method_missing-caught before
+      # `own_public_send_hook?` is ever asked whether the answer is trustworthy, so a nil owner here means
+      # `method_missing` is what actually forwards (or transforms) the call, never Ruby's own untouched
+      # `Kernel#public_send`.
       def own_public_send_hook?(collection)
         owner = Axn::Internal::NativeMethods.method_owner(collection, :public_send)
-        owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+        return own_method_missing_hook?(collection) if owner.nil?
+
+        NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
       end
 
       def range_usable?(collection)
