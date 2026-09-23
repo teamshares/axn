@@ -507,6 +507,30 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
   end
 
+  # The fourth limit: in development with best_effort_raises_in_dev, a raising callback is re-raised
+  # out of `.call` rather than swallowed, so the callbacks after it never fire.
+  context "when a callback raises in development with best_effort_raises_in_dev" do
+    before do
+      allow(Axn.config).to receive(:best_effort_raises_in_dev).and_return(true)
+      allow(Axn.config).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
+    end
+
+    it "re-raises out of .call, and the later callbacks never fire" do
+      fired = []
+      action = build_axn do
+        on_error do
+          fired << :on_error
+          raise ArgumentError, "broken on_error"
+        end
+        on_failure { fired << :on_failure }
+        define_method(:call) { fail!("failed") }
+      end
+
+      expect { action.call }.to raise_error(ArgumentError, "broken on_error")
+      expect(fired).to eq(%i[on_error])
+    end
+  end
+
   # Framework observability sits OUTSIDE the contract, so a call that never reaches the hooks is still
   # traced, timed and logged.
   describe "framework observability on a call settled before the hooks" do
