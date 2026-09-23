@@ -617,24 +617,17 @@ module Axn
         method_missing_accepts?(collection, count + 1)
       end
 
-      # `call` reachable with EXACTLY `count` positional arguments — real-method-first (any signature
-      # accepting `count`), `method_missing`-backed as fallback with the EXACT total arity Ruby would invoke
-      # it with for that call (`count` originals plus the `:call` message name itself). Used only where
-      # `arity` itself is NOT trustworthy-native, so `Proc#call`'s generic signature is the best available
-      # answer regardless (a genuinely mismatched closure body is caught instead by `proc_native_call_accepts?`
-      # whenever `arity` IS trustworthy).
-      def call_reachable_with_arg_count?(collection, count)
-        if public_method_owner?(collection, :call)
-          accepts_positional_args?(collection, :call, count)
-        else
-          method_missing_accepts?(collection, count + 1)
-        end
-      end
-
       # `call` reachable with EITHER zero or one argument — for the cases where `arity`'s own selected count
-      # cannot be trusted without dispatching the caller's object.
+      # cannot be trusted without dispatching the caller's object. Delegates to `proc_native_call_accepts?`
+      # for BOTH counts, not a separate ownership-only check: a literal Proc/lambda's `call` is owned by
+      # `::Proc` itself just as often here as in the trusted-arity branches, and `Proc#call`'s method-table
+      # signature is the SAME always-variadic `(*args)` regardless of which branch reached it — trusting that
+      # generic signature (rather than the instance's own native `parameters`) accepted a STRICT lambda
+      # requiring two arguments whenever its OWN `arity` was separately overridden to report otherwise, since
+      # `(*args)` accepts any count unconditionally (Codex, PR #288: "this branch delegates to the generic
+      # variadic Proc#call method instead of the lambda body's native parameters").
       def call_reachable_with_either_arity?(collection)
-        call_reachable_with_arg_count?(collection, 0) || call_reachable_with_arg_count?(collection, 1)
+        proc_native_call_accepts?(collection, 0) || proc_native_call_accepts?(collection, 1)
       end
 
       # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter AND the runtime
@@ -729,7 +722,20 @@ module Axn
         return proc_call_usable?(collection) if literal_proc?(collection)
 
         return dispatched_call_accepts_single_arg?(collection) if certainly_routed_to_call?(collection)
-        return true if certainly_resolved_per_call?(collection)
+
+        # `certainly_resolved_per_call?` alone only certifies that `resolve_value` MIGHT route through
+        # `.call` (a real, public, owned one exists) — it says nothing about whether that route's own arity
+        # is correct, nor about whether the OTHER route (`members = collection` itself, when the caller's
+        # overridden `respond_to?` answers `false` for `:call`) would work either. When routing is uncertain
+        # (reached here rather than the CERTAIN branch above, precisely because `respond_to?` is overridden),
+        # a real `call` whose own arity is ALSO wrong is not "usable regardless" — it is usable only if the
+        # OTHER, non-call route turns out fine, so this must fall through to that reasoning rather than
+        # short-circuit, exactly the same "check whether ANY possible route works" doubt this file already
+        # applies to `range_cover_resolution`'s `:undecidable`/`own_is_a_hook?` cases. Refusing here happens
+        # only if EVERYTHING below ALSO fails — i.e., only when NEITHER possible route could ever work,
+        # readable without dispatching anything (Codex, PR #288: "reject only when both possible routes are
+        # unusable").
+        return true if certainly_resolved_per_call?(collection) && dispatched_call_accepts_single_arg?(collection)
 
         # A doubtful hook claiming `:call`, backed by `method_missing`, routes to `method_missing(:call,
         # record)` — TWO args — if it actually cooperates. A `method_missing` that cannot even accept that

@@ -964,6 +964,25 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 5))).to eq(:reject)
     end
 
+    # The failure mirror of the spec above: `certainly_resolved_per_call?` alone (a real, public, owned
+    # `call`) only certifies that `resolve_value` MIGHT route there — not that the arity is correct, and not
+    # that the OTHER route (`members = collection` itself, whenever the overridden `respond_to?` answers
+    # `false` for `:call`) would work either. Here `respond_to?` is overridden to answer `true`
+    # UNCONDITIONALLY, so `resolve_value`'s own `value.respond_to?(:call)` deterministically routes to
+    # `.call(record)` — ONE argument — but `call` itself takes ZERO, and the object has no usable `include?`
+    # for the untaken alternate route either. BOTH possible routes are statically broken, so standing down on
+    # routing uncertainty is not safe here the way it is when at least one route could work (Codex, PR #288:
+    # "reject only when both possible routes are unusable").
+    it "refuses a delimiter whose overridden respond_to? routes to a wrong-arity call, with no usable include? either" do
+      stub_const("BothRoutesBroken", Class.new do
+        def respond_to?(*) = true
+        def call = [1, 2, 3]
+      end)
+
+      expect { build_axn { expects :v, inclusion: { in: BothRoutesBroken.new.freeze } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class BothRoutesBroken, which ActiveModel cannot use/)
+    end
+
     # The mirror: a cooperating `respond_to_missing?`/`method_missing` pair can supply a DYNAMIC `call` with
     # no real `call` method at all, routing `resolve_value` there instead of ever reaching `members = value`
     # — so `is_a?`/`cover?`/`include?` apply to whatever `.call` returns, never to the original delimiter. A
@@ -1131,6 +1150,22 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
     # must be rejected from the Proc's own parameters").
     it "refuses a Proc whose own body requires two arguments, which resolve_value never supplies" do
       delimiter = ->(_record, _second) { [1, 2, 3] }
+
+      expect { build_axn { expects :v, inclusion: delimiter } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class Proc, which ActiveModel cannot use/)
+    end
+
+    # The same two-required-argument body, but with `arity` ALSO overridden to (falsely) report a
+    # zero-or-one-compatible value: `arity`'s own overridden VALUE is genuinely unknowable without dispatch,
+    # so `call` is checked reachable with EITHER count — but that check must still read the closure's OWN
+    # native `parameters` (`PROC_PARAMETERS`), not `Proc#call`'s generic always-variadic method-table entry,
+    # the same fix already applied where `arity` IS trustworthy. Reusing the generic signature here accepted
+    # a lambda that can never be satisfied with zero or one argument regardless of what `arity` claims
+    # (Codex, PR #288: "this branch delegates to the generic variadic Proc#call method instead of the lambda
+    # body's native parameters").
+    it "refuses a Proc whose own body requires two arguments even when its singleton arity claims otherwise" do
+      delimiter = ->(_record, _second) { [1, 2, 3] }
+      def delimiter.arity = 1
 
       expect { build_axn { expects :v, inclusion: delimiter } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class Proc, which ActiveModel cannot use/)
