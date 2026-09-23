@@ -102,8 +102,8 @@ a `done!` from `call` or a hook, so a required exposure that's unset makes the a
 
 Hooks: `before`, `after`, `around` (block or symbol method). A `fail!`/raise in a hook fails the
 action; `done!` skips `after` hooks. All three unwind via an exception, so statements *after*
-`chain.call` in an `around` are skipped — put teardown in an `ensure` inside the `around`, or use
-`use :transaction`, which rescues the signal so the transaction still commits. Hooks run *inside*
+`chain.call` in an `around` are skipped — put teardown in an `ensure` inside the `around`. (`use :transaction` rescues only `done!`'s signal,
+so a `done!` still commits while a `fail!` or raise rolls back.) Hooks run *inside*
 the contract (a `before` reading `user` needs `user` resolved), so a call settled during inbound
 resolution never reaches them, `ensure` included; and outbound resolution runs *after* the hook
 body returns, so an `around` that rescues to record failures never sees an outbound error.
