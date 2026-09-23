@@ -737,7 +737,7 @@ A halt only counts if it escapes your own code. One you rescue and don't re-rais
 | A `user_facing:` override callable | Falls back to the field's own validation message |
 | A `fails_on` `if:`/`unless:` gate | Reads as not matching, so the exception is not reclassified |
 | A `tag`/`dimension` callable | Is swallowed; the outcome is unchanged |
-| A callback (`on_success`, `on_error`, …) | Is swallowed; the outcome is unchanged. A `done!` or `fail!` there is reported as [`Axn::MisplacedFlowControl`](#what-runs-when), since it cannot change an outcome that has already settled |
+| A callback (`on_success`, `on_error`, …) | Is swallowed; the outcome is unchanged. A `done!` or `fail!` there — or in a message, `fails_on` gate or `user_facing:` override — is reported as `Axn::MisplacedFlowControl`, since these callables observe or describe the outcome rather than decide it |
 
 An exception axn does not capture still passes through all of them; for a message callable that happens when the message is read, since messages resolve lazily. With [`best_effort_raises_in_dev`](/reference/configuration#best-effort-raises-in-dev) on in development, none of this containment applies: each one re-raises, and where that lands depends on when it runs. Before settlement — a `validate:` callable, a `model:` finder, a `user_facing:` override — it settles the call as that exception. During settlement it escapes `.call`, as described under the callback limits below. A `tag`/`dimension` callable escapes `.call` too. A few callables axn contains itself stay contained even then: a dynamic `sensitive:` predicate fails closed, and an error message's `join:` Proc falls back to the default join.
 

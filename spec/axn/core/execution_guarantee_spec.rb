@@ -764,6 +764,18 @@ RSpec.describe "Hook and callback execution guarantee" do
       expect(fired).to be_empty
     end
 
+    # Read from a before hook, the re-raise is a raise in that hook, so the call settles as it.
+    it "raises MisplacedFlowControl for a done! in a success message read mid-run, before the call settles" do
+      action = build_axn do
+        success -> { done!("from the message") }
+        before { result.success }
+      end
+
+      result = action.call
+      expect(result.exception).to be_a(Axn::MisplacedFlowControl)
+      expect(result.exception.message).to match(/observes or describes the action's outcome/)
+    end
+
     it "re-raises a raising tag callable out of .call" do
       action = build_axn { tag :t, -> { raise ArgumentError, "broken tag" } }
       expect { action.call }.to raise_error(ArgumentError, "broken tag")
