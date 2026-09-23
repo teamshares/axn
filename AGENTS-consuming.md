@@ -124,8 +124,9 @@ settlement, it still escapes `.call` and the later callbacks don't fire); with A
 `on_success` waits for the enclosing (joinable) DB transaction to commit, so a rollback skips it
 (older AR, or none, dispatches inline); in an async job, `async_exception_reporting` gates
 `on_exception` per attempt (by default an intermediate retry fires only `on_error`); and in
-development with `best_effort_raises_in_dev`, a raising `on_error`/`on_failure`/`on_exception`
-re-raises out of `.call` (the callbacks after it never fire), while a raising inline `on_success`
+development with `best_effort_raises_in_dev`, a raising `on_error`/`on_failure`/`on_exception` or
+`error`/`success` message callable re-raises out of `.call` (the callbacks not yet run never fire),
+while a raising inline `on_success`
 re-settles the call (a raise as an exception, a `fail!` as a failure). `on_error` is a superset,
 co-firing
 with whichever of `on_failure`/`on_exception` applies. A raise in a callback does **not** flip `ok?` —
