@@ -247,6 +247,26 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
   end
 
+  # While the call is already settling a raise or fail!, outbound defaults are applied best-effort: a
+  # done! from one is swallowed, and the original halt stands.
+  describe "done! from an outbound default while settling a halt" do
+    {
+      "a raise" => [proc { raise ArgumentError, "raised" }, :exception, ArgumentError],
+      "fail!" => [proc { fail!("failed") }, :failure, Axn::Failure],
+    }.each do |halt_name, (halt, outcome, exception_class)|
+      it "keeps #{halt_name} as the outcome" do
+        action = build_axn do
+          exposes :o, default: -> { done!("finished early") }
+          define_method(:call) { instance_exec(&halt) }
+        end
+
+        result = action.call
+        expect(result.outcome.to_s).to eq(outcome.to_s)
+        expect(result.exception).to be_a(exception_class)
+      end
+    end
+  end
+
   # A field carrying no validation is not resolved by inbound validation: its preprocess: runs on first
   # read, so a halt from it lands inside the hook chain and follows the `call` row.
   context "when an inbound preprocess: on an unvalidated field raises on first read in call" do
@@ -553,6 +573,21 @@ RSpec.describe "Hook and callback execution guarantee" do
       result = action.call
       expect(result.exception).to be_a(ArgumentError)
       expect(fired).to contain_exactly(:on_success, :on_error, :on_exception)
+    end
+
+    it "re-settles the call as a failure when an inline on_success calls fail!" do
+      fired = []
+      action = build_axn do
+        on_success do
+          fired << :on_success
+          fail!("failed")
+        end
+        on_error { fired << :on_error }
+        on_failure { fired << :on_failure }
+      end
+
+      expect(action.call.outcome).to be_failure
+      expect(fired).to contain_exactly(:on_success, :on_error, :on_failure)
     end
   end
 
