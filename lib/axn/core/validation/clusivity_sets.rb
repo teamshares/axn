@@ -375,6 +375,63 @@ module Axn
         if public_method_owner?(collection, :respond_to?)
           accepts_single_positional_arg?(collection, :respond_to?)
         else
+          method_missing_accepts?(collection, 2)
+        end
+      end
+
+      # Whether `method_missing` — already established as the caller's own via `own_method_missing_hook?` —
+      # can accept the EXACT positional argument count Ruby invokes it with for a given failed dispatch:
+      # `method_missing(missed_name, *original_args)`, so a probe with `count` total arguments (the missed
+      # name plus `count - 1` originals) is what a caller's `method_missing` must actually accept, not merely
+      # exist. `respond_to_reachable?`'s fallback is the first of these: `check_validity!`'s
+      # `delimiter.respond_to?(:include?)`, routed through `method_missing` when `respond_to?` itself is
+      # unreachable, invokes it as `method_missing(:respond_to?, :include?)` — TWO args — and a `method_missing`
+      # accepting fewer (`def method_missing(name) = ...`, a plausible authoring mistake, missing the
+      # conventional `*args` splat) raises `ArgumentError` on that very dispatch, before the hook ever gets a
+      # chance to answer (Codex, PR #288).
+      def method_missing_accepts?(collection, count)
+        own_method_missing_hook?(collection) && accepts_positional_args?(collection, :method_missing, count)
+      end
+
+      # Whether `collection` is a literal Proc — by ANCESTRY, matching every other "is this a built-in
+      # shape" classification in this file (Range, Array), never `is_a?`. `resolve_value`'s `case value; when
+      # Proc` is `Module#===`, a C-level ancestry check that does not dispatch on the value either, so this
+      # mirrors it exactly (the same reasoning `_parse_validates_options`'s own `case`/`when Range, Array`
+      # earns the same treatment already documented on `native_bare_clusivity_delimiter?`).
+      def literal_proc?(collection)
+        Axn::Internal::NativeMethods.includes_module?(Axn::Internal::Identity.class_of(collection), ::Proc)
+      end
+
+      # Whether a literal Proc's dispatch actually succeeds. `resolve_value`'s Proc branch is `value.arity ==
+      # 0 ? value.call : value.call(record)` — TWO calls, in order, BOTH with a receiver-explicit, undoubted
+      # arity ActiveModel decides for itself rather than adapting to whatever `certainly_resolved_per_call?`
+      # would otherwise assume:
+      #
+      #   1. `arity` is invoked with ZERO arguments, ALWAYS, to decide which branch to take. A real, public,
+      #      OWNED `arity` requiring one is certain `ArgumentError` before `call` is ever reached — the
+      #      generic prerequisite-arity treatment applied to a NEW prerequisite (Codex, PR #288).
+      #   2. `call` is then invoked with EITHER zero or one argument, decided by that same `arity` — not
+      #      always one, the way the generic (non-Proc) callable path requires. Whichever it turns out to be,
+      #      axn does not read `arity`'s VALUE (that would dispatch it), so this accepts a `call` reachable
+      #      with EITHER count: `Proc#call`'s own signature is `(*args)` and clears both trivially, but a
+      #      SINGLETON `call` narrowed to match the Proc's own arity (a zero-arity Proc with a zero-arg
+      #      singleton `call`) must also clear it, and does — refusing it would refuse a declaration
+      #      ActiveModel and the runtime both accept (Codex, PR #288, the singleton-narrowed-Proc case: "this
+      #      line instead treats it as a generic callable and requires call to accept one positional
+      #      argument, rejecting a legal declaration").
+      #
+      # Both real-method-first, method_missing-backed-only-as-fallback, the same precedence as every other
+      # prerequisite in this file: a real method (of any signature) always wins Ruby's dispatch.
+      def proc_call_usable?(collection)
+        if public_method_owner?(collection, :arity)
+          return false unless accepts_positional_args?(collection, :arity, 0)
+        else
+          return false unless method_missing_accepts?(collection, 1)
+        end
+
+        if public_method_owner?(collection, :call)
+          accepts_positional_args?(collection, :call, 0) || accepts_positional_args?(collection, :call, 1)
+        else
           own_method_missing_hook?(collection)
         end
       end
@@ -460,9 +517,15 @@ module Axn
       # behind a lying `respond_to?`" as well as the doubtful-hook case) stands down rather than enforcing
       # either route's own arity requirements — checking one would refuse a declaration whose OTHER route is
       # what the runtime actually takes (Codex, PR #288).
+      #
+      # A SIXTH question, checked BEFORE any of the above and unconditionally for anything ancestry
+      # classifies as a literal Proc: `resolve_value`'s `case value; when Proc` branch takes ABSOLUTE
+      # precedence over the generic "else" — a Proc is NEVER routed through `respond_to?(:call)` at all, so
+      # none of the routing-certainty reasoning above even applies to one. Delegated to `proc_call_usable?`.
       def usable_clusivity_delimiter?(collection)
         return false unless respond_to_reachable?(collection)
         return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
+        return proc_call_usable?(collection) if literal_proc?(collection)
 
         return accepts_single_positional_arg?(collection, :call) if certainly_resolved_per_call?(collection) && !own_respond_to_hook?(collection)
         return true if dynamically_resolved_per_call?(collection)

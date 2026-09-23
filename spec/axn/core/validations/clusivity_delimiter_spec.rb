@@ -251,6 +251,26 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: OneArgPublicSend.new.freeze } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class OneArgPublicSend, which ActiveModel cannot use/)
     end
+
+    # `method_missing` is invoked as `method_missing(missed_name, *original_args)` — when `respond_to?`
+    # itself is unreachable, that's `method_missing(:respond_to?, :include?)`, TWO args. A `method_missing`
+    # accepting fewer (missing the conventional `*args` splat) raises `ArgumentError` on that very dispatch,
+    # before the hook ever gets a chance to answer the probe (Codex, PR #288).
+    it "refuses a delimiter whose respond_to?-catching method_missing cannot accept the two arguments ActiveModel always supplies" do
+      stub_const("ZeroArgMethodMissing", Class.new do
+        def include?(_value) = true
+
+        def respond_to?(*) = super
+        private :respond_to?
+
+        # rubocop:disable Style/MissingRespondToMissing -- the missing arity is the point of this fixture
+        def method_missing = true
+        # rubocop:enable Style/MissingRespondToMissing
+      end)
+
+      expect { build_axn { expects :v, inclusion: ZeroArgMethodMissing.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgMethodMissing, which ActiveModel cannot use/)
+    end
   end
 
   describe "a long form naming no delimiter at all" do
@@ -749,6 +769,38 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
 
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 5))).to eq(:reject)
+    end
+  end
+
+  # A literal Proc is a SPECIAL case within `resolve_value` — its `case value; when Proc` branch takes
+  # absolute precedence over the generic "else" (`respond_to?(:call)`) path every other callable object goes
+  # through, and it reads `value.arity` to decide whether to call with zero or one argument
+  # (`value.arity == 0 ? value.call : value.call(record)`), rather than always supplying one the way the
+  # generic path does.
+  describe "a literal Proc — arity-adaptive call, never the generic one-argument requirement" do
+    # A zero-arity Proc's `call` is invoked with ZERO arguments, so a SINGLETON `call` override narrowed to
+    # match (also zero-arg) is exactly what gets dispatched — requiring one argument here (the generic
+    # callable-object rule) would refuse a declaration ActiveModel and the runtime both accept (Codex, PR
+    # #288).
+    it "declares and enforces a zero-arity Proc whose singleton call is also zero-arg" do
+      delimiter = -> { [1, 2, 3] }
+      def delimiter.call = [1, 2, 3]
+
+      action = build_axn { expects :v, inclusion: delimiter }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 5))).to eq(:reject)
+    end
+
+    # `resolve_value` calls `value.arity` with ZERO arguments, ALWAYS, before ever deciding how to call
+    # `call` itself. A singleton `arity` override requiring an argument is certain `ArgumentError` on that
+    # very first read, before `call`'s own (here, perfectly fine) arity ever matters (Codex, PR #288).
+    it "refuses a Proc whose singleton arity cannot accept the zero arguments ActiveModel always supplies" do
+      delimiter = -> { [1, 2, 3] }
+      def delimiter.arity(_required) = 0
+
+      expect { build_axn { expects :v, inclusion: delimiter } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class Proc, which ActiveModel cannot use/)
     end
   end
 
