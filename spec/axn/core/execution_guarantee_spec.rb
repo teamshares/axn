@@ -92,6 +92,10 @@ RSpec.describe "Hook and callback execution guarantee" do
       hooks: [],
       args: ->(halt) { { declare: proc { expects :n, type: Integer, if: -> { instance_exec(&halt) } }, n: 1 } },
     },
+    "an expects validator's callable option" => {
+      hooks: [],
+      args: ->(halt) { { declare: proc { expects :n, inclusion: { in: ->(action) { action.instance_exec(&halt) } } }, n: 1 } },
+    },
     "a before hook" => {
       hooks: observed_halt.call,
       args: ->(halt) { { before_body: halt } },
@@ -132,6 +136,14 @@ RSpec.describe "Hook and callback execution guarantee" do
       },
     },
     # ...and outbound, after the hook chain, for exposes.
+    "an exposes validator's callable option" => {
+      hooks: ran_to_completion,
+      args: lambda { |halt|
+        { declare: proc { exposes :o, optional: true, inclusion: { in: ->(action) { action.instance_exec(&halt) } } }, body: proc {
+          expose o: 1
+        } }
+      },
+    },
     "an exposes validation's if: condition" => {
       hooks: ran_to_completion,
       args: ->(halt) { { declare: proc { exposes :o, type: Integer, optional: true, if: -> { instance_exec(&halt) } } } },
