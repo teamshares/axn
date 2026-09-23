@@ -474,8 +474,19 @@ RSpec.describe "Hook and callback execution guarantee" do
       end
     end
 
-    it "keeps a swallowed done!'s message" do
+    it "keeps the message of a done! swallowed by an enclosing around" do
       expect(run_swallowing(proc { done!("finished early") }).success).to eq("finished early")
+    end
+
+    it "loses the message of a done! rescued in the same method that called it" do
+      action = build_axn do
+        define_method(:call) do
+          done!("finished early")
+        rescue StandardError
+          nil
+        end
+      end
+      expect(action.call.success).to eq("Action completed successfully")
     end
   end
 
