@@ -382,6 +382,14 @@ RSpec.describe "Hook and callback execution guarantee" do
       it "still passes through an Interrupt" do
         expect { build_with_finder { |_id| raise Interrupt }.call(thing_id: 1) }.to raise_error(Interrupt)
       end
+
+      [SystemStackError, NotImplementedError].each do |uncontained|
+        it "does not contain a #{uncontained}: the call settles as that exception" do
+          result = build_with_finder { |_id| raise uncontained, "finder raised" }.call(thing_id: 1)
+          expect(result.outcome).to be_exception
+          expect(result.exception).to be_a(uncontained)
+        end
+      end
     end
   end
 
@@ -508,7 +516,8 @@ RSpec.describe "Hook and callback execution guarantee" do
   end
 
   # The fourth limit: in development with best_effort_raises_in_dev, a raising callback is re-raised
-  # out of `.call` rather than swallowed, so the callbacks after it never fire.
+  # rather than swallowed. Where it lands depends on the phase: a settlement callback escapes `.call`,
+  # while an inline on_success raises inside the call and re-settles it as an exception.
   context "when a callback raises in development with best_effort_raises_in_dev" do
     before do
       allow(Axn.config).to receive(:best_effort_raises_in_dev).and_return(true)
@@ -528,6 +537,22 @@ RSpec.describe "Hook and callback execution guarantee" do
 
       expect { action.call }.to raise_error(ArgumentError, "broken on_error")
       expect(fired).to eq(%i[on_error])
+    end
+
+    it "re-settles the call as an exception when an inline on_success raises" do
+      fired = []
+      action = build_axn do
+        on_success do
+          fired << :on_success
+          raise ArgumentError, "broken on_success"
+        end
+        on_error { fired << :on_error }
+        on_exception { fired << :on_exception }
+      end
+
+      result = action.call
+      expect(result.exception).to be_a(ArgumentError)
+      expect(fired).to contain_exactly(:on_success, :on_error, :on_exception)
     end
   end
 

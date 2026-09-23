@@ -122,8 +122,9 @@ does not capture (`Interrupt`, `SystemExit`) never settles, so none fire; with A
 `on_success` waits for the enclosing (joinable) DB transaction to commit, so a rollback skips it
 (older AR, or none, dispatches inline); in an async job, `async_exception_reporting` gates
 `on_exception` per attempt (by default an intermediate retry fires only `on_error`); and in
-development with `best_effort_raises_in_dev`, a raising callback re-raises out of `.call`, so the
-callbacks after it never fire. `on_error` is a superset, co-firing
+development with `best_effort_raises_in_dev`, a raising `on_error`/`on_failure`/`on_exception`
+re-raises out of `.call` (the callbacks after it never fire), while a raising inline `on_success`
+re-settles the call as an exception. `on_error` is a superset, co-firing
 with whichever of `on_failure`/`on_exception` applies. A raise in a callback does **not** flip `ok?` —
 it is swallowed, logged, and reported to `Axn.config.on_ignored_exception` (which defaults to your
 `on_exception` handler) carrying `context[:axn_ignored]`.
