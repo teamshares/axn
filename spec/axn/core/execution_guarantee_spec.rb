@@ -425,6 +425,23 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
   end
 
+  describe "settlement-time callables" do
+    it "falls back to the field's own message when a user_facing: override raises" do
+      result = build_axn { expects :n, type: Integer, user_facing: -> { raise ArgumentError, "broken override" } }.call(n: "bad")
+      expect(result.outcome).to be_failure
+      expect(result.exception).to be_a(Axn::InboundValidationError)
+    end
+
+    it "reads a raising fails_on gate as not matching" do
+      result = build_axn do
+        fails_on ArgumentError, if: -> { raise NameError, "broken gate" }
+        define_method(:call) { raise ArgumentError, "original" }
+      end.call
+      expect(result.outcome).to be_exception
+      expect(result.exception).to be_a(ArgumentError)
+    end
+  end
+
   # An `around` that returns without calling `chain.call` is not a halt: nothing inside it runs, and
   # the call then completes normally — including outbound validation.
   describe "an around hook that never calls chain.call" do
@@ -658,6 +675,23 @@ RSpec.describe "Hook and callback execution guarantee" do
 
     it "keeps a raising sensitive: predicate contained" do
       expect(build_axn { expects :n, sensitive: -> { raise ArgumentError, "broken predicate" } }.call(n: 1)).to be_ok
+    end
+
+    it "settles a raising user_facing: override as that exception" do
+      result = build_axn { expects :n, type: Integer, user_facing: -> { raise ArgumentError, "broken override" } }.call(n: "bad")
+      expect(result.exception).to be_a(ArgumentError)
+    end
+
+    it "re-raises a raising fails_on gate out of .call before any callback fires" do
+      fired = []
+      action = build_axn do
+        fails_on ArgumentError, if: -> { raise NameError, "broken gate" }
+        on_error { fired << :on_error }
+        on_exception { fired << :on_exception }
+        define_method(:call) { raise ArgumentError, "original" }
+      end
+      expect { action.call }.to raise_error(NameError, "broken gate")
+      expect(fired).to be_empty
     end
 
     it "re-raises a raising tag callable out of .call" do
