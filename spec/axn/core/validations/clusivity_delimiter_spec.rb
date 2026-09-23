@@ -212,6 +212,22 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgCall, which ActiveModel cannot use/)
     end
 
+    # A bound `Method` object is not a literal Proc — `resolve_value`'s `case/when Proc` does not match it —
+    # so it goes through the generic `respond_to?(:call)` route like any other custom callable, and its own
+    # `call` is real and public. But `Method#call`'s method-table signature is ALSO always `(*args)`,
+    # regardless of the BOUND TARGET's real arity, exactly the same deceptive-wrapper shape `Proc#call` has
+    # — `resolve_value` always dispatches with exactly one argument (the record), so a bound method requiring
+    # two can never be satisfied (Codex, PR #288: "inspect the bound method's native parameters/arity,
+    # similarly to the Proc special case").
+    it "refuses a Method delimiter whose bound target requires two arguments, which resolve_value never supplies" do
+      stub_const("MethodDelimiterHelper", Class.new do
+        def self.allowed(_record, _second) = [1, 2, 3]
+      end)
+
+      expect { build_axn { expects :v, inclusion: MethodDelimiterHelper.method(:allowed) } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class Method, which ActiveModel cannot use/)
+    end
+
     # `check_validity!` probes with `delimiter.respond_to?(:include?)` — ONE positional argument, always. A
     # real, public, zero-arg `def respond_to? = true` answers indistinguishably from a correct one by every
     # ownership check (it IS public, it IS real), and then raises `ArgumentError` on that very first probe —
@@ -696,6 +712,22 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
 
       expect { build_axn { expects :v, inclusion: broken } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgIncludeSet, which ActiveModel cannot use/)
+    end
+
+    # `resolve_value`'s `case value; when Proc` takes ABSOLUTE precedence over the generic "else"
+    # (`respond_to?(:call)`) branch the freeze exemption's `own_respond_to_hook?` reasoning is about — a
+    # literal Proc's OWN `respond_to?`, overridden or not, is never even asked for the routing decision, so
+    # an override that simply delegates normally cannot redirect it. Requiring the freeze anyway refused a
+    # perfectly usable, unfrozen Proc (Codex, PR #288: "ActiveModel selects its when Proc resolution branch
+    # before the generic respond_to?(:call) route, so this override cannot redirect Proc resolution").
+    it "does not require an unfrozen literal Proc to be frozen, even with an overridden (but delegating) respond_to?" do
+      delimiter = ->(_record) { [1, 2, 3] }
+      def delimiter.respond_to?(name, *args) = super
+
+      action = build_axn { expects :v, inclusion: delimiter }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 5))).to eq(:reject)
     end
   end
 

@@ -147,8 +147,18 @@ module Axn
       # certain, and mutating the still-held object after declaring changes membership retroactively (Codex,
       # PR #288, fresh evidence after the earlier call-routing fix: "only the usability path accounts for the
       # overridden probe — the new aliasing exemptions still use the old table-only certainty predicate").
+      #
+      # A LITERAL Proc is a special case within that: `resolve_value`'s `case value; when Proc` is ancestry
+      # matching (`Module#===`, never dispatched), and takes ABSOLUTE precedence over the generic "else"
+      # branch this `respond_to?`-override reasoning is about — a Proc's OWN `respond_to?`, overridden or
+      # not, is never even ASKED for the routing decision, so `own_respond_to_hook?` is simply irrelevant to
+      # it. Requiring the SAME certainty test anyway refused a perfectly usable Proc (already confirmed
+      # working by `proc_call_usable?` before this is ever reached) over an override that could never have
+      # redirected it in the first place (Codex, PR #288: "ActiveModel selects its when Proc resolution
+      # branch before the generic respond_to?(:call) route, so this override cannot redirect Proc
+      # resolution").
       def certainly_routed_to_call?(collection)
-        certainly_resolved_per_call?(collection) && !own_respond_to_hook?(collection)
+        literal_proc?(collection) || (certainly_resolved_per_call?(collection) && !own_respond_to_hook?(collection))
       end
 
       # Whether the collection's method table is the whole truth about it. Ruby owns both hooks for an ordinary
@@ -503,6 +513,31 @@ module Axn
       # `parameters`, asked of the INSTANCE, reveals the real `[[:req, :a], [:req, :b]]`).
       PROC_PARAMETERS = ::Proc.instance_method(:parameters)
 
+      # `Method#parameters` itself, unbound — the SAME native-reader fix `PROC_PARAMETERS` applies, for the
+      # SAME reason, on a DIFFERENT Ruby-own generic-callable-wrapper type: `Method#call`'s OWN method-table
+      # signature is ALSO always `(*args)`, regardless of the BOUND target's real arity — a `Method` object
+      # is not a literal Proc (`resolve_value`'s `case/when Proc` does not match it, so it goes through the
+      # generic `respond_to?(:call)` route like any other custom callable), but its `call` is EXACTLY the
+      # same kind of deceptive wrapper: `receiver.method(:foo)`, where `foo` takes two required arguments,
+      # still answers `respond_to?(:call)` and `Method.instance_method(:call).parameters` with `[[:rest]]`,
+      # while the actual dispatch (`value.call(record)`, ALWAYS one argument) fails on every call (Codex, PR
+      # #288: "inspect the bound method's native parameters/arity, similarly to the Proc special case").
+      METHOD_PARAMETERS = ::Method.instance_method(:parameters)
+
+      # `call` reachable with a single positional argument, for a delimiter CERTAINLY routed there
+      # (`certainly_routed_to_call?`) — special-cased for a real `call` OWNED BY `::Method` ITSELF (a bound
+      # `Method` object, untouched): its acceptance is governed by the BOUND TARGET's own `parameters` (read
+      # via the bound native `METHOD_PARAMETERS`, never the caller's own possibly-overridden `.parameters`),
+      # never by `Method#call`'s always-variadic method-table entry. Any other real `call` (an ordinary
+      # object's own definition, whose method-table `parameters` genuinely reflect what will be dispatched)
+      # keeps the plain check.
+      def dispatched_call_accepts_single_arg?(collection)
+        call_owner = Axn::Internal::NativeMethods.method_owner(collection, :call)
+        return params_accept_positional_args?(METHOD_PARAMETERS.bind_call(collection), 1) if call_owner.equal?(::Method)
+
+        accepts_single_positional_arg?(collection, :call)
+      end
+
       # Whether a literal Proc's dispatch actually succeeds. `resolve_value`'s Proc branch is `value.arity ==
       # 0 ? value.call : value.call(record)` — TWO calls, in order, BOTH with a receiver-explicit, undoubted
       # arity ActiveModel decides for itself rather than adapting to whatever `certainly_resolved_per_call?`
@@ -693,7 +728,7 @@ module Axn
         return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
         return proc_call_usable?(collection) if literal_proc?(collection)
 
-        return accepts_single_positional_arg?(collection, :call) if certainly_routed_to_call?(collection)
+        return dispatched_call_accepts_single_arg?(collection) if certainly_routed_to_call?(collection)
         return true if certainly_resolved_per_call?(collection)
 
         # A doubtful hook claiming `:call`, backed by `method_missing`, routes to `method_missing(:call,
