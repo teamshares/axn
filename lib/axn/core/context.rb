@@ -58,6 +58,9 @@ module Axn
       def __classify_as_failure! = @classified_as_failure = true
       def __classified_as_failure? = @classified_as_failure || false
 
+      # Records the `done!` without finalizing: outbound resolution may still run after it (a `done!`
+      # from the hook chain), and a finalized result is one whose outcome can no longer change. The
+      # executor finalizes once the call has actually settled.
       def __record_early_completion(message, standalone: false)
         # Only store a real (non-sentinel) message, but always record the standalone opt-out so a bare
         # `done!(standalone: true)` isn't silently dropped (it's moot when no message resolves, but the
@@ -65,7 +68,6 @@ module Axn
         @early_completion_message = message unless message == Axn::Internal::EarlyCompletion.new.message
         @early_completion_standalone = standalone
         @early_completion = true
-        @finalized = true
       end
 
       def __early_completion_message = @early_completion_message.presence

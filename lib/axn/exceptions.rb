@@ -493,6 +493,22 @@ module Axn
     end
   end
 
+  # Raised in place of a `done!`/`fail!` from a callable axn runs while settling or observing the call —
+  # a callback, a message, a `fails_on` gate, a `user_facing:` override — where it cannot change the
+  # outcome. Like any raise from such a callable it is swallowed and reported by default, and re-raised
+  # under `best_effort_raises_in_dev`; it exists so neither path carries axn's internal signal instead.
+  # The original signal is this error's `cause`.
+  class MisplacedFlowControl < StandardError
+    include Axn::Error
+
+    def initialize(signal:, operation:)
+      signal, operation = [signal, operation].map { |text| Axn::Internal::RenderedText.of(text) }
+
+      super("`#{signal}` was called while #{operation}, where it cannot change the action's outcome: " \
+            "the action has already settled, or is settling. Decide the outcome in `call` or a hook instead.")
+    end
+  end
+
   class ValidationError < ContractViolation
     attr_reader :errors, :user_facing_message
 

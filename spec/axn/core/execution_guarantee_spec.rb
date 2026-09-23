@@ -45,6 +45,9 @@ RSpec.describe "Hook and callback execution guarantee" do
         raise
       ensure
         trace << :around_ensure
+        # Reading the outcome before the call settles must never freeze it: a stale memo here is what
+        # once let the final result report `outcome == "success"` beside `ok? == false`.
+        result.outcome
       end
 
       # Declared after the traced hook, so it runs INSIDE it: a halt here is observed by the traced one.
@@ -173,6 +176,10 @@ RSpec.describe "Hook and callback execution guarantee" do
       it "settles as #{outcome}" do
         expect(result.outcome.to_s).to eq(outcome.to_s)
       end
+
+      it "reports ok? consistently with its outcome" do
+        expect(result.ok?).to eq(result.outcome.success?)
+      end
     else
       it "is never settled: .call re-raises" do
         expect(result).to be_a(Interrupt)
@@ -241,19 +248,29 @@ RSpec.describe "Hook and callback execution guarantee" do
       }],
     }.each do |origin, (outcome, args)|
       context "when #{origin} calls done!" do
-        subject(:result) do
+        subject(:traced) do
           kwargs = args.call(proc { done!("finished early") })
           declare = kwargs[:declare]
           kwargs[:declare] = proc do
             instance_exec(&declare) if declare
             exposes :out, type: Integer
           end
-          run_traced(**kwargs).first
+          run_traced(**kwargs)
         end
+
+        let(:result) { traced.first }
+        let(:fired_callbacks) { traced.last & %i[on_success on_failure on_exception on_error] }
 
         it "settles as #{outcome}" do
           expect(result.outcome.to_s).to eq(outcome.to_s)
           expect(result.exception).to be_a(Axn::OutboundValidationError) if outcome == :exception
+          expect(result.ok?).to eq(result.outcome.success?)
+        end
+
+        # on_success fires only once the call has settled as a success, so a done! that outbound
+        # validation then fails never fires it beside the exception callbacks.
+        it "fires only the callbacks matching that outcome" do
+          expect(fired_callbacks).to match_array(callbacks.fetch(outcome))
         end
       end
     end
@@ -630,6 +647,37 @@ RSpec.describe "Hook and callback execution guarantee" do
     expect(fired).to eq(%i[on_error])
   end
 
+  # Outside dev-loud mode a done!/fail! in a callback is swallowed like any raise from it, so the call
+  # stays as it settled.
+  describe "a done! or fail! in a callback outside dev-loud mode" do
+    let(:reports) { [] }
+
+    before { Axn.config.on_ignored_exception = ->(e, **) { reports << e } }
+    after { Axn.config.on_ignored_exception = nil }
+
+    { "fail!" => proc { fail!("failed") }, "done!" => proc { done!("finished early") } }.each do |signal, halt|
+      it "keeps the call a success and reports #{signal} as MisplacedFlowControl" do
+        result = build_axn { on_success { instance_exec(&halt) } }.call
+
+        expect(result).to be_ok
+        expect(result.outcome).to be_success
+        expect(reports).to contain_exactly(an_instance_of(Axn::MisplacedFlowControl))
+      end
+    end
+  end
+
+  # A done! from an exposes default: after the body already called done! settles like any outbound
+  # done!, rather than escaping .call as axn's internal signal.
+  it "settles a body done! followed by an outbound default's done! as a success" do
+    result = build_axn do
+      exposes :o, default: -> { done!("from the default") }
+      define_method(:call) { done!("from the body") }
+    end.call
+
+    expect(result).to be_ok
+    expect(result.success).to eq("from the default")
+  end
+
   # A `throw` is not an exception, so nothing axn wraps can contain it: it unwinds through `.call`
   # like an exception axn does not capture, before or after settlement.
   describe "a throw to a catch outside the call" do
@@ -662,8 +710,7 @@ RSpec.describe "Hook and callback execution guarantee" do
   end
 
   # A limit on callback coverage: in development with best_effort_raises_in_dev, a raising callback is re-raised
-  # rather than swallowed. Where it lands depends on the phase: a settlement callback escapes `.call`,
-  # while an inline on_success raises inside the call and re-settles it as an exception.
+  # rather than swallowed, and escapes `.call` without ever changing a result that has already settled.
   context "when a callback raises in development with best_effort_raises_in_dev" do
     before do
       allow(Axn.config).to receive(:best_effort_raises_in_dev).and_return(true)
@@ -741,35 +788,39 @@ RSpec.describe "Hook and callback execution guarantee" do
       expect { result.success }.to raise_error(ArgumentError, "broken message")
     end
 
-    it "re-settles the call as an exception when an inline on_success raises" do
+    # A finalized result is never re-settled: an inline on_success's raise escapes .call like every
+    # other callback's, and the result it observed stays as it settled.
+    it "lets an inline on_success's raise escape .call without re-settling the result" do
       fired = []
+      observed = nil
       action = build_axn do
         on_success do
-          fired << :on_success
+          observed = result
+          result.outcome # read first: the memo this would once have left stale
           raise ArgumentError, "broken on_success"
         end
         on_error { fired << :on_error }
         on_exception { fired << :on_exception }
       end
 
-      result = action.call
-      expect(result.exception).to be_a(ArgumentError)
-      expect(fired).to contain_exactly(:on_success, :on_error, :on_exception)
+      expect { action.call }.to raise_error(ArgumentError, "broken on_success")
+      expect(fired).to be_empty
+      expect(observed).to be_ok
+      expect(observed.outcome).to be_success
+      expect(observed.exception).to be_nil
     end
 
-    it "re-settles the call as a failure when an inline on_success calls fail!" do
-      fired = []
-      action = build_axn do
-        on_success do
-          fired << :on_success
-          fail!("failed")
-        end
-        on_error { fired << :on_error }
-        on_failure { fired << :on_failure }
-      end
+    {
+      "fail!" => proc { fail!("failed") },
+      "done!" => proc { done!("finished early") },
+    }.each do |signal, halt|
+      it "raises MisplacedFlowControl for #{signal} in an inline on_success, never axn's internal signal" do
+        action = build_axn { on_success { instance_exec(&halt) } }
 
-      expect(action.call.outcome).to be_failure
-      expect(fired).to contain_exactly(:on_success, :on_error, :on_failure)
+        expect { action.call }.to raise_error(Axn::MisplacedFlowControl, /`#{Regexp.escape(signal)}` was called while executing on_success callback/) do |error|
+          expect(error.cause).to be_a(signal == "fail!" ? Axn::Failure : Axn::Internal::EarlyCompletion)
+        end
+      end
     end
   end
 

@@ -969,11 +969,17 @@ module Axn
       # EXCEPTION HANDLING (Boundary)
       # =========================================================================
 
+      # A raise that arrives after the result is finalized is never settled onto it: a finalized result
+      # is final, so its memoized `outcome`/messages can never disagree with `ok?`. The one source is an
+      # inline `on_success` under `best_effort_raises_in_dev`, whose raise then escapes `.call` exactly
+      # as every other callback's does.
       def with_exception_handling
         yield
       rescue Internal::EarlyCompletion
         raise
       rescue StandardError => e
+        raise if @context.finalized?
+
         _settle_exception(e)
       rescue Exception => e # rubocop:disable Lint/RescueException
         # An exception from OUTSIDE StandardError is still a bug in the run — a SystemStackError from
@@ -993,6 +999,7 @@ module Axn
         # not positively recognize as a bug passes through untouched: a signal, an `exit`, or another
         # library's private control-flow signal, which absorbing into a result would silently break.
         raise unless Axn::Extensions.swallowable?(e)
+        raise if @context.finalized?
 
         _settle_exception(e)
       end
@@ -1210,25 +1217,31 @@ module Axn
         # (ContractForSubfields.resolve_value), first triggered as inbound validation reads each reader —
         # never eagerly written back into provided_data. A `done!` raised inside a preprocess/default
         # therefore surfaces here, during validation, so this read is wrapped to settle the early
-        # completion.
-        return if handle_early_completion_if_raised { validate_contract!(:inbound) }
+        # completion. It settles without outbound resolution (PRO-3490).
+        return _settle_success! if handle_early_completion_if_raised { validate_contract!(:inbound) }
 
         # Inputs are canonical here (preprocessed, defaulted, validated), so input-phase facets can
-        # resolve — wrap the body so in-flight log lines inherit them under a SemanticLogger.
-        if handle_early_completion_if_raised { with_facet_log_context(&block) }
-          apply_defaults!(:outbound)
-          validate_contract!(:outbound)
-          return
-        end
+        # resolve — wrap the body so in-flight log lines inherit them under a SemanticLogger. A `done!`
+        # from the body or a hook is recorded here and does not skip what follows: outbound resolution
+        # still decides whether the call succeeds.
+        handle_early_completion_if_raised { with_facet_log_context(&block) }
 
         # The outbound copy-forward reads expects+exposes fields through the read path, which can be the
         # first time a field's default:/preprocess: runs; a done! raised there settles the same early
         # completion as one raised during validation or the body, rather than escaping .call.
-        return if handle_early_completion_if_raised do
+        handle_early_completion_if_raised do
           apply_defaults!(:outbound)
           validate_contract!(:outbound)
         end
 
+        _settle_success!
+      end
+
+      # The one point a call settles as a success. Finalizing only here — never when a `done!` is
+      # recorded — is what makes a finalized result final: nothing after this can change its outcome,
+      # so `outcome`/`success` may memoize, and `on_success` cannot fire for a call that goes on to fail
+      # outbound validation.
+      def _settle_success!
         @context.__finalize!
         trigger_on_success
       end
@@ -1266,7 +1279,6 @@ module Axn
         # guarded reader, a `to_s` that raises degrades to the class name, which is the no-message sentinel
         # `__record_early_completion` already drops.
         @context.__record_early_completion(Internal::Rendering.exception_message(e), standalone: e.standalone)
-        trigger_on_success
         true
       end
 

@@ -30,10 +30,11 @@ module Axn
             return call_callable_handler(action:, callable: handler, exception:) if callable?(handler)
 
             literal_value(handler)
-          rescue Axn::Internal::EarlyCompletion, Axn::Failure
+          rescue Axn::Internal::EarlyCompletion, Axn::Failure => e
             raise if allow_flow_control
 
-            Axn::Extensions.best_effort(operation, action:) { raise $ERROR_INFO }
+            signal = Axn::Internal::Identity.kind?(e, Axn::Failure) ? "fail!" : "done!"
+            Axn::Extensions.best_effort(operation, action:) { raise Axn::MisplacedFlowControl.new(signal:, operation:) }
             on_swallow
           rescue StandardError => e
             Axn::Extensions.best_effort(operation, action:) { raise e }
