@@ -331,6 +331,31 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 5))).to eq(:pass)
       expect(outcome(action.call(v: 20))).to eq(:reject)
     end
+
+    # `enumerable.begin || enumerable.end` is a genuine short-circuit: `.end` is asked at all only when
+    # `.begin` answers falsy. So an untouched, numeric `begin` alone resolves the bound — an UNRELATED
+    # override on `end` is never consulted and cannot make the resolution "unreliable" (Codex, PR #288).
+    it "refuses a Range SUBCLASS whose reliable begin selects cover?, even though its unrelated end is overridden" do
+      stub_const("OverriddenEndRange", Class.new(Range) do
+        undef_method :cover?
+        def end = "not-numeric"
+      end)
+
+      expect { build_axn { expects :v, inclusion: { in: OverriddenEndRange.new(1, 10).freeze } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class OverriddenEndRange, which ActiveModel cannot use/)
+    end
+
+    # The mirror: `end` is never DISPATCHED at all when `begin` alone resolves the bound, so an unreachable
+    # `end` (private/undefined, no `method_missing`) is irrelevant — refusing it here would refuse a
+    # declaration ActiveModel and the runtime both accept (Codex, PR #288).
+    it "does not refuse a Range SUBCLASS whose end is unreachable, since begin alone resolves the bound" do
+      stub_const("UndefEndRange", Class.new(Range) { undef_method :end })
+
+      action = build_axn { expects :v, inclusion: { in: UndefEndRange.new(1, 10).freeze } }
+
+      expect(outcome(action.call(v: 5))).to eq(:pass)
+      expect(outcome(action.call(v: 20))).to eq(:reject)
+    end
   end
 
   # `usable_clusivity_delimiter?` accepts a Set SUBCLASS, or any other object answering `include?`, and

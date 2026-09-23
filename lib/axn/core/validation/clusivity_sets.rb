@@ -403,53 +403,44 @@ module Axn
         (::Date if defined?(::Date)),
       ].compact.freeze
 
-      # Whether `RANGE_BEGIN`/`RANGE_END` would read the SAME value `Clusivity#inclusion_method` itself reads
-      # via ordinary `enumerable.begin`/`.end` dispatch — true only when the collection's own class has not
-      # overridden either one. `inclusion_method` calls them NORMALLY (dispatched, reaching any override), so
-      # a Range SUBCLASS that overrides `begin`/`end` to answer something OTHER than its own stored bound (an
-      # unusual thing to do, but not unreachable) makes the native-bound read diverge from what ActiveModel
-      # would actually see — the native read would still be answering truthfully about the OBJECT'S internal
-      # state, just not about what `inclusion_method` dispatches to (Codex, PR #288).
-      def range_bound_reliable?(collection)
-        Axn::Internal::NativeMethods.method_owner(collection, :begin).equal?(::Range) &&
-          Axn::Internal::NativeMethods.method_owner(collection, :end).equal?(::Range)
-      end
-
-      # Whether `collection.begin`/`.end` would be reachable AT ALL — a PREREQUISITE `range_bound_reliable?`
-      # does not check, and a DIFFERENT question from it: reliability is about whether the value a native
-      # read gets matches what dispatch would see; this is about whether dispatch would raise `NoMethodError`
-      # in the first place. `inclusion_method` calls `enumerable.begin` (and `.end` if `.begin` is falsy)
-      # NORMALLY, with an explicit receiver, so a Range SUBCLASS that narrows either to private/protected or
-      # `undef_method`s it outright — with no `method_missing` to catch the resulting miss — makes that very
-      # first read raise, regardless of what `include?`/`cover?` look like: STATICALLY known, CERTAIN failure
-      # (Codex, PR #288, distinct from the value-returning override case `range_bound_reliable?` covers,
-      # where the call itself still succeeds). Both names are checked, since `inclusion_method` may dispatch
-      # either depending on `.begin`'s own truthiness, which cannot be known without running it.
-      def range_bounds_reachable?(collection)
-        (public_method_owner?(collection, :begin) || own_method_missing_hook?(collection)) &&
-          (public_method_owner?(collection, :end) || own_method_missing_hook?(collection))
-      end
-
-      # Mirrors ActiveModel's own `Clusivity#inclusion_method`: a Range selects `cover?` for a bound that is
-      # `Numeric`/`Time`/`DateTime`/`Date`, `include?` for every other bound. The type check is a
-      # `Module#===` walk over TYPE constants — never a question put to the bound value itself, no `is_a?`
-      # dispatched on it, matching every other classification in this file.
+      # Resolves what `Clusivity#inclusion_method`'s `enumerable.begin || enumerable.end` would actually see,
+      # evaluated in THE SAME short-circuit order: `.end` is asked AT ALL only when `.begin` answers falsy
+      # (`nil`, for a beginless Range) — so `.end`'s reachability, ownership, and value are irrelevant
+      # whenever `.begin` alone resolves the bound, and matter only when it doesn't. Treating the two
+      # symmetrically (requiring both reachable, both reliable) gets this wrong in BOTH directions: it
+      # refused a Range whose untouched `begin` alone decides the bound while `end` was narrowed to
+      # private/undefined (never dispatched, so never a problem), and it silently accepted one whose
+      # untouched, numeric `begin` alone decides the bound while an UNRELATED override on `end` made the
+      # guard call the whole pair "unreliable" and skip the `cover?` requirement `begin`'s own real value
+      # would have earned (Codex, PR #288, two more findings after the first "require both" pass).
       #
-      # Read through `RANGE_BEGIN`/`RANGE_END` only when `range_bound_reliable?` — otherwise this cannot know
-      # what `inclusion_method` would actually dispatch to, and answering `false` here (never requiring
-      # `cover?`) is the doubt-permits-usable answer: `range_usable?` already requires `include?`
-      # unconditionally, so a Range whose overridden `begin`/`end` routes `inclusion_method` to `include?`
-      # anyway still needs nothing more, and one that genuinely needs `cover?` in this undecidable case is the
-      # same trade every other "cannot know without dispatch" judgment in this file already makes.
-      def range_selects_cover?(collection)
-        return false unless range_bound_reliable?(collection)
+      # Returns one of:
+      #   `:unreachable` — the read ActiveModel would try NEXT cannot be dispatched at all (no owner, no
+      #                    `method_missing` to catch the miss) — CERTAIN failure, refuse regardless of
+      #                    `cover?`/`include?`.
+      #   `:undecidable` — the read succeeds, but through an OVERRIDE (or a `method_missing`), so the value it
+      #                    returns cannot be safely determined without dispatching the caller's own code —
+      #                    DOUBT, so no `cover?` requirement either way.
+      #   `:cover`       — resolved, via a NATIVE (trustworthy) read, to a bound `Clusivity#inclusion_method`
+      #                    selects `cover?` for (`Numeric`/`Time`/`DateTime`/`Date`).
+      #   `:no_cover`    — resolved, via a NATIVE read, to any other bound (including both `begin` and `end`
+      #                    answering `nil`, which `inclusion_method` itself would then also route to
+      #                    `include?`).
+      def range_cover_resolution(collection)
+        %i[begin end].each do |name|
+          return :unreachable unless public_method_owner?(collection, name) || own_method_missing_hook?(collection)
+          return :undecidable unless Axn::Internal::NativeMethods.method_owner(collection, name).equal?(::Range)
 
-        bound = RANGE_BEGIN.bind_call(collection) || RANGE_END.bind_call(collection)
+          value = name.equal?(:begin) ? RANGE_BEGIN.bind_call(collection) : RANGE_END.bind_call(collection)
+          next if value.nil? && name.equal?(:begin)
 
-        case bound
-        when *RANGE_COVER_TYPES then true
-        else false
+          return(case value
+                 when *RANGE_COVER_TYPES then :cover
+                 else :no_cover
+                 end)
         end
+
+        :no_cover
       end
 
       # Whether `collection` is usable via a real public `include?` — REQUIRED UNCONDITIONALLY, Range or not:
@@ -467,10 +458,10 @@ module Axn
       # `cover?` needs no such extra requirement at all — refusing it there would refuse a declaration
       # ActiveModel and the runtime both accept, the same finding's other half.
       #
-      # `range_bounds_reachable?` gates BEFORE any of that: `inclusion_method` must read the bound before it
-      # can decide anything, so a Range whose `begin`/`end` cannot be dispatched at all (private/undefined,
-      # with nothing to catch the miss) is refused regardless of what `include?`/`cover?` look like — that
-      # first read is what raises, not the membership dispatch this method otherwise reasons about.
+      # `range_cover_resolution` gates the reachability question BEFORE any of that: `inclusion_method` must
+      # read the bound before it can decide anything, so a Range whose `begin` (or `end`, only when `.begin`
+      # is falsy) cannot be dispatched at all is refused regardless of what `include?`/`cover?` look like —
+      # that read is what raises, not the membership dispatch this method otherwise reasons about.
       #
       # `cover?` itself is required PUBLIC-OR-method_missing-caught, not public-only: unlike `include?`/`call`/
       # `to_sym`, `check_validity!` never probes `respond_to?(:cover?)` at all — `cover?` only matters for the
@@ -484,10 +475,12 @@ module Axn
 
         klass = Axn::Internal::Identity.class_of(collection)
         return true unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
-        return false unless range_bounds_reachable?(collection)
-        return true unless range_selects_cover?(collection)
 
-        public_method_owner?(collection, :cover?) || own_method_missing_hook?(collection)
+        case range_cover_resolution(collection)
+        when :unreachable then false
+        when :cover then public_method_owner?(collection, :cover?) || own_method_missing_hook?(collection)
+        else true # :undecidable or :no_cover
+        end
       end
 
       # Whether the `include?` ActiveModel would actually CALL is String's own. A String answers `include?`
