@@ -108,7 +108,7 @@ the contract (a `before` reading `user` needs `user` resolved), so a call settle
 resolution never reaches them, `ensure` included; and outbound resolution runs *after* the hook
 body returns, so an `around` that rescues to record failures never sees an outbound error.
 Callbacks (`on_success`, `on_error`, `on_failure`, `on_exception`) fire once the action
-**settles**, even when `call` never ran, which makes them — not hooks — the seam for per-call
+**settles** (subject to each one's own filter and `if:`/`unless:`), even when `call` never ran, which makes them — not hooks — the seam for per-call
 observability; `on_error` co-fires with whichever of `on_failure`/`on_exception` applies. A raise in
 a callback does **not** flip `ok?` by default — it is swallowed, logged, and reported to
 `Axn.config.on_ignored_exception` (which defaults to your `on_exception` handler) carrying

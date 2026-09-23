@@ -594,7 +594,7 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
   end
 
-  # The fourth limit: in development with best_effort_raises_in_dev, a raising callback is re-raised
+  # A limit on callback coverage: in development with best_effort_raises_in_dev, a raising callback is re-raised
   # rather than swallowed. Where it lands depends on the phase: a settlement callback escapes `.call`,
   # while an inline on_success raises inside the call and re-settles it as an exception.
   context "when a callback raises in development with best_effort_raises_in_dev" do
