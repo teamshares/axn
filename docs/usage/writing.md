@@ -195,8 +195,8 @@ end
 - This ensures database consistency while allowing early completion
 
 **Validation:**
-- Outbound validation (required `exposes`) still runs even with early completion
-- If required fields are not provided, the action will fail despite the early completion
+- Outbound validation (required `exposes`) still runs after a `done!` from `call` or a hook, so if required fields are not provided, the action will fail despite the early completion
+- A `done!` raised by contract resolution itself (a `default:`, `preprocess:` or validation condition) skips outbound validation — see [What runs when](#what-runs-when)
 
 ```ruby
 class BadExample
