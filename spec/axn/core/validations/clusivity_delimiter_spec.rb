@@ -802,6 +802,50 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: delimiter } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class Proc, which ActiveModel cannot use/)
     end
+
+    # `arity`'s trustworthy VALUE (native `::Proc` ownership confirmed) selects EXACTLY zero or one argument
+    # for `call` — not "either", the permissive fallback reserved for when `arity` is overridden and its
+    # value genuinely unknowable. A zero-arity Proc's singleton `call` requiring one argument is only ever
+    # invoked with zero, so it is never reachable at all (Codex, PR #288).
+    it "refuses a zero-arity Proc whose singleton call requires an argument it is never given" do
+      delimiter = -> { [1, 2, 3] }
+      def delimiter.call(_record) = [1, 2, 3]
+
+      expect { build_axn { expects :v, inclusion: delimiter } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class Proc, which ActiveModel cannot use/)
+    end
+
+    # The mirror: a one-arity Proc's singleton `call` accepting zero arguments is only ever invoked with one
+    # (the record), so it is equally unreachable (Codex, PR #288).
+    it "refuses a one-arity Proc whose singleton call accepts no arguments" do
+      delimiter = ->(_record) { [1, 2, 3] }
+      def delimiter.call = [1, 2, 3]
+
+      expect { build_axn { expects :v, inclusion: delimiter } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class Proc, which ActiveModel cannot use/)
+    end
+  end
+
+  # `own_method_missing_hook?` establishes that a doubtful hook is BACKED by `method_missing`, but not that
+  # `method_missing` itself can accept what Ruby will actually invoke it with —
+  # `method_missing(missed_name, *original_args)` — a question distinct from mere existence, and checked
+  # throughout this file via `method_missing_accepts?` (Codex, PR #288, a second round after the
+  # `respond_to?`-fallback fix: every other doubtful-hook fallback had the same gap).
+  describe "a doubtful hook backed by a method_missing that cannot accept what it would actually be invoked with" do
+    # `resolve_value`'s dynamic `.call(record)` route, reached through a cooperating `respond_to_missing?`
+    # with no real `call` method, dispatches `method_missing(:call, record)` — TWO args. A one-argument
+    # `method_missing(name)` cannot accept that, so the declaration must be refused rather than accepted on
+    # ownership alone (Codex, PR #288).
+    it "refuses a delimiter whose dynamic call route is backed by a method_missing accepting only the message name" do
+      stub_const("DynamicCallOneArgMethodMissing", Class.new do
+        def respond_to_missing?(name, *) = name == :call || super
+
+        def method_missing(name) = name == :call ? [1, 2, 3] : super
+      end)
+
+      expect { build_axn { expects :v, inclusion: DynamicCallOneArgMethodMissing.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class DynamicCallOneArgMethodMissing, which ActiveModel cannot use/)
+    end
   end
 
   describe "accepted delimiters (controls — must still declare cleanly)" do

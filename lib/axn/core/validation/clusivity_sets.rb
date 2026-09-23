@@ -383,12 +383,18 @@ module Axn
       # can accept the EXACT positional argument count Ruby invokes it with for a given failed dispatch:
       # `method_missing(missed_name, *original_args)`, so a probe with `count` total arguments (the missed
       # name plus `count - 1` originals) is what a caller's `method_missing` must actually accept, not merely
-      # exist. `respond_to_reachable?`'s fallback is the first of these: `check_validity!`'s
-      # `delimiter.respond_to?(:include?)`, routed through `method_missing` when `respond_to?` itself is
-      # unreachable, invokes it as `method_missing(:respond_to?, :include?)` — TWO args — and a `method_missing`
+      # exist. Every doubtful-hook fallback in this file needs this, one `count` per real call site:
+      # `respond_to?(:include?)`'s fallback is `method_missing(:respond_to?, :include?)` (2); `is_a?`'s is
+      # `method_missing(:is_a?, Range)` (2); `public_send`'s is `method_missing(:public_send, name, value)`
+      # (3); `include?`/`cover?`'s is `method_missing(:include?/:cover?, value)` (2); Range `begin`/`end`'s is
+      # `method_missing(:begin)`/`method_missing(:end)` (1, no originals); a literal Proc's `arity` fallback
+      # is `method_missing(:arity)` (1) and its `call` fallback is `method_missing(:call)`/`method_missing(
+      # :call, record)` (1 or 2, matching `proc_call_usable?`'s own count-per-branch). A `method_missing`
       # accepting fewer (`def method_missing(name) = ...`, a plausible authoring mistake, missing the
       # conventional `*args` splat) raises `ArgumentError` on that very dispatch, before the hook ever gets a
-      # chance to answer (Codex, PR #288).
+      # chance to answer (Codex, PR #288, across two rounds: the `respond_to?` fallback first, then every
+      # other doubtful-hook fallback in the file, "this dynamic route still checks hook ownership without
+      # checking that the hook accepts the missed name plus runtime argument").
       def method_missing_accepts?(collection, count)
         own_method_missing_hook?(collection) && accepts_positional_args?(collection, :method_missing, count)
       end
@@ -402,6 +408,13 @@ module Axn
         Axn::Internal::NativeMethods.includes_module?(Axn::Internal::Identity.class_of(collection), ::Proc)
       end
 
+      # `Proc#arity` itself, unbound — for reading a Proc's OWN true arity, never the caller's possibly
+      # overridden version, the same "native reader over the caller's own" pattern `RANGE_BEGIN`/`RANGE_END`
+      # already apply to a Range's bound: safe to bind and read (no caller code runs) ONLY once ownership
+      # confirms `arity` is Ruby's own C implementation rather than a singleton override, exactly as that
+      # pair are only trusted once `method_owner(collection, :begin/:end).equal?(::Range)` confirms the same.
+      PROC_ARITY = ::Proc.instance_method(:arity)
+
       # Whether a literal Proc's dispatch actually succeeds. `resolve_value`'s Proc branch is `value.arity ==
       # 0 ? value.call : value.call(record)` — TWO calls, in order, BOTH with a receiver-explicit, undoubted
       # arity ActiveModel decides for itself rather than adapting to whatever `certainly_resolved_per_call?`
@@ -410,30 +423,63 @@ module Axn
       #   1. `arity` is invoked with ZERO arguments, ALWAYS, to decide which branch to take. A real, public,
       #      OWNED `arity` requiring one is certain `ArgumentError` before `call` is ever reached — the
       #      generic prerequisite-arity treatment applied to a NEW prerequisite (Codex, PR #288).
-      #   2. `call` is then invoked with EITHER zero or one argument, decided by that same `arity` — not
-      #      always one, the way the generic (non-Proc) callable path requires. Whichever it turns out to be,
-      #      axn does not read `arity`'s VALUE (that would dispatch it), so this accepts a `call` reachable
-      #      with EITHER count: `Proc#call`'s own signature is `(*args)` and clears both trivially, but a
-      #      SINGLETON `call` narrowed to match the Proc's own arity (a zero-arity Proc with a zero-arg
-      #      singleton `call`) must also clear it, and does — refusing it would refuse a declaration
-      #      ActiveModel and the runtime both accept (Codex, PR #288, the singleton-narrowed-Proc case: "this
-      #      line instead treats it as a generic callable and requires call to accept one positional
-      #      argument, rejecting a legal declaration").
+      #   2. `call` is then invoked with EXACTLY the argument count that `arity` selects: zero if it answers
+      #      zero, one otherwise — never "whichever, doubtfully" once `arity`'s value can be TRUSTED. `arity`
+      #      is trustworthy precisely when its owner is confirmed `::Proc` itself (Ruby's own C accessor onto
+      #      the Proc's internal arity, not a singleton override) — the same ownership-equality gate
+      #      `range_cover_resolution` already applies before trusting `begin`/`end`'s VALUE, reused here for
+      #      `arity`'s. Read via the bound native `PROC_ARITY`, never the caller's own (possibly overridden)
+      #      `.arity`, so this never dispatches on the caller's object even while trusting the result.
+      #      Matching the SELECTED count exactly — not "either" — is what a mismatched singleton (a zero-arity
+      #      Proc with a one-arg singleton `call`, or the reverse) now correctly refuses: only ONE of the two
+      #      branches `resolve_value` could take is ever reachable, and it must be the right one (Codex, PR
+      #      #288: "validate only the argument count it selects; reserve the permissive result for an
+      #      overridden reader whose value is genuinely unknowable").
+      #   3. An OVERRIDDEN `arity` (real, correct-arity, but not `::Proc`'s own) leaves the selected count
+      #      genuinely unknowable without dispatching the caller's override — DOUBT, so `call` is accepted
+      #      reachable with EITHER count, matching every other undecidable case in this file (this is what
+      #      let a zero-arity Proc with a matching zero-arg singleton `call` through in the first place,
+      #      Codex, PR #288, the earlier singleton-narrowed-Proc finding).
       #
-      # Both real-method-first, method_missing-backed-only-as-fallback, the same precedence as every other
-      # prerequisite in this file: a real method (of any signature) always wins Ruby's dispatch.
+      # Every real-method check is real-method-first, method_missing-backed-only-as-fallback (with the exact
+      # argument count `method_missing` would actually be invoked with — `method_missing(:arity)` for #1,
+      # `method_missing(:call)`/`method_missing(:call, record)` for #2/#3), the same precedence and the same
+      # hook-arity discipline as every other prerequisite in this file: a real method always wins Ruby's
+      # dispatch, and a fallback hook must itself accept what it will be invoked with (Codex, PR #288).
       def proc_call_usable?(collection)
-        if public_method_owner?(collection, :arity)
-          return false unless accepts_positional_args?(collection, :arity, 0)
-        else
+        arity_owner = Axn::Internal::NativeMethods.method_owner(collection, :arity)
+
+        if arity_owner.nil?
           return false unless method_missing_accepts?(collection, 1)
+
+          return call_reachable_with_either_arity?(collection)
         end
 
-        if public_method_owner?(collection, :call)
-          accepts_positional_args?(collection, :call, 0) || accepts_positional_args?(collection, :call, 1)
+        return false unless Axn::Internal::NativeMethods.public_instance_method?(arity_owner, :arity)
+        return false unless accepts_positional_args?(collection, :arity, 0)
+
+        if arity_owner.equal?(::Proc)
+          call_reachable_with_arg_count?(collection, PROC_ARITY.bind_call(collection).zero? ? 0 : 1)
         else
-          own_method_missing_hook?(collection)
+          call_reachable_with_either_arity?(collection)
         end
+      end
+
+      # `call` reachable with EXACTLY `count` positional arguments — real-method-first (any signature
+      # accepting `count`), `method_missing`-backed as fallback with the EXACT total arity Ruby would invoke
+      # it with for that call (`count` originals plus the `:call` message name itself).
+      def call_reachable_with_arg_count?(collection, count)
+        if public_method_owner?(collection, :call)
+          accepts_positional_args?(collection, :call, count)
+        else
+          method_missing_accepts?(collection, count + 1)
+        end
+      end
+
+      # `call` reachable with EITHER zero or one argument — for the cases where `arity`'s own selected count
+      # cannot be trusted without dispatching the caller's object.
+      def call_reachable_with_either_arity?(collection)
+        call_reachable_with_arg_count?(collection, 0) || call_reachable_with_arg_count?(collection, 1)
       end
 
       # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter AND the runtime
@@ -528,12 +574,19 @@ module Axn
         return proc_call_usable?(collection) if literal_proc?(collection)
 
         return accepts_single_positional_arg?(collection, :call) if certainly_resolved_per_call?(collection) && !own_respond_to_hook?(collection)
-        return true if dynamically_resolved_per_call?(collection)
+        return true if certainly_resolved_per_call?(collection)
+
+        # A doubtful hook claiming `:call`, backed by `method_missing`, routes to `method_missing(:call,
+        # record)` — TWO args — if it actually cooperates. A `method_missing` that cannot even accept that
+        # shape (Codex, PR #288: "a one-argument method_missing(name)") is never checked again below (the
+        # generic fallback needs the SAME two-argument shape for `:include?` instead), so falling through
+        # rather than hard-rejecting here still reaches the right verdict either way.
+        return true if (own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)) && method_missing_accepts?(collection, 2)
 
         return false unless enumerable_is_a_reachable?(collection) && public_send_reachable?(collection)
         return false if public_method_owner?(collection, :include?) && !accepts_single_positional_arg?(collection, :include?)
         return true if range_usable?(collection)
-        return false unless own_method_missing_hook?(collection)
+        return false unless method_missing_accepts?(collection, 2)
 
         public_method_owner?(collection, :to_sym) || own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)
       rescue StandardError
@@ -553,7 +606,7 @@ module Axn
         if public_method_owner?(collection, :is_a?)
           accepts_single_positional_arg?(collection, :is_a?)
         else
-          own_method_missing_hook?(collection)
+          method_missing_accepts?(collection, 2)
         end
       end
 
@@ -572,7 +625,7 @@ module Axn
         if public_method_owner?(collection, :public_send)
           accepts_positional_args?(collection, :public_send, 2)
         else
-          own_method_missing_hook?(collection)
+          method_missing_accepts?(collection, 3)
         end
       end
 
@@ -630,7 +683,7 @@ module Axn
           if public_method_owner?(collection, name)
             return :unreachable unless accepts_positional_args?(collection, name, 0)
           else
-            return :unreachable unless own_method_missing_hook?(collection)
+            return :unreachable unless method_missing_accepts?(collection, 1)
           end
           return :undecidable unless Axn::Internal::NativeMethods.method_owner(collection, name).equal?(::Range)
 
@@ -721,7 +774,7 @@ module Axn
           if public_method_owner?(collection, :cover?)
             accepts_single_positional_arg?(collection, :cover?)
           else
-            own_method_missing_hook?(collection)
+            method_missing_accepts?(collection, 2)
           end
         else true # :undecidable or :no_cover
         end
