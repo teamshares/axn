@@ -574,6 +574,29 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
   end
 
+  # A lazily resolved field's halt belongs to its first reader: read first by a contained callable (an
+  # input tag here), it is swallowed with that callable's own raise and the call carries on.
+  describe "an unvalidated field first read by a tag callable" do
+    {
+      "raises" => proc { raise ArgumentError, "raised" },
+      "calls fail!" => proc { fail!("failed") },
+      "calls done!" => proc { done!("finished early") },
+    }.each do |halt_name, halt|
+      it "swallows it when its preprocess: #{halt_name}, and the call carries on" do
+        trace = []
+        action = build_axn do
+          expects :n, optional: true, preprocess: ->(_v) { instance_exec(&halt) }
+          tag :t, -> { n }
+          before { trace << :before }
+          define_method(:call) { trace << :call }
+        end
+
+        expect(action.call(n: 1)).to be_ok
+        expect(trace).to eq(%i[before call])
+      end
+    end
+  end
+
   # The documented limit on "callbacks observe every settled call": in an async retry, the default
   # `:first_and_exhausted` reporting mode gates `on_exception` per attempt, while `on_error` still fires.
   context "when a call raises on an intermediate async retry" do
