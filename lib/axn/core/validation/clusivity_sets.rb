@@ -147,9 +147,22 @@ module Axn
       # than going through the conventional `respond_to_missing?` hook) governs its own answer just as
       # completely, and just as undecidably without running it. DOUBT MUST ANSWER "usable" here for the same
       # reason it does for `respond_to_missing?` (Codex, PR #288).
+      #
+      # A NIL owner is a THIRD case, not a "no" — `respond_to?` can be unreachable through the normal table
+      # (narrowed to private/protected, or `undef_method`'d outright) and STILL be what actually answers
+      # `delimiter.respond_to?(...)`, because Ruby routes a call it cannot dispatch normally through
+      # `method_missing` regardless of why the normal dispatch failed (`respond_to_reachable?` already
+      # depends on this same fact). So a nil owner defers to whether `method_missing` is the caller's own: if
+      # it is, the probe is answered by CALLER code either way and stays doubtful; if it is not, `respond_to?`
+      # is either absent or plain Kernel's own, and `respond_to_reachable?` having already passed means the
+      # ONLY way it did is a public `respond_to?` this method already found — so a bare `nil` here, with no
+      # `method_missing`, cannot be reached from `usable_clusivity_delimiter?` at all (Codex, PR #288, a
+      # second case beyond the private-`respond_to?`-plus-`method_missing` one already fixed).
       def own_respond_to_hook?(collection)
         owner = Axn::Internal::NativeMethods.method_owner(collection, :respond_to?)
-        owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+        return own_method_missing_hook?(collection) if owner.nil?
+
+        NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
       end
 
       # Whether `method_missing` alone is the caller's own — the ONE hook that can actually catch a message
@@ -390,11 +403,32 @@ module Axn
         (::Date if defined?(::Date)),
       ].compact.freeze
 
+      # Whether `RANGE_BEGIN`/`RANGE_END` would read the SAME value `Clusivity#inclusion_method` itself reads
+      # via ordinary `enumerable.begin`/`.end` dispatch — true only when the collection's own class has not
+      # overridden either one. `inclusion_method` calls them NORMALLY (dispatched, reaching any override), so
+      # a Range SUBCLASS that overrides `begin`/`end` to answer something OTHER than its own stored bound (an
+      # unusual thing to do, but not unreachable) makes the native-bound read diverge from what ActiveModel
+      # would actually see — the native read would still be answering truthfully about the OBJECT'S internal
+      # state, just not about what `inclusion_method` dispatches to (Codex, PR #288).
+      def range_bound_reliable?(collection)
+        Axn::Internal::NativeMethods.method_owner(collection, :begin).equal?(::Range) &&
+          Axn::Internal::NativeMethods.method_owner(collection, :end).equal?(::Range)
+      end
+
       # Mirrors ActiveModel's own `Clusivity#inclusion_method`: a Range selects `cover?` for a bound that is
       # `Numeric`/`Time`/`DateTime`/`Date`, `include?` for every other bound. The type check is a
       # `Module#===` walk over TYPE constants — never a question put to the bound value itself, no `is_a?`
       # dispatched on it, matching every other classification in this file.
+      #
+      # Read through `RANGE_BEGIN`/`RANGE_END` only when `range_bound_reliable?` — otherwise this cannot know
+      # what `inclusion_method` would actually dispatch to, and answering `false` here (never requiring
+      # `cover?`) is the doubt-permits-usable answer: `range_usable?` already requires `include?`
+      # unconditionally, so a Range whose overridden `begin`/`end` routes `inclusion_method` to `include?`
+      # anyway still needs nothing more, and one that genuinely needs `cover?` in this undecidable case is the
+      # same trade every other "cannot know without dispatch" judgment in this file already makes.
       def range_selects_cover?(collection)
+        return false unless range_bound_reliable?(collection)
+
         bound = RANGE_BEGIN.bind_call(collection) || RANGE_END.bind_call(collection)
 
         case bound
@@ -498,6 +532,44 @@ module Axn
               "substring/pattern check."
       end
 
+      # Whether `collection` is an Array or a Range (by ANCESTRY, never `is_a?`) — the two shapes ActiveModel's
+      # OWN `_parse_validates_options` already routes a BARE delimiter to `{ in: … }` for, natively, with no
+      # help from axn's canonicalization. Their aliasing property (a caller who still holds the object can
+      # mutate it, changing an already-declared validator's membership) is consequently PRE-EXISTING, ordinary
+      # ActiveModel behavior that predates axn's involvement in this area entirely — sometimes even relied on
+      # intentionally for a dynamically-changing allow-list — and not a gap `usable_clusivity_delimiter?`
+      # opened, so it is out of scope for the aliasing rule below.
+      def native_bare_clusivity_delimiter?(collection)
+        klass = Axn::Internal::Identity.class_of(collection)
+        Axn::Internal::NativeMethods.includes_module?(klass, ::Array) ||
+          Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+      end
+
+      # A delimiter `usable_clusivity_delimiter?` accepts by OWNERSHIP — a Set SUBCLASS, or any other object
+      # answering `include?` (really, or through a doubtful hook) — is stored as the declaration's OWN
+      # membership set, by reference, once it reaches here. The SAME aliasing rule `reject_unreadable_mutable_
+      # container!` already applies to a Hash-keyed container applies for the SAME reason: a caller who still
+      # holds this object could mutate it after declaring, changing an already-declared class's membership
+      # retroactively (PRO-3326 widened bare acceptance to exactly the shapes this reopens — a Set subclass or
+      # a custom `include?`-answering object that used to raise on every call now declares cleanly and stores
+      # itself unguarded).
+      #
+      # EXEMPT when `certainly_resolved_per_call?` (a Proc/lambda's behavior cannot be mutated after creation
+      # the way a container's elements can, matching the Hash-keyed branch's own exemption) or
+      # `native_bare_clusivity_delimiter?` (an Array or Range, whose aliasing is ActiveModel's own
+      # pre-existing property, not this guard's to police). A Symbol is always frozen (Ruby gives every Symbol
+      # one object per name), so it clears the check below without needing a special case either.
+      def reject_unfrozen_clusivity_delimiter!(collection, key, where)
+        return if Axn::Internal::NativeMethods.frozen?(collection)
+
+        raise ArgumentError,
+              "#{key}: on #{where} names a set of class " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(collection)} that is not " \
+              "frozen. A declared contract is axn's own, so mutating what you still hold after declaring it " \
+              "could change its membership retroactively. Freeze this object before naming it as a delimiter " \
+              "(a frozen one is stored as-is, since nothing can mutate it afterwards)."
+      end
+
       # ONE clusivity entry, canonicalized. The bare shorthand becomes the long form its members belong in:
       # ActiveModel's `_parse_validates_options` maps only a Range or an Array to `{ in: }` and everything else
       # to `{ with: }`, which reaches `check_validity!` with no delimiter and raises on every call — so every
@@ -528,6 +600,7 @@ module Axn
 
           reject_unusable_clusivity_delimiter!(entry, key, where) unless usable_clusivity_delimiter?(entry)
           reject_string_clusivity_delimiter!(entry, key, where) if string_keyed_delimiter?(entry)
+          reject_unfrozen_clusivity_delimiter!(entry, key, where) unless certainly_resolved_per_call?(entry) || native_bare_clusivity_delimiter?(entry)
 
           return { in: entry }
         end
@@ -546,6 +619,9 @@ module Axn
 
         reject_unusable_clusivity_delimiter!(collection, key, where) unless usable_clusivity_delimiter?(collection)
         reject_string_clusivity_delimiter!(collection, key, where) if string_keyed_delimiter?(collection)
+        unless certainly_resolved_per_call?(collection) || native_bare_clusivity_delimiter?(collection)
+          reject_unfrozen_clusivity_delimiter!(collection, key, where)
+        end
 
         entry
       end

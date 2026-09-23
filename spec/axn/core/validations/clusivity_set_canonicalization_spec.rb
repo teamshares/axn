@@ -470,7 +470,7 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
   # It keeps ActiveModel's own behaviour, which is what it had before.
   it "stands down on a Set subclass rather than reading members it does not own" do
     subclass = Class.new(Set)
-    action = build_axn { expects :v, type: Integer, inclusion: { in: subclass[1] } }
+    action = build_axn { expects :v, type: Integer, inclusion: { in: subclass[1].freeze } }
     expect(action.call(v: 1)).to be_ok
   end
 

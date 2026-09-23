@@ -199,7 +199,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
 
     it "does not refuse a String SUBCLASS that overrides include? with its own membership test" do
       overridden = Class.new(String) { def include?(other) = other == :always }
-      set = overridden.new("irrelevant")
+      set = overridden.new("irrelevant").freeze
 
       expect { build_axn { expects :v, inclusion: { in: set } } }.not_to raise_error
     end
@@ -273,6 +273,67 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(string_action.call(v: "m"))).to eq(:pass)
       expect(outcome(string_action.call(v: "zz"))).to eq(:reject)
     end
+
+    # `inclusion_method` calls `enumerable.begin`/`.end` NORMALLY (dispatched, reaching any override), so a
+    # Range SUBCLASS whose overridden `begin` answers something other than its own native bound makes a
+    # native-bound read diverge from what ActiveModel would actually see — this Range's STORED bound is
+    # numeric, but `begin` is overridden to answer a String, so `inclusion_method` selects `include?` and
+    # never touches the undefined `cover?` (Codex, PR #288).
+    it "does not refuse a Range SUBCLASS whose begin is overridden and would select include?, even though its stored bound is numeric" do
+      stub_const("OverriddenBeginRange", Class.new(Range) do
+        undef_method :cover?
+        def begin = "not-really-numeric"
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: OverriddenBeginRange.new(1, 10).freeze } }
+
+      # `inclusion_method` selects `include?` (since the overridden `begin` answers a String), so this
+      # enforces via `(1..10).include?(v)` on the Range's REAL stored bound — never touching the undefined
+      # `cover?`, which is the whole point: it must not raise.
+      expect(outcome(action.call(v: 5))).to eq(:pass)
+      expect(outcome(action.call(v: 20))).to eq(:reject)
+    end
+  end
+
+  # `usable_clusivity_delimiter?` accepts a Set SUBCLASS, or any other object answering `include?`, and
+  # `canonical_clusivity_entry` stores it as the declaration's OWN membership set — by reference. A caller who
+  # still holds that object can mutate it after declaring, changing an already-declared class's membership
+  # retroactively; `reject_unreadable_mutable_container!` already closes this for a Hash-keyed container, and
+  # the SAME rule now applies to the wider bare-delimiter surface PRO-3326 opened (Codex, PR #288). Array and
+  # Range are exempt: ActiveModel's own native bare-spelling routing already makes their aliasing a
+  # pre-existing property, unrelated to and not introduced by this guard.
+  describe "a mutable bare delimiter — must be frozen, or aliasing could change membership after declaring" do
+    it "refuses an unfrozen bare Set SUBCLASS" do
+      stub_const("MutableSet", Class.new(Set))
+
+      expect { build_axn { expects :v, inclusion: MutableSet[1, 2] } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class MutableSet that is not frozen/)
+    end
+
+    it "refuses an unfrozen custom object answering include?" do
+      stub_const("MutableMembership", Class.new { def include?(_value) = true })
+
+      expect { build_axn { expects :v, inclusion: { in: MutableMembership.new } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class MutableMembership that is not frozen/)
+    end
+
+    it "accepts a frozen bare Set SUBCLASS and its membership cannot change after declaring" do
+      stub_const("FrozenMutableSet", Class.new(Set))
+      allowed = FrozenMutableSet[1, 2].freeze
+
+      action = build_axn { expects :v, inclusion: allowed }
+
+      expect(outcome(action.call(v: 3))).to eq(:reject)
+      expect { allowed.add(3) }.to raise_error(FrozenError)
+    end
+
+    it "does not require a bare Array or Range to be frozen, matching ActiveModel's own native handling" do
+      expect { build_axn { expects :v, inclusion: [1, 2] } }.not_to raise_error
+      expect { build_axn { expects :v, inclusion: 1..10 } }.not_to raise_error
+
+      unfrozen_range_subclass = Class.new(Range)
+      expect { build_axn { expects :v, inclusion: { in: unfrozen_range_subclass.new(1, 10) } } }.not_to raise_error
+    end
   end
 
   describe "the exclusion mirror" do
@@ -295,7 +356,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
     {
       "a bare Proc" => ->(_record) { [1] },
       "a bare Symbol naming an action method" => :allowed_values,
-      "a bare Set subclass" => my_set[1],
+      "a bare Set subclass" => my_set[1].freeze,
     }.each do |label, entry|
       it "declares and enforces #{label}, at a top-level field" do
         action = build_axn do
@@ -330,6 +391,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       proxy = Object.new
       def proxy.respond_to?(name, *a) = name == :include? || super
       def proxy.method_missing(name, *args) = name == :include? ? args.first == 1 : super # rubocop:disable Style/MissingRespondToMissing
+      proxy.freeze
 
       action = build_axn { expects :v, inclusion: { in: proxy } }
 
@@ -348,7 +410,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         def method_missing(name, *args) = name == :include? ? args.first == 1 : super # rubocop:disable Style/MissingRespondToMissing
       end)
 
-      action = build_axn { expects :v, inclusion: { in: ToSymPlusMethodMissing.new } }
+      action = build_axn { expects :v, inclusion: { in: ToSymPlusMethodMissing.new.freeze } }
 
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 2))).to eq(:reject)
@@ -364,7 +426,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         def method_missing(name, *args) = name == :call ? %w[a b] : super
       end)
 
-      action = build_axn { expects :v, inclusion: DynamicCallString.new("irrelevant") }
+      action = build_axn { expects :v, inclusion: DynamicCallString.new("irrelevant").freeze }
 
       expect(outcome(action.call(v: "a"))).to eq(:pass)
       expect(outcome(action.call(v: "z"))).to eq(:reject)
@@ -389,7 +451,29 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         private :respond_to?
       end)
 
-      action = build_axn { expects :v, inclusion: { in: PrivateRespondToWithMethodMissing.new } }
+      action = build_axn { expects :v, inclusion: { in: PrivateRespondToWithMethodMissing.new.freeze } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 2))).to eq(:reject)
+    end
+
+    # `undef_method :respond_to?` leaves NO owner in the method table at all — genuinely different from
+    # narrowing it to private, which still leaves an owner `method_owner` can find. Ruby routes the call
+    # through `method_missing` all the same, since it cannot dispatch normally either way (Codex, PR #288).
+    it "declares and enforces a delimiter whose undefined respond_to? is caught by a cooperating method_missing" do
+      stub_const("UndefRespondToWithMethodMissing", Class.new do
+        # rubocop:disable Style/MissingRespondToMissing -- respond_to? itself is the cooperating hook here
+        def method_missing(name, *args)
+          return (args.first == :include?) if name == :respond_to?
+          return args.first == 1 if name == :include?
+
+          super
+        end
+        # rubocop:enable Style/MissingRespondToMissing
+        undef_method :respond_to?
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: UndefRespondToWithMethodMissing.new.freeze } }
 
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 2))).to eq(:reject)
@@ -401,13 +485,13 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       "bare Array" => [1],
       "bare Range" => 1..5,
       "bare Set" => Set[1],
-      "bare Set subclass" => my_set[1],
+      "bare Set subclass" => my_set[1].freeze,
       "bare Proc" => ->(_r) { [1] },
       "bare Symbol" => :allowed,
       "long form naming an Array" => { in: [1] },
       "long form naming a Range" => { in: 1..5 },
-      "long form naming a Set subclass" => { in: my_set[1] },
-      "long form naming a plain object answering include?" => { in: Class.new { def include?(_value) = true }.new },
+      "long form naming a Set subclass" => { in: my_set[1].freeze },
+      "long form naming a plain object answering include?" => { in: Class.new { def include?(_value) = true }.new.freeze },
       "a disabled (falsy) entry" => false,
       "a nil entry" => nil,
     }.each do |label, spelling|
@@ -426,6 +510,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       liar = Object.new
       def liar.method_missing(name, *) = name == :include? ? true : super
       def liar.respond_to_missing?(name, _include_private = false) = name == :include? || super
+      liar.freeze
 
       expect { build_axn { expects :v, inclusion: { in: liar } } }.not_to raise_error
     end
@@ -468,18 +553,20 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
     # probe, never from `build_axn` itself.
     it "declares a delimiter reachable only through the caller's own overridden respond_to? (doubt permits), never dispatching it at declaration" do
       dispatched = []
+      tracking = false
       proxy = Object.new
       proxy.define_singleton_method(:respond_to?) do |name, *a|
-        dispatched << :respond_to? if @tracking
+        dispatched << :respond_to? if tracking
         name == :include? || super(name, *a)
       end
       proxy.define_singleton_method(:method_missing) { |name, *args| name == :include? ? args.first == 1 : super(name, *args) }
+      proxy.freeze
 
       action = nil
       expect { action = build_axn { expects :v, inclusion: { in: proxy } } }.not_to raise_error
       expect(dispatched).to eq([])
 
-      proxy.instance_variable_set(:@tracking, true)
+      tracking = true
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 2))).to eq(:reject)
       expect(dispatched).not_to be_empty
