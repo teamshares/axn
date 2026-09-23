@@ -310,6 +310,28 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 1))).to eq(:pass)
       expect(outcome(action.call(v: 5))).to eq(:reject)
     end
+
+    # A real `include?` alone answers `check_validity!`'s OWN gate without ever touching `respond_to_missing?`
+    # — but `resolve_value`'s "else" branch separately asks `value.respond_to?(:call)`, UNCONDITIONALLY,
+    # before `inclusion_method` is ever reached. With no real `call`, THAT probe reaches the broken hook all
+    # the same, regardless of `include?`'s own realness (Codex, PR #288: "validate respond_to_missing? for
+    # that later probe when native respond_to? will reach it").
+    it "refuses a delimiter with a real include? but no real call, whose broken respond_to_missing? is reached by resolve_value's own probe" do
+      stub_const("RealIncludeOnlyBadRespondToMissing", Class.new do
+        def include?(value) = [1, 2, 3].include?(value)
+
+        def respond_to_missing? = true
+
+        def method_missing(name, *args)
+          return [1, 2, 3] if name == :call
+
+          super
+        end
+      end)
+
+      expect { build_axn { expects :v, inclusion: RealIncludeOnlyBadRespondToMissing.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class RealIncludeOnlyBadRespondToMissing, which ActiveModel cannot use/)
+    end
   end
 
   describe "a long form naming no delimiter at all" do

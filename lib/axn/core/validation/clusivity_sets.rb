@@ -436,16 +436,21 @@ module Axn
       # from the table — `check_validity!`'s `respond_to?(:include?) || respond_to?(:call) ||
       # respond_to?(:to_sym)` evaluates LEFT TO RIGHT and SHORT-CIRCUITS, so a real, public `:include?`
       # answers the very first term without ever falling through to `respond_to_missing?` at all, regardless
-      # of `:call`/`:to_sym` or whether `respond_to_missing?` itself is broken. A real `include?` therefore
-      # exempts this check entirely — requiring it anyway refused a delimiter with working `include?` AND
-      # `call` methods over a `respond_to_missing?` that is never actually consulted (Codex, PR #288: "native
-      # respond_to? never invokes respond_to_missing?; requiring that hook to accept two arguments over-counts
-      # an unreachable path").
+      # of whether `respond_to_missing?` itself is broken. This is NOT the only place a `respond_to?` probe
+      # is dispatched, though: `resolve_value`'s "else" branch (`Clusivity#include?` calls it BEFORE
+      # `inclusion_method` is ever reached, UNCONDITIONALLY, for any delimiter that is not a literal
+      # Proc/Symbol) separately asks `value.respond_to?(:call)` to decide whether to route through `.call` —
+      # a SECOND, independent probe that reaches `respond_to_missing?` all the same whenever `:call` is
+      # itself absent, REGARDLESS of whether `:include?` is real. A real `include?` therefore exempts this
+      # check only ALONGSIDE a real `call` — one alone still leaves the OTHER probe to reach the broken hook
+      # (Codex, PR #288, fresh evidence after the include?-alone exemption: "validate respond_to_missing? for
+      # that later probe when native respond_to? will reach it; the existing working control with real
+      # include? and real call should remain exempt because that hook is genuinely unreachable there").
       def respond_to_reachable?(collection)
         if public_method_owner?(collection, :respond_to?)
           return false unless accepts_single_positional_arg?(collection, :respond_to?)
           return true unless Axn::Internal::NativeMethods.method_owner(collection, :respond_to?).equal?(::Kernel)
-          return true if public_method_owner?(collection, :include?)
+          return true if public_method_owner?(collection, :include?) && public_method_owner?(collection, :call)
           return true unless own_respond_to_missing_hook?(collection)
 
           accepts_positional_args?(collection, :respond_to_missing?, 2)
