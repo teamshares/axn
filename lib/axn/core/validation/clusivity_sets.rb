@@ -316,6 +316,36 @@ module Axn
         !owner.nil? && Axn::Internal::NativeMethods.public_instance_method?(owner, name)
       end
 
+      # Whether `collection`'s OWN `name` — already established public and owned via `public_method_owner?`
+      # — can be called with the single positional argument every real dispatch here ever supplies:
+      # `members.public_send(:include?/:cover?, value)` and (for the non-Proc "else" branch of
+      # `resolve_value`) `value.call(record)` are ALWAYS made with exactly one positional argument, with no
+      # arity adaptation the way `resolve_value`'s Proc branch gets (`value.arity == 0 ? value.call :
+      # value.call(record)`) — a Proc adapts to ITS OWN arity because `resolve_value` reads it first, but a
+      # plain object's `include?`/`cover?`/`call` gets no such courtesy. A zero-arg `def include? = true` (a
+      # plausible authoring mistake, not a hostile override) is real, public, and answers `respond_to?`
+      # exactly as a correct one would — `check_validity!` and every ownership check pass — and then
+      # `ArgumentError: wrong number of arguments` on the very first real call (Codex, PR #288: "the
+      # analogous early acceptance of a public call should require the record argument as well").
+      #
+      # Read from `UnboundMethod#parameters`, never by calling it. A `:keyreq` makes the one positional
+      # argument insufficient on its own (a required keyword still goes unsupplied); a `:rest` accepts any
+      # count including one (this is what lets `Proc#call`'s own `(*args)` — and any object whose `call`
+      # matches that shape — clear this unconditionally, matching `resolve_value`'s actual leniency there);
+      # otherwise one argument must fall within `:req` through `:req + :opt`.
+      def accepts_single_positional_arg?(collection, name)
+        method = Axn::Internal::NativeMethods.declared_method(collection, name)
+        return false if method.nil?
+
+        params = method.parameters
+        return false if params.any? { |type, _| type == :keyreq }
+        return true if params.any? { |type, _| type == :rest }
+
+        required = params.count { |type, _| type == :req }
+        optional = params.count { |type, _| type == :opt }
+        required <= 1 && (required + optional) >= 1
+      end
+
       # Whether `collection` can even ANSWER `respond_to?` at all — the one prerequisite every branch below
       # assumes and none of them may override. `check_validity!` probes the delimiter with
       # `delimiter.respond_to?(:include?) || delimiter.respond_to?(:call) || delimiter.respond_to?(:to_sym)` —
@@ -383,11 +413,21 @@ module Axn
       # before `include?`/`cover?` are ever consulted? Checked BEFORE `range_usable?` and the fallback branch,
       # since both calls happen ahead of either (Codex, PR #288, two more findings after the `is_a?`
       # classification fix: reachability is a different question from whether an override can be trusted).
+      #
+      # A FOURTH question, checked as an unconditional hard failure rather than falling through to the
+      # `method_missing` fallback below: whenever a real, public, OWNED `call`/`include?` exists at all, Ruby
+      # dispatches straight to it — `method_missing` is consulted only when normal dispatch finds NOTHING, so
+      # a real method with the WRONG arity is a certain `ArgumentError`, never something a coincidental
+      # `method_missing` elsewhere on the object could rescue (it would never be reached). So this is checked
+      # before, and independent of, `own_method_missing_hook?` — unlike every doubtful hook above, there is no
+      # doubt here to resolve in favor of usable (Codex, PR #288).
       def usable_clusivity_delimiter?(collection)
         return false unless respond_to_reachable?(collection)
         return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
+        return false if certainly_resolved_per_call?(collection) && !accepts_single_positional_arg?(collection, :call)
         return true if certainly_resolved_per_call?(collection)
         return false unless enumerable_is_a_reachable?(collection) && public_send_reachable?(collection)
+        return false if public_method_owner?(collection, :include?) && !accepts_single_positional_arg?(collection, :include?)
         return true if range_usable?(collection)
         return false unless own_method_missing_hook?(collection)
 
@@ -545,7 +585,16 @@ module Axn
 
         case range_cover_resolution(collection)
         when :unreachable then false
-        when :cover then public_method_owner?(collection, :cover?) || own_method_missing_hook?(collection)
+        when :cover
+          # A real, public, OWNED `cover?` is what Ruby dispatches to, unconditionally — `method_missing` is
+          # never consulted once a real method answers, so a WRONG arity there is certain failure regardless
+          # of whatever `method_missing` might otherwise do (same precedence `usable_clusivity_delimiter?`
+          # applies to `include?`/`call`, Codex, PR #288).
+          if public_method_owner?(collection, :cover?)
+            accepts_single_positional_arg?(collection, :cover?)
+          else
+            own_method_missing_hook?(collection)
+          end
         else true # :undecidable or :no_cover
         end
       end

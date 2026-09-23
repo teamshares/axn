@@ -188,6 +188,29 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: NoPublicSendDelimiter.new.freeze } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class NoPublicSendDelimiter, which ActiveModel cannot use/)
     end
+
+    # `WholeValueClusivity#include?` calls `members.public_send(:include?, value)` — ALWAYS with exactly one
+    # positional argument, with no arity adaptation the way a Proc gets. A zero-arg `def include? = true` is
+    # real, public, and answers `check_validity!`'s probe exactly as a correct one would, then raises
+    # `ArgumentError: wrong number of arguments` on the very first real call (Codex, PR #288).
+    it "refuses a delimiter whose include? cannot accept the one positional argument ActiveModel always supplies" do
+      stub_const("ZeroArgInclude", Class.new { def include? = true })
+
+      expect { build_axn { expects :v, inclusion: ZeroArgInclude.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgInclude, which ActiveModel cannot use/)
+    end
+
+    # `resolve_value`'s "else" branch (a real, public, non-Proc `call`) always calls `value.call(record)` —
+    # ONE positional argument, unlike its Proc branch, which adapts to the Proc's own arity
+    # (`value.arity == 0 ? value.call : value.call(record)`). A zero-arg `def call = [...]` is real and
+    # public, so `certainly_resolved_per_call?` accepts it, and then the actual dispatch raises
+    # `ArgumentError` before `include?` is ever reached (Codex, PR #288).
+    it "refuses a delimiter whose call cannot accept the record argument ActiveModel always supplies" do
+      stub_const("ZeroArgCall", Class.new { def call = [1, 2, 3] })
+
+      expect { build_axn { expects :v, inclusion: ZeroArgCall.new.freeze } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgCall, which ActiveModel cannot use/)
+    end
   end
 
   describe "a long form naming no delimiter at all" do
@@ -411,6 +434,18 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
 
       expect { build_axn { expects :v, inclusion: { in: NoIsARange.new(1, 10).freeze } } }
         .to raise_error(ArgumentError, /inclusion: on :v names a set of class NoIsARange, which ActiveModel cannot use/)
+    end
+
+    # `WholeValueClusivity#include?` calls `members.public_send(:cover?, value)` with ONE positional
+    # argument, same as `include?` — a real, public, zero-arg `def cover? = true` answers cleanly and then
+    # raises `ArgumentError` on the very first numeric-bounded call. A real method always wins dispatch over
+    # `method_missing`, so this is refused regardless of whatever `method_missing` might otherwise do (Codex,
+    # PR #288).
+    it "refuses a numeric-bounded Range SUBCLASS whose cover? cannot accept the one positional argument ActiveModel always supplies" do
+      stub_const("ZeroArgCoverRange", Class.new(Range) { def cover? = true })
+
+      expect { build_axn { expects :v, inclusion: { in: ZeroArgCoverRange.new(1, 10).freeze } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgCoverRange, which ActiveModel cannot use/)
     end
   end
 
