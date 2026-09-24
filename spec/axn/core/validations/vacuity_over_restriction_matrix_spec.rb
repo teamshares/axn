@@ -350,7 +350,9 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
               gate_variants(entry, validator_key).each do |gate_name, gated_entry|
                 label = "#{type}/#{literal_name}/#{context_name}/#{spelling}/#{gate_name}"
                 gated = refusal(type, gated_entry, validator_key)
-                stood_down = gated.nil? && !value_constraint
+                # Only a multi-entry rule may stand down: an ungated `:vacuous` verdict is always the single-entry
+                # vacuity guard, so it is never excused.
+                stood_down = gated.nil? && ungated == :unsatisfiable && !value_constraint
                 mismatched << "#{label}: ungated #{ungated.inspect}, gated #{gated.inspect}" unless gated == ungated || stood_down
                 next unless gated == :unsatisfiable
 
