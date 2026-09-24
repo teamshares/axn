@@ -196,7 +196,7 @@ end
 
 **Validation:**
 - Outbound validation (required `exposes`) still runs after `done!`, so if required fields are not provided, the action will fail despite the early completion
-- `done!` belongs in `call` or a hook. One inside a `default:`, a `preprocess:`, or a callable a validation evaluates raises `Axn::MisplacedFlowControl` instead, since a successful early exit there would skip the validation that guarantees the result's shape (`fail!` is still allowed there) — see [What runs when](#what-runs-when)
+- `done!` belongs in `call` or a hook. One inside a `default:`, a `preprocess:`, or a validation's condition or callable option raises `Axn::MisplacedFlowControl` instead (a `validate:` callable turns it into that field's validation failure), since a successful early exit there would skip the validation that guarantees the result's shape (`fail!` is still allowed there) — see [What runs when](#what-runs-when)
 
 ```ruby
 class BadExample
@@ -721,7 +721,7 @@ Two things decide what runs: **where** a call halts decides which hooks run, and
 | A raise axn captures — including a validation failure | exception | `on_exception`, `on_error` |
 | An exception axn does not capture (`Interrupt`, `SystemExit`, …) | none: `.call` re-raises it | none |
 
-² Outbound resolution still runs after a call that returns and after every `done!`, so an unset required exposure turns either into an `exception` (`OutboundValidationError`) — and `on_success` fires only once outbound resolution has passed, never beside the exception callbacks. A `done!` never skips validation: it can only come from `call` or a hook. One from a callable the contract evaluates — a `preprocess:`, a `default:`, or a validation's condition or callable option, inbound or outbound, including a field's `default:` first read from inside `call` — settles the call as an `Axn::MisplacedFlowControl` exception instead. A `fail!` there is still allowed: a failure promises no exposures.
+² Outbound resolution still runs after a call that returns and after every `done!`, so an unset required exposure turns either into an `exception` (`OutboundValidationError`) — and `on_success` fires only once outbound resolution has passed, never beside the exception callbacks. A `done!` never skips validation: it can only come from `call` or a hook. One from a callable the contract evaluates — a `preprocess:`, a `default:`, or a validation's condition or callable option, inbound or outbound, including a field's `default:` first read from inside `call` — settles the call as an `Axn::MisplacedFlowControl` exception instead. (While a call is already settling a raise or `fail!`, outbound defaults are applied best-effort, so a refused `done!` from one is swallowed and the original halt stands.) A `fail!` there is still allowed: a failure promises no exposures, and a `validate:` callable contains any of the three as that field's validation failure (see the table below).
 
 Both tables hold for [`call!`](/usage/using#call) too: the same hooks and callbacks run, and `call!` then raises for a failure or exception outcome instead of returning the result.
 
