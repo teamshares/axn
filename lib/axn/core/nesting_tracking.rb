@@ -39,14 +39,65 @@ module Axn
         _current_axn_stack.push(axn)
         yield
       ensure
-        _current_axn_stack.pop
+        stack = _current_axn_stack
+        # Identity, not equality: two frames may track equal-but-distinct actions, and `equal?` keeps
+        # this check allocation-free on the path every call takes.
+        if stack.last.equal?(axn)
+          stack.pop
+        else
+          _heal_interleaved_stack(stack, axn)
+        end
         # Outermost action finished: clear per-execution exception bookkeeping so the same exception
         # object re-raised by a later, independent run starts fresh (report dedup, fails_on
         # stickiness, and a fails_on condition's cached verdict are all scoped to one call tree).
-        if _current_axn_stack.empty?
+        if stack.empty?
           Axn::Internal::ExceptionClassification.reset!
           Axn::Internal::CarriedPresentation.reset!
           Axn::Internal::FailsOnVerdicts.reset!
+        end
+      end
+
+      # The top of the stack is not this frame's own entry, so another execution sharing this stack
+      # pushed after us and has not popped yet: two call trees interleaved on one stack. Under :thread
+      # isolation that happens with manually resumed Fibers and no scheduler (a scheduler under :thread
+      # is the case `_warn_if_fiber_isolation_mismatch` already announces, so it is not re-announced
+      # here). Popping the top would remove the OTHER tree's entry and leave ours in its place, so the
+      # other tree would read this finished action as its own; remove our own entry instead — the last
+      # one, since an entry above it belongs to whoever pushed later.
+      #
+      # Known limit: an interleave whose pops happen to balance (B's call tree starts and finishes
+      # entirely while A is suspended) always finds its own entry on top and is not detected, even
+      # though B's frames read A's entry beneath their own and were attributed as nested inside A.
+      def self._heal_interleaved_stack(stack, axn)
+        index = stack.rindex { |entry| entry.equal?(axn) }
+        return unless index # our entry is already gone (e.g. IsolatedExecutionState was cleared)
+
+        stack.delete_at(index)
+        _warn_interleaved_stack
+      end
+
+      INTERLEAVE_LOCK = Thread::Mutex.new
+      private_constant :INTERLEAVE_LOCK
+
+      # Same claim-before-log, log-outside-the-lock, never-raise-into-`.call` shape as
+      # `_warn_if_fiber_isolation_mismatch` below, for the same reasons.
+      def self._warn_interleaved_stack
+        return if @_interleave_warned
+
+        Axn::Extensions.best_effort("warning about an interleaved nesting stack") do
+          next if Fiber.respond_to?(:scheduler) && Fiber.scheduler
+
+          claimed = INTERLEAVE_LOCK.synchronize do
+            @_interleave_warned ? false : (@_interleave_warned = true)
+          end
+          next unless claimed
+
+          Axn.config.logger.warn(
+            "[Axn] axn calls on one thread were interleaved without a Fiber scheduler (e.g. manually " \
+            "resumed Fibers), so nesting-dependent state (log prefixes, exception attribution) was " \
+            "misattributed while they overlapped. Manually driven fibers are not supported: run them under " \
+            "a Fiber scheduler with `ActiveSupport::IsolatedExecutionState.isolation_level = :fiber`.",
+          )
         end
       end
 
@@ -90,10 +141,11 @@ module Axn
         end
       end
 
-      # Re-arms the once-per-process warning above, for a spec suite that asserts on it. Named for
+      # Re-arms the once-per-process warnings above, for a spec suite that asserts on them. Named for
       # the caller it exists for: Axn::Testing.reset! is the supported entry point.
       def self._reset_isolation_warning!
         remove_instance_variable(:@_isolation_mismatch_warned) if instance_variable_defined?(:@_isolation_mismatch_warned)
+        remove_instance_variable(:@_interleave_warned) if instance_variable_defined?(:@_interleave_warned)
       end
 
       # Whether the CURRENT thread's execution context has the fiber-scheduler/isolation_level mismatch
@@ -122,7 +174,7 @@ module Axn
 
       # Reached only from `tracking` above. `_current_axn_stack` stays public: the executor, the call
       # logger and the exception-context builder all read it as `NestingTracking._current_axn_stack`.
-      private_class_method :_warn_if_fiber_isolation_mismatch
+      private_class_method :_warn_if_fiber_isolation_mismatch, :_heal_interleaved_stack, :_warn_interleaved_stack
     end
   end
 end
