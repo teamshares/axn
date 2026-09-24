@@ -141,6 +141,7 @@ RSpec.describe "mixed-encoding message compositions" do
           exception_class: Axn::ContractViolation::PreprocessingError,
           message: "on %s: %s",
           field_identifier: latin1_name,
+          operation: "preprocessing",
         ) { raise error }
       end.to raise_error(Axn::ContractViolation::PreprocessingError) { |raised|
         expect(raised.message).to be_readable_utf8

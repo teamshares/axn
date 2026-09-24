@@ -10,9 +10,9 @@
 #   — puts hooks INSIDE the contract, so a halt during inbound resolution never reaches them, and a
 #   halt during outbound resolution happens after the hook body has returned.
 # - WHAT KIND of halt it is (a raise, `fail!`, `done!`, or an exception axn does not capture) decides
-#   the outcome and which callbacks fire — identically from every origin, with one coupling pinned
-#   separately below: outbound validation runs after a `done!` from the hook chain but not after one
-#   raised by contract resolution itself.
+#   the outcome and which callbacks fire — identically from every origin, with one exception: a `done!`
+#   from a callable the contract evaluates is refused (MisplacedFlowControl), so a `done!` never skips
+#   validation.
 #
 # The grid is the full cross product, so a new origin or halt kind cannot hold for one axis and
 # silently not the other. Each case asserts the ordered hook trace, not just which blocks ran: the
@@ -83,19 +83,23 @@ RSpec.describe "Hook and callback execution guarantee" do
   # Each origin injects the halt (a proc run against the action instance) at one point in the pipeline.
   origins = {
     "an inbound preprocess:" => {
+      contract: true,
       hooks: [],
       args: ->(halt) { { declare: proc { expects :n, preprocess: ->(_v) { instance_exec(&halt) } }, n: 1 } },
     },
     "an inbound default:" => {
+      contract: true,
       hooks: [],
       args: ->(halt) { { declare: proc { expects :n, default: -> { instance_exec(&halt) } } } },
     },
     # A validation's if:/unless: condition runs where its field is validated: inbound for expects...
     "an expects validation's if: condition" => {
+      contract: true,
       hooks: [],
       args: ->(halt) { { declare: proc { expects :n, type: Integer, if: -> { instance_exec(&halt) } }, n: 1 } },
     },
     "an expects validator's callable option" => {
+      contract: true,
       hooks: [],
       args: ->(halt) { { declare: proc { expects :n, inclusion: { in: ->(action) { action.instance_exec(&halt) } } }, n: 1 } },
     },
@@ -124,12 +128,14 @@ RSpec.describe "Hook and callback execution guarantee" do
     # Outbound resolution runs after the hook body has returned: every hook runs to completion and the
     # `around` never sees the halt.
     "an outbound (exposes) default:" => {
+      contract: true,
       hooks: ran_to_completion,
       args: ->(halt) { { declare: proc { exposes :out, default: -> { instance_exec(&halt) } } } },
     },
     # A field both expected and exposed, carrying no validation and never read by the body, first
     # resolves its default: during the outbound copy-forward.
     "an inbound default: first resolved by the outbound copy-forward" => {
+      contract: true,
       hooks: ran_to_completion,
       args: lambda { |halt|
         { declare: proc {
@@ -140,6 +146,7 @@ RSpec.describe "Hook and callback execution guarantee" do
     },
     # ...and outbound, after the hook chain, for exposes.
     "an exposes validator's callable option" => {
+      contract: true,
       hooks: ran_to_completion,
       args: lambda { |halt|
         { declare: proc { exposes :o, optional: true, inclusion: { in: ->(action) { action.instance_exec(&halt) } } }, body: proc {
@@ -148,6 +155,7 @@ RSpec.describe "Hook and callback execution guarantee" do
       },
     },
     "an exposes validation's if: condition" => {
+      contract: true,
       hooks: ran_to_completion,
       args: ->(halt) { { declare: proc { exposes :o, type: Integer, optional: true, if: -> { instance_exec(&halt) } } } },
     },
@@ -197,10 +205,14 @@ RSpec.describe "Hook and callback execution guarantee" do
 
   origins.each do |origin, where|
     halts.each do |halt_name, halt|
+      # A done! from a callable the contract evaluates is refused (MisplacedFlowControl): it would skip
+      # the validation that guarantees the result's shape. Every other halt keeps its own outcome.
+      outcome = where[:contract] && halt_name == "calls done!" ? :exception : halt[:outcome]
+
       context "when #{origin} #{halt_name}" do
         subject(:traced) { run_traced(**where[:args].call(halt[:halt])) }
 
-        it_behaves_like "the execution guarantee", hooks: where[:hooks], outcome: halt[:outcome]
+        it_behaves_like "the execution guarantee", hooks: where[:hooks], outcome:
       end
     end
   end
@@ -223,30 +235,33 @@ RSpec.describe "Hook and callback execution guarantee" do
     it_behaves_like "the execution guarantee", hooks: ran_to_completion, outcome: :exception
   end
 
-  # Outbound resolution runs after a `done!` from `call` or a hook, so an unset required exposure turns
-  # it into an exception; a `done!` raised by contract resolution itself (a preprocess:/default: or a
-  # validation's if:/unless: running outside the hook chain) settles immediately and skips outbound
-  # validation (PRO-3490).
+  # A `done!` never skips validation: from `call` or a hook it is followed by outbound validation, which
+  # an unset required exposure fails; from a callable the contract evaluates it is refused.
   describe "done! with a required exposure left unset" do
     {
-      "an inbound preprocess:" => [:success, ->(done) { { declare: proc { expects :n, preprocess: ->(_v) { instance_exec(&done) } }, n: 1 } }],
-      "an inbound default:" => [:success, ->(done) { { declare: proc { expects :n, default: -> { instance_exec(&done) } } } }],
-      "a before hook" => [:exception, ->(done) { { before_body: done } }],
-      "call" => [:exception, ->(done) { { body: done } }],
-      "an after hook" => [:exception, ->(done) { { after_body: done } }],
-      "an around hook, before its chain.call," => [:exception, ->(done) { { inner_around_pre: done } }],
-      "an around hook, after its chain.call," => [:exception, ->(done) { { inner_around_post: done } }],
-      "an outbound (exposes) default:" => [:success, ->(done) { { declare: proc { exposes :other, default: -> { instance_exec(&done) } } } }],
-      "an exposes validation's if: condition" => [:success, lambda { |done|
+      "an inbound preprocess:" => [:refused, ->(done) { { declare: proc { expects :n, preprocess: ->(_v) { instance_exec(&done) } }, n: 1 } }],
+      "an inbound default:" => [:refused, ->(done) { { declare: proc { expects :n, default: -> { instance_exec(&done) } } } }],
+      "a before hook" => [:unset, ->(done) { { before_body: done } }],
+      "call" => [:unset, ->(done) { { body: done } }],
+      "an after hook" => [:unset, ->(done) { { after_body: done } }],
+      "an around hook, before its chain.call," => [:unset, ->(done) { { inner_around_pre: done } }],
+      "an around hook, after its chain.call," => [:unset, ->(done) { { inner_around_post: done } }],
+      "an outbound (exposes) default:" => [:refused, ->(done) { { declare: proc { exposes :other, default: -> { instance_exec(&done) } } } }],
+      "an exposes validation's if: condition" => [:refused, lambda { |done|
         { declare: proc { exposes :other, type: Integer, optional: true, if: -> { instance_exec(&done) } } }
       }],
-      "an inbound default: first resolved by the outbound copy-forward" => [:success, lambda { |done|
+      "an inbound default: first resolved by the outbound copy-forward" => [:refused, lambda { |done|
         { declare: proc {
           expects :v, optional: true, default: -> { instance_exec(&done) }
           exposes :v, optional: true
         } }
       }],
-    }.each do |origin, (outcome, args)|
+    }.each do |origin, (verdict, args)|
+      # A done! from the hook chain is followed by outbound validation, which the unset exposure fails; a
+      # done! from a callable the contract evaluates is refused outright.
+      outcome = :exception
+      exception_class = verdict == :refused ? Axn::MisplacedFlowControl : Axn::OutboundValidationError
+
       context "when #{origin} calls done!" do
         subject(:traced) do
           kwargs = args.call(proc { done!("finished early") })
@@ -261,9 +276,9 @@ RSpec.describe "Hook and callback execution guarantee" do
         let(:result) { traced.first }
         let(:fired_callbacks) { traced.last & %i[on_success on_failure on_exception on_error] }
 
-        it "settles as #{outcome}" do
+        it "settles as an exception: #{exception_class}" do
           expect(result.outcome.to_s).to eq(outcome.to_s)
-          expect(result.exception).to be_a(Axn::OutboundValidationError) if outcome == :exception
+          expect(result.exception).to be_a(exception_class)
           expect(result.ok?).to eq(result.outcome.success?)
         end
 
@@ -591,6 +606,21 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
   end
 
+  # A `done!` in a default: is refused wherever the default happens to run — here first read from inside
+  # `call`, past every contract boundary — so a default: can never end the call as a success.
+  it "refuses a done! in an unvalidated field's default: first read from inside call" do
+    fired = []
+    result = build_axn do
+      expects :v, optional: true, default: -> { done!("from the default") }
+      on_success { fired << :on_success }
+      define_method(:call) { v }
+    end.call
+
+    expect(result.exception).to be_a(Axn::MisplacedFlowControl)
+    expect(result.exception.message).to include("resolving the default: for field 'v'")
+    expect(fired).to be_empty
+  end
+
   # A lazily resolved field's halt belongs to its first reader: read first by a contained callable (an
   # input tag here), it is swallowed with that callable's own raise and the call carries on.
   describe "an unvalidated field first read by a tag callable" do
@@ -666,16 +696,15 @@ RSpec.describe "Hook and callback execution guarantee" do
     end
   end
 
-  # A done! from an exposes default: after the body already called done! settles like any outbound
-  # done!, rather than escaping .call as axn's internal signal.
-  it "settles a body done! followed by an outbound default's done! as a success" do
+  # A done! from an exposes default: after the body already called done! is refused like any done!
+  # from a default:, rather than escaping .call as axn's internal signal.
+  it "refuses an outbound default's done! after a body done!" do
     result = build_axn do
       exposes :o, default: -> { done!("from the default") }
       define_method(:call) { done!("from the body") }
     end.call
 
-    expect(result).to be_ok
-    expect(result.success).to eq("from the default")
+    expect(result.exception).to be_a(Axn::MisplacedFlowControl)
   end
 
   # A `throw` is not an exception, so nothing axn wraps can contain it: it unwinds through `.call`
@@ -773,7 +802,7 @@ RSpec.describe "Hook and callback execution guarantee" do
 
       result = action.call
       expect(result.exception).to be_a(Axn::MisplacedFlowControl)
-      expect(result.exception.message).to match(/observes or describes the action's outcome/)
+      expect(result.exception.message).to match(/where it cannot decide the action's outcome/)
     end
 
     it "re-raises a raising tag callable out of .call" do

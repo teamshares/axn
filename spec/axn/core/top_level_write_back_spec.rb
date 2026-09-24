@@ -460,6 +460,8 @@ RSpec.describe "top-level read-path resolution (PRO-2908)" do
   end
 
   describe "done! raised during outbound copy-forward (PRO-2908 Finding 2)" do
+    # Still settles rather than escaping .call — now as the refused done! it is, since a default:
+    # cannot decide the outcome.
     it "settles rather than escaping .call when a field's read-path default runs first during copy-forward" do
       action = build_axn do
         expects :value, optional: true, default: -> { done!("early from default") }
@@ -470,8 +472,8 @@ RSpec.describe "top-level read-path resolution (PRO-2908)" do
 
       result = action.call
 
-      expect(result).to be_ok
-      expect(result.success).to eq("early from default")
+      expect(result.exception).to be_a(Axn::MisplacedFlowControl)
+      expect(result.exception.message).to include("resolving the default: for field 'value'")
     end
   end
 

@@ -1216,9 +1216,10 @@ module Axn
         # Top-level and subfield coerce:/preprocess:/default: resolve lazily on the read path
         # (ContractForSubfields.resolve_value), first triggered as inbound validation reads each reader —
         # never eagerly written back into provided_data. A `done!` raised inside a preprocess/default
-        # therefore surfaces here, during validation, so this read is wrapped to settle the early
-        # completion. It settles without outbound resolution (PRO-3490).
-        return _settle_success! if handle_early_completion_if_raised { validate_contract!(:inbound) }
+        # therefore surfaces during validation — refused at the callable itself
+        # (ContractErrorHandling), and here for anything else validation evaluates (a condition, a
+        # callable validator option): a `done!` never skips validation.
+        _refusing_early_completion("validating the action's inputs") { validate_contract!(:inbound) }
 
         # Inputs are canonical here (preprocessed, defaulted, validated), so input-phase facets can
         # resolve — wrap the body so in-flight log lines inherit them under a SemanticLogger. A `done!`
@@ -1226,10 +1227,10 @@ module Axn
         # still decides whether the call succeeds.
         handle_early_completion_if_raised { with_facet_log_context(&block) }
 
-        # The outbound copy-forward reads expects+exposes fields through the read path, which can be the
-        # first time a field's default:/preprocess: runs; a done! raised there settles the same early
-        # completion as one raised during validation or the body, rather than escaping .call.
-        handle_early_completion_if_raised do
+        # Outbound resolution runs whether or not the body completed early. The copy-forward can be the
+        # first read of a field's default:/preprocess:, and outbound validation evaluates conditions and
+        # callable options, so a `done!` here is refused exactly as it is inbound.
+        _refusing_early_completion("resolving the action's outputs") do
           apply_defaults!(:outbound)
           validate_contract!(:outbound)
         end
@@ -1265,6 +1266,14 @@ module Axn
         return body.call unless named.any? && Internal::CallLogger.semantic_logger?
 
         SemanticLogger.tagged(**named, &body)
+      end
+
+      # A `done!` the contract's own evaluation raised — never the body's or a hook's, which
+      # `handle_early_completion_if_raised` records — is flow control where it cannot decide the outcome.
+      def _refusing_early_completion(operation)
+        yield
+      rescue Internal::EarlyCompletion
+        raise Axn::MisplacedFlowControl.new(signal: "done!", operation:)
       end
 
       def handle_early_completion_if_raised

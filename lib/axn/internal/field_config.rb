@@ -113,6 +113,7 @@ module Axn
           exception_class: Axn::ContractViolation::DefaultAssignmentError,
           message: ->(_field, error) { "Error applying default for #{rendered(descriptor)}: #{rendered_exception_message(error)}" },
           field_identifier: identifier,
+          operation: "resolving the default: for #{rendered(descriptor)}",
         ) do
           config.default.respond_to?(:call) ? action.instance_exec(&config.default) : config.default
         end
@@ -128,6 +129,7 @@ module Axn
           exception_class: Axn::ContractViolation::PreprocessingError,
           message: ->(_field, error) { "Error preprocessing #{rendered(descriptor)}: #{rendered_exception_message(error)}" },
           field_identifier: identifier,
+          operation: "running the preprocess: for #{rendered(descriptor)}",
         ) do
           action.instance_exec(value, &config.preprocess)
         end

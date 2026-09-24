@@ -493,9 +493,11 @@ module Axn
     end
   end
 
-  # Raised in place of a `done!`/`fail!` from a callable that observes or describes the call rather than
-  # deciding it — a callback, a message, a `fails_on` gate, a `user_facing:` override — so it cannot change
-  # the outcome, whenever it happens to run. Like any raise from such a callable it is swallowed and reported by default, and re-raised
+  # Raised in place of a `done!`/`fail!` from a callable that cannot decide the call's outcome: one that
+  # observes or describes it (a callback, a message, a `fails_on` gate, a `user_facing:` override), or —
+  # for `done!` — one the contract evaluates (a `default:`, a `preprocess:`, a validation's condition or
+  # callable option), where a successful early exit would skip the validation that guarantees the
+  # result's shape. `done!` belongs in `call` or a hook. Like any raise from such a callable it is swallowed and reported by default, and re-raised
   # under `best_effort_raises_in_dev`; it exists so neither path carries axn's internal signal instead.
   # The original signal is this error's `cause`.
   class MisplacedFlowControl < StandardError
@@ -504,8 +506,8 @@ module Axn
     def initialize(signal:, operation:)
       signal, operation = [signal, operation].map { |text| Axn::Internal::RenderedText.of(text) }
 
-      super("`#{signal}` was called while #{operation}, which observes or describes the action's outcome " \
-            "rather than deciding it, so it cannot change it. Decide the outcome in `call` or a hook instead.")
+      super("`#{signal}` was called while #{operation}, where it cannot decide the action's outcome. " \
+            "Call it from `call` or a hook instead.")
     end
   end
 
