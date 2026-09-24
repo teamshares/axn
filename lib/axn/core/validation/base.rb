@@ -454,7 +454,7 @@ module Axn
       # are for the floor.
       def self.emittable_length_ceiling?(ceiling) = ceiling.is_a?(Integer) && !ceiling.negative?
 
-      # The error ActiveModel's own validator raises when BUILT on these options, or nil when it builds. Building
+      # ActiveModel's own validator BUILT on these options, raising whatever it raises when it cannot be. Building
       # it is what runs `EachValidator#initialize` and `check_validity!` — exactly what `validates` does in any
       # model's class body — so a declaration guard asks ActiveModel instead of predicting it. axn compiles its
       # validator classes lazily, on the first `.call` (`ValidatorClassCache`), so without this an option AM
@@ -462,11 +462,8 @@ module Axn
       #
       # Side-effect-free: construction stores the options and checks their shape, and runs nothing it was
       # handed. The options are copied first, since `LengthValidator#initialize` deletes from the Hash it gets.
-      def self.validator_build_error(validator_class, options)
+      def self.build_validator(validator_class, options)
         validator_class.new(options.merge(attributes: [:_axn_declaration_probe]))
-        nil
-      rescue StandardError => e
-        e
       end
 
       # The operators ActiveModel compares a value against, shared by `numericality:` and `comparison:` —

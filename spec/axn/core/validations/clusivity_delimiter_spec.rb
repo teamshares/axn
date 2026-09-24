@@ -225,6 +225,31 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
 
       expect { build_axn { expects :v, inclusion: { in: set } } }.not_to raise_error
     end
+
+    # A subclass that inherits `String#include?` is the same substring test — `"12".html_safe` is one.
+    it "refuses a String SUBCLASS that inherits String's own include?" do
+      stub_const("PlainStringSubclass", Class.new(String))
+
+      expect { build_axn { expects :v, type: Integer, inclusion: { in: PlainStringSubclass.new("12").freeze } } }
+        .to raise_error(ArgumentError, /names a String as its set \(of class PlainStringSubclass\)/)
+    end
+
+    it "refuses an ActiveSupport::SafeBuffer" do
+      require "active_support/core_ext/string/output_safety"
+
+      expect { build_axn { expects :v, type: Integer, inclusion: { in: "12".html_safe } } }
+        .to raise_error(ArgumentError, /names a String as its set \(of class ActiveSupport::SafeBuffer\)/)
+    end
+
+    # `resolve_value` calls anything answering `call` before `include?` is ever reached.
+    it "does not refuse a String SUBCLASS resolved per call, and enforces the resolved collection" do
+      callable = Class.new(String) { def call(_record) = %w[a b] }
+
+      action = build_axn { expects :v, inclusion: callable.new("irrelevant") }
+
+      expect(outcome(action.call(v: "a"))).to eq(:pass)
+      expect(outcome(action.call(v: "z"))).to eq(:reject)
+    end
   end
 
   describe "a Range delimiter" do
@@ -238,6 +263,31 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       string_action = build_axn { expects :v, inclusion: { in: PlainRangeSubclass.new("a", "z") } }
       expect(outcome(string_action.call(v: "m"))).to eq(:pass)
       expect(outcome(string_action.call(v: "zz"))).to eq(:reject)
+    end
+
+    # ActiveModel selects `cover?` for a numeric or time-bounded Range and `include?` otherwise, and hands the
+    # value to whichever it selected — so that one's signature is what has to take it.
+    it "refuses a numeric-bounded Range SUBCLASS whose cover? takes no argument" do
+      stub_const("ZeroArgCoverRange", Class.new(Range) { def cover? = true })
+
+      expect { build_axn { expects :v, inclusion: { in: ZeroArgCoverRange.new(1, 10) } } }
+        .to raise_error(ArgumentError, /names a set of class ZeroArgCoverRange, which ActiveModel cannot use — its `cover\?` cannot take/)
+    end
+
+    it "refuses a string-bounded Range SUBCLASS whose include? takes no argument" do
+      stub_const("ZeroArgIncludeRange", Class.new(Range) { def include? = true })
+
+      expect { build_axn { expects :v, inclusion: { in: ZeroArgIncludeRange.new("a", "z") } } }
+        .to raise_error(ArgumentError, /names a set of class ZeroArgIncludeRange, which ActiveModel cannot use — its `include\?` cannot take/)
+    end
+
+    it "does not refuse a numeric-bounded Range SUBCLASS whose unselected include? takes no argument" do
+      stub_const("UnselectedIncludeRange", Class.new(Range) { def include? = true })
+
+      action = build_axn { expects :v, inclusion: { in: UnselectedIncludeRange.new(1, 10) } }
+
+      expect(outcome(action.call(v: 5))).to eq(:pass)
+      expect(outcome(action.call(v: 20))).to eq(:reject)
     end
   end
 

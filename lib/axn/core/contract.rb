@@ -3988,7 +3988,7 @@ module Axn
         # an `:is`/`:minimum`/`:maximum` that is none of a non-negative Integer, `Float::INFINITY`, a Symbol or a
         # Proc, or no size key at all. `length: { in: 3..2 }` is the sharpest case: AM expands the backwards
         # range to `minimum: nil`, which it then rejects. Asked by building the validator
-        # (`Base.validator_build_error`), so the verdict is AM's own; see there for why it would otherwise surface
+        # (`Base.build_validator`), so the verdict is AM's own; see there for why it would otherwise surface
         # only on the first call.
         #
         # Reads only the author's own `length:` spelling, so — unlike `_reject_unsatisfiable_size_interval!` — it
@@ -3997,9 +3997,13 @@ module Axn
           entry = validations[:length]
           return unless entry
 
-          error = Axn::Validation::Base.validator_build_error(
-            ::ActiveModel::Validations::LengthValidator, Axn::Validation::Base.validator_entry_options(entry)
-          )
+          error = begin
+            Axn::Validation::Base.build_validator(::ActiveModel::Validations::LengthValidator,
+                                                  Axn::Validation::Base.validator_entry_options(entry))
+            nil
+          rescue StandardError => e
+            e
+          end
           return unless error
 
           raise ArgumentError,

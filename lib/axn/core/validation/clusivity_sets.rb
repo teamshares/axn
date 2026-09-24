@@ -191,11 +191,11 @@ module Axn
       # the class cleanly and then raise, or quietly change, on every call:
       #
       #   1. ActiveModel's own `check_validity!` rejects it. Asked by BUILDING the validator the declaration
-      #      will use (`validator_build_error`), which is exactly what `validates` does in any model's class
+      #      will use (`Base.build_validator`), which is exactly what `validates` does in any model's class
       #      body, rather than by predicting what that check would answer.
-      #   2. Its `include?`/`call` cannot take the argument ActiveModel hands it — the one shape
-      #      `check_validity!` cannot see, since it asks only whether the method EXISTS.
-      #   3. It is a String, whose `include?` is a substring test.
+      #   2. The method ActiveModel will dispatch it through cannot take the argument ActiveModel hands it — the
+      #      one shape `check_validity!` cannot see, since it asks only whether a method EXISTS.
+      #   3. It answers membership with String's own `include?`, a substring test.
       #   4. It is a mutable object stored by reference, so mutating what the caller still holds would change an
       #      already-declared contract.
       def reject_unusable_clusivity_delimiter!(options, set_key, key, where)
@@ -203,16 +203,19 @@ module Axn
         reason = unusable_delimiter_reason(delimiter, options, key)
         raise ArgumentError, unusable_delimiter_message(delimiter, key, where, reason) if reason
 
-        reject_string_clusivity_delimiter!(delimiter, key, where) if Axn::Internal::Identity.class_of(delimiter).equal?(::String)
+        reject_string_clusivity_delimiter!(delimiter, key, where) if substring_membership?(delimiter)
         reject_aliased_clusivity_delimiter!(delimiter, key, where)
       end
 
       # Why ActiveModel cannot use this delimiter (refusals 1 and 2 above), or nil when it can.
       def unusable_delimiter_reason(delimiter, options, key)
-        error = validator_build_error(clusivity_validator_class(key), options)
-        return "building its validator raises `#{error.class}: #{error.message}`" if error
+        begin
+          validator = build_validator(clusivity_validator_class(key), options)
+        rescue StandardError => e
+          return "building its validator raises `#{e.class}: #{e.message}`"
+        end
 
-        method_name, count = delimiter_dispatch_mismatch(delimiter)
+        method_name, count = delimiter_dispatch_mismatch(delimiter, validator)
         return nil unless method_name
 
         "its `#{method_name}` cannot take the #{count} argument#{'s' unless count == 1} ActiveModel passes it, so " \
@@ -228,24 +231,26 @@ module Axn
       # The method ActiveModel will dispatch this delimiter through, and the argument count it passes, when the
       # delimiter's own signature cannot accept that count — or nil when it can, or when there is nothing to
       # check. `resolve_value` runs a Proc as `arity.zero? ? call : call(record)` and any other callable as
-      # `call(record)`; everything else is asked `include?(value)` through `WholeValueClusivity`.
+      # `call(record)`; everything else is handed the value through whichever of `include?`/`cover?` the
+      # validator's own `inclusion_method` selects (`cover?` for a numeric or time-bounded Range), asked of the
+      # validator just built rather than re-derived here.
       #
-      # A Symbol names an action method that may be defined later in the class body, and a Range's
-      # `include?`/`cover?` are Ruby's own, so neither is checked. A non-lambda Proc drops or pads positional
-      # arguments on its own, so only a required keyword breaks one. Doubt permits: a method this cannot read
-      # the signature of (`method` raising, say, for one answered through `method_missing`) is left to the
-      # runtime rather than refused.
-      def delimiter_dispatch_mismatch(delimiter)
+      # A Symbol names an action method that may be defined later in the class body, so it is not checked. A
+      # non-lambda Proc drops or pads positional arguments on its own, so only a required keyword breaks one.
+      # Doubt permits: a method this cannot read the signature of (`method` raising, say, for one answered
+      # through `method_missing`) is left to the runtime rather than refused.
+      def delimiter_dispatch_mismatch(delimiter, validator)
         name, parameters, count, lenient =
           case delimiter
-          when ::Symbol, ::Range then return nil
+          when ::Symbol then return nil
           when ::Proc then [:call, delimiter.parameters, delimiter.arity.zero? ? 0 : 1, !delimiter.lambda?]
           else
             if delimiter.respond_to?(:call)
               # A bound `Method`'s own `call` is always `(*args)`; the signature that decides is its target's.
               [:call, (delimiter.is_a?(::Method) ? delimiter : delimiter.method(:call)).parameters, 1, false]
             else
-              [:include?, delimiter.method(:include?).parameters, 1, false]
+              selected = validator.send(:inclusion_method, delimiter)
+              [selected, delimiter.method(selected).parameters, 1, false]
             end
           end
 
@@ -373,10 +378,21 @@ module Axn
           "Symbol naming an action method that returns a collection, or a Proc/lambda called with the record."
       end
 
+      # Whether ActiveModel would decide membership with String's own `include?` — a String, or a subclass that
+      # inherits it (`ActiveSupport::SafeBuffer`, which `"12".html_safe` returns), and that `resolve_value`
+      # does not route through a `call` first. Asked of the `include?` the delimiter actually answers with
+      # (`Method#owner`), so a subclass giving itself a membership test of its own is left alone.
+      def substring_membership?(delimiter)
+        Axn::Internal::Identity.kind?(delimiter, ::String) && !delimiter.respond_to?(:call) &&
+          delimiter.method(:include?).owner.equal?(::String)
+      rescue StandardError
+        false
+      end
+
       # A String delimiter declares cleanly (a String answers `include?`, so `check_validity!` accepts it) and
       # is not a membership set at all: `String#include?` is a SUBSTRING test, and raises `TypeError` for any
       # value that is not itself a String. So `type: Integer, inclusion: { in: "12" }` would raise on every
-      # call. Exact class only — a String subclass carries whatever `include?` its author gave it.
+      # call.
       def reject_string_clusivity_delimiter!(collection, key, where)
         raise ArgumentError,
               "#{key}: on #{where} names a String as its set (of class " \
