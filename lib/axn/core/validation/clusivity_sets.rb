@@ -999,30 +999,53 @@ module Axn
         # declaration `inclusion_method` would actually route to `cover?` — so this doubt is resolved before
         # ancestry is ever consulted, not after, the same "doubt answers usable" doctrine as everywhere else
         # here.
-        return true if own_is_a_hook?(collection)
+        #
+        # But doubt about WHICH branch applies is not doubt about whether the declaration works AT ALL: a
+        # frozen delimiter with a public `to_sym` (clearing the validity gate), a correct-arity overridden
+        # `is_a?`, and NEITHER a usable `include?`/`public_send` (the non-Range path) NOR a usable `begin`
+        # (the Range path) fails EVERY possible classification `is_a?` could return, readable from the method
+        # table alone with no need to know which one it actually picks (Codex, PR #288: "only stand down here
+        # when at least one possible classification path is usable"). So both paths are checked, and doubt
+        # permits only when at least one of them could work.
+        return non_range_include_usable?(collection) || range_cover_usable?(collection) if own_is_a_hook?(collection)
 
         klass = Axn::Internal::Identity.class_of(collection)
-        unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
-          # `public_send` performs the actual dispatch here (`members.public_send(:include?, value)`) — a
-          # caller-owned override can intercept the message itself, implementing membership entirely on its
-          # own terms, never forwarding to a real `include?` at all (Codex, PR #288: a frozen delimiter with a
-          # public `to_sym`, no `include?` whatsoever, and a two-argument `public_send` override that handles
-          # `:include?` directly declares and enforces fine under real ActiveModel — `to_sym` alone clears the
-          # validity gate, and the override IS the membership test). Checked BEFORE requiring `include?` at
-          # all, not merely before trusting its arity: requiring ownership first refused this working
-          # declaration before the override could ever stand in for it.
-          return true if own_public_send_hook?(collection)
+        return range_cover_usable?(collection) if Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
 
-          # `include?` is unconditionally what `inclusion_method` selects for anything outside Range ancestry
-          # — never `cover?`, and `to_sym` alone never satisfies the ACTUAL dispatch (`resolve_value` never
-          # calls it) — so a real, correct-arity `include?` is required here once `public_send` itself is
-          # confirmed trustworthy (Codex, PR #288: deferred below for the reason this early return exists at
-          # all).
-          return false unless public_method_owner?(collection, :include?)
+        non_range_include_usable?(collection)
+      end
 
-          return accepts_single_positional_arg?(collection, :include?)
-        end
+      # The non-Range path `inclusion_method` takes: `include?` (never `cover?`) is unconditionally what gets
+      # selected, and `to_sym` alone never satisfies the ACTUAL dispatch (`resolve_value` never calls it).
+      # Extracted from `range_usable?` so the `own_is_a_hook?` doubt above can ask "would THIS path work" without
+      # regard to the object's real ancestry — `inclusion_method`'s classification, not axn's, decides which
+      # path the runtime actually takes.
+      def non_range_include_usable?(collection)
+        # `public_send` performs the actual dispatch here (`members.public_send(:include?, value)`) — a
+        # caller-owned override can intercept the message itself, implementing membership entirely on its
+        # own terms, never forwarding to a real `include?` at all (Codex, PR #288: a frozen delimiter with a
+        # public `to_sym`, no `include?` whatsoever, and a two-argument `public_send` override that handles
+        # `:include?` directly declares and enforces fine under real ActiveModel — `to_sym` alone clears the
+        # validity gate, and the override IS the membership test). Checked BEFORE requiring `include?` at
+        # all, not merely before trusting its arity: requiring ownership first refused this working
+        # declaration before the override could ever stand in for it.
+        return true if own_public_send_hook?(collection)
 
+        # `include?` is unconditionally what `inclusion_method` selects for anything outside Range ancestry
+        # — never `cover?`, and `to_sym` alone never satisfies the ACTUAL dispatch (`resolve_value` never
+        # calls it) — so a real, correct-arity `include?` is required here once `public_send` itself is
+        # confirmed trustworthy (Codex, PR #288: deferred below for the reason this early return exists at
+        # all).
+        return false unless public_method_owner?(collection, :include?)
+
+        accepts_single_positional_arg?(collection, :include?)
+      end
+
+      # The Range path `inclusion_method` takes: `cover?` or `include?`, selected by the bound. Extracted from
+      # `range_usable?` for the same reason `non_range_include_usable?` is — `range_cover_resolution` itself
+      # never consults real ancestry (only method-table ownership), so this can be asked of ANY object
+      # regardless of whether it truly includes `Range`.
+      def range_cover_usable?(collection)
         case range_cover_resolution(collection)
         when :unreachable then false
         when :cover
@@ -1062,9 +1085,41 @@ module Axn
           return false unless public_method_owner?(collection, :include?)
 
           accepts_single_positional_arg?(collection, :include?)
-        else true # :undecidable — the bound itself is unreadable, so which method gets selected is UNKNOWN;
-          # doubt answers usable here for the same reason `own_is_a_hook?` above does, not the certain
-          # dispatch `:no_cover` earns.
+        else
+          # `:undecidable` — the bound itself is unreadable (an overridden `begin`/`end` whose VALUE cannot be
+          # trusted without dispatch), so WHICH of `cover?`/`include?` gets selected is unknown. Doubt about
+          # the SELECTION is not doubt about whether the declaration works at all: a Range with both `include?`
+          # and `cover?` undefined (no `method_missing`/`public_send` override to catch either) fails EVERY
+          # possible selection, readable from the method table alone (Codex, PR #288: "require that at least
+          # one of the include? or cover? routes can actually be dispatched"). So this stands down only when
+          # at least one of the two possible routes could work, the same "check every possible path" doubt
+          # `own_is_a_hook?`'s caller now applies one level up.
+          cover_or_include_viable?(collection)
+        end
+      end
+
+      # Whether EITHER `cover?` or `include?` could be the one `inclusion_method` selects and dispatches
+      # successfully — used only where WHICH one gets selected is itself unknown without dispatch
+      # (`range_cover_usable?`'s `:undecidable` case). Each route's own viability mirrors exactly how
+      # `range_cover_usable?` checks it when that route IS the certain selection (`own_public_send_hook?`
+      # stand-down first, then real-owned-and-correct-arity, then a cooperating `method_missing` fallback) —
+      # a real, wrong-arity `cover?` does not make the `include?` route viable, and vice versa, since Ruby's
+      # dispatch precedence within WHICHEVER route is actually taken is exactly as unconditional here as it
+      # is when the selection is certain.
+      def cover_or_include_viable?(collection)
+        return true if own_public_send_hook?(collection)
+
+        cover_viable = if public_method_owner?(collection, :cover?)
+                         accepts_single_positional_arg?(collection, :cover?)
+                       else
+                         method_missing_accepts?(collection, 2)
+                       end
+        return true if cover_viable
+
+        if public_method_owner?(collection, :include?)
+          accepts_single_positional_arg?(collection, :include?)
+        else
+          method_missing_accepts?(collection, 2)
         end
       end
 

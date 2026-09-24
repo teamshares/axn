@@ -665,6 +665,22 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(outcome(action.call(v: 2))).to eq(:reject)
     end
 
+    # Doubt about WHICH classification `is_a?` picks is not doubt about whether the declaration works AT
+    # ALL: a delimiter with a public `to_sym` (clearing the validity gate) and a correct-arity overridden
+    # `is_a?`, but NEITHER a usable `include?`/`public_send` (the non-Range path) NOR a usable `begin` (the
+    # Range path), fails every possible classification `is_a?` could return — readable from the method table
+    # alone, with no need to know which one it actually picks (Codex, PR #288: "only stand down here when at
+    # least one possible classification path is usable").
+    it "refuses a delimiter whose overridden is_a? leaves BOTH possible classifications unusable" do
+      stub_const("BothIsAOutcomesBroken", Class.new do
+        def to_sym = :whatever
+        def is_a?(klass) = klass.equal?(Range)
+      end)
+
+      expect { build_axn { expects :v, inclusion: { in: BothIsAOutcomesBroken.new.freeze } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class BothIsAOutcomesBroken, which ActiveModel cannot use/)
+    end
+
     # `inclusion_method`'s `enumerable.is_a? Range` check happens BEFORE `cover?`/`include?` are ever
     # consulted, Range ancestry or not — so a Range SUBCLASS with `is_a?` undefined outright (not merely
     # overridden to answer `false`) raises on that very first call, regardless of what `include?`/`cover?`
@@ -736,6 +752,24 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
 
       expect(outcome(action.call(v: 5))).to eq(:pass)
       expect(outcome(action.call(v: 20))).to eq(:reject)
+    end
+
+    # Doubt about WHICH of `cover?`/`include?` gets selected (an overridden `begin` whose VALUE cannot be
+    # trusted without dispatch, `range_cover_resolution`'s `:undecidable`) is not doubt about whether the
+    # declaration works at all: a Range with BOTH `include?` and `cover?` undefined, and no
+    # `method_missing`/`public_send` override to catch either, fails every possible selection — readable from
+    # the method table alone (Codex, PR #288: "require that at least one of the include? or cover? routes can
+    # actually be dispatched").
+    it "refuses a Range SUBCLASS whose unreadable bound leaves BOTH cover? and include? unusable" do
+      stub_const("BothBoundOutcomesBroken", Class.new(Range) do
+        undef_method :include?
+        undef_method :cover?
+        def to_sym = :whatever
+        def begin = "unreadable but real"
+      end)
+
+      expect { build_axn { expects :v, inclusion: { in: BothBoundOutcomesBroken.new(1, 10).freeze } } }
+        .to raise_error(ArgumentError, /inclusion: on :v names a set of class BothBoundOutcomesBroken, which ActiveModel cannot use/)
     end
   end
 
