@@ -340,24 +340,26 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
 
       candidates_by_type.each_key do |type|
         literals.merge(range_sets).each do |literal_name, literal|
-          contexts.slice("default", "presence: false").each do |context_name, context|
-            spellings = literal.is_a?(Range) ? range_spellings_for(literal, {}, context) : spellings_for(literal, {}, context)
-            spellings.each do |spelling, (entry, validator_key)|
-              ungated = refusal(type, entry, validator_key)
-              refused += 1 if ungated
-              value_constraint = ungated && value_constraint_reasons.any? { |reason| refusal_message(type, entry).include?(reason) }
+          tolerances.each do |tolerance_name, tolerance|
+            contexts.slice("default", "presence: false").each do |context_name, context|
+              spellings = literal.is_a?(Range) ? range_spellings_for(literal, tolerance, context) : spellings_for(literal, tolerance, context)
+              spellings.each do |spelling, (entry, validator_key)|
+                ungated = refusal(type, entry, validator_key)
+                refused += 1 if ungated
+                value_constraint = ungated && value_constraint_reasons.any? { |reason| refusal_message(type, entry).include?(reason) }
 
-              gate_variants(entry, validator_key).each do |gate_name, gated_entry|
-                label = "#{type}/#{literal_name}/#{context_name}/#{spelling}/#{gate_name}"
-                gated = refusal(type, gated_entry, validator_key)
-                # Only a multi-entry rule may stand down: an ungated `:vacuous` verdict is always the single-entry
-                # vacuity guard, so it is never excused.
-                stood_down = gated.nil? && ungated == :unsatisfiable && !value_constraint
-                mismatched << "#{label}: ungated #{ungated.inspect}, gated #{gated.inspect}" unless gated == ungated || stood_down
-                next unless gated == :unsatisfiable
+                gate_variants(entry, validator_key).each do |gate_name, gated_entry|
+                  label = "#{type}/#{literal_name}/#{tolerance_name}/#{context_name}/#{spelling}/#{gate_name}"
+                  gated = refusal(type, gated_entry, validator_key)
+                  # Only a multi-entry rule may stand down: an ungated `:vacuous` verdict is always the single-entry
+                  # vacuity guard, so it is never excused.
+                  stood_down = gated.nil? && ungated == :unsatisfiable && !value_constraint
+                  mismatched << "#{label}: ungated #{ungated.inspect}, gated #{gated.inspect}" unless gated == ungated || stood_down
+                  next unless gated == :unsatisfiable
 
-                message = refusal_message(type, gated_entry)
-                misworded << label if message.include?("every value is rejected") || !message.include?("whenever it runs")
+                  message = refusal_message(type, gated_entry)
+                  misworded << label if message.include?("every value is rejected") || !message.include?("whenever it runs")
+                end
               end
             end
           end

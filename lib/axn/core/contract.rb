@@ -4183,8 +4183,8 @@ module Axn
         def _unsatisfiable_constraint_message(key, entry, klasses, where:, blank_tolerant: false, nested: false)
           if blank_tolerant
             return "#{key}: on #{where} can never match — nothing it compares against is of type " \
-                   "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so the only value that " \
-                   "could pass is the blank your `allow_blank:` skips, and the emitted schema advertises the set " \
+                   "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so whenever it runs the " \
+                   "only value that could pass is the blank your `allow_blank:` skips, and the emitted schema advertises the set " \
                    "as an `enum` no value can satisfy at all. Compare against literals of the declared type."
           end
 
