@@ -407,6 +407,29 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect { build_axn { expects :v, inclusion: { in: set } } }.not_to raise_error
     end
 
+    # `WholeValueClusivity#include?` dispatches membership as `members.public_send(:include?, value)` — a
+    # caller-owned `public_send` can intercept `:include?` itself BEFORE it ever reaches String's inherited
+    # substring implementation, the same doubt `own_public_send_hook?` already resolves for `range_usable?`.
+    # This String SUBCLASS never overrides `include?` at all (still the inherited substring test, by
+    # ownership), but the override never lets it be reached — so classifying by `include?`'s OWNERSHIP alone,
+    # with no exemption for a doubtful `public_send`, refused a declaration that never touches the substring
+    # behavior at all (Codex, PR #288: "own_public_send_hook? should make the selected membership behavior
+    # undecidable here just as it does in range_usable?").
+    it "does not refuse a String SUBCLASS whose overridden public_send intercepts include? before the inherited substring test" do
+      stub_const("StringWithInterceptingPublicSend", Class.new(String) do
+        def public_send(name, value)
+          return [1, 2, 3].include?(value) if name == :include?
+
+          super
+        end
+      end)
+
+      action = build_axn { expects :v, inclusion: StringWithInterceptingPublicSend.new("irrelevant").freeze }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: "not an integer at all"))).to eq(:reject)
+    end
+
     # `resolve_value`'s `else` branch checks `respond_to?(:call)` BEFORE anything ever reaches `include?`, so a
     # String subclass carrying a public `call` (returning the real collection) is resolved through that `call`
     # and its inherited substring `include?` is never invoked at all — refusing it would refuse a declaration
@@ -1055,6 +1078,30 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       action = build_axn { expects :v, inclusion: { in: DropsValueBeforeInclude.new.freeze } }
 
       expect(outcome(action.call(v: 1))).to eq(:pass)
+    end
+
+    # The further extreme: an overridden `public_send` need not forward to a real `include?` AT ALL — it can
+    # intercept `:include?` and implement membership entirely on its own terms. A delimiter with a public
+    # `to_sym` (clearing the validity gate on its own) and NO `include?` whatsoever still declares and
+    # enforces fine, since the override IS the membership test `WholeValueClusivity#include?` dispatches to.
+    # Requiring `include?`'s OWNERSHIP before ever consulting `own_public_send_hook?` refused this working
+    # declaration before the override could stand in for it at all (Codex, PR #288: "check that hook before
+    # requiring a table-visible membership method").
+    it "declares and enforces a non-Range delimiter with no include? at all, whose public_send handles membership itself" do
+      stub_const("PublicSendHandlesIncludeItself", Class.new do
+        def to_sym = :whatever
+
+        def public_send(name, value)
+          return [1, 2, 3].include?(value) if name == :include?
+
+          super
+        end
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: PublicSendHandlesIncludeItself.new.freeze } }
+
+      expect(outcome(action.call(v: 1))).to eq(:pass)
+      expect(outcome(action.call(v: 5))).to eq(:reject)
     end
 
     # `own_public_send_hook?` must treat a NIL owner (undef'd, caught only through `method_missing`) exactly

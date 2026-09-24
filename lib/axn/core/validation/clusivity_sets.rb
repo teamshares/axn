@@ -1003,20 +1003,22 @@ module Axn
 
         klass = Axn::Internal::Identity.class_of(collection)
         unless Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+          # `public_send` performs the actual dispatch here (`members.public_send(:include?, value)`) — a
+          # caller-owned override can intercept the message itself, implementing membership entirely on its
+          # own terms, never forwarding to a real `include?` at all (Codex, PR #288: a frozen delimiter with a
+          # public `to_sym`, no `include?` whatsoever, and a two-argument `public_send` override that handles
+          # `:include?` directly declares and enforces fine under real ActiveModel — `to_sym` alone clears the
+          # validity gate, and the override IS the membership test). Checked BEFORE requiring `include?` at
+          # all, not merely before trusting its arity: requiring ownership first refused this working
+          # declaration before the override could ever stand in for it.
+          return true if own_public_send_hook?(collection)
+
           # `include?` is unconditionally what `inclusion_method` selects for anything outside Range ancestry
           # — never `cover?`, and `to_sym` alone never satisfies the ACTUAL dispatch (`resolve_value` never
-          # calls it) — so a real, correct-arity `include?` is required here regardless of what cleared the
-          # validity gate above (Codex, PR #288: deferred below for the reason this early return exists at
+          # calls it) — so a real, correct-arity `include?` is required here once `public_send` itself is
+          # confirmed trustworthy (Codex, PR #288: deferred below for the reason this early return exists at
           # all).
           return false unless public_method_owner?(collection, :include?)
-
-          # `public_send` performs the actual dispatch here (`members.public_send(:include?, value)`) — a
-          # caller-owned override can transform or drop `value` before forwarding, so a real `include?`'s OWN
-          # arity is only a certain requirement when `public_send` is trustworthy. Codex, PR #288: a frozen
-          # delimiter overriding `public_send` as `def public_send(name, _value) = send(name)` calls a
-          # zero-arg `include?` with no value at all, and declares/enforces fine under real ActiveModel even
-          # though this arity check would otherwise refuse it.
-          return true if own_public_send_hook?(collection)
 
           return accepts_single_positional_arg?(collection, :include?)
         end
@@ -1080,6 +1082,14 @@ module Axn
       # #288, twice: a real `call` first, then a dynamically dispatched one).
       def string_keyed_delimiter?(collection)
         return false if dynamically_resolved_per_call?(collection)
+
+        # `WholeValueClusivity#include?` dispatches membership as `members.public_send(:include?, value)` —
+        # a caller-owned `public_send` can intercept `:include?` itself before it ever reaches String's own
+        # inherited substring implementation, the same doubt `own_public_send_hook?` already resolves
+        # elsewhere in this file (Codex, PR #288: a frozen String SUBCLASS overriding `public_send` to
+        # implement membership itself never touches the inherited substring `include?` at all, and declares
+        # and enforces fine even for a non-String value that would otherwise raise `TypeError`).
+        return false if own_public_send_hook?(collection)
 
         Axn::Internal::NativeMethods.method_owner(collection, :include?).equal?(::String)
       rescue StandardError
