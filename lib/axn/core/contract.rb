@@ -3951,8 +3951,8 @@ module Axn
         #
         # Gates do NOT rescue one. This is a judgment about what the validator can MEAN at this position, and a
         # closed `if:` skips a check rather than giving it a reading. The satisfiability guard below refuses
-        # through a gate too, for a different reason: reflection is static-maximal, so a gated can-never-match
-        # set still emits an unsatisfiable node.
+        # through a gate too, for a different reason: a gated can-never-match set rejects every value whenever
+        # its gate is open, so the declaration is broken on every call that runs it.
         #
         # Every offender is named at once: an author who wrote two has one declaration to fix.
         def _reject_container_position_validators!(validations, where:, nested: false)
@@ -4047,10 +4047,12 @@ module Axn
         # judge, or a tolerance flag, under which nil passes and the emitted node stays satisfiable (`type:
         # ["array","null"]` with nil in the enum).
         #
-        # An `if:`/`unless:` gate does NOT stand it down, and that asymmetry is the point: reflection is
-        # static-maximal, so a gated can-never-match set still emits `{type: "array", enum: [...]}` — exactly
-        # the unsatisfiable node the corollary forbids. A gate removes the check rather than giving the set a
-        # reading: closed it enforces nothing, open it rejects everything.
+        # An `if:`/`unless:` gate does NOT stand it down. A refusal is judged against the readings the runtime
+        # can take, and a gate adds exactly one besides the ungated one: closed, the entry enforces nothing;
+        # open, it rejects everything. The open reading is broken on every call that reaches it, and no reading
+        # is the one the author wrote, so a gate removes the check rather than giving the set a reading. The
+        # message says "whenever it runs" so that it stays true for a closed gate — at an entry, on the
+        # declaration, or on the field enclosing an `of:` bag.
         # The option keys each value-comparing validator reads its literals from. One judgment serves all three
         # because they break the same way. `other_than` is deliberately ABSENT from comparison's list: it is an
         # inverted operator, so a wrong-type bound makes the check ActiveModel runs always PASS rather than
@@ -4171,8 +4173,8 @@ module Axn
           raise ArgumentError,
                 "#{key}: on #{where} can never match — it compares against a bound that does not equal even " \
                 "itself (a NaN), and every one of ActiveModel's non-inverted operators reports false against " \
-                "one, so every value is rejected. Compare against a bound a value can actually match, and test " \
-                "for NaN with `validate: ->(value) { ... }`."
+                "one, so it rejects every value whenever it runs. Compare against a bound a value can actually " \
+                "match, and test for NaN with `validate: ->(value) { ... }`."
         end
 
         # The unsatisfiable message, which names the reason the set or bound matches nothing. An empty Range
@@ -4181,21 +4183,21 @@ module Axn
         def _unsatisfiable_constraint_message(key, entry, klasses, where:, blank_tolerant: false, nested: false)
           if blank_tolerant
             return "#{key}: on #{where} can never match — nothing it compares against is of type " \
-                   "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so the only value that " \
-                   "could pass is the blank your `allow_blank:` skips, and the emitted schema advertises the set " \
+                   "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so whenever it runs the " \
+                   "only value that could pass is the blank your `allow_blank:` skips, and the emitted schema advertises the set " \
                    "as an `enum` no value can satisfy at all. Compare against literals of the declared type."
           end
 
           if _empty_range_set?(key, entry)
             return "#{key}: on #{where} can never match — the Range it names is empty, so it contains no value " \
-                   "at all and every value is rejected. Name a Range with at least one value in it (an " \
-                   "exclusive Range whose endpoints meet, or one whose bounds run backwards, is empty)."
+                   "at all and it rejects every value whenever it runs. Name a Range with at least one value in " \
+                   "it (an exclusive Range whose endpoints meet, or one whose bounds run backwards, is empty)."
           end
 
           "#{key}: on #{where} can never match — nothing it compares against " \
-            "is of type #{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so every " \
-            "value is rejected. A validator constrains the value at the position it is declared at: compare " \
-            "against literals of the declared type, and constrain a container's CONTENTS at their own " \
+            "is of type #{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so it rejects " \
+            "every value whenever it runs. A validator constrains the value at the position it is declared " \
+            "at: compare against literals of the declared type, and constrain a container's CONTENTS at their own " \
             "position — #{_contents_position_remedy(nested)}."
         end
 
@@ -4473,8 +4475,7 @@ module Axn
         # the nil the flag exempts, and `type: Array, exclusion: { in: [[]] }, allow_blank: true` forbids only
         # the blank one. Both accept every input, and both are refused once the skipped literal stops counting.
         #
-        # A GATE does not rescue one either, but for a simpler reason than above: `exclusion:` emits nothing
-        # into the schema, so there is no static-maximal node to argue from. A gate can only remove the check.
+        # A GATE does not rescue one either, on the same terms as above: a gate can only remove the check.
         # Closed it enforces nothing, open it enforces nothing — there is no reading under which the
         # declaration means what it says.
         def _reject_vacuous_value_constraints!(validations, where:, tolerance:, nested: false)

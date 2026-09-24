@@ -301,4 +301,76 @@ RSpec.describe "the vacuity and satisfiability guards never refuse a declaration
 
     expect_audit_clean(wrong, tally, examined: 500)
   end
+
+  # A gate adds one reading to a declaration — the gate closed, where the entry enforces nothing — and keeps the
+  # ungated one as its open reading. A refusal is judged against the open reading, which for a single entry is
+  # the ungated entry exactly, so a gate must never change the value-constraint guards' verdict: the audits
+  # above already establish that every ungated verdict is earned. The only thing a gate may change there is the
+  # wording, which must not claim a rejection the closed reading does not make.
+  #
+  # The size and blank-axis rules reach this product through the same `inclusion: … can never match` prefix,
+  # and those DO stand down under a gate: they weigh two entries against each other, and a guard that cannot
+  # see whether both can be open on one call has not proven the broken reading reachable. Standing down is the
+  # direction every guard is allowed to err in, so for them the assertion is only the other half: a gate never
+  # creates or changes a refusal. Every gate position the guards can see is walked: the entry's own
+  # `if:`/`unless:`, and the declaration's, which ActiveModel merges into every entry.
+  describe "a gate" do
+    # The phrases only `_unsatisfiable_constraint_message` and `_reject_non_reflexive_bound!` produce.
+    let(:value_constraint_reasons) { ["nothing it compares against", "the Range it names is empty", "(a NaN)"] }
+
+    def gate_variants(entry, validator_key)
+      {
+        "entry if:" => entry.merge(validator_key => entry[validator_key].merge(if: -> { false })),
+        "entry unless:" => entry.merge(validator_key => entry[validator_key].merge(unless: -> { true })),
+        "declaration if:" => entry.merge(if: -> { false }),
+      }
+    end
+
+    def refusal_message(type, entry)
+      build_axn { expects :v, type:, **entry }
+      nil
+    rescue ArgumentError => e
+      e.message
+    end
+
+    it "never changes either guard's verdict, and a gated refusal claims a rejection only whenever it runs" do
+      mismatched = []
+      misworded = []
+      refused = 0
+
+      candidates_by_type.each_key do |type|
+        literals.merge(range_sets).each do |literal_name, literal|
+          tolerances.each do |tolerance_name, tolerance|
+            contexts.slice("default", "presence: false").each do |context_name, context|
+              spellings = literal.is_a?(Range) ? range_spellings_for(literal, tolerance, context) : spellings_for(literal, tolerance, context)
+              spellings.each do |spelling, (entry, validator_key)|
+                ungated = refusal(type, entry, validator_key)
+                refused += 1 if ungated
+                value_constraint = ungated && value_constraint_reasons.any? { |reason| refusal_message(type, entry).include?(reason) }
+
+                gate_variants(entry, validator_key).each do |gate_name, gated_entry|
+                  label = "#{type}/#{literal_name}/#{tolerance_name}/#{context_name}/#{spelling}/#{gate_name}"
+                  gated = refusal(type, gated_entry, validator_key)
+                  # Only a multi-entry rule may stand down: an ungated `:vacuous` verdict is always the single-entry
+                  # vacuity guard, so it is never excused.
+                  stood_down = gated.nil? && ungated == :unsatisfiable && !value_constraint
+                  mismatched << "#{label}: ungated #{ungated.inspect}, gated #{gated.inspect}" unless gated == ungated || stood_down
+                  next unless gated == :unsatisfiable
+
+                  message = refusal_message(type, gated_entry)
+                  misworded << label if message.include?("every value is rejected") || !message.include?("whenever it runs")
+                end
+              end
+            end
+          end
+        end
+      end
+
+      aggregate_failures do
+        expect(refused).to be > 100 # the product reached both guards, so an empty mismatch list means something
+        expect(mismatched).to be_empty, "a gate changed the verdict:\n  #{mismatched.join("\n  ")}"
+        expect(misworded).to be_empty, "a gated refusal claims an unconditional rejection:\n  #{misworded.join("\n  ")}"
+      end
+    end
+  end
 end

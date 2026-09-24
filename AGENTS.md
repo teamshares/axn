@@ -134,6 +134,16 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   unsatisfiable node is the signature of the runtime and the emitter disagreeing about what a validator
   targets, and it satisfies a directional invariant vacuously. And a contract that admits nothing has no
   honest projection at all, so refuse it at declaration rather than teaching the emitter to paper over it.
+- **A declaration-time refusal is earned by a reading the runtime can take — never by the schema alone.**
+  Refuse a declaration only when it is broken on a call the runtime can actually make: it raises on every
+  call, rejects every value, carries an option that is silently inert, or silently means something looser
+  than it says (`of: { of: Integer }` checks only the elements that happen to be arrays). A refusal whose
+  only job is keeping the emitted schema exact is not earned: what the schema cannot say is the emitter's to
+  handle, not the author's to be refused for. A gated entry is judged under its gate-OPEN reading, which for a
+  single entry is the ungated one, so a gate never rescues it — and a message must not claim a rejection the
+  closed reading does not make ("rejects every value whenever it runs"). A rule weighing two entries it
+  cannot prove are open on the same call stands down instead, the direction a guard may always err in.
+  Before adding a guard, name the broken reading and probe it with the guard stubbed off.
 - **Canonicalizing a value obliges you to re-audit every guard that read the raw form.** Symbolizing
   keys, defaulting an absent list to `[]`, normalizing a name — each silently disarms any downstream
   check that distinguished what you just erased. Enumerate the consumers of both forms in the same
