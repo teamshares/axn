@@ -460,8 +460,11 @@ module Axn
       # validator classes lazily, on the first `.call` (`ValidatorClassCache`), so without this an option AM
       # cannot use declares cleanly and every call fails with AM's own error, which does not name the field.
       #
-      # Side-effect-free: construction stores the options and checks their shape, and runs nothing it was
-      # handed. The options are copied first, since `LengthValidator#initialize` deletes from the Hash it gets.
+      # Construction stores the options and checks their shape, and calls no callable it was handed. The only
+      # dispatch on a caller's value is ActiveModel's own shape check (`respond_to?`, `is_a?`, `==` against
+      # `Float::INFINITY`), the same one `validates` makes in a model's class body, so a value whose own
+      # `respond_to?` or `==` lies decides the verdict — out of scope, as a lying class is everywhere here. The
+      # options are copied first, since `LengthValidator#initialize` deletes from the Hash it gets.
       def self.build_validator(validator_class, options)
         validator_class.new(options.merge(attributes: [:_axn_declaration_probe]))
       end
