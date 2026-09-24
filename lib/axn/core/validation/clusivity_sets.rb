@@ -857,7 +857,13 @@ module Axn
           return :undecidable unless Axn::Internal::NativeMethods.method_owner(collection, name).equal?(::Range)
 
           value = name.equal?(:begin) ? RANGE_BEGIN.bind_call(collection) : RANGE_END.bind_call(collection)
-          next if value.nil? && name.equal?(:begin)
+          # Identity, never `value.nil?`: `value` is the Range's OWN bound, whatever the caller made it — a
+          # `Time`/`Date`/custom Comparable with a singleton `nil?` override would otherwise have that
+          # override DISPATCHED during declaration, running caller code `enumerable.begin || enumerable.end`
+          # itself never runs (Ruby's `||` is a language-level truthiness check, not a dispatched call) —
+          # the same "never `include?`/`==`, only `equal?(nil)`" discipline this file already applies
+          # everywhere else nil-detection touches a caller-controlled value (Codex, PR #288).
+          next if nil.equal?(value) && name.equal?(:begin)
 
           return(case value
                  when *RANGE_COVER_TYPES then :cover

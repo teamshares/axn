@@ -1293,6 +1293,27 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       expect(dispatched).to eq([])
     end
 
+    # `Clusivity#inclusion_method` branches on `enumerable.begin || enumerable.end` — Ruby's `||` is a
+    # language-level truthiness check, never a dispatched call, so the real runtime never asks the bound's own
+    # `nil?`. Calling `value.nil?` here would both dispatch a possibly-overridden method on the caller's own
+    # bound during declaration AND, if that override lies, diverge from what ActiveModel actually branches on
+    # (Codex, PR #288).
+    it "never calls a Range bound's own nil? while resolving cover?/include?, using identity instead" do
+      dispatched = []
+      liar = Time.now
+      liar.define_singleton_method(:nil?) do
+        dispatched << :nil?
+        true
+      end
+      stub_const("LyingNilRange", Class.new(Range))
+
+      action = build_axn { expects :v, inclusion: { in: LyingNilRange.new(liar, liar + 100).freeze } }
+
+      expect(outcome(action.call(v: liar + 50))).to eq(:pass)
+      expect(outcome(action.call(v: liar - 50))).to eq(:reject)
+      expect(dispatched).to eq([])
+    end
+
     # A caller who overrides `respond_to?` ITSELF (rather than the conventional `respond_to_missing?` hook)
     # governs `check_validity!`'s answer just as completely, and just as undecidably without running it —
     # DOUBT MUST ANSWER "usable" here too (Codex, PR #288). Still never DISPATCHED by axn's own declaration-time
