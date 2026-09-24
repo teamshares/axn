@@ -1,5 +1,17 @@
 # frozen_string_literal: true
 
+# Named rather than relied on transitively, for the reason `axn.rb`'s own `require "bigdecimal"` already is:
+# `RANGE_COVER_TYPES` below is a FROZEN list built once, at load time, from `defined?(::Date)`/`defined?
+# (::DateTime)` — so whichever of them is not yet loaded THEN is permanently absent from it, regardless of
+# whether something else loads it moments later. Every current path into this file happens to require "date"
+# first already (`contract.rb`'s own `require "date"` precedes its `require "axn/core/validation/fields"`,
+# the only way here, on every entry point — verified, Codex, PR #288, a false positive on the SPECIFIC claim
+# that the current order is already broken), but that safety is a property of the REQUIRE GRAPH, not of
+# anything this file states — a reordering elsewhere would silently starve `RANGE_COVER_TYPES` with no test
+# able to notice, the exact fragility this whole codebase already treats as worth foreclosing rather than
+# tolerating.
+require "date"
+
 module Axn
   module Validation
     # How axn reads the SET a clusivity validator compares a value against, and the one rewrite it applies to
@@ -104,12 +116,49 @@ module Axn
       end
 
       # Strict: only a PUBLIC `call` in the method table, which is exactly what `respond_to?(:call)` answers
-      # true for without consulting a hook (measured across a public, private and `method_missing`-backed
-      # `call`). A private one is found by the table but never called by ActiveModel, so a collection carrying
-      # one is a static set like any other and must not slip past the aliasing refusal.
+      # true for without consulting a hook — PROVIDED `respond_to?` itself is native and untouched. A private
+      # one is found by the table but never called by ActiveModel, so a collection carrying one is a static
+      # set like any other and must not slip past the aliasing refusal.
+      #
+      # This is OWNERSHIP of `call` alone, not routing certainty: an overridden `respond_to?` can hide a real
+      # public `call` behind a `false` answer for `:call` specifically, routing `resolve_value` to `include?`
+      # instead. A caller asking "is `resolve_value` CERTAIN to route through `.call`" — which is what the
+      # ALIASING exemptions below need, since doubt there must answer "do not exempt" — wants
+      # `certainly_routed_to_call?` instead. This narrower, ownership-only predicate remains correct for its
+      # OTHER two callers precisely because they need the opposite doubt direction: `possibly_resolved_per_
+      # call?` (member-reading, doubt answers "do not read" — a real `call`, however `respond_to?` might
+      # route around it, is reason enough to leave the object unread) and `dynamically_resolved_per_call?`
+      # (the String-refusal exemption, doubt answers "do not refuse" — the same favorable direction
+      # `certainly_routed_to_call?` would only narrow unnecessarily) (Codex, PR #288).
       def certainly_resolved_per_call?(collection)
         owner = Axn::Internal::NativeMethods.method_owner(collection, :call)
         !owner.nil? && Axn::Internal::NativeMethods.public_instance_method?(owner, :call)
+      end
+
+      # Whether `resolve_value` is CERTAIN to route through `.call` — `certainly_resolved_per_call?`'s real
+      # public `call`, PLUS confirmation that `respond_to?` itself is untouched (`!own_respond_to_hook?`), so
+      # nothing can make `resolve_value`'s `value.respond_to?(:call)` answer anything but the truthful `true`
+      # a real `call` earns. This is the predicate the ALIASING exemptions below need — a Proc/lambda's
+      # behavior genuinely cannot be mutated after creation the way a container's elements can, which is why
+      # `certainly_resolved_per_call?` alone used to seem sufficient, but that reasoning only holds when
+      # `resolve_value` is GUARANTEED to reach `.call` at all: an unfrozen object with a real `call` AND a
+      # real `include?`, whose `respond_to?` is overridden to hide `:call` specifically, is certainly NOT
+      # exempt from the freeze requirement — `resolve_value` routes it through the mutable `include?` for
+      # certain, and mutating the still-held object after declaring changes membership retroactively (Codex,
+      # PR #288, fresh evidence after the earlier call-routing fix: "only the usability path accounts for the
+      # overridden probe — the new aliasing exemptions still use the old table-only certainty predicate").
+      #
+      # A LITERAL Proc is a special case within that: `resolve_value`'s `case value; when Proc` is ancestry
+      # matching (`Module#===`, never dispatched), and takes ABSOLUTE precedence over the generic "else"
+      # branch this `respond_to?`-override reasoning is about — a Proc's OWN `respond_to?`, overridden or
+      # not, is never even ASKED for the routing decision, so `own_respond_to_hook?` is simply irrelevant to
+      # it. Requiring the SAME certainty test anyway refused a perfectly usable Proc (already confirmed
+      # working by `proc_call_usable?` before this is ever reached) over an override that could never have
+      # redirected it in the first place (Codex, PR #288: "ActiveModel selects its when Proc resolution
+      # branch before the generic respond_to?(:call) route, so this override cannot redirect Proc
+      # resolution").
+      def certainly_routed_to_call?(collection)
+        literal_proc?(collection) || (certainly_resolved_per_call?(collection) && !own_respond_to_hook?(collection))
       end
 
       # Whether the collection's method table is the whole truth about it. Ruby owns both hooks for an ordinary
@@ -127,6 +176,71 @@ module Axn
       # Ruby itself supplies them from — anything else means the caller took one over.
       DISPATCH_HOOKS = %i[method_missing respond_to_missing?].freeze
       NATIVE_DISPATCH_HOOK_OWNERS = [::BasicObject, ::Kernel, ::Object].freeze
+
+      # Whether `respond_to_missing?` alone is the caller's own — the ONE hook `Kernel#respond_to?` actually
+      # consults. `own_dispatch_hooks?` above checks `method_missing` too, because a `call`/`include?` a caller
+      # only *dispatches* through `method_missing` is real either way that predicate's doubt falls — but
+      # `respond_to?` never asks `method_missing` at all, so a `method_missing` override with no matching
+      # `respond_to_missing?` leaves `respond_to?` answering its INHERITED (always-false) verdict for every
+      # absent name — deterministically, not doubtfully. `usable_clusivity_delimiter?` mirrors
+      # `check_validity!`, which is built entirely out of `respond_to?` checks, so it is this narrower
+      # predicate it needs: doubt may only survive where `respond_to?`'s own answer actually could.
+      def own_respond_to_missing_hook?(collection)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, :respond_to_missing?)
+        owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+      end
+
+      # Whether `respond_to?` ITSELF is the caller's own, distinct from `respond_to_missing?` above.
+      # `check_validity!` calls `delimiter.respond_to?(...)` directly, and Ruby dispatches WHICHEVER
+      # implementation the caller's class defines — a caller who overrides `respond_to?` outright (rather
+      # than going through the conventional `respond_to_missing?` hook) governs its own answer just as
+      # completely, and just as undecidably without running it. DOUBT MUST ANSWER "usable" here for the same
+      # reason it does for `respond_to_missing?` (Codex, PR #288).
+      #
+      # A NIL owner is a THIRD case, not a "no" — `respond_to?` can be unreachable through the normal table
+      # (narrowed to private/protected, or `undef_method`'d outright) and STILL be what actually answers
+      # `delimiter.respond_to?(...)`, because Ruby routes a call it cannot dispatch normally through
+      # `method_missing` regardless of why the normal dispatch failed (`respond_to_reachable?` already
+      # depends on this same fact). So a nil owner defers to whether `method_missing` is the caller's own: if
+      # it is, the probe is answered by CALLER code either way and stays doubtful; if it is not, `respond_to?`
+      # is either absent or plain Kernel's own, and `respond_to_reachable?` having already passed means the
+      # ONLY way it did is a public `respond_to?` this method already found — so a bare `nil` here, with no
+      # `method_missing`, cannot be reached from `usable_clusivity_delimiter?` at all (Codex, PR #288, a
+      # second case beyond the private-`respond_to?`-plus-`method_missing` one already fixed).
+      def own_respond_to_hook?(collection)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, :respond_to?)
+        return own_method_missing_hook?(collection) if owner.nil?
+
+        NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+      end
+
+      # Whether `method_missing` alone is the caller's own — the ONE hook that can actually catch a message
+      # Ruby's normal dispatch (`public_send`, an ordinary `.call`) fails to find in the method table. Neither
+      # `respond_to?` nor `respond_to_missing?` participates in dispatch at all — they only decide what
+      # `respond_to?` REPORTS, which a caller-owned override of either makes undecidable (see
+      # `own_respond_to_missing_hook?`/`own_respond_to_hook?`), but that doubt is worthless on its own: an
+      # object claiming to answer `:include?` through an overridden `respond_to?`/`respond_to_missing?`, with
+      # NEITHER hook actually catching the call, still raises `NoMethodError` from the real dispatch — for
+      # CERTAIN, not doubtfully, since `method_missing` absent (native) means nothing stands between the miss
+      # and the raise. So a doubtful `respond_to?` answer may only stand in for a real `include?`/`call` when
+      # `method_missing` is ALSO the caller's own (Codex, PR #288).
+      def own_method_missing_hook?(collection)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, :method_missing)
+        owner && NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+      end
+
+      # Whether ActiveModel might dispatch `.call` on this collection AT ALL — certainly, through a real public
+      # `call`, or DOUBTFULLY, through an overridden `respond_to?`/`respond_to_missing?` that might answer true
+      # for `:call` — PROVIDED `method_missing` is there to catch the dispatch if it happens; a doubtful
+      # `respond_to?(:call)` answer with no `method_missing` to back it still raises `NoMethodError` for
+      # certain, per `own_method_missing_hook?` above. THE single question `string_keyed_delimiter?` needs:
+      # would `resolve_value`'s `respond_to?(:call)` check route this collection to `.call` before its own
+      # `include?` (substring or otherwise) is ever reached.
+      def dynamically_resolved_per_call?(collection)
+        certainly_resolved_per_call?(collection) ||
+          ((own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)) &&
+            own_method_missing_hook?(collection))
+      end
 
       # The two validators that name a set of values the field's own value is compared AGAINST. THE single
       # definition, so the canonicalization below and the declaration guards (contract.rb `CLUSIVITY_KEYS`)
@@ -242,13 +356,918 @@ module Axn
               "it afterwards)."
       end
 
+      # Whether `name` is in `collection`'s method table as a PUBLIC method — the ownership mirror of
+      # `respond_to?(name)` (public-only, which is what `check_validity!` itself asks), read the way
+      # `certainly_resolved_per_call?` already reads it for `:call` alone: through the OWNER the method table
+      # names, never by dispatching `respond_to?` on the caller's object.
+      def public_method_owner?(collection, name)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, name)
+        !owner.nil? && Axn::Internal::NativeMethods.public_instance_method?(owner, name)
+      end
+
+      # Whether `collection`'s OWN `name` — already established owned via `public_method_owner?` (or, for a
+      # Range's `begin`/`end`, owned by ANYONE at all, native or overridden) — can be called with EXACTLY
+      # `count` positional arguments. Every prerequisite this file dispatches on the caller's object is called
+      # with a FIXED count, and none of them gets the arity adaptation `resolve_value`'s Proc branch gives its
+      # own callable (`value.arity == 0 ? value.call : value.call(record)`) — a real, public method matching
+      # neither the exact count nor a `:rest` still raises `ArgumentError` on the very first genuine dispatch,
+      # however correctly it answers `respond_to?`/ownership otherwise (Codex, PR #288, across two rounds:
+      # `include?`/`cover?`/`call` first, then `respond_to?`/`is_a?`/`public_send`/Range `begin`/`end`, "the
+      # analogous ... failure").
+      #
+      # The fixed counts, so a caller reads them straight off the real call sites rather than re-deriving:
+      # `respond_to?(:include?)` and `enumerable.is_a? Range` are each ONE; `members.public_send(name,
+      # value)` is TWO; `enumerable.begin`/`.end` are ZERO.
+      #
+      # Read from `UnboundMethod#parameters`, never by calling it. A `:keyreq` makes ANY positional count
+      # insufficient on its own (a required keyword still goes unsupplied); a `:rest` accepts any count
+      # (this is what lets `Proc#call`'s own `(*args)` — and any object whose `call` matches that shape —
+      # clear the one-argument check unconditionally, matching `resolve_value`'s actual leniency there);
+      # otherwise `count` must fall within `:req` through `:req + :opt`.
+      def accepts_positional_args?(collection, name, count)
+        method = Axn::Internal::NativeMethods.declared_method(collection, name)
+        return false if method.nil?
+
+        params_accept_positional_args?(method.parameters, count)
+      end
+
+      # The same arity check `accepts_positional_args?` applies to a DECLARED method's `parameters`, pulled
+      # out for a caller that already has a `parameters` array in hand from somewhere OTHER than
+      # `NativeMethods.declared_method` — namely, a Proc's OWN native `parameters` (`PROC_PARAMETERS`), which
+      # reflects the closure's real signature in a way `Proc#call`'s always-variadic method-table entry never
+      # can (Codex, PR #288).
+      #
+      # A `:rest` param removes the UPPER bound alone — it never excuses required (`:req`) params still
+      # unsatisfied by `count`: `def include?(first, second, *rest)` still raises `ArgumentError` when called
+      # with one argument, `*rest` notwithstanding. Checking `:rest` before `required <= count` accepted a
+      # declaration whose leading required params ActiveModel could never actually supply (Codex, PR #288:
+      # "first require required <= count, then use :rest only to remove the upper bound").
+      def params_accept_positional_args?(params, count)
+        return false if params.any? { |type, _| type == :keyreq }
+
+        required = params.count { |type, _| type == :req }
+        return required <= count if params.any? { |type, _| type == :rest }
+
+        optional = params.count { |type, _| type == :opt }
+        required <= count && (required + optional) >= count
+      end
+
+      def accepts_single_positional_arg?(collection, name) = accepts_positional_args?(collection, name, 1)
+
+      # Whether `collection` can even ANSWER `respond_to?` at all — the one prerequisite every branch below
+      # assumes and none of them may override. `check_validity!` probes the delimiter with
+      # `delimiter.respond_to?(:include?) || delimiter.respond_to?(:call) || delimiter.respond_to?(:to_sym)` —
+      # an EXPLICIT-receiver call, so a PUBLIC `respond_to?` answers it for CERTAIN. A value rooted at
+      # `BasicObject` with nothing added has no `respond_to?` at all, and a class that narrows the inherited
+      # one to `private`/`protected` (unusual, but not unreachable) has one the table finds but
+      # `delimiter.respond_to?(...)` still cannot reach that way — EXCEPT Ruby routes a call Ruby cannot
+      # dispatch normally (an absent method, or a private one reached with an explicit receiver) through
+      # `method_missing` regardless of why the normal dispatch failed, so a caller-owned `method_missing` that
+      # cooperates with an otherwise-unreachable `respond_to?` genuinely answers the probe (measured: a private
+      # `respond_to?` alongside a `method_missing` that handles the `:respond_to?` message dispatches to
+      # `method_missing`, not `NoMethodError`). DOUBTFUL in that case — axn cannot know whether the
+      # `method_missing` actually cooperates — so DOUBT MUST ANSWER "usable" the same as every other hook here.
+      # Only the absence of BOTH a public `respond_to?` AND a `method_missing` to catch the miss is CERTAIN
+      # failure, readable without dispatch, and refused unconditionally (Codex, PR #288).
+      #
+      # A real, public, OWNED `respond_to?` is what Ruby dispatches `delimiter.respond_to?(:include?)` to —
+      # `method_missing` is never consulted once a real method answers, so a zero-arg `def respond_to? =
+      # true` (real, public, and — being arity-agnostic about WHAT it answers for — indistinguishable from a
+      # correct one by every check above) is certain `ArgumentError`, regardless of whatever `method_missing`
+      # might otherwise do (same precedence as `include?`/`cover?`/`call`, Codex, PR #288).
+      #
+      # A real, public `respond_to?` owned by `::Kernel` ITSELF (native, untouched) is a SPECIAL case within
+      # that: its own C implementation is what runs `delimiter.respond_to?(:include?)`, and for any name
+      # absent from the table it internally dispatches `respond_to_missing?(name, false)` — TWO args — before
+      # answering. A caller-owned `respond_to_missing?` with the wrong arity (`def respond_to_missing? =
+      # true`, missing the conventional `(name, include_all = false)` signature) is real, public, and answers
+      # every ownership check here, and then breaks `check_validity!`'s VERY FIRST probe with `ArgumentError`
+      # — before `usable_clusivity_delimiter?` ever reaches the dynamic-call-route question that reads this
+      # same ownership (Codex, PR #288, fresh evidence after the prior hook-arity fix: "the current code
+      # validates method_missing but never the owned respond_to_missing?"). Irrelevant when `respond_to?`
+      # ITSELF is overridden (a non-`::Kernel` owner) — an override answers the probe on its own terms and
+      # need not consult `respond_to_missing?` at all, which is not axn's to police (out of scope, the same
+      # as every other caller-code behavior this file declines to simulate).
+      #
+      # But even with `respond_to?` native, `respond_to_missing?` is consulted AT ALL only for a name ABSENT
+      # from the table — `check_validity!`'s `respond_to?(:include?) || respond_to?(:call) ||
+      # respond_to?(:to_sym)` evaluates LEFT TO RIGHT and SHORT-CIRCUITS, so a real, public `:include?`
+      # answers the very first term without ever falling through to `respond_to_missing?` at all, regardless
+      # of whether `respond_to_missing?` itself is broken. This is NOT the only place a `respond_to?` probe
+      # is dispatched, though: `resolve_value`'s "else" branch (`Clusivity#include?` calls it BEFORE
+      # `inclusion_method` is ever reached, UNCONDITIONALLY, for any delimiter that is not a literal
+      # Proc/Symbol) separately asks `value.respond_to?(:call)` to decide whether to route through `.call` —
+      # a SECOND, independent probe that reaches `respond_to_missing?` all the same whenever `:call` is
+      # itself absent, REGARDLESS of whether `:include?` is real. A real `include?` therefore exempts this
+      # check only ALONGSIDE a real `call` — one alone still leaves the OTHER probe to reach the broken hook
+      # (Codex, PR #288, fresh evidence after the include?-alone exemption: "validate respond_to_missing? for
+      # that later probe when native respond_to? will reach it; the existing working control with real
+      # include? and real call should remain exempt because that hook is genuinely unreachable there").
+      def respond_to_reachable?(collection)
+        if public_method_owner?(collection, :respond_to?)
+          return false unless accepts_single_positional_arg?(collection, :respond_to?)
+          return true unless Axn::Internal::NativeMethods.method_owner(collection, :respond_to?).equal?(::Kernel)
+          return true if public_method_owner?(collection, :include?) && public_method_owner?(collection, :call)
+          return true unless own_respond_to_missing_hook?(collection)
+
+          accepts_positional_args?(collection, :respond_to_missing?, 2)
+        else
+          method_missing_accepts?(collection, 2)
+        end
+      end
+
+      # Whether `method_missing` — already established as the caller's own via `own_method_missing_hook?` —
+      # can accept the EXACT positional argument count Ruby invokes it with for a given failed dispatch:
+      # `method_missing(missed_name, *original_args)`, so a probe with `count` total arguments (the missed
+      # name plus `count - 1` originals) is what a caller's `method_missing` must actually accept, not merely
+      # exist. Every doubtful-hook fallback in this file needs this, one `count` per real call site:
+      # `respond_to?(:include?)`'s fallback is `method_missing(:respond_to?, :include?)` (2); `is_a?`'s is
+      # `method_missing(:is_a?, Range)` (2); `public_send`'s is `method_missing(:public_send, name, value)`
+      # (3); `include?`/`cover?`'s is `method_missing(:include?/:cover?, value)` (2); Range `begin`/`end`'s is
+      # `method_missing(:begin)`/`method_missing(:end)` (1, no originals); a literal Proc's `arity` fallback
+      # is `method_missing(:arity)` (1) and its `call` fallback is `method_missing(:call)`/`method_missing(
+      # :call, record)` (1 or 2, matching `proc_call_usable?`'s own count-per-branch). A `method_missing`
+      # accepting fewer (`def method_missing(name) = ...`, a plausible authoring mistake, missing the
+      # conventional `*args` splat) raises `ArgumentError` on that very dispatch, before the hook ever gets a
+      # chance to answer (Codex, PR #288, across two rounds: the `respond_to?` fallback first, then every
+      # other doubtful-hook fallback in the file, "this dynamic route still checks hook ownership without
+      # checking that the hook accepts the missed name plus runtime argument").
+      def method_missing_accepts?(collection, count)
+        own_method_missing_hook?(collection) && accepts_positional_args?(collection, :method_missing, count)
+      end
+
+      # Whether `collection` is a literal Proc — by ANCESTRY, matching every other "is this a built-in
+      # shape" classification in this file (Range, Array), never `is_a?`. `resolve_value`'s `case value; when
+      # Proc` is `Module#===`, a C-level ancestry check that does not dispatch on the value either, so this
+      # mirrors it exactly (the same reasoning `_parse_validates_options`'s own `case`/`when Range, Array`
+      # earns the same treatment already documented on `native_bare_clusivity_delimiter?`).
+      def literal_proc?(collection)
+        Axn::Internal::NativeMethods.includes_module?(Axn::Internal::Identity.class_of(collection), ::Proc)
+      end
+
+      # `Proc#arity` itself, unbound — for reading a Proc's OWN true arity, never the caller's possibly
+      # overridden version, the same "native reader over the caller's own" pattern `RANGE_BEGIN`/`RANGE_END`
+      # already apply to a Range's bound: safe to bind and read (no caller code runs) ONLY once ownership
+      # confirms `arity` is Ruby's own C implementation rather than a singleton override, exactly as that
+      # pair are only trusted once `method_owner(collection, :begin/:end).equal?(::Range)` confirms the same.
+      PROC_ARITY = ::Proc.instance_method(:arity)
+
+      # `Proc#parameters` itself, unbound — for reading a Proc's OWN real parameter list, the same native
+      # reader pattern as `PROC_ARITY`. Needed because `Proc#call`'s OWN method-table signature (what
+      # `accepts_positional_args?(collection, :call, count)` would otherwise read) is ALWAYS `(*args)` —
+      # generic across every Proc instance at the C level — and so can never reflect a SPECIFIC closure's own
+      # strictness (a 2-required-arg lambda's `call` is still declared `(*args)` in the method table; only
+      # `parameters`, asked of the INSTANCE, reveals the real `[[:req, :a], [:req, :b]]`).
+      PROC_PARAMETERS = ::Proc.instance_method(:parameters)
+
+      # `Method#parameters` itself, unbound — the SAME native-reader fix `PROC_PARAMETERS` applies, for the
+      # SAME reason, on a DIFFERENT Ruby-own generic-callable-wrapper type: `Method#call`'s OWN method-table
+      # signature is ALSO always `(*args)`, regardless of the BOUND target's real arity — a `Method` object
+      # is not a literal Proc (`resolve_value`'s `case/when Proc` does not match it, so it goes through the
+      # generic `respond_to?(:call)` route like any other custom callable), but its `call` is EXACTLY the
+      # same kind of deceptive wrapper: `receiver.method(:foo)`, where `foo` takes two required arguments,
+      # still answers `respond_to?(:call)` and `Method.instance_method(:call).parameters` with `[[:rest]]`,
+      # while the actual dispatch (`value.call(record)`, ALWAYS one argument) fails on every call (Codex, PR
+      # #288: "inspect the bound method's native parameters/arity, similarly to the Proc special case").
+      METHOD_PARAMETERS = ::Method.instance_method(:parameters)
+
+      # `call` reachable with a single positional argument, for a delimiter CERTAINLY routed there
+      # (`certainly_routed_to_call?`) — special-cased for a real `call` OWNED BY `::Method` ITSELF (a bound
+      # `Method` object, untouched): its acceptance is governed by the BOUND TARGET's own `parameters` (read
+      # via the bound native `METHOD_PARAMETERS`, never the caller's own possibly-overridden `.parameters`),
+      # never by `Method#call`'s always-variadic method-table entry. Any other real `call` (an ordinary
+      # object's own definition, whose method-table `parameters` genuinely reflect what will be dispatched)
+      # keeps the plain check.
+      def dispatched_call_accepts_single_arg?(collection)
+        call_owner = Axn::Internal::NativeMethods.method_owner(collection, :call)
+        return params_accept_positional_args?(METHOD_PARAMETERS.bind_call(collection), 1) if call_owner.equal?(::Method)
+
+        accepts_single_positional_arg?(collection, :call)
+      end
+
+      # Whether a literal Proc's dispatch actually succeeds. `resolve_value`'s Proc branch is `value.arity ==
+      # 0 ? value.call : value.call(record)` — TWO calls, in order, BOTH with a receiver-explicit, undoubted
+      # arity ActiveModel decides for itself rather than adapting to whatever `certainly_resolved_per_call?`
+      # would otherwise assume:
+      #
+      #   1. `arity` is invoked with ZERO arguments, ALWAYS, to decide which branch to take. A real, public,
+      #      OWNED `arity` requiring one is certain `ArgumentError` before `call` is ever reached — the
+      #      generic prerequisite-arity treatment applied to a NEW prerequisite (Codex, PR #288).
+      #   2. `call` is then invoked with EXACTLY the argument count that `arity` selects: zero if it answers
+      #      zero, one otherwise — never "whichever, doubtfully" once `arity`'s value can be TRUSTED. `arity`
+      #      is trustworthy precisely when its owner is confirmed `::Proc` itself (Ruby's own C accessor onto
+      #      the Proc's internal arity, not a singleton override) — the same ownership-equality gate
+      #      `range_cover_resolution` already applies before trusting `begin`/`end`'s VALUE, reused here for
+      #      `arity`'s. Read via the bound native `PROC_ARITY`, never the caller's own (possibly overridden)
+      #      `.arity`, so this never dispatches on the caller's object even while trusting the result.
+      #      Matching the SELECTED count exactly — not "either" — is what a mismatched singleton (a zero-arity
+      #      Proc with a one-arg singleton `call`, or the reverse) now correctly refuses: only ONE of the two
+      #      branches `resolve_value` could take is ever reachable, and it must be the right one (Codex, PR
+      #      #288: "validate only the argument count it selects; reserve the permissive result for an
+      #      overridden reader whose value is genuinely unknowable").
+      #   3. An OVERRIDDEN `arity` (real, correct-arity, but not `::Proc`'s own) leaves the selected count
+      #      genuinely unknowable without dispatching the caller's override — DOUBT, so `call` is accepted
+      #      reachable with EITHER count, matching every other undecidable case in this file (this is what
+      #      let a zero-arity Proc with a matching zero-arg singleton `call` through in the first place,
+      #      Codex, PR #288, the earlier singleton-narrowed-Proc finding).
+      #
+      # Every real-method check is real-method-first, method_missing-backed-only-as-fallback (with the exact
+      # argument count `method_missing` would actually be invoked with — `method_missing(:arity)` for #1,
+      # `method_missing(:call)`/`method_missing(:call, record)` for #2/#3), the same precedence and the same
+      # hook-arity discipline as every other prerequisite in this file: a real method always wins Ruby's
+      # dispatch, and a fallback hook must itself accept what it will be invoked with (Codex, PR #288).
+      #
+      # `arity`'s OWNER existing but not PUBLIC (narrowed to private/protected) is a THIRD case, not a
+      # "real, so trust it": Ruby routes a call it cannot dispatch normally — an absent method, or a private
+      # one reached with an explicit receiver, exactly as `respond_to_reachable?`/`range_cover_resolution`
+      # already establish — through `method_missing` regardless of WHY normal dispatch failed. A private
+      # `arity` backed by a cooperating `method_missing` genuinely answers `value.arity`, so it takes the
+      # same doubtful fallback as an absent one, not an unconditional refusal (Codex, PR #288: "Ruby routes
+      # an explicit call to the private method through method_missing, just as the surrounding delimiter
+      # checks already allow for other inaccessible methods").
+      def proc_call_usable?(collection)
+        arity_owner = Axn::Internal::NativeMethods.method_owner(collection, :arity)
+        arity_reachable_normally = arity_owner && Axn::Internal::NativeMethods.public_instance_method?(arity_owner, :arity)
+
+        unless arity_reachable_normally
+          return false unless method_missing_accepts?(collection, 1)
+
+          return call_reachable_with_either_arity?(collection)
+        end
+
+        return false unless accepts_positional_args?(collection, :arity, 0)
+
+        if arity_owner.equal?(::Proc)
+          proc_native_call_accepts?(collection, PROC_ARITY.bind_call(collection).zero? ? 0 : 1)
+        else
+          call_reachable_with_either_arity?(collection)
+        end
+      end
+
+      # `call` reachable with EXACTLY `count` positional arguments, for a delimiter whose `arity` is
+      # TRUSTED-native (so `count` itself is trustworthy) — real-method-first, but NOT via the generic
+      # `Proc#call` signature: a real, public `call` OWNED BY `::Proc` ITSELF (no singleton override) is the
+      # ORIGINAL closure body, dispatched directly, and its acceptance is governed by the closure's OWN
+      # `parameters` (read via the bound native `PROC_PARAMETERS`, never the caller's own possibly-overridden
+      # `.parameters`) — NOT by `Proc#call`'s method-table entry, which is always `(*args)` regardless of any
+      # specific closure's real strictness, and would otherwise let a 2-required-arg lambda through a check
+      # that only ever asked "does `call` exist," never "does the BODY accept what `resolve_value` supplies"
+      # (Codex, PR #288: "arities greater than one and required keywords must be rejected from the Proc's own
+      # parameters"). A SINGLETON override of `call` shadows the original body entirely, the same as anywhere
+      # else in this file a singleton can shadow a native implementation — its OWN declared parameters govern
+      # instead, read the ordinary way.
+      def proc_native_call_accepts?(collection, count)
+        call_owner = Axn::Internal::NativeMethods.method_owner(collection, :call)
+        return params_accept_positional_args?(PROC_PARAMETERS.bind_call(collection), count) if call_owner.equal?(::Proc)
+        return accepts_positional_args?(collection, :call, count) if call_owner && Axn::Internal::NativeMethods.public_instance_method?(call_owner, :call)
+
+        method_missing_accepts?(collection, count + 1)
+      end
+
+      # `call` reachable with EITHER zero or one argument — for the cases where `arity`'s own selected count
+      # cannot be trusted without dispatching the caller's object. Delegates to `proc_native_call_accepts?`
+      # for BOTH counts, not a separate ownership-only check: a literal Proc/lambda's `call` is owned by
+      # `::Proc` itself just as often here as in the trusted-arity branches, and `Proc#call`'s method-table
+      # signature is the SAME always-variadic `(*args)` regardless of which branch reached it — trusting that
+      # generic signature (rather than the instance's own native `parameters`) accepted a STRICT lambda
+      # requiring two arguments whenever its OWN `arity` was separately overridden to report otherwise, since
+      # `(*args)` accepts any count unconditionally (Codex, PR #288: "this branch delegates to the generic
+      # variadic Proc#call method instead of the lambda body's native parameters").
+      def call_reachable_with_either_arity?(collection)
+        proc_native_call_accepts?(collection, 0) || proc_native_call_accepts?(collection, 1)
+      end
+
+      # Whether ActiveModel's `Clusivity#check_validity!` would accept this as a delimiter AND the runtime
+      # would actually dispatch it without raising — TWO questions, because they can disagree, and both must
+      # clear for a declaration to be genuinely usable:
+      #
+      #   1. Would `check_validity!`'s `respond_to?(:include?) || respond_to?(:call) || respond_to?(:to_sym)`
+      #      answer true? Mirrored by OWNERSHIP rather than by dispatching `respond_to?` on the caller's
+      #      object. A collection carrying its own `respond_to_missing?` OR its own `respond_to?` is
+      #      undecidable without running it — `respond_to?` is answered by whichever of the two the caller's
+      #      class overrides, `respond_to_missing?` for the conventional hook, `respond_to?` itself when
+      #      overridden directly — and DOUBT MUST ANSWER "usable" for THIS question alone: refusing it would
+      #      refuse a declaration `check_validity!` might in fact accept.
+      #   2. Would the ACTUAL member dispatch (`members.include?`/`.cover?` via `public_send`, or `.call` if
+      #      `resolve_value` routes there first) reach something rather than raise `NoMethodError`? THIS is
+      #      governed entirely by `method_missing` (or a real method) — `respond_to?`/`respond_to_missing?`
+      #      participate in NEITHER `public_send`'s dispatch nor an ordinary `.call`, so a doubtful "yes" from
+      #      question 1 is worthless here on its own: an object whose `respond_to_missing?` claims `:include?`
+      #      with no `method_missing` to catch the actual call still raises `NoMethodError` on EVERY call, for
+      #      CERTAIN — declares cleanly, breaks on every call, the shape this guard exists to close (Codex, PR
+      #      #288). So a doubtful hook from question 1 only stands in for question 2 when `method_missing` is
+      #      ALSO the caller's own.
+      #
+      # `method_missing` alone answers NEITHER question: it grants no doubt about question 1 (checked
+      # explicitly, matches `own_respond_to_missing_hook?`'s own reasoning), so a collection overriding only
+      # `method_missing`, with neither `respond_to?` hook overridden and nothing else real, is refused by the
+      # final `return false` — `check_validity!` raises regardless of what `method_missing` would have done if
+      # actually reached (measured).
+      #
+      # A real public `include?`/`call` answers BOTH questions on its own (certain, no hook needed either
+      # way), which is why they short-circuit ahead of the hook checks. `to_sym` is different from both: a
+      # genuinely public `to_sym` answers question 1 on its own (`respond_to?(:to_sym)` needs no doubtful hook
+      # — it is really there), but says NOTHING about question 2, since `resolve_value` never calls `to_sym` at
+      # all — it dispatches on `case value when Symbol` (`is_a?(Symbol)`, judged by IDENTITY via
+      # `Identity.class_of`, never `is_a?`, since `Symbol` takes no subclass and so cannot be missed this way),
+      # and a value that fails that falls through to `members = value` then `value.include?(record_value)`.
+      # So a public `to_sym` alone still needs question 2 answered separately: certain via a real
+      # `include?`/`call` (already covered above), or doubtful via `method_missing` (which is why it is
+      # checked again at the very end, alongside the two `respond_to?` hooks it can stand in for once
+      # `method_missing` backs it).
+      #
+      # A THIRD question, distinct from both above, only for a delimiter that reaches `members = value`
+      # UNCHANGED (a Symbol/Proc/real-callable is resolved to something ELSE first, so neither question below
+      # is about the declared object at all — see `enumerable_is_a_reachable?`/`public_send_reachable?`): would
+      # `Clusivity#inclusion_method`'s `enumerable.is_a? Range` and `WholeValueClusivity#include?`'s
+      # `members.public_send(...)` — both ORDINARY calls with an explicit receiver, dispatched on EVERY such
+      # delimiter regardless of what it turns out to be — reach something rather than raise `NoMethodError`
+      # before `include?`/`cover?` are ever consulted? Checked BEFORE `range_usable?` and the fallback branch,
+      # since both calls happen ahead of either (Codex, PR #288, two more findings after the `is_a?`
+      # classification fix: reachability is a different question from whether an override can be trusted).
+      #
+      # A FOURTH question, checked as an unconditional hard failure rather than falling through to the
+      # `method_missing` fallback below: whenever a real, public, OWNED `call`/`include?` exists at all, Ruby
+      # dispatches straight to it — `method_missing` is consulted only when normal dispatch finds NOTHING, so
+      # a real method with the WRONG arity is a certain `ArgumentError`, never something a coincidental
+      # `method_missing` elsewhere on the object could rescue (it would never be reached). So this is checked
+      # before, and independent of, `own_method_missing_hook?` — unlike every doubtful hook above, there is no
+      # doubt here to resolve in favor of usable (Codex, PR #288).
+      #
+      # A FIFTH question, prior to and gating the fourth: is it even CERTAIN which of the two routes
+      # `resolve_value` takes at all? Its "else" branch asks `value.respond_to?(:call)` — an ordinary call
+      # Ruby dispatches to WHICHEVER `respond_to?` the caller's class defines, same as `check_validity!`'s own
+      # probe. A real public `call` makes that answer true FOR CERTAIN only when `respond_to?` ITSELF is
+      # untouched (native `Kernel#respond_to?` checks the real method table first, so `respond_to_missing?`
+      # is never even consulted for a name already present) — an overridden `respond_to?` governs the answer
+      # just as completely as it does for `check_validity!`'s probe, and could hide a real `call` behind a
+      # `false`, routing to `include?` instead (measured: a valid `include?`, a real but WRONG-arity `call`,
+      # and a `respond_to?` override answering `false` for `:call` declares and enforces fine via `include?`
+      # — the arity-mismatched `call` is never reached at all). Conversely, a doubtful `respond_to_missing?`/
+      # `respond_to?` override backed by a cooperating `method_missing` (`dynamically_resolved_per_call?`)
+      # can route to `.call` even with NO real `call` method at all, in which case `is_a?`/`public_send`
+      # apply to WHATEVER `.call` returns, not to the original object — so a broken arity on the ORIGINAL
+      # object's own `is_a?` is irrelevant (measured: a zero-arg `is_a?` on the delimiter itself, alongside a
+      # `respond_to_missing?`+`method_missing` pair that supplies a real `.call` returning an Array, declares
+      # and enforces fine — the original's `is_a?` is never dispatched).
+      #
+      # So the fourth question's "certain failure" only holds when routing is ALSO certain — the same
+      # `own_respond_to_hook?` check `check_validity!`'s own probe already needs, reused here for a second
+      # reason. And per the doubt-answers-usable doctrine that governs every other undecidable case in this
+      # file, MERELY possible call routing (`dynamically_resolved_per_call?`, which already covers "real call
+      # behind a lying `respond_to?`" as well as the doubtful-hook case) stands down rather than enforcing
+      # either route's own arity requirements — checking one would refuse a declaration whose OTHER route is
+      # what the runtime actually takes (Codex, PR #288).
+      #
+      # A SIXTH question, checked BEFORE any of the above and unconditionally for anything ancestry
+      # classifies as a literal Proc: `resolve_value`'s `case value; when Proc` branch takes ABSOLUTE
+      # precedence over the generic "else" — a Proc is NEVER routed through `respond_to?(:call)` at all, so
+      # none of the routing-certainty reasoning above even applies to one. Delegated to `proc_call_usable?`.
+      def usable_clusivity_delimiter?(collection)
+        return false unless respond_to_reachable?(collection)
+        return true if Axn::Internal::Identity.class_of(collection).equal?(::Symbol)
+        return proc_call_usable?(collection) if literal_proc?(collection)
+
+        return dispatched_call_accepts_single_arg?(collection) if certainly_routed_to_call?(collection)
+
+        # `certainly_resolved_per_call?` alone only certifies that `resolve_value` MIGHT route through
+        # `.call` (a real, public, owned one exists) — it says nothing about whether that route's own arity
+        # is correct, nor about whether the OTHER route (`members = collection` itself, when the caller's
+        # overridden `respond_to?` answers `false` for `:call`) would work either. When routing is uncertain
+        # (reached here rather than the CERTAIN branch above, precisely because `respond_to?` is overridden),
+        # a real `call` whose own arity is ALSO wrong is not "usable regardless" — it is usable only if the
+        # OTHER, non-call route turns out fine, so this must fall through to that reasoning rather than
+        # short-circuit, exactly the same "check whether ANY possible route works" doubt this file already
+        # applies to `range_cover_resolution`'s `:undecidable`/`own_is_a_hook?` cases. Refusing here happens
+        # only if EVERYTHING below ALSO fails — i.e., only when NEITHER possible route could ever work,
+        # readable without dispatching anything (Codex, PR #288: "reject only when both possible routes are
+        # unusable").
+        return true if certainly_resolved_per_call?(collection) && dispatched_call_accepts_single_arg?(collection)
+
+        # A doubtful hook claiming `:call`, backed by `method_missing`, routes to `method_missing(:call,
+        # record)` — TWO args — if it actually cooperates. A `method_missing` that cannot even accept that
+        # shape (Codex, PR #288: "a one-argument method_missing(name)") is never checked again below (the
+        # generic fallback needs the SAME two-argument shape for `:include?` instead), so falling through
+        # rather than hard-rejecting here still reaches the right verdict either way.
+        return true if (own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)) && method_missing_accepts?(collection, 2)
+
+        return false unless enumerable_is_a_reachable?(collection) && public_send_reachable?(collection)
+        return true if range_usable?(collection)
+        return false if public_method_owner?(collection, :include?) && !accepts_single_positional_arg?(collection, :include?) &&
+                        !own_public_send_hook?(collection)
+        return false unless method_missing_accepts?(collection, 2)
+
+        public_method_owner?(collection, :to_sym) || own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)
+      rescue StandardError
+        true
+      end
+
+      # Whether `is_a?` can be DISPATCHED at all — `Clusivity#inclusion_method`'s `enumerable.is_a? Range` is
+      # an ordinary call with an explicit receiver, made for EVERY delimiter that reaches `members = value`
+      # unchanged, Range or not (Codex, PR #288: "before accepting either Range or non-Range delimiters"). A
+      # private/undefined `is_a?` with no `method_missing` to catch the miss raises `NoMethodError` on the
+      # first call, regardless of whether the object answers `include?` perfectly well. Distinct from
+      # `own_is_a_hook?`, which asks whether an is_a? that CAN be dispatched is trustworthy for ancestry
+      # classification — this asks only whether it can be dispatched AT ALL. A real, public, OWNED `is_a?`
+      # always wins Ruby's dispatch over `method_missing`, so a zero-arg `def is_a? = false` is certain
+      # `ArgumentError` regardless of whatever `method_missing` might otherwise do (Codex, PR #288).
+      def enumerable_is_a_reachable?(collection)
+        if public_method_owner?(collection, :is_a?)
+          accepts_single_positional_arg?(collection, :is_a?)
+        else
+          method_missing_accepts?(collection, 2)
+        end
+      end
+
+      # Whether `public_send` can be DISPATCHED at all — `WholeValueClusivity#include?` performs the actual
+      # membership test as `members.public_send(inclusion_method(members), value)`, an ordinary call with an
+      # explicit receiver, for every delimiter that reaches this point, Range or not. A private/undefined
+      # `public_send` with no `method_missing` to catch the miss raises `NoMethodError` before the verified
+      # `include?`/`cover?`/`to_sym` is ever reached, however public and however real (Codex, PR #288). Backed
+      # by `own_method_missing_hook?` the same way every other unreachable-but-caught case here is: Ruby
+      # routes a call it cannot dispatch normally through `method_missing` regardless of why normal dispatch
+      # failed, so a caller-owned `method_missing` genuinely answers a `public_send` an ordinary lookup could
+      # not reach. And, same precedence as every other real-method-first case here: a real, public, OWNED
+      # `public_send` accepting fewer than the TWO arguments it is always called with (the method name plus
+      # the value) is certain `ArgumentError`, `method_missing` notwithstanding (Codex, PR #288).
+      def public_send_reachable?(collection)
+        if public_method_owner?(collection, :public_send)
+          accepts_positional_args?(collection, :public_send, 2)
+        else
+          method_missing_accepts?(collection, 3)
+        end
+      end
+
+      # The native `Range#begin`/`#end` readers, unbound and bound per call — for reading a Range's OWN
+      # stored bound, never the caller's possibly-overridden version, exactly the "native reader over the
+      # caller's own" pattern `HASH_KEYS_READER` already applies to a Hash's keys. `inclusion_method` itself
+      # would read the SAME value absent such an override, since `begin`/`end` are C-level accessors onto
+      # Range's own internal state, not derived from anything a subclass typically recomputes.
+      RANGE_BEGIN = ::Range.instance_method(:begin)
+      RANGE_END = ::Range.instance_method(:end)
+
+      # The bound types `Clusivity#inclusion_method` selects `cover?` for, guarded by `defined?` for the same
+      # reason `Set` is guarded elsewhere in this file — axn works outside Rails, where `Time`/`DateTime`/
+      # `Date` may not be loaded at all.
+      RANGE_COVER_TYPES = [
+        ::Numeric,
+        (::Time if defined?(::Time)),
+        (::DateTime if defined?(::DateTime)),
+        (::Date if defined?(::Date)),
+      ].compact.freeze
+
+      # Resolves what `Clusivity#inclusion_method`'s `enumerable.begin || enumerable.end` would actually see,
+      # evaluated in THE SAME short-circuit order: `.end` is asked AT ALL only when `.begin` answers falsy
+      # (`nil`, for a beginless Range) — so `.end`'s reachability, ownership, and value are irrelevant
+      # whenever `.begin` alone resolves the bound, and matter only when it doesn't. Treating the two
+      # symmetrically (requiring both reachable, both reliable) gets this wrong in BOTH directions: it
+      # refused a Range whose untouched `begin` alone decides the bound while `end` was narrowed to
+      # private/undefined (never dispatched, so never a problem), and it silently accepted one whose
+      # untouched, numeric `begin` alone decides the bound while an UNRELATED override on `end` made the
+      # guard call the whole pair "unreliable" and skip the `cover?` requirement `begin`'s own real value
+      # would have earned (Codex, PR #288, two more findings after the first "require both" pass).
+      #
+      # Returns one of:
+      #   `:unreachable` — the read ActiveModel would try NEXT cannot be dispatched at all (no owner, no
+      #                    `method_missing` to catch the miss) — CERTAIN failure, refuse regardless of
+      #                    `cover?`/`include?`.
+      #   `:undecidable` — the read succeeds, but through an OVERRIDE (or a `method_missing`), so the value it
+      #                    returns cannot be safely determined without dispatching the caller's own code —
+      #                    DOUBT, so no `cover?` requirement either way.
+      #   `:cover`       — resolved, via a NATIVE (trustworthy) read, to a bound `Clusivity#inclusion_method`
+      #                    selects `cover?` for (`Numeric`/`Time`/`DateTime`/`Date`).
+      #   `:no_cover`    — resolved, via a NATIVE read, to any other bound (including both `begin` and `end`
+      #                    answering `nil`, which `inclusion_method` itself would then also route to
+      #                    `include?`).
+      #
+      # A REAL method, of ANY owner, is checked for arity BEFORE the ownership-equal-`::Range` read below:
+      # `enumerable.begin`/`.end` are called with ZERO arguments, and a real method requiring one — overridden
+      # by anything, not necessarily maliciously — is refused as `:unreachable` REGARDLESS of who owns it,
+      # the same "a real method always wins dispatch over `method_missing`" precedence applied everywhere
+      # else in this file. This is decidable from the method table alone, unlike the VALUE such an override
+      # would return, which is what the ownership-equal-`::Range` check below still exists to gate (Codex, PR
+      # #288).
+      def range_cover_resolution(collection)
+        %i[begin end].each do |name|
+          if public_method_owner?(collection, name)
+            return :unreachable unless accepts_positional_args?(collection, name, 0)
+          else
+            return :unreachable unless method_missing_accepts?(collection, 1)
+          end
+          return :undecidable unless Axn::Internal::NativeMethods.method_owner(collection, name).equal?(::Range)
+
+          value = name.equal?(:begin) ? RANGE_BEGIN.bind_call(collection) : RANGE_END.bind_call(collection)
+          # Identity, never `value.nil?`: `value` is the Range's OWN bound, whatever the caller made it — a
+          # `Time`/`Date`/custom Comparable with a singleton `nil?` override would otherwise have that
+          # override DISPATCHED during declaration, running caller code `enumerable.begin || enumerable.end`
+          # itself never runs (Ruby's `||` is a language-level truthiness check, not a dispatched call) —
+          # the same "never `include?`/`==`, only `equal?(nil)`" discipline this file already applies
+          # everywhere else nil-detection touches a caller-controlled value (Codex, PR #288).
+          next if nil.equal?(value) && name.equal?(:begin)
+
+          return(case value
+                 when *RANGE_COVER_TYPES then :cover
+                 else :no_cover
+                 end)
+        end
+
+        :no_cover
+      end
+
+      # Whether `collection` is usable via a real public `include?` — REQUIRED UNCONDITIONALLY, Range or not:
+      # `check_validity!`'s `respond_to?(:include?) || respond_to?(:call) || respond_to?(:to_sym)` gate never
+      # looks at `cover?` at all, so a private `include?` fails `check_validity!` regardless of what bound the
+      # Range has or whether `cover?` is public — a Range gets NO exemption from the ordinary requirement
+      # every other collection already has here.
+      #
+      # For a Range (by ANCESTRY, ordinarily — see the `is_a?` stand-down below) whose bound is
+      # `Numeric`/`Time`/`DateTime`/`Date`, `cover?` is an ADDITIONAL requirement ON TOP of `include?`, never
+      # a substitute for it: `check_validity!` passes on `include?` alone, but `Clusivity#inclusion_method`
+      # then selects `cover?` for that bound, and `WholeValueClusivity#include?` dispatches it with
+      # `public_send` — so a Range SUBCLASS with a real public `include?` but an undefined/private `cover?`
+      # still declares cleanly and raises `NoMethodError` on every call whose bound is numeric/time-like
+      # (Codex, PR #288). A Range whose bound does NOT select `cover?` needs no such extra requirement at
+      # all — refusing it there would refuse a declaration ActiveModel and the runtime both accept, the same
+      # finding's other half.
+      #
+      # `range_cover_resolution` gates the reachability question BEFORE any of that: `inclusion_method` must
+      # read the bound before it can decide anything, so a Range whose `begin` (or `end`, only when `.begin`
+      # is falsy) cannot be dispatched at all is refused regardless of what `include?`/`cover?` look like —
+      # that read is what raises, not the membership dispatch this method otherwise reasons about.
+      #
+      # `cover?` itself is required PUBLIC-OR-method_missing-caught, not public-only: unlike `include?`/`call`/
+      # `to_sym`, `check_validity!` never probes `respond_to?(:cover?)` at all — `cover?` only matters for the
+      # ACTUAL dispatch (`public_send`, which reaches `method_missing` regardless of any `respond_to?` hook
+      # cooperating) once `inclusion_method` has already selected it, so `own_method_missing_hook?` alone is
+      # sufficient here, with no `respond_to?`/`respond_to_missing?` override needed to back it (Codex, PR
+      # #288 — a genuine difference from every other doubtful hook in this file, which all gate on
+      # `respond_to?` being asked first).
+      #
+      # ANCESTRY classifies "is this a Range" everywhere else in this file — established once through
+      # `Identity.class_of`/`includes_module?` and never by dispatching `is_a?` on the caller's object, same
+      # as every other classification here. But `inclusion_method` does not ask ancestry: `enumerable.is_a?
+      # Range` is a REAL call, and a caller who overrides it governs what the runtime actually branches on,
+      # not what its ancestry says. Measured: a Range subclass overriding `is_a?` to answer `false` for
+      # `Range`, with `cover?` undefined, declares against `include?` alone and validates cleanly under real
+      # ActiveModel — `inclusion_method` never reaches the numeric bound, `cover?`, or the requirement below
+      # at all, because its own `is_a? Range` check is the thing that decided not to. Ancestry alone would
+      # still call this a Range and require `cover?` (Codex, PR #288). `own_is_a_hook?` catches this the same
+      # way every other doubtful hook here is caught: OWNERSHIP, never dispatch. Doubt answers "usable" for
+      # the same reason `range_cover_resolution`'s own `:undecidable` branch does — an overridden `is_a?`
+      # could in principle still answer exactly as ancestry does, in which case standing down costs a
+      # `cover?` requirement that was genuinely earned, but requiring it anyway costs certain, immediate
+      # rejection of a declaration ActiveModel actually accepts, which is the one error this guard exists to
+      # rule out.
+      #
+      # Whether `is_a?` ITSELF is the caller's own, distinct from every other dispatch hook this file checks
+      # ownership of. `Clusivity#inclusion_method` classifies its argument with `enumerable.is_a? Range` — a
+      # REAL call, dispatched on the collection exactly as written, not a question about its ancestry — so an
+      # override answering `false` for a genuine Range subclass (or `true` for something that is not one) is
+      # what the runtime actually consults, and `range_usable?` classifying by ANCESTRY alone (deliberately,
+      # see below) can disagree with it in either direction. Ownership only, never dispatched, for the same
+      # reason every other hook here is: running `is_a?` on the caller's object to find out is the one thing
+      # this predicate exists to avoid needing.
+      #
+      # A NIL owner defers to `method_missing`, the same case `own_respond_to_hook?` already carves out for
+      # `respond_to?`: `undef_method :is_a?` removes it from the table entirely, and Ruby routes the call
+      # through `method_missing` regardless — every caller of this predicate has already established
+      # `enumerable_is_a_reachable?` (real OR method_missing-caught) before ever asking whether the ANSWER is
+      # trustworthy, so a nil owner here is never "native and untouched," it is "the caller's own
+      # `method_missing` answers this, and can answer anything" — doubtful, not native, found only by
+      # empirically constructing a `method_missing` that LIES about `is_a?(Range)` and confirming both real
+      # ActiveModel and axn's own (pre-fix) guard disagreed about the result (a systematic audit of every
+      # dispatch hook against real ActiveModel, prompted by finding this same nil-owner gap already fixed once
+      # for `respond_to?` but never generalized to the other hooks this file added afterward).
+      def own_is_a_hook?(collection)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, :is_a?)
+        return own_method_missing_hook?(collection) if owner.nil?
+
+        NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+      end
+
+      # Whether `public_send` ITSELF is the caller's own, the same ownership question `own_is_a_hook?` asks
+      # of `is_a?` — `WholeValueClusivity#include?` performs the actual membership test as
+      # `members.public_send(inclusion_method(members), value)`, so every arity requirement this file places
+      # on the SELECTED method (`include?`/`cover?`) assumes that call forwards `value` unchanged. A caller-
+      # owned `public_send` can transform or drop the arguments before forwarding — Codex, PR #288: an
+      # override `def public_send(name, _value) = send(name)` calls a zero-arg `include?` with no value at
+      # all, so a real, public, zero-arg `include?` declares and enforces fine even though the arity this file
+      # would otherwise require is never actually asked for. Ownership only, never dispatched, for the same
+      # reason every other hook here is.
+      #
+      # A NIL owner defers to `method_missing`, the same `own_is_a_hook?` fix applies for the same reason:
+      # `public_send_reachable?` has already established this is real-OR-method_missing-caught before
+      # `own_public_send_hook?` is ever asked whether the answer is trustworthy, so a nil owner here means
+      # `method_missing` is what actually forwards (or transforms) the call, never Ruby's own untouched
+      # `Kernel#public_send`.
+      def own_public_send_hook?(collection)
+        owner = Axn::Internal::NativeMethods.method_owner(collection, :public_send)
+        return own_method_missing_hook?(collection) if owner.nil?
+
+        NATIVE_DISPATCH_HOOK_OWNERS.none? { |native| native.equal?(owner) }
+      end
+
+      def range_usable?(collection)
+        # `check_validity!`'s gate is `respond_to?(:include?) || respond_to?(:call) || respond_to?(:to_sym)`
+        # — `:call` being certainly (or doubtfully) routed is already handled by the caller BEFORE this is
+        # ever reached, so by the time execution gets here the gate can only still be cleared by a real
+        # `include?` OR a real `to_sym`. Requiring `include?` UNCONDITIONALLY, as if it were the only way to
+        # clear the gate, refused a Range whose `include?` is undefined/private but whose `to_sym` clears the
+        # gate on its own — a case where `include?` is never even a candidate for the ACTUAL dispatch either,
+        # since a numeric/date/time bound selects `cover?` instead (Codex, PR #288: "include? is required for
+        # validity only when neither call nor to_sym can satisfy the validity gate").
+        #
+        # A doubtful `respond_to?`/`respond_to_missing?` hook can ALSO clear this gate on its own, entirely
+        # independent of whatever `include?`/`to_sym` actually look like — `check_validity!`'s probe is
+        # `delimiter.respond_to?(...)`, dispatched to WHICHEVER `respond_to?` the caller's class defines, so
+        # an override answering `true` for `:include?` satisfies it regardless of `include?`'s own visibility.
+        # A numeric-bounded Range SUBCLASS making `include?` PRIVATE (never dispatched at all, since the bound
+        # selects `cover?`) while advertising it through an overridden `respond_to?` declares and enforces
+        # fine under real ActiveModel — this validity-probe question is distinct from whether the ACTUAL
+        # membership dispatch (`cover?`/`include?`'s own ownership and arity, still enforced unconditionally
+        # below) will succeed, and conflating the two refused a working declaration (Codex, PR #288: "treat
+        # hook-backed validity separately from hook-backed membership dispatch").
+        return false unless public_method_owner?(collection, :include?) || public_method_owner?(collection, :to_sym) ||
+                            own_respond_to_missing_hook?(collection) || own_respond_to_hook?(collection)
+
+        # `inclusion_method`'s `enumerable.is_a? Range` is a REAL, dispatched call — when it is overridden,
+        # ActiveModel's actual branch selection (`cover?` vs `include?`) can diverge from static ancestry in
+        # EITHER direction: a genuine Range subclass can deny Range (handled below, once ancestry is real), and
+        # — Codex, PR #288, finding on 0665413 — a non-Range object can equally CLAIM Range, supply `begin`/
+        # `cover?`, and be routed straight to `cover?`, skipping `include?` entirely even though it has none.
+        # Deciding by ANCESTRY which branch below even applies, while `is_a?` is overridden, could reject a
+        # declaration `inclusion_method` would actually route to `cover?` — so this doubt is resolved before
+        # ancestry is ever consulted, not after, the same "doubt answers usable" doctrine as everywhere else
+        # here.
+        #
+        # But doubt about WHICH branch applies is not doubt about whether the declaration works AT ALL: a
+        # frozen delimiter with a public `to_sym` (clearing the validity gate), a correct-arity overridden
+        # `is_a?`, and NEITHER a usable `include?`/`public_send` (the non-Range path) NOR a usable `begin`
+        # (the Range path) fails EVERY possible classification `is_a?` could return, readable from the method
+        # table alone with no need to know which one it actually picks (Codex, PR #288: "only stand down here
+        # when at least one possible classification path is usable"). So both paths are checked, and doubt
+        # permits only when at least one of them could work.
+        return non_range_include_usable?(collection) || range_cover_usable?(collection) if own_is_a_hook?(collection)
+
+        klass = Axn::Internal::Identity.class_of(collection)
+        return range_cover_usable?(collection) if Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+
+        non_range_include_usable?(collection)
+      end
+
+      # The non-Range path `inclusion_method` takes: `include?` (never `cover?`) is unconditionally what gets
+      # selected, and `to_sym` alone never satisfies the ACTUAL dispatch (`resolve_value` never calls it).
+      # Extracted from `range_usable?` so the `own_is_a_hook?` doubt above can ask "would THIS path work" without
+      # regard to the object's real ancestry — `inclusion_method`'s classification, not axn's, decides which
+      # path the runtime actually takes.
+      def non_range_include_usable?(collection)
+        # `public_send` performs the actual dispatch here (`members.public_send(:include?, value)`) — a
+        # caller-owned override can intercept the message itself, implementing membership entirely on its
+        # own terms, never forwarding to a real `include?` at all (Codex, PR #288: a frozen delimiter with a
+        # public `to_sym`, no `include?` whatsoever, and a two-argument `public_send` override that handles
+        # `:include?` directly declares and enforces fine under real ActiveModel — `to_sym` alone clears the
+        # validity gate, and the override IS the membership test). Checked BEFORE requiring `include?` at
+        # all, not merely before trusting its arity: requiring ownership first refused this working
+        # declaration before the override could ever stand in for it.
+        return true if own_public_send_hook?(collection)
+
+        # `include?` is unconditionally what `inclusion_method` selects for anything outside Range ancestry
+        # — never `cover?`, and `to_sym` alone never satisfies the ACTUAL dispatch (`resolve_value` never
+        # calls it) — so a real, correct-arity `include?` is required here once `public_send` itself is
+        # confirmed trustworthy (Codex, PR #288: deferred below for the reason this early return exists at
+        # all).
+        return false unless public_method_owner?(collection, :include?)
+
+        accepts_single_positional_arg?(collection, :include?)
+      end
+
+      # The Range path `inclusion_method` takes: `cover?` or `include?`, selected by the bound. Extracted from
+      # `range_usable?` for the same reason `non_range_include_usable?` is — `range_cover_resolution` itself
+      # never consults real ancestry (only method-table ownership), so this can be asked of ANY object
+      # regardless of whether it truly includes `Range`.
+      def range_cover_usable?(collection)
+        case range_cover_resolution(collection)
+        when :unreachable then false
+        when :cover
+          # A real, public, OWNED `cover?` is what Ruby dispatches to, unconditionally — `method_missing` is
+          # never consulted once a real method answers, so a WRONG arity there is certain failure regardless
+          # of whatever `method_missing` might otherwise do (same precedence `usable_clusivity_delimiter?`
+          # applies to `include?`/`call`, Codex, PR #288). `include?`'s own arity is IRRELEVANT here:
+          # `inclusion_method` selected `cover?`, and `include?` is never dispatched at all — a numeric-bounded
+          # Range with a zero-arg `include?` and a correct `cover?` declares and enforces fine, since the
+          # broken `include?` is never reached (Codex, PR #288: "the arity requirement should apply only when
+          # include? is the selected membership method").
+          #
+          # Same `public_send` doubt as the non-Range branch above applies to `cover?`'s own arity too, since
+          # `public_send` performs this dispatch as well.
+          if own_public_send_hook?(collection)
+            true
+          elsif public_method_owner?(collection, :cover?)
+            accepts_single_positional_arg?(collection, :cover?)
+          else
+            method_missing_accepts?(collection, 2)
+          end
+        when :no_cover
+          # `:no_cover` is resolved via a NATIVE (trustworthy) read — `inclusion_method` is CERTAIN to select
+          # `include?` here, never `cover?`, so a real `include?` (and its own arity) governs, the same as
+          # the non-Range branch above and for the same reason: `to_sym` alone clears the validity gate but
+          # never the actual dispatch. Absent, this falls to the caller's own generic `method_missing`
+          # fallback rather than duplicating it here (Codex, PR #288, same reasoning as the non-Range early
+          # return above — deferred here rather than left to the caller's own top-level check, which cannot
+          # tell `:no_cover` apart from `:cover`).
+          #
+          # Same `own_public_send_hook?` stand-down as the non-Range and `:cover` branches, and checked FIRST
+          # for the same reason: a caller-owned `public_send` can intercept `:include?` and implement
+          # membership itself, with no real `include?` in the table at all (Codex, PR #288, the same fix
+          # generalized to the one branch it was left out of: "move the custom-public_send stand-down ahead
+          # of this ownership requirement, as in the non-Range and :cover branches").
+          return true if own_public_send_hook?(collection)
+          return false unless public_method_owner?(collection, :include?)
+
+          accepts_single_positional_arg?(collection, :include?)
+        else
+          # `:undecidable` — the bound itself is unreadable (an overridden `begin`/`end` whose VALUE cannot be
+          # trusted without dispatch), so WHICH of `cover?`/`include?` gets selected is unknown. Doubt about
+          # the SELECTION is not doubt about whether the declaration works at all: a Range with both `include?`
+          # and `cover?` undefined (no `method_missing`/`public_send` override to catch either) fails EVERY
+          # possible selection, readable from the method table alone (Codex, PR #288: "require that at least
+          # one of the include? or cover? routes can actually be dispatched"). So this stands down only when
+          # at least one of the two possible routes could work, the same "check every possible path" doubt
+          # `own_is_a_hook?`'s caller now applies one level up.
+          cover_or_include_viable?(collection)
+        end
+      end
+
+      # Whether EITHER `cover?` or `include?` could be the one `inclusion_method` selects and dispatches
+      # successfully — used only where WHICH one gets selected is itself unknown without dispatch
+      # (`range_cover_usable?`'s `:undecidable` case). Each route's own viability mirrors exactly how
+      # `range_cover_usable?` checks it when that route IS the certain selection (`own_public_send_hook?`
+      # stand-down first, then real-owned-and-correct-arity, then a cooperating `method_missing` fallback) —
+      # a real, wrong-arity `cover?` does not make the `include?` route viable, and vice versa, since Ruby's
+      # dispatch precedence within WHICHEVER route is actually taken is exactly as unconditional here as it
+      # is when the selection is certain.
+      def cover_or_include_viable?(collection)
+        return true if own_public_send_hook?(collection)
+
+        cover_viable = if public_method_owner?(collection, :cover?)
+                         accepts_single_positional_arg?(collection, :cover?)
+                       else
+                         method_missing_accepts?(collection, 2)
+                       end
+        return true if cover_viable
+
+        if public_method_owner?(collection, :include?)
+          accepts_single_positional_arg?(collection, :include?)
+        else
+          method_missing_accepts?(collection, 2)
+        end
+      end
+
+      # Whether the `include?` ActiveModel would actually CALL is String's own. A String answers `include?`
+      # (so `usable_clusivity_delimiter?` above is true for it, and `check_validity!` declares it clean), but
+      # it is the one common delimiter whose membership test is not membership at all: `String#include?` is a
+      # SUBSTRING test, and raises `TypeError` for any value that is not itself a String. So `type: Integer,
+      # inclusion: { in: "12" }` declares cleanly and raises on every call — the same shape this guard exists
+      # to close, just past the one check that lets everything else through.
+      #
+      # Asked by OWNERSHIP, not by class: a String SUBCLASS that has not overridden `include?` inherits the
+      # same substring behaviour and is refused on the same terms, while one that overrides it decides its own
+      # membership and is exempt — the same rule `certainly_resolved_per_call?` applies to `call`.
+      #
+      # EXEMPT when `dynamically_resolved_per_call?` is true: `resolve_value`'s `else` branch checks
+      # `respond_to?(:call)` BEFORE anything ever reaches `include?`, so a String subclass ActiveModel would
+      # route to `.call` — certainly, through a real public `call`, or doubtfully, through a cooperating
+      # `respond_to?`/`respond_to_missing?` + `method_missing` pair — is resolved through that `call`, never
+      # through its own inherited substring `include?` at all. Refusing it here would refuse a declaration
+      # ActiveModel and the runtime both accept, which is the one error this guard may not make (Codex, PR
+      # #288, twice: a real `call` first, then a dynamically dispatched one).
+      def string_keyed_delimiter?(collection)
+        return false if dynamically_resolved_per_call?(collection)
+
+        # `WholeValueClusivity#include?` dispatches membership as `members.public_send(:include?, value)` —
+        # a caller-owned `public_send` can intercept `:include?` itself before it ever reaches String's own
+        # inherited substring implementation, the same doubt `own_public_send_hook?` already resolves
+        # elsewhere in this file (Codex, PR #288: a frozen String SUBCLASS overriding `public_send` to
+        # implement membership itself never touches the inherited substring `include?` at all, and declares
+        # and enforces fine even for a non-String value that would otherwise raise `TypeError`).
+        return false if own_public_send_hook?(collection)
+
+        Axn::Internal::NativeMethods.method_owner(collection, :include?).equal?(::String)
+      rescue StandardError
+        false
+      end
+
+      # No delimiter at all: a long-form entry naming neither `in:` nor `within:` a TRUTHY value (an empty
+      # Hash, one carrying only `message:`/`if:`/…, or one whose only size key is falsy) reaches
+      # `check_validity!` with `delimiter` resolved to `nil`, which answers none of `include?`/`call`/`to_sym`
+      # and raises ActiveModel's own `ArgumentError` on EVERY call — the declares-cleanly-then-always-raises
+      # shape this guard exists to close, reported separately from the case below because there is no
+      # offending VALUE to describe.
+      def reject_missing_clusivity_delimiter!(key, where)
+        raise ArgumentError,
+              "#{key}: on #{where} names no set at all — neither `in:` nor `within:` carries a value. " \
+              "Declared, the class defines cleanly and every call raises ActiveModel's own `ArgumentError: An " \
+              "object with the method #include? or a proc, lambda or symbol is required, and must be supplied " \
+              "as the :in (or :within) option of the configuration hash` from Clusivity#check_validity! " \
+              "instead. Name the set: an Array or Range of members, a Symbol naming an action method that " \
+              "returns one, or a Proc/lambda called with the record."
+      end
+
+      # A delimiter ActiveModel's own `Clusivity#check_validity!` cannot use at all. Described BY CLASS,
+      # never by `inspect`: this is an error-reporting path over the caller's own value, and dispatching its
+      # `inspect` here would let it replace this ArgumentError with whatever IT raises instead — the same
+      # reason `reject_unreadable_mutable_container!` above and `_reject_invalid_length_bounds!` (contract.rb)
+      # read a caller value the same way.
+      def reject_unusable_clusivity_delimiter!(collection, key, where)
+        raise ArgumentError,
+              "#{key}: on #{where} names a set of class " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(collection)}, which " \
+              "ActiveModel cannot use — declared, the class defines cleanly and every call raises ActiveModel's " \
+              "own `ArgumentError: An object with the method #include? or a proc, lambda or symbol is " \
+              "required, and must be supplied as the :in (or :within) option of the configuration hash` from " \
+              "Clusivity#check_validity! instead. Name an Array or Range of members, a Set or Hash (whose keys " \
+              "are read as members), a Symbol naming an action method that returns a collection, or a " \
+              "Proc/lambda called with the record."
+      end
+
+      # A String delimiter — declares cleanly (a String answers `include?`) and raises on every call anyway;
+      # see `string_keyed_delimiter?` for why.
+      def reject_string_clusivity_delimiter!(collection, key, where)
+        raise ArgumentError,
+              "#{key}: on #{where} names a String as its set (of class " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(collection)}). A String " \
+              "answers membership by SUBSTRING, and raises `TypeError` for any value that is not itself a " \
+              "String — so declared, the class defines cleanly and every call raises unless the field's own " \
+              "value is a String. Name the members instead (`%w[a b c]`), or use `format:` for a " \
+              "substring/pattern check."
+      end
+
+      # Whether `collection` is an Array or a Range (by ANCESTRY, never `is_a?`) — the two shapes ActiveModel's
+      # OWN `_parse_validates_options` already routes a BARE delimiter to `{ in: … }` for, natively, with no
+      # help from axn's canonicalization. Their aliasing property (a caller who still holds the object can
+      # mutate it, changing an already-declared validator's membership) is consequently PRE-EXISTING, ordinary
+      # ActiveModel behavior that predates axn's involvement in this area entirely — sometimes even relied on
+      # intentionally for a dynamically-changing allow-list — and not a gap `usable_clusivity_delimiter?`
+      # opened, so it is out of scope for the aliasing rule below.
+      def native_bare_clusivity_delimiter?(collection)
+        klass = Axn::Internal::Identity.class_of(collection)
+        Axn::Internal::NativeMethods.includes_module?(klass, ::Array) ||
+          Axn::Internal::NativeMethods.includes_module?(klass, ::Range)
+      end
+
+      # A delimiter `usable_clusivity_delimiter?` accepts by OWNERSHIP — a Set SUBCLASS, or any other object
+      # answering `include?` (really, or through a doubtful hook) — is stored as the declaration's OWN
+      # membership set, by reference, once it reaches here. The SAME aliasing rule `reject_unreadable_mutable_
+      # container!` already applies to a Hash-keyed container applies for the SAME reason: a caller who still
+      # holds this object could mutate it after declaring, changing an already-declared class's membership
+      # retroactively (PRO-3326 widened bare acceptance to exactly the shapes this reopens — a Set subclass or
+      # a custom `include?`-answering object that used to raise on every call now declares cleanly and stores
+      # itself unguarded).
+      #
+      # EXEMPT when `certainly_routed_to_call?` (a Proc/lambda's behavior cannot be mutated after creation the
+      # way a container's elements can, matching the Hash-keyed branch's own exemption — and CERTAINLY, not
+      # merely a real `call` in the table, since an overridden `respond_to?` can route dispatch through a
+      # mutable `include?` instead, Codex, PR #288) or `native_bare_clusivity_delimiter?` (an Array or Range,
+      # whose aliasing is ActiveModel's own pre-existing property, not this guard's to police). A Symbol is
+      # always frozen (Ruby gives every Symbol one object per name), so it clears the check below without
+      # needing a special case either.
+      #
+      # "Nothing can mutate it afterwards" means the object's OWN state, which is what `frozen?` has ever
+      # meant in Ruby — never a deep freeze of whatever it happens to delegate to. A frozen wrapper whose
+      # `include?` reads an externally-held, still-mutable Array from an ivar is exactly as aliasable as a
+      # frozen `Array` holding a mutable `Hash` element (`[h].freeze` does not freeze `h`) — universal Ruby
+      # semantics, not a gap this guard introduced or could close without either deep-freezing an arbitrary
+      # object graph (undecidable in general: the mutable state a caller's `include?` reads need not even
+      # live in an ivar — a constant, a closure, a global, all equally invisible without dispatch) or running
+      # the caller's own `include?` to find out, which this guard declines to do everywhere else for the same
+      # reason (Codex, PR #288 — the same "no achievable fix without dispatching the caller's own code"
+      # boundary this file draws around every hostile-shaped finding).
+      #
+      # Freezing a THIN wrapper (one whose `include?` closes over nothing mutable, or built from an
+      # already-frozen source) genuinely closes the aliasing this guard exists for; a wrapper that instead
+      # freezes only ITSELF while delegating to something it does not own the mutability of was never the
+      # shape `freeze` could protect against, in axn or in plain Ruby.
+      def reject_unfrozen_clusivity_delimiter!(collection, key, where)
+        return if Axn::Internal::NativeMethods.frozen?(collection)
+
+        raise ArgumentError,
+              "#{key}: on #{where} names a set of class " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(collection)} that is not " \
+              "frozen. A declared contract is axn's own, so mutating what you still hold after declaring it " \
+              "could change its membership retroactively. Freeze this object before naming it as a delimiter " \
+              "(a frozen one is stored as-is, since nothing can mutate it afterwards)."
+      end
+
       # ONE clusivity entry, canonicalized. The bare shorthand becomes the long form its members belong in:
       # ActiveModel's `_parse_validates_options` maps only a Range or an Array to `{ in: }` and everything else
-      # to `{ with: }`, which reaches `check_validity!` with no delimiter and raises on every call.
+      # to `{ with: }`, which reaches `check_validity!` with no delimiter and raises on every call — so every
+      # bare delimiter ActiveModel could otherwise use (a Proc, a Symbol, a plain `include?`-answering object,
+      # a Set subclass) is wrapped into the long form here, exactly as the Set/Hash case already was
+      # (PRO-3319). One that ActiveModel could never use, in either spelling, is refused instead (PRO-3326).
       #
       # The entry is returned unchanged — by identity, which is how the caller knows not to write — whenever
-      # there is nothing to rewrite: an Array or Range set, a collection axn may not read, or a long form
-      # naming no set at all.
+      # there is nothing to rewrite: a collection axn may not read (frozen, so stored as declared), or a long
+      # form already naming a usable set.
       def canonical_clusivity_entry(entry, key: :inclusion, where: nil)
         graph = Axn::Internal::ShapeGraph
         options = graph.hash_or_nil(entry)
@@ -257,24 +1276,54 @@ module Axn
           members = hash_keyed_set_members(entry)
           return { in: members } if members
 
-          reject_unreadable_mutable_container!(entry, key, where) if hash_keyed_container?(entry) && !certainly_resolved_per_call?(entry)
-          # A container whose members must not be read still needs the long form, and does not need reading to
-          # get it: the shorthand is a SPELLING that ActiveModel maps only for a Range or an Array, so leaving a
-          # bare Set as written sent it to `with:` and raised `ArgumentError` on every call. Wrapping the
-          # collection itself keeps its own `include?` answering membership while making the spelling valid.
-          return { in: entry } if hash_keyed_container?(entry)
+          if hash_keyed_container?(entry)
+            # A container whose members must not be read still needs the long form, and does not need reading
+            # to get it: the shorthand is a SPELLING that ActiveModel maps only for a Range or an Array, so
+            # leaving a bare Set as written sent it to `with:` and raised `ArgumentError` on every call.
+            # Wrapping the collection itself keeps its own `include?` answering membership while making the
+            # spelling valid.
+            #
+            # Reaching here means the container OWNS code of its own (`hash_keyed_set_members` already stood
+            # down otherwise, reading the members out instead) — a Set/Hash with a singleton `include?` is
+            # exactly as usable-or-not as any other custom `include?`-answering object, so it earns the SAME
+            # `usable_clusivity_delimiter?` check the generic path below already runs. Skipping it here left
+            # a frozen Set with a broken singleton `include?` declaring cleanly and raising on every call —
+            # the exact shape this whole guard exists to close, just reached through the ONE path that never
+            # asked (Codex, PR #288: "this early return bypasses usable_clusivity_delimiter? entirely for
+            # hash-keyed containers").
+            reject_unusable_clusivity_delimiter!(entry, key, where) unless usable_clusivity_delimiter?(entry)
+            reject_unreadable_mutable_container!(entry, key, where) unless certainly_routed_to_call?(entry)
+            return { in: entry }
+          end
 
-          return entry
+          reject_unusable_clusivity_delimiter!(entry, key, where) unless usable_clusivity_delimiter?(entry)
+          reject_string_clusivity_delimiter!(entry, key, where) if string_keyed_delimiter?(entry)
+          reject_unfrozen_clusivity_delimiter!(entry, key, where) unless certainly_routed_to_call?(entry) || native_bare_clusivity_delimiter?(entry)
+
+          return { in: entry }
         end
 
         set_key = declared_set_key(options, keys: CLUSIVITY_SET_KEYS)
-        return entry if set_key.nil?
+        reject_missing_clusivity_delimiter!(key, where) if set_key.nil?
 
         collection = options[set_key]
         members = hash_keyed_set_members(collection)
         return options.merge(set_key => members) if members
 
-        reject_unreadable_mutable_container!(collection, key, where) if hash_keyed_container?(collection) && !certainly_resolved_per_call?(collection)
+        if hash_keyed_container?(collection)
+          # Same reasoning as the bare-shorthand branch above: this container owns code of its own, so it
+          # needs the SAME usability check as any other custom `include?`-answering object (Codex, PR #288).
+          reject_unusable_clusivity_delimiter!(collection, key, where) unless usable_clusivity_delimiter?(collection)
+          reject_unreadable_mutable_container!(collection, key, where) unless certainly_routed_to_call?(collection)
+          return entry
+        end
+
+        reject_unusable_clusivity_delimiter!(collection, key, where) unless usable_clusivity_delimiter?(collection)
+        reject_string_clusivity_delimiter!(collection, key, where) if string_keyed_delimiter?(collection)
+        unless certainly_routed_to_call?(collection) || native_bare_clusivity_delimiter?(collection)
+          reject_unfrozen_clusivity_delimiter!(collection, key, where)
+        end
+
         entry
       end
 

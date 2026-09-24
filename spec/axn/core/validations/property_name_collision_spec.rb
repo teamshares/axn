@@ -885,19 +885,24 @@ RSpec.describe "declaration-time property name collisions" do
       end
 
       # A membership container axn may NOT read its members out of reaches this path and is stored as the
-      # caller's OBJECT — not copied, and so not refused either: nothing of axn's answers membership, the
-      # caller's own object does, so the divergence above is unreachable. What remains is the aliasing the copy
-      # exists to prevent, recorded here rather than claimed closed. A Set SUBCLASS is one such container: its
-      # traversal is its own, so canonicalizing would have to run the subclass's code. A `Range` is frozen by
-      # construction and so is unaffected.
-      it "records the residue: a Set subclass stays the caller's own object" do
+      # caller's OBJECT — not copied, and so nothing of axn's answers membership; the caller's own object
+      # does, so the divergence above is unreachable. What remains is the aliasing the copy exists to
+      # prevent — CLOSED now (PRO-3326) by requiring the container to be frozen first, the same escape
+      # `reject_unreadable_mutable_container!` already offers a Hash-keyed container that answers with code
+      # of its own. A Set SUBCLASS is one such container: its traversal is its own, so canonicalizing would
+      # have to run the subclass's code. A `Range` is frozen by construction and so is unaffected.
+      it "closes the residue: an unfrozen Set subclass is refused rather than aliased" do
         values = Class.new(Set).new(%w[a])
+
+        expect { declared_with(values) }.to raise_error(ArgumentError, /that is not frozen/)
+      end
+
+      it "stores a FROZEN Set subclass as the caller's own object, immune to the aliasing a freeze rules out" do
+        values = Class.new(Set).new(%w[a]).freeze
         klass = declared_with(values)
 
         expect(klass.internal_field_configs.first.validations.dig(:inclusion, :in)).to be(values)
         expect(accepts_c?(klass)).to be(false)
-        values << "c"
-        expect(accepts_c?(klass)).to be(true)
       end
     end
   end

@@ -4227,7 +4227,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       lazy = lazy_class
       klass = Class.new do
         include Axn
-        expects :b, inclusion: { in: lazy.new }, presence: false
+        expects :b, inclusion: { in: lazy.new.freeze }, presence: false
         def call = nil
       end
 
