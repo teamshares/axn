@@ -11,6 +11,9 @@ require "active_support"
 # needs it whether or not the umbrella entrypoint loaded it.
 require "axn/extensions"
 
+# The stack check compares frames by bound identity, never by dispatching `equal?` to an action.
+require "axn/internal/identity"
+
 module Axn
   module Core
     module NestingTracking
@@ -40,9 +43,10 @@ module Axn
         yield
       ensure
         stack = _current_axn_stack
-        # Identity, not equality: two frames may track equal-but-distinct actions, and `equal?` keeps
-        # this check allocation-free on the path every call takes.
-        if stack.last.equal?(axn)
+        # Identity, not equality: two frames may track equal-but-distinct actions. Bound rather than
+        # dispatched, so an action overriding `equal?` cannot intercept its own stack cleanup, and still
+        # allocation-free on the path every call takes.
+        if Axn::Internal::Identity.same?(stack.last, axn)
           stack.pop
         else
           _heal_interleaved_stack(stack, axn)
@@ -69,7 +73,7 @@ module Axn
       # entirely while A is suspended) always finds its own entry on top and is not detected, even
       # though B's frames read A's entry beneath their own and were attributed as nested inside A.
       def self._heal_interleaved_stack(stack, axn)
-        index = stack.rindex { |entry| entry.equal?(axn) }
+        index = stack.rindex { |entry| Axn::Internal::Identity.same?(entry, axn) }
         return unless index # our entry is already gone (e.g. IsolatedExecutionState was cleared)
 
         stack.delete_at(index)

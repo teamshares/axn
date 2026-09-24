@@ -156,6 +156,19 @@ RSpec.describe "Axn::Core::NestingTracking.tracking interleaved without a schedu
     expect(tracking._current_axn_stack).to be_empty
   end
 
+  # The frame's own cleanup must not dispatch to the action it tracks: an action class is the author's, and
+  # one overriding `equal?` would otherwise decide whether its frame leaves the stack.
+  it "cleans up a frame whose action overrides equal?, whether it lies or raises" do
+    liar = Class.new { def equal?(_other) = false }.new
+    raiser = Class.new { def equal?(_other) = raise("equal? dispatched") }.new
+
+    expect { tracking.tracking(liar) { nil } }.not_to raise_error
+    expect { tracking.tracking(raiser) { nil } }.not_to raise_error
+    expect(Axn::Internal::Identity.same?(interleave(liar, raiser), raiser)).to be(true) # `be(raiser)` would dispatch equal?
+    expect(tracking._current_axn_stack).to be_empty
+    expect(interleave_warnings.size).to eq(1)
+  end
+
   it "does not let a raising logger escape the frame's exit" do
     allow(logger).to receive(:warn).and_raise(IOError, "closed stream")
 
