@@ -1141,6 +1141,30 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
 
       expect(outcome(action.call(v: 5))).to eq(:pass)
     end
+
+    # The same `own_public_send_hook?` stand-down, for the THIRD branch that needed it: `:no_cover` (a
+    # string-bounded Range, where `inclusion_method` is certain to select `include?`, never `cover?`). A
+    # caller-owned `public_send` can intercept `:include?` and implement membership itself, with no real
+    # `include?` in the table at all — the fix already applied to the non-Range and `:cover` branches, but
+    # left out of this one (Codex, PR #288: "move the custom-public_send stand-down ahead of this ownership
+    # requirement, as in the non-Range and :cover branches").
+    it "declares and enforces a string-bounded Range SUBCLASS with no include? at all, whose public_send handles membership itself" do
+      stub_const("StringRangePublicSendHandlesInclude", Class.new(Range) do
+        undef_method :include?
+        def to_sym = :whatever
+
+        def public_send(name, value)
+          return %w[a b c].include?(value) if name == :include?
+
+          super
+        end
+      end)
+
+      action = build_axn { expects :v, inclusion: { in: StringRangePublicSendHandlesInclude.new("a", "z").freeze } }
+
+      expect(outcome(action.call(v: "a"))).to eq(:pass)
+      expect(outcome(action.call(v: "z"))).to eq(:reject)
+    end
   end
 
   # A literal Proc is a SPECIAL case within `resolve_value` — its `case value; when Proc` branch takes

@@ -1052,8 +1052,14 @@ module Axn
           # fallback rather than duplicating it here (Codex, PR #288, same reasoning as the non-Range early
           # return above — deferred here rather than left to the caller's own top-level check, which cannot
           # tell `:no_cover` apart from `:cover`).
-          return false unless public_method_owner?(collection, :include?)
+          #
+          # Same `own_public_send_hook?` stand-down as the non-Range and `:cover` branches, and checked FIRST
+          # for the same reason: a caller-owned `public_send` can intercept `:include?` and implement
+          # membership itself, with no real `include?` in the table at all (Codex, PR #288, the same fix
+          # generalized to the one branch it was left out of: "move the custom-public_send stand-down ahead
+          # of this ownership requirement, as in the non-Range and :cover branches").
           return true if own_public_send_hook?(collection)
+          return false unless public_method_owner?(collection, :include?)
 
           accepts_single_positional_arg?(collection, :include?)
         else true # :undecidable — the bound itself is unreadable, so which method gets selected is UNKNOWN;
