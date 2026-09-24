@@ -3984,50 +3984,29 @@ module Axn
           end
         end
 
-        # A `length:` option ActiveModel's own `LengthValidator` cannot use — either a non-Range `in:`/
-        # `within:` (`initialize` requires one), or an `:is`/`:minimum`/`:maximum` that is none of a
-        # non-negative Integer, `Float::INFINITY` (either sign), a Symbol, or a Proc (`check_validity!`). axn
-        # compiles the validator class lazily, on the first `.call` (`ValidatorClassCache`), so today either
-        # declares cleanly and every call fails with AM's own opaque `ArgumentError` instead of one naming the
-        # field at the point it was declared. `length: { in: 3..2 }` is the sharpest case: a backwards or
-        # otherwise-empty Range resolves its `:minimum` to `nil` — not itself Numeric — through AM's own
-        # begin/end-gated expansion (`Axn::Validation::Base.invalid_length_bounds` mirrors that expansion
-        # exactly rather than `Range#min`/`#max`, which raise outright on a beginless/endless range AM itself
-        # declares cleanly).
+        # A `length:` entry ActiveModel's own `LengthValidator` cannot be built on — a non-Range `in:`/`within:`,
+        # an `:is`/`:minimum`/`:maximum` that is none of a non-negative Integer, `Float::INFINITY`, a Symbol or a
+        # Proc, or no size key at all. `length: { in: 3..2 }` is the sharpest case: AM expands the backwards
+        # range to `minimum: nil`, which it then rejects. Asked by building the validator
+        # (`Base.validator_build_error`), so the verdict is AM's own; see there for why it would otherwise surface
+        # only on the first call.
         #
-        # A third AM raise this guard also catches: `"Range unspecified"` from `check_validity!`, reached
-        # whenever `CHECKS.keys & options.keys` ends up empty — an entry naming none of `:is`/`:minimum`/
-        # `:maximum`, or one whose only size key is a FALSY `in:`/`within:` (`length: { in: nil }`), since
-        # AM's own `if range = (options.delete(:in) || options.delete(:within))` treats a falsy alias as not
-        # given at all, the same skip-when-falsy idiom `presence: false` and every other AM option follows.
-        #
-        # Reads only the author's own `length:` spelling (`Axn::Validation::Base.invalid_length_bounds`), so —
-        # unlike `_reject_unsatisfiable_size_interval!` — it does not need to wait for the tolerance push-down
-        # or `_apply_default_presence!` to settle the bag first.
+        # Reads only the author's own `length:` spelling, so — unlike `_reject_unsatisfiable_size_interval!` — it
+        # does not need to wait for the tolerance push-down or `_apply_default_presence!` to settle the bag first.
         def _reject_invalid_length_bounds!(validations, where:)
-          bad = Axn::Validation::Base.invalid_length_bounds(validations[:length])
-          return if bad.empty?
+          entry = validations[:length]
+          return unless entry
 
-          # `Identity.describe`, not `.inspect`: every value here is the caller's own (a raw bound, a bad
-          # `in:`/`within:`, or the whole entry), and this is an error-reporting path — dispatching a
-          # caller's `inspect` here would let it replace this ArgumentError with whatever it raises instead.
-          if bad.key?(:length)
-            raise ArgumentError,
-                  "length: on #{where} specifies no check at all (#{Internal::Identity.describe(bad[:length])}) " \
-                  "— declared, the class defines cleanly and every call raises ActiveModel's own " \
-                  "`ArgumentError: Range unspecified. Specify the :in, :within, :maximum, :minimum, or :is " \
-                  "option.` from LengthValidator#check_validity! instead. Name a real bound, or drop length: " \
-                  "entirely."
-          end
+          error = Axn::Validation::Base.validator_build_error(
+            ::ActiveModel::Validations::LengthValidator, Axn::Validation::Base.validator_entry_options(entry)
+          )
+          return unless error
 
-          offenders = bad.map { |key, value| "#{key}: #{Internal::Identity.describe(value)}" }.join(", ")
           raise ArgumentError,
-                "length: on #{where} has an option ActiveModel cannot use (#{offenders}) — :in:/:within: must " \
-                "each be a Range, and :is:/:minimum:/:maximum: must each be a non-negative Integer, " \
-                "Float::INFINITY, a Symbol, or a Proc. Declared, the class defines cleanly and every call " \
-                "raises ActiveModel's own opaque ArgumentError from LengthValidator#initialize/#check_validity! " \
-                "instead. A backwards or empty Range (`length: { in: 3..2 }`) resolves the same way, since it " \
-                "leaves `:minimum` (or `:maximum`) as `nil` rather than as the Range's own bound."
+                "length: on #{where} has an option ActiveModel cannot use — building its validator raises " \
+                "`#{error.class}: #{error.message}`. Declared, the class would define cleanly and every call " \
+                "would raise instead. `in:`/`within:` must be a non-empty Range, and `is:`/`minimum:`/`maximum:` " \
+                "each a non-negative Integer, Float::INFINITY, a Symbol, or a Proc."
         end
 
         # An `inclusion:` set no value of the declared type can be a member of — a contract that rejects every

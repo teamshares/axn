@@ -753,7 +753,7 @@ RSpec.describe "Axn class-level schema reflection" do
       # a floor to begin with.
       it "never reaches reflection: a bare shorthand that names no check is refused at declaration" do
         expect { schema_for(type: String, length: 3) }
-          .to raise_error(ArgumentError, /length: on .* specifies no check at all/)
+          .to raise_error(ArgumentError, /length: on .* has an option ActiveModel cannot use .*Range unspecified/)
       end
 
       # A fractional floor is not a shape reflection ever sees: `_reject_invalid_length_bounds!` (PRO-3233)
